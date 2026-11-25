@@ -3,6 +3,7 @@ import type {
   ChatGptTransferredProfile,
   ProviderAuthRespondInput,
   ProviderAuthState,
+  ProviderInstanceId,
   ProviderSetupError,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -23,6 +24,8 @@ export interface ProviderAuthController {
     stopSessions: Effect.Effect<void, ProviderSetupError>,
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly isChangingCredentials?: Effect.Effect<boolean>;
+  /** Interactive sign-in may reserve the binding for setup while sessions still use the old identity. */
+  readonly isAccessBlocked?: Effect.Effect<boolean>;
   readonly invalidate?: Effect.Effect<void>;
   readonly refreshMethods?: Effect.Effect<void>;
   readonly removeMethod?: (
@@ -37,6 +40,8 @@ export interface ProviderAuthController {
     methodId?: string,
     returnUrl?: string,
     callbackMode?: "server" | "client",
+    bindingInstances?: ReadonlyArray<ProviderInstanceId>,
+    reserveIdleBinding?: Effect.Effect<boolean, never, Scope.Scope>,
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly complete: (
     ownerSessionId: string,

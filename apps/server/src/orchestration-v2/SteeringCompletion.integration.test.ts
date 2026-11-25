@@ -1,9 +1,19 @@
 import { assert, it } from "@effect/vitest";
 import * as TestClock from "effect/testing/TestClock";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
+import * as DocumentText from "../provider/DocumentText.ts";
+import * as ServerConfig from "../config.ts";
+import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
+import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
+import { vi } from "vite-plus/test";
 import {
   ChatAttachmentId,
   CommandId,
   EnvironmentId,
+  type ChatAttachment,
+  GuestMessageId,
+  GuestShareId,
   MessageId,
   EventId,
   NodeId,
@@ -24,6 +34,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -56,6 +67,8 @@ it.effect.each(
       [true, "without native steering"],
       [true, "with interrupting native steering"],
       [true, "settled only"],
+      [true, "with unknown task owners"],
+      [true, "with mixed task owners"],
       [false, "during continuation"],
       ["question", "during delivery"],
     ] as const
@@ -73,7 +86,10 @@ it.effect.each(
     const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
     const steerEntered = yield* Deferred.make<void>();
     const rejectSteer = yield* Deferred.make<void>();
+    const separateMailbox =
+      timing === "with unknown task owners" || timing === "with mixed task owners";
     let steerCalls = 0;
+    let interrupts = 0;
     const capabilities = {
       ...CodexProviderCapabilitiesV2,
       turns: {
@@ -152,7 +168,12 @@ it.effect.each(
             steerTurn: (turn) =>
               Effect.gen(function* () {
                 steerCalls += 1;
-                if (timing === "after delivery" || timing === "during continuation") return;
+                if (
+                  timing === "after delivery" ||
+                  timing === "during continuation" ||
+                  separateMailbox
+                )
+                  return;
                 yield* Deferred.succeed(steerEntered, undefined);
                 yield* Deferred.await(rejectSteer);
                 return yield* new ProviderAdapter.ProviderAdapterSteerRunError({
@@ -162,7 +183,10 @@ it.effect.each(
                   cause: "turn already completed",
                 });
               }),
-            interruptTurn: () => Effect.void,
+            interruptTurn: () =>
+              Effect.sync(() => {
+                interrupts += 1;
+              }),
             respondToRuntimeRequest: () => Effect.void,
             readThreadSnapshot: () => Effect.die("unused"),
             rollbackThread: () => Effect.die("unused"),
@@ -203,8 +227,8 @@ it.effect.each(
         text: "first",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
-        createdBy: "user",
-        creationSource: "web",
+        createdBy: separateMailbox ? "agent" : "user",
+        creationSource: separateMailbox ? "mcp" : "web",
       });
       const running = yield* watch(
         (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -214,6 +238,11 @@ it.effect.each(
       const first = started[0]!;
       const messageId = MessageId.make("message:steering");
       const taskId = NodeId.make("task:mailbox");
+      const taskIds = separateMailbox ? [taskId, NodeId.make("task:another")] : [taskId];
+      // Automated deliveries carry the demand of the run that owns their tasks.
+      const source = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.id === first.runId,
+      )!;
       if (mailbox) {
         const sink = yield* EventSink.EventSinkV2;
         const now = yield* DateTime.now;
@@ -227,20 +256,24 @@ it.effect.each(
               delegatedCompletion: {
                 disposition: "open",
                 nextGeneration: 2,
-                delivery: { generation: 1, messageId, taskIds: [taskId] },
+                delivery: { generation: 1, messageId, taskIds },
               },
             }),
-            {
-              id: EventId.make("mailbox:task"),
+            ...taskIds.map((id, index): OrchestrationV2DomainEvent => ({
+              id: EventId.make(`mailbox:${id}`),
               type: "subagent.updated",
               threadId,
               runId: first.runId,
-              nodeId: taskId,
+              nodeId: id,
               occurredAt: now,
               payload: {
-                id: taskId,
+                id,
                 threadId,
                 runId: first.runId,
+                demandId:
+                  timing === "with mixed task owners"
+                    ? `demand:${String(index + 1).repeat(64)}`
+                    : (source.demandId ?? null),
                 parentNodeId: first.rootNodeId,
                 origin: "app_owned",
                 createdBy: "agent",
@@ -260,7 +293,7 @@ it.effect.each(
                 completedAt: now,
                 updatedAt: now,
               },
-            },
+            })),
           ],
         });
       }
@@ -302,6 +335,7 @@ it.effect.each(
         creationSource: mailbox || question ? "server" : "web",
         ...(question
           ? {
+              demandId: source.demandId ?? null,
               notification: {
                 source: { kind: "delegated_task", taskIds: [taskId] },
                 outcome: "updated",
@@ -314,12 +348,23 @@ it.effect.each(
               delegatedCompletion: {
                 parentRunId: first.runId,
                 generation: 1,
-                taskIds: [taskId],
+                taskIds,
               },
             }
           : {}),
       });
       if (timing !== "before dispatch") yield* dispatchSteer;
+      if (separateMailbox) {
+        yield* worker.drain();
+        assert.equal(steerCalls, 0);
+        assert.equal(interrupts, 0);
+        const { runs } = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(runs.find((run) => run.id === first.runId)?.demandId);
+        const followup = runs.find((run) => run.userMessageId === messageId);
+        assert.equal(followup?.status, "queued");
+        assert.isNull(followup?.demandId);
+        return;
+      }
       if (timing === "during continuation") {
         const projection = yield* orchestrator.getThreadProjection(threadId);
         const turn = projection.providerTurns[0]!;
@@ -442,6 +487,12 @@ it.effect.each(
       ]);
       assert.equal(steerCalls, timing === "during delivery" ? 1 : 0);
       const final = yield* orchestrator.getThreadProjection(threadId);
+      const original = final.runs.find((run) => run.id === first.runId)!;
+      assert.isString(original.demandId);
+      assert.equal(
+        final.runs.find((run) => run.id === started[1]?.runId)?.demandId,
+        original.demandId,
+      );
       if (question) {
         assert.deepEqual(final.thread.modelSelection, composerSelection);
         assert.deepEqual(started[1]?.modelSelection, composerSelection);
@@ -667,9 +718,8 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     ProviderAdapterRegistry.layerFromAdapters([adapter, ...extraAdapters]),
     { runEffectWorker: false },
   );
-  const startFirstTurn = Effect.gen(function* () {
+  const createThread = Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
     const threadId = ThreadId.make(`thread:${name}`);
     yield* orchestrator.dispatch({
       type: "thread.create",
@@ -685,6 +735,12 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       createdBy: "user",
       creationSource: "web",
     });
+    return threadId;
+  });
+  const startFirstTurnFrom = Effect.fn("startFirstTurnFrom")(function* (source: "web" | "mcp") {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const threadId = yield* createThread;
     const running = yield* orchestrator.streamDomainEvents.pipe(
       Stream.filter(
         (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -702,8 +758,8 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       attachments: [],
       modelSelection: runSelection,
       dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
+      createdBy: source === "web" ? "user" : "agent",
+      creationSource: source,
     });
     yield* worker.drain();
     yield* Fiber.join(running);
@@ -719,7 +775,9 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     steeredSelections,
     interrupted,
     layer,
-    startFirstTurn,
+    createThread,
+    startFirstTurn: startFirstTurnFrom("web"),
+    startFirstTurnFrom,
     steerEntered,
     releaseSteer,
   };
@@ -1127,6 +1185,319 @@ it.effect.each(
       assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, "running");
     }).pipe(Effect.provide(layer));
   }),
+);
+
+it.effect("a busy run takes steering only from its own demand", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { started, steered, interrupted, layer, startFirstTurn } =
+        yield* nextTurnSelectionHarness("steering-demand", true);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const [first] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+        assert.isString(first!.demandId);
+        const send = (
+          text: string,
+          demandId: string | null,
+          mode: "steer_active" | "restart_active",
+        ) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make(text),
+            messageId: MessageId.make(`message:${text}`),
+            text,
+            attachments: [],
+            dispatchMode: { type: mode, targetRunId: first!.id },
+            demandId,
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+        const other = `demand:${"2".repeat(64)}`;
+        yield* send("other", other, "steer_active");
+        yield* send("other", other, "steer_active");
+        yield* send("unknown", null, "restart_active");
+        yield* send("same", first!.demandId!, "steer_active");
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          started.map((turn) => turn.runId),
+          [first!.id],
+        );
+        assert.deepEqual(steered, ["same"]);
+        assert.deepEqual(interrupted, []);
+        const queued = projection.runs.filter((run) => run.status === "queued");
+        assert.deepEqual(
+          queued.map((run) => [run.userMessageId, run.demandId]),
+          [
+            [MessageId.make("message:other"), other],
+            [MessageId.make("message:unknown"), null],
+          ],
+        );
+        const promotion = yield* orchestrator
+          .dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote-other"),
+            threadId,
+            queuedRunId: queued[0]!.id,
+            targetRunId: first!.id,
+          })
+          .pipe(Effect.flip);
+        assert.equal(promotion._tag, "OrchestratorDispatchError");
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.id === queued[0]!.id,
+          )?.status,
+          "queued",
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect.each([
+  { mode: "steer_active", historical: false },
+  { mode: "restart_active", historical: true },
+  { mode: "queue_after_active", historical: true },
+  { mode: "queue_after_active", historical: false },
+] as const)(
+  "keeps unowned MCP work separate for $mode (historical: $historical)",
+  ({ mode, historical }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, interrupted, layer, startFirstTurnFrom } =
+          yield* nextTurnSelectionHarness("unowned-steering", true);
+        yield* Effect.gen(function* () {
+          const engine = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurnFrom("mcp");
+          const [active] = (yield* engine.getThreadProjection(threadId)).runs;
+          assert.isDefined(active);
+          assert.isNull(active.demandId);
+          const omitDemand = Effect.fn("omitDemand")(function* () {
+            const sink = yield* EventSink.EventSinkV2;
+            const now = yield* DateTime.now;
+            const { runs } = yield* engine.getThreadProjection(threadId);
+            yield* sink.write({
+              events: runs.map(({ demandId: _owner, ...run }) => ({
+                id: EventId.make(`legacy:${runs.length}:${run.id}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: run,
+              })),
+            });
+          });
+          if (historical) yield* omitDemand();
+          const messageId = MessageId.make("unowned");
+          yield* engine.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make("send-unowned"),
+            messageId,
+            text: "continue independently",
+            attachments: [],
+            dispatchMode:
+              mode === "queue_after_active"
+                ? { type: mode }
+                : { type: mode, targetRunId: active.id },
+            ...(historical ? {} : { demandId: null }),
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          const queued = (yield* engine.getThreadProjection(threadId)).runs.find(
+            (run) => run.userMessageId === messageId,
+          );
+          assert.equal(queued?.status, "queued");
+          assert.isNull(queued?.demandId);
+          if (mode === "queue_after_active") {
+            if (historical) yield* omitDemand();
+            const rejection = yield* engine
+              .dispatch({
+                type: "queued-message.promote-to-steer",
+                threadId,
+                commandId: CommandId.make("promote"),
+                queuedRunId: queued!.id,
+                targetRunId: active.id,
+              })
+              .pipe(Effect.flip);
+            assert.include(String(rejection.cause), "separate turn");
+          }
+          yield* worker.drain();
+          assert.lengthOf(started, 1);
+          assert.deepEqual(steered, []);
+          assert.deepEqual(interrupted, []);
+          assert.equal(
+            (yield* engine.getThreadProjection(threadId)).runs.find((run) => run.id === queued!.id)
+              ?.status,
+            "queued",
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+it.effect("an owner can steer a historical run directly and by promoting a queued message", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "historical-user-steering",
+      );
+      yield* Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const [first] = (yield* engine.getThreadProjection(threadId)).runs;
+        const { demandId: _owner, ...legacy } = first!;
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("historical-owner"),
+              type: "run.updated",
+              threadId,
+              runId: legacy.id,
+              occurredAt: yield* DateTime.now,
+              payload: legacy,
+            },
+          ],
+        });
+        for (const delivery of ["steer_active", "queue_after_active"] as const) {
+          yield* engine.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make(delivery),
+            messageId: MessageId.make(delivery),
+            text: delivery,
+            attachments: [],
+            dispatchMode:
+              delivery === "steer_active"
+                ? { type: delivery, targetRunId: legacy.id }
+                : { type: delivery },
+            createdBy: "user",
+            creationSource: "mobile",
+          });
+        }
+        const queued = (yield* engine.getThreadProjection(threadId)).runs.find(
+          (run) => run.status === "queued",
+        )!;
+        yield* engine.dispatch({
+          type: "queued-message.promote-to-steer",
+          threadId,
+          commandId: CommandId.make("promote"),
+          queuedRunId: queued.id,
+          targetRunId: legacy.id,
+        });
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+        assert.deepEqual(steered, ["steer_active", "queue_after_active"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect.each([
+  { source: "web" as const, historical: false },
+  { source: "mobile" as const, historical: true },
+])(
+  "keeps an accepted guest message in its own queued run ($source, historical: $historical)",
+  ({ source, historical }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { steered, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness("guest-promotion");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = yield* startFirstTurn;
+          const now = yield* DateTime.now;
+          const shareId = GuestShareId.make("share:guest-promotion");
+          const guestMessageId = GuestMessageId.make("guest:question");
+          const messageId = MessageId.make("accept-guest");
+          yield* orchestrator.dispatch({
+            type: "thread.guest-share.open",
+            commandId: CommandId.make("open"),
+            threadId,
+            shareId,
+            host: "env.t3.test",
+            expiresAt: DateTime.formatIso(DateTime.add(now, { hours: 24 })),
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.guest-share.redeem",
+            commandId: CommandId.make("redeem"),
+            threadId,
+            shareId,
+            guestName: "Guest",
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.guest-message.submit",
+            commandId: CommandId.make("submit"),
+            threadId,
+            shareId,
+            guestMessageId,
+            text: "Review this separately",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(messageId),
+            threadId,
+            messageId,
+            guestMessageId,
+            text: "",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: source,
+          });
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const active = before.runs.find((run) => run.status === "running");
+          const queued = before.runs.find((run) => run.userMessageId === messageId);
+          assert.isDefined(active);
+          assert.isDefined(queued);
+          assert.isString(queued.demandId);
+          assert.notEqual(queued.demandId, active.demandId);
+          assert.equal(
+            before.messages.find((message) => message.id === messageId)?.context?.guest
+              ?.guestMessageId,
+            guestMessageId,
+          );
+          if (historical) {
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({
+              events: before.runs.map(({ demandId: _owner, ...run }) => ({
+                id: EventId.make(`legacy:${run.id}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: run,
+              })),
+            });
+          }
+          const rejection = yield* orchestrator
+            .dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make("promote-guest"),
+              threadId,
+              queuedRunId: queued.id,
+              targetRunId: active.id,
+            })
+            .pipe(Effect.flip);
+          assert.equal(rejection._tag, "OrchestratorDispatchError");
+          assert.include(String(rejection.cause), "must run as a separate turn");
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          const pending = after.runs.find((run) => run.id === queued.id);
+          assert.equal(pending?.status, "queued");
+          assert.equal(pending?.demandId, historical ? undefined : queued.demandId);
+          assert.equal(
+            after.messages.find((message) => message.id === messageId)?.runId,
+            queued.id,
+          );
+          yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+          assert.deepEqual(steered, []);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 it.effect("force sends multiple queued messages and can force send a requeued message again", () =>
@@ -3461,6 +3832,240 @@ it.effect("preserves a queued message's model options when promoting it to a ste
   ),
 );
 
+it.effect.each([false, true])(
+  "a fresh managed send that loses to archive only replays an already accepted send (%s)",
+  (alreadyAccepted) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { layer, createThread } = yield* nextTurnSelectionHarness(
+          "managed-send-archive",
+          true,
+        );
+        const management = ThreadManagementService.layer.pipe(
+          Layer.provideMerge(layer),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(
+            CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        );
+        const files = ServerConfig.layerTest(process.cwd(), {
+          prefix: "t3-archive-attachment-",
+        }).pipe(
+          Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+        );
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagementService.ThreadManagementService;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = yield* createThread;
+          const fs = yield* FileSystem.FileSystem;
+          const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+          const contents = "Pending document";
+          const extracted = "Extracted text";
+          const upload: ChatAttachment = {
+            type: "file",
+            id: ChatAttachmentId.make(createPendingAttachmentId("docx")),
+            name: "notes.docx",
+            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            sizeBytes: contents.length,
+          };
+          const pathOf = (attachment: ChatAttachment) => {
+            const path = resolveAttachmentPath({ attachmentsDir, attachment });
+            assert.isNotNull(path);
+            return path;
+          };
+          const pendingPath = pathOf(upload);
+          yield* fs.writeFileString(pendingPath, contents);
+          yield* fs.writeFileString(pendingPath + ".txt", extracted);
+          const expectContents = (path: string) =>
+            Effect.gen(function* () {
+              assert.equal(yield* fs.readFileString(path), contents);
+              assert.equal(yield* fs.readFileString(path + ".txt"), extracted);
+            });
+          const input = {
+            threadId,
+            projectId: ProjectId.make("project:managed-send-archive"),
+            commandId: CommandId.make("fresh-after-archive"),
+            messageId: MessageId.make("fresh-after-archive"),
+            mode: "queue" as const,
+            text: "Run next",
+            attachments: [upload],
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          const reached = yield* Deferred.make<ChatAttachment>();
+          const proceed = yield* Deferred.make<void>();
+          const dispatch = orchestrator.dispatch;
+          let pauseFirst = true;
+          using _pause = vi.spyOn(orchestrator, "dispatch").mockImplementation((command) => {
+            if (
+              command.type !== "message.dispatch" ||
+              command.commandId !== input.commandId ||
+              !pauseFirst
+            )
+              return dispatch(command);
+            pauseFirst = false;
+            return Deferred.succeed(reached, command.attachments[0]!).pipe(
+              Effect.andThen(Deferred.await(proceed)),
+              Effect.andThen(dispatch(command)),
+            );
+          });
+          const sending = yield* ThreadMessageIntake.sendToThread(input).pipe(
+            Effect.result,
+            Effect.forkChild,
+          );
+          const firstCopy = pathOf(yield* Deferred.await(reached));
+          assert.notEqual(firstCopy, pendingPath);
+          yield* expectContents(firstCopy);
+          const winner = alreadyAccepted
+            ? yield* ThreadMessageIntake.sendToThread(input)
+            : undefined;
+          if (winner !== undefined) {
+            const completedAt = yield* DateTime.now;
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("winning-send-completed"),
+                  type: "run.updated",
+                  threadId,
+                  runId: winner.run.id,
+                  occurredAt: completedAt,
+                  payload: { ...winner.run, status: "completed", completedAt },
+                },
+              ],
+            });
+          }
+          yield* threads.dispatch({
+            type: "thread.archive",
+            threadId,
+            commandId: CommandId.make("archive-winning-race"),
+          });
+          yield* Deferred.succeed(proceed, undefined);
+          const result = yield* Fiber.join(sending);
+          assert.isFalse(yield* fs.exists(firstCopy));
+          assert.isFalse(yield* fs.exists(firstCopy + ".txt"));
+          yield* expectContents(pendingPath);
+          if (winner !== undefined) {
+            assert.ok(Result.isSuccess(result));
+            assert.isTrue(result.success.dispatch.replayed);
+            assert.equal(result.success.run.id, winner.run.id);
+            assert.deepEqual(result.success.message.attachments, winner.message.attachments);
+            yield* expectContents(pathOf(winner.message.attachments[0]!));
+            return;
+          }
+          assert.ok(Result.isFailure(result));
+          assert.equal(result.failure._tag, "ThreadManagementThreadArchivedError");
+          assert.isUndefined(yield* threads.acceptedCommandSequence(input.commandId));
+          assert.isFalse(
+            (yield* threads.getThreadProjection(threadId)).messages.some(
+              (message) => message.id === input.messageId,
+            ),
+          );
+          yield* threads.dispatch({
+            type: "thread.unarchive",
+            threadId,
+            commandId: CommandId.make("unarchive-and-retry"),
+          });
+          const accepted = yield* ThreadMessageIntake.sendToThread(input);
+          assert.equal(accepted.message.id, input.messageId);
+          const storedPath = pathOf(accepted.message.attachments[0]!);
+          assert.notEqual(storedPath, pendingPath);
+          yield* expectContents(storedPath);
+          const keptFiles = (yield* fs.readDirectory(attachmentsDir)).toSorted();
+          assert.isTrue((yield* ThreadMessageIntake.sendToThread(input)).dispatch.replayed);
+          assert.deepEqual((yield* fs.readDirectory(attachmentsDir)).toSorted(), keptFiles);
+          yield* expectContents(pendingPath);
+        }).pipe(Effect.provide(Layer.mergeAll(management, files)));
+      }),
+    ),
+);
+
+it.effect.each(["steer", "restart"] as const)(
+  "an accepted %s send replays after its run settles",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          "receipt-after-settle",
+          true,
+        );
+        const management = ThreadManagementService.layer.pipe(
+          Layer.provideMerge(layer),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(
+            CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagementService.ThreadManagementService;
+          const threadId = yield* startFirstTurn;
+          const [run] = (yield* threads.getThreadProjection(threadId)).runs;
+          assert.isDefined(run);
+          assert(typeof run.demandId === "string");
+          const input = {
+            mode,
+            projectId: ProjectId.make("project:receipt-after-settle"),
+            threadId,
+            commandId: CommandId.make("ordinary-send"),
+            messageId: MessageId.make("ordinary-send"),
+            text: "Continue",
+            attachments: [],
+            demandId: run.demandId,
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          assert.isUndefined(yield* threads.acceptedCommandSequence(input.commandId));
+          const first = yield* threads.sendToThread(input);
+          assert.equal(
+            yield* threads.acceptedCommandSequence(input.commandId),
+            first.dispatch.sequence,
+          );
+          assert.equal(first.delivery, mode === "restart" ? "restarted" : "steered");
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const snapshot = yield* threads.getThreadProjection(threadId);
+          yield* sink.write({
+            events: snapshot.runs.map((row) => ({
+              id: EventId.make(`settled:${row.id}`),
+              type: "run.updated",
+              threadId,
+              runId: row.id,
+              occurredAt: now,
+              payload: { ...row, status: "completed", completedAt: now },
+            })),
+          });
+          const retry = yield* threads.sendToThread(input);
+          assert.equal(retry.delivery, first.delivery);
+          assert.equal(retry.run.id, first.run.id);
+          assert.isTrue(retry.dispatch.replayed);
+          yield* threads.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("archive-after-completion"),
+            threadId,
+          });
+          const archived = yield* threads.sendToThread(input);
+          assert.equal(archived.delivery, first.delivery);
+          assert.equal(archived.run.id, first.run.id);
+          assert.isTrue(archived.dispatch.replayed);
+          const fresh = yield* Effect.flip(
+            threads.sendToThread({
+              ...input,
+              commandId: CommandId.make("new-after-archive"),
+              messageId: MessageId.make("new-after-archive"),
+            }),
+          );
+          assert.equal(fresh._tag, "ThreadManagementThreadArchivedError");
+          assert.lengthOf(
+            (yield* threads.getThreadProjection(threadId)).messages.filter(
+              (row) => row.id === input.messageId,
+            ),
+            1,
+          );
+        }).pipe(Effect.provide(management));
+      }),
+    ),
+);
+
 it.effect("starts a stop-and-send that arrives after the provider turn completed", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -3791,6 +4396,47 @@ it.effect("sends a promoted message first when it cannot steer the running turn"
   ),
 );
 
+it.effect("a web on-return compaction and its owner message share one demand", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { layer, startFirstTurn } = yield* nextTurnSelectionHarness("compact-owner");
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const trigger = MessageId.make("owner-prompt");
+        for (const [id, text] of [
+          ["auto-compact", "/compact"],
+          [trigger, "Continue"],
+          ["manual-compact", "/compact"],
+        ] as const) {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(id),
+            text,
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+            ...(id === "auto-compact"
+              ? { idleCompaction: "onReturn" as const, compactionForMessageId: trigger }
+              : {}),
+            dispatchMode: { type: "queue_after_active" },
+          });
+        }
+        const { runs } = yield* orchestrator.getThreadProjection(threadId);
+        const owner = runs.find((run) => run.userMessageId === trigger)?.demandId;
+        assert.isString(owner);
+        assert.equal(runs.find((run) => run.userMessageId === "auto-compact")?.demandId, owner);
+        assert.notEqual(
+          runs.find((run) => run.userMessageId === "manual-compact")?.demandId,
+          owner,
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect("stops the running turn and starts a goal sent into it next", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -3801,6 +4447,11 @@ it.effect("stops the running turn and starts a goal sent into it next", () =>
         yield* send("queued", "queued", "queue");
         yield* send("goal", "/goal all tests pass", "auto");
         yield* worker.drain();
+        const runs = (yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(threadId))
+          .runs;
+        const goal = runs.find((run) => run.userMessageId === MessageId.make("message:goal"));
+        assert.isString(goal?.demandId);
+        assert.notEqual(goal?.demandId, runs[0]!.demandId);
 
         assert.deepEqual(steered, []);
         assert.deepEqual(yield* read(threadId), {

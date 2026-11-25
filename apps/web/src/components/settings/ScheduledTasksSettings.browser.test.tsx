@@ -1,5 +1,5 @@
 import { RegistryContext } from "@effect/atom-react";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
   DEFAULT_UNIFIED_SETTINGS,
   EnvironmentId,
@@ -14,6 +14,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { act, render } from "../../../test/render";
+import { ThreadFolderNameDialogHost } from "../ThreadFolderNameDialog";
 import { ScheduledTasksSettings } from "./ScheduledTasksSettings";
 import { ConfirmDialogHost } from "../ConfirmDialogHost";
 
@@ -62,6 +63,7 @@ const state = vi.hoisted(() => ({
 }));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
+const savedFolders = Atom.family((_id: EnvironmentId) => Atom.make<ReadonlyArray<string>>([]));
 
 function setup() {
   state.connected = true;
@@ -89,7 +91,16 @@ function environment() {
     label: "Laptop",
     connection: { phase: state.connected ? "connected" : "disconnected" },
     serverConfig: state.connected
-      ? { environment: { platform: "linux", capabilities: { oneTimeSchedules: true } } }
+      ? {
+          environment: {
+            platform: "linux",
+            capabilities: {
+              oneTimeSchedules: true,
+              scheduledTaskGroups: true,
+              threadFolders: true,
+            },
+          },
+        }
       : null,
   };
 }
@@ -139,6 +150,18 @@ vi.mock(import("../../state/threads"), async (original) => {
   return {
     ...actual,
     threadFamilies: { ...actual.threadFamilies, familyAtom: (() => threadFamilyRead) as never },
+    threadEnvironment: {
+      ...actual.threadEnvironment,
+      savedFoldersAtom: (id) => savedFolders(id),
+      saveFolders: {
+        ...actual.threadEnvironment.saveFolders,
+        permissionAtom: (id) => permissions.get(id ?? "")!,
+        run: async (registry, { environmentId, input: { folders } }) => {
+          registry.set(savedFolders(environmentId), folders);
+          return AsyncResult.success({ folders });
+        },
+      },
+    },
   };
 });
 // Mirrors the real query: a null request (disconnected environment) has no data.
@@ -195,6 +218,26 @@ describe("ScheduledTasksSettings", () => {
         input: { id: task.id },
       }),
     );
+  });
+
+  it("creates a folder from the empty scheduled tasks list", async () => {
+    setup();
+    state.tasksLoaded = false;
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <ScheduledTasksSettings />
+        <ThreadFolderNameDialogHost />
+      </RegistryContext.Provider>,
+    );
+
+    await screen.getByRole("button", { name: "New folder…" }).click();
+    const dialog = page.getByRole("dialog", { name: "New folder" });
+    await userEvent.fill(dialog.getByRole("textbox", { name: "Folder name" }), "Maintenance");
+    await dialog.getByRole("button", { name: "Create folder" }).click();
+
+    await expect.element(screen.getByText("Maintenance", { exact: true })).toBeVisible();
   });
 
   it("creates on a permitted secondary and reacts to permission changes", async () => {

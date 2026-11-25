@@ -5,12 +5,12 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import { ChevronDownIcon, SquareIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 import { AgentElapsed } from "./AgentElapsed";
-import { SubagentTooltipContent } from "./SubagentTooltipContent";
+import { SubagentRowDetail, SubagentTooltipContent } from "./SubagentTooltipContent";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
-import { ThreadRelationshipIcon } from "./ThreadRelationshipIcon";
+import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { cn } from "../../lib/utils";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
@@ -79,6 +79,7 @@ function WorkflowMemberRow({
 }) {
   const threadId = member.childThreadId;
   const canOpen = threadId !== null;
+  const detailId = useId();
   return (
     <li>
       <Tooltip>
@@ -87,7 +88,9 @@ function WorkflowMemberRow({
           render={
             <ThreadDetailsControl
               part="row"
+              multiline
               aria-label={t("Open {title} chat", { title: member.title })}
+              aria-describedby={detailId}
               disabled={!canOpen}
               onClick={() => canOpen && onOpen(threadId)}
             />
@@ -99,8 +102,18 @@ function WorkflowMemberRow({
             providerEntries={providerEntries}
             status={member.status}
           />
-          <span className="min-w-0 flex-1 truncate">{member.title}</span>
-          <span className="sr-only">{member.status}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-left">{member.title}</span>
+            <SubagentRowDetail
+              id={detailId}
+              model={member.model}
+              effort={member.effort}
+              provider={provider}
+              status={member.status}
+              progress={member.progress}
+              outcome={threadRelationshipStatusLabel(member.status)}
+            />
+          </span>
           {member.startedAt ? (
             <span className="shrink-0 text-2xs font-normal tabular-nums text-muted-foreground">
               <AgentElapsed agent={member} />

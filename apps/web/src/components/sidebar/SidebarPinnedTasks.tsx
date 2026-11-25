@@ -2,14 +2,7 @@ import {
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
 } from "@t3tools/client-runtime/state/thread-status";
-import {
-  closestCenter,
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import {
   arrayMove,
@@ -21,6 +14,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { groupScheduledTaskItems } from "@t3tools/client-runtime/scheduled-task-groups";
 import {
   applyHeldPinOrder,
   collectPinnedTasks,
@@ -39,7 +33,6 @@ import {
   type HeldPinOrder,
   resolveScheduledTaskPlacement,
   scheduledTaskPlacementOptions,
-  scheduledTaskHiddenThreadKeys,
   type PinnedTaskRowStatus,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
@@ -73,6 +66,7 @@ import {
   UserRoundIcon,
 } from "lucide-react";
 import {
+  Fragment,
   memo,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -82,6 +76,7 @@ import {
 
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { useScheduledTaskFolderMenu } from "../../hooks/useScheduledTaskFolders";
 import {
   supportsScheduledTaskPlacement,
   useSetScheduledTaskPlacement,
@@ -99,6 +94,7 @@ import { resolveSidebarRowAccessibility, resolveWorkingStartedAt } from "../Side
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { MachineBadge } from "../MachineBadge";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
+import { isThreadFolderMenuAction, type ThreadFolderMenuAction } from "../threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -118,27 +114,6 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
     ),
   ).pipe(Atom.withLabel(`web:sidebar-pinned-tasks:${environmentIdsKey}`)),
 );
-
-const hiddenThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
-  let previous: ReadonlySet<string> = new Set();
-  return Atom.make((get) => {
-    previous = scheduledTaskHiddenThreadKeys(
-      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
-      (environmentId) =>
-        AsyncResult.getOrElse(
-          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
-          () => null,
-        )?.tasks ?? [],
-      previous,
-    );
-    return previous;
-  }).pipe(Atom.withLabel(`web:sidebar-hidden-task-threads:${environmentIdsKey}`));
-});
-
-/** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
-export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
-  return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
-}
 
 const STATUS_ICON: Record<Exclude<PinnedTaskStatus, "idle">, typeof CircleDashedIcon> = {
   starting: CircleDashedIcon,
@@ -167,6 +142,8 @@ type PinnedTaskMenuId =
   | "move-up"
   | "move-down"
   | "show-in"
+  | "folder"
+  | ThreadFolderMenuAction
   | `place:${ScheduledTaskPlacement}`;
 
 // Module constants keep dnd-kit's sensor and modifier inputs stable across renders.
@@ -220,6 +197,7 @@ function IntervalWaitBar(props: { task: ScheduledTask }) {
 
 const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   sortableId: string;
+  parentRowId: string;
   environmentId: EnvironmentId;
   task: ScheduledTask;
   projectDisplayName: string | null;
@@ -232,6 +210,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   onNavigateToThread: (threadRef: ScopedThreadRef) => void;
 }) {
   const { environmentId, task, onNavigateToThread } = props;
+  const folderMenu = useScheduledTaskFolderMenu(environmentId, task);
   const navigate = useNavigate();
   const canOperate = useAtomValue(
     serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
@@ -291,11 +270,13 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const showMenu = async (position: { x: number; y: number }) => {
     const api = readLocalApi();
     if (!api) return;
+    const folderItem = folderMenu?.menu();
     const items: ContextMenuItem<PinnedTaskMenuId>[] = [
       ...(runThread !== null
         ? [{ id: "open-run" as const, label: t("Open last run"), icon: "message-square" }]
         : []),
       { id: "edit", label: t("Edit task"), icon: "pencil" },
+      ...(folderItem?.children?.length ? [folderItem] : []),
       // Webhook tasks run only when their URL receives a request.
       ...(task.schedule.type === "webhook"
         ? []
@@ -346,6 +327,10 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     ];
     const clicked = await settlePromise(() => api.contextMenu.show(items, position));
     if (clicked._tag === "Failure") return;
+    if (clicked.value !== null && isThreadFolderMenuAction(clicked.value)) {
+      await folderMenu?.choose(clicked.value);
+      return;
+    }
     switch (clicked.value) {
       case "open-run":
         openRun();
@@ -431,7 +416,11 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       {...listeners}
-      className={cn("list-none", isDragging && "relative z-20")}
+      className={cn(
+        "list-none",
+        props.parentRowId !== "shelf:scheduled" && "ms-4",
+        isDragging && "relative z-20",
+      )}
     >
       <Tooltip disabled={isDragging}>
         <TooltipTrigger
@@ -440,7 +429,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
               role="button"
               tabIndex={0}
               data-sidebar-row={`task:${environmentId}:${task.id}`}
-              data-sidebar-parent="shelf:scheduled"
+              data-sidebar-parent={props.parentRowId}
               aria-label={accessibility.label}
               aria-current={accessibility.current}
               data-testid="sidebar-pinned-task-row"
@@ -566,6 +555,7 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
   );
   // Keys this client sent, shown until the server's list reflects them, so a drop does not snap back.
   const [held, setHeld] = useState<HeldPinOrder | null>(null);
+  const [collapsedFolders, setCollapsedFolders] = useState<ReadonlySet<string>>(() => new Set());
   const reorder = useAtomCommand(serverEnvironment.reorderPinnedScheduledTasks, {
     label: "sidebar scheduled task reorder",
   });
@@ -578,9 +568,9 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
       props.scopedProjectKeys.has(`${environmentId}:${task.projectId}`),
   );
   if (entries.length === 0) return null;
-  const visibleKeys = entries.map(pinnedTaskKey);
+  const sections = groupScheduledTaskItems(entries, ({ task }) => task.group);
 
-  const moveTo = (movedKey: string, toIndex: number) => {
+  const moveTo = (visibleKeys: string[], movedKey: string, toIndex: number) => {
     const fromIndex = visibleKeys.indexOf(movedKey);
     if (fromIndex === -1 || toIndex < 0 || toIndex >= visibleKeys.length || toIndex === fromIndex) {
       return;
@@ -635,12 +625,6 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
       );
     })();
   };
-  const moveBy = (movedKey: string, offset: -1 | 1) =>
-    moveTo(movedKey, visibleKeys.indexOf(movedKey) + offset);
-  const handleDragEnd = ({ active, over }: DragEndEvent) => {
-    if (over === null || active.id === over.id) return;
-    moveTo(String(active.id), visibleKeys.indexOf(String(over.id)));
-  };
   const showMachine = (JSON.parse(props.environmentIdsKey) as ReadonlyArray<string>).length > 1;
   return (
     <>
@@ -654,37 +638,81 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
           {t("Scheduled")}
         </CollapsibleSectionHeader>
       </li>
-      {expanded && (
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          modifiers={PINNED_TASK_DRAG_MODIFIERS}
-          onDragEnd={handleDragEnd}
-        >
-          <SortableContext items={visibleKeys} strategy={verticalListSortingStrategy}>
-            {entries.map(({ environmentId, task }, index) => (
-              <SidebarPinnedTaskRow
-                key={visibleKeys[index]}
-                sortableId={visibleKeys[index]!}
-                environmentId={environmentId}
-                task={task}
-                projectDisplayName={
-                  props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ?? null
-                }
-                machineLabel={
-                  showMachine ? (props.environmentLabelById.get(environmentId) ?? null) : null
-                }
-                machineKind={props.environmentMachineById.get(environmentId) ?? "server"}
-                routeThreadKey={props.routeThreadKey}
-                canMoveUp={index > 0}
-                canMoveDown={index < entries.length - 1}
-                onMove={moveBy}
-                onNavigateToThread={props.onNavigateToThread}
-              />
-            ))}
-          </SortableContext>
-        </DndContext>
-      )}
+      {expanded &&
+        sections.map((section) => {
+          const keys = section.items.map(pinnedTaskKey);
+          const folderKey = section.key;
+          const parentRowId =
+            folderKey === null ? "shelf:scheduled" : `scheduled-folder:${folderKey}`;
+          const closed = folderKey !== null && collapsedFolders.has(folderKey);
+          return (
+            <Fragment key={parentRowId}>
+              {folderKey !== null && (
+                <li className="ms-2 list-none">
+                  <CollapsibleSectionHeader
+                    role="treeitem"
+                    tabIndex={-1}
+                    data-sidebar-row={parentRowId}
+                    data-sidebar-parent="shelf:scheduled"
+                    expanded={!closed}
+                    onClick={() =>
+                      setCollapsedFolders((current) => {
+                        const next = new Set(current);
+                        if (next.has(folderKey)) next.delete(folderKey);
+                        else next.add(folderKey);
+                        return next;
+                      })
+                    }
+                    accessory={<span className="font-normal tabular-nums">{keys.length}</span>}
+                  >
+                    <span className="flex min-w-0 items-center gap-1">
+                      <FolderIcon aria-hidden className="size-3 shrink-0" />
+                      <span className="truncate">{section.label}</span>
+                    </span>
+                  </CollapsibleSectionHeader>
+                </li>
+              )}
+              {!closed && (
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  modifiers={PINNED_TASK_DRAG_MODIFIERS}
+                  onDragEnd={({ active, over }) => {
+                    if (over !== null)
+                      moveTo(keys, String(active.id), keys.indexOf(String(over.id)));
+                  }}
+                >
+                  <SortableContext items={keys} strategy={verticalListSortingStrategy}>
+                    {section.items.map(({ environmentId, task }, index) => (
+                      <SidebarPinnedTaskRow
+                        key={keys[index]}
+                        sortableId={keys[index]!}
+                        parentRowId={parentRowId}
+                        environmentId={environmentId}
+                        task={task}
+                        projectDisplayName={
+                          props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ??
+                          null
+                        }
+                        machineLabel={
+                          showMachine
+                            ? (props.environmentLabelById.get(environmentId) ?? null)
+                            : null
+                        }
+                        machineKind={props.environmentMachineById.get(environmentId) ?? "server"}
+                        routeThreadKey={props.routeThreadKey}
+                        canMoveUp={index > 0}
+                        canMoveDown={index < keys.length - 1}
+                        onMove={(key, offset) => moveTo(keys, key, keys.indexOf(key) + offset)}
+                        onNavigateToThread={props.onNavigateToThread}
+                      />
+                    ))}
+                  </SortableContext>
+                </DndContext>
+              )}
+            </Fragment>
+          );
+        })}
       <li
         aria-hidden
         data-testid="sidebar-pinned-tasks-divider"

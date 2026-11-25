@@ -219,6 +219,9 @@ it("counts recency from what the user wrote, else from when the thread began", (
   ).toBe(Date.parse("2026-10-05T00:00:00.000Z"));
   // An older server omits the field.
   expect(threadSearchSubject(thread, null).activityAt).toBe(Date.parse("2026-10-20T00:00:00.000Z"));
+  expect(threadSearchSubject({ ...thread, latestUserMessageAt: null }, null).activityAt).toBe(
+    Date.parse("2026-10-01T00:00:00.000Z"),
+  );
 });
 
 it("keeps shown message rows in place and leaves room for a slower environment", () => {

@@ -92,11 +92,7 @@ describe("filterSettingsSections", () => {
       catalog: { Keyboard: "Клавіатура", Interface: "Інтерфейс" },
       formattingLocale: "uk",
     });
-    try {
-      expect(visible("клавіат")).toEqual([["Interface", ["Keyboard"]]]);
-      expect(visible("keyboard")).toEqual([["Interface", ["Keyboard"]]]);
-    } finally {
-      activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
-    }
+    expect(visible("клавіат")).toEqual([["Interface", ["Keyboard"]]]);
+    expect(visible("keyboard")).toEqual([["Interface", ["Keyboard"]]]);
   });
 });

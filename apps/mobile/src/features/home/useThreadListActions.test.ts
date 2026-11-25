@@ -1,4 +1,5 @@
 import { makeThreadShellFixture } from "../../test-fixtures";
+import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -15,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const state = vi.hoisted(() => ({
   connectedEnvironmentIds: [] as EnvironmentId[],
+  sort: "default" as ThreadListSort,
   pendingOrder: null as object | null,
   dropBusy: false,
   holdingRows: false,
@@ -208,9 +210,20 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { composerDraftsAtom } from "../../state/use-composer-drafts";
 import { dismissThreadUndoNotice, readThreadUndoNotice } from "./thread-undo-notice";
 import { useThreadListActions } from "./useThreadListActions";
+import { getThreadListV2OrderedSection } from "../threads/threadListV2";
 
 const primaryEnvironmentId = EnvironmentId.make("primary");
 const otherEnvironmentId = EnvironmentId.make("other");
+
+/** Reads the rows the list shows when the move is invoked. */
+function shownArrangement() {
+  const input = { threads: state.shells, now: "2026-09-05T00:00:00.000Z" };
+  return {
+    pinned: getThreadListV2OrderedSection({ ...input, section: "pinned" }),
+    active: getThreadListV2OrderedSection({ ...input, section: "active" }),
+    activeManualOrder: state.sort === "default",
+  };
+}
 
 function makeThread(input: Partial<EnvironmentThreadShell> = {}): EnvironmentThreadShell {
   return makeThreadShellFixture({
@@ -236,6 +249,7 @@ const mutationCases = [
 
 beforeEach(() => {
   state.connectedEnvironmentIds = [primaryEnvironmentId, otherEnvironmentId];
+  state.sort = "default";
   state.failedAction = null;
   state.titleOutcome = null;
   state.archivedRefreshes = [];
@@ -331,7 +345,7 @@ describe("pinned thread operation permissions", () => {
       }),
     ];
 
-    expect(await useThreadListActions().moveThread(moved, "up")).toBe(false);
+    expect(await useThreadListActions().moveThread(moved, "up", shownArrangement)).toBe(false);
     expect(state.requests).toEqual([]);
   });
 
@@ -349,11 +363,11 @@ describe("pinned thread operation permissions", () => {
 
     // Rows that wait to show can hold order keys the server has replaced.
     state.holdingRows = true;
-    expect(await useThreadListActions().moveThread(moved, "up")).toBe(false);
+    expect(await useThreadListActions().moveThread(moved, "up", shownArrangement)).toBe(false);
     expect(state.requests).toEqual([]);
     state.holdingRows = false;
 
-    expect(await useThreadListActions().moveThread(moved, "up")).toBe(true);
+    expect(await useThreadListActions().moveThread(moved, "up", shownArrangement)).toBe(true);
     expect(state.requests).toEqual([
       expect.objectContaining({ action: "reorderPin", environmentId: primaryEnvironmentId }),
     ]);
@@ -371,7 +385,7 @@ describe("pinned thread operation permissions", () => {
     ];
     state.afterRequest = () => state.scopes.get(primaryEnvironmentId)!.clear();
 
-    expect(await useThreadListActions().moveThread(moved, "up")).toBe(false);
+    expect(await useThreadListActions().moveThread(moved, "up", shownArrangement)).toBe(false);
     expect(state.requests).toHaveLength(1);
   });
 });
@@ -423,12 +437,12 @@ describe("thread reorder connection availability", () => {
       state.connectedEnvironmentIds = [primaryEnvironmentId];
 
       const { moveThread } = useThreadListActions();
-      expect(await moveThread(moved, "up")).toBe(false);
+      expect(await moveThread(moved, "up", shownArrangement)).toBe(false);
       expect(state.requests).toEqual([]);
 
       state.connectedEnvironmentIds = [primaryEnvironmentId, otherEnvironmentId];
 
-      expect(await moveThread(moved, "up")).toBe(true);
+      expect(await moveThread(moved, "up", shownArrangement)).toBe(true);
       expect(state.requests).toHaveLength(2);
       expect(new Set(state.requests.map(({ environmentId }) => environmentId))).toEqual(
         new Set([primaryEnvironmentId, otherEnvironmentId]),
@@ -437,7 +451,7 @@ describe("thread reorder connection availability", () => {
   );
 
   it.each(["active", "pinned"] as const)(
-    "uses the latest connection state in a retained %s move callback",
+    "uses the current connection and arrangement in a retained %s move callback",
     async (section) => {
       const moved = makeThread({
         pinnedAt: section === "pinned" ? "2026-09-02T00:00:00.000Z" : null,
@@ -457,12 +471,18 @@ describe("thread reorder connection availability", () => {
       const { moveThread } = useThreadListActions();
       state.connectedEnvironmentIds = [];
 
-      expect(await moveThread(moved, "up")).toBe(false);
+      expect(await moveThread(moved, "up", shownArrangement)).toBe(false);
       expect(state.requests).toEqual([]);
 
       state.connectedEnvironmentIds = [primaryEnvironmentId];
+      state.sort = "name";
+      if (section === "active") {
+        expect(await moveThread(moved, "up", shownArrangement)).toBe(false);
+        expect(state.requests).toEqual([]);
+        state.sort = "default";
+      }
 
-      expect(await moveThread(moved, "up")).toBe(true);
+      expect(await moveThread(moved, "up", shownArrangement)).toBe(true);
       expect(state.requests).toEqual([
         expect.objectContaining({
           action: section === "pinned" ? "reorderPin" : "reorderActive",
@@ -471,6 +491,51 @@ describe("thread reorder connection availability", () => {
       ]);
     },
   );
+
+  it("moves past the next shown row when a retained callback's tag filter hides its neighbor", async () => {
+    const pinnedAt = "2026-09-02T00:00:00.000Z";
+    const moved = makeThread({
+      id: ThreadId.make("a"),
+      pinnedAt,
+      createdAt: "2026-09-04T00:00:00.000Z",
+    });
+    const hidden = makeThread({
+      id: ThreadId.make("b"),
+      pinnedAt,
+      createdAt: "2026-09-03T00:00:00.000Z",
+    });
+    const shown = makeThread({
+      id: ThreadId.make("c"),
+      pinnedAt,
+      createdAt: "2026-09-02T00:00:00.000Z",
+    });
+    state.shells = [moved, hidden, shown];
+    const { moveThread } = useThreadListActions();
+    let arrangement = shownArrangement();
+    const moveDown = () => moveThread(moved, "down", () => arrangement);
+
+    arrangement = { ...arrangement, pinned: [moved, shown] };
+    expect(await moveDown()).toBe(true);
+    expect(state.requests.map(({ input }) => input.threadId).sort()).toEqual(["a", "c"]);
+    const keyFor = (threadId: string) =>
+      state.requests.find(({ input }) => input.threadId === threadId)?.input.orderKey;
+    expect(keyFor("a")! > keyFor("c")!).toBe(true);
+  });
+
+  it("unpins a thread dropped into a sorted Active list without writing order keys", async () => {
+    const moved = makeThread({ pinnedAt: "2026-09-02T00:00:00.000Z", pinOrderKey: "m" });
+    state.shells = [moved, makeThread({ id: ThreadId.make("neighbor"), activeOrderKey: "g" })];
+    state.sort = "name";
+
+    expect(
+      await useThreadListActions().moveThread(
+        moved,
+        { targetId: null, section: "active", placement: "after" },
+        shownArrangement,
+      ),
+    ).toBe(true);
+    expect(state.requests.map(({ action }) => action)).toEqual(["unpin"]);
+  });
 });
 
 describe("thread action undo", () => {

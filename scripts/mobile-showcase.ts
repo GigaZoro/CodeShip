@@ -353,9 +353,8 @@ export function parseShowcaseCliArgs(args: ReadonlyArray<string>): CliOptions {
       keepRunning = true;
     } else if (argument === "--validate-only") {
       validateOnly = true;
-    } else if (argument === "--list") {
-      list = true;
-    } else if (argument === "--help" || argument === "-h") {
+    } else if (argument === "--list" || argument === "--help" || argument === "-h") {
+      if (args.length !== 1) throw new Error(argument + " must be used alone.");
       list = true;
     } else {
       throw new Error(`Unknown option '${argument}'.`);

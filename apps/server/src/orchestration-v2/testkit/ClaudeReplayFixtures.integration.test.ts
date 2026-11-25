@@ -7,6 +7,7 @@ import {
   ProviderDriverKind,
   type ProviderReplayEntry,
 } from "@t3tools/contracts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as Effect from "effect/Effect";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
@@ -44,7 +45,10 @@ function runClaudeReplayFixture(input: ReplayFixtureCase) {
 }
 
 describe("Claude Agent SDK replay fixtures", () => {
-  itRunsReplayFixtures("claudeAgent", runClaudeReplayFixture);
+  // Claude's task output folder is per uid, so there is none to tail on Windows.
+  itRunsReplayFixtures("claudeAgent", runClaudeReplayFixture, {
+    excludeFixtures: process.getuid === undefined ? ["command_output_streaming"] : [],
+  });
 
   it.effect("refuses messages to a native subagent thread without touching it", () =>
     Effect.gen(function* () {
@@ -63,6 +67,7 @@ describe("Claude Agent SDK replay fixtures", () => {
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
       const scenario = {
         name: "subagent/claudeAgent:read-only-child",
+        runtimePolicyOverride: { cwd: yield* checkpointWorkspace("subagent-read-only-child") },
         transcript,
         commands: materialized.commands,
         steps: materialized.steps,
@@ -117,9 +122,8 @@ describe("Claude Agent SDK replay fixtures", () => {
           ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness),
         ),
         provideDeterministicTestRuntime,
-        Effect.scoped,
       );
-    }),
+    }).pipe(Effect.scoped),
   );
 
   const afterRootFixture = findReplayFixture("claude_background_subagent_after_root");
@@ -149,61 +153,63 @@ describe("Claude Agent SDK replay fixtures", () => {
     // A subagent's foreground Bash run during the root's turn is tailed like a
     // root call's, so the child's command row streams live.
     const SUBAGENT_BASH_ID = "toolu_01JMN3SSQCHzUTNua9AWdkiH";
-    it.effect("streams a subagent's foreground Bash output live during the root turn", () =>
-      runClaudeReplayFixture({
-        fixtureName: afterRootFixture.name,
-        buildInput: afterRootFixture.buildInput,
-        driver: {
-          ...afterRootProvider,
-          assertOutput: (result) => {
-            const childThreadId = projectionFor(result, afterRootFixture.name).subagents[0]
-              ?.childThreadId;
-            assert.exists(childThreadId);
-            const command = result.projections
-              .get(childThreadId)
-              ?.turnItems.find(
-                (item) =>
-                  item.type === "command_execution" &&
-                  JSON.stringify(item.input).includes("SUB_DONE_1"),
-              );
-            assert.exists(command);
-            const streamed = result.commandOutput?.get(command.id);
-            assert.exists(streamed, "the subagent's command must stream its output");
-            assert.include(streamed.output.text, "SUB_DONE_1");
+    it.effect.skipIf(process.getuid === undefined)(
+      "streams a subagent's foreground Bash output live during the root turn",
+      () =>
+        runClaudeReplayFixture({
+          fixtureName: afterRootFixture.name,
+          buildInput: afterRootFixture.buildInput,
+          driver: {
+            ...afterRootProvider,
+            assertOutput: (result) => {
+              const childThreadId = projectionFor(result, afterRootFixture.name).subagents[0]
+                ?.childThreadId;
+              assert.exists(childThreadId);
+              const command = result.projections
+                .get(childThreadId)
+                ?.turnItems.find(
+                  (item) =>
+                    item.type === "command_execution" &&
+                    JSON.stringify(item.input).includes("SUB_DONE_1"),
+                );
+              assert.exists(command);
+              const streamed = result.commandOutput?.get(command.id);
+              assert.exists(streamed, "the subagent's command must stream its output");
+              assert.include(streamed.output.text, "SUB_DONE_1");
+            },
           },
-        },
-        transformTranscript: (transcript) => {
-          const isBashFrame = (entry: ProviderReplayEntry) => {
-            if (entry.type !== "emit_inbound") return false;
-            const frame = entry.frame as Record<string, any>;
-            return (
-              frame.message?.content?.[0]?.id === SUBAGENT_BASH_ID ||
-              frame.message?.content?.[0]?.tool_use_id === SUBAGENT_BASH_ID ||
-              (frame.type === "system" && frame.tool_use_id === SUBAGENT_BASH_ID)
+          transformTranscript: (transcript) => {
+            const isBashFrame = (entry: ProviderReplayEntry) => {
+              if (entry.type !== "emit_inbound") return false;
+              const frame = entry.frame as Record<string, any>;
+              return (
+                frame.message?.content?.[0]?.id === SUBAGENT_BASH_ID ||
+                frame.message?.content?.[0]?.tool_use_id === SUBAGENT_BASH_ID ||
+                (frame.type === "system" && frame.tool_use_id === SUBAGENT_BASH_ID)
+              );
+            };
+            // Recorded without the structured result the replay writes output files from.
+            const bashFrames = transcript.entries.filter(isBashFrame).map((entry) => {
+              const frame = (entry as { readonly frame: Record<string, any> }).frame;
+              return frame.type === "user"
+                ? {
+                    ...entry,
+                    frame: { ...frame, tool_use_result: { stdout: "SUB_DONE_1\n", stderr: "" } },
+                  }
+                : entry;
+            });
+            const rest = transcript.entries.filter((entry) => !isBashFrame(entry));
+            const resultIndex = rest.findIndex(
+              (entry) => entry.type === "emit_inbound" && entry.label === "result",
             );
-          };
-          // Recorded without the structured result the replay writes output files from.
-          const bashFrames = transcript.entries.filter(isBashFrame).map((entry) => {
-            const frame = (entry as { readonly frame: Record<string, any> }).frame;
-            return frame.type === "user"
-              ? {
-                  ...entry,
-                  frame: { ...frame, tool_use_result: { stdout: "SUB_DONE_1\n", stderr: "" } },
-                }
-              : entry;
-          });
-          const rest = transcript.entries.filter((entry) => !isBashFrame(entry));
-          const resultIndex = rest.findIndex(
-            (entry) => entry.type === "emit_inbound" && entry.label === "result",
-          );
-          assert.lengthOf(bashFrames, 4, "transcript shape changed");
-          assert.isAtLeast(resultIndex, 0, "transcript shape changed");
-          return {
-            ...transcript,
-            entries: [...rest.slice(0, resultIndex), ...bashFrames, ...rest.slice(resultIndex)],
-          };
-        },
-      }),
+            assert.lengthOf(bashFrames, 4, "transcript shape changed");
+            assert.isAtLeast(resultIndex, 0, "transcript shape changed");
+            return {
+              ...transcript,
+              entries: [...rest.slice(0, resultIndex), ...bashFrames, ...rest.slice(resultIndex)],
+            };
+          },
+        }),
     );
 
     // regression: #16486 a background subagent's tool left open while its parent is idle never settled

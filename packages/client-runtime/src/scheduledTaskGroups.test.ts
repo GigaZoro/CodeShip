@@ -55,11 +55,13 @@ describe("groupScheduledTaskItems", () => {
         task("4", { group: "Machine care" }),
       ],
       (item) => item.group,
+      ["Machine care", "Empty"],
     );
     expect(
       sections.map((section) => [section.label, section.items.map((item) => item.id)]),
     ).toEqual([
-      ["machine  care", ["3", "4"]],
+      ["Empty", []],
+      ["Machine care", ["3", "4"]],
       ["PolyBot delivery", ["1"]],
       [null, ["2"]],
     ]);

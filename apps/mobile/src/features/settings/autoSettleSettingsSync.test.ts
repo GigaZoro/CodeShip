@@ -36,6 +36,7 @@ describe("auto-settle settings sync", () => {
     expect(plan.patch).toEqual({
       sidebarAutoSettleAfterDays: 7,
       sidebarAutoSettleOnMerge: true,
+      sidebarAutoSettleScheduledThreads: true,
     });
   });
 
@@ -47,6 +48,7 @@ describe("auto-settle settings sync", () => {
         ...reference.settings,
         sidebarAutoSettleAfterDays: null,
         sidebarAutoSettleOnMerge: false,
+        sidebarAutoSettleScheduledThreads: false,
         newWorktreesStartFromOrigin: true,
         continueThreadsAfterServerUpdate: true,
         sourceControlWritingStyle: {
@@ -62,6 +64,7 @@ describe("auto-settle settings sync", () => {
     expect(plan.mismatches).toEqual([target]);
     expect(updated.sidebarAutoSettleAfterDays).toBe(7);
     expect(updated.sidebarAutoSettleOnMerge).toBe(true);
+    expect(updated.sidebarAutoSettleScheduledThreads).toBe(true);
     expect(updated.newWorktreesStartFromOrigin).toBe(true);
     expect(updated.continueThreadsAfterServerUpdate).toBe(true);
     expect(updated.sourceControlWritingStyle).toEqual(target.settings.sourceControlWritingStyle);

@@ -12,11 +12,10 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import { Trash2Icon, XIcon } from "lucide-react";
+import { Trash2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { ComposerHandleContext } from "../../composerHandleContext";
 import { useClientSettings } from "../../hooks/useSettings";
 import { releaseComposerDraftUploads } from "../../lib/composerDraftUploads";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
@@ -27,11 +26,10 @@ import { useEnvironmentScope } from "../../state/session";
 import { useEnvironmentShellHasSnapshot } from "../../state/shell";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import ChatView from "../ChatView";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { BackgroundThreadContext } from "./backgroundThread";
+import { EmbeddedThreadChat, EmbeddedThreadPane } from "./EmbeddedThreadPane";
 
 /** A side chat tab: its title, Bring back, Delete and Close, over the side chat's own chat. */
 export default function SideChatPane(props: {
@@ -42,13 +40,17 @@ export default function SideChatPane(props: {
 }) {
   const { parentRef, threadId } = props;
   const threadRef = scopeThreadRef(parentRef.environmentId, threadId);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the parent panel as host in the panel store
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a side chat shares its parent's workspace, so its panel actions open in the parent's panel
   useEffect(
     () => hostRightPanel(scopeThreadRef(parentRef.environmentId, threadId), parentRef),
     [parentRef, threadId],
   );
   const shell = useQuietThreadShell(threadRef);
-  const parent = useQuietThreadShell(parentRef);
+  // A nested side chat shows in its ancestor's panel but merges into its own parent.
+  const mergeTargetId = shell?.lineage.parentThreadId ?? null;
+  const mergeTarget = useQuietThreadShell(
+    mergeTargetId === null ? null : scopeThreadRef(parentRef.environmentId, mergeTargetId),
+  );
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);
   const projection = useQuietThreadProjection(shell === null ? null : threadRef)?.projection;
   const canOperate = useEnvironmentScope(parentRef.environmentId, AuthOrchestrationOperateScope);
@@ -61,18 +63,19 @@ export default function SideChatPane(props: {
   // A pending merge-back would fail the main thread's queued message, so the server refuses it.
   const bringBackBlockedReason = !canOperate
     ? t("This connection cannot change threads.")
-    : threadRuntimeIsActive(parent?.runtime)
+    : threadRuntimeIsActive(mergeTarget?.runtime)
       ? t("Available when the main thread is idle.")
-      : mergeRun === null
+      : mergeRun === null || mergeTargetId === null
         ? t("Available after a finished reply.")
         : null;
 
   const bringBack = async () => {
-    if (bringBackBlockedReason !== null || mergeRun === null || bringingBack) return;
+    if (bringBackBlockedReason !== null || bringingBack) return;
+    if (mergeRun === null || mergeTargetId === null) return;
     setBringingBack(true);
     const result = await mergeBack({
       environmentId: parentRef.environmentId,
-      input: { sourceThreadId: threadId, targetThreadId: parentRef.threadId, runId: mergeRun.id },
+      input: { sourceThreadId: threadId, targetThreadId: mergeTargetId, runId: mergeRun.id },
     });
     setBringingBack(false);
     if (result._tag === "Success") {
@@ -128,62 +131,54 @@ export default function SideChatPane(props: {
   };
 
   return (
-    <div data-side-chat-pane={threadId} className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1 pl-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">
-          {shell?.title ?? t("Side chat")}
-        </span>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="xs"
-                aria-disabled={bringBackBlockedReason !== null || bringingBack || undefined}
-                onClick={() => void bringBack()}
-              >
-                {t("Bring back")}
-              </Button>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {bringBackBlockedReason ?? t("Adds this side chat to the main thread's next message.")}
-          </TooltipPopup>
-        </Tooltip>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={t("Delete side chat")}
-          disabled={!canOperate || shell === null || deleting}
-          onClick={() => void deleteSideChat()}
-        >
-          <Trash2Icon />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={t("Close side chat")}
-          onClick={props.onClose}
-        >
-          <XIcon />
-        </Button>
-      </div>
+    <EmbeddedThreadPane
+      threadId={threadId}
+      title={shell?.title ?? t("Side chat")}
+      closeLabel={t("Close side chat")}
+      onClose={props.onClose}
+      actions={
+        <>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  aria-disabled={bringBackBlockedReason !== null || bringingBack || undefined}
+                  onClick={() => void bringBack()}
+                >
+                  {t("Bring back")}
+                </Button>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {bringBackBlockedReason ??
+                t("Adds this side chat to the main thread's next message.")}
+            </TooltipPopup>
+          </Tooltip>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={t("Delete side chat")}
+            disabled={!canOperate || shell === null || deleting}
+            onClick={() => void deleteSideChat()}
+          >
+            <Trash2Icon />
+          </Button>
+        </>
+      }
+    >
       {shell === null ? (
         snapshotLoaded ? (
           <p className="p-3 text-xs text-muted-foreground">{t("This side chat was deleted.")}</p>
         ) : null
       ) : (
-        <BackgroundThreadContext value>
-          <ComposerHandleContext value={null}>
-            <ChatView
-              environmentId={parentRef.environmentId}
-              threadId={threadId}
-              routeKind="server"
-              embedded={props.parentPanel}
-            />
-          </ComposerHandleContext>
-        </BackgroundThreadContext>
+        <EmbeddedThreadChat
+          threadRef={threadRef}
+          hostRef={parentRef}
+          parentPanel={props.parentPanel}
+        />
       )}
-    </div>
+    </EmbeddedThreadPane>
   );
 }

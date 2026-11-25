@@ -39,10 +39,8 @@ import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   CLAUDE_MODEL_SELECTION,
   materializeFixtureInput,
-  projectionFor,
   SIMPLE_PROMPT,
 } from "./fixtures/shared.ts";
-import { runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
 
 const SCENARIO = "restart_before_prompt";
@@ -76,8 +74,6 @@ describe("restart before provider prompt delivery", () => {
           name: SCENARIO,
           transcript,
           commands: [],
-          steps: materialized.steps.filter((step) => step.type === "await_thread_idle"),
-          projectionThreadIds: materialized.projectionThreadIds,
           runtimePolicyOverride: { cwd: workspace },
         };
         const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
@@ -124,14 +120,26 @@ describe("restart before provider prompt delivery", () => {
             ),
           ),
         );
+        const run = before.runs[0];
+        if (run === undefined) {
+          return yield* Effect.die("restart scenario has no original run");
+        }
         const snapshotDatabase = SqlitePersistence.layerFromPath(snapshotPath).pipe(
           Layer.provide(NodeServices.layer),
         );
-        const after = yield* Effect.scoped(
+        const projection = yield* Effect.scoped(
           Effect.gen(function* () {
-            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-            yield* worker.drain();
-            return yield* runOrchestratorV2Scenario(scenario);
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* orchestrator.streamStoredEventsFrom({ threadId, eventType: "run.updated" }).pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "run.updated" &&
+                  event.runId === run.id &&
+                  (event.payload.status === "completed" || event.payload.status === "failed"),
+              ),
+              Stream.runHead,
+            );
+            return yield* orchestrator.getThreadProjection(threadId);
           }).pipe(
             Effect.provide(
               ProviderReplayHarness.layerProviderReplay(scenario, harness, {
@@ -142,11 +150,6 @@ describe("restart before provider prompt delivery", () => {
             ),
           ),
         );
-        const projection = projectionFor(after, SCENARIO);
-        const run = before.runs[0];
-        if (run === undefined) {
-          return yield* Effect.die("restart scenario has no original run");
-        }
         assert.deepEqual(
           projection.runs.map((recovered) => ({ id: recovered.id, status: recovered.status })),
           [{ id: run.id, status: "completed" }],

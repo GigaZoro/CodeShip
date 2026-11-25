@@ -36,9 +36,11 @@ Each provider instance keeps its own login on the environment that runs it. Your
 CLI login are separate. A configured `CURSOR_API_KEY` overrides browser sign-in; remove that override
 to use the browser flow.
 
-Use **Change account** or **Sign out** in the same settings section. Both stop that
-instance's running threads and keep their history. Sign-out forgets the saved credential; to revoke
-the generated key before it expires, remove it from your Cursor dashboard's API keys.
+Choose **Change account** to sign in while chats continue using the current account. After
+CodeShip saves the new login, it stops sessions using the previous one. Canceling keeps
+those sessions running. **Sign out** stops the instance's sessions and forgets its saved
+credential. Thread history stays available. To revoke the generated key before it expires,
+remove it from your Cursor dashboard's API keys.
 
 ## V2 Capability Mapping
 

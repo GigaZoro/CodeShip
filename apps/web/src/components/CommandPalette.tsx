@@ -88,6 +88,7 @@ import {
   MessagesSquareIcon,
   PaletteIcon,
   ArchiveIcon,
+  ArchiveRestoreIcon,
   RotateCcwIcon,
   ServerIcon,
   SettingsIcon,
@@ -144,6 +145,7 @@ import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
 import { environmentThreadShells, threadEnvironment } from "../state/threads";
+import { useReopenLastArchivedThread } from "../hooks/useReopenLastArchivedThread";
 import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { anyEnvironmentSupportsThreadFolders } from "@t3tools/client-runtime/thread-folders";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
@@ -163,6 +165,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../state/environments";
 import {
+  readThreadShell,
   useAnyEnvironmentHiding,
   useDelegatedUnderParent,
   useHiddenThreadKeys,
@@ -212,7 +215,7 @@ import {
   isWindowsPlatform,
   newProjectId,
 } from "../lib/utils";
-import { buildThreadRouteParams } from "../threadRoutes";
+import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
 import { useAvailableSettingsSearchItems } from "./settings/useAvailableSettingsSearchItems";
 import {
   applyWslEnvironmentConfiguration,
@@ -295,8 +298,13 @@ import { openUseInAnotherApp } from "./mcp/UseInAnotherAppDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
+import {
+  formatShortcutLabel,
+  resolveShortcutCommand,
+  threadJumpIndexFromCommand,
+} from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
+import { Kbd } from "./ui/kbd";
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { suggestAppAccessForRemote } from "./sourceControlAppAccessToast";
@@ -316,6 +324,14 @@ import { useSidebarFolderControls } from "./sidebar/sidebarFolderControls";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+const OPEN_IN_SIDE_PANEL_SHORTCUT = {
+  key: "enter",
+  altKey: true,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  modKey: false,
+} as const;
 const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 // Its own view, so going Back and choosing "New thread in..." lists every machine again.
@@ -462,6 +478,7 @@ function OpenCommandPaletteDialog(props: {
   readonly initialContext: CommandPaletteReturnContext | undefined;
 }) {
   const navigate = useNavigate();
+  const reopenLastArchivedThread = useReopenLastArchivedThread();
   const openSetupWizard = useOpenSetupWizard();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { openChildSearch, setOpen } = props;
@@ -1078,6 +1095,7 @@ function OpenCommandPaletteDialog(props: {
     };
   })();
 
+  const panelThreadRef = resolveActiveThreadRouteRef(paletteRouteTarget, activeDraftThread ?? null);
   const {
     threadItems: allThreadItems,
     threadMessageItems,
@@ -1972,6 +1990,16 @@ function OpenCommandPaletteDialog(props: {
     run: async () => {
       await navigate({ to: "/archived" });
     },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:reopen-last-archived-thread",
+    searchTerms: ["reopen", "restore", "unarchive", "undo archive", "last archived", "archived"],
+    title: t("Reopen last archived thread"),
+    icon: <ArchiveRestoreIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "thread.reopenLastArchived",
+    run: reopenLastArchivedThread,
   });
 
   actionItems.push({
@@ -3010,6 +3038,28 @@ function OpenCommandPaletteDialog(props: {
     return useMetaForMod ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
   }
 
+  const selectedItem = findHighlightedCommandPaletteItem(
+    displayedGroups,
+    highlightedItemValue ?? (autoHighlightsFirstRow ? (resultRows.itemValues[0] ?? null) : null),
+  );
+  const selectedThreadRef =
+    selectedItem?.kind === "action" ? selectedItem.targetThreadRef : undefined;
+  const canOpenSelectedThreadInSidePanel =
+    panelThreadRef !== null &&
+    selectedThreadRef !== undefined &&
+    scopedThreadKey(panelThreadRef) !== scopedThreadKey(selectedThreadRef);
+
+  function openPaletteThreadInSidePanel() {
+    if (panelThreadRef === null || selectedThreadRef === undefined) return;
+    if (
+      useRightPanelStore
+        .getState()
+        .openThread(panelThreadRef, selectedThreadRef, readThreadShell(selectedThreadRef)?.lineage)
+    ) {
+      setOpen(false);
+    }
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
     if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229)) {
       // Confirming an IME candidate must not submit a path or select a row.
@@ -3021,6 +3071,22 @@ function OpenCommandPaletteDialog(props: {
       platform: navigator.platform,
       context: { modelPickerOpen: false, editableFocus: true },
     });
+    if (
+      command === null &&
+      event.key === "Enter" &&
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      panelThreadRef !== null &&
+      selectedThreadRef !== undefined
+    ) {
+      (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+      event.preventDefault();
+      event.stopPropagation();
+      openPaletteThreadInSidePanel();
+      return;
+    }
     if (
       command === "thread.snooze" &&
       !event.nativeEvent.isComposing &&
@@ -3418,6 +3484,7 @@ function OpenCommandPaletteDialog(props: {
           ? t("Select")
           : undefined;
 
+  const showThreadSearchPending = isThreadSearchPending && !isLinkedThreadSearch && !isBrowsing;
   const footerTrailing = canOpenProjectFromFileManager ? (
     <CommandFooterAction
       disabled={isPickingProjectFolder}
@@ -3427,10 +3494,19 @@ function OpenCommandPaletteDialog(props: {
     >
       {t("Open in {fileManager}", { fileManager: fileManagerName })}
     </CommandFooterAction>
-  ) : isThreadSearchPending && !isLinkedThreadSearch && !isBrowsing ? (
-    // In the footer, so the list keeps its height while message results may
-    // still arrive below it.
-    <span className="text-muted-foreground text-xs">{t("Searching messages…")}</span>
+  ) : canOpenSelectedThreadInSidePanel || showThreadSearchPending ? (
+    <div className="flex items-center gap-3">
+      {showThreadSearchPending ? (
+        // In the footer, so the list keeps its height while message results may
+        // still arrive below it.
+        <span className="text-muted-foreground text-xs">{t("Searching messages…")}</span>
+      ) : null}
+      {canOpenSelectedThreadInSidePanel ? (
+        <CommandFooterAction onClick={openPaletteThreadInSidePanel}>
+          {t("Open in side panel")} <Kbd>{formatShortcutLabel(OPEN_IN_SIDE_PANEL_SHORTCUT)}</Kbd>
+        </CommandFooterAction>
+      ) : null}
+    </div>
   ) : null;
 
   return (

@@ -31,7 +31,9 @@ covers installation and custom configuration.
 
 With **Binary path** left empty, T3.CodeShip runs the `codex` on that machine's `PATH`.
 When there is none, it runs its own copy of Codex with the same login. If it has no
-copy yet, the provider's settings offer **Install Codex**; then sign in there.
+copy yet, the provider's settings offer **Install Codex**. Signing in through those
+settings selects a private login for the app. Running chats can use the previous
+account until the new login is saved.
 
 Running `codex login` does not change a managed ChatGPT connection. In
 **Settings > Providers & models**, add a Codex instance, choose **Configure manually**,

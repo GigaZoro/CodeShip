@@ -1,4 +1,5 @@
 import { t } from "~/i18n";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   foldSearchQuery,
   PALETTE_SECONDARY_LIMIT,
@@ -18,9 +19,9 @@ import {
   type AddProjectRemoteSource,
 } from "@t3tools/client-runtime/operations/projects";
 import {
-  type ScopedThreadRef,
   type EnvironmentId,
   type ProjectId,
+  type ScopedThreadRef,
   type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
@@ -49,6 +50,7 @@ export function buildLinkedThreadActionItems(
     kind: "action",
     value: `thread:${input.environmentId}:${thread.id}`,
     threadRef: { environmentId: input.environmentId, threadId: thread.id },
+    targetThreadRef: scopeThreadRef(input.environmentId, thread.id),
     title: thread.title || t("Untitled thread"),
     description: thread.archivedAt === null ? t("Linked thread") : t("Archived thread"),
     searchTerms: [input.query, thread.title],
@@ -221,6 +223,29 @@ export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly pin?: CommandPaletteItemPin;
   /** Set on toggle rows; exposed to assistive technology as `aria-checked`. */
   readonly checked?: boolean;
+  readonly targetThreadRef?: ScopedThreadRef;
+}
+
+/** A thread row listed for a message match: the snippet replaces the project line, so it is as tall as a title row. */
+export function buildMessageMatchItem(
+  item: CommandPaletteActionItem,
+  match: {
+    readonly source: CommandPaletteThreadContentMatch["source"];
+    readonly snippet: string;
+    readonly messageCreatedAt?: string | null | undefined;
+  },
+  query: string,
+): CommandPaletteActionItem {
+  // Find follows a match only in the main view, so the row cannot open in the side panel.
+  const { description: _description, targetThreadRef: _targetThreadRef, ...rest } = item;
+  return {
+    ...rest,
+    // When the matching message was written, not when the thread last moved.
+    ...(match.messageCreatedAt
+      ? { timestamp: formatRelativeTimeLabel(match.messageCreatedAt) }
+      : {}),
+    threadContentMatch: { source: match.source, snippet: match.snippet, query },
+  };
 }
 
 export interface CommandPaletteItemPin {
@@ -427,9 +452,7 @@ export type BuildThreadActionItemsThread = Pick<
       SidebarThreadSummary,
       "pullRequests" | "linkedPullRequest" | "branchPullRequest" | "opens" | "latestUserMessageAt"
     >
-  > & {
-    updatedAt: string;
-  };
+  >;
 
 export function buildThreadActionItems<TThread extends BuildThreadActionItemsThread>(input: {
   threads: ReadonlyArray<TThread>;
@@ -473,25 +496,30 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       ? input.renderDescription(thread, { projectTitle })
       : descriptionParts.join(` · `);
 
+    const threadSearch = threadSearchSubject(
+      {
+        ...thread,
+        latestUserMessageAt: thread.latestUserMessageAt ?? null,
+        opens: thread.opens ?? null,
+      },
+      projectTitle,
+      input.environmentLabelOf?.(thread),
+    );
+
     return Object.assign(
       {
         kind: "action" as const,
         value: `thread:${thread.environmentId}:${thread.id}`,
         threadRef: { environmentId: thread.environmentId, threadId: thread.id },
+        targetThreadRef: scopeThreadRef(thread.environmentId, thread.id),
         searchTerms: [thread.title],
-        threadSearch: threadSearchSubject(
-          {
-            ...thread,
-            latestUserMessageAt: thread.latestUserMessageAt ?? null,
-            opens: thread.opens ?? null,
-          },
-          projectTitle,
-          input.environmentLabelOf?.(thread),
-        ),
+        threadSearch,
         title: thread.title,
         description,
         timestamp: formatRelativeTimeLabel(
-          thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+          threadSearch.activityAt === null
+            ? thread.createdAt
+            : new Date(threadSearch.activityAt).toISOString(),
         ),
         icon: input.icon,
       },

@@ -11,6 +11,8 @@ import {
   translateToParts,
   type MessageCatalog,
 } from "./i18n.ts";
+// A client module tested under the server's config: it opts in to the client test locale.
+import { TEST_LANGUAGE } from "./testing/locale.ts";
 
 const UKRAINIAN: MessageCatalog = {
   "Delete {name}?": "Видалити {name}?",
@@ -23,7 +25,7 @@ function withLanguage(catalog: MessageCatalog, run: () => void) {
   try {
     run();
   } finally {
-    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+    activateLanguage(TEST_LANGUAGE);
   }
 }
 
@@ -117,13 +119,9 @@ describe("translation", () => {
   });
 
   it("marks translated text in pseudo mode and leaves placeholder values alone", () => {
-    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined, pseudo: true });
-    try {
-      expect(t("Delete {name}?", { name: "main" })).toBe("⟦Déléţé main?·····⟧");
-      expect(resolveAppLanguage(normalizeLanguagePreference("pseudo"), ["uk"])).toBe("en");
-    } finally {
-      activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
-    }
+    activateLanguage({ ...TEST_LANGUAGE, pseudo: true });
+    expect(t("Delete {name}?", { name: "main" })).toBe("⟦Déléţé main?·····⟧");
+    expect(resolveAppLanguage(normalizeLanguagePreference("pseudo"), ["uk"])).toBe("en");
   });
 
   it("places non-string values where their placeholders fall", () => {

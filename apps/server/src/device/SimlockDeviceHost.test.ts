@@ -166,6 +166,7 @@ const makeSecretResolver = (values: Record<string, string> = {}) =>
     read: (references) =>
       Effect.succeed(references.map((reference) => values[reference.reference])),
     invalidate: () => Effect.void,
+    refreshUnattended: () => Effect.succeedNone,
     label: (provider) => Effect.succeed(provider),
   });
 

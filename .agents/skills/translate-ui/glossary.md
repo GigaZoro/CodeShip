@@ -51,6 +51,7 @@ message passes only when every word in it is listed here.
 | snooze / unsnooze, wake                   | відкласти / повернути                         |
 | settle, settled (mark a thread done)      | завершити, завершені                          |
 | archive                                   | архівувати, архів                             |
+| tag (a thread label)                      | тег (мн. теги)                                |
 | pin / unpin                               | закріпити / відкріпити                        |
 | scheduled task                            | заплановане завдання                          |
 | tray / notification area (Windows)        | трей / область сповіщень                      |

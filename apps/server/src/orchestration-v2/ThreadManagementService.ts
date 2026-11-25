@@ -138,7 +138,9 @@ function existingThreadIdsForCommand(
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
+    case "delegated_task.remote.attach-run":
     case "delegated_task.command.request":
+    case "delegated_task.command.start":
     case "delegated_task.command.complete":
       return [command.parentThreadId];
     case "thread.created.record":
@@ -151,6 +153,7 @@ function existingThreadIdsForCommand(
 }
 
 export interface ThreadManagementSendInput {
+  readonly demandId?: string;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -466,6 +469,9 @@ export interface ThreadManagementServiceShape {
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly acceptedCommandSequence: (
+    commandId: CommandId,
+  ) => Effect.Effect<number | undefined, Orchestrator.OrchestratorDispatchError>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
@@ -714,10 +720,33 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId) =>
+  const readReceipt = (commandId: CommandId) =>
     receipts.getByCommandId(commandId).pipe(
-      Effect.orElseSucceed(() => Option.none()),
+      Effect.mapError(
+        (cause) =>
+          new Orchestrator.OrchestratorDispatchError({
+            commandId,
+            commandType: "receipt.read",
+            cause,
+          }),
+      ),
+    );
+
+  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId) =>
+    readReceipt(commandId).pipe(
       Effect.map(Option.isSome),
+      Effect.orElseSucceed(() => false),
+    );
+
+  const acceptedCommandSequence: ThreadManagementServiceShape["acceptedCommandSequence"] = (
+    commandId,
+  ) =>
+    readReceipt(commandId).pipe(
+      Effect.map((receipt) =>
+        Option.isSome(receipt) && receipt.value.status === "accepted"
+          ? receipt.value.resultSequence
+          : undefined,
+      ),
     );
 
   const ensureLegacyTranscript = Effect.fn(
@@ -877,12 +906,66 @@ const make = Effect.gen(function* () {
     }
   };
 
-  /** Puts an Auto turn on its model and account, before anything checks the target. */
+  /** A thread created with its first message starts that turn as a fresh thread's own would. */
+  const routeCreatedThread = Effect.fn("ThreadManagementService.routeCreatedThread")(function* (
+    routing: AccountRouting.AccountRouting["Service"],
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.create" }>,
+  ) {
+    const message = command.initialMessage;
+    if (
+      message === undefined ||
+      message.launchAlreadyRouted === true ||
+      message.crossProviderFailoverFrom !== undefined ||
+      command.delegatedFrom !== undefined ||
+      command.importedNativeThread !== undefined
+    )
+      return command;
+    // A retried command keeps the account its first attempt chose.
+    const receipt = yield* receipts
+      .getByCommandId(command.commandId)
+      .pipe(Effect.orElseSucceed(Option.none));
+    if (Option.isSome(receipt)) return command;
+    const scheduled = message.scheduledTaskId !== undefined;
+    const launch = yield* routing.failoverLaunch({
+      selection: command.modelSelection,
+      projectId: command.projectId,
+      scheduled,
+      discoverMcpSignIns: false,
+    });
+    if (launch.failover?.reason === "usageLimit") {
+      const from = launch.failover.crossProviderFrom;
+      return {
+        ...command,
+        modelSelection: launch.selection,
+        ...(from === undefined
+          ? {}
+          : { initialMessage: { ...message, crossProviderFailoverFrom: from } }),
+      };
+    }
+    if (command.modelSelection.autoAccount !== true) return command;
+    const routed = yield* routing.route({
+      selection: command.modelSelection,
+      projectId: command.projectId,
+      currentInstanceId: null,
+      started: false,
+      scheduled,
+    });
+    return routed === command.modelSelection ? command : { ...command, modelSelection: routed };
+  });
+
+  /** Routes the first turn or an Auto turn before anything checks its target. */
   const routeDispatchAccount = (
     command: OrchestrationV2ServerCommand,
   ): Effect.Effect<OrchestrationV2ServerCommand, Orchestrator.OrchestratorV2Error> => {
     if (Option.isNone(accountRouting)) return Effect.succeed(command);
     const routing = accountRouting.value;
+    if (command.type === "thread.create") return routeCreatedThread(routing, command);
+    if (
+      (command.type !== "message.dispatch" && command.type !== "delegated_task.request") ||
+      command.crossProviderFailoverFrom !== undefined
+    ) {
+      return Effect.succeed(command);
+    }
     const route = Effect.fn("ThreadManagementService.routeDispatchAccount")(function* (input: {
       readonly threadId: ThreadId;
       readonly selection: ModelSelection | undefined;
@@ -890,15 +973,45 @@ const make = Effect.gen(function* () {
       readonly newThread: boolean;
       readonly scheduled: boolean;
     }) {
-      if (input.selection !== undefined && input.selection.autoAccount !== true) return command;
+      if (input.newThread && input.selection?.autoAccount !== true) return command;
+      const thread = yield* orchestrator.getThreadShell(input.threadId);
+      if (thread === null) return command;
+      const selection = input.selection ?? thread.modelSelection;
+      const fresh =
+        !input.newThread &&
+        command.launchAlreadyRouted !== true &&
+        thread.delegatedFrom === undefined &&
+        thread.latestRunId === null &&
+        thread.activeProviderThreadId === null;
+      if (!fresh && selection.autoAccount !== true) return command;
       // A retried command keeps the account its first attempt chose.
       const receipt = yield* receipts
         .getByCommandId(command.commandId)
         .pipe(Effect.orElseSucceed(Option.none));
       if (Option.isSome(receipt)) return command;
-      const thread = yield* orchestrator.getThreadShell(input.threadId);
-      if (thread === null) return command;
-      const selection = input.selection ?? thread.modelSelection;
+      if (fresh) {
+        const launch = yield* routing.failoverLaunch({
+          selection,
+          projectId: thread.projectId,
+          scheduled: input.scheduled,
+          discoverMcpSignIns: false,
+        });
+        if (launch.failover?.reason === "usageLimit") {
+          const from = launch.failover.crossProviderFrom;
+          return {
+            ...command,
+            modelSelection: launch.selection,
+            ...(from === undefined
+              ? {}
+              : {
+                  crossProviderFailoverFrom: from,
+                  ...(input.selection === undefined
+                    ? {}
+                    : { requestedModelSelection: input.selection }),
+                }),
+          };
+        }
+      }
       if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
         selection,
@@ -933,8 +1046,6 @@ const make = Effect.gen(function* () {
           newThread: true,
           scheduled: false,
         });
-      default:
-        return Effect.succeed(command);
     }
   };
 
@@ -1010,89 +1121,143 @@ const make = Effect.gen(function* () {
     "ThreadManagementService.sendToThread",
   )(function* (input) {
     const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
-    if (target.thread.archivedAt !== null) {
-      return yield* new ThreadManagementThreadArchivedError({
-        threadId: input.threadId,
-      });
-    }
-    const steerableRun = latestSteerableRun(target);
     // A fresh send never joins a running turn, so it needs none to steer or restart.
     const mode =
       input.freshContext && (input.mode === "steer" || input.mode === "restart")
         ? "queue"
         : input.mode;
-    let dispatchMode: Extract<
-      OrchestrationV2Command,
-      { readonly type: "message.dispatch" }
-    >["dispatchMode"];
-    if (mode === "steer" || mode === "restart") {
-      if (steerableRun === undefined) {
-        return yield* new ThreadManagementNoSteerableRunError({
+    const receipt = Option.getOrUndefined(
+      yield* receipts.getByCommandId(input.commandId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new Orchestrator.OrchestratorDispatchError({
+              commandId: input.commandId,
+              commandType: "message.dispatch",
+              cause,
+            }),
+        ),
+      ),
+    );
+    const dispatched = yield* Effect.gen(function* () {
+      if (receipt?.status === "accepted") {
+        if (receipt.threadId !== input.threadId) {
+          return yield* new Orchestrator.OrchestratorCommandIdConflictError({
+            commandId: input.commandId,
+            commandType: "message.dispatch",
+            receiptThreadId: receipt.threadId,
+            commandThreadId: input.threadId,
+          });
+        }
+        if (receipt.commandType !== "message.dispatch") {
+          return yield* new Orchestrator.OrchestratorDispatchError({
+            commandId: input.commandId,
+            commandType: "message.dispatch",
+            cause: "The accepted command was not a message send.",
+          });
+        }
+        return {
+          sequence: receipt.resultSequence,
+          replayed: true as const,
+          storedEvents: yield* orchestrator.readCommandEvents({
+            commandId: input.commandId,
+            type: "message.dispatch",
+          }),
+        };
+      }
+      if (target.thread.archivedAt !== null) {
+        return yield* new ThreadManagementThreadArchivedError({
           threadId: input.threadId,
-          mode,
         });
       }
-      dispatchMode = {
-        type: mode === "steer" ? "steer_active" : "restart_active",
-        targetRunId: steerableRun.id,
-      };
-    } else if (mode === "auto" && steerableRun !== undefined) {
-      dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
-    } else {
-      dispatchMode = {
-        type: mode === "queue" ? "queue_after_active" : "start_immediately",
-      };
-    }
+      const steerableRun = latestSteerableRun(target);
+      let dispatchMode: Extract<
+        OrchestrationV2Command,
+        { readonly type: "message.dispatch" }
+      >["dispatchMode"];
+      if (mode === "steer" || mode === "restart") {
+        if (steerableRun === undefined) {
+          return yield* new ThreadManagementNoSteerableRunError({
+            threadId: input.threadId,
+            mode,
+          });
+        }
+        dispatchMode = {
+          type: mode === "steer" ? "steer_active" : "restart_active",
+          targetRunId: steerableRun.id,
+        };
+      } else if (mode === "auto" && steerableRun !== undefined) {
+        dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
+      } else {
+        dispatchMode = {
+          type: mode === "queue" ? "queue_after_active" : "start_immediately",
+        };
+      }
 
-    // Turn start would fail on its own after the send reported success; a replay keeps its answer.
-    // A live steer starts no turn, so it needs no workspace.
-    if (dispatchMode.type !== "steer_active") {
-      yield* worktreeRestore
-        .restore(target.thread)
-        .pipe(
-          Effect.catch((cause) =>
-            hasReceipt(input.commandId).pipe(
-              Effect.flatMap((replay) =>
-                replay
-                  ? Effect.void
-                  : Effect.fail(
-                      new ThreadManagementWorktreeRestoreError({ threadId: input.threadId, cause }),
-                    ),
-              ),
+      // Turn start would fail on its own after the send reported success; a recorded rejection
+      // replays its answer. A live steer starts no turn, so it needs no workspace.
+      if (dispatchMode.type !== "steer_active") {
+        yield* worktreeRestore
+          .restore(target.thread)
+          .pipe(
+            Effect.catch((cause) =>
+              receipt === undefined
+                ? Effect.fail(
+                    new ThreadManagementWorktreeRestoreError({ threadId: input.threadId, cause }),
+                  )
+                : Effect.void,
             ),
-          ),
-        );
-    }
+          );
+      }
 
-    const dispatched = yield* dispatch({
-      type: "message.dispatch",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      messageId: input.messageId,
-      ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
-      ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-      ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
-      text: input.text,
-      attachments: input.attachments,
-      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-      ...(input.manualContinuationOfRunId === undefined
-        ? {}
-        : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
-      ...(input.freshContext ? { freshContext: true } : {}),
-      dispatchMode,
-      ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
-      createdBy: input.createdBy,
-      creationSource: input.creationSource,
+      return yield* dispatch({
+        type: "message.dispatch",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        sendToProjectId: input.projectId,
+        messageId: input.messageId,
+        ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+        ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
+        ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+        ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
+        text: input.text,
+        attachments: input.attachments,
+        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+        ...(input.manualContinuationOfRunId === undefined
+          ? {}
+          : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
+        ...(input.freshContext ? { freshContext: true } : {}),
+        dispatchMode,
+        ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+      }).pipe(
+        Effect.mapError((error) => {
+          if (error._tag !== "OrchestratorSendTargetUnavailableError") return error;
+          return error.reason === "archived"
+            ? new ThreadManagementThreadArchivedError({ threadId: input.threadId })
+            : new ThreadManagementThreadNotFoundError({
+                projectId: input.projectId,
+                threadId: input.threadId,
+              });
+        }),
+      );
     });
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],
       turnItemTypes: ["user_message"],
     });
     const message = projection.messages.find((candidate) => candidate.id === input.messageId);
-    const run =
-      message?.runId === null || message?.runId === undefined
-        ? undefined
-        : projection.runs.find((candidate) => candidate.id === message.runId);
+    const acceptedMessage = dispatched.storedEvents.find(
+      ({ event }) =>
+        event.type === "message.updated" &&
+        event.threadId === input.threadId &&
+        event.payload.id === input.messageId,
+    )?.event;
+    const runId =
+      acceptedMessage?.type === "message.updated"
+        ? (acceptedMessage.payload.runId ?? acceptedMessage.runId)
+        : undefined;
+    const run = projection.runs.find((candidate) => candidate.id === runId);
     const turnItem =
       projection.turnItems.find(
         (
@@ -1100,18 +1265,25 @@ const make = Effect.gen(function* () {
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
           candidate.type === "user_message" && candidate.messageId === input.messageId,
       ) ?? null;
+    const created = dispatched.storedEvents.find(
+      ({ event }) =>
+        event.type === "run.created" &&
+        event.threadId === input.threadId &&
+        event.payload.id === runId,
+    )?.event;
     if (
       message === undefined ||
       run === undefined ||
-      (turnItem === null && run.status !== "queued")
+      (turnItem === null &&
+        !(created?.type === "run.created" && created.payload.status === "queued"))
     ) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
         messageId: input.messageId,
       });
     }
-    // A provider without interrupt-and-restart stops the turn and runs the
-    // restart as the next turn. Read from this command's own events, so a replay agrees.
+    // The receipt records the accepted delivery even if the message later moved or its run settled.
+    // A provider without interrupt-and-restart stops the turn and runs the restart as the next turn.
     const restartedAsNextTurn =
       mode === "restart" &&
       dispatched.storedEvents.some(
@@ -1122,13 +1294,18 @@ const make = Effect.gen(function* () {
       );
     const delivery: ThreadManagementSendResult["delivery"] = restartedAsNextTurn
       ? "restarted"
-      : turnItem === null || turnItem.inputIntent === "queued_turn"
-        ? "queued"
-        : turnItem.inputIntent === "turn_start"
-          ? "started"
-          : mode === "restart"
-            ? "restarted"
-            : "steered";
+      : created?.type === "run.created"
+        ? created.payload.status === "queued"
+          ? "queued"
+          : "started"
+        : dispatched.storedEvents.some(
+              ({ event }) =>
+                event.type === "run-attempt.created" &&
+                event.threadId === input.threadId &&
+                event.payload.runId === runId,
+            )
+          ? "restarted"
+          : "steered";
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };
   });
 
@@ -1900,6 +2077,7 @@ const make = Effect.gen(function* () {
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,
+    acceptedCommandSequence,
     waitForThread,
     organizeAfterRun,
     organizeThread,

@@ -199,18 +199,25 @@ const recordScenario = Effect.fn("recordScenario")(function* (
   );
 }, Effect.scoped);
 
+export const cursorReplayFlags = {
+  scenario: Flag.Literals("scenario", RECORDING_NAMES).pipe(
+    Flag.withDescription("Scenario to record (or T3_CURSOR_REPLAY_SCENARIO)."),
+    Flag.withFallbackConfig(Config.Literals(RECORDING_NAMES, "T3_CURSOR_REPLAY_SCENARIO")),
+  ),
+  out: Flag.String("out").pipe(
+    // An empty path most often comes from a shell variable left unset; refuse it before the paid run.
+    Flag.filter(
+      (out) => out.trim() !== "",
+      () => "--out needs a value.",
+    ),
+    Flag.optional,
+    Flag.withDescription("Write the transcript here instead of over the checked-in fixture."),
+  ),
+};
+
 const recordCursorReplayCommand = Command.make(
   "record-cursor-agent-sdk-replay-fixture",
-  {
-    scenario: Flag.Literals("scenario", RECORDING_NAMES).pipe(
-      Flag.withDescription("Scenario to record (or T3_CURSOR_REPLAY_SCENARIO)."),
-      Flag.withFallbackConfig(Config.Literals(RECORDING_NAMES, "T3_CURSOR_REPLAY_SCENARIO")),
-    ),
-    out: Flag.String("out").pipe(
-      Flag.optional,
-      Flag.withDescription("Write the transcript here instead of over the checked-in fixture."),
-    ),
-  },
+  cursorReplayFlags,
   ({ scenario, out }) => recordScenario(scenario, Option.getOrUndefined(out)),
 ).pipe(
   Command.withDescription(
@@ -218,7 +225,9 @@ const recordCursorReplayCommand = Command.make(
   ),
 );
 
-Command.run(recordCursorReplayCommand, { version: "0.0.0" }).pipe(
-  Effect.provide(CursorSdk.layer.pipe(Layer.provideMerge(NodeServices.layer))),
-  NodeRuntime.runMain,
-);
+if (import.meta.main) {
+  Command.run(recordCursorReplayCommand, { version: "0.0.0" }).pipe(
+    Effect.provide(CursorSdk.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    NodeRuntime.runMain,
+  );
+}

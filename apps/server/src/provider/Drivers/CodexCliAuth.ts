@@ -10,13 +10,18 @@ import type * as CodexErrors from "effect-codex-app-server/errors";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import { HttpClient } from "effect/http";
 
 import { mcpCallbackUrl, mcpRedirect } from "@t3tools/shared/mcpAuthCallback";
 
 const REQUEST_TIMEOUT = "20 seconds";
 const CALLBACK_TIMEOUT = "15 seconds";
+type OpenLoginClient = Effect.Effect<
+  CodexClient.CodexAppServerClient["Service"],
+  CodexErrors.CodexAppServerError | ProviderSetupError,
+  Scope.Scope
+>;
 
 const CHATGPT_METHOD: ProviderAuthMethod = {
   id: "chatgpt",
@@ -29,11 +34,7 @@ const CHATGPT_METHOD: ProviderAuthMethod = {
 export const makeCodexChatGptLogin = Effect.fn("makeCodexChatGptLogin")(function* (options: {
   readonly instanceId: ProviderInstanceId;
   /** An initialized app server for the Codex home, closed with the scope. */
-  readonly openClient: Effect.Effect<
-    CodexClient.CodexAppServerClient["Service"],
-    CodexErrors.CodexAppServerError | ProviderSetupError,
-    Scope.Scope
-  >;
+  readonly openClient: OpenLoginClient;
 }) {
   const http = yield* HttpClient.HttpClient;
   const failure = (operation: string, detail: string, cause?: unknown) =>
@@ -129,19 +130,35 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
   readonly instanceId: ProviderInstanceId;
   readonly credentialKey: string;
   /** An initialized app server for this instance's Codex home, closed with the scope. */
-  readonly openClient: Effect.Effect<
-    CodexClient.CodexAppServerClient["Service"],
-    CodexErrors.CodexAppServerError | ProviderSetupError,
+  readonly openClient: OpenLoginClient;
+  readonly canLogout: boolean;
+  readonly stageLogin: (context: ProviderAuthFlow.ProviderAuthFlowContext) => Effect.Effect<
+    {
+      readonly openClient: OpenLoginClient;
+      readonly persist: Effect.Effect<void, ProviderSetupError>;
+    },
+    ProviderSetupError,
     Scope.Scope
   >;
-  readonly canLogout: boolean;
 }) {
   const login = yield* makeCodexChatGptLogin(options);
+  const http = yield* HttpClient.HttpClient;
   const controller = yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     credentialBinding: { owner: "provider", key: options.credentialKey },
     methods: Effect.succeed([CHATGPT_METHOD]),
-    authenticate: (_methodId, context) => login.authenticate(context),
+    replacesInstance: true,
+    stage: Effect.fn("CodexCliAuth.stage")(function* (_methodId, context) {
+      const candidate = yield* options
+        .stageLogin(context)
+        .pipe(Effect.provideService(Scope.Scope, context.scope));
+      const staged = yield* makeCodexChatGptLogin({
+        instanceId: options.instanceId,
+        openClient: candidate.openClient,
+      }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+      yield* staged.authenticate(context);
+      return candidate.persist;
+    }),
     logout: options.canLogout
       ? login.logout
       : Effect.fail(

@@ -1,4 +1,4 @@
-import type { ThreadMoveDestination } from "../threads/threadOrder";
+import type { ThreadListArrangement, ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { showThreadUndoNotice } from "./thread-undo-notice";
@@ -7,7 +7,7 @@ import {
   unmergedWorkFromStatus,
   unmergedWorkSettleConfirmation,
 } from "@t3tools/client-runtime/state/thread-settled";
-import { AuthOrchestrationOperateScope, threadFolderKeyOf } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useRef } from "react";
@@ -38,8 +38,7 @@ import {
 } from "../../state/thread-order";
 import {
   createPendingThreadOrder,
-  createThreadMovePlanner,
-  listedThreadMove,
+  planThreadListMove,
   threadDropLifecycle,
 } from "../threads/threadOrder";
 import { getThreadListV2OrderedSection } from "../threads/threadListV2";
@@ -254,6 +253,7 @@ export function useThreadListActions(): {
   readonly moveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
+    getArrangement: () => ThreadListArrangement,
   ) => Promise<boolean>;
   readonly renameThread: (thread: EnvironmentThreadShell) => void;
   readonly regenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -710,14 +710,17 @@ export function useThreadListActions(): {
     });
   };
 
-  // Plan against the complete section so filtering does not change a move.
   const reorderPinnedMutation = useAtomCommand(threadEnvironment.reorderPin, {
     reportFailure: false,
   });
   const reorderActiveMutation = useAtomCommand(threadEnvironment.reorderActive, {
     reportFailure: false,
   });
-  const moveThread = async (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
+  const moveThread = async (
+    thread: EnvironmentThreadShell,
+    direction: ThreadMoveDestination,
+    getArrangement: () => ThreadListArrangement,
+  ) => {
     if (!checkThreadOperationPermission(thread, t("Could not move thread"))) return false;
     if (getPendingThreadOrder() !== null || appAtomRegistry.get(threadDropBusyAtom)) return false;
     // The rows on screen can be older than the server's while they wait to show. A move
@@ -768,32 +771,20 @@ export function useThreadListActions(): {
       shells.map((shell) => [scopedThreadKey(shell.environmentId, shell.id), shell]),
     );
     const movedKey = scopedThreadKey(thread.environmentId, thread.id);
-    // Filed chats list in their folders, so an unfiled chat steps over them in the Active list.
-    const destination =
-      section === "active" &&
-      typeof direction === "string" &&
-      threadFolderKeyOf(thread.folder) === null
-        ? listedThreadMove(
-            ordered.map((row) => scopedThreadKey(row.environmentId, row.id)),
-            movedKey,
-            direction,
-            (id) => threadFolderKeyOf(shellByKey.get(id)?.folder) === null,
-          )
-        : direction;
-    if (destination === null) return false;
-    const assignments = createThreadMovePlanner({
-      allThreads: shells,
-      ordered,
+    const move = planThreadListMove({
+      movedId: movedKey,
       section,
+      direction,
+      ordered,
+      allThreads: shells,
+      arrangement: getArrangement(),
       reorderableEnvironmentIds: new Set(
         [...configs.keys()].filter((environmentId) => connectedEnvironmentIds.has(environmentId)),
       ),
-    })(movedKey, destination);
-    if (assignments === null) return false;
+    });
+    if (move === null) return false;
+    const { crossSection, destination, assignments } = move;
     const lifecycle = threadDropLifecycle(thread, section, new Date().toISOString());
-    const crossSection = !ordered.some(
-      (row) => row.id === thread.id && row.environmentId === thread.environmentId,
-    );
     for (const assignment of assignments) {
       const target = shellByKey.get(assignment.id);
       if (target && !checkThreadOperationPermission(target, t("Could not move thread")))

@@ -41,6 +41,7 @@ function countingResolver() {
         }),
       ),
     invalidate: () => Effect.void,
+    refreshUnattended: () => Effect.succeedNone,
   });
   return { reads, resolver };
 }
@@ -125,6 +126,7 @@ it.effect("reads a collected reference again once it is invalidated", () =>
           if (references === undefined) cache.clear();
           else for (const reference of references) cache.delete(reference.reference);
         }),
+      refreshUnattended: () => Effect.succeedNone,
     });
     const read = () => resolveSourceControlHostSecrets(resolver, hosts, "bitbucket");
     const usageLimitSources = {

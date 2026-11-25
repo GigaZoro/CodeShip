@@ -9,6 +9,7 @@ import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
 
+import { parseCommandLine, positiveInteger } from "./lib/command-line.ts";
 import { Device, type Pool, poolError, run } from "./mobile-e2e/device.ts";
 import { runJourney, type StepResult } from "./mobile-e2e/journey.ts";
 import { POSES, type Pose } from "./mobile-e2e/poses.ts";
@@ -146,29 +147,53 @@ async function runPose(
   }
 }
 
+export function parseE2eArguments(args: ReadonlyArray<string>) {
+  const { values, tokens } = parseCommandLine({
+    args: args[0] === "--" ? args.slice(1) : args,
+    options: {
+      list: { type: "boolean" },
+      pose: { type: "string", multiple: true, default: [] },
+      platform: { type: "string", multiple: true, default: [] },
+      concurrency: { type: "string" },
+      "no-review": { type: "boolean" },
+    },
+  });
+  if (tokens.some((token) => token.kind === "option-terminator")) {
+    throw new Error("Pass -- only once at the start of the command.");
+  }
+  if (values.list && tokens.length !== 1) throw new Error("--list must be used alone.");
+  const unknown = values.pose.filter((id) => !POSES.some((pose) => pose.id === id));
+  if (unknown.length) throw new Error("Unknown pose " + unknown.join(", ") + ". Run with --list.");
+  const unsupported = values.platform.filter(
+    (platform) => platform !== "ios" && platform !== "android",
+  );
+  if (unsupported.length) throw new Error("Unknown platform " + unsupported.join(", ") + ".");
+  const poses = POSES.filter(
+    (pose) =>
+      (values.pose.length === 0 ? !pose.pending : values.pose.includes(pose.id)) &&
+      (values.platform.length === 0 || values.platform.includes(pose.platform)),
+  );
+  if (poses.length === 0) throw new Error("No poses match the selected platforms.");
+  return {
+    list: values.list === true,
+    poses,
+    concurrency:
+      values.concurrency === undefined
+        ? undefined
+        : positiveInteger(values.concurrency, "--concurrency"),
+    review: !values["no-review"],
+  };
+}
+
 async function main() {
-  const args = NodeProcess.argv.slice(2);
-  if (args.includes("--list")) {
+  const { list, poses, concurrency, review } = parseE2eArguments(NodeProcess.argv.slice(2));
+  if (list) {
     for (const pose of POSES)
       NodeProcess.stdout.write(
         `${pose.id}\t${pose.device}${pose.pending ? `\t(pending: ${pose.pending})` : ""}\n`,
       );
     return;
   }
-  const values = (flag: string) =>
-    args.flatMap((arg, index) => (args[index - 1] === flag ? [arg] : []));
-  const selected = values("--pose");
-  const unknown = selected.filter((id) => !POSES.some((pose) => pose.id === id));
-  if (unknown.length) throw new Error(`Unknown pose ${unknown.join(", ")}. Run with --list.`);
-  const platforms = values("--platform");
-  const poses = POSES.filter(
-    (pose) =>
-      (selected.length === 0 ? !pose.pending : selected.includes(pose.id)) &&
-      (platforms.length === 0 || platforms.includes(pose.platform)),
-  );
-  const concurrencyFlag = values("--concurrency")[0];
-  const concurrency = concurrencyFlag ? Number(concurrencyFlag) : undefined;
-  const review = !args.includes("--no-review");
 
   const agentDeviceUrl = NodeProcess.env.SIMLOCK_AGENT_DEVICE_URL;
   const token = NodeProcess.env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;

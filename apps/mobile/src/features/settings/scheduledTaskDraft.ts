@@ -200,6 +200,7 @@ type Workspace = "worktree" | "root" | "existing_worktree";
 export type ScheduledTaskDraft = PromptFileDraft & {
   readonly task: ScheduledTask | null;
   readonly title: string;
+  readonly description: string;
   readonly prompt: string;
   /** The label tasks are listed and paused under; empty for none. */
   readonly group: string;
@@ -231,6 +232,7 @@ export type ScheduledTaskDraft = PromptFileDraft & {
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
     draft.title,
+    draft.description.trim(),
     draft.prompt,
     draft.promptSource,
     draft.promptFile.trim(),
@@ -329,6 +331,7 @@ export function createDraft(
   return {
     task: null,
     title: "",
+    description: "",
     prompt: "",
     ...promptFileDraft(null),
     group: "",
@@ -373,6 +376,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
   return {
     task,
     title: task.title,
+    description: task.description ?? "",
     prompt: task.prompt,
     ...promptFileDraft(task),
     group: task.group ?? "",

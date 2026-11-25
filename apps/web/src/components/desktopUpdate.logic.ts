@@ -165,7 +165,7 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
 export function getSafeUpdateButtonTooltip(
   state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
   runningThreads: number,
-  runningCommands: number,
+  commands: number,
 ): string {
   const version = getDesktopUpdateDownloadedVersion(state);
   const threads =
@@ -185,16 +185,15 @@ export function getSafeUpdateButtonTooltip(
             "Update downloaded. Click for a safe update: {count} running chat resume after the restart.",
             "Update downloaded. Click for a safe update: {count} running chats resume after the restart.",
           );
-  return runningCommands === 0
-    ? threads
-    : `${threads} ${runningCommandsCarryOnLabel(runningCommands)}`;
+  return commands === 0 ? threads : `${threads} ${commandsCarryOnLabel(commands)}`;
 }
 
-export function runningCommandsCarryOnLabel(count: number): string {
+/** Running and queued alike: neither stops for an update. */
+export function commandsCarryOnLabel(count: number): string {
   return tn(
     count,
-    "{count} running command carries on through the update.",
-    "{count} running commands carry on through the update.",
+    "{count} command carries on through the update.",
+    "{count} commands carry on through the update.",
   );
 }
 

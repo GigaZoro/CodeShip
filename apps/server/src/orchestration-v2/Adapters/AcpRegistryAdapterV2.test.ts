@@ -302,7 +302,7 @@ const openClaudeReplaySession = Effect.fn("openClaudeReplaySession")(function* (
   const now = yield* DateTime.now;
   const turnInput = (
     ordinal: number,
-    options: { readonly continuation?: boolean } = {},
+    options: { readonly continuation?: boolean; readonly messageId?: MessageId } = {},
   ): ProviderAdapter.ProviderAdapterV2TurnInput => ({
     appThread: {
       createdBy: "user",
@@ -338,7 +338,7 @@ const openClaudeReplaySession = Effect.fn("openClaudeReplaySession")(function* (
       ...(options.continuation === true
         ? { createdBy: "agent" as const, creationSource: "provider" as const }
         : { createdBy: "user" as const, creationSource: "web" as const }),
-      messageId: MessageId.make(`message-claude-lifecycle-${ordinal}`),
+      messageId: options.messageId ?? MessageId.make(`message-claude-lifecycle-${ordinal}`),
       text: "test prompt",
       attachments: [],
     },
@@ -1804,7 +1804,9 @@ describe("AcpRegistryAdapterV2", () => {
       yield* session.throughMarker("continuation idle");
       const offer = session.offers[0]!;
       yield* offer.dispatchIfCurrent!(Effect.void);
-      yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+      yield* session.runtime.startTurn(
+        session.turnInput(2, { continuation: true, messageId: offer.messageId! }),
+      );
       const continuation = yield* session.until((event) => event.type === "turn.terminal");
       const terminal = continuation.at(-1)!;
       if (terminal.type !== "turn.terminal") throw new Error("Missing continuation terminal");
@@ -2027,7 +2029,9 @@ describe("AcpRegistryAdapterV2", () => {
       const offer = session.offers[0]!;
       assert.isDefined(offer.dispatchIfCurrent);
       yield* offer.dispatchIfCurrent!(Effect.void);
-      yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+      yield* session.runtime.startTurn(
+        session.turnInput(2, { continuation: true, messageId: offer.messageId! }),
+      );
       const started = yield* session.until(
         (event) =>
           event.type === "provider_turn.updated" && event.providerTurn.status === "running",
@@ -2727,7 +2731,9 @@ describe("AcpRegistryAdapterV2", () => {
         yield* Queue.take(session.offered);
         assert.lengthOf(session.offers, 1);
         yield* session.offers[0]!.dispatchIfCurrent!(Effect.void);
-        yield* session.runtime.startTurn(session.turnInput(3, { continuation: true }));
+        yield* session.runtime.startTurn(
+          session.turnInput(3, { continuation: true, messageId: session.offers[0]!.messageId! }),
+        );
         const continued = yield* session.until((event) => event.type === "turn.terminal");
         const terminal = continued.at(-1)!;
         if (terminal.type !== "turn.terminal") throw new Error("Missing continuation terminal");

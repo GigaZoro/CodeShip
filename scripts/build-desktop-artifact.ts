@@ -41,9 +41,18 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { packagedProbeEnv, stageInstallEnv } from "./lib/child-env.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { resolveTaggedSourceVersion } from "./lib/tagged-source-version.ts";
+import {
+  StageDirRequiredError,
+  StagePhase,
+  markStageComplete,
+  prepareStageDir,
+  requireCompletedStage,
+  stageCommitMarker,
+} from "./lib/stage-dir.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -69,9 +78,28 @@ const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 
+const DependencySpecs = Schema.Record(Schema.String, Schema.String);
+/** The dependency-spec fields of a package extension; only these may name catalog: specs. */
+const PACKAGE_EXTENSION_SPEC_FIELDS = [
+  "dependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+// pnpm's extension fields; one the stage dropped would change an edge, which the drift check fails.
+const PackageExtension = Schema.Struct({
+  dependencies: Schema.optional(DependencySpecs),
+  optionalDependencies: Schema.optional(DependencySpecs),
+  peerDependencies: Schema.optional(DependencySpecs),
+  peerDependenciesMeta: Schema.optional(
+    Schema.Record(Schema.String, Schema.Struct({ optional: Schema.optional(Schema.Boolean) })),
+  ),
+});
+const PackageExtensions = Schema.Record(Schema.String, PackageExtension);
+
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  packageExtensions: Schema.optional(PackageExtensions),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
 });
@@ -86,27 +114,53 @@ const StageWorkspaceConfig = Schema.Struct({
   // pnpm 11 reads build approvals only from pnpm-workspace.yaml; omission fails staged lifecycle installs.
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  // A stage carries every root patch, so a transitive patched package keeps its patch.
+  allowUnusedPatches: Schema.optional(Schema.Boolean),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  packageExtensions: Schema.optional(
-    Schema.Record(
-      Schema.String,
-      Schema.Struct({
-        peerDependenciesMeta: Schema.Record(
-          Schema.String,
-          Schema.Struct({ optional: Schema.Boolean }),
-        ),
-      }),
-    ),
-  ),
+  packageExtensions: Schema.optional(PackageExtensions),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
 
-// TypeScript is a typings-only peer; pnpm auto-installation would ship a compiler.
-const STAGE_PACKAGE_EXTENSIONS = {
-  "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
-  "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
+// TypeScript is a typings-only peer. Seeded with the root lockfile, pnpm satisfies it
+// with another workspace's compiler, which the app would then ship.
+const STAGE_PEER_OVERRIDES = {
+  "electron-webauthn>typescript": "-",
+  "@electron-webauthn/macos>typescript": "-",
 } as const;
+
+const PnpmImporterDependencies = Schema.optional(
+  Schema.Record(Schema.String, Schema.Struct({ version: Schema.String })),
+);
+
+const PnpmLockfileDocument = Schema.Struct({
+  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  importers: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        dependencies: PnpmImporterDependencies,
+        devDependencies: PnpmImporterDependencies,
+        optionalDependencies: PnpmImporterDependencies,
+      }),
+    ),
+  ),
+  packages: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({ resolution: Schema.Record(Schema.String, Schema.Unknown) }),
+    ),
+  ),
+  snapshots: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+        optionalDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+      }),
+    ),
+  ),
+});
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -117,6 +171,7 @@ const decodeReleasePackageManifest = Schema.decodeEffect(
 );
 const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
+const decodePnpmLockfileDocument = Schema.decodeEffect(fromYaml(PnpmLockfileDocument));
 
 export const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -189,6 +244,8 @@ interface BuildCliInput {
   readonly mockUpdates: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<number>;
   readonly wslRuntime: Option.Option<string>;
+  readonly phase: Option.Option<StagePhase>;
+  readonly stageDir: Option.Option<string>;
 }
 
 function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
@@ -282,6 +339,19 @@ export class UnsupportedDesktopBuildArchitectureError extends Schema.TaggedError
   }
 }
 
+// Mac App Store targets package Electron's mas build into mas* folders, which this build
+// neither stages, checks nor collects.
+const MAC_APP_STORE_TARGETS: ReadonlySet<string> = new Set(["mas", "mas-dev"]);
+
+export class UnsupportedDesktopBuildTargetError extends Schema.TaggedError<UnsupportedDesktopBuildTargetError>()(
+  "UnsupportedDesktopBuildTargetError",
+  { platform: BuildPlatform, target: Schema.String },
+) {
+  override get message(): string {
+    return `Unsupported target '${this.target}' for ${this.platform}: Mac App Store builds are not supported.`;
+  }
+}
+
 const InvalidMockUpdateServerPortReason = Schema.Literals([
   "not-numeric",
   "not-integer",
@@ -335,6 +405,31 @@ export class BuildCommandFailedError extends Schema.TaggedError<BuildCommandFail
     ].filter((section): section is string => section !== undefined);
     const outputSuffix = outputSections.length > 0 ? `\n\n${outputSections.join("\n\n")}` : "";
     return `Command exited with non-zero exit code (${this.exitCode})${outputSuffix}`;
+  }
+}
+
+class DesktopStagePhaseOptionError extends Schema.TaggedError<DesktopStagePhaseOptionError>()(
+  "DesktopStagePhaseOptionError",
+  { option: Schema.Literals(["--signed", "--mock-updates", "--wsl-runtime"]) },
+) {
+  override get message(): string {
+    return `${this.option} changes only packaging, so the stage phase would drop it. Pass it to --phase package.`;
+  }
+}
+
+export class StageLockfileDriftError extends Schema.TaggedError<StageLockfileDriftError>()(
+  "StageLockfileDriftError",
+  { stage: Schema.String, drift: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    const shown = this.drift.slice(0, 20).map((line) => `  - ${line}`);
+    const hidden = this.drift.length - shown.length;
+    return [
+      `The ${this.stage} install resolved versions that pnpm-lock.yaml does not pin:`,
+      ...shown,
+      ...(hidden > 0 ? [`  ...and ${String(hidden)} more`] : []),
+      "Release builds install only the root lockfile's versions. Run `vp install` at the repository root and commit pnpm-lock.yaml, or align the staged dependencies with it.",
+    ].join("\n");
   }
 }
 
@@ -529,25 +624,14 @@ export class BundledClientAssetsMissingError extends Schema.TaggedError<BundledC
   }
 }
 
-export class UnsupportedDesktopBuildPlatformError extends Schema.TaggedError<UnsupportedDesktopBuildPlatformError>()(
-  "UnsupportedDesktopBuildPlatformError",
-  {
-    platform: Schema.String,
-  },
-) {
-  override get message(): string {
-    return `Unsupported platform '${this.platform}'.`;
-  }
-}
-
 const dependencyResolutionDescriptions = {
   "server-production": "production dependencies",
-  "workspace-overrides": "overrides",
+  "workspace-settings": "overrides and package extensions",
   "desktop-runtime": "desktop runtime dependencies",
 } as const;
 const DependencyResolutionKind = Schema.Literals([
   "server-production",
-  "workspace-overrides",
+  "workspace-settings",
   "desktop-runtime",
 ]);
 
@@ -960,15 +1044,17 @@ interface ResolvedBuildOptions {
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
   readonly wslRuntime: string | undefined;
+  readonly phase: StagePhase;
+  /** Undefined only for phase "all", which then stages in a temporary directory. */
+  readonly stageDir: string | undefined;
 }
 
+/** The signing fields (build, t3codeWebAuthn, t3codeAppleTeamSigned) are added by the package phase. */
 interface StagePackageJson {
   readonly name: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
-  readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
-  readonly t3codeAppleTeamSigned?: boolean;
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -976,14 +1062,20 @@ interface StagePackageJson {
   readonly homepage: string;
   readonly author: string;
   readonly main: string;
-  readonly build: Record<string, unknown>;
   readonly dependencies: Record<string, unknown>;
   readonly devDependencies: {
     readonly electron: string;
   };
 }
 
-export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
+// Resolution only: nothing is installed and no lifecycle script runs before the drift check.
+const STAGE_LOCKFILE_ARGS = [
+  "install",
+  "--lockfile-only",
+  "--no-frozen-lockfile",
+  "--ignore-scripts",
+] as const;
+const STAGE_INSTALL_ARGS = ["install", "--frozen-lockfile", "--prod"] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // Cursor walks from argv[1] to platform assets; helpers and native addons need real paths outside ASAR.
@@ -1010,7 +1102,7 @@ export const MAC_FILE_EXCLUSIONS = [
   "!**/node_modules/node-pty/prebuilds/win32-*/**/*",
   "!**/node_modules/node-pty/third_party/conpty/**/*",
 ] as const;
-// Linux builds node-pty from source; its prebuilds target other platforms.
+// Linux runs node-pty's linux-* prebuilds; the macOS and Windows ones are dead weight.
 export const LINUX_FILE_EXCLUSIONS = [
   ...MAC_FILE_EXCLUSIONS,
   "!**/node_modules/node-pty/prebuilds/darwin-*/**/*",
@@ -1578,14 +1670,40 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
   }
 });
 
-export function createStageWorkspaceConfig(input: {
+function createStageWorkspaceConfig(input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
-  readonly allowBuilds?: Record<string, boolean>;
-  readonly patchedDependencies?: Record<string, string>;
-  readonly overrides?: Record<string, string>;
+  readonly workspace: WorkspaceConfig;
 }): StageWorkspaceConfig {
-  const { platform, arch, allowBuilds, patchedDependencies, overrides } = input;
+  const { platform, arch, workspace } = input;
+  const catalog = workspace.catalog ?? {};
+  const allowBuilds = workspace.allowBuilds ?? {};
+  const patchedDependencies = workspace.patchedDependencies ?? {};
+  const packageExtensions = Object.fromEntries(
+    Object.entries(workspace.packageExtensions ?? {}).map(([selector, extension]) => [
+      selector,
+      {
+        ...extension,
+        ...Object.fromEntries(
+          PACKAGE_EXTENSION_SPEC_FIELDS.flatMap((field) => {
+            const specs = extension[field];
+            return specs === undefined
+              ? []
+              : [
+                  [
+                    field,
+                    resolveCatalogDependencies(
+                      specs,
+                      catalog,
+                      `pnpm-workspace.yaml packageExtensions ${selector} ${field}`,
+                    ),
+                  ],
+                ];
+          }),
+        ),
+      },
+    ]),
+  );
   const hostOs = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   const hostCpu = arch === "universal" ? ["arm64", "x64"] : [arch];
   // Linux AppImages require glibc native optional dependencies; tell pnpm explicitly.
@@ -1603,30 +1721,340 @@ export function createStageWorkspaceConfig(input: {
 
   return {
     supportedArchitectures,
-    ...(allowBuilds && Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
-    ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
-      ? { patchedDependencies }
+    ...(Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
+    ...(Object.keys(patchedDependencies).length > 0
+      ? { patchedDependencies, allowUnusedPatches: true }
       : {}),
-    ...(overrides && Object.keys(overrides).length > 0 ? { overrides } : {}),
-    packageExtensions: STAGE_PACKAGE_EXTENSIONS,
+    overrides: {
+      ...resolveCatalogDependencies(
+        workspace.overrides ?? {},
+        catalog,
+        "pnpm-workspace.yaml overrides",
+      ),
+      ...STAGE_PEER_OVERRIDES,
+    },
+    ...(Object.keys(packageExtensions).length > 0 ? { packageExtensions } : {}),
   };
 }
 
-export function createStagePatchedDependencies(
-  patchedDependencies: Record<string, string>,
-  dependencies: Record<string, unknown>,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(patchedDependencies).filter(([patchKey]) =>
-      Object.hasOwn(dependencies, getPatchedDependencyPackageName(patchKey)),
+/**
+ * Gives a stage the root's install settings (build approvals, overrides, package extensions and
+ * every patch), so it resolves the graph pnpm-lock.yaml records.
+ */
+export const writeStageWorkspace = Effect.fn("writeStageWorkspace")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageDir: string;
+  readonly platform: typeof BuildPlatform.Type;
+  readonly arch: typeof BuildArch.Type;
+  readonly workspace: WorkspaceConfig;
+  readonly nodeLinker?: "hoisted";
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* Effect.try({
+    try: () => createStageWorkspaceConfig(input),
+    catch: (cause) =>
+      new DesktopBuildDependencyResolutionError({
+        kind: "workspace-settings",
+        manifestPath: "pnpm-workspace.yaml",
+        cause,
+      }),
+  });
+  yield* fs.writeFileString(
+    path.join(input.stageDir, "pnpm-workspace.yaml"),
+    yield* encodeStageWorkspaceConfig(
+      input.nodeLinker === undefined ? config : { ...config, nodeLinker: input.nodeLinker },
     ),
   );
+  if (config.patchedDependencies !== undefined) {
+    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
+  }
+});
+
+const EDGE_KINDS = ["dependencies", "optionalDependencies"] as const;
+/** A snapshot's dependency edges by kind; an edge that moves between kinds changes what installs. */
+type SnapshotEdges = {
+  readonly [Kind in (typeof EDGE_KINDS)[number]]: Readonly<Record<string, string>>;
+};
+
+interface PnpmLockfileGraph {
+  readonly resolutions: ReadonlyMap<string, Readonly<Record<string, unknown>>>;
+  /** Dependency edges per exact snapshot key; keys and references keep their peer and patch suffixes. */
+  readonly snapshots: ReadonlyMap<string, SnapshotEdges>;
+  /** Direct dependency references per importer path. */
+  readonly importers: ReadonlyMap<string, Readonly<Record<string, string>>>;
+  readonly patchHashes: ReadonlyMap<string, string>;
 }
 
-function getPatchedDependencyPackageName(patchKey: string): string {
-  const versionSeparator = patchKey.lastIndexOf("@");
-  return versionSeparator > 0 ? patchKey.slice(0, versionSeparator) : patchKey;
+const withoutPeerSuffix = (reference: string) => {
+  const peerStart = reference.indexOf("(");
+  return peerStart === -1 ? reference : reference.slice(0, peerStart);
+};
+
+const snapshotPackageName = (key: string) => {
+  const base = withoutPeerSuffix(key);
+  return base.slice(0, base.lastIndexOf("@"));
+};
+
+// An aliased reference ("@tsc-rs/typescript@0.8.0") names its snapshot itself.
+const snapshotKeyOf = (name: string, reference: string) =>
+  withoutPeerSuffix(reference).lastIndexOf("@") > 0 ? reference : `${name}@${reference}`;
+
+const versionsByName = (
+  ...groups: ReadonlyArray<Readonly<Record<string, { readonly version: string }>> | undefined>
+) =>
+  Object.fromEntries(
+    groups.flatMap((group) =>
+      Object.entries(group ?? {}).map(([name, entry]) => [name, entry.version] as const),
+    ),
+  );
+
+export const readPnpmLockfileGraph = Effect.fn("readPnpmLockfileGraph")(function* (
+  lockfile: string,
+) {
+  const resolutions = new Map<string, Readonly<Record<string, unknown>>>();
+  const snapshots = new Map<string, SnapshotEdges>();
+  const importers = new Map<string, Readonly<Record<string, string>>>();
+  const patchHashes = new Map<string, string>();
+  // pnpm writes its own install as a leading document; "---" at column 0 always starts one.
+  for (const document of lockfile.split(/^---[ \t]*$/mu)) {
+    if (document.trim() === "") continue;
+    const decoded = yield* decodePnpmLockfileDocument(document);
+    for (const [key, hash] of Object.entries(decoded.patchedDependencies ?? {})) {
+      patchHashes.set(key, hash);
+    }
+    for (const [importer, entry] of Object.entries(decoded.importers ?? {})) {
+      importers.set(importer, {
+        ...importers.get(importer),
+        ...versionsByName(entry.optionalDependencies, entry.devDependencies, entry.dependencies),
+      });
+    }
+    for (const [key, entry] of Object.entries(decoded.packages ?? {})) {
+      resolutions.set(key, entry.resolution);
+    }
+    for (const [key, snapshot] of Object.entries(decoded.snapshots ?? {})) {
+      snapshots.set(key, {
+        dependencies: snapshot.dependencies ?? {},
+        optionalDependencies: snapshot.optionalDependencies ?? {},
+      });
+    }
+  }
+  return { resolutions, snapshots, importers, patchHashes } satisfies PnpmLockfileGraph;
+});
+
+/** The root lockfile as a stage resolves it. */
+interface StagedRootGraph {
+  readonly importers: ReadonlyMap<string, Readonly<Record<string, string>>>;
+  /** Every root snapshot a stage snapshot key may stand for. */
+  readonly snapshots: ReadonlyMap<string, ReadonlyArray<SnapshotEdges>>;
 }
+
+/**
+ * A STAGE_PEER_OVERRIDES entry removes that peer from its package, so in a stage each
+ * of the package's snapshots loses the edge and the peer suffix, and its peer variants
+ * become one snapshot.
+ */
+function stagedRootGraph(root: PnpmLockfileGraph): StagedRootGraph {
+  const removedPeers = new Map<string, Set<string>>();
+  for (const selector of Object.keys(STAGE_PEER_OVERRIDES)) {
+    const [parent = "", peer = ""] = selector.split(">");
+    removedPeers.set(parent, (removedPeers.get(parent) ?? new Set()).add(peer));
+  }
+  const removedSuffixes = new Map<string, Set<string>>();
+  for (const [key, edges] of root.snapshots) {
+    const parent = snapshotPackageName(key);
+    for (const peer of removedPeers.get(parent) ?? []) {
+      const reference = edges.dependencies[peer] ?? edges.optionalDependencies[peer];
+      if (reference === undefined) continue;
+      const suffixes = removedSuffixes.get(parent) ?? new Set();
+      removedSuffixes.set(parent, suffixes.add(`(${snapshotKeyOf(peer, reference)})`));
+    }
+  }
+  const withoutRemovedPeers = (name: string, reference: string) =>
+    [...(removedSuffixes.get(name) ?? [])].reduce(
+      (stripped, suffix) => stripped.replaceAll(suffix, ""),
+      reference,
+    );
+  const stagedReferences = (name: string, references: Readonly<Record<string, string>>) =>
+    Object.fromEntries(
+      Object.entries(references)
+        .filter(([child]) => removedPeers.get(name)?.has(child) !== true)
+        .map(([child, reference]) => [child, withoutRemovedPeers(child, reference)]),
+    );
+  const stagedEdges = (name: string, edges: SnapshotEdges): SnapshotEdges => ({
+    dependencies: stagedReferences(name, edges.dependencies),
+    optionalDependencies: stagedReferences(name, edges.optionalDependencies),
+  });
+  const snapshots = new Map<string, Array<SnapshotEdges>>();
+  for (const [key, edges] of root.snapshots) {
+    const name = snapshotPackageName(key);
+    const stagedKey = `${name}@${withoutRemovedPeers(name, key.slice(name.length + 1))}`;
+    snapshots.set(stagedKey, [...(snapshots.get(stagedKey) ?? []), stagedEdges(name, edges)]);
+  }
+  return {
+    importers: new Map(
+      [...root.importers].map(([importer, references]) => [
+        importer,
+        stagedReferences("", references),
+      ]),
+    ),
+    snapshots,
+  };
+}
+
+/**
+ * What the root lockfile pins for a stage's direct dependency: the first source
+ * importer's own entry, else the edge one of their direct dependencies has to it
+ * (a platform binary the stage names directly).
+ */
+function rootDirectReference(
+  root: StagedRootGraph,
+  sourceImporters: ReadonlyArray<string>,
+  name: string,
+): string | undefined {
+  for (const importer of sourceImporters) {
+    const reference = root.importers.get(importer)?.[name];
+    if (reference !== undefined) return reference;
+  }
+  for (const importer of sourceImporters) {
+    for (const [parent, reference] of Object.entries(root.importers.get(importer) ?? {})) {
+      for (const edges of root.snapshots.get(snapshotKeyOf(parent, reference)) ?? []) {
+        const pinned = edges.dependencies[name] ?? edges.optionalDependencies[name];
+        if (pinned !== undefined) return pinned;
+      }
+    }
+  }
+  return undefined;
+}
+
+const sameResolution = (
+  left: Readonly<Record<string, unknown>>,
+  right: Readonly<Record<string, unknown>>,
+) =>
+  Object.keys(left).length === Object.keys(right).length &&
+  Object.entries(left).every(([field, value]) => right[field] === value);
+
+/** Both ways: an edge the stage adds or changes, and one it drops, alter what installs. */
+const differingEdges = (key: string, edges: SnapshotEdges, rootEdges: SnapshotEdges) =>
+  EDGE_KINDS.flatMap((kind) => {
+    const label = kind === "optionalDependencies" ? " (optional)" : "";
+    return [
+      ...Object.entries(edges[kind])
+        .filter(([child, reference]) => rootEdges[kind][child] !== reference)
+        .map(
+          ([child, reference]) =>
+            `${key} depends on ${child}@${reference}${label}, which pnpm-lock.yaml does not`,
+        ),
+      ...Object.entries(rootEdges[kind])
+        .filter(([child]) => edges[kind][child] === undefined)
+        .map(
+          ([child, reference]) =>
+            `${key} lacks its dependency ${child}@${reference}${label} from pnpm-lock.yaml`,
+        ),
+    ];
+  });
+
+/**
+ * A stage must install exactly what the root lockfile pins: its direct dependencies
+ * at the source importers' references, and every package, snapshot (peer and patch
+ * variant included), dependency edge and patch as the root lockfile records them.
+ */
+export function findStageLockfileDrift(
+  rootGraph: PnpmLockfileGraph,
+  stage: PnpmLockfileGraph,
+  sourceImporters: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  const root = stagedRootGraph(rootGraph);
+  const drift: string[] = [];
+  for (const [name, reference] of Object.entries(stage.importers.get(".") ?? {})) {
+    if (/^(?:link|file):/u.test(reference)) {
+      drift.push(`${name} installs from a local path (${reference})`);
+      continue;
+    }
+    const pinned = rootDirectReference(root, sourceImporters, name);
+    if (pinned === undefined) {
+      drift.push(
+        `${name} is not a dependency of ${sourceImporters.join(" or ")} in pnpm-lock.yaml`,
+      );
+    } else if (pinned !== reference) {
+      drift.push(`${name} resolved to ${reference}, but pnpm-lock.yaml pins ${pinned}`);
+    }
+  }
+  for (const [key, resolution] of stage.resolutions) {
+    const rootResolution = rootGraph.resolutions.get(key);
+    if (rootResolution === undefined) {
+      drift.push(`${key} is not in pnpm-lock.yaml`);
+    } else if (!sameResolution(resolution, rootResolution)) {
+      drift.push(`${key} resolves to a different tarball than pnpm-lock.yaml`);
+    }
+  }
+  for (const [key, edges] of stage.snapshots) {
+    const variants = root.snapshots.get(key);
+    if (variants === undefined) {
+      // A package the root lockfile lacks altogether is reported with the resolutions.
+      if (rootGraph.resolutions.has(withoutPeerSuffix(key))) {
+        drift.push(`${key} is a peer or patch variant pnpm-lock.yaml does not have`);
+      }
+      continue;
+    }
+    drift.push(
+      ...variants
+        .map((rootEdges) => differingEdges(key, edges, rootEdges))
+        .reduce((best, differing) => (differing.length < best.length ? differing : best)),
+    );
+  }
+  for (const [key, hash] of stage.patchHashes) {
+    if (rootGraph.patchHashes.get(key) !== hash) {
+      drift.push(`the patch for ${key} differs from pnpm-lock.yaml`);
+    }
+  }
+  return drift;
+}
+
+/** Installs a staged manifest at the root lockfile's versions, so releases never resolve fresh. */
+export const installStagedDependencies = Effect.fn("installStagedDependencies")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageDir: string;
+  readonly label: string;
+  /** The root lockfile importers whose dependencies the stage installs, in the order the stage merged them. */
+  readonly sourceImporters: ReadonlyArray<string>;
+  readonly verbose: boolean;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const rootLockfile = yield* fs.readFileString(path.join(input.repoRoot, "pnpm-lock.yaml"));
+  const stageLockfilePath = path.join(input.stageDir, "pnpm-lock.yaml");
+  // A seeded lockfile makes pnpm keep the root's resolutions and prune the rest.
+  yield* fs.writeFileString(stageLockfilePath, rootLockfile);
+  yield* runStageVp(input, STAGE_LOCKFILE_ARGS);
+  const drift = findStageLockfileDrift(
+    yield* readPnpmLockfileGraph(rootLockfile),
+    yield* readPnpmLockfileGraph(yield* fs.readFileString(stageLockfilePath)),
+    input.sourceImporters,
+  );
+  if (drift.length > 0) {
+    return yield* new StageLockfileDriftError({ stage: input.label, drift: [...drift] });
+  }
+  yield* runStageVp(input, STAGE_INSTALL_ARGS);
+});
+
+const runStageVp = Effect.fn("runStageVp")(function* (
+  stage: { readonly stageDir: string; readonly label: string; readonly verbose: boolean },
+  args: ReadonlyArray<string>,
+) {
+  const command = yield* resolveSpawnCommand("vp", [...args]);
+  yield* runCommand(
+    ChildProcess.make(command.command, command.args, {
+      cwd: stage.stageDir,
+      shell: command.shell,
+      // Install scripts run here; whichever step installs, they see no signing, notarization or
+      // registry credential.
+      env: stageInstallEnv(process.env),
+      extendEnv: false,
+    }),
+    { label: `vp ${args.join(" ")} (${stage.label})`, verbose: stage.verbose },
+  );
+});
 
 const AzureTrustedSigningOptionsConfig = Config.all({
   publisherName: Config.String("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"),
@@ -1709,6 +2137,9 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   }
 
   const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
+  if (platform === "mac" && MAC_APP_STORE_TARGETS.has(target)) {
+    return yield* new UnsupportedDesktopBuildTargetError({ platform, target });
+  }
   const defaultArch = yield* getDefaultArch(platform);
   const arch = mergeOptions(input.arch, env.arch, defaultArch);
   const supportedArchitectures = PLATFORM_CONFIG[platform].archChoices;
@@ -1748,6 +2179,26 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const wslRuntime =
     Option.getOrUndefined(input.wslRuntime) ?? Option.getOrUndefined(env.wslRuntime);
 
+  const phase = Option.getOrElse(input.phase, (): StagePhase => "all");
+  const stageDir = Option.getOrUndefined(
+    Option.map(input.stageDir, (dir) => path.resolve(repoRoot, dir)),
+  );
+  if (phase !== "all" && stageDir === undefined) {
+    return yield* new StageDirRequiredError({ phase });
+  }
+  if (phase === "stage") {
+    const packagingOption = signed
+      ? "--signed"
+      : mockUpdates
+        ? "--mock-updates"
+        : wslRuntime !== undefined
+          ? "--wsl-runtime"
+          : undefined;
+    if (packagingOption) {
+      return yield* new DesktopStagePhaseOptionError({ option: packagingOption });
+    }
+  }
+
   return {
     platform,
     target,
@@ -1761,6 +2212,8 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     mockUpdates,
     mockUpdateServerPort,
     wslRuntime,
+    phase,
+    stageDir,
   } satisfies ResolvedBuildOptions;
 });
 
@@ -2021,24 +2474,31 @@ function windowsVswherePrerequisiteScript(arch: typeof BuildArch.Type): string {
 }
 
 export const preflightWindowsDesktopBuild = Effect.fn("preflightWindowsDesktopBuild")(
-  function* (input: { readonly arch: typeof BuildArch.Type; readonly bundlesWslRuntime: boolean }) {
+  function* (input: {
+    readonly arch: typeof BuildArch.Type;
+    readonly phase: StagePhase;
+    readonly bundlesWslRuntime: boolean;
+  }) {
     const rustTarget = resolveResourceMonitorRustTargets("win", input.arch)[0]!;
-    const reuseResourceMonitor = yield* Config.Boolean(
-      "T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR",
-    ).pipe(Config.withDefault(false));
-    const python = yield* resolvePythonForNodeGyp();
+    // Packaging builds and installs nothing; it only reads the bundled WSL runtime.
+    const stages = input.phase !== "package";
+    const buildsResourceMonitor =
+      stages &&
+      !(yield* Config.Boolean("T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR").pipe(
+        Config.withDefault(false),
+      ));
+    const hasPython = !stages || (yield* resolvePythonForNodeGyp()) !== undefined;
     const checks = yield* Effect.all(
       {
-        rust: reuseResourceMonitor
-          ? Effect.succeed(true)
-          : Effect.all([
+        rust: buildsResourceMonitor
+          ? Effect.all([
               desktopBuildProbeSucceeds(ChildProcess.make("cargo", ["--version"]), "cargo"),
               rustTargetIsInstalled(rustTarget),
-            ]).pipe(Effect.map(([cargo, target]) => cargo && target)),
-        python: Effect.succeed(python !== undefined),
-        msvc: reuseResourceMonitor
-          ? Effect.succeed(true)
-          : desktopBuildProbeSucceeds(
+            ]).pipe(Effect.map(([cargo, target]) => cargo && target))
+          : Effect.succeed(true),
+        python: Effect.succeed(hasPython),
+        msvc: buildsResourceMonitor
+          ? desktopBuildProbeSucceeds(
               ChildProcess.make("powershell.exe", [
                 "-NoLogo",
                 "-NoProfile",
@@ -2047,7 +2507,8 @@ export const preflightWindowsDesktopBuild = Effect.fn("preflightWindowsDesktopBu
                 windowsVswherePrerequisiteScript(input.arch),
               ]),
               "Visual Studio Build Tools",
-            ),
+            )
+          : Effect.succeed(true),
         tar: input.bundlesWslRuntime
           ? desktopBuildProbeSucceeds(ChildProcess.make("tar.exe", ["--version"]), "tar")
           : Effect.succeed(true),
@@ -2259,13 +2720,14 @@ export const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBund
     yield* runCommand(
       ChildProcess.make(
         process.execPath,
-        // Clearing NODE_PATH leaves CommonJS global fallbacks; disable them so host packages cannot satisfy missing dependencies.
+        // The probe env has no NODE_PATH, but CommonJS still has global fallbacks; disable them so host packages cannot satisfy missing dependencies.
         ["--no-global-search-paths", entryPoint, "--version"],
         {
           cwd: probeApp,
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, NODE_PATH: "" },
+          env: packagedProbeEnv(process.env),
+          extendEnv: false,
         },
       ),
       {
@@ -2790,6 +3252,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
+    // Native addons ship N-API prebuilds the staged install already placed. A rebuild would
+    // compile sources while signing credentials are loaded, and shadow the prebuilds.
+    npmRebuild: false,
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
@@ -2980,7 +3445,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "win") {
-    buildConfig.npmRebuild = false;
     buildConfig.nsis = {
       differentialPackage: true,
       include: "apps/desktop/resources/installer.nsh",
@@ -3058,6 +3522,107 @@ export const stageWslRuntimeArchive = Effect.fn("stageWslRuntimeArchive")(functi
   );
 });
 
+export const ELECTRON_DIST_DIR = "electron-dist";
+const ELECTRON_PLATFORM_NAMES = {
+  mac: "darwin",
+  linux: "linux",
+  win: "win32",
+} as const satisfies Record<typeof BuildPlatform.Type, string>;
+const decodeElectronPackageManifest = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+);
+const decodeElectronChecksums = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+);
+
+export class ElectronDistStageError extends Schema.TaggedError<ElectronDistStageError>()(
+  "ElectronDistStageError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return `Cannot stage Electron for packaging: ${this.detail}`;
+  }
+}
+
+const downloadElectronArchive = (verbose: boolean) =>
+  Effect.fn("downloadElectronArchive")(function* (
+    version: string,
+    archiveName: string,
+    destination: string,
+  ) {
+    // electron-builder honored this mirror when it downloaded Electron itself.
+    const mirror = yield* Config.String("ELECTRON_MIRROR").pipe(
+      Config.withDefault("https://github.com/electron/electron/releases/download"),
+    );
+    const url = `${mirror.replace(/\/+$/, "")}/v${version}/${archiveName}`;
+    yield* runCommand(
+      ChildProcess.make("curl", [
+        "-fsSL",
+        "--retry",
+        "3",
+        "--retry-all-errors",
+        "--connect-timeout",
+        "30",
+        "--max-time",
+        "600",
+        url,
+        "-o",
+        destination,
+      ]),
+      { label: `curl ${url}`, verbose },
+    );
+  });
+
+/**
+ * Packaging unpacks these zips (electronDist) instead of downloading Electron while signing
+ * credentials are loaded. The digests ship inside the electron package the root lockfile pins.
+ */
+export const stageElectronDist = Effect.fn("stageElectronDist")(function* (input: {
+  readonly electronPackageDir: string;
+  readonly version: string;
+  readonly platform: typeof BuildPlatform.Type;
+  readonly arch: typeof BuildArch.Type;
+  readonly distDir: string;
+  readonly download: ReturnType<typeof downloadElectronArchive>;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const installed = yield* decodeElectronPackageManifest(
+    yield* fs.readFileString(path.join(input.electronPackageDir, "package.json")),
+  );
+  if (installed.version !== input.version) {
+    return yield* new ElectronDistStageError({
+      detail: `apps/desktop pins electron ${input.version}, but ${input.electronPackageDir} holds ${installed.version}. Run vp i.`,
+    });
+  }
+  const checksums = yield* decodeElectronChecksums(
+    yield* fs.readFileString(path.join(input.electronPackageDir, "checksums.json")),
+  );
+  yield* fs.makeDirectory(input.distDir, { recursive: true });
+  // electron-builder unpacks each architecture of a universal app from its own zip.
+  for (const arch of input.arch === "universal" ? (["x64", "arm64"] as const) : [input.arch]) {
+    const archiveName = `electron-v${input.version}-${ELECTRON_PLATFORM_NAMES[input.platform]}-${arch}.zip`;
+    const expected = checksums[archiveName];
+    if (expected === undefined) {
+      return yield* new ElectronDistStageError({
+        detail: `electron/checksums.json has no SHA-256 for ${archiveName}.`,
+      });
+    }
+    const archivePath = path.join(input.distDir, archiveName);
+    yield* input.download(input.version, archiveName, archivePath);
+    const hash = NodeCrypto.createHash("sha256");
+    yield* fs
+      .stream(archivePath)
+      .pipe(Stream.runForEach((chunk) => Effect.sync(() => hash.update(chunk))));
+    const actual = hash.digest("hex");
+    if (actual !== expected) {
+      return yield* new ElectronDistStageError({
+        detail: `${archiveName} has SHA-256 ${actual}, but electron/checksums.json lists ${expected}.`,
+      });
+    }
+  }
+});
+
 // Match cliArchiveStem without its circular import. WSL uses the Windows host's architecture.
 export const wslRuntimeArchiveStem = (version: string, arch: typeof BuildArch.Type): string =>
   `t3-${version}-linux-${arch}`;
@@ -3123,9 +3688,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   readonly appVersion: string;
   readonly runtimeExternalDependencies: Record<string, string>;
   readonly fffNodeVersion: string;
-  readonly allowBuilds: Record<string, boolean>;
-  readonly patchedDependencies: Record<string, string>;
-  readonly overrides: Record<string, string>;
+  readonly workspace: WorkspaceConfig;
   readonly asarPath: string;
   readonly verbose: boolean;
 }) {
@@ -3140,10 +3703,6 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     ...input.runtimeExternalDependencies,
     ...resolveFffNativeDependencies("win", input.arch, input.fffNodeVersion),
   };
-  const sidecarPatchedDependencies = createStagePatchedDependencies(
-    input.patchedDependencies,
-    sidecarDependencies,
-  );
   const sidecarPackageJson = {
     name: "t3code-server",
     version: input.appVersion,
@@ -3156,35 +3715,24 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     path.join(serverStageDir, "package.json"),
     `${sidecarPackageJsonString}\n`,
   );
-  const sidecarWorkspaceConfig = {
-    ...createStageWorkspaceConfig({
-      platform: "win",
-      arch: input.arch,
-      allowBuilds: input.allowBuilds,
-      patchedDependencies: sidecarPatchedDependencies,
-      overrides: input.overrides,
-    }),
-    // server.asar cannot carry pnpm symlinks or junctions; install physical hoisted dependencies.
-    nodeLinker: "hoisted" as const,
-  };
-  const sidecarWorkspaceConfigString = yield* encodeStageWorkspaceConfig(sidecarWorkspaceConfig);
-  yield* fs.writeFileString(
-    path.join(serverStageDir, "pnpm-workspace.yaml"),
-    sidecarWorkspaceConfigString,
-  );
-  if (Object.keys(sidecarPatchedDependencies).length > 0) {
-    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(serverStageDir, "patches"));
-  }
+  // server.asar cannot carry pnpm symlinks or junctions; install physical hoisted dependencies.
+  yield* writeStageWorkspace({
+    repoRoot: input.repoRoot,
+    stageDir: serverStageDir,
+    platform: "win",
+    arch: input.arch,
+    workspace: input.workspace,
+    nodeLinker: "hoisted",
+  });
 
   yield* Effect.log("[desktop-artifact] Installing server sidecar runtime externals...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(installCommand.command, installCommand.args, {
-      cwd: serverStageDir,
-      shell: installCommand.shell,
-    }),
-    { label: "vp install --prod (server sidecar)", verbose: input.verbose },
-  );
+  yield* installStagedDependencies({
+    repoRoot: input.repoRoot,
+    stageDir: serverStageDir,
+    label: "server sidecar",
+    sourceImporters: ["apps/server"],
+    verbose: input.verbose,
+  });
 
   yield* Effect.log("[desktop-artifact] Packing server.asar...");
   yield* fs.makeDirectory(path.dirname(input.asarPath), { recursive: true });
@@ -3267,10 +3815,6 @@ export const verifyWindowsPrimaryFffNativeLoad = Effect.fn(
     prefix: "t3code-windows-primary-native-probe-",
   });
   const fffEntryPath = path.join(input.asarPath, "node_modules/@ff-labs/fff-node/dist/index.js");
-  const probeEnv = { ...process.env };
-  delete probeEnv.ELECTRON_NO_ASAR;
-  delete probeEnv.NODE_OPTIONS;
-
   yield* runCommand(
     ChildProcess.make(
       executablePath,
@@ -3286,11 +3830,8 @@ export const verifyWindowsPrimaryFffNativeLoad = Effect.fn(
         cwd: input.packagedAppDir,
         stdout: "pipe",
         stderr: "pipe",
-        env: {
-          ...probeEnv,
-          ELECTRON_RUN_AS_NODE: "1",
-          NODE_PATH: "",
-        },
+        env: packagedProbeEnv(process.env, { ELECTRON_RUN_AS_NODE: "1" }),
+        extendEnv: false,
       },
     ),
     {
@@ -3633,40 +4174,71 @@ export const validateLinuxPackagedPayload = Effect.fn(
   );
 });
 
-const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(function* (
+// The stage marker carries the version, so both phases resolve it the same way.
+const desktopAppVersion = (options: ResolvedBuildOptions, repoRoot: string) =>
+  options.version ?? resolveTaggedSourceVersion(repoRoot, serverPackageJson.version);
+
+const preflightDesktopBuild = Effect.fn("preflightDesktopBuild")(function* (
   options: ResolvedBuildOptions,
 ) {
-  const repoRoot = yield* RepoRoot;
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcess.Platform;
-  if (hostPlatform === "linux" && options.platform === "linux") {
+  // The Linux and macOS checks cover only tools the stage phase uses.
+  const stages = options.phase !== "package";
+  if (stages && hostPlatform === "linux" && options.platform === "linux") {
     yield* preflightLinuxDesktopBuild(options.arch);
   }
-  if (hostPlatform === "darwin" && options.platform === "mac") {
+  if (stages && hostPlatform === "darwin" && options.platform === "mac") {
     yield* preflightMacDesktopBuild(options.arch);
   }
   if (hostPlatform === "win32" && options.platform === "win") {
     yield* preflightWindowsDesktopBuild({
       arch: options.arch,
+      phase: options.phase,
       bundlesWslRuntime: bundlesWslRuntime({
         platform: options.platform,
         runtimeArchivePath: options.wslRuntime,
       }),
     });
   }
+});
+
+const desktopStageMarker = Effect.fn("desktopStageMarker")(function* (
+  options: ResolvedBuildOptions,
+  appVersion: string,
+) {
+  return {
+    platform: options.platform,
+    arch: options.arch,
+    target: options.target,
+    version: appVersion,
+    ...(yield* stageCommitMarker(options.phase, yield* RepoRoot)),
+  };
+});
+
+const resolveDesktopStageRoot = Effect.fn("resolveDesktopStageRoot")(function* (
+  options: ResolvedBuildOptions,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (options.stageDir === undefined) {
+    const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
+    return yield* mkdir({ prefix: `t3code-desktop-${options.platform}-stage-` });
+  }
+  if (options.phase !== "package") {
+    yield* prepareStageDir(options.stageDir);
+  }
+  return options.stageDir;
+});
+
+/** Builds and installs everything that ships; runs without signing credentials. */
+const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
+  options: ResolvedBuildOptions,
+  stageRoot: string,
+) {
+  const repoRoot = yield* RepoRoot;
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
   const workspaceConfig = yield* readWorkspaceConfig();
   const workspaceCatalog = workspaceConfig.catalog ?? {};
-  const workspaceOverrides = workspaceConfig.overrides ?? {};
-  const workspacePatchedDependencies = workspaceConfig.patchedDependencies ?? {};
-  const workspaceAllowBuilds = workspaceConfig.allowBuilds ?? {};
-
-  const platformConfig = PLATFORM_CONFIG[options.platform];
-  if (!platformConfig) {
-    return yield* new UnsupportedDesktopBuildPlatformError({
-      platform: options.platform,
-    });
-  }
 
   const electronVersion = desktopPackageJson.dependencies.electron;
 
@@ -3676,16 +4248,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       manifestPath: "apps/server/package.json",
     });
   }
-
-  const resolvedOverrides = yield* Effect.try({
-    try: () => resolveCatalogDependencies(workspaceOverrides, workspaceCatalog, "apps/desktop"),
-    catch: (cause) =>
-      new DesktopBuildDependencyResolutionError({
-        kind: "workspace-overrides",
-        manifestPath: "pnpm-workspace.yaml",
-        cause,
-      }),
-  });
 
   const resolvedServerDependencies = yield* Effect.try({
     try: () => resolveCatalogDependencies(serverDependencies, workspaceCatalog, "apps/server"),
@@ -3709,14 +4271,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       }),
   });
 
-  const appVersion =
-    options.version ?? resolveTaggedSourceVersion(repoRoot, serverPackageJson.version);
+  const appVersion = desktopAppVersion(options, repoRoot);
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
-  const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
-  const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
-  });
 
   const stageAppDir = path.join(stageRoot, "app");
   const stageResourcesDir = path.join(stageAppDir, "apps/desktop/resources");
@@ -3871,6 +4428,122 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
+  const stageDependencies =
+    options.platform === "win"
+      ? { ...resolvedDesktopRuntimeDependencies }
+      : resolveMergedStageDependencies({
+          platform: options.platform,
+          serverDependencies: resolvedServerDependencies,
+          desktopDependencies: resolvedDesktopRuntimeDependencies,
+          arch: options.arch,
+          fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
+        });
+  const windowsServerAsarPath =
+    options.platform === "win"
+      ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
+      : undefined;
+  const stagePackageJson: StagePackageJson = {
+    name: "t3code",
+    version: appVersion,
+    buildVersion: appVersion,
+    t3codeCommitHash: commitHash,
+    private: true,
+    packageManager: rootPackageJson.packageManager,
+    description:
+      "T3.CodeShip is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+    license: "MIT",
+    homepage: "https://t3.codes",
+    author: "T3 Tools",
+    main: "apps/desktop/dist-electron/boot.cjs",
+    dependencies: stageDependencies,
+    devDependencies: {
+      electron: electronVersion,
+    },
+  };
+
+  const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
+  yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
+  yield* writeStageWorkspace({
+    repoRoot,
+    stageDir: stageAppDir,
+    platform: options.platform,
+    arch: options.arch,
+    workspace: workspaceConfig,
+  });
+
+  yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
+  yield* installStagedDependencies({
+    repoRoot,
+    stageDir: stageAppDir,
+    label: "desktop app",
+    // A merged stage lets the desktop's dependencies win over the server's (resolveMergedStageDependencies).
+    sourceImporters:
+      options.platform === "win" ? ["apps/desktop"] : ["apps/desktop", "apps/server"],
+    verbose: options.verbose,
+  });
+  yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
+  yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
+
+  if (options.platform === "win" && windowsServerAsarPath) {
+    yield* stageWindowsServerSidecar({
+      stageRoot,
+      repoRoot,
+      serverDistDir: distDirs.serverDist,
+      arch: options.arch,
+      appVersion,
+      runtimeExternalDependencies: resolvedServerRuntimeExternalDependencies,
+      fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
+      workspace: workspaceConfig,
+      asarPath: windowsServerAsarPath,
+      verbose: options.verbose,
+    });
+  }
+  yield* stageCursorSdkPlatformPackages(
+    path.join(
+      options.platform === "win" ? path.join(stageRoot, "server") : stageAppDir,
+      "node_modules",
+    ),
+    path.join(stageProdResourcesDir, "cursor-sdk"),
+  );
+  const electronPackageDir = yield* Effect.try({
+    try: () =>
+      path.dirname(
+        NodeModule.createRequire(path.join(repoRoot, "apps/desktop/package.json")).resolve(
+          "electron/package.json",
+        ),
+      ),
+    catch: () =>
+      new ElectronDistStageError({
+        detail: "apps/desktop cannot resolve the electron package. Run vp i.",
+      }),
+  });
+  yield* stageElectronDist({
+    electronPackageDir,
+    version: electronVersion,
+    platform: options.platform,
+    arch: options.arch,
+    distDir: path.join(stageRoot, ELECTRON_DIST_DIR),
+    download: downloadElectronArchive(options.verbose),
+  });
+  yield* markStageComplete(stageRoot, yield* desktopStageMarker(options, appVersion));
+});
+
+/** Signs and packages a finished stage; the only phase that reads signing credentials. */
+const packageDesktopApp = Effect.fn("packageDesktopApp")(function* (
+  options: ResolvedBuildOptions,
+  stageRoot: string,
+) {
+  const repoRoot = yield* RepoRoot;
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const hostPlatform = yield* HostProcess.Platform;
+  const appVersion = desktopAppVersion(options, repoRoot);
+  yield* requireCompletedStage(stageRoot, yield* desktopStageMarker(options, appVersion));
+  const stageAppDir = path.join(stageRoot, "app");
+  const stageDistDir = path.join(stageAppDir, "dist");
+  // A retried package phase must not copy what an earlier attempt left in dist.
+  yield* fs.remove(stageDistDir, { recursive: true, force: true });
+
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
@@ -3910,117 +4583,44 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     );
   }
 
-  const stageDependencies =
-    options.platform === "win"
-      ? { ...resolvedDesktopRuntimeDependencies }
-      : resolveMergedStageDependencies({
-          platform: options.platform,
-          serverDependencies: resolvedServerDependencies,
-          desktopDependencies: resolvedDesktopRuntimeDependencies,
-          arch: options.arch,
-          fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
-        });
-  const stagePatchedDependencies = createStagePatchedDependencies(
-    workspacePatchedDependencies,
-    stageDependencies,
+  const stagePackageJsonPath = path.join(stageAppDir, "package.json");
+  const stagedPackageJson = yield* decodeReleasePackageManifest(
+    yield* fs.readFileString(stagePackageJsonPath),
   );
-  const windowsServerAsarPath =
-    options.platform === "win"
-      ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
-      : undefined;
-  const stagePackageJson: StagePackageJson = {
-    name: "t3code",
-    version: appVersion,
-    buildVersion: appVersion,
-    t3codeCommitHash: commitHash,
+  // Undefined fields drop out of the JSON, which also clears what an earlier attempt wrote.
+  const packagedPackageJson = {
+    ...stagedPackageJson,
     // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
-    ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
+    t3codeWebAuthn: macWebAuthn,
     // Read by apps/desktop/src/app/DesktopClerk.ts; self-signed and ad hoc builds have no Team ID.
-    ...(options.platform === "mac" ? { t3codeAppleTeamSigned: options.signed } : {}),
-    private: true,
-    packageManager: rootPackageJson.packageManager,
-    description:
-      "T3.CodeShip is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
-    license: "MIT",
-    homepage: "https://t3.codes",
-    author: "T3 Tools",
-    main: "apps/desktop/dist-electron/boot.cjs",
-    build: yield* createBuildConfig(
-      options.platform,
-      options.target,
-      appVersion,
-      options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
-      macPasskeySigning && macEntitlementsPath
-        ? {
-            entitlementsPath: macEntitlementsPath,
-            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-          }
-        : undefined,
-      bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
-      options.arch,
-    ),
-    dependencies: stageDependencies,
-    devDependencies: {
-      electron: electronVersion,
+    t3codeAppleTeamSigned: options.platform === "mac" ? options.signed : undefined,
+    build: {
+      ...(yield* createBuildConfig(
+        options.platform,
+        options.target,
+        appVersion,
+        options.signed,
+        options.mockUpdates,
+        options.mockUpdateServerPort,
+        macPasskeySigning && macEntitlementsPath
+          ? {
+              entitlementsPath: macEntitlementsPath,
+              provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+            }
+          : undefined,
+        bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
+        options.arch,
+      )),
+      // The zips the stage verified; without them electron-builder downloads Electron here.
+      electronDist: path.join(stageRoot, ELECTRON_DIST_DIR),
+      afterExtract: path.join(repoRoot, "scripts/electron-after-extract.cjs"),
     },
   };
-
-  const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
-  yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
-  const stageWorkspaceConfig = createStageWorkspaceConfig({
-    platform: options.platform,
-    arch: options.arch,
-    allowBuilds: workspaceAllowBuilds,
-    patchedDependencies: stagePatchedDependencies,
-    overrides: resolvedOverrides,
-  });
-  const stageWorkspaceConfigString = yield* encodeStageWorkspaceConfig(stageWorkspaceConfig);
   yield* fs.writeFileString(
-    path.join(stageAppDir, "pnpm-workspace.yaml"),
-    stageWorkspaceConfigString,
+    stagePackageJsonPath,
+    `${yield* encodeJsonString(packagedPackageJson)}\n`,
   );
 
-  if (Object.keys(stagePatchedDependencies).length > 0) {
-    yield* fs.copy(path.join(repoRoot, "patches"), path.join(stageAppDir, "patches"));
-  }
-
-  yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  const installCommand = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(installCommand.command, installCommand.args, {
-      cwd: stageAppDir,
-      shell: installCommand.shell,
-    }),
-    { label: "vp install --prod", verbose: options.verbose },
-  );
-  yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
-  yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
-
-  if (options.platform === "win" && windowsServerAsarPath) {
-    yield* stageWindowsServerSidecar({
-      stageRoot,
-      repoRoot,
-      serverDistDir: distDirs.serverDist,
-      arch: options.arch,
-      appVersion,
-      runtimeExternalDependencies: resolvedServerRuntimeExternalDependencies,
-      fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
-      allowBuilds: workspaceAllowBuilds,
-      patchedDependencies: workspacePatchedDependencies,
-      overrides: resolvedOverrides,
-      asarPath: windowsServerAsarPath,
-      verbose: options.verbose,
-    });
-  }
-  yield* stageCursorSdkPlatformPackages(
-    path.join(
-      options.platform === "win" ? path.join(stageRoot, "server") : stageAppDir,
-      "node_modules",
-    ),
-    path.join(stageProdResourcesDir, "cursor-sdk"),
-  );
   if (
     options.wslRuntime !== undefined &&
     bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime })
@@ -4091,7 +4691,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     "electron-builder",
     "--projectDir",
     stageAppDir,
-    platformConfig.cliFlag,
+    PLATFORM_CONFIG[options.platform].cliFlag,
     `--${options.arch}`,
     "--publish",
     "never",
@@ -4104,12 +4704,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       shell: builderCommand.shell,
     }),
     {
-      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+      label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${PLATFORM_CONFIG[options.platform].cliFlag} --${options.arch} --publish never`,
       verbose: options.verbose,
     },
   );
 
-  const stageDistDir = path.join(stageAppDir, "dist");
   if (!(yield* fs.exists(stageDistDir))) {
     return yield* new DesktopBuildDistDirectoryMissingError({
       distPath: stageDistDir,
@@ -4167,7 +4766,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
   const repoRoot = yield* RepoRoot;
-  return yield* withDesktopBuildLock(repoRoot, buildDesktopArtifactUnlocked(options));
+  return yield* withDesktopBuildLock(
+    repoRoot,
+    Effect.gen(function* () {
+      yield* preflightDesktopBuild(options);
+      const stageRoot = yield* resolveDesktopStageRoot(options);
+      if (options.phase !== "package") yield* stageDesktopApp(options, stageRoot);
+      if (options.phase !== "stage") yield* packageDesktopApp(options, stageRoot);
+    }),
+  );
 });
 
 export const copyDesktopBuildArtifacts = Effect.fn("copyDesktopBuildArtifacts")(function* (
@@ -4264,6 +4871,18 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   wslRuntime: Flag.String("wsl-runtime").pipe(
     Flag.withDescription(
       "Path to the Linux CLI release archive (t3-<version>-linux-x64.tar.gz) to embed as the WSL runtime of a Windows build (env: T3CODE_DESKTOP_WSL_RUNTIME).",
+    ),
+    Flag.optional,
+  ),
+  phase: Flag.Literals("phase", StagePhase.literals).pipe(
+    Flag.withDescription(
+      "all (default) stages and packages; stage builds and installs without signing; package signs and packages a finished --stage-dir.",
+    ),
+    Flag.optional,
+  ),
+  stageDir: Flag.String("stage-dir").pipe(
+    Flag.withDescription(
+      "Directory the stage phase fills (it must be empty) and the package phase reads. The build never removes it.",
     ),
     Flag.optional,
   ),

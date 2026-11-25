@@ -75,54 +75,57 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmentLive", (it) => {
-  it.effect("publishes proven install ownership only for manually updated servers", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      // Installation checks compare real paths; macOS tmpdir sits behind /var -> /private/var.
-      const baseDir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
-      const prefix = `${baseDir}/node`;
-      const entry = `${prefix}/lib/node_modules/t3/dist/bin.mjs`;
-      yield* fs.makeDirectory(`${prefix}/lib/node_modules/t3/dist`, { recursive: true });
-      yield* fs.makeDirectory(`${prefix}/bin`, { recursive: true });
-      yield* fs.writeFileString(entry, "");
-      yield* fs.writeFileString(
-        `${prefix}/lib/node_modules/t3/package.json`,
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
-      );
-      yield* fs.symlink(entry, `${prefix}/bin/t3`);
-      const config = yield* makeServerConfig(baseDir);
-      yield* fs.makeDirectory(config.stateDir, { recursive: true });
-      for (const mode of ["web", "desktop"] as const) {
-        const descriptor = yield* Effect.gen(function* () {
-          const environment = yield* ServerEnvironment.ServerEnvironment;
-          return yield* environment.getDescriptor;
-        }).pipe(
-          Effect.provide(
-            ServerEnvironment.layer.pipe(
-              Layer.provide(layerEmptySecretStore),
-              Layer.provide(ServerConfig.layer({ ...config, mode })),
+  // npm-global ownership is a POSIX layout; resolveServerInstallation returns null on win32.
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "publishes proven install ownership only for manually updated servers",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        // Installation checks compare real paths; macOS tmpdir sits behind /var -> /private/var.
+        const baseDir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+        const prefix = `${baseDir}/node`;
+        const entry = `${prefix}/lib/node_modules/t3/dist/bin.mjs`;
+        yield* fs.makeDirectory(`${prefix}/lib/node_modules/t3/dist`, { recursive: true });
+        yield* fs.makeDirectory(`${prefix}/bin`, { recursive: true });
+        yield* fs.writeFileString(entry, "");
+        yield* fs.writeFileString(
+          `${prefix}/lib/node_modules/t3/package.json`,
+          '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
+        );
+        yield* fs.symlink(entry, `${prefix}/bin/t3`);
+        const config = yield* makeServerConfig(baseDir);
+        yield* fs.makeDirectory(config.stateDir, { recursive: true });
+        for (const mode of ["web", "desktop"] as const) {
+          const descriptor = yield* Effect.gen(function* () {
+            const environment = yield* ServerEnvironment.ServerEnvironment;
+            return yield* environment.getDescriptor;
+          }).pipe(
+            Effect.provide(
+              ServerEnvironment.layer.pipe(
+                Layer.provide(layerEmptySecretStore),
+                Layer.provide(ServerConfig.layer({ ...config, mode })),
+              ),
             ),
-          ),
-          Effect.provideService(HostProcess.Arguments, ["node", entry]),
-          Effect.provideService(HostProcess.IsExecutable, false),
-          Effect.provideService(HostProcess.Platform, "linux"),
-          Effect.provideService(HostProcess.Environment, {}),
-        );
-        expect(descriptor.capabilities.serverInstallation).toEqual(
-          mode === "web" ? { kind: "npm-global", prefix } : undefined,
-        );
-        expect(descriptor.capabilities.serverSelfUpdate).toBe(
-          mode === "web" ? undefined : "desktop-managed",
-        );
-        expect(descriptor.capabilities).toMatchObject({
-          settledWorktreeCleanup: true,
-          storageCleanupRun: true,
-          projectWorktreeCleanup: true,
-          worktreesDirectory: true,
-          threadAutoSettlementScope: true,
-        });
-      }
-    }),
+            Effect.provideService(HostProcess.Arguments, ["node", entry]),
+            Effect.provideService(HostProcess.IsExecutable, false),
+            Effect.provideService(HostProcess.Platform, "linux"),
+            Effect.provideService(HostProcess.Environment, {}),
+          );
+          expect(descriptor.capabilities.serverInstallation).toEqual(
+            mode === "web" ? { kind: "npm-global", prefix } : undefined,
+          );
+          expect(descriptor.capabilities.serverSelfUpdate).toBe(
+            mode === "web" ? undefined : "desktop-managed",
+          );
+          expect(descriptor.capabilities).toMatchObject({
+            settledWorktreeCleanup: true,
+            storageCleanupRun: true,
+            projectWorktreeCleanup: true,
+            worktreesDirectory: true,
+            threadAutoSettlementScope: true,
+          });
+        }
+      }),
   );
   it.effect.each([
     { desktopAppUpdate: false, advertised: undefined },

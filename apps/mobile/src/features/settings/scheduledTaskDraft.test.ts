@@ -119,6 +119,18 @@ describe("task group in the draft", () => {
   });
 });
 
+it("keeps a duplicated description and detects description-only edits", () => {
+  const task = {
+    title: "Triage",
+    description: "Queue health",
+    schedule: { type: "interval", everyMs: 60_000 },
+    workspaceStrategy: { type: "root" },
+  } as unknown as ScheduledTask;
+  const draft = editDraft(task);
+  expect(duplicateDraft(task, "Copy").description).toBe("Queue health");
+  expect(hasScheduledTaskDraftChanges(draft, { ...draft, description: "" })).toBe(true);
+});
+
 describe("scheduleFromDraft", () => {
   it("rejects an empty day selection rather than silently scheduling every day", () => {
     expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [] })).toBeNull();

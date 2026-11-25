@@ -34,6 +34,7 @@ import {
   type CodexRateLimitSnapshot,
 } from "../../provider/codexUsageLimits.ts";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   CodexSettings,
   defaultInstanceIdForDriver,
   isOrchestrationV2WorkActive,
@@ -152,8 +153,9 @@ import {
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { backgroundWorkNotification } from "@t3tools/provider-core/server/notification";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
+  MODEL_NOT_SUPPORTED_FAILURE_CODE,
   makeProviderFailure,
+  modelHoldScope,
   makeProviderFailureTurnItem,
   makeProviderRetryTurnItem,
   PROVIDER_RETRY_BUDGET_MS,
@@ -1301,25 +1303,42 @@ const codexSignedOutFailure = () =>
     class: "provider_error",
   });
 
+/** Codex names the refused model in this 400, so the hold needs no model from the turn. */
+const CODEX_MODEL_NOT_SUPPORTED = /The '([^']+)' model is not supported when using Codex/;
+
+function codexModelNotSupportedFailure(message: string | undefined) {
+  const model = message === undefined ? undefined : CODEX_MODEL_NOT_SUPPORTED.exec(message)?.[1];
+  return model === undefined
+    ? undefined
+    : makeProviderFailure({
+        message,
+        code: MODEL_NOT_SUPPORTED_FAILURE_CODE,
+        class: "provider_error",
+        modelScope: modelHoldScope(model),
+      });
+}
+
 function codexTurnFailure(
   error: Partial<CodexSchema.ServerNotification__TurnError>,
   retryable?: true,
   nativeError: unknown = error,
 ): OrchestrationV2ProviderFailure {
   const code = codexErrorInfoCode(error.codexErrorInfo);
+  const details = error.additionalDetails?.trim() || error.message;
   return withCodexManagedFailure(
     // Codex retries a refused login before giving up, so only the final failure is a sign-out.
     retryable === undefined && isCodexLoginRejected(error)
       ? codexSignedOutFailure()
-      : makeProviderFailure({
-          message: error.additionalDetails?.trim() || error.message,
-          code,
-          class:
-            retryable && (code?.startsWith("http") || code?.startsWith("responseStream"))
-              ? "transport_error"
-              : codexTerminalFailureClass(error.codexErrorInfo, code),
-          ...(retryable === undefined ? {} : { retryable }),
-        }),
+      : (codexModelNotSupportedFailure(details) ??
+          makeProviderFailure({
+            message: details,
+            code,
+            class:
+              retryable && (code?.startsWith("http") || code?.startsWith("responseStream"))
+                ? "transport_error"
+                : codexTerminalFailureClass(error.codexErrorInfo, code),
+            ...(retryable === undefined ? {} : { retryable }),
+          })),
     nativeError,
   );
 }
@@ -5760,6 +5779,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     yield* continuationRequests.offer({
                       threadId: context.projectionThreadId,
                       providerThreadId: context.providerThread.id,
+                      ...(context.projectionRunId === null
+                        ? {}
+                        : { demandSourceRunId: context.projectionRunId }),
                       driver: CODEX_PROVIDER,
                       // Codex starts a new turn from this text, so nothing is buffered.
                       delivery: "message_text",
@@ -7158,6 +7180,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   yield* continuationRequests.offer({
                     threadId: parent.projectionThreadId,
                     providerThreadId: parent.providerThread.id,
+                    ...(parent.projectionRunId === null
+                      ? {}
+                      : { demandSourceRunId: parent.projectionRunId }),
                     driver: CODEX_PROVIDER,
                     detail: codexNativeSubagentDetail(task),
                     // The detail is the whole wake; Codex buffers no output for it.

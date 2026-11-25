@@ -6,6 +6,8 @@ import {
   ProjectId,
   ScheduledTask,
   ScheduledTaskChangedBy,
+  ScheduledTaskDescription,
+  MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   ScheduledTaskSharing,
   ScheduledTaskOneMachineDecision,
   ScheduledTaskProjectMachineOrder,
@@ -65,6 +67,7 @@ import {
   type ScheduledTaskReorderPinnedResult,
   type ScheduledTaskSetPlacementInput,
   type ScheduledTaskSetPlacementResult,
+  type ScheduledTaskSetGroupInput,
   type ScheduledTaskSetGroupPausedInput,
   type ScheduledTaskSetGroupPausedResult,
   type ServerSettings as ServerSettingsValue,
@@ -77,7 +80,6 @@ import {
   scheduledTaskThreadMode,
   managedRuntimeModeDenial,
   sameThreadFolder,
-  type ThreadFolder,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -332,6 +334,12 @@ const webhookDedupe = (signature: UpsertWebhookSignature, dedupe: WebhookDedupe)
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeRunRecord = Schema.decodeUnknownOption(ScheduledTaskRunRecord);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
+const decodeDescription = Schema.decodeUnknownEffect(
+  Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
+);
+const DescriptionJson = Schema.fromJsonString(Schema.NullOr(ScheduledTaskDescription));
+const decodeDescriptionJson = Schema.decodeUnknownEffect(DescriptionJson);
+const encodeDescriptionJson = Schema.encodeSync(DescriptionJson);
 const decodeScheduleJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.schedule),
 );
@@ -341,6 +349,11 @@ const decodeWorkspaceStrategyJson = Schema.decodeUnknownEffect(
 const decodeModelSelectionJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.modelSelection),
 );
+const FallbackModelSelectionsJson = Schema.fromJsonString(
+  Schema.Array(ScheduledTask.fields.modelSelection),
+);
+const encodeFallbackModelSelectionsJson = Schema.encodeSync(FallbackModelSelectionsJson);
+const decodeFallbackModelSelectionsJson = Schema.decodeUnknownEffect(FallbackModelSelectionsJson);
 const decodeSharedProjectJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTaskSharing.fields.project),
 );
@@ -409,6 +422,7 @@ function resolveThreadMode(
 interface ScheduledTaskRow {
   readonly task_id: string;
   readonly title: string;
+  readonly description_json: string | null;
   readonly prompt: string;
   readonly enabled: number;
   readonly schedule_json: string;
@@ -417,6 +431,7 @@ interface ScheduledTaskRow {
   readonly thread_mode: string;
   readonly workspace_strategy_json: string;
   readonly model_selection_json: string;
+  readonly fallback_model_selections_json: string | null;
   readonly runtime_mode: string;
   readonly interaction_mode: string;
   readonly created_by: string;
@@ -571,7 +586,7 @@ export class ScheduledTaskService extends Context.Service<
      * It never turns a task on or off or runs it.
      */
     readonly setGroup: (
-      input: { readonly id: ScheduledTaskId; readonly group: ThreadFolder | null },
+      input: ScheduledTaskSetGroupInput,
       by: ScheduledTaskChanger,
     ) => Effect.Effect<void, ScheduledTaskError>;
     readonly reorderPinned: (
@@ -862,6 +877,9 @@ const decodeRow = Effect.fnUntraced(
     return yield* decodeTask({
       id: row.task_id,
       title: row.title,
+      ...(row.description_json === null
+        ? {}
+        : { description: yield* decodeDescriptionJson(row.description_json) }),
       prompt: row.prompt,
       enabled: row.enabled === 1,
       schedule,
@@ -870,6 +888,13 @@ const decodeRow = Effect.fnUntraced(
       threadMode: row.thread_mode,
       workspaceStrategy,
       modelSelection,
+      ...(row.fallback_model_selections_json == null
+        ? {}
+        : {
+            fallbackModelSelections: yield* decodeFallbackModelSelectionsJson(
+              row.fallback_model_selections_json,
+            ),
+          }),
       runtimeMode: row.runtime_mode,
       interactionMode: row.interaction_mode,
       createdBy: row.created_by,
@@ -1285,6 +1310,10 @@ export const layer = Layer.effect(
         changed_by_json TEXT NOT NULL
       )
     `;
+    const taskColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_tasks)`;
+    if (!taskColumns.some((column) => column.name === "fallback_model_selections_json")) {
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN fallback_model_selections_json TEXT`;
+    }
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
@@ -1442,6 +1471,7 @@ export const layer = Layer.effect(
       SELECT
         task_id,
         title,
+        description_json,
         prompt,
         enabled,
         schedule_json,
@@ -1450,6 +1480,7 @@ export const layer = Layer.effect(
         thread_mode,
         workspace_strategy_json,
         model_selection_json,
+        fallback_model_selections_json,
         runtime_mode,
         interaction_mode,
         created_by,
@@ -1552,6 +1583,7 @@ export const layer = Layer.effect(
       SELECT
         task_id,
         title,
+        description_json,
         prompt,
         enabled,
         schedule_json,
@@ -1560,6 +1592,7 @@ export const layer = Layer.effect(
         thread_mode,
         workspace_strategy_json,
         model_selection_json,
+        fallback_model_selections_json,
         runtime_mode,
         interaction_mode,
         created_by,
@@ -1692,6 +1725,7 @@ export const layer = Layer.effect(
         INSERT INTO scheduled_tasks (
           task_id,
           title,
+          description_json,
           prompt,
           enabled,
           schedule_json,
@@ -1700,6 +1734,7 @@ export const layer = Layer.effect(
           thread_mode,
           workspace_strategy_json,
           model_selection_json,
+          fallback_model_selections_json,
           runtime_mode,
           interaction_mode,
           created_by,
@@ -1717,6 +1752,7 @@ export const layer = Layer.effect(
         SELECT
           ${task.id},
           ${task.title},
+          ${task.description === undefined ? null : encodeDescriptionJson(task.description)},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
           ${JSON.stringify(task.schedule)},
@@ -1725,6 +1761,7 @@ export const layer = Layer.effect(
           ${scheduledTaskThreadMode(task)},
           ${JSON.stringify(task.workspaceStrategy)},
           ${JSON.stringify(task.modelSelection)},
+          ${task.fallbackModelSelections === undefined ? null : encodeFallbackModelSelectionsJson(task.fallbackModelSelections)},
           ${task.runtimeMode},
           ${task.interactionMode},
           ${task.createdBy},
@@ -1743,6 +1780,7 @@ export const layer = Layer.effect(
         ON CONFLICT (task_id)
         DO UPDATE SET
           title = excluded.title,
+          description_json = COALESCE(excluded.description_json, scheduled_tasks.description_json),
           prompt = excluded.prompt,
           enabled = excluded.enabled,
           schedule_json = excluded.schedule_json,
@@ -1757,6 +1795,7 @@ export const layer = Layer.effect(
           thread_mode = excluded.thread_mode,
           workspace_strategy_json = excluded.workspace_strategy_json,
           model_selection_json = excluded.model_selection_json,
+          fallback_model_selections_json = COALESCE(excluded.fallback_model_selections_json, scheduled_tasks.fallback_model_selections_json),
           runtime_mode = excluded.runtime_mode,
           interaction_mode = excluded.interaction_mode,
           creation_source = excluded.creation_source,
@@ -2286,14 +2325,26 @@ export const layer = Layer.effect(
       const own: ModelSelection = launchModelSelection(yield* readSettings, task);
       const route = Option.isNone(accountRouting)
         ? { selection: own, failover: null }
-        : yield* accountRouting.value.failoverLaunch({ selection: own, projectId: task.projectId });
+        : yield* accountRouting.value.failoverLaunch({
+            selection: own,
+            projectId: task.projectId,
+            scheduled: true,
+            ...(task.fallbackModelSelections === undefined
+              ? {}
+              : { fallbackModelSelections: task.fallbackModelSelections }),
+          });
       return {
         selection: route.selection,
+        crossProviderFailoverFrom:
+          route.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined,
         failover:
           route.failover === null
             ? null
             : {
-                from: own.instanceId,
+                from:
+                  route.failover.reason === "usageLimit"
+                    ? (route.failover.crossProviderFrom ?? own.instanceId)
+                    : own.instanceId,
                 to: route.selection.instanceId,
                 ...route.failover,
               },
@@ -2543,6 +2594,7 @@ export const layer = Layer.effect(
             startedAt,
             active.nextRunAt,
             "previous occurrence still queued",
+            undefined,
           );
           return { task: active, threadId: null, dispatchFailed: false };
         }
@@ -2629,7 +2681,9 @@ export const layer = Layer.effect(
             : null;
         const prompt: typeof read =
           shortAfterRead === null
-            ? read
+            ? Result.map(read, (text) =>
+                RunConditionCheck.promptWithRunCondition(text, fire?.check),
+              )
             : Result.fail(
                 taskError(
                   `This machine's memory was short when the prompt file arrived (${MemoryAdmission.describeMemoryShortage(shortAfterRead)}), so the chat did not start.`,
@@ -2707,6 +2761,9 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      ...(target.crossProviderFailoverFrom === undefined
+                        ? {}
+                        : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
                       text: prompt.success,
                       attachments: [],
                     },
@@ -2884,41 +2941,75 @@ export const layer = Layer.effect(
       now: DateTime.DateTime,
       missedAt: string | null,
       reason: "missed" | "next_run_sooner" | "previous occurrence still queued",
+      // A skip decided from a read of the schedule, its catch-up choice and its drain hold only
+      // lands while all three are still as read. A skip at dispatch has just read the task: undefined.
+      observed: { readonly catchUp: number | null; readonly heldAt: string | null } | undefined,
       runError?: string,
     ) {
       const next = nextRunAt(task, now);
+      // The run record joins the row's move, so a skip is reported only once its history commits.
+      const skipped = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (observed !== undefined) {
+              const [current] = yield* sql<{ schedule_json: string }>`
+                SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${task.id}
+              `;
+              if (
+                !current ||
+                !isSameSchedule(task.schedule, yield* decodeScheduleJson(current.schedule_json))
+              ) {
+                return false;
+              }
+            }
+            // `task` can be a stale batch snapshot; a run or edit since then already moved the row on.
+            const moved = yield* sql`
+              UPDATE scheduled_tasks
+              SET next_run_at = ${next},
+                  updated_at = ${iso(now)}
+                  ${runError === undefined ? sql`` : sql`, last_run_status = 'failed', last_run_error = ${runError}`}
+              WHERE task_id = ${task.id}
+                AND next_run_at IS ${task.nextRunAt}
+                AND last_run_at IS ${task.lastRunAt}
+                ${
+                  observed === undefined
+                    ? sql``
+                    : sql`
+                AND ${occurrenceUnmoved(task)}
+                AND created_at = ${task.createdAt} AND updated_at = ${task.updatedAt}
+                AND (SELECT enabled FROM scheduled_task_catch_up WHERE task_id = ${task.id})
+                  IS ${observed.catchUp}
+                AND (SELECT held_at FROM scheduled_task_drain_holds
+                     WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}) IS ${observed.heldAt}`
+                }
+              RETURNING task_id
+            `;
+            if (moved.length === 0) return false;
+            yield* writeRunRecord({
+              id: `${task.id}:${missedAt ?? task.nextRunAt}:skipped`,
+              taskId: task.id,
+              trigger: "scheduled",
+              scheduledFor: missedAt,
+              startedAt: iso(now),
+              completedAt: iso(now),
+              outcome: "skipped",
+              skipReason: reason,
+              failover: null,
+            });
+            return true;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not reschedule missed schedule task run.", { taskId: task.id, cause }),
+          ),
+        );
+      if (!skipped) return;
       yield* Effect.logInfo("Skipping schedule task run", {
         taskId: task.id,
         missedRunAt: missedAt,
         rescheduledTo: next,
         reason,
-      });
-      // `task` can be a stale batch snapshot; a run or edit since then already moved the row on.
-      const updated = yield* sql`
-        UPDATE scheduled_tasks
-        SET next_run_at = ${next},
-            updated_at = ${iso(now)}
-            ${runError === undefined ? sql`` : sql`, last_run_status = 'failed', last_run_error = ${runError}`}
-        WHERE task_id = ${task.id}
-          AND next_run_at IS ${task.nextRunAt}
-          AND last_run_at IS ${task.lastRunAt}
-        RETURNING task_id
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not reschedule missed schedule task run.", { taskId: task.id, cause }),
-        ),
-      );
-      if (updated.length === 0) return;
-      yield* insertRunRecord({
-        id: `${task.id}:${missedAt ?? task.nextRunAt}:skipped`,
-        taskId: task.id,
-        trigger: "scheduled",
-        scheduledFor: missedAt,
-        startedAt: iso(now),
-        completedAt: iso(now),
-        outcome: "skipped",
-        skipReason: reason,
-        failover: null,
       });
       yield* notifyChanged;
     });
@@ -3076,12 +3167,23 @@ export const layer = Layer.effect(
             current.threadId === null ? launchModelSelection(yield* readSettings, current) : null,
           projectId: current.projectId,
           delegates,
+          ...(current.fallbackModelSelections === undefined
+            ? {}
+            : { fallbackModelSelections: current.fallbackModelSelections }),
         });
         if (block === null) return false;
         const now = yield* localNow;
+        const following = nextRunAt(current, now);
+        // A daily task would lose its whole day to a limit that lifts within it, so a fixed-time
+        // task that catches up runs once the room returns, unless its next time comes first.
+        const waitsForRoom =
+          current.schedule.type === "once" ||
+          (current.schedule.type === "fixed_time" &&
+            (current.catchUpMissedRun ?? defaultCatchUpMissedRun(current.schedule)) &&
+            (following === null || Date.parse(block.until) < Date.parse(following)));
         const skipped = yield* recordQuietSkip(task, fire, occurrenceUnmoved(task), {
           reason: "usage_limited",
-          next: current.schedule.type === "once" ? block.until : nextRunAt(current, now),
+          next: waitsForRoom ? block.until : following,
           now,
           usageLimit: { driver: block.driver, until: block.until },
         });
@@ -4189,7 +4291,10 @@ export const layer = Layer.effect(
         DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at);
       if (heldByUpdate) {
         if (!missed.catchUp) {
-          return yield* rescheduleMissedRun(task, now, missedAt, "next_run_sooner");
+          return yield* rescheduleMissedRun(task, now, missedAt, "next_run_sooner", {
+            catchUp: stored?.enabled ?? null,
+            heldAt: held.held_at,
+          });
         }
         // next_run_at is its time, or the later time a one-machine turn asks about it at.
         if (DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)) {
@@ -4207,6 +4312,7 @@ export const layer = Layer.effect(
             now,
             missedAt,
             catchUp ? "next_run_sooner" : "missed",
+            { catchUp: stored?.enabled ?? null, heldAt: held?.held_at ?? null },
             "Missed a scheduled run because the server was not running at that time.",
           );
         }
@@ -4593,11 +4699,15 @@ export const layer = Layer.effect(
                 {
                   id: task.id,
                   title: task.title,
+                  ...(task.description === undefined ? {} : { description: task.description }),
                   prompt: task.prompt,
                   enabled: task.enabled,
                   schedule: task.schedule,
                   workspaceStrategy: task.workspaceStrategy,
                   modelSelection: task.modelSelection,
+                  ...(task.fallbackModelSelections === undefined
+                    ? {}
+                    : { fallbackModelSelections: task.fallbackModelSelections }),
                   followsDefaultModel: task.followsDefaultModel ?? false,
                   ...(task.catchUpMissedRun === undefined
                     ? {}
@@ -4811,6 +4921,16 @@ export const layer = Layer.effect(
       },
     );
 
+    const normalizeDescription = (description: ScheduledTask["description"], id: ScheduledTaskId) =>
+      decodeDescription(description).pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            `Expected a nonblank description of at most ${MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH} characters.`,
+            { taskId: id, cause },
+          ),
+        ),
+      );
+
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input, by) {
@@ -4870,6 +4990,7 @@ export const layer = Layer.effect(
         existingTask.projectId !== input.projectId &&
         keptThreadId === existingTask.threadId;
       const threadId = threadMode === "new_thread" || movedOffThread ? null : keptThreadId;
+      const description = yield* normalizeDescription(input.description, id);
       // Omitted keeps the stored choice, so a client that predates sharing can re-save a task.
       const sharedExclusions =
         input.shared === undefined
@@ -5039,6 +5160,7 @@ export const layer = Layer.effect(
       const task: ScheduledTask = {
         id,
         title: input.title,
+        ...(description === undefined ? {} : { description }),
         prompt,
         enabled: input.enabled,
         schedule,
@@ -5047,6 +5169,9 @@ export const layer = Layer.effect(
         threadMode,
         workspaceStrategy,
         modelSelection: input.modelSelection,
+        ...(input.fallbackModelSelections === undefined
+          ? {}
+          : { fallbackModelSelections: input.fallbackModelSelections }),
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
@@ -5180,6 +5305,10 @@ export const layer = Layer.effect(
       const id = input.type === "upsert" ? input.task.id : input.deletion.id;
       const incoming =
         input.type === "upsert" ? input.task.shared.revision : input.deletion.revision;
+      const description = yield* normalizeDescription(
+        input.type === "upsert" ? input.task.description : undefined,
+        id,
+      );
       const toTaskError = (cause: unknown) =>
         isScheduledTaskError(cause)
           ? cause
@@ -5225,6 +5354,28 @@ export const layer = Layer.effect(
               SELECT path FROM scheduled_task_prompt_files WHERE task_id = ${taskId}`;
             const [delegates] = yield* sql<{ readonly providers_json: string }>`
               SELECT providers_json FROM scheduled_task_delegate_providers WHERE task_id = ${taskId}`;
+            const fallbacks =
+              task.fallbackModelSelections === undefined
+                ? null
+                : encodeFallbackModelSelectionsJson(task.fallbackModelSelections);
+            const filledFallbacks =
+              fallbacks === null
+                ? []
+                : yield* sql`
+              UPDATE scheduled_tasks SET fallback_model_selections_json = ${fallbacks}
+              WHERE task_id = ${taskId} AND fallback_model_selections_json IS NULL
+              RETURNING task_id
+            `;
+            const descriptionJson =
+              description === undefined ? null : encodeDescriptionJson(description);
+            const filledDescription =
+              descriptionJson === null
+                ? []
+                : yield* sql`
+                  UPDATE scheduled_tasks SET description_json = ${descriptionJson}
+                  WHERE task_id = ${taskId} AND description_json IS NOT ${descriptionJson}
+                  RETURNING task_id
+                `;
             const liveRunLimitDiffers =
               task.maxLiveRuns !== undefined &&
               task.maxLiveRuns !== (yield* liveRunLimitOf(taskId));
@@ -5258,7 +5409,9 @@ export const layer = Layer.effect(
               !promptFileDiffers &&
               !delegatesDiffer &&
               !liveRunLimitDiffers &&
-              !changedByMissing
+              !changedByMissing &&
+              filledDescription.length === 0 &&
+              filledFallbacks.length === 0
             ) {
               return { outcome: "stale" as const };
             }
@@ -5354,6 +5507,7 @@ export const layer = Layer.effect(
       const saved: ScheduledTask = {
         id,
         title: task.title,
+        ...(description === undefined ? {} : { description }),
         prompt: task.prompt,
         enabled: task.enabled,
         schedule,
@@ -5361,6 +5515,9 @@ export const layer = Layer.effect(
         threadId: null,
         workspaceStrategy,
         modelSelection: task.modelSelection,
+        ...(task.fallbackModelSelections === undefined
+          ? {}
+          : { fallbackModelSelections: task.fallbackModelSelections }),
         runtimeMode: task.runtimeMode,
         interactionMode: task.interactionMode,
         createdBy: existingTask?.createdBy ?? task.createdBy,
@@ -5430,21 +5587,35 @@ export const layer = Layer.effect(
     const setGroup: ScheduledTaskService["Service"]["setGroup"] = Effect.fn(
       "ScheduledTaskService.setGroup",
     )(function* (input, by) {
-      const existing = yield* loadTask(input.id);
-      if ((existing.group ?? null) === input.group) return;
-      yield* sql
+      const changed = yield* sql
         .withTransaction(
-          writeGroup(input.id, input.group, "keep").pipe(
-            Effect.andThen(recordChange(input.id, by)),
-          ),
+          Effect.gen(function* () {
+            const [existing] = yield* sql<{ readonly label: string | null }>`
+              SELECT g.label
+              FROM scheduled_tasks t
+              LEFT JOIN scheduled_task_group g ON g.task_id = t.task_id
+              WHERE t.task_id = ${input.id}
+            `;
+            if (existing === undefined) {
+              return yield* taskError("Schedule task not found.", { taskId: input.id });
+            }
+            if (existing.label === input.group) return false;
+            yield* writeGroup(input.id, input.group, "keep");
+            yield* recordChange(input.id, by);
+            return true;
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
-            taskError("Could not update schedule task.", { taskId: input.id, cause }),
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not update schedule task.", { taskId: input.id, cause }),
           ),
         );
-      yield* notifyChanged;
-      yield* fileTaskChats(input.id);
+      if (changed) {
+        yield* notifyChanged;
+        yield* fileTaskChats(input.id);
+      }
     });
 
     // Why a task may not be turned on, whether by hand or by resuming its group.

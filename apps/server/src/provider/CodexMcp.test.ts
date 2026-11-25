@@ -195,6 +195,12 @@ it.effect("adds servers as new config tables and removes them by key", () =>
       args: ["-y", "@upstash/context7-mcp"],
       env: {},
     });
+    yield* mcp.add("notes", {
+      transport: "http",
+      url: "https://notes.example/mcp",
+      headers: {},
+      bearerTokenEnvVar: "NOTES_TOKEN",
+    });
     const taken = yield* mcp
       .add("minions", { transport: "http", url: "https://minions.example/mcp", headers: {} })
       .pipe(Effect.flip);
@@ -210,6 +216,16 @@ it.effect("adds servers as new config tables and removes them by key", () =>
         {
           keyPath: "mcp_servers",
           value: { context7: { command: "npx", args: ["-y", "@upstash/context7-mcp"] } },
+          mergeStrategy: "upsert",
+        },
+      ],
+      [
+        "config/value/write",
+        {
+          keyPath: "mcp_servers",
+          value: {
+            notes: { url: "https://notes.example/mcp", bearer_token_env_var: "NOTES_TOKEN" },
+          },
           mergeStrategy: "upsert",
         },
       ],

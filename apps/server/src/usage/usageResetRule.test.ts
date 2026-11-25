@@ -220,6 +220,50 @@ const rows: ReadonlyArray<Row> = [
     expected: wait("no-reset", 100),
   },
   {
+    name: "claims a held grant read before the account reached the limit its kind clears",
+    limits: limits(
+      [weekly(100)],
+      [grant("weekly", undefined, { usableNow: false, requiresLimit: true })],
+    ),
+    expected: claim("weekly", "claude", 100, "reset-too-far"),
+  },
+  {
+    name: "claims a grant Claude offers now before a held one that expires no sooner",
+    limits: limits(
+      [weekly(100)],
+      [
+        grant("weekly", undefined, { usableNow: false, requiresLimit: true }),
+        grant("full", undefined),
+      ],
+    ),
+    expected: claim("full", "claude", 100, "reset-too-far"),
+  },
+  {
+    name: "keeps a held grant whose kind does not clear the limit reached",
+    limits: limits(
+      [weekly(100)],
+      [grant("five_hour", undefined, { usableNow: false, requiresLimit: true })],
+    ),
+    expected: wait("no-reset", 100),
+  },
+  {
+    name: "never claims a held grant whose kind Claude did not name",
+    limits: limits(
+      [weekly(100)],
+      [
+        {
+          program: "granted",
+          kindUnknownReason: "totalOnly",
+          resetsLeft: 2,
+          expiresAt: at(400),
+          usableNow: false,
+          requiresLimit: true,
+        },
+      ],
+    ),
+    expected: wait("no-reset", 100),
+  },
+  {
     name: "never claims an expired reset",
     limits: limits([weekly(100)], [grant("full", -1)]),
     expected: wait("no-reset", 100),

@@ -185,7 +185,7 @@ describe("providerUsageFields", () => {
                 usableNow: true,
                 requiresLimit: true,
               },
-              { program: "cedar_ember", usableNow: false, paused: true },
+              { program: "cedar_ember", kind: "fable", usableNow: false, requiresLimit: true },
             ],
           },
           resetPrograms,
@@ -211,13 +211,48 @@ describe("providerUsageFields", () => {
           grantedAt: null,
           expiresAt: null,
           program: "cedar_ember",
-          kind: null,
+          kind: "fable",
           usableNow: false,
-          paused: true,
+          requiresLimit: true,
         },
       ],
     });
     expect(fields.usage?.resetPrograms).toEqual(resetPrograms);
+    const totalOnly = providerUsageFields(
+      provider("claudeAgent", {
+        usageLimits: {
+          ...claudeLimits,
+          resetCredits: {
+            availableCount: 0,
+            credits: [
+              {
+                program: "cedar_ember",
+                kindUnknownReason: "totalOnly",
+                resetsLeft: 1,
+                expiresAt: "2026-09-20T00:00:00.000Z",
+                usableNow: false,
+                paused: true,
+              },
+            ],
+          },
+          resetPrograms,
+        },
+      }),
+      false,
+    ).usage;
+    expect(totalOnly?.bankedResets?.resets).toEqual([
+      {
+        status: null,
+        grantedAt: null,
+        expiresAt: "2026-09-20T00:00:00.000Z",
+        program: "cedar_ember",
+        kind: null,
+        kindUnknownReason: "total_only",
+        resetsLeft: 1,
+        usableNow: false,
+        paused: true,
+      },
+    ]);
     const unknown = providerUsageFields(
       provider("claudeAgent", {
         usageLimits: {

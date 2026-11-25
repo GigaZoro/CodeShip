@@ -12,6 +12,8 @@ packages:
 allowBuilds:
   browser-tabs-lock: false
   bufferutil: false
+  # Links the server recorder's packaged Bun executable for this platform.
+  bun@1.4.5: true
   core-js: false
   # No install script since Electron 44; ensure:electron runs install.js.
   # Keep the key: pnpm fails installs that still record a removed `true`.
@@ -100,8 +102,8 @@ catalog:
   unified: 11.0.5
 
 overrides:
-  # Pin every patched package, including transitive dependencies, so lockfile-free
-  # release installs cannot drift past the patch. Update these with patchedDependencies.
+  # Pin every patched package, including transitive dependencies, to the version its
+  # patch was written for. Update these with patchedDependencies.
   react-native-image-viewing: 0.2.2
   mdast-util-math: 3.0.0
   micromark-extension-llm-math: 3.1.0
@@ -196,8 +198,8 @@ overrides:
   # react-native-worklets peers on any version, so a fresh resolve takes the newest
   # one; React Native's CLI plugin wants exactly its own. Move with react-native.
   "@react-native/metro-config": 0.88.1
-  # The desktop app installs these without a lockfile when it packages them, so
-  # pin the native passkey code that runs in its main process.
+  # The native passkey code runs in the desktop main process; a lockfile refresh
+  # must not move it off the reviewed version.
   "electron-webauthn>@electron-webauthn/macos": "catalog:"
   "@electron-webauthn/macos>objc-js": "catalog:"
   lightningcss: "catalog:"
@@ -274,8 +276,10 @@ patchedDependencies:
   # 127.0.0.1 listener on the same port answers in its place (PeerLinks.test.ts). Drop it once
   # Effect's layerTest names its host.
   "@effect/platform-node@4.1.2": patches/@effect__platform-node@4.1.2.patch
-  # The spawner takes an injected spawn function (and uses it for taskkill) so Windows launches
-  # can run on worker threads: apps/server/src/process/SpawnWorker.ts.
+  # The spawner takes an injected spawn function so Windows launches can run on worker threads
+  # (apps/server/src/process/SpawnWorker.ts). On Windows its kill ends only the leader: taskkill /T
+  # ends descendants by pid from a snapshot and can end a program that took a pid meanwhile;
+  # endingWindowsTrees ends the descendants through its checked walk.
   "@effect/platform-node-shared@4.1.2": patches/@effect__platform-node-shared@4.1.2.patch
   # Electron net requests never emit "socket", so upstream's idle timeout never fires and a
   # stalled update download hangs forever.

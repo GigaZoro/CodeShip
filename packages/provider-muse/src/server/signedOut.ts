@@ -1,8 +1,5 @@
-import type { ServerProvider } from "@t3tools/contracts";
-import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
-  makeProviderFailure,
-} from "@t3tools/provider-core/server/failure";
+import { AUTHENTICATION_FAILED_FAILURE_CODE, type ServerProvider } from "@t3tools/contracts";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 

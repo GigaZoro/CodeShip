@@ -17,16 +17,12 @@ import * as ServerConfig from "./config.ts";
 import * as MigrationProgress from "./persistence/MigrationProgress.ts";
 import { layerHttpServer, layerPlatformServices } from "./server.ts";
 
-// Holds a port on a specific non-loopback address, so a wildcard bind on that
-// port fails with EADDRINUSE while a loopback bind is still free.
-const occupyNonLoopbackPort = Effect.acquireRelease(
+// Holds a port on a second loopback address, which Linux routes to loopback like all of
+// 127.0.0.0/8, so a wildcard bind on that port fails with EADDRINUSE while 127.0.0.1 is free.
+const occupyOtherLoopbackPort = Effect.acquireRelease(
   Effect.callback<NodeNet.Server & { readonly port: number }>((resume) => {
-    const address = Object.values(NodeOS.networkInterfaces())
-      .flat()
-      .find((entry) => entry?.family === "IPv4" && !entry.internal)?.address;
-    if (address === undefined) throw new Error("no non-loopback IPv4 interface");
     const blocker = NodeNet.createServer();
-    blocker.listen(0, address, () => {
+    blocker.listen(0, "127.0.0.2", () => {
       const bound = blocker.address() as NodeNet.AddressInfo;
       resume(Effect.succeed(Object.assign(blocker, { port: bound.port })));
     });
@@ -59,7 +55,7 @@ it.live.skipIf(!wildcardBindConflicts)(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { port } = yield* occupyNonLoopbackPort;
+        const { port } = yield* occupyOtherLoopbackPort;
         const { address, config } = yield* Effect.all({
           address: Effect.map(HttpServer.HttpServer, (server) => server.address),
           config: ServerConfig.ServerConfig,
@@ -81,7 +77,7 @@ it.live.skipIf(!wildcardBindConflicts)(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { port } = yield* occupyNonLoopbackPort;
+        const { port } = yield* occupyOtherLoopbackPort;
         const exit = yield* HttpServer.HttpServer.pipe(
           Effect.provide(
             httpServerWithConfig({ host: "0.0.0.0", port, privateNetworkOnly: undefined }),

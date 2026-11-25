@@ -143,6 +143,49 @@ function filterLegacyPage(
   );
 }
 
+export type LatestArchivedThread =
+  | {
+      readonly _tag: "Found";
+      readonly environmentId: EnvironmentId;
+      readonly thread: OrchestrationV2ThreadShell;
+    }
+  | { readonly _tag: "Empty" }
+  /** The tag filter hid every loaded row, and more pages follow. */
+  | { readonly _tag: "LoadMore" }
+  | { readonly _tag: "Pending" }
+  | { readonly _tag: "Failed"; readonly message: string };
+
+/** The newest archived thread, decided only once every machine has answered. */
+export function resolveLatestArchivedThread(
+  state: ArchivedThreadSnapshotsState,
+): LatestArchivedThread {
+  if (state.error !== null) return { _tag: "Failed", message: state.error };
+  if (state.isLoading) return { _tag: "Pending" };
+  const latest = latestArchivedThread(state.snapshots);
+  if (latest !== null) return { _tag: "Found", ...latest };
+  return state.hasMore ? { _tag: "LoadMore" } : { _tag: "Empty" };
+}
+
+/** The most recently archived thread across environments, by the server's archive order. */
+function latestArchivedThread(
+  snapshots: ReadonlyArray<ArchivedSnapshotEntry>,
+): { readonly environmentId: EnvironmentId; readonly thread: OrchestrationV2ThreadShell } | null {
+  let latest: {
+    environmentId: EnvironmentId;
+    thread: OrchestrationV2ThreadShell;
+    key: ArchiveRowKey;
+  } | null = null;
+  for (const { environmentId, snapshot } of snapshots) {
+    for (const thread of snapshot.threads) {
+      const key = archiveRowKey(thread);
+      if (latest === null || compareArchiveRows(key, latest.key) < 0) {
+        latest = { environmentId, thread, key };
+      }
+    }
+  }
+  return latest === null ? null : { environmentId: latest.environmentId, thread: latest.thread };
+}
+
 interface EnvironmentPages {
   readonly environmentId: EnvironmentId;
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;

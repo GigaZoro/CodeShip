@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -36,6 +37,10 @@ const loginFailureDetail = (cause: unknown) => {
   return "Cursor sign-in failed. Start sign-in again.";
 };
 
+const AdmittedKey = Context.Reference<
+  { readonly binding: string; readonly apiKey: string | undefined } | undefined
+>("CursorAuth/AdmittedKey", { defaultValue: () => undefined });
+
 interface AuthFlow {
   readonly id: string;
   readonly owner: string;
@@ -59,6 +64,7 @@ export interface CursorAuthOptions {
   readonly apiKey?: string;
   readonly store: SdkCredentialStore;
   readonly credentialBinding?: NonNullable<ProviderAuthController["credentialBinding"]>;
+  readonly verify: (apiKey: string) => Effect.Effect<void, ProviderSetupError>;
   readonly onChanged: (signedIn: boolean) => Effect.Effect<void, ProviderSetupError>;
   readonly login?: (options: SdkLoginOptions) => Promise<SdkLoginResult>;
 }
@@ -78,7 +84,13 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
   };
   const snapshot = yield* SubscriptionRef.make({ owner: null as string | null, state: emptyState });
   let active: AuthFlow | undefined;
-  let operation: "idle" | "login" | "stopping" | "closed" = "idle";
+  let operation: "idle" | "login" | "cancelling" | "publishing" | "stopping" | "closed" = "idle";
+  const binding = options.credentialBinding ?? {
+    owner: "t3" as const,
+    key: `cursor:${options.instanceId}`,
+  };
+  const accessBlocked = () =>
+    operation !== "idle" && operation !== "login" && operation !== "cancelling";
   const sessions = new Set<Scope.Closeable>();
 
   const publish = (flow: AuthFlow, patch: Partial<ProviderAuthState>) =>
@@ -107,14 +119,15 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
   });
 
   const requireApiKey = Effect.gen(function* () {
-    if (operation !== "idle") {
+    const admitted = yield* AdmittedKey;
+    if (accessBlocked() && !(operation === "publishing" && admitted?.binding === binding.key)) {
       return yield* new ProviderSetupError({
         instanceId: options.instanceId,
         operation: "credentials",
         detail: "Cursor sign-in or sign-out is in progress. Try again after it finishes.",
       });
     }
-    const apiKey = yield* readApiKey;
+    const apiKey = admitted?.binding === binding.key ? admitted.apiKey : yield* readApiKey;
     if (!apiKey) {
       return yield* new ProviderSetupError({
         instanceId: options.instanceId,
@@ -130,14 +143,19 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const parent = yield* Scope.Scope;
-        const child = yield* lock.withPermits(1)(
+        const { child, credentials } = yield* lock.withPermits(1)(
           Effect.gen(function* () {
-            if (operation !== "idle")
+            if (accessBlocked())
               return yield* new ProviderSetupError({
                 instanceId: options.instanceId,
                 operation: "session",
                 detail: "Cursor sign-in or sign-out is in progress. Try again after it finishes.",
               });
+            const admitted = yield* AdmittedKey;
+            const credentials =
+              admitted?.binding === binding.key
+                ? admitted
+                : { binding: binding.key, apiKey: yield* readApiKey };
             const child = yield* Scope.make();
             sessions.add(child);
             yield* Scope.addFinalizer(
@@ -147,11 +165,12 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
               }),
             );
             yield* Scope.addFinalizer(parent, Scope.close(child, Exit.void));
-            return child;
+            return { child, credentials };
           }),
         );
         const fiber = yield* restore(task).pipe(
           Effect.provideService(Scope.Scope, child),
+          Effect.provideService(AdmittedKey, credentials),
           Effect.forkIn(child),
         );
         return yield* restore(Fiber.await(fiber)).pipe(
@@ -169,108 +188,87 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
     }),
   );
 
+  const authenticate = Effect.fn("providerAuthFlow.authenticate")(function* (flow: AuthFlow) {
+    yield* Effect.annotateCurrentSpan({ instanceId: options.instanceId });
+    // The SDK first writes into memory. Cancellation must not save a late login result.
+    const { Cursor, InMemoryCredentialStore } = yield* Effect.try({
+      try: loadCursorSdk,
+      catch: (cause) =>
+        new ProviderSetupError({
+          instanceId: options.instanceId,
+          operation: "start",
+          detail: "Could not load the Cursor SDK. Try signing in again.",
+          cause,
+        }),
+    });
+    const pendingStore = new InMemoryCredentialStore();
+    const urls = yield* Queue.unbounded<string>();
+    yield* Queue.take(urls).pipe(
+      Effect.flatMap((authorizationUrl) =>
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            if (
+              active !== flow ||
+              operation !== "login" ||
+              snapshot.value.state.phase === "verifying"
+            )
+              return;
+            yield* publish(flow, {
+              phase: "waiting",
+              authorizationUrl,
+              message:
+                "Open the Cursor sign-in page and finish signing in. This page updates automatically.",
+            });
+          }),
+        ),
+      ),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+    yield* Effect.tryPromise({
+      try: (signal) =>
+        (options.login ?? Cursor.auth.login)({
+          openBrowser: false,
+          store: pendingStore,
+          signal,
+          apiKeyName: `T3.CodeShip - ${options.displayName}`,
+          onLoginUrl: (authorizationUrl) => {
+            if (active === flow) Queue.offerUnsafe(urls, authorizationUrl);
+          },
+        }),
+      catch: (cause) =>
+        new ProviderSetupError({
+          instanceId: options.instanceId,
+          operation: "start",
+          detail: loginFailureDetail(cause),
+          cause,
+        }),
+    });
+    const credentials = yield* Effect.promise(() => pendingStore.load());
+    if (!credentials)
+      return yield* new ProviderSetupError({
+        instanceId: options.instanceId,
+        operation: "start",
+        detail: "Cursor login did not return credentials.",
+      });
+    yield* lock.withPermit(
+      Effect.suspend(() =>
+        active === flow && operation === "login"
+          ? publish(flow, {
+              phase: "verifying",
+              authorizationUrl: null,
+              message: "Checking Cursor sign-in.",
+            })
+          : Effect.interrupt,
+      ),
+    );
+    yield* options.verify(credentials.apiKey);
+    return credentials;
+  });
+
   const runLogin = Effect.fn("CursorAuth.runLogin")(
     function* (flow: AuthFlow, stopSessions: Effect.Effect<void, ProviderSetupError>) {
-      yield* stopSessions.pipe(Effect.ensuring(stopSessionsWithCredentials));
-      // The SDK first writes into memory. Cancellation must not save a late login result.
-      const { Cursor, InMemoryCredentialStore } = yield* Effect.try({
-        try: loadCursorSdk,
-        catch: (cause) =>
-          new ProviderSetupError({
-            instanceId: options.instanceId,
-            operation: "start",
-            detail: "Could not load the Cursor SDK. Try signing in again.",
-            cause,
-          }),
-      });
-      const pendingStore = new InMemoryCredentialStore();
-      const urls = yield* Queue.unbounded<string>();
-      yield* Queue.take(urls).pipe(
-        Effect.flatMap((authorizationUrl) =>
-          lock.withPermits(1)(
-            Effect.gen(function* () {
-              if (active !== flow) return;
-              yield* publish(flow, {
-                phase: "waiting",
-                authorizationUrl,
-                message:
-                  "Open the Cursor sign-in page and finish signing in. This page updates automatically.",
-              });
-            }),
-          ),
-        ),
-        Effect.forever,
-        Effect.forkScoped,
-      );
-      yield* Effect.tryPromise({
-        try: (signal) =>
-          (options.login ?? Cursor.auth.login)({
-            openBrowser: false,
-            store: pendingStore,
-            signal,
-            apiKeyName: `T3.CodeShip - ${options.displayName}`,
-            onLoginUrl: (authorizationUrl) => {
-              if (active === flow) Queue.offerUnsafe(urls, authorizationUrl);
-            },
-          }),
-        catch: (cause) =>
-          new ProviderSetupError({
-            instanceId: options.instanceId,
-            operation: "start",
-            detail: loginFailureDetail(cause),
-            cause,
-          }),
-      });
-      // Commit and publish together; interrupting a store Promise cannot stop a late write.
-      yield* lock.withPermits(1)(
-        Effect.gen(function* () {
-          if (active !== flow) return;
-          yield* publish(flow, {
-            phase: "verifying",
-            authorizationUrl: null,
-            message: "Checking Cursor sign-in.",
-          });
-          yield* Effect.tryPromise({
-            try: async () => {
-              const credentials = await pendingStore.load();
-              if (!credentials) throw new Error("Cursor login did not return credentials");
-              await options.store.save(credentials);
-            },
-            catch: (cause) =>
-              new ProviderSetupError({
-                instanceId: options.instanceId,
-                operation: "start",
-                detail: "Could not save the Cursor sign-in. Try again.",
-                cause,
-              }),
-          });
-          const verified = yield* options.onChanged(true).pipe(Effect.exit);
-          if (Exit.isFailure(verified)) {
-            yield* Effect.tryPromise({
-              try: () => options.store.clear(),
-              catch: (cause) =>
-                new ProviderSetupError({
-                  instanceId: options.instanceId,
-                  operation: "start",
-                  detail: "Could not clear the rejected Cursor sign-in. Try signing out.",
-                  cause,
-                }),
-            });
-            return yield* Effect.failCause(verified.cause);
-          }
-          active = undefined;
-          operation = "idle";
-          yield* publish(flow, {
-            phase: "succeeded",
-            authorizationUrl: null,
-            expiresAt: null,
-            message: "Signed in with Cursor.",
-          });
-        }).pipe(Effect.uninterruptible),
-      );
-    },
-    (effect, flow, _stopSessions) =>
-      effect.pipe(
+      const credentials = yield* authenticate(flow).pipe(
         Effect.scoped,
         Effect.timeoutOrElse({
           duration: AUTH_TIMEOUT_MS,
@@ -283,6 +281,38 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
               }),
             ),
         }),
+      );
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const current = yield* lock.withPermit(
+            Effect.sync(() => {
+              if (active !== flow) return false;
+              operation = "publishing";
+              return true;
+            }),
+          );
+          if (!current) return;
+          yield* Effect.tryPromise({
+            try: () => options.store.save(credentials),
+            catch: (cause) =>
+              new ProviderSetupError({
+                instanceId: options.instanceId,
+                operation: "start",
+                detail: "Could not save the Cursor sign-in. Try again.",
+                cause,
+              }),
+          }).pipe(
+            Effect.withSpan("providerAuthFlow.persistCredentials", {
+              attributes: { instanceId: options.instanceId },
+            }),
+          );
+          yield* stopSessions.pipe(Effect.ensuring(stopSessionsWithCredentials));
+          yield* options.onChanged(true);
+        }),
+      );
+    },
+    (effect, flow) =>
+      effect.pipe(
         Effect.tapCause((cause) => Effect.logWarning("Cursor sign-in failed", cause)),
         Effect.exit,
         Effect.flatMap((result) =>
@@ -313,7 +343,7 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
     id: string,
     name: string,
   ) {
-    if (!active || active.owner !== owner || active.id !== id) {
+    if (operation !== "login" || !active || active.owner !== owner || active.id !== id) {
       return yield* new ProviderSetupError({
         instanceId: options.instanceId,
         operation: name,
@@ -324,11 +354,11 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
   });
 
   const controller: ProviderAuthController = {
-    credentialBinding: options.credentialBinding ?? {
-      owner: "t3",
-      key: `cursor:${options.instanceId}`,
-    },
+    credentialBinding: binding,
     isChangingCredentials: Effect.sync(() => operation !== "idle"),
+    isAccessBlocked: Effect.sync(accessBlocked),
+    withAccess,
+    invalidate: stopSessionsWithCredentials,
     start: (owner, stopSessions = Effect.void) =>
       lock.withPermits(1)(
         Effect.uninterruptible(
@@ -401,7 +431,7 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
             Effect.gen(function* () {
               const flow = yield* requireFlow(owner, id, "cancel");
               active = undefined;
-              operation = "stopping";
+              operation = "cancelling";
               yield* publish(flow, {
                 phase: "cancelled",
                 authorizationUrl: null,

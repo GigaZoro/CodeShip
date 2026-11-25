@@ -114,6 +114,7 @@ import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeComp
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -180,7 +181,7 @@ import type * as ProviderContinuationRequests from "@t3tools/provider-core/serve
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
-
+import { compileClaudeModelSelection } from "../../claudeModelOptions.ts";
 import * as ClaudeSettingsCascade from "../../provider/Drivers/ClaudeSettingsCascade.ts";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -459,6 +460,31 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.equal(options.permissionMode, expected);
     assert.isUndefined(options.extraArgs?.["permission-mode"]);
     assert.isUndefined(options.extraArgs?.["dangerously-skip-permissions"]);
+  });
+
+  it.each([
+    ["the selection's effort over a launch --effort", "claude-opus-5-5", "high", "high", undefined],
+    [
+      "a launch --effort to a model without effort levels",
+      "claude-unlisted",
+      undefined,
+      undefined,
+      "ultracode",
+    ],
+  ] as const)("passes %s", (_, model, selectedEffort, effort, launchEffort) => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: {
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        model,
+        options: selectedEffort === undefined ? [] : [{ id: "effort", value: selectedEffort }],
+      },
+      nativeThreadId: "native-effort-override",
+      resume: false,
+      cwd: "/workspace",
+      settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs: "--effort ultracode" },
+    });
+    assert.equal(options.effort, effort);
+    assert.equal(options.extraArgs?.effort, launchEffort);
   });
 
   it("passes every --add-dir launch directory to Claude", () => {
@@ -6091,6 +6117,96 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }).pipe(Effect.provide(NodeServices.layer)),
     );
 
+    it.each([
+      ["omitted", [], false],
+      ["off", [{ id: "ultracode", value: false }], false],
+      ["on", [{ id: "ultracode", value: true }], true],
+    ] as const)(
+      "launches a selection with Ultracode %s with each setting a live switch to it sends, over launch --settings",
+      (_, options, ultracode) => {
+        const modelSelection: ModelSelection = {
+          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+          model: "claude-opus-5-5",
+          options,
+        };
+        // Effort reaches a launch as --effort, not as a setting.
+        const { effortLevel: _effortLevel, ...switched } =
+          ClaudeAdapterV2.claudeLiveSelectionFlagSettings(
+            compileClaudeModelSelection(modelSelection),
+          );
+        const launched = ClaudeAdapterV2.claudeFlagSettings({
+          launchArgSettings: Object.fromEntries(
+            Object.entries(switched).map(([key, value]) => [key, value !== true]),
+          ),
+          modelSelection,
+          settings: DEFAULT_CLAUDE_SETTINGS,
+        }) as Readonly<Record<string, unknown>>;
+        // A live switch clears with null what a launch leaves out.
+        const launchedFields: Readonly<Record<string, unknown>> = Object.fromEntries(
+          Object.keys(switched).map((key) => [key, launched[key] ?? null]),
+        );
+        assert.equal(switched.ultracode, ultracode);
+        assert.deepEqual(launchedFields, switched);
+      },
+    );
+
+    it.effect.each([
+      ["off", true],
+      ["on", false],
+    ] as const)(
+      "refuses to start Ultracode %s under managed settings that set ultracode to %s",
+      ([, managed]) =>
+        Effect.gen(function* () {
+          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(async (read) => {
+            const effective =
+              read?.serverManagedSettings === undefined ? {} : { ultracode: managed };
+            return { effective, provenance: {}, sources: [] };
+          });
+          const harness = yield* makeWakeHarnessWithOptions();
+          const now = yield* DateTime.now;
+          const start = (attempt: string, ultracode: boolean) =>
+            harness.runtime.startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now,
+                attemptId: RunAttemptId.make(`attempt-managed-ultracode-${attempt}`),
+                text: "Hello",
+                attachments: [],
+                providerTurnOrdinal: 1,
+                modelSelection: {
+                  instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+                  model: "claude-opus-5-5",
+                  options: [{ id: "ultracode", value: ultracode }],
+                },
+              }),
+            );
+          const refused = yield* start("refused", !managed).pipe(Effect.result);
+          assert.equal(refused._tag, "Failure");
+          if (refused._tag === "Failure") {
+            assert.instanceOf(
+              refused.failure.cause,
+              ClaudeAdapterV2.ClaudeUltracodeOverriddenError,
+            );
+            assert.include(refused.failure.cause.message, "ultracode");
+          }
+          assert.isUndefined(harness.getOpenedOptions());
+
+          yield* start("matching", managed);
+          const sent = harness.getOpenedOptions()?.settings as Readonly<Record<string, unknown>>;
+          assert.equal(sent.ultracode, managed);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+    );
+
     const DISABLE_BYPASS = { permissions: { disableBypassPermissionsMode: "disable" } };
 
     it.effect.each([
@@ -6270,7 +6386,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
     it.effect.each([
       ["by its path", false],
-      // `cwd/link/..` spells cwd, but the file system resolves it to root.
+      // POSIX follows the link before `..`, while Windows walks back to cwd.
       ["through a symlink and `..`", true],
     ] as const)(
       "reads project and local settings from the folder --project-config-root names %s",
@@ -6313,9 +6429,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             path,
           });
           const { FROM_PROJECT, FROM_LOCAL } = environment;
+          const expectedFolder = throughSymlink && isWindowsHost ? "cwd" : "root";
           assert.deepEqual(
             { FROM_PROJECT, FROM_LOCAL },
-            { FROM_PROJECT: "root", FROM_LOCAL: "root" },
+            { FROM_PROJECT: expectedFolder, FROM_LOCAL: expectedFolder },
           );
         }).pipe(Effect.provide(NodeServices.layer)),
     );
@@ -8491,7 +8608,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
 
           yield* harness.runtime.startTurn(
-            turn(2, { ...normal, options: [{ id: "fastMode", value: false }] }),
+            turn(2, {
+              ...normal,
+              options: [
+                { id: "fastMode", value: false },
+                { id: "ultracode", value: false },
+              ],
+            }),
           );
           yield* settle;
           assert.deepEqual(harness.liveSelectionChanges, []);
@@ -8706,7 +8829,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         { model: "claude-sonnet-4-6" },
         { effortLevel: "high", fastMode: null, ultracode: null },
         { model: "claude-opus-5-5" },
-        { effortLevel: "medium", fastMode: false, ultracode: null },
+        { effortLevel: "medium", fastMode: false, ultracode: false },
       ]);
     }).pipe(
       Effect.provide(
@@ -16885,53 +17008,82 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect("buffers wake output and requests a single continuation run", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
-      const now = yield* DateTime.now;
+  it.effect.each([false, true])(
+    "buffers wake output and requests a single continuation run (initially foreground: %s)",
+    (foreground) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
 
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now,
-          attemptId: RunAttemptId.make("attempt-claude-wake-1"),
-          text: "Run the build in the background.",
-          attachments: [],
-        }),
-      );
-      yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
-      yield* Queue.offer(harness.sdkMessages, turnOneResult);
-      yield* harness.awaitTerminal(1);
-      assert.equal(harness.terminalEvents()[0]?.status, "completed");
-      assert.isTrue(yield* harness.hasPendingBackgroundWork);
-      assert.lengthOf(harness.continuationRequests, 0);
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-wake-1"),
+            text: "Run the build in the background.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          foreground
+            ? claudeSdkFrame({ ...wakeTaskStarted, is_backgrounded: false })
+            : wakeTaskStarted,
+        );
+        if (foreground) {
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: [
+                {
+                  task_id: WAKE_TASK_ID,
+                  task_type: "local_bash",
+                  description: WAKE_TASK_DESCRIPTION,
+                },
+              ],
+              uuid: "00000000-0000-4000-8000-000000000210",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        }
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        assert.lengthOf(harness.continuationRequests, 0);
 
-      yield* harness.offerAndWait(wakeNotification);
-      assert.lengthOf(harness.continuationRequests, 0);
-      assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        yield* harness.offerAndWait(wakeNotification);
+        assert.lengthOf(harness.continuationRequests, 0);
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
 
-      yield* Queue.offer(harness.sdkMessages, wakeAssistant);
-      yield* harness.awaitContinuation(1);
-      assert.equal(harness.continuationRequests[0]?.threadId, harness.threadId);
-      assert.equal(harness.continuationRequests[0]?.providerThreadId, harness.providerThread.id);
-      assert.equal(harness.continuationRequests[0]?.driver, ClaudeAdapterV2.CLAUDE_PROVIDER);
-      assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
+        yield* Queue.offer(harness.sdkMessages, wakeAssistant);
+        yield* harness.awaitContinuation(1);
+        assert.equal(harness.continuationRequests[0]?.threadId, harness.threadId);
+        assert.equal(harness.continuationRequests[0]?.providerThreadId, harness.providerThread.id);
+        assert.equal(harness.continuationRequests[0]?.driver, ClaudeAdapterV2.CLAUDE_PROVIDER);
+        assert.equal(
+          harness.continuationRequests[0]?.demandSourceRunId,
+          RunId.make("run-attempt-claude-wake-1"),
+        );
+        assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
 
-      yield* harness.offerAndWait(wakeResult);
-      assert.lengthOf(harness.continuationRequests, 1);
-      assert.lengthOf(harness.terminalEvents(), 1);
-      assert.isTrue(yield* harness.hasPendingBackgroundWork);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+        yield* harness.offerAndWait(wakeResult);
+        assert.lengthOf(harness.continuationRequests, 1);
+        assert.lengthOf(harness.terminalEvents(), 1);
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
-    ),
   );
 
   it.effect("starts the wake run when Claude opens the wake turn, before its output", () =>
@@ -19262,16 +19414,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             event.type === "turn_item.updated" &&
             event.turnItem.nativeItemRef?.nativeId === nativeId,
         );
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now,
-          attemptId: RunAttemptId.make("attempt-claude-live-idle-1"),
-          text: "Audit in the background.",
-          attachments: [],
-        }),
-      );
+      const originalTurn = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now,
+        attemptId: RunAttemptId.make("attempt-claude-live-idle-1"),
+        text: "Audit in the background.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(originalTurn);
       for (const frame of [
         makeSubagentTaskStartedFrame({
           taskId: TASK_ID,
@@ -19354,6 +19505,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.offer(harness.sdkMessages, frame);
       }
       yield* harness.awaitContinuation(1);
+      assert.equal(harness.continuationRequests[0]?.demandSourceRunId, originalTurn.runId);
       yield* Queue.offer(
         harness.sdkMessages,
         makeResultFrame({

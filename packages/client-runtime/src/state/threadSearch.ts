@@ -19,7 +19,6 @@ import {
 import { threadSearchPullRequests } from "@t3tools/shared/threadPullRequests";
 
 import type { EnvironmentThreadShell } from "./models.ts";
-import { getThreadSortTimestamp } from "./threadSort.ts";
 
 // When this client last sent an open per thread, by its own clock: a server
 // timestamp would be off by any clock skew. The server merges opens closer
@@ -195,7 +194,6 @@ export type ThreadSearchShell = Pick<
   | "title"
   | "branch"
   | "createdAt"
-  | "updatedAt"
   | "latestUserMessageAt"
   | "latestUserAuthoredMessageAt"
   | "opens"
@@ -246,7 +244,13 @@ function buildThreadSearchSubject(
   projectTitle: string | null | undefined,
   environmentLabel: string | null | undefined,
 ): ThreadSearchSubject {
-  const activityAt = getThreadSortTimestamp(thread, "updated_at");
+  // What the user wrote, not agent wakes or task notices in the user role. A
+  // thread the user never wrote in counts from its creation; an older server
+  // omits the field, so the latest user-role message stands in.
+  const authored = thread.latestUserAuthoredMessageAt;
+  const activityAt = Date.parse(
+    (authored === undefined ? thread.latestUserMessageAt : authored) ?? thread.createdAt,
+  );
   const localOpenedAt = localThreadOpens.get(`${thread.environmentId}:${thread.id}`) ?? 0;
   return {
     id: thread.id,

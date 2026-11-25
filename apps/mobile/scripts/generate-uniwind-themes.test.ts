@@ -1,10 +1,98 @@
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
+import { vitePlusCommand } from "../../../scripts/check-changed-command.ts";
 
-import { customThemeNames, renderUniwindThemesCSS } from "./generate-uniwind-themes.mts";
+// @test-input ../package.json
+
+import {
+  customThemeNames,
+  getGeneratedUniwindThemeOutputs,
+  renderUniwindThemesCSS,
+} from "./generate-uniwind-themes.mts";
+function withThemeSandbox(
+  test: (
+    mobile: string,
+    run: (...args: string[]) => NodeChildProcess.SpawnSyncReturns<string>,
+  ) => void,
+) {
+  const root = NodePath.resolve(import.meta.dirname, "../../..");
+  const sandbox = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "mobile-theme-check-"));
+  try {
+    const script = "apps/mobile/scripts/generate-uniwind-themes.mts";
+    for (const path of [
+      script,
+      "apps/mobile/package.json",
+      "apps/mobile/src/lib/mobileTheme.ts",
+      "scripts/lib/command-line.ts",
+    ]) {
+      const target = NodePath.join(sandbox, path);
+      NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
+      NodeFS.copyFileSync(NodePath.join(root, path), target);
+    }
+    NodeFS.symlinkSync(
+      NodePath.join(root, "apps/mobile/node_modules"),
+      NodePath.join(sandbox, "apps/mobile/node_modules"),
+      "junction",
+    );
+    const mobile = NodePath.join(sandbox, "apps/mobile");
+    const target = NodePath.join(sandbox, script);
+    expect(NodePath.relative(NodeFS.realpathSync(sandbox), NodeFS.realpathSync(target))).toBe(
+      NodePath.normalize(script),
+    );
+    test(mobile, (...args) => {
+      const [command, commandArgs] = vitePlusCommand(["run", "generate", ...args]);
+      return NodeChildProcess.spawnSync(command, commandArgs, {
+        cwd: mobile,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+    });
+  } finally {
+    NodeFS.rmSync(sandbox, { recursive: true, force: true });
+  }
+}
 
 describe("generate mobile Uniwind themes", () => {
+  it.each([
+    [["--chek"], "Unknown option '--chek'"],
+    [["--check", "--check"], "Pass --check at most once."],
+  ] as const)("refuses %j before writing outputs", (args, diagnostic) => {
+    withThemeSandbox((mobile, run) => {
+      const result = run(...args);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(diagnostic);
+      for (const [file] of getGeneratedUniwindThemeOutputs()) {
+        expect(NodeFS.existsSync(NodePath.join(mobile, NodePath.basename(file)))).toBe(false);
+      }
+    });
+  });
+
+  it("checks the committed output and leaves stale files untouched", () => {
+    withThemeSandbox((mobile, run) => {
+      const outputs = getGeneratedUniwindThemeOutputs();
+      for (const [file, expected] of outputs) {
+        expect(NodeFS.readFileSync(file, "utf8")).toBe(expected);
+        NodeFS.copyFileSync(file, NodePath.join(mobile, NodePath.basename(file)));
+      }
+      const current = run("--check");
+      expect(current.error).toBeUndefined();
+      expect(current.status, current.stdout + current.stderr).toBe(0);
+
+      const stalePath = NodePath.join(mobile, NodePath.basename(outputs[0]![0]));
+      const sentinel = Buffer.from("stale output for the check-mode test\n");
+      NodeFS.writeFileSync(stalePath, sentinel);
+      const stale = run("--check");
+      expect(stale.error).toBeUndefined();
+      expect(stale.status).toBe(1);
+      expect(stale.stderr).toContain("is stale");
+      expect(NodeFS.readFileSync(stalePath)).toEqual(sentinel);
+    });
+  });
+
   it("gives every theme the same variables and a fixed Clerk palette for its appearance", () => {
     const css =
       NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../global.css"), "utf8") +

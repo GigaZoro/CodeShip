@@ -1130,6 +1130,147 @@ describe("releasing a held account", () => {
   );
 });
 
+describe("cross-provider launch routing", () => {
+  const codex = ProviderDriverKind.make("codex");
+  const muse = ProviderDriverKind.make("muse");
+  const codexMain = ProviderInstanceId.make("codex_main");
+  const codexSpare = ProviderInstanceId.make("codex_spare");
+  const museMain = ProviderInstanceId.make("muse_main");
+  const named = { instanceId: primary, model: auto.model };
+  const codexPick = { instanceId: codexMain, model: "gpt-explicit" };
+  const musePick = { instanceId: museMain, model: "muse-explicit" };
+  const claudeReset = "2026-11-05T00:00:00.000Z";
+  const codexReset = "2026-11-04T00:00:00.000Z";
+  const fallbackProvider = (
+    instanceId: ProviderInstanceId,
+    driver: ProviderDriverKind,
+    models: ReadonlyArray<string>,
+    resetsAt: string,
+  ) =>
+    provider(instanceId, {
+      driver,
+      models: models.map((slug) => ({ ...provider(primary).models[0]!, slug, aliases: [] })),
+      usageLimits: {
+        checkedAt: "2026-11-03T11:59:00.000Z",
+        windows: [{ id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 20, resetsAt }],
+      },
+    });
+
+  const input = (limited: ReadonlyArray<ProviderInstanceId> = [primary, second]) => ({
+    selection: named,
+    projectId,
+    nowMs,
+    scheduled: true,
+    mcpSignInsNeeded: signIns(),
+    providers: [
+      provider(primary),
+      provider(second),
+      fallbackProvider(codexMain, codex, ["gpt-auto", codexPick.model], claudeReset),
+      fallbackProvider(codexSpare, codex, ["gpt-auto", codexPick.model], codexReset),
+      fallbackProvider(museMain, muse, [musePick.model], claudeReset),
+    ],
+    settings: {
+      ...settings([primary, second, codexMain, codexSpare, museMain]),
+      autoModeModels: { codex: { model: "gpt-auto" }, muse: { model: musePick.model } },
+      providerInstances: {
+        ...settings([primary, second]).providerInstances,
+        [codexMain]: { driver: codex, enabled: true },
+        [codexSpare]: { driver: codex, enabled: true },
+        [museMain]: { driver: muse, enabled: true },
+      },
+    },
+    recordedLimits: new Map(
+      limited.map((id) => [
+        id,
+        [
+          {
+            resetAt: id === codexSpare ? codexReset : claudeReset,
+            refusedAt: "2026-11-03T11:00:00Z",
+          },
+        ],
+      ]),
+    ),
+  });
+
+  it.each([
+    {
+      name: "takes the first configured alternative",
+      alternatives: [musePick, codexPick],
+      expected: musePick,
+    },
+    {
+      name: "moves on when the first alternative is limited",
+      alternatives: [musePick, codexPick],
+      limited: [primary, second, museMain],
+      expected: codexPick,
+    },
+    {
+      name: "passes over a disabled alternative",
+      alternatives: [musePick, codexPick],
+      disabled: museMain,
+      expected: codexPick,
+    },
+    {
+      name: "tries the named alternative's model on another account with room",
+      alternatives: [codexPick, musePick],
+      limited: [primary, second, codexMain],
+      expected: { ...codexPick, instanceId: codexSpare },
+    },
+    {
+      name: "uses the other provider's Auto model without a configured alternative",
+      alternatives: [],
+      expected: { instanceId: codexSpare, model: "gpt-auto" },
+    },
+  ])("$name and admits the scheduled run", ({ alternatives, limited, disabled, expected }) => {
+    const base = input(limited);
+    const context = {
+      ...base,
+      settings: {
+        ...base.settings,
+        projectSettingsOverrides:
+          disabled === undefined
+            ? {}
+            : { [projectId]: { providerInstances: { [disabled]: { enabled: false } } } },
+      },
+      fallbackModelSelections: alternatives,
+    };
+    assert.include(failoverLimitedLaunch(context).selection, expected);
+    assert.isNull(usageBlock({ ...context, delegates: [] }));
+  });
+
+  it("reports the earliest return of room across providers", () => {
+    assert.include(
+      usageBlock({
+        ...input([primary, second, codexMain, codexSpare, museMain]),
+        delegates: [],
+      }),
+      { driver: codex, until: codexReset },
+    );
+  });
+
+  it("keeps all limited accounts in the Auto wait when they advertise different model IDs", () => {
+    const base = input([primary, second, codexMain, codexSpare, museMain]);
+    const block = usageBlock({
+      ...base,
+      selection: auto,
+      providers: base.providers.map((account) =>
+        account.instanceId === second
+          ? {
+              ...account,
+              models: account.models.map((model) => ({ ...model, slug: "other-opus-id" })),
+            }
+          : account,
+      ),
+      settings: {
+        ...base.settings,
+        autoModeModels: { ...base.settings.autoModeModels, [claude]: { model: "primary" } },
+      },
+      delegates: [],
+    });
+    assert.includeMembers([...(block?.accounts ?? [])], [primary, second]);
+  });
+});
+
 describe("usageBlock", () => {
   const codexDriver = ProviderDriverKind.make("codex");
   const codexMain = ProviderInstanceId.make("codex_main");

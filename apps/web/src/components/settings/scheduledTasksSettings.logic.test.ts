@@ -224,6 +224,18 @@ describe("editing scheduled task branch settings", () => {
   });
 });
 
+it("treats a copied task description as new on the destination", () => {
+  const task = { ...legacyTask, description: "Queue health" };
+  expect(taskToDraft(task)).toMatchObject({
+    description: "Queue health",
+    savedDescription: "Queue health",
+  });
+  expect(copyTaskDraft(task, "Copy")).toMatchObject({
+    description: "Queue health",
+    savedDescription: "",
+  });
+});
+
 describe("a task's run condition in the editor", () => {
   const checked: ScheduledTask = {
     ...legacyTask,

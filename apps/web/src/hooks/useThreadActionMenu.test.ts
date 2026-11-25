@@ -35,6 +35,10 @@ function recordEffect(action: string) {
 }
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
+vi.mock("./useThreadTagActions", () => ({
+  readThreadTagsMenuState: () => ({ entries: [], canEdit: false }),
+  useThreadTagActions: () => vi.fn(),
+}));
 vi.mock("./useThreadFolderActions", () => ({
   readThreadFolderMenuState: () => null,
   useThreadFolderActions: () => ({ runMenuAction: vi.fn() }),

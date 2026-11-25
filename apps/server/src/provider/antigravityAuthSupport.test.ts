@@ -32,6 +32,7 @@ import {
   makeAntigravityStdoutTransform,
   parseAntigravityAuthorizationUrl,
   prepareAntigravityProfile,
+  makeAntigravityLoginProfiles,
   resolveAntigravityInstanceDirectories,
 } from "./antigravityAuthSupport.ts";
 
@@ -197,6 +198,38 @@ describe("Antigravity process environment", () => {
     expect(perRun.env?.TEMP).toBe(`${windowsProfile.tempDirectory}\\run-1`);
     expect(perRun.env?.TMP).toBe(`${windowsProfile.tempDirectory}\\run-1`);
   });
+
+  it.effect(
+    "publishes only the selected native profile and keeps the old credential isolated",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = path.join(yield* fs.makeTempDirectoryScoped(), "profile");
+        const id = ProviderInstanceId.make("test");
+        const profiles = yield* makeAntigravityLoginProfiles(root, id);
+        const token = (home: string) => path.join(home, "antigravity-acp", "acp_token.json");
+        const abandoned = yield* Effect.scoped(
+          profiles
+            .stage("00000000-0000-4000-8000-000000000001")
+            .pipe(Effect.map((profile) => profile.home)),
+        );
+        expect(yield* fs.exists(abandoned)).toBe(false);
+        const staged = yield* profiles.stage("00000000-0000-4000-8000-000000000002");
+        yield* fs.writeFileString(token(root), "old");
+        expect((yield* staged.persist.pipe(Effect.flip)).operation).toBe("save");
+        expect(yield* fs.readFileString(token(root))).toBe("old");
+        yield* fs.writeFileString(token(staged.home), "new");
+        expect((yield* makeAntigravityLoginProfiles(root, id)).active).toBe(root);
+        yield* staged.persist;
+        expect((yield* makeAntigravityLoginProfiles(root, id)).active).toBe(staged.home);
+        expect(profiles.active).toBe(root);
+        expect(yield* fs.readFileString(token(root))).toBe("old");
+        yield* staged.activate(true);
+        expect(yield* fs.readFileString(token(profiles.active))).toBe("new");
+        expect(yield* fs.exists(token(root))).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 
   it.effect("keeps accounts separate even when instance IDs differ only by case", () =>
     Effect.gen(function* () {

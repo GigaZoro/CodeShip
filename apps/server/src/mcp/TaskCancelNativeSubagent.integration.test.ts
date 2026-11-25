@@ -172,8 +172,9 @@ const cancelBackgroundOnlyTask = (
         ProviderReplayHarness.layerWithRegistry(
           { name: "task-cancel-native-subagent" },
           layerAdapters,
+          // The test drains both servers itself: drain() returns before an effect a daemon claimed settles.
           restarted
-            ? { databaseLayer, recoverOnStartup: true }
+            ? { databaseLayer, recoverOnStartup: true, runEffectWorker: false }
             : { databaseLayer, runEffectWorker: false },
         ),
       );

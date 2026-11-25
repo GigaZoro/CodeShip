@@ -11,6 +11,8 @@ import {
   type OrchestrationV2ThreadShell,
   type ProviderAuthState,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -20,6 +22,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -27,6 +30,7 @@ import { AcpProviderCapabilitiesV2 } from "@t3tools/provider-acp/server/adapter"
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderAuthService from "./ProviderAuthService.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity-personal");
@@ -131,6 +135,7 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     logoutError?: ProviderSetupError;
     sharedCredentials?: boolean;
     sharedBusy?: boolean;
+    busySessionInstance?: ProviderInstanceId;
     sharedBusyEffect?: Effect.Effect<boolean>;
     responds?: boolean;
     /** The instance also keeps a login only to read its limits. */
@@ -303,6 +308,8 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
             }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          reserveIdleCredentialBinding: (ids) =>
+            Effect.succeed(!input.busySessionInstance || !ids.includes(input.busySessionInstance)),
           release: ({ providerSessionId, reason }) =>
             Effect.gen(function* () {
               assert.isTrue(gateClosed);
@@ -432,6 +439,38 @@ const observeAuth = Effect.fn("ProviderAuthService.test.observeAuth")(function* 
 });
 
 describe("ProviderAuthService", () => {
+  it.effect(
+    "periodically reserves a disconnected account before applying unattended credentials",
+    () =>
+      Effect.gen(function* () {
+        const refreshed = yield* Deferred.make<boolean>();
+        const instance = makeInstance({ instanceId, enabled: true });
+        const providers = Layer.mergeAll(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            listInstances: Effect.succeed([instance]),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            reserveIdleCredentialBinding: (ids, options) =>
+              Effect.succeed(ids.includes(instanceId) && options?.requireDisconnected === true),
+          }),
+          Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({
+            refreshUnattendedSecrets: (reserve) =>
+              Effect.scoped(reserve(instanceId)).pipe(
+                Effect.flatMap((reserved) => Deferred.succeed(refreshed, reserved)),
+                Effect.asVoid,
+              ),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* TestClock.adjust("5 minutes");
+          assert.isTrue(yield* Deferred.await(refreshed));
+        }).pipe(
+          Effect.provide(
+            ProviderAuthService.layerUnattendedSecretRefresh.pipe(Layer.provide(providers)),
+          ),
+        );
+      }),
+  );
   it.effect("a limits sign-in and its sign-out leave the account's sessions running", () =>
     Effect.gen(function* () {
       const { service, actions, sessions } = yield* makeHarness({
@@ -466,6 +505,29 @@ describe("ProviderAuthService", () => {
         assert.isBelow(actions.indexOf("invalidate-shared"), actions.indexOf("native-logout"));
       }),
   );
+  it.effect("refuses an in-place login through the service while a credential alias has work", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({
+        sharedCredentials: true,
+        busySessionInstance: otherInstanceId,
+      });
+      h.replaceAuth(
+        yield* ProviderAuthFlow.make({
+          instanceId,
+          credentialBinding: h.auth.credentialBinding!,
+          methods: Effect.succeed([
+            { id: "native", name: "Native", description: null, type: "agent" },
+          ]),
+          authenticate: () => Effect.die("started native login while a peer was working"),
+          logout: Effect.void,
+        }),
+      );
+      const error = yield* h.service.start({ instanceId }, owner).pipe(Effect.flip);
+      assert.include(error.detail, "Wait for turns");
+      assert.deepEqual(h.actions, []);
+    }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layer)),
+  );
+
   it.effect("rejects overlapping changes to a shared sign-in", () =>
     Effect.gen(function* () {
       const { service, actions } = yield* makeHarness({

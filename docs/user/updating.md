@@ -6,6 +6,9 @@ of the sidebar and **Settings → Machines & access** offer to update it. The de
 app checks for new releases on its own, so the update button appears only when
 there is something to update.
 
+Open **Release notes** beside **Details** to see what changed in your installed
+version. Search by date, title, or a word in a note to find older changes offline.
+
 ## Update everything at once
 
 The update button at the bottom of the sidebar updates every connected machine
@@ -138,7 +141,9 @@ restart. Changes are saved to connected environments that support this setting;
 update older servers first. If a supported environment was offline or has a
 different value, use **Apply to all** in Settings after it connects.
 T3.CodeShip must start again on that machine;
-the setting does not enable automatic startup. Terminal commands may still be
+the setting does not enable automatic startup. Threads resume one at a time and wait
+while the machine is short of memory; see
+[Wait while memory is short](project-settings.md#wait-while-memory-is-short). Terminal commands may still be
 interrupted, and threads without saved provider resume state need a new message.
 A message the restart cut before the agent received it, while its worktree was
 being prepared or its agent was starting, is sent again as it was, with the same
@@ -169,7 +174,8 @@ the restarted turn is told.
 An interrupted `/compact` compacts again. An approval or secret the restart
 cancelled is asked for again when the thread resumes. A question the agent asked
 stays open for your answer, which continues the thread. A thread is not resumed
-while it is archived, snoozed, or settled, or after you stopped it. After three
+while it is archived, snoozed, or settled, or after you stopped it. One that waits
+for memory has begun to resume: snoozing it only hides it, and Stop ends it. After three
 consecutive crash recoveries of an unfinished turn, even when they are more than five
 minutes apart, or three automatic resumes of the same turn within five minutes, the
 thread waits for your next message. A completed turn or a planned shutdown resets the

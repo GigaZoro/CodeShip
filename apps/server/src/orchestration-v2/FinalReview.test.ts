@@ -120,6 +120,7 @@ describe("finalReviewCommand", () => {
     assert.strictEqual(command?.commandId, `final-review:${threadId}:${runId}`);
     assert.deepEqual(command?.dispatchMode, { type: "queue_after_active" });
     assert.strictEqual(command?.creationSource, "server");
+    assert.strictEqual(command?.demandSourceRunId, runId);
     const text = command?.text ?? "";
     assert.include(
       text,

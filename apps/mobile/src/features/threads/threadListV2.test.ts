@@ -370,6 +370,29 @@ describe("getThreadListV2OrderedSection", () => {
   });
 });
 
+describe("listedSections", () => {
+  it("lists the pinned rows a tag filter shows, and whether Active keeps its keys' order", () => {
+    const pinned = (id: string, pinOrderKey: string, tags: string[]) => {
+      const thread = makeThread({ id: ThreadId.make(id), title: id, pinnedAt: NOW, pinOrderKey });
+      return { ...thread, source: { ...thread.source, tags } };
+    };
+    const threads = [pinned("a", "a", ["ui"]), pinned("b", "b", []), pinned("c", "c", ["ui"])];
+    const listedSections = (workingShelfEnabled: boolean) =>
+      buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        selectedTags: ["ui"],
+        workingShelfEnabled,
+      }).listedSections;
+
+    expect(listedSections(false).pinned.map((thread) => thread.id)).toEqual(["a", "c"]);
+    expect(listedSections(false).activeManualOrder).toBe(true);
+    expect(listedSections(true).activeManualOrder).toBe(false);
+  });
+});
+
 describe("buildThreadListV2Items", () => {
   it("hides snoozed threads and counts them — visibility parity with web", () => {
     const layout = buildThreadListV2Items({
@@ -732,6 +755,20 @@ describe("buildThreadListV2Items settled paging", () => {
     });
     expect(unloadedOnly.settledCount).toBe(5);
     expect(unloadedOnly.settledShelfHeaderIndex).toBe(0);
+
+    // A filter cannot count older threads, but keeps the shelf so it can page them.
+    const filteredUnloaded = buildThreadListV2Items({
+      threads: [],
+      environmentId: null,
+      searchQuery: "",
+      settledLimit: 10,
+      now: NOW,
+      unloadedSettledCount: 5,
+      selectedTags: ["ui"],
+    });
+    expect(filteredUnloaded.settledCount).toBe(0);
+    expect(filteredUnloaded.hiddenSettledCount).toBeNull();
+    expect(filteredUnloaded.settledShelfHeaderIndex).toBe(0);
   });
 });
 

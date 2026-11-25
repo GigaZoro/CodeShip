@@ -224,7 +224,7 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { toastManager } from "./ui/toast";
 import { projectScriptIdFromCommand } from "@t3tools/shared/projectScripts";
 import { newMessageId } from "~/lib/utils";
-import { isInSideChatPane, type SideChatParentPanel } from "~/lib/sideChatPane";
+import { isInSideChatPane, type EmbeddedChatHost } from "~/lib/sideChatPane";
 import {
   NO_PROVIDER_MODEL_SELECTION,
   providerInstanceEntriesFor,
@@ -289,6 +289,7 @@ import {
   useQuietThreadProjection,
   useThreadUpdatedAt,
   useThreadLastVisitedAt,
+  useThreadPendingSubagentRequest,
   useQuietThreadVisibleTurnItems,
   useThreadStatus,
   useThreadHistory,
@@ -431,8 +432,8 @@ type ChatViewProps =
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
-      /** A side chat in its parent's right panel; the parent keeps the keyboard and workspace UI. */
-      embedded?: SideChatParentPanel;
+      /** A chat in another thread's right panel; that thread keeps the keyboard and workspace UI. */
+      embedded?: EmbeddedChatHost;
       routeKind: "server";
       draftId?: never;
     }
@@ -532,12 +533,14 @@ export default function ChatView(props: ChatViewProps) {
   const fallbackDetailRef = serverThreadShell === null ? routeThreadDetailRef : null;
   const fallbackUpdatedAt = useThreadUpdatedAt(fallbackDetailRef);
   const fallbackLastVisitedAt = useThreadLastVisitedAt(fallbackDetailRef);
+  const fallbackSubagentRequest = useThreadPendingSubagentRequest(fallbackDetailRef);
   const serverThread =
     serverThreadShell !== null || serverProjection === null || fallbackUpdatedAt === null
       ? serverThreadShell
       : presentThreadShellFromProjection(environmentId, threadId, serverProjection, {
           updatedAt: fallbackUpdatedAt,
           lastVisitedAt: fallbackLastVisitedAt,
+          pendingSubagentRequest: fallbackSubagentRequest,
         });
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
@@ -947,8 +950,10 @@ export default function ChatView(props: ChatViewProps) {
   const parentThreadLink = (() => {
     if (sideChatParentRef !== null) {
       const title = sideChatParent?.title ?? t("Parent thread");
-      // Embedded, the parent is the view around it.
-      if (embedded) return { title, sideChat: true };
+      // Embedded in its parent's panel, the parent is the view around it.
+      if (embedded && scopedThreadKey(parentPanel.hostRef) === scopedThreadKey(sideChatParentRef)) {
+        return { title, sideChat: true };
+      }
       return {
         title,
         sideChat: true,
@@ -1669,6 +1674,13 @@ export default function ChatView(props: ChatViewProps) {
     followUpSent: timelineMessages.filter((message) => message.role === "user").length > 1,
   });
   const onCancelWorktreeSetupStable = useStableCallback(() => void cancelWorktreeSetup());
+  // The terminal drawer is thread state an embedded chat does not render, so the thread moves to the main view.
+  const onOpenWorktreeSetupTerminalStable = useStableCallback((terminalId: string) => {
+    onOpenWorktreeSetupTerminal?.(terminalId);
+    if (embedded && activeThreadRef) {
+      useRightPanelStore.getState().requestThreadReveal(activeThreadRef);
+    }
+  });
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -2497,6 +2509,7 @@ export default function ChatView(props: ChatViewProps) {
     setBranchMismatchDismissTick,
     showBranchMismatchBanner,
     threadStatusLine,
+    threadPin,
     shortcuts: threadLifecycleShortcuts,
   } = useThreadLifecycle({
     environmentId,
@@ -3218,9 +3231,10 @@ export default function ChatView(props: ChatViewProps) {
   const threadHasChanges = gitStatus?.isRepo
     ? gitStatus.hasWorkingTreeChanges || gitStatus.hasCommitsAhead
     : null;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- offers this thread's agent actions to the command palette while the chat view shows it
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- offers this thread's agent actions to the command palette while the main chat view shows it
   useEffect(() => {
-    if (!agentActionsOffered) return;
+    // The palette acts on the routed thread; an embedded chat would replace its target.
+    if (!agentActionsOffered || embedded) return;
     return publishAgentActionsTarget({
       threadKey: routeThreadKey,
       isGitRepo,
@@ -3229,6 +3243,7 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [
     agentActionsOffered,
+    embedded,
     routeThreadKey,
     isGitRepo,
     agentActionsUnavailableReason,
@@ -3457,6 +3472,9 @@ export default function ChatView(props: ChatViewProps) {
     runShellCommand: runSideChatShellCommandStable,
   };
 
+  const timelineRunShellCommand = embedded ? parentPanel.runShellCommand : runShellCommandStable;
+  const timelineOpenToolDiff = embedded ? parentPanel.openToolDiff : onOpenToolDiffStable;
+
   if (!activeThread) {
     return embedded ? null : <NoActiveThreadState />;
   }
@@ -3607,6 +3625,7 @@ export default function ChatView(props: ChatViewProps) {
               activeThreadTitle={activeThread.title}
               activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
               activeProject={activeProject ?? null}
+              threadPin={threadPin}
               parentThreadLink={headerParentThreadLink}
               onOpenThread={onOpenRelatedThreadStable}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
@@ -3680,8 +3699,8 @@ export default function ChatView(props: ChatViewProps) {
                   citationHistory={citationHistory}
                   onCiteAssistantText={citeAssistantTextStable}
                   onReplyToResponse={replyToResponseStable}
-                  {...(activeProject
-                    ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
+                  {...(activeProject && timelineRunShellCommand
+                    ? { onRunShellCommand: timelineRunShellCommand }
                     : {})}
                   {...(canOperateThread ? { onAddToComposer: addToComposerStable } : {})}
                   isWorking={isWorking}
@@ -3708,7 +3727,9 @@ export default function ChatView(props: ChatViewProps) {
                   {...(draftId
                     ? { onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocallyStable }
                     : {})}
-                  {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
+                  {...(onOpenWorktreeSetupTerminal
+                    ? { onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminalStable }
+                    : {})}
                   isPreparingWorktree={isPreparingWorktree}
                   footer={timelineFooter}
                   listRef={legendListRef}
@@ -3727,7 +3748,7 @@ export default function ChatView(props: ChatViewProps) {
                   routeThreadKey={displayedTimelineKey}
                   displayThreadKey={displayedTimelineKey}
                   announceTurnStatus={!isProviderSubagent}
-                  onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
+                  {...(timelineOpenToolDiff ? { onOpenToolDiff: timelineOpenToolDiff } : {})}
                   // Side chat runs keep no checkpoints to diff, and a fork would promote the side chat.
                   {...(embedded
                     ? {}
@@ -4199,6 +4220,11 @@ export default function ChatView(props: ChatViewProps) {
                         }
                       : null
                   }
+                  model={{
+                    label: providerSubagentModelLabel,
+                    effortLabel: providerSubagentEffortLabel,
+                  }}
+                  threadShell={serverThread}
                   usage={{
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,

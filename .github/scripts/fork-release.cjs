@@ -57,7 +57,7 @@ function carryMacosFeed(feed, tag) {
 
 function main(argv) {
   const [command, ...args] = argv;
-  if (command === "public-config") {
+  if (command === "public-config" && args.length <= 1) {
     const [file = ".env.example"] = args;
     process.stdout.write(`${publicConfig(fs.readFileSync(file, "utf8")).join("\n")}\n`);
     return;

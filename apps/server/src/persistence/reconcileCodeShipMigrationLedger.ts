@@ -23,7 +23,15 @@ export const legacyCodeShipMigrationNames = [
   "PullRequestReviewGuideLanguages",
   "CommandRunLossEvidence",
   "MonitoringThreadAnalyses",
+  "NodePayloadWithoutColumnKeys",
+  "CommandRunProcessIdentity",
+  "ScheduledTaskDescriptions",
+  "TurnItemPayloadWithoutColumnKeys",
+  "CommandRunShell",
 ] as const;
+
+/** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */
+const legacyResumableCodeShipMigrationIds = [91, 97, 100] as const;
 
 type MigrationRow = { readonly id: number; readonly name: string };
 
@@ -90,28 +98,37 @@ export const reconcileCodeShipMigrationLedger = Effect.fn("reconcileCodeShipMigr
             yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = ${row.id} AND name = ${row.name}`;
           }
         }
-        // The old cursor belongs to compaction only if neither completed migration occupied id 91.
-        if (tables.has("migration_progress") && !upstream.some(({ id }) => id === 91)) {
-          const cursors = yield* sql<{ readonly cursor_json: string }>`
-        SELECT cursor_json FROM migration_progress WHERE migration_id = 91
-      `;
-          const cursor = cursors[0];
-          if (cursor !== undefined) {
+        // A cursor is the fork's only while the upstream ledger still holds the fork migration
+        // before it and nothing at its own id: a later upstream migration may take that id.
+        if (tables.has("migration_progress")) {
+          for (const legacyId of legacyResumableCodeShipMigrationIds) {
+            const previous = legacyCodeShipMigrationNames[legacyId - 79];
+            if (
+              upstream.some(({ id }) => id === legacyId) ||
+              !upstream.some(({ id, name }) => id === legacyId - 1 && name === previous)
+            )
+              continue;
+            const cursors = yield* sql<{ readonly cursor_json: string }>`
+          SELECT cursor_json FROM migration_progress WHERE migration_id = ${legacyId}
+        `;
+            const cursor = cursors[0];
+            if (cursor === undefined) continue;
+            const forkId = legacyId - 77;
             yield* sql`CREATE TABLE IF NOT EXISTS codeship_migration_progress (
           migration_id INTEGER PRIMARY KEY NOT NULL, cursor_json TEXT NOT NULL
         )`;
             const existing = yield* sql<{ readonly cursor_json: string }>`
-          SELECT cursor_json FROM codeship_migration_progress WHERE migration_id = 14
+          SELECT cursor_json FROM codeship_migration_progress WHERE migration_id = ${forkId}
         `;
             if (existing[0] !== undefined && existing[0].cursor_json !== cursor.cursor_json) {
               return yield* new Migrator.MigrationError({
                 kind: "BadState",
-                message: "Conflicting CodeShip compaction cursors.",
+                message: `Conflicting CodeShip migration cursors for ${forkId}_${legacyCodeShipMigrationNames[legacyId - 78]}.`,
               });
             }
             yield* sql`INSERT INTO codeship_migration_progress (migration_id, cursor_json)
-          VALUES (14, ${cursor.cursor_json}) ON CONFLICT (migration_id) DO NOTHING`;
-            yield* sql`DELETE FROM migration_progress WHERE migration_id = 91`;
+          VALUES (${forkId}, ${cursor.cursor_json}) ON CONFLICT (migration_id) DO NOTHING`;
+            yield* sql`DELETE FROM migration_progress WHERE migration_id = ${legacyId}`;
           }
           if ((yield* sql`SELECT 1 FROM migration_progress LIMIT 1`).length === 0) {
             yield* sql`DROP TABLE migration_progress`;

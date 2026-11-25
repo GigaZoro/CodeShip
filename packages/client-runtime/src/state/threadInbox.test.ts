@@ -21,6 +21,7 @@ function thread(id: string, working: boolean) {
     createdAt: "2026-06-01T00:00:00.000Z",
     unsettledAt: null,
     latestRun: null,
+    latestUserMessageAt: null as string | null,
     hasActionableProposedPlan: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
@@ -263,6 +264,31 @@ describe("sortWorkingThreadsBySend", () => {
     expect(
       sortWorkingThreadsBySend([launched, sentFirst, sentLast]).map((thread) => thread.id),
     ).toEqual(["sent-last", "sent-first", "launched"]);
+  });
+
+  it("counts a steer as a send on a server without authored message times", () => {
+    const run = {
+      runId: RunId.make("run:first"),
+      status: "running" as const,
+      requestedAt: "2026-06-01T01:00:00.000Z",
+      startedAt: "2026-06-01T01:00:00.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    };
+    const steered = {
+      ...thread("steered", true),
+      latestRun: run,
+      latestUserMessageAt: "2026-06-01T03:00:00.000Z",
+    };
+    const sentBetween = {
+      ...thread("sent-between", true),
+      latestRun: { ...run, requestedAt: "2026-06-01T02:00:00.000Z" },
+      latestUserMessageAt: "2026-06-01T02:00:00.000Z",
+    };
+    expect(sortWorkingThreadsBySend([sentBetween, steered]).map((thread) => thread.id)).toEqual([
+      "steered",
+      "sent-between",
+    ]);
   });
 });
 

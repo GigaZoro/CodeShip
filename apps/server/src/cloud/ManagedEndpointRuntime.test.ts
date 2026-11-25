@@ -43,7 +43,7 @@ const layerRelayClientAvailable = Layer.succeed(
     }),
     install: Effect.die("unused"),
     installWithProgress: () => Effect.die("unused"),
-    pruneManagedVersions: Effect.void,
+    pruneManagedVersions: Effect.succeed(true),
   }),
 );
 
@@ -1229,87 +1229,98 @@ describe("CloudManagedEndpointRuntime", () => {
     }),
   );
 
-  it.effect(
-    "runs an older relay client while the pinned one installs, then hands off to it and prunes",
-    () =>
-      Effect.gen(function* () {
-        const olderClient = {
-          status: "available",
-          executablePath: "/managed/2025.9.0/cloudflared",
-          source: "managed",
-          version: "2025.9.0",
-        } as const;
-        const pinnedClient = {
-          status: "available",
-          executablePath: "/managed/pinned/cloudflared",
-          source: "managed",
-          version: RelayClient.CLOUDFLARED_VERSION,
-        } as const;
-        let installed = false;
-        const releaseInstall = yield* Deferred.make<void>();
-        const pruned = yield* Deferred.make<void>();
-        const spawned = yield* Queue.unbounded<string>();
-        const olderStopped = yield* Deferred.make<void>();
-        const output = yield* Queue.unbounded<Uint8Array>();
-        const spawner = ChildProcessSpawner.make((command) =>
-          Effect.gen(function* () {
-            const executable = ChildProcess.isStandardCommand(command) ? command.command : "";
-            yield* Queue.offer(spawned, executable);
-            const handle = makeHandle({
-              pid: executable === pinnedClient.executablePath ? 2 : 1,
-              onKill: () => {
-                if (executable === olderClient.executablePath) {
-                  Deferred.doneUnsafe(olderStopped, Effect.void);
-                }
-              },
-              ...(executable === pinnedClient.executablePath
-                ? { output: Stream.fromQueue(output) }
-                : {}),
-            });
-            yield* Effect.addFinalizer(() => handle.kill().pipe(Effect.ignore));
-            return handle;
-          }),
-        );
-        const runtime = yield* buildCloudManagedEndpointRuntime(
-          spawner,
-          Layer.succeed(
-            RelayClient.RelayClient,
-            RelayClient.RelayClient.of({
-              resolve: Effect.sync(() => (installed ? pinnedClient : olderClient)),
-              install: Deferred.await(releaseInstall).pipe(
-                Effect.andThen(
-                  Effect.sync(() => {
-                    installed = true;
-                    return pinnedClient;
-                  }),
-                ),
+  it.effect("hands off to the pinned relay and retries busy cleanup on its next registration", () =>
+    Effect.gen(function* () {
+      const olderClient = {
+        status: "available",
+        executablePath: "/managed/2025.9.0/cloudflared",
+        source: "managed",
+        version: "2025.9.0",
+      } as const;
+      const pinnedClient = {
+        status: "available",
+        executablePath: "/managed/pinned/cloudflared",
+        source: "managed",
+        version: RelayClient.CLOUDFLARED_VERSION,
+      } as const;
+      let installed = false;
+      const releaseInstall = yield* Deferred.make<void>();
+      const busy = yield* Deferred.make<void>();
+      const pruned = yield* Deferred.make<void>();
+      const spawned = yield* Queue.unbounded<string>();
+      const olderStopped = yield* Deferred.make<void>();
+      const output = yield* Queue.unbounded<Uint8Array>();
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          const executable = ChildProcess.isStandardCommand(command) ? command.command : "";
+          yield* Queue.offer(spawned, executable);
+          const handle = makeHandle({
+            pid: executable === pinnedClient.executablePath ? 2 : 1,
+            onKill: () => {
+              if (executable === olderClient.executablePath) {
+                Deferred.doneUnsafe(olderStopped, Effect.void);
+              }
+            },
+            ...(executable === pinnedClient.executablePath
+              ? { output: Stream.fromQueue(output) }
+              : {}),
+          });
+          yield* Effect.addFinalizer(() => handle.kill().pipe(Effect.ignore));
+          return handle;
+        }),
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        spawner,
+        Layer.succeed(
+          RelayClient.RelayClient,
+          RelayClient.RelayClient.of({
+            resolve: Effect.sync(() => (installed ? pinnedClient : olderClient)),
+            install: Deferred.await(releaseInstall).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  installed = true;
+                  return pinnedClient;
+                }),
               ),
-              installWithProgress: () => Effect.die("unused"),
-              pruneManagedVersions: Deferred.succeed(pruned, undefined).pipe(Effect.asVoid),
+            ),
+            installWithProgress: () => Effect.die("unused"),
+            pruneManagedVersions: Effect.gen(function* () {
+              if (!(yield* Deferred.isDone(busy))) {
+                yield* Deferred.succeed(busy, undefined);
+                return false;
+              }
+              yield* Deferred.succeed(pruned, undefined);
+              return true;
             }),
-          ),
-        );
+          }),
+        ),
+      );
 
-        const status = yield* runtime.applyConfig({
-          providerKind: "cloudflare_tunnel",
-          connectorToken: "token",
-        });
-        expect(status).toMatchObject({ status: "running", pid: 1 });
-        expect(yield* Queue.take(spawned)).toBe(olderClient.executablePath);
+      const status = yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+      expect(status).toMatchObject({ status: "running", pid: 1 });
+      expect(yield* Queue.take(spawned)).toBe(olderClient.executablePath);
 
-        yield* Deferred.succeed(releaseInstall, undefined);
-        expect(yield* Queue.take(spawned)).toBe(pinnedClient.executablePath);
-        expect(Option.isNone(yield* Deferred.poll(olderStopped))).toBe(true);
+      yield* Deferred.succeed(releaseInstall, undefined);
+      expect(yield* Queue.take(spawned)).toBe(pinnedClient.executablePath);
+      expect(Option.isNone(yield* Deferred.poll(olderStopped))).toBe(true);
 
-        yield* Queue.offer(
-          output,
-          new TextEncoder().encode(
-            "2026-10-08T00:00:00Z INF Registered tunnel connection connIndex=0\n",
-          ),
-        );
-        yield* Deferred.await(olderStopped);
-        yield* Deferred.await(pruned);
-      }),
+      yield* Queue.offer(
+        output,
+        new TextEncoder().encode(
+          "2026-10-08T00:00:00Z INF Registered tunnel connection connIndex=0\n",
+        ),
+      );
+      yield* Deferred.await(olderStopped);
+      yield* Deferred.await(busy);
+      yield* Queue.offer(
+        output,
+        new TextEncoder().encode("INF Registered tunnel connection connIndex=1\n"),
+      );
+      yield* Deferred.await(pruned);
+    }),
   );
 
   it.effect("installs a missing relay client in the background and then starts it", () =>
@@ -1348,7 +1359,7 @@ describe("CloudManagedEndpointRuntime", () => {
               return pinnedClient;
             }),
             installWithProgress: () => Effect.die("unused"),
-            pruneManagedVersions: Effect.void,
+            pruneManagedVersions: Effect.succeed(true),
           }),
         ),
       );
@@ -1416,7 +1427,7 @@ describe("CloudManagedEndpointRuntime", () => {
               ),
             ),
             installWithProgress: () => Effect.die("unused"),
-            pruneManagedVersions: Effect.void,
+            pruneManagedVersions: Effect.succeed(true),
           }),
         ),
       );
@@ -1476,7 +1487,7 @@ describe("CloudManagedEndpointRuntime", () => {
               ),
             ),
             installWithProgress: () => Effect.die("unused"),
-            pruneManagedVersions: Effect.void,
+            pruneManagedVersions: Effect.succeed(true),
           }),
         ),
       );
@@ -1519,7 +1530,7 @@ describe("CloudManagedEndpointRuntime", () => {
               ),
             ),
             installWithProgress: () => Effect.die("unused"),
-            pruneManagedVersions: Effect.void,
+            pruneManagedVersions: Effect.succeed(true),
           }),
         ),
       );

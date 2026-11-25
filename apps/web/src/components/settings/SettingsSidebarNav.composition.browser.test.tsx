@@ -120,15 +120,11 @@ it("renders the real Ukrainian catalog and searches in either language", async (
     catalog: await loadMessageCatalog("uk"),
     formattingLocale: "uk",
   });
-  try {
-    await using _screen = await renderNav();
-    const search = page.getByRole("combobox", { name: "Шукати в налаштуваннях" });
-    await expect.element(page.getByRole("button", { name: "Загальні" })).toBeVisible();
-    for (const query of ["тема", "theme"]) {
-      await search.fill(query);
-      await expect.element(page.getByRole("option", { name: /Тема/ })).toBeVisible();
-    }
-  } finally {
-    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+  await using _screen = await renderNav();
+  const search = page.getByRole("combobox", { name: "Шукати в налаштуваннях" });
+  await expect.element(page.getByRole("button", { name: "Загальні" })).toBeVisible();
+  for (const query of ["тема", "theme"]) {
+    await search.fill(query);
+    await expect.element(page.getByRole("option", { name: /Тема/ })).toBeVisible();
   }
 });

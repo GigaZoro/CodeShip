@@ -171,14 +171,15 @@ const isProviderAdapterOpenSessionError = Schema.is(
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
- * launch arguments whose appended system prompt or settings cannot be read, or MCP registration
- * that never answers while the query opens. A query that ends before the turn attaches (such as a
- * rejected resume point) never received the prompt either.
+ * unreadable launch arguments or settings, managed settings overriding the chat's Ultracode, MCP
+ * that never answers while the query opens, or unreviewed Consumer Terms. A query that ends before
+ * the turn attaches (such as a rejected resume point) never received the prompt either.
  */
 const PROMPT_REFUSAL_TAGS = [
   "ClaudeBackgroundWorkBlocksQueryReplacementError",
   "ClaudeAppendSystemPromptFileError",
   "ClaudeAppendSystemPromptMissingValueError",
+  "ClaudeUltracodeOverriddenError",
   "ClaudeSettingsLaunchArgError",
   "ClaudeProjectConfigRootError",
   "ClaudeSettingsResolveError",
@@ -757,9 +758,34 @@ export const layer: Layer.Layer<
           : undefined;
       const providerMessage = unsentResumeMessage ?? message;
       const unstarted = { projection, run, attempt, rootNode };
+      const providerSessionId = providerThread.providerSessionId;
+      // A process that sent nothing for a whole start step has stopped answering, and the retry
+      // would wait on it again. One still sending events for other turns stays.
+      const releaseSilentSession = (error: Error) =>
+        isProviderStartStepTimeoutError(error)
+          ? providerSessions
+              .releaseIfSilent({
+                providerSessionId,
+                silentForMs: Duration.toMillis(Duration.minutes(error.minutes)),
+                detail: `The provider sent nothing for ${error.minutes} minutes while a turn waited on it, so it was stopped. The next turn starts a new one.`,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logError(
+                    "orchestration-v2.provider-turn-start.silent-session-release-failed",
+                    {
+                      providerSessionId,
+                      cause,
+                    },
+                  ),
+                ),
+              )
+          : Effect.void;
       const settleStartFailure = (failed: Parameters<typeof settleUnstartedRunFailure>[1]) =>
         Effect.flatMap(input.waitDuringStart, (wait) =>
-          settleUnstartedRunFailure(unstarted, { ...failed, wait }),
+          releaseSilentSession(failed.error).pipe(
+            Effect.andThen(settleUnstartedRunFailure(unstarted, { ...failed, wait })),
+          ),
         );
       if (
         providerMessage.attachments.length === 0 &&
@@ -902,7 +928,6 @@ export const layer: Layer.Layer<
         return;
       }
       const inheritedBackgroundTurnItems = selectInheritedBackgroundItems(recoveryResult.success);
-      const providerSessionId = providerThread.providerSessionId;
       const runControls = makeRunControls({
         threadId: projection.thread.id,
         runId: run.id,

@@ -6,6 +6,7 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceId,
   type OrchestrationV2Subagent,
+  isOrchestrationV2WorkActive,
   REASONING_EFFORT_OPTION_IDS,
 } from "@t3tools/contracts";
 import {
@@ -29,6 +30,78 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 import { deriveProviderInstanceEntries, shouldShowInstanceBadge } from "../../providerInstances";
+import { t } from "~/i18n";
+
+type SubagentSelectionInput = Pick<
+  Parameters<typeof SubagentTooltipContent>[0],
+  "model" | "providerInstanceId" | "origin" | "modelSelection" | "provider" | "childThread"
+>;
+
+/** The child's saved model selection when it still names the model the subagent reports. */
+export function resolveSubagentSelection(props: SubagentSelectionInput) {
+  const childSelection =
+    props.modelSelection ??
+    (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
+  const { modelSlug } = resolveSubagentMetadata({ ...props, modelSelection: childSelection });
+  const childModel = props.provider
+    ? (resolveSelectableModel(
+        props.provider.driver,
+        childSelection?.model,
+        props.provider.models,
+      ) ?? childSelection?.model.trim())
+    : childSelection?.model.trim();
+  const matchingSelection =
+    childModel === modelSlug && childSelection?.instanceId === props.providerInstanceId
+      ? childSelection
+      : undefined;
+  const effort = REASONING_EFFORT_OPTION_IDS.map((id) =>
+    getModelSelectionStringOptionValue(matchingSelection, id),
+  ).find(Boolean);
+  return { childSelection, modelSlug, matchingSelection, effort };
+}
+
+/** Model, then what the subagent is doing now or how it ended, under its title. */
+export function SubagentRowDetail(props: {
+  readonly id?: string | undefined;
+  readonly model: string | null;
+  readonly effort: string | null | undefined;
+  readonly provider: ServerProvider | undefined;
+  readonly status: OrchestrationV2Subagent["status"];
+  readonly progress?: string | null | undefined;
+  /** The status in words, for when the work has ended or reports no progress. */
+  readonly outcome: string;
+  readonly machineLabel?: string | undefined;
+}) {
+  const { modelLabel } = resolveSubagentMetadata({ model: props.model, provider: props.provider });
+  const progress = isOrchestrationV2WorkActive(props.status)
+    ? props.progress?.slice(0, 240).replace(/\s+/gu, " ").trim()
+    : undefined;
+  const metadata = [
+    props.effort ? `${modelLabel} · ${props.effort}` : modelLabel,
+    ...(props.machineLabel === undefined ? [] : [t("on {label}", { label: props.machineLabel })]),
+    progress,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+  // Progress is the newest news and may be cut; the short status otherwise always shows.
+  const outcome = progress ? "" : props.outcome;
+  return (
+    <span
+      id={props.id}
+      className={cn(
+        "flex min-w-0 text-left text-2xs font-normal leading-4",
+        props.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+      )}
+    >
+      {metadata === "" ? null : <span className="min-w-0 truncate">{metadata}</span>}
+      {outcome === "" ? null : (
+        <span className="shrink-0 whitespace-pre">
+          {metadata === "" ? outcome : ` · ${outcome}`}
+        </span>
+      )}
+    </span>
+  );
+}
 
 export function SubagentTooltipContent(props: {
   title: string;
@@ -50,31 +123,14 @@ export function SubagentTooltipContent(props: {
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
-  const childSelection =
-    props.modelSelection ??
-    (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
-  const {
-    modelLabel,
-    modelSlug,
-    workspace: metadata,
-  } = resolveSubagentMetadata({ ...props, modelSelection: childSelection });
+  const { childSelection, modelSlug, matchingSelection, effort } = resolveSubagentSelection(props);
+  const { modelLabel, workspace: metadata } = resolveSubagentMetadata({
+    ...props,
+    modelSelection: childSelection,
+  });
   const preview = subagentDetailPreview(props);
   const providerModel = props.provider?.models.find((candidate) => candidate.slug === modelSlug);
-  const childModel = props.provider
-    ? (resolveSelectableModel(
-        props.provider.driver,
-        childSelection?.model,
-        props.provider.models,
-      ) ?? childSelection?.model.trim())
-    : childSelection?.model.trim();
   const provider = props.provider;
-  const matchingSelection =
-    childModel === modelSlug && childSelection?.instanceId === props.providerInstanceId
-      ? childSelection
-      : undefined;
-  const effort = REASONING_EFFORT_OPTION_IDS.map((id) =>
-    getModelSelectionStringOptionValue(matchingSelection, id),
-  ).find(Boolean);
   const speed = provider
     ? providerModel?.capabilities?.optionDescriptors
         ?.map((descriptor) => {

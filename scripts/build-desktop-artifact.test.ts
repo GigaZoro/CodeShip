@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createPackageWithOptions, extractFile } from "@electron/asar";
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -13,12 +13,14 @@ import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 
 import {
@@ -31,9 +33,16 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   DESKTOP_FILE_EXCLUSIONS,
+  ELECTRON_DIST_DIR,
+  ElectronDistStageError,
+  findStageLockfileDrift,
+  installStagedDependencies,
+  readPnpmLockfileGraph,
+  StageLockfileDriftError,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
+  UnsupportedDesktopBuildTargetError,
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
   packWindowsServerAsar,
@@ -59,6 +68,7 @@ import {
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
   stageCursorSdkPlatformPackages,
+  stageElectronDist,
   WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT,
   WINDOWS_SERVER_ASAR_IGNORE_GLOBS,
   WINDOWS_SERVER_ASAR_RESOURCE,
@@ -67,6 +77,7 @@ import {
   WSL_RUNTIME_ARCHIVE_HASH_NAME,
   WSL_RUNTIME_ARCHIVE_NAME,
   wslRuntimeArchiveStem,
+  writeStageWorkspace,
 } from "./build-desktop-artifact.ts";
 import {
   ReleasePackageManifestError,
@@ -74,13 +85,206 @@ import {
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
+
+const desktopElectronVersion = desktopPackageJson.dependencies.electron;
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
 );
 
-// Keeps pnpm from auto-installing TypeScript, a types-only peer, into the app.
+// pnpm writes its own install as a leading document in both lockfiles.
+const PNPM_LOCKFILE_DOCUMENT = `---
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    configDependencies: {}
+    packageManagerDependencies:
+      pnpm:
+        specifier: 12.14.0
+        version: 12.14.0
+
+packages:
+
+  pnpm@12.14.0:
+    resolution: {integrity: sha512-pnpm}
+
+snapshots:
+
+  pnpm@12.14.0: {}
+`;
+
+// Shaped like the repo lockfile: electron-webauthn carries a typescript peer that
+// STAGE_PEER_OVERRIDES removes in a stage, and fff-node reaches its platform binary.
+const ROOT_LOCKFILE_FIXTURE = `${PNPM_LOCKFILE_DOCUMENT}
+---
+lockfileVersion: '9.0'
+
+patchedDependencies:
+  node-pty@1.2.0-beta.15: a111
+
+importers:
+
+  apps/desktop:
+    dependencies:
+      '@t3tools/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      electron-webauthn:
+        specifier: 1.3.1
+        version: 1.3.1(@tsc-rs/typescript@0.8.0)
+      node-pty:
+        specifier: 1.2.0-beta.15
+        version: 1.2.0-beta.15(patch_hash=a111)
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+
+  apps/server:
+    dependencies:
+      '@ff-labs/fff-node':
+        specifier: 0.11.0
+        version: 0.11.0
+
+packages:
+
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0':
+    resolution: {integrity: sha512-fff-bin}
+
+  '@ff-labs/fff-node@0.11.0':
+    resolution: {integrity: sha512-fff-node}
+
+  '@tsc-rs/typescript@0.8.0':
+    resolution: {integrity: sha512-tsc-rs}
+
+  electron-webauthn@1.3.1:
+    resolution: {integrity: sha512-webauthn}
+
+  node-pty@1.2.0-beta.15:
+    resolution: {integrity: sha512-pty}
+
+  typescript@6.0.3:
+    resolution: {integrity: sha512-typescript}
+
+  zod@4.6.4:
+    resolution: {integrity: sha512-zod-4.6.4}
+
+  zod@4.6.5:
+    resolution: {integrity: sha512-zod}
+
+snapshots:
+
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0': {}
+
+  '@ff-labs/fff-node@0.11.0':
+    optionalDependencies:
+      '@ff-labs/fff-bin-darwin-arm64': 0.11.0
+
+  '@tsc-rs/typescript@0.8.0': {}
+
+  electron-webauthn@1.3.1(@tsc-rs/typescript@0.8.0):
+    dependencies:
+      typescript: '@tsc-rs/typescript@0.8.0'
+      zod: 4.6.5
+
+  electron-webauthn@1.3.1(zod@4.6.4):
+    dependencies:
+      zod: 4.6.4
+
+  node-pty@1.2.0-beta.15(patch_hash=a111): {}
+
+  typescript@6.0.3: {}
+
+  zod@4.6.4: {}
+
+  zod@4.6.5: {}
+`;
+
+const stageLockfileFixture = (input: {
+  readonly zod?: string;
+  readonly zodIntegrity?: string;
+  readonly webauthnSnapshot?: string;
+  /** `null` installs node-pty without its patch. */
+  readonly patchHash?: string | null;
+  readonly extraDirectDependency?: string;
+}) => {
+  const zod = input.zod ?? "4.6.5";
+  const patchHash = input.patchHash === undefined ? "a111" : input.patchHash;
+  const nodePty = patchHash === null ? "1.2.0-beta.15" : `1.2.0-beta.15(patch_hash=${patchHash})`;
+  return `${PNPM_LOCKFILE_DOCUMENT}
+---
+lockfileVersion: '9.0'
+${
+  patchHash === null
+    ? ""
+    : `
+patchedDependencies:
+  node-pty@1.2.0-beta.15: ${patchHash}
+`
+}
+importers:
+
+  .:
+    dependencies:
+      '@ff-labs/fff-bin-darwin-arm64':
+        specifier: 0.11.0
+        version: 0.11.0
+      electron-webauthn:
+        specifier: 1.3.1
+        version: 1.3.1
+      node-pty:
+        specifier: 1.2.0-beta.15
+        version: ${nodePty}${
+          input.extraDirectDependency === undefined
+            ? ""
+            : `
+      ${input.extraDirectDependency}`
+        }
+
+packages:
+
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0':
+    resolution: {integrity: sha512-fff-bin}
+
+  electron-webauthn@1.3.1:
+    resolution: {integrity: sha512-webauthn}
+
+  node-pty@1.2.0-beta.15:
+    resolution: {integrity: sha512-pty}
+
+  zod@${zod}:
+    resolution: {integrity: ${input.zodIntegrity ?? "sha512-zod"}}
+
+snapshots:
+
+  '@ff-labs/fff-bin-darwin-arm64@0.11.0': {}
+
+  ${
+    input.webauthnSnapshot ??
+    `electron-webauthn@1.3.1:
+    dependencies:
+      zod: ${zod}`
+  }
+
+  node-pty@${nodePty}: {}
+
+  zod@${zod}: {}
+`;
+};
+
+const STAGE_SOURCE_IMPORTERS = ["apps/desktop", "apps/server"];
+
+// Signing, notarization and registry credentials, in each spelling pnpm and npm read.
+const CREDENTIAL_NAMES = [
+  "AZURE_CLIENT_SECRET",
+  "NODE_AUTH_TOKEN",
+  "pnpm_config__auth",
+  "PNPM_CONFIG__AUTH",
+  "npm_config_//registry.npmjs.org/:_authToken",
+];
 
 const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(function* (input: {
   readonly root: string;
@@ -104,16 +308,17 @@ const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(
     yield* fs.makeDirectory(path.dirname(memberPath), { recursive: true });
     yield* fs.writeFileString(memberPath, member);
   }
-  const archivePath = path.join(input.root, `${input.stem}.tar.gz`);
+  const archiveName = `${input.stem}.tar.gz`;
   const tar = yield* spawner.spawn(
-    ChildProcess.make("tar", ["-czf", archivePath, "-C", contentRoot, "."], {
+    ChildProcess.make("tar", ["-czf", archiveName, "-C", path.basename(contentRoot), "."], {
+      cwd: input.root,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
     }),
   );
   assert.equal(Number(yield* tar.exitCode), 0);
-  return archivePath;
+  return path.join(input.root, archiveName);
 });
 
 function mockProcess(exitCode: number, stdout = "") {
@@ -638,6 +843,280 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect.each([
+    { name: "a stage that reuses the root resolutions", stage: {}, drift: [] },
+    {
+      name: "a version the root lockfile lacks",
+      stage: { zod: "4.6.7" },
+      drift: [
+        "zod@4.6.7 is not in pnpm-lock.yaml",
+        "electron-webauthn@1.3.1 depends on zod@4.6.7, which pnpm-lock.yaml does not",
+      ],
+    },
+    {
+      name: "a root version fetched from another tarball",
+      stage: { zodIntegrity: "sha512-other" },
+      drift: ["zod@4.6.5 resolves to a different tarball than pnpm-lock.yaml"],
+    },
+    {
+      name: "a peer the root lockfile never links for that package",
+      stage: {
+        webauthnSnapshot: `electron-webauthn@1.3.1(typescript@6.0.3):
+    dependencies:
+      typescript: 6.0.3
+      zod: 4.6.5`,
+      },
+      drift: [
+        "electron-webauthn@1.3.1(typescript@6.0.3) is a peer or patch variant pnpm-lock.yaml does not have",
+      ],
+    },
+    {
+      name: "a peer variant with another variant's dependency",
+      stage: {
+        webauthnSnapshot: `electron-webauthn@1.3.1(zod@4.6.4):
+    dependencies:
+      zod: 4.6.5`,
+      },
+      drift: [
+        "electron-webauthn@1.3.1(zod@4.6.4) depends on zod@4.6.5, which pnpm-lock.yaml does not",
+      ],
+    },
+    {
+      name: "a dependency the root lockfile records and the stage drops",
+      stage: { webauthnSnapshot: "electron-webauthn@1.3.1: {}" },
+      drift: ["electron-webauthn@1.3.1 lacks its dependency zod@4.6.5 from pnpm-lock.yaml"],
+    },
+    {
+      name: "a dependency the stage makes optional",
+      stage: {
+        webauthnSnapshot: `electron-webauthn@1.3.1:
+    optionalDependencies:
+      zod: 4.6.5`,
+      },
+      drift: [
+        "electron-webauthn@1.3.1 lacks its dependency zod@4.6.5 from pnpm-lock.yaml",
+        "electron-webauthn@1.3.1 depends on zod@4.6.5 (optional), which pnpm-lock.yaml does not",
+      ],
+    },
+    {
+      name: "a patch that differs from the root lockfile",
+      stage: { patchHash: "b222" },
+      drift: [
+        "node-pty resolved to 1.2.0-beta.15(patch_hash=b222), but pnpm-lock.yaml pins 1.2.0-beta.15(patch_hash=a111)",
+        "node-pty@1.2.0-beta.15(patch_hash=b222) is a peer or patch variant pnpm-lock.yaml does not have",
+        "the patch for node-pty@1.2.0-beta.15 differs from pnpm-lock.yaml",
+      ],
+    },
+    {
+      name: "a patched package installed without its patch",
+      stage: { patchHash: null },
+      drift: [
+        "node-pty resolved to 1.2.0-beta.15, but pnpm-lock.yaml pins 1.2.0-beta.15(patch_hash=a111)",
+        "node-pty@1.2.0-beta.15 is a peer or patch variant pnpm-lock.yaml does not have",
+      ],
+    },
+    {
+      name: "a direct dependency no source importer has",
+      stage: {
+        extraDirectDependency: `typescript:
+        specifier: 6.0.3
+        version: 6.0.3`,
+      },
+      drift: ["typescript is not a dependency of apps/desktop or apps/server in pnpm-lock.yaml"],
+    },
+    {
+      name: "a workspace link",
+      stage: {
+        extraDirectDependency: `'@t3tools/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared`,
+      },
+      drift: ["@t3tools/shared installs from a local path (link:../../packages/shared)"],
+    },
+  ])("reports staged lockfile drift for $name", ({ stage, drift }) =>
+    Effect.gen(function* () {
+      const root = yield* readPnpmLockfileGraph(ROOT_LOCKFILE_FIXTURE);
+      const staged = yield* readPnpmLockfileGraph(stageLockfileFixture(stage));
+
+      assert.deepStrictEqual(findStageLockfileDrift(root, staged, STAGE_SOURCE_IMPORTERS), drift);
+    }),
+  );
+
+  it.effect("gives a stage the root's patches, overrides and package extensions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stage-workspace-" });
+        const stageDir = path.join(repoRoot, "stage");
+        yield* fs.makeDirectory(path.join(repoRoot, "patches"));
+        yield* fs.makeDirectory(stageDir);
+        yield* fs.writeFileString(path.join(repoRoot, "patches", "node-pty.patch"), "patch\n");
+
+        yield* writeStageWorkspace({
+          repoRoot,
+          stageDir,
+          platform: "mac",
+          arch: "arm64",
+          workspace: {
+            catalog: { "vite-plus": "1.4.0", zod: "4.6.5" },
+            overrides: { zod: "catalog:" },
+            packageExtensions: {
+              "@effect/vitest@*": { dependencies: { "vite-plus": "catalog:" } },
+              "plugin-host@*": {
+                peerDependencies: { zod: "catalog:" },
+                peerDependenciesMeta: { zod: { optional: true } },
+              },
+            },
+            patchedDependencies: { "node-pty@1.2.0-beta.15": "patches/node-pty.patch" },
+            allowBuilds: { "node-pty": true },
+          },
+          nodeLinker: "hoisted",
+        });
+
+        assert.deepStrictEqual(
+          yield* Schema.decodeEffect(fromYaml(Schema.Unknown))(
+            yield* fs.readFileString(path.join(stageDir, "pnpm-workspace.yaml")),
+          ),
+          {
+            supportedArchitectures: { os: ["darwin"], cpu: ["arm64"] },
+            allowBuilds: { "node-pty": true },
+            patchedDependencies: { "node-pty@1.2.0-beta.15": "patches/node-pty.patch" },
+            allowUnusedPatches: true,
+            overrides: {
+              zod: "4.6.5",
+              "electron-webauthn>typescript": "-",
+              "@electron-webauthn/macos>typescript": "-",
+            },
+            packageExtensions: {
+              "@effect/vitest@*": { dependencies: { "vite-plus": "1.4.0" } },
+              "plugin-host@*": {
+                peerDependencies: { zod: "4.6.5" },
+                peerDependenciesMeta: { zod: { optional: true } },
+              },
+            },
+            nodeLinker: "hoisted",
+          },
+        );
+        assert.strictEqual(
+          yield* fs.readFileString(path.join(stageDir, "patches", "node-pty.patch")),
+          "patch\n",
+        );
+      }),
+    ),
+  );
+
+  it.effect("decodes the repo lockfile in the shape the drift check reads", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const lockfile = yield* fs.readFileString(
+        path.join(import.meta.dirname, "..", "pnpm-lock.yaml"),
+      );
+      const graph = yield* readPnpmLockfileGraph(lockfile);
+
+      assert.isTrue(graph.resolutions.has(`electron@${desktopElectronVersion}`));
+      assert.isTrue(
+        graph.importers.get("apps/desktop")?.["electron"]?.startsWith(desktopElectronVersion),
+      );
+      assert.isTrue(graph.patchHashes.size > 0);
+      assert.isTrue([...graph.snapshots.keys()].some((key) => key.includes("(patch_hash=")));
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "installs a stage that keeps the root resolutions",
+      resolved: stageLockfileFixture({}),
+      drift: undefined,
+      commands: [
+        "install --lockfile-only --no-frozen-lockfile --ignore-scripts",
+        "install --frozen-lockfile --prod",
+      ],
+    },
+    {
+      name: "fails a drifting stage before anything is installed",
+      // A newer zod release stands in for a fresh resolution.
+      resolved: stageLockfileFixture({ zod: "4.6.7" }),
+      drift: "zod@4.6.7 is not in pnpm-lock.yaml",
+      commands: ["install --lockfile-only --no-frozen-lockfile --ignore-scripts"],
+    },
+  ])("$name", ({ resolved, drift, commands }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            for (const name of CREDENTIAL_NAMES) vi.stubEnv(name, "fixture-credential");
+            vi.stubEnv("pnpm_config_store_dir", "/fixture/store");
+          }),
+          () => Effect.sync(() => vi.unstubAllEnvs()),
+        );
+        const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stage-lockfile-" });
+        const stageDir = path.join(repoRoot, "stage");
+        const stageLockfile = path.join(stageDir, "pnpm-lock.yaml");
+        yield* fs.makeDirectory(stageDir);
+        yield* fs.writeFileString(path.join(repoRoot, "pnpm-lock.yaml"), ROOT_LOCKFILE_FIXTURE);
+        const ran: string[] = [];
+        const seeds: string[] = [];
+        const credentials: string[] = [];
+        const storeDirs: Array<string | undefined> = [];
+        const spawner = ChildProcessSpawner.make((command) => {
+          const { args, options } = command as unknown as ChildProcess.StandardCommand;
+          ran.push(args.join(" "));
+          // Without extendEnv a given env replaces the inherited one; without env the child inherits.
+          const env =
+            options.env === undefined
+              ? process.env
+              : options.extendEnv === true
+                ? { ...process.env, ...options.env }
+                : options.env;
+          credentials.push(...CREDENTIAL_NAMES.filter((name) => name in env));
+          storeDirs.push(env.pnpm_config_store_dir);
+          return (
+            args.includes("--lockfile-only")
+              ? fs.readFileString(stageLockfile).pipe(
+                  Effect.tap((seed) => Effect.sync(() => seeds.push(seed))),
+                  Effect.andThen(fs.writeFileString(stageLockfile, resolved)),
+                )
+              : Effect.void
+          ).pipe(Effect.as(mockProcess(0)));
+        });
+
+        const result = yield* installStagedDependencies({
+          repoRoot,
+          stageDir,
+          label: "desktop app",
+          sourceImporters: STAGE_SOURCE_IMPORTERS,
+          verbose: false,
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          // On Windows `vp` resolves to a shell command line; the spawner above reads plain args.
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.result,
+        );
+
+        assert.deepStrictEqual(seeds, [ROOT_LOCKFILE_FIXTURE]);
+        assert.deepStrictEqual(ran, commands);
+        assert.deepStrictEqual(credentials, []);
+        assert.deepStrictEqual(
+          storeDirs,
+          commands.map(() => "/fixture/store"),
+        );
+        if (drift === undefined) {
+          assert.isTrue(Result.isSuccess(result));
+        } else {
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result)) {
+            assert.instanceOf(result.failure, StageLockfileDriftError);
+            assert.include(result.failure.message, drift);
+          }
+        }
+      }),
+    ),
+  );
+
   it("stages only the externals of both bundles in merged packages", () => {
     assert.deepStrictEqual(
       resolveMergedStageDependencies({
@@ -845,6 +1324,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         const error = yield* preflightWindowsDesktopBuild({
           arch: "x64",
+          phase: "all",
           bundlesWslRuntime: true,
         }).pipe(
           Effect.provide(
@@ -886,6 +1366,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         yield* preflightWindowsDesktopBuild({
           arch: "x64",
+          phase: "all",
           bundlesWslRuntime: true,
         }).pipe(
           Effect.provide(
@@ -906,6 +1387,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.notInclude(commands, "powershell.exe");
       }),
     ),
+  );
+
+  it.effect("packages a finished stage without the Windows build toolchain", () =>
+    Effect.gen(function* () {
+      const commands: string[] = [];
+      const spawner = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as { readonly command: string };
+          commands.push(childProcess.command);
+          return Effect.succeed(mockProcess(childProcess.command === "tar.exe" ? 0 : 1));
+        }),
+      );
+
+      yield* preflightWindowsDesktopBuild({
+        arch: "x64",
+        phase: "package",
+        bundlesWslRuntime: true,
+      }).pipe(
+        Effect.provide(
+          Layer.merge(spawner, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        ),
+      );
+
+      assert.deepStrictEqual(commands, ["tar.exe"]);
+    }),
   );
 
   it.effect("rejects a PATH-discovered Python executable that is not Python 3", () =>
@@ -934,6 +1441,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         const error = yield* preflightWindowsDesktopBuild({
           arch: "x64",
+          phase: "all",
           bundlesWslRuntime: false,
         }).pipe(
           Effect.provide(
@@ -1131,6 +1639,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       readonly options: {
         readonly cwd?: string;
         readonly env?: Readonly<Record<string, string | undefined>>;
+        readonly extendEnv?: boolean;
       };
     }> = [];
     const spawnerLayer = Layer.succeed(
@@ -1175,7 +1684,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ),
         );
         assert.equal(primaryProbe.options.cwd, fixture.packagedAppDir);
-        assert.equal(primaryProbe.options.env?.NODE_PATH, "");
+        assert.isFalse(primaryProbe.options.extendEnv);
+        assert.notProperty(primaryProbe.options.env, "NODE_PATH");
       }),
     ).pipe(
       Effect.provide(
@@ -1224,9 +1734,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("skips the primary native probe for cross-architecture Windows payloads", () => {
     const commands: Array<{
       readonly command: string;
-      readonly options: {
-        readonly env?: Readonly<Record<string, string | undefined>>;
-      };
+      readonly args: ReadonlyArray<string>;
     }> = [];
     const spawnerLayer = Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
@@ -1255,7 +1763,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isTrue(
           commands.some(
             (command) =>
-              command.command === process.execPath && command.options.env?.NODE_PATH === "",
+              command.command === process.execPath &&
+              command.args.includes("--no-global-search-paths"),
           ),
         );
       }),
@@ -1480,6 +1989,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.isNotEmpty(packaging);
       for (const job of packaging) assert.strictEqual(job.with?.untrusted_bundle, true);
     }),
+  );
+
+  it.effect("runs the packaged server without the signing step's credentials", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            vi.stubEnv("CSC_KEY_PASSWORD", "fixture-password");
+            vi.stubEnv("Release_Signing_Token", "fixture-token");
+          }),
+          () => Effect.sync(() => vi.unstubAllEnvs()),
+        );
+        const fixture = yield* makePackagedAppFixture({
+          serverEntrySource: [
+            "const visible = Object.keys(process.env).filter((name) => /password|token/i.test(name));",
+            'if (visible.length > 0) { console.error(`credentials visible: ${visible.join(",")}`); process.exit(1); }',
+            "",
+          ].join("\n"),
+        });
+        yield* validateMacPackagedPayload({ stageDistDir: fixture.stageDistDir });
+      }),
+    ),
   );
 
   it.effect("rejects a macOS stage without a packaged app", () =>
@@ -1802,6 +2333,85 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  const stageElectronFixture = Effect.fn("stageElectronFixture")(function* (
+    zipBytes: (archiveName: string) => Uint8Array,
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-electron-dist-" });
+    const electronPackageDir = path.join(root, "electron");
+    const archiveNames = ["x64", "arm64"].map(
+      (arch) => `electron-v${desktopElectronVersion}-darwin-${arch}.zip`,
+    );
+    const published = (archiveName: string) => new TextEncoder().encode(archiveName);
+    yield* fs.makeDirectory(electronPackageDir);
+    yield* fs.writeFileString(
+      path.join(electronPackageDir, "package.json"),
+      JSON.stringify({ version: desktopElectronVersion }),
+    );
+    yield* fs.writeFileString(
+      path.join(electronPackageDir, "checksums.json"),
+      JSON.stringify(
+        Object.fromEntries(
+          archiveNames.map((name) => [
+            name,
+            NodeCrypto.createHash("sha256").update(published(name)).digest("hex"),
+          ]),
+        ),
+      ),
+    );
+    const distDir = path.join(root, ELECTRON_DIST_DIR);
+    const exit = yield* Effect.exit(
+      stageElectronDist({
+        electronPackageDir,
+        version: desktopElectronVersion,
+        platform: "mac",
+        arch: "universal",
+        distDir,
+        download: (_version, archiveName, destination) =>
+          fs.writeFile(destination, zipBytes(archiveName)).pipe(Effect.orDie),
+      }),
+    );
+    return { exit, distDir, archiveNames, published };
+  });
+
+  it.effect("stages the Electron zip of each architecture a universal app unpacks", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { exit, distDir, archiveNames, published } = yield* stageElectronFixture(
+          (archiveName) => new TextEncoder().encode(archiveName),
+        );
+
+        assert.isTrue(Exit.isSuccess(exit));
+        assert.deepStrictEqual(
+          (yield* fs.readDirectory(distDir)).toSorted(),
+          archiveNames.toSorted(),
+        );
+        for (const name of archiveNames) {
+          assert.deepStrictEqual(yield* fs.readFile(NodePath.join(distDir, name)), published(name));
+        }
+      }),
+    ),
+  );
+
+  it.effect("rejects an Electron zip whose SHA-256 differs from the locked electron package", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { exit } = yield* stageElectronFixture((archiveName) =>
+          new TextEncoder().encode(archiveName.endsWith("arm64.zip") ? "tampered" : archiveName),
+        );
+
+        const error = Option.getOrUndefined(Exit.findErrorOption(exit));
+        assert.instanceOf(error, ElectronDistStageError);
+        assert.include(
+          error.message,
+          `electron-v${desktopElectronVersion}-darwin-arm64.zip has SHA-256`,
+        );
+      }),
+    ),
+  );
+
   it.effect("rejects universal builds on Linux and Windows before staging binaries", () =>
     Effect.gen(function* () {
       for (const platform of ["linux", "win"] as const) {
@@ -1819,11 +2429,40 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             mockUpdates: Option.none(),
             mockUpdateServerPort: Option.none(),
             wslRuntime: Option.none(),
+            phase: Option.none(),
+            stageDir: Option.none(),
           }),
         );
 
         assert.instanceOf(error, UnsupportedDesktopBuildArchitectureError);
         assert.deepStrictEqual(error.supportedArchitectures, ["x64", "arm64"]);
+      }
+    }),
+  );
+
+  it.effect("rejects Mac App Store targets before staging anything", () =>
+    Effect.gen(function* () {
+      for (const target of ["mas", "mas-dev"]) {
+        const error = yield* Effect.flip(
+          resolveBuildOptions({
+            platform: Option.some("mac"),
+            target: Option.some(target),
+            arch: Option.some("arm64"),
+            buildVersion: Option.none(),
+            outputDir: Option.none(),
+            skipBuild: Option.none(),
+            keepStage: Option.none(),
+            signed: Option.none(),
+            verbose: Option.none(),
+            mockUpdates: Option.none(),
+            mockUpdateServerPort: Option.none(),
+            wslRuntime: Option.none(),
+            phase: Option.none(),
+            stageDir: Option.none(),
+          }),
+        );
+
+        assert.instanceOf(error, UnsupportedDesktopBuildTargetError);
       }
     }),
   );
@@ -1843,6 +2482,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         mockUpdates: Option.some(false),
         mockUpdateServerPort: Option.none(),
         wslRuntime: Option.none(),
+        phase: Option.none(),
+        stageDir: Option.none(),
       }).pipe(
         Effect.provide(
           ConfigProvider.layer(
@@ -1864,6 +2505,64 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "a stage phase without --stage-dir",
+      phase: "stage",
+      stageDir: undefined,
+      signed: false,
+      wslRuntime: undefined,
+      error: "StageDirRequiredError",
+    },
+    {
+      name: "a package phase without --stage-dir",
+      phase: "package",
+      stageDir: undefined,
+      signed: false,
+      wslRuntime: undefined,
+      error: "StageDirRequiredError",
+    },
+    {
+      name: "a signed stage phase",
+      phase: "stage",
+      stageDir: "stage",
+      signed: true,
+      wslRuntime: undefined,
+      error: "DesktopStagePhaseOptionError",
+    },
+    {
+      name: "a stage phase that would drop the WSL runtime",
+      phase: "stage",
+      stageDir: "stage",
+      signed: false,
+      wslRuntime: "t3-linux-x64.tar.gz",
+      error: "DesktopStagePhaseOptionError",
+    },
+  ] as const)("rejects $name", ({ phase, stageDir, signed, wslRuntime, error }) =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        resolveBuildOptions({
+          platform: Option.some("win"),
+          target: Option.none(),
+          arch: Option.some("x64"),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.some(signed),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.fromUndefinedOr(wslRuntime),
+          phase: Option.some(phase),
+          stageDir: Option.fromUndefinedOr(stageDir),
+        }),
+      );
+
+      assert.equal(failure._tag, error);
     }),
   );
 });

@@ -122,7 +122,7 @@ function EnvironmentSecretProviders({
           <SettingsRow
             title={t("No secret providers configured.")}
             description={t(
-              "Add a 1Password account, then pick it as the source of a provider variable.",
+              "Add a 1Password provider, then pick it as the source of a provider variable.",
             )}
           />
         ) : (
@@ -147,13 +147,17 @@ function EnvironmentSecretProviders({
                   classified.kind === "one_password" && kind ? (
                     <span className="flex min-w-0 items-center gap-1">
                       <span className="shrink-0">{kind.name} ·</span>
-                      <RedactedSensitiveText
-                        value={classified.account}
-                        ariaLabel={t("Toggle account visibility")}
-                        revealTooltip={t("Click to reveal account")}
-                        hideTooltip={t("Click to hide account")}
-                        className="max-w-full truncate"
-                      />
+                      {classified.auth === "desktop" ? (
+                        <RedactedSensitiveText
+                          value={classified.account}
+                          ariaLabel={t("Toggle account visibility")}
+                          revealTooltip={t("Click to reveal account")}
+                          hideTooltip={t("Click to hide account")}
+                          className="max-w-full truncate"
+                        />
+                      ) : (
+                        t("Linux service account")
+                      )}
                     </span>
                   ) : (
                     t("Unsupported provider ({kind})", { kind: config.kind })
@@ -190,6 +194,7 @@ function EnvironmentSecretProviders({
           onClose={() => setDialog(null)}
           environmentId={environmentId}
           environmentLabel={environment.label}
+          serviceAccountSupported={environment.serverConfig?.onePasswordServiceAccount === true}
           existingIds={new Set(Object.keys(providers))}
           {...(editing === undefined ? {} : { existing: editing })}
         />

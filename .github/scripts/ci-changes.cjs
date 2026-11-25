@@ -2,6 +2,7 @@
 // scripts/check-changed.ts shares these decisions so local checks match CI.
 const fs = require("node:fs");
 const path = require("node:path");
+const { parseArgs } = require("node:util");
 
 const root = path.resolve(__dirname, "../..");
 
@@ -194,16 +195,21 @@ function decide(files, packages, full) {
 }
 
 function main() {
-  const args = process.argv.slice(2);
-  const pathsIndex = args.indexOf("--paths");
+  // parseArgs refuses an option it does not know: a mistyped --full must fail the job, not run fewer jobs.
+  const { values, tokens } = parseArgs({
+    tokens: true,
+    options: { paths: { type: "string" }, full: { type: "boolean", default: false } },
+  });
+  for (const flag of ["paths", "full"]) {
+    if (tokens.filter((token) => token.kind === "option" && token.name === flag).length > 1) {
+      throw new Error("Pass --" + flag + " at most once.");
+    }
+  }
   const files =
-    pathsIndex === -1
+    values.paths === undefined
       ? null
-      : fs
-          .readFileSync(args[pathsIndex + 1], "utf8")
-          .split("\n")
-          .filter(Boolean);
-  const { affected, outputs } = decide(files, readWorkspace(), args.includes("--full"));
+      : fs.readFileSync(values.paths, "utf8").split("\n").filter(Boolean);
+  const { affected, outputs } = decide(files, readWorkspace(), values.full);
 
   console.error(`Affected packages: ${affected.join(", ") || "none"}`);
   for (const [key, value] of Object.entries(outputs)) console.log(`${key}=${value}`);

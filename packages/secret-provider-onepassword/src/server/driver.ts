@@ -1,5 +1,6 @@
-import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
+import { spawnAndCollect, type CommandResult } from "@t3tools/provider-core/server/snapshotProbe";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
@@ -8,9 +9,14 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { ChildProcess } from "effect/process";
 
-import { definition, type OnePasswordAccount } from "../shared/definition.ts";
+import {
+  definition,
+  isOnePasswordLinuxServiceAccountReference,
+  type OnePasswordAccount,
+} from "../shared/definition.ts";
 
 const ONE_PASSWORD_BINARY = "op";
+const SUDO_BINARY = "/usr/bin/sudo";
 // Bounds a read long enough to reach for a fingerprint reader, short enough not to wedge a rebuild.
 const READ_TIMEOUT = Duration.seconds(45);
 
@@ -28,11 +34,7 @@ const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
 // A secret is passed on verbatim; surrounding whitespace can be part of it.
 const nonEmpty = (value: string) => (value.trim().length > 0 ? value : undefined);
 
-const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
-  account: OnePasswordAccount,
-  reference: string,
-) {
-  const result = yield* runOnePassword(["read", `--account=${account}`, "--no-newline", reference]);
+const readValue = Effect.fn("OnePasswordDriver.readValue")(function* (result: CommandResult) {
   if (result.code !== 0) {
     yield* Effect.logWarning("Could not read secret from 1Password", {
       stage: "read",
@@ -41,6 +43,41 @@ const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
     return undefined;
   }
   return nonEmpty(result.stdout);
+});
+
+const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
+  account: OnePasswordAccount,
+  reference: string,
+) {
+  return yield* readValue(
+    yield* runOnePassword(["read", `--account=${account}`, "--no-newline", reference]),
+  );
+});
+
+const readWithServiceAccount = Effect.fn("OnePasswordDriver.readWithServiceAccount")(function* (
+  reference: string,
+) {
+  if (!isOnePasswordLinuxServiceAccountReference(reference)) return;
+  // Only the exact per-field command may receive the credential from sudo policy.
+  const result = yield* spawnAndCollect(
+    SUDO_BINARY,
+    ChildProcess.make(
+      SUDO_BINARY,
+      [
+        "-n",
+        "-u",
+        "codeship-op",
+        "--",
+        "/usr/bin/op",
+        "--cache=false",
+        "read",
+        "--no-newline",
+        reference,
+      ],
+      { cwd: "/", env: {}, extendEnv: false, shell: false },
+    ),
+  );
+  return yield* readValue(result);
 });
 
 // One `op inject` costs one unlock for every reference in the template. `op` ignores piped stdin
@@ -91,18 +128,27 @@ const recover = <A, E extends { readonly _tag: string }, R>(
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
-  read: Effect.fn("OnePasswordDriver.read")(function* ({ account }, references) {
+  unattended: (config) => config.auth === "linux-service-account",
+  read: Effect.fn("OnePasswordDriver.read")(function* (config, references) {
+    const account = config.auth === "linux-service-account" ? undefined : config.account;
+    if (account === undefined && (yield* HostProcess.Platform) !== "linux") {
+      yield* Effect.logWarning("1Password service account reads require Linux");
+      return references.map(() => undefined);
+    }
     // One deadline covers the batch and the fallback; a reference not read by then is unreadable.
     const values: Array<string | undefined> = references.map(() => undefined);
     const outcome = yield* Effect.gen(function* () {
-      if (references.length > 1) {
+      if (account !== undefined && references.length > 1) {
         const together = yield* recover("inject", readTogether(account, references));
         if (together !== undefined) return together;
       }
       yield* Effect.forEach(
         references,
         (reference, index) =>
-          recover("read", readOne(account, reference)).pipe(
+          (account === undefined
+            ? recover("read", readWithServiceAccount(reference))
+            : recover("read", readOne(account, reference))
+          ).pipe(
             Effect.map((value) => {
               values[index] = value;
             }),

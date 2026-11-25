@@ -40,8 +40,17 @@ export class ContextHandoffBackgroundWorkError extends Schema.TaggedError<Contex
   }
 }
 
-/** The failure code of a turn a provider refused because the account's login no longer works. */
-export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
+/** The failure code of a turn a provider refused because this account's login cannot run the model. */
+export const MODEL_NOT_SUPPORTED_FAILURE_CODE = "model_not_supported";
+
+/** The words a model slug is matched by in a model-scoped hold: `gpt-6.2-astra` is `gpt_6_2_astra`. */
+export function modelHoldScope(model: string): string {
+  return model
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .join("_");
+}
 
 export const MAX_PROVIDER_FAILURE_MESSAGE_LENGTH = 4_096;
 const MAX_PROVIDER_FAILURE_CODE_LENGTH = 128;
@@ -132,6 +141,7 @@ function curatedCauseMessages(cause: unknown): {
         case "ClaudeBackgroundWorkBlocksQueryReplacementError":
         case "ClaudeAppendSystemPromptFileError":
         case "ClaudeAppendSystemPromptMissingValueError":
+        case "ClaudeUltracodeOverriddenError":
         case "ClaudeCodeStartupExitError":
         case "ClaudeTermsReviewRequiredError":
         case "ClaudeSettingsLaunchArgError":

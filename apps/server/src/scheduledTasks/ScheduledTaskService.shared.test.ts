@@ -325,6 +325,16 @@ it.effect(
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
 
         yield* service.setGroup({ id: saved.id, group: "Autopilot" }, agent);
+        const moved = yield* taskOf(service);
+        expect(moved).toMatchObject({
+          group: "Autopilot",
+          enabled: false,
+          nextRunAt: null,
+          prompt: saved.prompt,
+          schedule: saved.schedule,
+          shared: { revision: { at: "2031-01-01T00:00:00.003Z" } },
+        });
+        yield* service.setGroup({ id: saved.id, group: "Autopilot" }, agent);
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.003Z");
 
         // Where a task sits is this machine's own business: no revision, and the author stays.
@@ -371,6 +381,47 @@ it.effect(
     ),
 );
 
+it.effect("saves, keeps, and clears a description without changing the prompt or schedule", () =>
+  withService((service) =>
+    Effect.gen(function* () {
+      const by = ScheduledTaskService.CHANGED_IN_APP;
+      const { task: created } = yield* service.upsert(
+        upsertInput({ description: "  Review pending changes.  " }),
+        by,
+      );
+      expect(created.description).toBe("Review pending changes.");
+      const { task: kept } = yield* service.upsert(upsertInput({ title: "Daily review" }), by);
+      expect(kept.description).toBe(created.description);
+      const present = yield* service.sharedCopies(OTHER as never, { recordPuller: false });
+      expect(present.tasks[0]?.description).toBe(created.description);
+      const { task: cleared } = yield* service.upsert(upsertInput({ description: null }), by);
+      expect(cleared.description).toBeNull();
+      expect([cleared.prompt, cleared.nextRunAt]).toEqual([created.prompt, created.nextRunAt]);
+      const absent = yield* service.sharedCopies(OTHER as never, { recordPuller: false });
+      expect(absent.tasks[0]?.description).toBeNull();
+    }),
+  ),
+);
+
+it.effect("relays an old copy without turning its omitted description into a clear", () =>
+  withService((service) =>
+    Effect.gen(function* () {
+      const at = "2026-09-10T00:00:00.000Z";
+      yield* service.applyShared(copy(at));
+      const relayed = yield* service.sharedCopies("environment-recipient" as never, {
+        recordPuller: false,
+      });
+      expect(relayed.tasks[0]).not.toHaveProperty("description");
+      expect(
+        yield* service.applyShared(copy(at, { description: "Review pending changes." })),
+      ).toEqual({
+        outcome: "applied",
+      });
+      expect((yield* taskOf(service))?.description).toBe("Review pending changes.");
+    }),
+  ),
+);
+
 it.effect(
   "applying a newer copy saves it, keeps this machine's run state, and stores its revision",
   () =>
@@ -397,14 +448,19 @@ it.effect(
         yield* service.applyShared(copy("2026-09-10T00:00:30.000Z", { changedBy: author }));
         expect((yield* taskOf(service))?.changedBy).toEqual(author);
 
-        // A copy without the field keeps this machine's run condition; null clears it.
+        // An omitted field keeps the local setting. Null clears it.
         const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
-        yield* service.applyShared(copy("2026-09-11T00:00:00.000Z", { runCondition: condition }));
-        expect((yield* taskOf(service))?.runCondition).toEqual(condition);
+        yield* service.applyShared(
+          copy("2026-09-11T00:00:00.000Z", { runCondition: condition, description: "Triage" }),
+        );
         yield* service.applyShared(copy("2026-09-12T00:00:00.000Z"));
-        expect((yield* taskOf(service))?.runCondition).toEqual(condition);
-        yield* service.applyShared(copy("2026-09-13T00:00:00.000Z", { runCondition: null }));
-        expect((yield* taskOf(service))?.runCondition).toBeNull();
+        const preserved = yield* taskOf(service);
+        expect([preserved?.runCondition, preserved?.description]).toEqual([condition, "Triage"]);
+        yield* service.applyShared(
+          copy("2026-09-13T00:00:00.000Z", { runCondition: null, description: null }),
+        );
+        const cleared = yield* taskOf(service);
+        expect([cleared?.runCondition, cleared?.description]).toEqual([null, null]);
       }),
     ),
 );

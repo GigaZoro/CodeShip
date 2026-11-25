@@ -58,7 +58,9 @@ function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
 function withFakeClaudeEnv<A, E, R>(
   input: {
     output: string;
-    rejectsNoSessionPersistence?: boolean;
+    unsupportedOptions?: ReadonlyArray<string>;
+    investigation?: boolean;
+    schemaProperty?: string;
     lifecyclePort?: number;
     exitCode?: number;
     stderr?: string;
@@ -80,9 +82,12 @@ function withFakeClaudeEnv<A, E, R>(
     const hostEnv = yield* HostProcess.Environment;
     const fakeClaudeEnv: Record<string, string | undefined> = {
       T3_FAKE_CLAUDE_OUTPUT: input.output,
-      T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE: input.rejectsNoSessionPersistence
-        ? "1"
-        : undefined,
+      T3_FAKE_CLAUDE_UNSUPPORTED_OPTIONS:
+        input.unsupportedOptions === undefined
+          ? undefined
+          : JSON.stringify(input.unsupportedOptions),
+      T3_FAKE_CLAUDE_INVESTIGATION: input.investigation ? "1" : undefined,
+      T3_FAKE_CLAUDE_SCHEMA_PROPERTY: input.schemaProperty,
       T3_FAKE_CLAUDE_EXIT_CODE: input.exitCode === undefined ? undefined : String(input.exitCode),
       T3_FAKE_CLAUDE_STDERR: input.stderr,
       T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN: input.argsMustContain,
@@ -125,7 +130,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
               body: "Body",
             },
           }),
-          argsMustContain: `--model ${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded] --effort max --settings {"disableAllHooks":true,"fastMode":true}`,
+          argsMustContain: `--model ${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded] --effort max --settings {"fastMode":true,"ultracode":false,"disableAllHooks":true}`,
           claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
         },
         (textGeneration) =>
@@ -210,6 +215,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
   const launchSettings = {
     disableAllHooks: false,
     fastMode: false,
+    ultracode: true,
     env: { ANTHROPIC_VERTEX_PROJECT_ID: "issue-25017-marker" },
   };
   it.effect.each([
@@ -227,7 +233,12 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       return yield* withFakeClaudeEnv(
         {
           output: JSON.stringify({ structured_output: { title: "Use launch settings" } }),
-          settingsMustEqual: { ...launchSettings, disableAllHooks: true, fastMode: true },
+          settingsMustEqual: {
+            ...launchSettings,
+            disableAllHooks: true,
+            fastMode: true,
+            ultracode: false,
+          },
           claudeConfig: {
             launchArgs: `--settings '${inline ? JSON.stringify(launchSettings) : "launch-settings.json"}'`,
           },
@@ -333,11 +344,15 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     ),
   );
 
-  it.effect("retries without --no-session-persistence when the Claude CLI rejects it", () =>
+  it.effect.each([
+    { unsupportedOptions: ["--no-session-persistence"] },
+    { unsupportedOptions: ["--safe-mode"] },
+    { unsupportedOptions: ["--safe-mode", "--no-session-persistence"] },
+  ])("retries without unsupported CLI options $unsupportedOptions", ({ unsupportedOptions }) =>
     withFakeClaudeEnv(
       {
         output: JSON.stringify({ structured_output: { title: "Reconnect failures" } }),
-        rejectsNoSessionPersistence: true,
+        unsupportedOptions,
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -353,6 +368,77 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           expect(generated.title).toBe("Reconnect failures");
         }),
     ),
+  );
+
+  it.effect(
+    "passes safe mode to the other generation operations and keeps investigation tools",
+    () => {
+      const input = {
+        cwd: process.cwd(),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        ),
+      };
+      return Effect.gen(function* () {
+        yield* withFakeClaudeEnv(
+          {
+            output: JSON.stringify({
+              structured_output: {
+                subject: "Add sorting tests",
+                body: "Cover the default sort order.",
+                branch: "add-sorting-tests",
+                summary: "A sign-in is needed.",
+                needsPerson: true,
+                solutions: [
+                  { title: "Sign in", detail: "Use the browser.", command: "", agentCanDo: false },
+                ],
+                translation: { title: "Sign in", step: "Open the browser." },
+              },
+            }),
+          },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              yield* textGeneration.generateCommitMessage({
+                ...input,
+                branch: "main",
+                stagedSummary: "1 file changed",
+                stagedPatch: "diff --git a/sort.test.ts b/sort.test.ts",
+              });
+              yield* textGeneration.generateBranchName({ ...input, message: "Add sorting tests" });
+              yield* textGeneration.generateManualStepReview({
+                ...input,
+                step: {
+                  title: "Sign in",
+                  step: "Open the browser.",
+                  machine: "test",
+                  kind: "hands-on",
+                },
+                notes: [],
+                language: "en",
+              });
+            }),
+        );
+        yield* withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { stops: [] } }),
+            investigation: true,
+            schemaProperty: "stops",
+          },
+          (textGeneration) =>
+            textGeneration.generateReviewGuide({
+              ...input,
+              number: 1,
+              title: "Add sorting tests",
+              description: "",
+              baseBranch: "main",
+              baseCommit: "abc123",
+              settledReview: "",
+              language: "en",
+            }),
+        );
+      });
+    },
   );
 
   it.effect.each([
@@ -536,6 +622,39 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
 
           expect(error.detail).toBe(`Claude CLI command failed: ${structuredOutputError}`);
         }),
+    ),
+  );
+
+  // A retry here would drop --safe-mode, which the fake binary rejects with a different error.
+  it.effect.each([
+    [
+      "a structured Claude error when stderr also shows a flag diagnostic",
+      JSON.stringify({ is_error: true, result: "API Error: 429 rate limited" }),
+      "error: unknown option '--safe-mode'",
+      "API Error: 429 rate limited",
+    ],
+    [
+      "stderr that only quotes a flag diagnostic",
+      "not json",
+      "wrapper: previously saw error: unknown option '--safe-mode'",
+      "wrapper: previously saw error: unknown option '--safe-mode'",
+    ],
+  ] as const)("reports %s without retrying", ([, output, stderr, expected]) =>
+    withFakeClaudeEnv({ output, stderr, exitCode: 1 }, (textGeneration) =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            },
+          }),
+        );
+
+        expect(error.detail).toBe(`Claude CLI command failed: ${expected}`);
+      }),
     ),
   );
 });

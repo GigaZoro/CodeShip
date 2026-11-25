@@ -1,6 +1,7 @@
 import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import type {
   ModelSelection,
+  ProviderOptionSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   ProjectId,
@@ -43,6 +44,28 @@ export function autoCoordinatorAccounts(
     });
 }
 
+// delegate_task rejects an option the model no longer offers (a sign-in can remove one, e.g. Codex serviceTier).
+function offeredOptions(
+  provider: {
+    readonly models: ReadonlyArray<{
+      readonly slug: string;
+      readonly capabilities?:
+        | { readonly optionDescriptors?: ReadonlyArray<{ readonly id: string }> | undefined }
+        | null
+        | undefined;
+    }>;
+  },
+  primary: {
+    readonly model: string;
+    readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+  },
+) {
+  const offered = provider.models
+    .find((model) => model.slug === primary.model)
+    ?.capabilities?.optionDescriptors?.map((option) => option.id);
+  return (primary.options ?? []).filter((option) => offered?.includes(option.id) === true);
+}
+
 export function autoCoordinatorBriefInput(
   input: Parameters<typeof autoCoordinatorAccounts>[0] & { readonly selection: ModelSelection },
 ): Parameters<typeof autoCoordinatorInstructions>[0] {
@@ -66,7 +89,11 @@ export function autoCoordinatorBriefInput(
     ...(reviewer === undefined || otherPrimary == null
       ? {}
       : {
-          otherPrimary: { ...otherPrimary, providerInstanceId: reviewer.instanceId },
+          otherPrimary: {
+            ...otherPrimary,
+            providerInstanceId: reviewer.instanceId,
+            options: offeredOptions(reviewer, otherPrimary),
+          },
         }),
     models:
       own?.models.filter(

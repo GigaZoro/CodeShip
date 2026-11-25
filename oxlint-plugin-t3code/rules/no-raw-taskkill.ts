@@ -1,7 +1,7 @@
 import { defineRule } from "@oxlint/plugins";
 
 const message =
-  "End a Windows process tree with stopWindowsProcessTree or endingWindowsTrees from @t3tools/shared/windowsProcessTree. taskkill /T finds descendants only through a running leader, so what a leader that exited left running survives it.";
+  "End a Windows process tree with endingWindowsTrees, withWindowsTreeStop or windowsTreeStopper from @t3tools/shared/windowsProcessTree. taskkill /T finds descendants only through a running leader, so what a leader that exited left running survives it.";
 
 const TASKKILL = /^taskkill(?:\.exe)?$/i;
 

@@ -14,6 +14,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import { isWithinRoot } from "./KnownWorkspaces.ts";
 import { withWorkspaceLease } from "./workspaceLease.ts";
+import { releasedWorktree } from "./worktreeRelease.ts";
 import { TerminalCwdRecovery } from "../terminal/Manager.ts";
 
 export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateError>()(
@@ -127,6 +128,7 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
   });
 
   const recreateMissingWorktree = Effect.fn("restoreMissingWorktree.recreate")(function* (input: {
+    readonly threadId: ThreadId;
     readonly cwd: string;
     readonly worktreePath: string;
     readonly branch: string;
@@ -134,13 +136,43 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     const { cwd, worktreePath, branch } = input;
     yield* gitWorkflow.pruneWorktrees({ cwd });
     const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
+    const primaryRemoteName = gitWorkflow
+      .resolvePrimaryRemoteName(cwd)
+      .pipe(Effect.orElseSucceed(() => null));
+    const released = yield* releasedWorktree(
+      fileSystem,
+      path.join(serverConfig.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY),
+      worktreePath,
+      input.threadId,
+      branch,
+    );
+    if (released) {
+      const base = yield* resolveRecreateBase(cwd, yield* primaryRemoteName);
+      if (!base) return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
+      if (localBranchNames.includes(branch)) {
+        yield* gitWorkflow.createWorktree(
+          { cwd, refName: branch, path: worktreePath },
+          {
+            releasedBranch: { previousHead: released.request.head, baseRef: base.refName },
+          },
+        );
+      } else {
+        yield* gitWorkflow.createWorktree({
+          cwd,
+          refName: base.refName,
+          newRefName: branch,
+          path: worktreePath,
+          ...(base.baseRefName ? { baseRefName: base.baseRefName } : {}),
+        });
+      }
+      yield* fileSystem.remove(released.receipt);
+      return;
+    }
     if (localBranchNames.includes(branch)) {
       yield* gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath });
       return;
     }
-    const remoteName = yield* gitWorkflow
-      .resolvePrimaryRemoteName(cwd)
-      .pipe(Effect.orElseSucceed(() => null));
+    const remoteName = yield* primaryRemoteName;
     // Push keeps the tracking ref current, so recovery reads it without fetching.
     const pushedRef = remoteName === null ? null : `refs/remotes/${remoteName}/${branch}`;
     if (pushedRef !== null && (yield* gitWorkflow.hasCommit({ cwd, refName: pushedRef }))) {
@@ -184,7 +216,14 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     });
     // `git worktree add` refuses a non-empty target.
     yield* (leftover ? fileSystem.remove(worktreePath, { recursive: true }) : Effect.void).pipe(
-      Effect.andThen(recreateMissingWorktree({ cwd: project.workspaceRoot, worktreePath, branch })),
+      Effect.andThen(
+        recreateMissingWorktree({
+          threadId: thread.id,
+          cwd: project.workspaceRoot,
+          worktreePath,
+          branch,
+        }),
+      ),
       Effect.mapError((cause) =>
         cause._tag === "WorktreeRecreateNoBaseError"
           ? cause

@@ -280,9 +280,9 @@ const makeHarnessFor = Effect.fnUntraced(function* (
       const waiting = yield* phase("waiting");
       return { waiting, callbackUrl: prepareCallback(waiting).toString() };
     });
-  const signInWithMethod = (methodId?: string) =>
+  const signInWithMethod = (methodId?: string, stopSessions = Effect.void) =>
     Effect.gen(function* () {
-      yield* auth.controller.start("owner", Effect.void, methodId, returnUrl);
+      yield* auth.controller.start("owner", stopSessions, methodId, returnUrl);
       const waiting = yield* phase("waiting");
       assert.strictEqual(waiting.interaction?.type, "browser");
       const callback = prepareCallback(waiting);
@@ -369,7 +369,8 @@ const makeHarnessFor = Effect.fnUntraced(function* (
     startRemote,
     signIn: signInWithMethod(),
     changeAccount: signInWithMethod("chatgpt-change-account"),
-    reconnectProfile: (clientId: string) => signInWithMethod(`chatgpt-profile:${clientId}`),
+    reconnectProfile: (clientId: string, stopSessions = Effect.void) =>
+      signInWithMethod(`chatgpt-profile:${clientId}`, stopSessions),
     phase,
     seedExpired,
     exchanges,
@@ -1863,8 +1864,27 @@ it.effect("a running session renews its bound profile but refuses a replacement 
       assert.deepEqual(renewed[0], renewed[1]);
       assert.equal(yield* h.auth.profileKey(renewed[0]), profileKey);
 
-      // Reconnecting the same account replaces its sign-in identity, too.
-      yield* h.reconnectProfile("oaiapp_test");
+      const admitted = yield* Deferred.make<void>();
+      const published = yield* Deferred.make<void>();
+      const denied = yield* Deferred.make<boolean>();
+      yield* h.auth.controller.withAccess!(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(admitted, undefined);
+          yield* Deferred.await(published);
+          const result = yield* h.auth.access.pipe(Effect.result);
+          yield* Deferred.succeed(denied, result._tag === "Failure");
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(admitted);
+      // Access the store after publication but before retirement can interrupt startup.
+      yield* h.reconnectProfile(
+        "oaiapp_test",
+        Deferred.succeed(published, undefined).pipe(
+          Effect.andThen(Deferred.await(denied)),
+          Effect.asVoid,
+        ),
+      );
+      assert.isTrue(yield* Deferred.await(denied));
       yield* h.phase("succeeded");
       const replacement = Option.getOrThrow(yield* h.auth.read);
       assert.equal(replacement.clientId, renewed[0].clientId);

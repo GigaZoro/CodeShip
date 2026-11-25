@@ -221,7 +221,7 @@ it.effect(
           liftUsageLimitHolds: () => Effect.die("unused liftUsageLimitHolds"),
           getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
-          getSignedOutFailoverCandidates: () => Effect.die("unused getSignedOutFailoverCandidates"),
+          getSignedOutCandidates: () => Effect.die("unused getSignedOutCandidates"),
           getUsageLimitedProviderInstances: () =>
             Effect.die("unused getUsageLimitedProviderInstances"),
           getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
@@ -262,6 +262,7 @@ it.effect(
           getMessageCount: () => Effect.die("unused message count"),
           getTranscriptByteFloor: () => Effect.die("unused transcript byte floor"),
           hasPendingDelegatedCompletion: () => Effect.die("unused hasPendingDelegatedCompletion"),
+          getMemoryAdmissionQueue: () => Effect.die("unused getMemoryAdmissionQueue"),
           getSubagentCount: () => Effect.die("unused subagent count"),
           listAppOwnedChildThreadIds: () => Effect.die("unused listAppOwnedChildThreadIds"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
@@ -306,12 +307,14 @@ it.effect(
       const layerSessionManager = Layer.succeed(
         ProviderSessionManager.ProviderSessionManagerV2,
         ProviderSessionManager.ProviderSessionManagerV2.of({
+          occupiedWorkspaces: Effect.succeed([]),
           shutdown: Effect.void,
           open: () => Effect.die("unused open"),
           get: (providerSessionId) =>
             Effect.succeed(
               providerSessionId === oldSessionId ? Option.some(runtime) : Option.none(),
             ),
+          reserveIdleCredentialBinding: () => Effect.die("unused credential reservation"),
           isLive: (providerSessionId) => Effect.succeed(providerSessionId === oldSessionId),
           close: () => Effect.void,
           closeInstance: () => Effect.void,
@@ -320,6 +323,7 @@ it.effect(
           otherWorkingThreads: () => Effect.succeed([]),
           releaseUnlessBusy: () => Effect.succeed(true),
           subscribePromptSuggestion: () => Stream.empty,
+          releaseIfSilent: () => Effect.die("unused releaseIfSilent"),
         }),
       );
       const terminalAwaited = yield* Deferred.make<RunAttemptId>();

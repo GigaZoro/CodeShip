@@ -2,6 +2,7 @@ import { t } from "~/i18n";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
+  type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -15,7 +16,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, PinIcon, PinOffIcon } from "lucide-react";
 import {
   memo,
   useEffect,
@@ -27,6 +28,9 @@ import {
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Badge } from "../ui/badge";
 import { MiddleTruncate } from "../ui/middle-truncate";
+import { Button } from "../ui/button";
+import { shortcutLabelForCommand } from "~/keybindings";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
@@ -58,6 +62,8 @@ interface ChatHeaderProps {
   activeThreadLinkOrigin?: string | null | undefined;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
+  /** Absent where this thread cannot be pinned or the connection cannot change it. */
+  threadPin?: { pinned: boolean; toggle: () => void } | null | undefined;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
   onOpenThread: (threadId: ThreadId) => void;
   onNewThreadInProject: () => void;
@@ -75,6 +81,46 @@ function resolveRenameCommit(input: {
   return { action: "commit", title: trimmed };
 }
 
+function ThreadPinButton(props: {
+  pin: { pinned: boolean; toggle: () => void };
+  keybindings: ResolvedKeybindingsConfig;
+}) {
+  const label = props.pin.pinned ? t("Unpin thread") : t("Pin thread");
+  const shortcut = shortcutLabelForCommand(props.keybindings, "thread.pin");
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant={props.pin.pinned ? "ghost" : "ghost-muted"}
+            size="icon-xs"
+            aria-label={label}
+            aria-pressed={props.pin.pinned}
+            onClick={props.pin.toggle}
+            className="group/pin"
+          />
+        }
+      >
+        {props.pin.pinned ? (
+          <>
+            <PinIcon
+              aria-hidden
+              className="fill-current group-hover/pin:hidden group-focus-visible/pin:hidden"
+            />
+            <PinOffIcon
+              aria-hidden
+              className="hidden group-hover/pin:block group-focus-visible/pin:block"
+            />
+          </>
+        ) : (
+          <PinIcon aria-hidden />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">{shortcut ? `${label} (${shortcut})` : label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
@@ -82,12 +128,14 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadLinkOrigin,
   isServerThread,
   activeProject,
+  threadPin,
   parentThreadLink,
   onOpenThread,
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
 }: ChatHeaderProps) {
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const allProjects = useProjects();
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -431,6 +479,7 @@ export const ChatHeader = memo(function ChatHeader({
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      {threadPin ? <ThreadPinButton pin={threadPin} keybindings={keybindings} /> : null}
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
     </div>
   );

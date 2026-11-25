@@ -7,6 +7,7 @@ import type { ClaudeSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Claude Code's ownership and real-path checks need lstat and the native realpath, which FileSystem lacks.
@@ -39,14 +40,60 @@ export class ClaudeSettingsLaunchArgError extends Schema.TaggedError<ClaudeSetti
   }
 }
 
+const CLAUDE_SETTINGS_FAILURE_PHASES = [
+  "user-project-local-files",
+  "account-worker",
+  "flag-validation",
+  "policy-resolution",
+] as const;
+const CLAUDE_SETTINGS_FAILURE_KINDS = [
+  "timeout",
+  "spawn",
+  "nonzero-exit",
+  "invalid-output",
+  "sdk-error",
+] as const;
+
+/**
+ * Both fields are fixed literals, so the message that reaches the persisted run failure says where
+ * and how resolution failed without carrying settings, arguments, stderr or exception text.
+ */
 export class ClaudeSettingsResolveError extends Schema.TaggedError<ClaudeSettingsResolveError>()(
   "ClaudeSettingsResolveError",
-  { cause: Schema.optional(Schema.Defect()) },
+  {
+    phase: Schema.Literals(CLAUDE_SETTINGS_FAILURE_PHASES),
+    kind: Schema.Literals(CLAUDE_SETTINGS_FAILURE_KINDS),
+    cause: Schema.optional(Schema.Defect()),
+  },
 ) {
   override get message(): string {
-    return "Claude's settings could not be resolved.";
+    return `Claude's settings could not be resolved (${this.phase}: ${this.kind}).`;
   }
 }
+
+/** The safe kind of a failure from the account worker, by the tag of its error. */
+export const claudeSettingsWorkerFailureKind = (
+  error: unknown,
+): (typeof CLAUDE_SETTINGS_FAILURE_KINDS)[number] => {
+  const tag = Predicate.isTagged(error, "TimeoutError")
+    ? "TimeoutError"
+    : Predicate.hasProperty(error, "_tag")
+      ? error._tag
+      : undefined;
+  switch (tag) {
+    case "TimeoutError":
+      return "timeout";
+    case "ClaudeWorkerError":
+      return "nonzero-exit";
+    case "SchemaError":
+      return "invalid-output";
+    case "PlatformError":
+    case "ProviderCommandNotFoundError":
+      return "spawn";
+    default:
+      return "sdk-error";
+  }
+};
 
 export class ClaudeProjectConfigRootError extends Schema.TaggedError<ClaudeProjectConfigRootError>()(
   "ClaudeProjectConfigRootError",
@@ -209,7 +256,12 @@ const claudeUserOwnsRoot = Effect.fn("ClaudeAdapterV2.userOwnsRoot")(function* (
       ]);
       return rootInfo.uid === uid && gitInfo.uid === uid && claudeUid === uid;
     },
-    catch: (cause) => new ClaudeSettingsResolveError({ cause }),
+    catch: (cause) =>
+      new ClaudeSettingsResolveError({
+        phase: "user-project-local-files",
+        kind: "sdk-error",
+        cause,
+      }),
   }).pipe(Effect.orElseSucceed(() => false));
 });
 
@@ -279,7 +331,12 @@ const resolveClaudeSettingsFiles = Effect.fn("ClaudeAdapterV2.resolveSettingsFil
   > = usesHostConfig
     ? yield* Effect.tryPromise({
         try: () => resolveClaudeSettingsSources(reads),
-        catch: (cause) => new ClaudeSettingsResolveError({ cause }),
+        catch: (cause) =>
+          new ClaudeSettingsResolveError({
+            phase: "user-project-local-files",
+            kind: "sdk-error",
+            cause,
+          }),
       })
     : yield* runClaudeWorker({
         method: "resolveSettings",
@@ -287,7 +344,14 @@ const resolveClaudeSettingsFiles = Effect.fn("ClaudeAdapterV2.resolveSettingsFil
         environment: { ...environment, CLAUDE_CONFIG_DIR: homePath },
       }).pipe(
         Effect.flatMap(decodeClaudeSettingsReadSources),
-        Effect.mapError((cause) => new ClaudeSettingsResolveError({ cause })),
+        Effect.mapError(
+          (cause) =>
+            new ClaudeSettingsResolveError({
+              phase: "account-worker",
+              kind: claudeSettingsWorkerFailureKind(cause),
+              cause,
+            }),
+        ),
       );
   return sources.flat().flatMap((entry): ReadonlyArray<ClaudeSettingsTier> => {
     const { source } = entry;
@@ -367,7 +431,8 @@ const validClaudeFlagSettings = Effect.fn("ClaudeAdapterV2.validLaunchArgSetting
   );
   const [sources = []] = yield* Effect.tryPromise({
     try: () => resolveClaudeSettingsSources([{ cwd: directory, settingSources: ["project"] }]),
-    catch: (cause) => new ClaudeSettingsResolveError({ cause }),
+    catch: (cause) =>
+      new ClaudeSettingsResolveError({ phase: "flag-validation", kind: "sdk-error", cause }),
   });
   return sources.find((entry) => entry.source === "project")?.settings as
     | ClaudeSdkSettings
@@ -470,7 +535,8 @@ export const readClaudeSettingsCascade = Effect.fn("ClaudeSettingsCascade.read")
           Option.getOrElse(remote, () => ({})) as ClaudeSdkSettings,
         ),
       }),
-    catch: (cause) => new ClaudeSettingsResolveError({ cause }),
+    catch: (cause) =>
+      new ClaudeSettingsResolveError({ phase: "policy-resolution", kind: "sdk-error", cause }),
   });
   const tiers: ReadonlyArray<ClaudeSettingsTier> = [
     ...files,

@@ -16,7 +16,7 @@ import { canOpenLinksInApp } from "../browser/browserLinkTarget";
 import { useOpenLink } from "../browser/useOpenLink";
 import { useClientSettings } from "../hooks/useSettings";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import { useRightPanelStore } from "../rightPanelStore";
+import { rightPanelHostRef, useRightPanelStore } from "../rightPanelStore";
 import {
   selectThreadBranchBaseRef,
   selectThreadDiffPanelSelection,
@@ -169,11 +169,14 @@ export function useOpenChangeRequestLink(
       const commit = parsedCommit.link;
       event.preventDefault();
       event.stopPropagation();
-      const userActionRevision = useRightPanelStore.getState().markUserAction(resolvedThreadRef);
-      const baseRef = selectThreadBranchBaseRef(useDiffPanelStore.getState(), resolvedThreadRef);
+      // The diff panel belongs to the thread whose panel shows the commit, which a hosted
+      // chat does not own. Read it before the lookup: the pane may unmount meanwhile.
+      const panelOwnerRef = rightPanelHostRef(resolvedThreadRef);
+      const userActionRevision = useRightPanelStore.getState().markUserAction(panelOwnerRef);
+      const baseRef = selectThreadBranchBaseRef(useDiffPanelStore.getState(), panelOwnerRef);
       const selection = selectThreadDiffPanelSelection(
         useDiffPanelStore.getState().byThreadKey,
-        resolvedThreadRef,
+        panelOwnerRef,
       );
       void readDiffPreview({
         environmentId: resolvedThreadRef.environmentId,
@@ -186,11 +189,11 @@ export function useOpenChangeRequestLink(
       })
         .then((result) => {
           if (
-            useRightPanelStore.getState().getUserActionRevision(resolvedThreadRef) !==
+            useRightPanelStore.getState().getUserActionRevision(panelOwnerRef) !==
               userActionRevision ||
             selectThreadDiffPanelSelection(
               useDiffPanelStore.getState().byThreadKey,
-              resolvedThreadRef,
+              panelOwnerRef,
             ) !== selection
           )
             return;
@@ -200,8 +203,8 @@ export function useOpenChangeRequestLink(
               (source) => source.kind === "commit" && source.headRef === commit.sha,
             )
           ) {
-            useDiffPanelStore.getState().selectCommit(resolvedThreadRef, commit.sha);
-            useRightPanelStore.getState().open(resolvedThreadRef, "diff");
+            useDiffPanelStore.getState().selectCommit(panelOwnerRef, commit.sha);
+            useRightPanelStore.getState().open(panelOwnerRef, "diff");
             return;
           }
           if (openPullRequest()) return;

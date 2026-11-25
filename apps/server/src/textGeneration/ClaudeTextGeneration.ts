@@ -15,18 +15,10 @@ import {
   normalizeCliError,
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
-import {
-  getModelSelectionBooleanOptionValue,
-  getModelSelectionStringOptionValue,
-  getProviderOptionDescriptors,
-} from "@t3tools/shared/model";
+import { compileClaudeModelSelection, withClaudeSelectionSettings } from "../claudeModelOptions.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
-  getClaudeCatalogModelCapabilities,
-  normalizeClaudeCatalogEffort,
-  resolveClaudeCatalogApiModelId,
-  resolveClaudeCatalogEffort,
   resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "../provider/ClaudeModelCatalog.ts";
@@ -51,9 +43,9 @@ const CLAUDE_INVESTIGATION_ALLOWED = [
 // Denies override allows; block git --output/-o because allowed trailing args can otherwise write anywhere.
 const CLAUDE_INVESTIGATION_DENIED = ["Bash(git * --output*)", "Bash(git * -o *)"].join(",");
 
-const NO_SESSION_PERSISTENCE = "--no-session-persistence";
-// Claude Code before 2.0.63 exits with this on stderr; those runs retry without the flag.
-const NO_SESSION_PERSISTENCE_REJECTED = `error: unknown option '${NO_SESSION_PERSISTENCE}'`;
+// --safe-mode keeps the account's CLAUDE.md, skills and plugins (about 23k tokens) out of one-shot calls.
+// Claude versions that predate a flag exit with the stderr line "error: unknown option '<flag>'"; those runs retry without it.
+const OPTIONAL_CLAUDE_FLAGS = ["--safe-mode", "--no-session-persistence"];
 
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
@@ -176,33 +168,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       toJsonSchemaObject(outputSchemaJson),
       "Failed to encode structured output schema.",
     );
-    const caps = getClaudeCatalogModelCapabilities(catalog, resolvedModelSelection.model);
-    const descriptors = getProviderOptionDescriptors({
-      caps,
-      selections: resolvedModelSelection.options,
-    });
-    const findDescriptor = (id: string) => descriptors.find((descriptor) => descriptor.id === id);
-    const rawEffortSelection = getModelSelectionStringOptionValue(resolvedModelSelection, "effort");
-    const resolvedEffort = resolveClaudeCatalogEffort(
-      catalog,
-      resolvedModelSelection.model,
-      rawEffortSelection,
-    );
-    const cliEffort = normalizeClaudeCatalogEffort(
-      catalog,
-      resolvedEffort,
-      resolvedModelSelection.model,
-    );
-    const ultracode = findDescriptor("ultracode")?.currentValue;
-    const thinkingDescriptor = findDescriptor("thinking");
-    const fastModeDescriptor = findDescriptor("fastMode");
-    // Only a chosen value; otherwise Claude Code's own default applies, as in chat turns.
-    const thinking =
-      thinkingDescriptor?.type === "boolean"
-        ? getModelSelectionBooleanOptionValue(resolvedModelSelection, "thinking")
-        : undefined;
-    const fastMode =
-      fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+    // The same model options a chat turn on this selection launches with.
+    const selection = compileClaudeModelSelection(resolvedModelSelection, catalog);
     const launchArgSettings = yield* readClaudeLaunchArgSettings({
       settings: claudeSettings,
       cwd,
@@ -214,11 +181,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ),
     );
     const settings = {
-      ...launchArgSettings,
+      ...withClaudeSelectionSettings(launchArgSettings ?? {}, selection),
       disableAllHooks: true,
-      ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-      ...(fastMode ? { fastMode: true } : {}),
-      ...(typeof ultracode === "boolean" ? { ultracode } : {}),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -227,7 +191,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
-      noSessionPersistence: boolean,
+      optionalFlags: ReadonlyArray<string>,
     ) {
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
       const spawnCommand = yield* resolveSpawnCommand(
@@ -239,8 +203,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--json-schema",
           jsonSchemaStr,
           "--model",
-          resolveClaudeCatalogApiModelId(catalog, resolvedModelSelection),
-          ...(cliEffort ? ["--effort", cliEffort] : []),
+          selection.apiModelId,
+          ...(selection.effort ? ["--effort", selection.effort] : []),
           "--settings",
           settingsJson,
           ...(investigate
@@ -254,7 +218,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
               ]
             : ["--tools", ""]),
           "--disable-slash-commands",
-          ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
+          ...optionalFlags,
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
           ...(managedMcpConfig ? [] : ["--strict-mcp-config"]),
           "--permission-mode",
@@ -296,12 +260,21 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       return { stdout, stderr, exitCode };
     });
 
-    const rawStdout = yield* runClaudeCommand(true).pipe(
-      Effect.filterOrElse(
-        (result) =>
-          result.exitCode === 0 || !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
-        () => runClaudeCommand(false),
-      ),
+    const rawStdout = yield* Effect.gen(function* () {
+      let optionalFlags = OPTIONAL_CLAUDE_FLAGS;
+      let result = yield* runClaudeCommand(optionalFlags);
+      // A structured Claude result means Claude started, so no flag was rejected; wrapper text must not drop safe mode.
+      while (result.exitCode !== 0 && claudeErrorResult(result.stdout.trim()) === undefined) {
+        const stderrLines = new Set(result.stderr.split(/\r?\n/).map((line) => line.trim()));
+        const supportedFlags = optionalFlags.filter(
+          (flag) => !stderrLines.has(`error: unknown option '${flag}'`),
+        );
+        if (supportedFlags.length === optionalFlags.length) break;
+        optionalFlags = supportedFlags;
+        result = yield* runClaudeCommand(optionalFlags);
+      }
+      return result;
+    }).pipe(
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
         if (exitCode === 0) return Effect.succeed(stdout);
         const stderrDetail = stderr.trim();

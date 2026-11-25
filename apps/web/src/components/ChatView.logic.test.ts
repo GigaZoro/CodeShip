@@ -11,6 +11,7 @@ import {
   isThreadEnvironmentLocked,
   recallCheckoutIsRepo,
   rememberCheckoutIsRepo,
+  observeProactivePanelUserChoice,
 } from "./ChatView.logic";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { deriveProviderInstanceEntries } from "../providerInstances";
@@ -36,6 +37,10 @@ import {
 import * as DateTime from "effect/DateTime";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import {
+  isThreadWaitingOnWork,
+  resolveThreadStatus,
+} from "@t3tools/client-runtime/state/thread-status";
 import type { Thread } from "../types";
 import { derivePhase } from "../session-logic";
 import { makeThreadFixture, makeThreadProjectionFixture } from "../test-fixtures";
@@ -54,6 +59,7 @@ import {
   deriveLockedProvider,
   hasCompactableConversation,
   hasServerAcknowledgedLocalDispatch,
+  presentThreadShellFromProjection,
 } from "./ChatView.logic";
 
 const environmentId = EnvironmentId.make("environment-local");
@@ -1190,5 +1196,136 @@ describe("Open in for the host environment", () => {
         }),
       ).toBe(visible);
     }
+  });
+});
+
+describe("presentThreadShellFromProjection", () => {
+  it("keeps the approval a subagent's shell rolls up to a thread opened before its own shell", () => {
+    const projection = makeThreadProjectionFixture();
+    const shell = presentThreadShellFromProjection(
+      environmentId,
+      projection.thread.id,
+      projection,
+      { updatedAt: projection.updatedAt, lastVisitedAt: null, pendingSubagentRequest: "approval" },
+    );
+
+    expect(shell.pendingSubagentRequest).toBe("approval");
+    expect(resolveThreadStatus(shell)).toBe("approval");
+  });
+
+  it("waits on the thread its running turn awaits", () => {
+    const projection = makeThreadProjectionFixture();
+    const at = projection.updatedAt;
+    const runId = RunId.make("run-awaiting");
+    const run = {
+      id: runId,
+      threadId: projection.thread.id,
+      ordinal: 1,
+      providerInstanceId: projection.thread.providerInstanceId,
+      modelSelection: projection.thread.modelSelection,
+      providerThreadId: null,
+      userMessageId: MessageId.make("message-awaiting"),
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "running" as const,
+      requestedAt: at,
+      startedAt: at,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const threadWait = {
+      id: TurnItemId.make("item-thread-wait"),
+      threadId: projection.thread.id,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "running" as const,
+      title: null,
+      startedAt: at,
+      completedAt: null,
+      updatedAt: at,
+      type: "dynamic_tool" as const,
+      toolName: "mcp__t3-code__t3_thread_wait",
+      input: {},
+    };
+    const shell = presentThreadShellFromProjection(
+      environmentId,
+      projection.thread.id,
+      { ...projection, runs: [run], turnItems: [threadWait] },
+      { updatedAt: at, lastVisitedAt: null, pendingSubagentRequest: null },
+    );
+
+    expect(shell.blockedOnThreadWait).toBe(true);
+    expect(isThreadWaitingOnWork(shell)).toBe(true);
+    expect(resolveThreadStatus(shell)).toBe("waiting");
+  });
+
+  it("waits on the background work that holds a thread", () => {
+    const projection = makeThreadProjectionFixture();
+    const watchedPullRequest = {
+      host: "github.com",
+      repository: "acme/app",
+      number: 7,
+      url: "https://github.com/acme/app/pull/7",
+      source: "agent",
+      linkedAt: "2026-01-01T00:00:00.000Z",
+      snapshot: null,
+      stack: null,
+      watch: {
+        startedAt: "2026-01-01T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        passedChecks: [],
+        remarksThrough: "2026-01-01T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      },
+    } as unknown as NonNullable<typeof projection.thread.pullRequests>[number];
+    const shell = presentThreadShellFromProjection(
+      environmentId,
+      projection.thread.id,
+      { ...projection, thread: { ...projection.thread, pullRequests: [watchedPullRequest] } },
+      { updatedAt: projection.updatedAt, lastVisitedAt: null, pendingSubagentRequest: null },
+    );
+
+    expect(shell.pendingBackgroundTasks).toEqual([
+      expect.objectContaining({ kind: "monitor", awaited: true }),
+    ]);
+    expect(isThreadWaitingOnWork(shell)).toBe(true);
+    expect(resolveThreadStatus(shell)).toBe("waiting");
+  });
+});
+
+describe("observeProactivePanelUserChoice", () => {
+  const input = {
+    threadKey: "environment-local:thread-1",
+    runningTurnId: null,
+    userActionRevision: 4,
+  };
+
+  it("treats the selection that revealed a thread as a choice made before its first observation", () => {
+    expect(observeProactivePanelUserChoice(null, input).userActionRevision).toBe(4);
+    expect(
+      observeProactivePanelUserChoice(null, { ...input, revealedBySelection: true })
+        .userActionRevision,
+    ).toBe(3);
+  });
+
+  it("ignores the reveal once the thread is already observed", () => {
+    const first = observeProactivePanelUserChoice(null, { ...input, revealedBySelection: true });
+    expect(
+      observeProactivePanelUserChoice(first, {
+        ...input,
+        userActionRevision: 5,
+        revealedBySelection: true,
+      }).userActionRevision,
+    ).toBe(3);
   });
 });

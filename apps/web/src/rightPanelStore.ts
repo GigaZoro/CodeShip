@@ -3,13 +3,24 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ThreadShell,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
+import {
+  isThreadPanelSurface,
+  threadPanelSurface,
+  type ThreadPanelSurface,
+} from "./rightPanelThreadSurface";
 import type { ChatFileAttachment } from "./types";
 
 const RIGHT_PANEL_KINDS = [
@@ -22,6 +33,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "side-chat",
+  "thread",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -78,7 +90,8 @@ export type RightPanelSurface =
       detailTab?: PullRequestDetailTab;
     }
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId }
+  | ThreadPanelSurface;
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -109,6 +122,14 @@ interface RightPanelStoreState {
   pendingMaximizeThreadKey: string | null;
   requestMaximize: (ref: ScopedThreadRef) => void;
   consumeMaximizeRequest: (ref: ScopedThreadRef) => boolean;
+  /** Set when a thread embedded in `hostKey`'s tab opened a panel surface of its own. */
+  pendingThreadReveal: { readonly hostKey: string; readonly threadKey: string } | null;
+  consumeThreadRevealRequest: (host: ScopedThreadRef, thread: ScopedThreadRef) => boolean;
+  /** Asks the host of an embedded `thread` to move it to the main view, for state outside its panel. */
+  requestThreadReveal: (thread: ScopedThreadRef) => void;
+  /** Set when a reveal moved a thread to the main view; its first proactive observation takes it. */
+  revealedThreadKey: string | null;
+  consumeRevealedThread: (thread: ScopedThreadRef) => boolean;
   threadPanelVisibilityByThreadKey: Record<string, ThreadPanelVisibility>;
   userActionRevisionByThreadKey: Record<string, number>;
   closeRevisionByThreadKey: Record<string, number>;
@@ -125,8 +146,13 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat" | "thread">,
   ) => void;
+  openThread: (
+    host: ScopedThreadRef,
+    target: ScopedThreadRef,
+    lineage?: Pick<OrchestrationV2ThreadShell["lineage"], "sideChat" | "parentThreadId">,
+  ) => boolean;
   openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
@@ -191,7 +217,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat" | "thread">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -214,7 +240,10 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "side-chat">,
+  kind: Exclude<
+    RightPanelKind,
+    "file" | "preview" | "terminal" | "pull-request" | "side-chat" | "thread"
+  >,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -400,21 +429,60 @@ const automaticUpdate = (
   ...updateThread(state, threadKey, updater),
 });
 
-// A side chat pane has no panel of its own, so its panel actions open in its parent's panel.
-const panelHosts = new Map<string, ScopedThreadRef>();
+// A side chat shares its parent's workspace, so its panel actions run on the parent's panel. An
+// embedded thread keeps its own panel and asks its host to move it to the main view instead.
+interface PanelRoute {
+  readonly host: ScopedThreadRef;
+  readonly requestsReveal: boolean;
+}
+const panelRoutes = new Map<string, PanelRoute>();
+let panelRoutingSuspended = false;
+
+const panelRouteOf = (threadKey: string) =>
+  panelRoutingSuspended ? undefined : panelRoutes.get(threadKey);
+
+function registerPanelRoute(guest: ScopedThreadRef, route: PanelRoute): () => void {
+  const guestKey = scopedThreadKey(guest);
+  panelRoutes.set(guestKey, route);
+  return () => {
+    if (panelRoutes.get(guestKey) !== route) return;
+    panelRoutes.delete(guestKey);
+    const pending = useRightPanelStore.getState().pendingThreadReveal;
+    if (pending?.threadKey === guestKey && pending.hostKey === scopedThreadKey(route.host)) {
+      useRightPanelStore.setState({ pendingThreadReveal: null });
+    }
+  };
+}
 
 /** Routes `guest`'s panel actions to `host`'s panel until the returned cleanup runs. */
 export function hostRightPanel(guest: ScopedThreadRef, host: ScopedThreadRef): () => void {
-  const guestKey = scopedThreadKey(guest);
-  panelHosts.set(guestKey, host);
-  return () => {
-    if (panelHosts.get(guestKey) === host) panelHosts.delete(guestKey);
-  };
+  return registerPanelRoute(guest, { host, requestsReveal: false });
+}
+
+/**
+ * Embeds `guest` in `host`'s thread tab. Its panel actions use `guest`'s own panel, which the
+ * tab does not show, and ask `host` to move `guest` to the main view. Ending the embedding
+ * cancels a request it made.
+ */
+export function embedRightPanelThread(guest: ScopedThreadRef, host: ScopedThreadRef): () => void {
+  return registerPanelRoute(guest, { host, requestsReveal: true });
 }
 
 /** The thread whose panel shows `ref`'s panel actions, so it also owns their browser tabs. */
 export function rightPanelHostRef(ref: ScopedThreadRef): ScopedThreadRef {
-  return panelHosts.get(scopedThreadKey(ref)) ?? ref;
+  const route = panelRouteOf(scopedThreadKey(ref));
+  return route !== undefined && !route.requestsReveal ? route.host : ref;
+}
+
+/** Runs synchronous panel actions on the threads they name, for restoring a thread's own history. */
+export function withoutPanelRouting<T>(run: () => T): T {
+  const previous = panelRoutingSuspended;
+  panelRoutingSuspended = true;
+  try {
+    return run();
+  } finally {
+    panelRoutingSuspended = previous;
+  }
 }
 
 const userAction = (
@@ -423,9 +491,24 @@ const userAction = (
   updater: (current: ThreadRightPanelState) => ThreadRightPanelState,
   closesView = false,
 ): Partial<RightPanelStoreState> => {
-  const host = panelHosts.get(guestKey);
-  const threadKey = host === undefined ? guestKey : scopedThreadKey(host);
-  return userActionOnThread(state, threadKey, updater, closesView);
+  const route = panelRouteOf(guestKey);
+  if (route !== undefined && !route.requestsReveal) {
+    return userActionOnThread(state, scopedThreadKey(route.host), updater, closesView);
+  }
+  const next = userActionOnThread(state, guestKey, updater, closesView);
+  const guestPanel = next.byThreadKey?.[guestKey];
+  if (
+    route === undefined ||
+    closesView ||
+    guestPanel === state.byThreadKey[guestKey] ||
+    guestPanel?.isOpen !== true
+  ) {
+    return next;
+  }
+  return {
+    ...next,
+    pendingThreadReveal: { hostKey: scopedThreadKey(route.host), threadKey: guestKey },
+  };
 };
 
 const userActionOnThread = (
@@ -501,8 +584,19 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    const kind = (surface as { kind?: string }).kind;
-                    if (kind === "plan" || kind === "agents") return [];
+                    if (
+                      !surface ||
+                      typeof surface.id !== "string" ||
+                      !RIGHT_PANEL_KINDS.includes(surface.kind)
+                    ) {
+                      return [];
+                    }
+                    if (surface.kind === "thread") {
+                      return isThreadPanelSurface(surface) &&
+                        scopedThreadKey(surface.threadRef) !== threadKey
+                        ? [surface]
+                        : [];
+                    }
                     if (
                       (surface.kind === "file" || surface.kind === "files") &&
                       "folderTrail" in surface &&
@@ -651,6 +745,31 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set({ pendingMaximizeThreadKey: null });
         return true;
       },
+      pendingThreadReveal: null,
+      consumeThreadRevealRequest: (host, thread) => {
+        const pending = get().pendingThreadReveal;
+        if (
+          pending?.hostKey !== scopedThreadKey(host) ||
+          pending.threadKey !== scopedThreadKey(thread)
+        ) {
+          return false;
+        }
+        set({ pendingThreadReveal: null, revealedThreadKey: pending.threadKey });
+        return true;
+      },
+      requestThreadReveal: (thread) => {
+        const threadKey = scopedThreadKey(thread);
+        const route = panelRouteOf(threadKey);
+        if (route?.requestsReveal) {
+          set({ pendingThreadReveal: { hostKey: scopedThreadKey(route.host), threadKey } });
+        }
+      },
+      revealedThreadKey: null,
+      consumeRevealedThread: (thread) => {
+        if (get().revealedThreadKey !== scopedThreadKey(thread)) return false;
+        set({ revealedThreadKey: null });
+        return true;
+      },
       threadPanelVisibilityByThreadKey: {},
       userActionRevisionByThreadKey: {},
       closeRevisionByThreadKey: {},
@@ -739,6 +858,27 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
           }),
         ),
+      openThread: (host, target, lineage) => {
+        const hostKey = scopedThreadKey(host);
+        if (hostKey === scopedThreadKey(target)) return false;
+        if (
+          target.environmentId === host.environmentId &&
+          lineage?.sideChat === true &&
+          lineage.parentThreadId === host.threadId
+        ) {
+          get().openSideChat(host, target.threadId);
+        } else {
+          set((state) =>
+            userActionOnThread(
+              state,
+              hostKey,
+              (current) => upsertSurface(current, threadPanelSurface(target)),
+              false,
+            ),
+          );
+        }
+        return true;
+      },
       openSideChat: (ref, threadId) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) =>
@@ -1218,6 +1358,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      merge: (persisted, current) => ({
+        ...current,
+        ...migratePersistedRightPanelState(persisted),
+      }),
     },
   ),
 );

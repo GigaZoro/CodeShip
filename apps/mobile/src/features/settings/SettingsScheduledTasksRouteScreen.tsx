@@ -8,7 +8,7 @@ import {
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
-import { readEnvironmentScope } from "../../state/session";
+import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import type {
   EnvironmentId,
   LinkedScheduledTaskMachine,
@@ -37,8 +37,10 @@ import {
   runConditionInput,
   runConditionInvalidText,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import { mergeSavedThreadFolders } from "@t3tools/client-runtime/thread-folders";
 import { providerDriverDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
+  MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   MAX_THREAD_FOLDER_LENGTH,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
@@ -95,6 +97,11 @@ import {
   promptFileReadFor,
   promptUpsertFields,
 } from "@t3tools/client-runtime/scheduled-task-prompt-file";
+import {
+  scheduledTaskDescriptionField,
+  scheduledTaskDescriptionUnsupported,
+  scheduledTaskPreview,
+} from "@t3tools/client-runtime/scheduled-task-description";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import {
@@ -111,6 +118,7 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-sharing";
 import {
   scheduledTaskGroupAction,
+  scheduledTaskGroupCopy,
   scheduledTaskGroupLabels,
   scheduledTaskGroupPausePlan,
   scheduledTaskGroupUpsertField,
@@ -138,9 +146,13 @@ import {
   resolveInheritedDefaultModelSelection,
 } from "@t3tools/shared/serverSettings";
 import { useEnvironmentQuery } from "../../state/query";
+import { connectedEnvironmentIdsAtom } from "../../state/presentation";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { ListSection } from "../../components/ui/ListSection";
 import { serverEnvironment } from "../../state/server";
+import { threadEnvironment } from "../../state/threads";
+import { promptThreadFolderName } from "../threads/ThreadFolderNamePrompt";
+import { readThreadFolderTargets, useSaveThreadFolder } from "../threads/useThreadFolderActions";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { resolveNewTaskBranchLabel } from "../threads/new-task-context-presentation";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
@@ -171,6 +183,7 @@ import {
   useScheduledTaskEditor,
   useScheduledTaskThread,
 } from "./scheduled-task-editor";
+import { useScheduledTaskFolderMenu } from "./useScheduledTaskFolderMenu";
 import { useOpenScheduledTaskThread } from "./ScheduledTaskRunsRouteScreen";
 import {
   discardScheduledTaskEditor,
@@ -191,6 +204,16 @@ import {
 
 const FILTER_VALUE_EXAMPLE = "opened";
 const FILTER_LIST_EXAMPLE = "opened, reopened";
+
+const savedScheduledTaskFoldersAtom = Atom.family((key: string) =>
+  Atom.make((get) =>
+    mergeSavedThreadFolders(
+      (key === "" ? [] : (key.split("\n") as EnvironmentId[])).map((environmentId) =>
+        get(threadEnvironment.savedFoldersAtom(environmentId)),
+      ),
+    ),
+  ).pipe(Atom.withLabel(`mobile-scheduled-task-folders:${key}`)),
+);
 
 /** Keyed by environment ids; a list that has not loaded is left out. */
 const scheduledTaskListsAtom = Atom.family((key: string) =>
@@ -678,9 +701,42 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
         .map((task): ScheduledTaskListItem => ({ kind: "local", environmentId, task }));
     }),
   ];
+  const savedFolders = useAtomValue(
+    savedScheduledTaskFoldersAtom(
+      visibleEnvironments.map((entry) => entry.environmentId).join("\n"),
+    ),
+  );
+  const writableEnvironments = useEnvironmentsWithScope(
+    visibleEnvironments,
+    AuthOrchestrationOperateScope,
+  );
+  const connectedEnvironments = useAtomValue(connectedEnvironmentIdsAtom);
+  const folderTargets = visibleEnvironments.filter(
+    ({ environmentId, serverConfig }) =>
+      serverConfig.environment.capabilities.threadFolders === true &&
+      serverConfig.environment.capabilities.scheduledTaskGroups === true &&
+      connectedEnvironments.includes(environmentId) &&
+      writableEnvironments.has(environmentId),
+  );
+  const saveFolder = useSaveThreadFolder();
+  const promptNewFolder = () =>
+    promptThreadFolderName({
+      title: t("New folder"),
+      confirmText: t("Create"),
+      initialValue: "",
+      onConfirm: (name) => {
+        const available = readThreadFolderTargets();
+        void Promise.all(
+          folderTargets
+            .filter(({ environmentId }) => available.includes(environmentId))
+            .map(({ environmentId }) => saveFolder(environmentId, name)),
+        );
+      },
+    });
   const taskGroupSections = groupScheduledTaskItems(
     listedTasks,
     (item) => scheduledTaskListItemGroupCopy(item).task.group,
+    savedFolders,
   );
   const grouped = taskGroupSections.some((section) => section.key !== null);
   const statsEnvironmentIds = visibleEnvironments
@@ -750,6 +806,15 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
       title={t("Scheduled tasks")}
       workspaceRoot={props.workspace}
       actions={[
+        ...(folderTargets.length > 0
+          ? [
+              {
+                accessibilityLabel: t("New folder"),
+                icon: "folder.badge.plus" as const,
+                onPress: () => promptNewFolder(),
+              },
+            ]
+          : []),
         {
           accessibilityLabel: t("New task"),
           icon: "plus",
@@ -1000,6 +1065,7 @@ function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }
                       draft: {
                         ...draftForEnvironment(target.environmentId),
                         title: current.draft.title,
+                        description: current.draft.description,
                         group: current.draft.group,
                         prompt: current.draft.prompt,
                         promptSource: current.draft.promptSource,
@@ -1106,16 +1172,16 @@ function TaskForm({
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
   const offersCatchUp = config?.environment.capabilities.scheduledTaskRunHistory === true;
   const offersGroups = config?.environment.capabilities.scheduledTaskGroups === true;
-  const groupSuggestions = scheduledTaskGroupLabels(
-    useAtomValue(
-      scheduledTaskListsAtom(
-        availableTargets
-          .filter((target) => target.serverConfig.environment.capabilities.scheduledTaskGroups)
-          .map((target) => target.environmentId)
-          .join("\n"),
-      ),
-    ).flatMap(({ tasks }) => tasks.map((task) => task.group)),
-  );
+  const groupEnvironmentIds = availableTargets
+    .filter((target) => target.serverConfig.environment.capabilities.scheduledTaskGroups)
+    .map((target) => target.environmentId)
+    .join("\n");
+  const savedFolders = useAtomValue(savedScheduledTaskFoldersAtom(groupEnvironmentIds));
+  const groupTaskLists = useAtomValue(scheduledTaskListsAtom(groupEnvironmentIds));
+  const groupSuggestions = scheduledTaskGroupLabels([
+    ...savedFolders,
+    ...groupTaskLists.flatMap(({ tasks }) => tasks.map((task) => task.group)),
+  ]);
   const catchUpMissedRun =
     draft.catchUpMissedRun ??
     defaultCatchUpMissedRun({
@@ -1184,6 +1250,13 @@ function TaskForm({
   const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles = config?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const supportsDescriptions = config?.environment.capabilities.scheduledTaskDescriptions === true;
+  const savedDescription = draft.task?.description ?? "";
+  const descriptionField = scheduledTaskDescriptionField({
+    supported: supportsDescriptions,
+    description: draft.description,
+    savedDescription,
+  });
   const offersDelegateProviders =
     config?.environment.capabilities.scheduledTaskDelegateProviders === true;
   const delegateProviderChoices = [
@@ -1310,6 +1383,13 @@ function TaskForm({
       );
       return;
     }
+    if (descriptionField === null) {
+      Dialog.alert(
+        t("Description could not be saved"),
+        scheduledTaskDescriptionUnsupported(environmentLabel),
+      );
+      return;
+    }
     const maxLiveRuns = offersLiveRuns ? liveRunLimitInput(draft.maxLiveRuns) : undefined;
     if (offersLiveRuns && maxLiveRuns === undefined) {
       Dialog.alert(t("Invalid live-run limit"), liveRunLimitInvalidText());
@@ -1323,6 +1403,7 @@ function TaskForm({
     const input: ScheduledTaskUpsertInput = {
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
+      ...descriptionField,
       ...promptUpsertFields({ supportsPromptFiles, draft }),
       projectId: draft.projectId,
       modelSelection: withImplicitFastModeSelection(taskModel, config?.providers ?? []),
@@ -1498,6 +1579,31 @@ function TaskForm({
             placeholder={t("Check for issues")}
             onChange={(title) => setDraft((current) => ({ ...current, title }))}
           />
+          {supportsDescriptions || draft.description !== "" || savedDescription !== "" ? (
+            <View className="gap-2 border-t border-border-subtle px-4 py-3">
+              <Text className="text-sm text-foreground-muted">{t("Description (optional)")}</Text>
+              <RNTextInput
+                accessibilityLabel={t("Description (optional)")}
+                multiline
+                readOnly={saving}
+                value={draft.description}
+                maxLength={MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH}
+                onChangeText={(description) => setDraft((current) => ({ ...current, description }))}
+                textAlignVertical="top"
+                className="min-h-14 font-sans text-base text-foreground"
+              />
+              <View className="flex-row items-start justify-between gap-3">
+                <Text className="min-w-0 flex-1 text-sm text-foreground-muted">
+                  {descriptionField === null
+                    ? scheduledTaskDescriptionUnsupported(environmentLabel)
+                    : t("A short summary shown in the scheduled task list.")}
+                </Text>
+                <Text className="text-sm text-foreground-muted">
+                  {`${draft.description.length} / ${MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH}`}
+                </Text>
+              </View>
+            </View>
+          ) : null}
           {offersGroups ? (
             <GroupField
               value={draft.group}
@@ -2454,11 +2560,14 @@ function ScheduledTaskGroupSection({
     );
   };
   const hasEnabled = changeable.some(({ task }) => task.enabled);
-  const nextRun = !hasEnabled
-    ? t("Paused")
-    : summary.nextRunAt !== null
-      ? formatNextScheduledTaskRun(summary.nextRunAt, now)
-      : null;
+  const nextRun =
+    changeable.length === 0
+      ? null
+      : !hasEnabled
+        ? t("Paused")
+        : summary.nextRunAt !== null
+          ? formatNextScheduledTaskRun(summary.nextRunAt, now)
+          : null;
   const health = summary.health;
   const healthParts =
     health === null
@@ -2600,6 +2709,8 @@ function SharedTaskRow({
   readonly onDuplicate: (environmentId: EnvironmentId, task: ScheduledTask) => void;
 }) {
   const { environmentId, task } = group.primary;
+  const groupCopy = scheduledTaskGroupCopy(group);
+  const folderMenu = useScheduledTaskFolderMenu(groupCopy.environmentId);
   const openThread = useOpenScheduledTaskThread();
   const snapshots = useSharedScheduledTaskSnapshots();
   const canOperate = useAtomValue(
@@ -2694,12 +2805,15 @@ function SharedTaskRow({
           oneMachine
             ? t("Edit {title}, runs on one machine", { title: task.title })
             : t("Edit {title}, runs on every machine", { title: task.title })
-        }${[...failingChecks].map(([id, text]) => `, ${labelOf(id)}: ${text}`).join("")}`}
+        }${task.description ? `, ${task.description}` : ""}${[...failingChecks].map(([id, text]) => `, ${labelOf(id)}: ${text}`).join("")}`}
         onPress={() => onEdit(environmentId, task)}
         className="min-w-0 flex-1 gap-1 active:opacity-70"
       >
         <Text textRole="body" className="text-foreground" numberOfLines={1}>
           {task.title}
+        </Text>
+        <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+          {scheduledTaskPreview(task)}
         </Text>
         <Text className="text-sm text-foreground-muted" numberOfLines={2}>
           {describeSchedule(task)}
@@ -2734,6 +2848,7 @@ function SharedTaskRow({
       <Menu
         actions={[
           { id: "edit", title: t("Edit") },
+          ...folderMenu.actions(groupCopy.task),
           { id: "duplicate", title: t("Duplicate") },
           ...(openable.length === 1
             ? [{ id: `open-run:${openable[0]!.environmentId}`, title: t("Open last run") }]
@@ -2788,6 +2903,7 @@ function SharedTaskRow({
         ]}
         onPressAction={({ nativeEvent }) => {
           const action = nativeEvent.event;
+          if (folderMenu.handleAction(groupCopy.task, action)) return;
           const opened = copyFor("open-run", action);
           const ran = copyFor("run", action);
           const placement = scheduledTaskPlacementOptions().find(
@@ -2900,6 +3016,9 @@ function LinkedMachineTasks({
                 {task.title}
               </Text>
               <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                {scheduledTaskPreview(task)}
+              </Text>
+              <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                 {[
                   project,
                   describeSchedule(task),
@@ -2962,6 +3081,7 @@ function EnvironmentTasks({
   readonly onDuplicate: (task: ScheduledTask) => void;
 }) {
   const environmentId = environment.environmentId;
+  const folderMenu = useScheduledTaskFolderMenu(environmentId);
   const openThread = useOpenScheduledTaskThread();
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
@@ -3083,7 +3203,7 @@ function EnvironmentTasks({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}${failingCheck === null ? "" : `, ${failingCheck}`}`}
+          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.description ? `, ${task.description}` : ""}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}${failingCheck === null ? "" : `, ${failingCheck}`}`}
           accessibilityHint={
             runThreadId === null ? t("Opens the task editor.") : t("Opens the task's last run.")
           }
@@ -3095,6 +3215,9 @@ function EnvironmentTasks({
         >
           <Text textRole="body" className="text-foreground" numberOfLines={1}>
             {task.title}
+          </Text>
+          <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+            {scheduledTaskPreview(task)}
           </Text>
           <Text className="text-sm text-foreground-muted" numberOfLines={2}>
             {inGroup ? `${environment.label} · ` : ""}
@@ -3143,6 +3266,7 @@ function EnvironmentTasks({
               ? [{ id: "open-thread", title: t("Open thread"), image: "text.bubble" }]
               : []),
             { id: "edit", title: t("Edit"), image: "square.and.pencil" },
+            ...folderMenu.actions(task),
             ...(canDuplicateOnMobile(task)
               ? [{ id: "duplicate", title: t("Duplicate"), image: "plus.square.on.square" }]
               : []),
@@ -3181,6 +3305,7 @@ function EnvironmentTasks({
           ]}
           onPressAction={({ nativeEvent }) => {
             const action = nativeEvent.event;
+            if (folderMenu.handleAction(task, action)) return;
             if (action === "open-run") {
               if (runThreadId !== null) openThread(environmentId, runThreadId);
             } else if (action === "open-thread") {

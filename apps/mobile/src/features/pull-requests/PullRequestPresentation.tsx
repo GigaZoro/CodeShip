@@ -9,7 +9,7 @@ import { useResolveClassNames } from "uniwind";
 import { AppText as Text } from "../../components/ui/AppText";
 import { cn } from "../../lib/cn";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { t } from "../../lib/i18n";
+import { getFormattingLocale, t } from "../../lib/i18n";
 
 export function PullRequestReadStatus(props: {
   readonly pending: boolean;
@@ -75,12 +75,12 @@ export function PullRequestDiffStats(props: {
     <View className="shrink-0 flex-row items-center gap-2">
       {!props.compact || props.additions > 0 ? (
         <Text className={cn(textSize, "font-t3-medium tabular-nums text-adaptive-emerald-600-400")}>
-          +{props.additions.toLocaleString()}
+          +{props.additions.toLocaleString(getFormattingLocale())}
         </Text>
       ) : null}
       {!props.compact || props.deletions > 0 ? (
         <Text className={cn(textSize, "font-t3-medium tabular-nums text-danger-foreground")}>
-          −{props.deletions.toLocaleString()}
+          −{props.deletions.toLocaleString(getFormattingLocale())}
         </Text>
       ) : null}
     </View>

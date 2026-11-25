@@ -1,30 +1,6 @@
-import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
-import { hasUnseenCompletion } from "../Sidebar.logic";
-
-export type ProjectThreadState = "attention" | "working" | "done" | "quiet";
+import type { ProjectThreadState } from "@t3tools/client-runtime/state/thread-status";
 
 export type ProjectsOverviewFilter = Exclude<ProjectThreadState, "quiet"> | "all";
-
-type ProjectThreadStateInput = Parameters<typeof resolveThreadStatus>[0] &
-  Parameters<typeof hasUnseenCompletion>[0];
-
-/** What a thread asks of the user, with `lastVisitedAt` already resolved against local visits. */
-export function resolveProjectThreadState(thread: ProjectThreadStateInput): ProjectThreadState {
-  switch (resolveThreadStatus(thread)) {
-    case "approval":
-    case "input":
-    case "request":
-    case "limited":
-    case "failed":
-      return "attention";
-    case "working":
-      return "working";
-    case "ready":
-      return hasUnseenCompletion(thread) ? "done" : "quiet";
-    case "waiting":
-      return "quiet";
-  }
-}
 
 export interface ProjectThreadCounts {
   readonly attention: number;

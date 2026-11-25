@@ -41,6 +41,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import { turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
 
 export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>()(
   "EventSinkWriteError",
@@ -789,13 +790,23 @@ const layerBase: Layer.Layer<
         "orchestration_v2.turn_item_id": input.expected.id,
       });
       const expectedJson = yield* ProjectionStore.encodeTurnItemPayload(input.expected);
+      // payload_json leaves out the keys its columns hold, so compare the item rebuilt from the row.
       return yield* writeIfStoredPayloadMatches(
         sql<{ readonly payload_json: string }>`
-          SELECT payload_json
+          SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json
           FROM orchestration_v2_projection_turn_items
           WHERE turn_item_id = ${input.expected.id}
           LIMIT 1
-        `,
+        `.pipe(
+          Effect.flatMap(
+            Effect.forEach((row) =>
+              ProjectionStore.decodeTurnItemPayload(row.payload_json).pipe(
+                Effect.flatMap(ProjectionStore.encodeTurnItemPayload),
+                Effect.map((payload_json) => ({ payload_json })),
+              ),
+            ),
+          ),
+        ),
         expectedJson,
         input.events,
       );

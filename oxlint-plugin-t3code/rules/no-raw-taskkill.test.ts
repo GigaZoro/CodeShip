@@ -8,10 +8,10 @@ describe("t3code/no-raw-taskkill", () => {
   rule.valid(
     "allows the shared tree stop and other commands",
     `
-      import { stopWindowsProcessTree } from "@t3tools/shared/windowsProcessTree";
+      import { withWindowsTreeStop } from "@t3tools/shared/windowsProcessTree";
       import { execFile } from "node:child_process";
 
-      export const stop = stopWindowsProcessTree;
+      export const stop = withWindowsTreeStop;
       export const list = () => execFile("tasklist", ["/FI", "taskkill is not a command name here"]);
     `,
   );

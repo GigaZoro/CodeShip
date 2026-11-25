@@ -299,7 +299,7 @@ interface ActiveOpenCodeTurn {
   readonly itemOrdinals: Map<string, number>;
   readonly parts: Map<string, Exclude<OpenCodePart, ToolPart>>;
   readonly partIdsByMessage: Map<string, Set<string>>;
-  readonly toolNamesByCallId: Map<string, string>;
+  readonly toolsByCallId: Map<string, { readonly messageId: string; readonly name: string }>;
   mcpServerNames?: ReadonlyArray<string>;
   readonly providerTurn: OrchestrationV2ProviderTurn;
   nextItemOrdinal: number;
@@ -388,6 +388,7 @@ export const reconcileOpenCodePromptAdmissionStatus = Effect.fn(
 
 interface OpenCodeSubagentContext {
   readonly nativeItemId: string;
+  readonly parentMessageId: string;
   readonly nodeId: OrchestrationV2Subagent["id"];
   readonly parentState: OpenCodeThreadState;
   readonly parentTurn: ActiveOpenCodeTurn;
@@ -415,6 +416,7 @@ interface OpenCodeWake {
 
 interface OpenCodeThreadState {
   readonly nativeSessionId: string;
+  readonly createdHere: boolean;
   providerThread: OrchestrationV2ProviderThread;
   appThread: OrchestrationV2AppThread | null;
   activeTurn: ActiveOpenCodeTurn | null;
@@ -439,14 +441,31 @@ interface OpenCodeRequestOwner {
   readonly subagent: OpenCodeSubagentContext | null;
 }
 
+/** A new native session has no earlier turn whose untagged notification could arrive late. */
+function onlyRequestTurn(state: OpenCodeThreadState, turn: ActiveOpenCodeTurn): boolean {
+  return state.createdHere && state.providerTurns.size === 1 && state.activeTurn === turn;
+}
+
 function topLevelRequestOwner(state: OpenCodeThreadState): OpenCodeRequestOwner | undefined {
-  let owner = state;
+  let parent = state;
   let subagent: OpenCodeSubagentContext | null = null;
-  while (owner.parentSubagent !== null) {
-    subagent = owner.parentSubagent;
-    owner = subagent.parentState;
+  while (parent.parentSubagent !== null) {
+    subagent = parent.parentSubagent;
+    parent = subagent.parentState;
+    const turn = subagent.parentTurn;
+    if (
+      turn !== parent.activeTurn ||
+      turn.finalized ||
+      turn.interrupted ||
+      (!onlyRequestTurn(parent, turn) &&
+        turn.usage.assistantOwnershipByMessageId.get(subagent.parentMessageId) !== "owned")
+    )
+      return undefined;
   }
-  return owner.activeTurn === null ? undefined : { state: owner, turn: owner.activeTurn, subagent };
+  const turn = parent.activeTurn;
+  return turn === null || turn.finalized || turn.interrupted
+    ? undefined
+    : { state: parent, turn, subagent };
 }
 
 interface PendingOpenCodeRequest {
@@ -462,6 +481,14 @@ interface PendingOpenCodeRequest {
   readonly createdAt: DateTime.Utc;
   readonly permission?: PermissionRequest;
   readonly question?: QuestionRequest;
+}
+
+interface OpenCodeEventReceipt {
+  readonly settledRequest: PendingOpenCodeRequest | undefined;
+  /** The turns a request may belong to. */
+  readonly requestTurns: ReadonlySet<ActiveOpenCodeTurn>;
+  /** A turn adopted the wake that held this event, so the event needs no other ownership proof. */
+  readonly adopted: boolean;
 }
 
 export interface OpenCodeAdapterV2Options {
@@ -1454,6 +1481,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           if (context === undefined) {
             context = {
               nativeItemId: part.id,
+              parentMessageId: part.messageID,
               nodeId,
               parentState: state,
               parentTurn: turn,
@@ -1551,6 +1579,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 : resumedChild.nextChildTurnOrdinal;
             threads.set(childSessionId, {
               nativeSessionId: childSessionId,
+              createdHere: false,
               providerThread: childProviderThread,
               appThread: childThread,
               activeTurn: null,
@@ -2017,12 +2046,13 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
 
         const emitRuntimeRequest = Effect.fnUntraced(function* (
           owner: OpenCodeRequestOwner,
+          source: OpenCodeThreadState | undefined,
+          sourceTurn: ActiveOpenCodeTurn | null | undefined,
           nativeRequestId: string,
           request:
             | { readonly type: "permission"; readonly value: PermissionRequest }
             | { readonly type: "question"; readonly value: QuestionRequest },
         ) {
-          if (pendingRequestsByNativeId.has(nativeRequestId)) return;
           const { state, turn, subagent } = owner;
           const now = yield* DateTime.now;
           const requestId = yield* idAllocator.allocate.runtimeRequest({
@@ -2032,11 +2062,23 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           });
           const nodeId = idAllocator.derive.approvalNode({ requestId });
           const turnItemId = idAllocator.derive.approvalTurnItem({ requestId });
+          // Allocation yields. A settled turn or a native reply that won that race owns no new request.
+          if (
+            closing ||
+            state.activeTurn !== turn ||
+            source?.activeTurn !== sourceTurn ||
+            turn.finalized ||
+            turn.interrupted ||
+            settledNativeRequestIds.has(nativeRequestId) ||
+            pendingRequestsByNativeId.has(nativeRequestId)
+          )
+            return false;
+          const tool = request.value.tool;
+          const recorded =
+            tool === undefined ? undefined : sourceTurn?.toolsByCallId.get(tool.callID);
           const permissionToolName =
-            request.type === "permission" && request.value.tool !== undefined
-              ? threads
-                  .get(request.value.sessionID)
-                  ?.activeTurn?.toolNamesByCallId.get(request.value.tool.callID)
+            recorded !== undefined && recorded.messageId === tool?.messageID
+              ? recorded.name
               : undefined;
           const permissionRequestKind =
             request.type === "permission"
@@ -2110,13 +2152,23 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             runtimeRequest,
           });
           yield* updateProviderSession("waiting", null);
+          return true;
         });
 
+        const takeSettledRequest = (nativeRequestId: string) => {
+          rememberSettledRequest(nativeRequestId);
+          const pending = pendingRequestsByNativeId.get(nativeRequestId);
+          if (pending !== undefined) {
+            pendingRequests.delete(String(pending.requestId));
+            pendingRequestsByNativeId.delete(nativeRequestId);
+          }
+          return pending;
+        };
+
         const resolveRuntimeRequest = Effect.fnUntraced(function* (
-          nativeRequestId: string,
+          pending: PendingOpenCodeRequest | undefined,
           status: "resolved" | "cancelled",
         ) {
-          const pending = pendingRequestsByNativeId.get(nativeRequestId);
           if (pending === undefined) return;
           const now = yield* DateTime.now;
           const current = pending.state.runtimeRequests.get(String(pending.requestId));
@@ -2148,7 +2200,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               countsForRun: false,
               providerThreadId: pending.state.providerThread.id,
               providerTurnId: pending.turn.providerTurnId,
-              nativeItemRef: providerRef(nativeRequestId),
+              nativeItemRef: providerRef(pending.nativeRequestId),
               runtimeRequestId: pending.requestId,
               checkpointScopeId: null,
               startedAt: pending.createdAt,
@@ -2165,8 +2217,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               now,
             ),
           });
-          pendingRequests.delete(String(pending.requestId));
-          pendingRequestsByNativeId.delete(nativeRequestId);
           const hasOtherPending = Array.from(pendingRequests.values()).some(
             (candidate) => candidate.turn.isRoot,
           );
@@ -2196,7 +2246,48 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           return undefined;
         });
 
+        const requestTurnsAtReceipt = () => {
+          // Child ancestry and assistant messages can arrive after the request. A lookup may
+          // prove one of the turns active at receipt, but cannot transfer the request to a later turn.
+          const atReceipt = new Set<ActiveOpenCodeTurn>();
+          for (const state of threads.values()) {
+            if (
+              state.activeTurn?.isRoot &&
+              !state.activeTurn.finalized &&
+              !state.activeTurn.interrupted
+            )
+              atReceipt.add(state.activeTurn);
+          }
+          return atReceipt;
+        };
+
+        // Read when an event arrives: a reply settles its request before queued events or a
+        // retrying route see it pending, and a request belongs to a turn active then.
+        const receiveEvent = (event: OpenCodeEvent): OpenCodeEventReceipt => ({
+          settledRequest:
+            event.type === "permission.replied" ||
+            event.type === "question.replied" ||
+            event.type === "question.rejected"
+              ? takeSettledRequest(event.properties.requestID)
+              : undefined,
+          requestTurns:
+            event.type === "permission.asked" || event.type === "question.asked"
+              ? requestTurnsAtReceipt()
+              : new Set(),
+          adopted: false,
+        });
+        // The turn that adopts a wake owns the requests the wake held for it.
+        const receiveHeldEvent = (
+          event: OpenCodeEvent,
+          turn: ActiveOpenCodeTurn,
+        ): OpenCodeEventReceipt => ({
+          ...receiveEvent(event),
+          requestTurns: new Set([turn]),
+          adopted: true,
+        });
+
         const routeRuntimeRequest = Effect.fnUntraced(function* (
+          receipt: OpenCodeEventReceipt,
           nativeRequestId: string,
           sessionId: string,
           request:
@@ -2204,27 +2295,90 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             | { readonly type: "question"; readonly value: QuestionRequest },
         ) {
           if (pendingChildRequestRoutes.has(nativeRequestId)) return;
-          const attempt = Effect.gen(function* () {
-            if (
-              settledNativeRequestIds.has(nativeRequestId) ||
-              pendingRequestsByNativeId.has(nativeRequestId)
-            ) {
-              return true;
-            }
+          let ourSession = false;
+          const settled = () =>
+            closing ||
+            settledNativeRequestIds.has(nativeRequestId) ||
+            pendingRequestsByNativeId.has(nativeRequestId);
+          let checkedMessage = false;
+          const attempt = Effect.fnUntraced(function* (deferred: boolean) {
+            if (settled()) return true;
             const state = yield* resolveSessionOwner(sessionId);
-            const owner = state === undefined ? undefined : topLevelRequestOwner(state);
-            if (owner === undefined) return false;
-            yield* emitRuntimeRequest(owner, nativeRequestId, request);
-            return true;
+            if (state === undefined) return false;
+            ourSession = true;
+            const owner = topLevelRequestOwner(state);
+            if (owner === undefined || !receipt.requestTurns.has(owner.turn)) return false;
+            const source = threads.get(sessionId);
+            const sourceTurn = source?.activeTurn;
+            const messageID = request.value.tool?.messageID;
+            const evidence =
+              messageID && sourceTurn?.usage.assistantOwnershipByMessageId.get(messageID);
+            if (evidence === "other") return false;
+            // A projected child is linked by its parent's native task part. An unknown child
+            // of a reused session cannot use ancestry alone to identify a particular parent turn.
+            const childOfTurn =
+              source?.parentSubagent !== undefined && source?.parentSubagent !== null;
+            if (
+              !childOfTurn &&
+              !receipt.adopted &&
+              !onlyRequestTurn(owner.state, owner.turn) &&
+              evidence !== "owned"
+            ) {
+              if (!deferred || checkedMessage || !sourceTurn || !messageID) return false;
+              checkedMessage = true;
+              const query = { sessionID: sessionId, messageID };
+              const lookup = yield* sdkCall("session.message", query, (signal) =>
+                client.session.message(query, { signal }),
+              ).pipe(Effect.option);
+              const info = Option.getOrUndefined(lookup)?.data?.info;
+              if (
+                info?.role !== "assistant" ||
+                info.id !== messageID ||
+                info.sessionID !== sessionId ||
+                !sourceTurn.usage.promptMessageIds.has(info.parentID)
+              )
+                return false;
+            }
+            return yield* emitRuntimeRequest(owner, source, sourceTurn, nativeRequestId, request);
           });
-          if (yield* attempt) return;
+          if (yield* attempt(false)) return;
           pendingChildRequestRoutes.add(nativeRequestId);
           yield* Effect.gen(function* () {
             for (let retry = 0; retry < 5; retry += 1) {
               yield* Effect.sleep(Duration.millis(Math.min(200 * 2 ** retry, 2_000)));
-              if (yield* attempt) return;
+              if (yield* attempt(true)) return;
+            }
+            // This stream can also report other apps' sessions. Only decline our own unreachable request.
+            if (!ourSession || settled()) return;
+            if (request.type === "permission") {
+              yield* sdkCall(
+                "permission.reply",
+                { requestID: nativeRequestId, reply: "reject" },
+                async (signal) => {
+                  if (settled()) return;
+                  const response = await client.permission.reply(
+                    { requestID: nativeRequestId, reply: "reject" },
+                    { signal },
+                  );
+                  rememberSettledRequest(nativeRequestId);
+                  return response;
+                },
+              );
+            } else {
+              yield* sdkCall("question.reject", { requestID: nativeRequestId }, async (signal) => {
+                if (settled()) return;
+                const response = await client.question.reject(
+                  { requestID: nativeRequestId },
+                  { signal },
+                );
+                rememberSettledRequest(nativeRequestId);
+                return response;
+              });
             }
           }).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not decline an unowned OpenCode request", { cause }),
+            ),
             Effect.ensuring(Effect.sync(() => pendingChildRequestRoutes.delete(nativeRequestId))),
             Effect.forkIn(scope),
           );
@@ -2267,7 +2421,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   pending.turn.providerTurnId === turn.providerTurnId ||
                   pending.nativeSessionId === state.nativeSessionId
                 ) {
-                  yield* resolveRuntimeRequest(pending.nativeRequestId, "cancelled");
+                  yield* resolveRuntimeRequest(
+                    takeSettledRequest(pending.nativeRequestId),
+                    "cancelled",
+                  );
                 }
               }
               // Prompts read the catalog only for variants; a completed turn needs its context window.
@@ -2493,7 +2650,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             usage: makeOpenCodeTurnTokenUsageAccumulator(),
             parts: new Map(),
             partIdsByMessage: new Map(),
-            toolNamesByCallId: new Map(),
+            toolsByCallId: new Map(),
             providerTurn,
             nextItemOrdinal: 1,
             nativeUserMessageId: message.id,
@@ -2720,7 +2877,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             return;
           }
           if (part.type === "tool") {
-            turn.toolNamesByCallId.set(part.callID, part.tool);
+            turn.toolsByCallId.set(part.callID, { messageId: part.messageID, name: part.tool });
           } else {
             turn.parts.set(part.id, part);
             const ids = turn.partIdsByMessage.get(part.messageID) ?? new Set<string>();
@@ -2864,13 +3021,17 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
 
         // Callers hold eventPermit. A root user message with no T3 turn starts a wake; its work stays
         // held, with that of children no turn has claimed yet, until startTurn takes it.
-        const acceptEvent = Effect.fnUntraced(function* (event: OpenCodeEvent) {
+        const acceptEvent = Effect.fnUntraced(function* (
+          event: OpenCodeEvent,
+          receipt?: OpenCodeEventReceipt,
+        ) {
           const sessionId = sessionWorkEventSessionId(event);
           const owner =
             sessionId === undefined
               ? undefined
               : (threads.get(sessionId) ?? relatedSessionOwners.get(sessionId));
-          if (owner === undefined || sessionId === undefined) return yield* routeEvent(event);
+          if (owner === undefined || sessionId === undefined)
+            return yield* routeEvent(event, undefined, receipt);
           const wake = owner.wake;
           const isRoot = sessionId === owner.nativeSessionId;
           const rootStatus =
@@ -2895,7 +3056,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             wake.settled = Deferred.makeUnsafe<void>();
           }
           if (wake?.cancelling) {
-            if (!isRoot) return yield* routeEvent(event);
+            if (!isRoot) return yield* routeEvent(event, undefined, receipt);
             wake.events.push(event);
             if (isRoot && (rootStatus === "busy" || rootStatus === "retry")) {
               wake.offered = true;
@@ -2958,10 +3119,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             };
             return;
           }
-          yield* routeEvent(event);
+          yield* routeEvent(event, undefined, receipt);
         });
 
         const handleEvent = Effect.fnUntraced(function* (event: OpenCodeEvent) {
+          const receipt = receiveEvent(event);
           yield* logProtocolEvent({
             direction: "incoming",
             messageKind: "notification",
@@ -2969,12 +3131,14 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             payload: event,
           });
           // A slow native call only delays events, as on main; Stop goes through lifecyclePermit.
-          yield* eventPermit.withPermit(acceptEvent(event));
+          yield* eventPermit.withPermit(acceptEvent(event, receipt));
         });
 
+        // An event held past its wake's turn is received again when it is accepted again.
         const routeEvent = Effect.fnUntraced(function* (
           event: OpenCodeEvent,
           historicalRootSessionId?: string,
+          receipt: OpenCodeEventReceipt = receiveEvent(event),
         ) {
           const historicalRoot =
             historicalRootSessionId !== undefined &&
@@ -3022,25 +3186,23 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               return;
             }
             case "permission.asked":
-              yield* routeRuntimeRequest(event.properties.id, event.properties.sessionID, {
+              yield* routeRuntimeRequest(receipt, event.properties.id, event.properties.sessionID, {
                 type: "permission",
                 value: event.properties,
               });
               return;
             case "question.asked":
-              yield* routeRuntimeRequest(event.properties.id, event.properties.sessionID, {
+              yield* routeRuntimeRequest(receipt, event.properties.id, event.properties.sessionID, {
                 type: "question",
                 value: event.properties,
               });
               return;
             case "permission.replied":
             case "question.replied":
-              rememberSettledRequest(event.properties.requestID);
-              yield* resolveRuntimeRequest(event.properties.requestID, "resolved");
+              yield* resolveRuntimeRequest(receipt.settledRequest, "resolved");
               return;
             case "question.rejected":
-              rememberSettledRequest(event.properties.requestID);
-              yield* resolveRuntimeRequest(event.properties.requestID, "cancelled");
+              yield* resolveRuntimeRequest(receipt.settledRequest, "cancelled");
               return;
             case "session.created":
             case "session.updated": {
@@ -3312,6 +3474,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           nativeSession: OpenCodeSession,
           providerThread: OrchestrationV2ProviderThread,
           appThread: OrchestrationV2AppThread | null,
+          createdHere = false,
         ): OpenCodeThreadState => {
           const existing = threads.get(nativeSession.id);
           if (existing !== undefined) {
@@ -3324,6 +3487,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           const parentSubagent = subagentsByChildSessionId.get(nativeSession.id) ?? null;
           const state: OpenCodeThreadState = {
             nativeSessionId: nativeSession.id,
+            createdHere,
             providerThread,
             appThread,
             activeTurn: null,
@@ -3632,7 +3796,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       status: created.status,
                       updatedAt: created.updatedAt,
                     };
-              registerThread(nativeSession, providerThread, null).permission = permission;
+              registerThread(nativeSession, providerThread, null, true).permission = permission;
               return providerThread;
             },
             (effect, threadInput) =>
@@ -3760,7 +3924,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 usage: makeOpenCodeTurnTokenUsageAccumulator(),
                 parts: new Map(),
                 partIdsByMessage: new Map(),
-                toolNamesByCallId: new Map(),
+                toolsByCallId: new Map(),
                 providerTurn,
                 nextItemOrdinal: turnInput.providerTurnOrdinal * 100 + 1,
                 nativeUserMessageId: null,
@@ -3843,7 +4007,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       // Work held after this turn settles is a later result; it starts its own wake.
                       yield* Effect.forEach(wake?.events ?? [], (event) =>
                         (state.activeTurn === turn
-                          ? routeEvent(event, continuation ? undefined : sessionId)
+                          ? routeEvent(
+                              event,
+                              continuation ? undefined : sessionId,
+                              receiveHeldEvent(event, turn),
+                            )
                           : acceptEvent(event)
                         ).pipe(Effect.timeout("10 seconds")),
                       ).pipe(
@@ -4198,6 +4366,16 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   `No pending OpenCode request ${requestInput.requestId}`,
                 );
               }
+              const assertPending = () => {
+                if (
+                  closing ||
+                  pending.state.activeTurn !== pending.turn ||
+                  pending.turn.finalized ||
+                  pending.turn.interrupted ||
+                  pendingRequests.get(String(requestInput.requestId)) !== pending
+                )
+                  throw protocolError("The OpenCode request no longer belongs to an active turn");
+              };
               if (pending.question !== undefined) {
                 if (requestInput.answers === undefined) {
                   return yield* protocolError(
@@ -4211,14 +4389,13 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 yield* sdkCall(
                   "question.reply",
                   { requestID: pending.nativeRequestId, answers },
-                  (signal) =>
-                    client.question.reply(
-                      {
-                        requestID: pending.nativeRequestId,
-                        answers,
-                      },
+                  (signal) => {
+                    assertPending();
+                    return client.question.reply(
+                      { requestID: pending.nativeRequestId, answers },
                       { signal },
-                    ),
+                    );
+                  },
                 ).pipe(Effect.timeout("10 seconds"));
                 return;
               }
@@ -4231,14 +4408,13 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               yield* sdkCall(
                 "permission.reply",
                 { requestID: pending.nativeRequestId, reply },
-                (signal) =>
-                  client.permission.reply(
-                    {
-                      requestID: pending.nativeRequestId,
-                      reply,
-                    },
+                (signal) => {
+                  assertPending();
+                  return client.permission.reply(
+                    { requestID: pending.nativeRequestId, reply },
                     { signal },
-                  ),
+                  );
+                },
               ).pipe(Effect.timeout("10 seconds"));
             },
             (effect, requestInput) =>

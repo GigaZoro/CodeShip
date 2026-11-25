@@ -1,12 +1,12 @@
 import {
   ClaudeSettings,
-  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderSkillError,
   ProviderSetupError,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -16,7 +16,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Option from "effect/Option";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
@@ -41,9 +41,13 @@ import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import { setClaudeSkillOverride } from "./ClaudeSkills.ts";
-import { readClaudeCredentials, readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
+import {
+  claudeKeychainService,
+  readClaudeCredentials,
+  readClaudeLoginExpiry,
+} from "../claudeLoginExpiry.ts";
 import { makeClaudeAuthenticationFailure } from "../claudeSignedOut.ts";
-import { saveClaudeOAuthToken } from "../claudeOAuthToken.ts";
+import { saveClaudeOAuthToken, withClaudeOAuthToken } from "../claudeOAuthToken.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
@@ -75,11 +79,11 @@ import {
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
 import {
-  claudeAccountHomePath,
   materializeClaudeAccountHome,
   readClaudeMcpServers,
   shareClaudeMcpServers,
 } from "./ClaudeAccountHome.ts";
+import * as ProviderLoginHome from "../providerLoginHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
 import { runClaudeCli } from "./ClaudeExecutable.ts";
 import {
@@ -118,6 +122,7 @@ export type ClaudeDriverEnv =
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
+  | Digest.Digest
   | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -174,17 +179,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     });
     // An added account signs in to its own folder unless it names one; the rest of that folder
     // links to the shared Claude folder, so every account keeps the same files and sessions.
-    const sharedHome = yield* resolveClaudeHomePath(config, processEnv);
     const configDirVariable = yield* findProviderInstanceEnvironmentVariable(
       environment,
       "CLAUDE_CONFIG_DIR",
     );
-    const accountHome =
-      instanceId !== defaultInstanceIdForDriver(DRIVER_KIND) &&
-      config.homePath.trim().length === 0 &&
-      configDirVariable === undefined
-        ? claudeAccountHomePath(path, stateDir, instanceId)
-        : undefined;
+    const { sharedHome, accountHome, bindingHome, configuredHome, bindingKey } =
+      yield* ProviderLoginHome.claudeBinding(
+        config,
+        instanceId,
+        stateDir,
+        processEnv,
+        configDirVariable !== undefined,
+      );
     const sharedConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
       processEnv.CLAUDE_CONFIG_DIR?.trim() ? sharedHome : undefined,
     );
@@ -205,11 +211,52 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
             Effect.provideService(Path.Path, path),
           );
     yield* prepareAccountHome;
+    const platform = yield* HostProcess.Platform;
+    const loginHomes = yield* ProviderLoginHome.make({
+      driver: DRIVER_KIND,
+      instanceId,
+      generation: config.loginGeneration,
+      bindingKey,
+      select: (instance) => withClaudeOAuthToken(instance),
+      discard: (home) =>
+        platform !== "darwin"
+          ? Effect.void
+          : Effect.scoped(
+              spawner
+                .exitCode(
+                  ChildProcess.make("security", [
+                    "delete-generic-password",
+                    "-s",
+                    claudeKeychainService(home),
+                  ]),
+                )
+                .pipe(
+                  Effect.flatMap((code) =>
+                    Number(code) === 0 || Number(code) === 44
+                      ? Effect.void
+                      : Effect.logWarning("Could not remove a staged Claude Keychain login."),
+                  ),
+                  Effect.timeout("5 seconds"),
+                  Effect.ignoreCause({ log: true }),
+                ),
+            ),
+    });
+    const loginHome = loginHomes.activeHome;
+    const baseConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(configuredHome);
+    const prepareLoginHome = (home: string) =>
+      materializeClaudeAccountHome({ sharedHome: bindingHome, accountHome: home }).pipe(
+        Effect.andThen(
+          shareClaudeMcpServers({ sharedConfigPath: baseConfigPath, accountHome: home }),
+        ),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+    if (loginHome) yield* prepareLoginHome(loginHome);
     const effectiveConfig = {
       ...config,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
-      homePath: accountHome ?? config.homePath,
+      homePath: loginHome ?? accountHome ?? config.homePath,
     } satisfies ClaudeSettings;
     const resolveMaintenance = yield* makeClaudeMaintenanceResolution({
       binaryPath: effectiveConfig.binaryPath,
@@ -231,7 +278,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const configFolder: ProviderConfigFolder =
       ownConfigDir === undefined
         ? { kind: "default" }
-        : effectiveConfig.homePath.trim().length === 0 && configDirVariable?.sensitive
+        : config.homePath.trim().length === 0 && configDirVariable?.sensitive
           ? { kind: "secret" }
           : { kind: "path", path: ownConfigDir };
     const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(ownConfigDir);
@@ -267,9 +314,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       binaryPath: effectiveConfig.binaryPath,
       cwd: stateDir,
       environment: claudeEnvironment,
-      configDir,
-      prepare: prepareAccountHome,
-      canLogout: accountHome !== undefined,
+      configDir: bindingKey,
+      prepare: loginHome ? prepareLoginHome(loginHome) : prepareAccountHome,
+      canLogout: loginHome !== undefined || accountHome !== undefined,
+      stageLogin: (id, instances) =>
+        loginHomes.stage(id, instances).pipe(Effect.tap(({ home }) => prepareLoginHome(home))),
       saveToken: (token) =>
         saveClaudeOAuthToken(instanceId, token).pipe(
           Effect.asVoid,
@@ -284,18 +333,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           ),
         ),
       // Any other failure is left to the status check that ends every sign-in.
-      needsTermsReview: probeClaudeCapabilities(
-        effectiveConfig,
-        regularLoginEnvironment,
-        stateDir,
-        false,
-      ).pipe(
-        Effect.as(false),
-        Effect.catch((error) => Effect.succeed(isClaudeTermsReviewRequiredError(error))),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      ),
+      needsTermsReview: (home) =>
+        probeClaudeCapabilities(
+          { ...effectiveConfig, homePath: home },
+          { ...regularLoginEnvironment, CLAUDE_CONFIG_DIR: home },
+          stateDir,
+          false,
+        ).pipe(
+          Effect.as(false),
+          Effect.catch((error) => Effect.succeed(isClaudeTermsReviewRequiredError(error))),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
     });
     const plugins = yield* makeClaudePluginManagement({
       instanceId,
@@ -379,7 +429,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ...draft,
         setup: { canInstall: false, ...draft.setup, canAuthenticate: auth.canAuthenticate },
         // The first Claude provider uses the Claude CLI's own login, which other apps share.
-        auth: { ...draft.auth, canLogout: accountHome !== undefined },
+        auth: { ...draft.auth, canLogout: loginHome !== undefined || accountHome !== undefined },
       });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
@@ -435,7 +485,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ),
         modelCatalog,
         routeModelCatalog: modelRoutes.route,
-        prepareHome: copyMcpServers.pipe(Effect.andThen(ensureMcpSignInsFresh)),
+        prepareHome: copyMcpServers.pipe(
+          Effect.andThen(loginHome ? prepareLoginHome(loginHome) : Effect.void),
+          Effect.andThen(ensureMcpSignInsFresh),
+        ),
       },
     ).pipe(
       Effect.mapError(

@@ -1,5 +1,5 @@
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
+  MODEL_NOT_SUPPORTED_FAILURE_CODE,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
@@ -11,6 +11,7 @@ import {
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   CommandId,
   CheckpointId,
   CodexSettings,
@@ -7810,6 +7811,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedMessage: "sign-in was rejected",
     },
     {
+      name: "model-not-supported",
+      code: "other",
+      message:
+        "The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account.",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedCode: MODEL_NOT_SUPPORTED_FAILURE_CODE,
+      expectedMessage: "gpt-6.2-astra",
+    },
+    {
       name: "rejected-login-code",
       code: "unauthorized",
       notification: false,
@@ -9482,57 +9493,59 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   });
 
   it.effect("wakes the parent when a native child finishes after the parent's turn", () =>
-    Effect.gen(function* () {
-      const entries = resumeSubagentTranscript.entries;
-      const labelIndex = (label: string) =>
-        entries.findIndex((entry) => entry.type === "emit_inbound" && entry.label === label);
-      const rootCompleted = labelIndex("turn/completed/root");
-      const harness = yield* makeCodexReplayHarness(
-        makeCodexReplayTranscript({
-          scenario: RESUME_SCENARIO,
-          entries: [
-            ...entries.slice(0, labelIndex(`turn/started/${RESUME_CHILD_TURN_1}`) + 1),
-            ...entries.slice(rootCompleted - 1, rootCompleted + 1),
-            childAgentMessage({
-              id: "child-late-answer",
-              text: "NATIVE_CHILD_16900_DONE",
-              turnId: RESUME_CHILD_TURN_1,
-              completedAtMs: 1782622480000,
-              afterMs: 60_000,
-            }),
-            childTurnCompleted(RESUME_CHILD_TURN_1),
-          ],
-        }),
-      );
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entries = resumeSubagentTranscript.entries;
+        const labelIndex = (label: string) =>
+          entries.findIndex((entry) => entry.type === "emit_inbound" && entry.label === label);
+        const rootCompleted = labelIndex("turn/completed/root");
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: RESUME_SCENARIO,
+            entries: [
+              ...entries.slice(0, labelIndex(`turn/started/${RESUME_CHILD_TURN_1}`) + 1),
+              ...entries.slice(rootCompleted - 1, rootCompleted + 1),
+              childAgentMessage({
+                id: "child-late-answer",
+                text: "NATIVE_CHILD_16900_DONE",
+                turnId: RESUME_CHILD_TURN_1,
+                completedAtMs: 1782622480000,
+                afterMs: 60_000,
+              }),
+              childTurnCompleted(RESUME_CHILD_TURN_1),
+            ],
+          }),
+        );
 
-      yield* harness.runtime.startTurn(
-        makeCodexTestTurnInput({
+        const parentTurn = makeCodexTestTurnInput({
           threadId: harness.threadId,
           providerThread: harness.providerThread,
           now: yield* DateTime.now,
           attemptId: RunAttemptId.make("attempt-codex-late-child"),
           text: RESUME_PROMPT,
-        }),
-      );
-      yield* harness.awaitTerminal(1);
-      assert.equal(harness.terminalEvents()[0]?.status, "completed");
-      assert.lengthOf(harness.continuationRequests, 0);
+        });
+        yield* harness.runtime.startTurn(parentTurn);
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.lengthOf(harness.continuationRequests, 0);
 
-      yield* TestClock.adjust("60 seconds");
-      yield* harness.until(
-        () => harness.subagentUpdates().at(-1)?.subagent.result === "NATIVE_CHILD_16900_DONE",
-      );
-      assert.equal(harness.subagentUpdates().at(-1)?.subagent.status, "completed");
-      assert.lengthOf(harness.continuationRequests, 1);
-      assert.include(harness.continuationRequests[0]?.detail, "NATIVE_CHILD_16900_DONE");
-      assert.equal(harness.continuationRequests[0]?.delivery, "message_text");
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+        yield* TestClock.adjust("60 seconds");
+        yield* harness.until(
+          () => harness.subagentUpdates().at(-1)?.subagent.result === "NATIVE_CHILD_16900_DONE",
+        );
+        assert.equal(harness.subagentUpdates().at(-1)?.subagent.status, "completed");
+        assert.lengthOf(harness.continuationRequests, 1);
+        assert.include(harness.continuationRequests[0]?.detail, "NATIVE_CHILD_16900_DONE");
+        assert.equal(harness.continuationRequests[0]?.demandSourceRunId, parentTurn.runId);
+        assert.equal(harness.continuationRequests[0]?.delivery, "message_text");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
     ),

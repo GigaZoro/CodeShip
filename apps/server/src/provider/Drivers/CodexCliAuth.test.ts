@@ -37,7 +37,8 @@ const makeHarness = Effect.gen(function* () {
   const auth = yield* makeCodexCliAuth({
     instanceId,
     credentialKey: "codex:home:/state/shadow",
-    openClient: Effect.succeed(client),
+    openClient: Effect.die("Interactive login opened the current account"),
+    stageLogin: () => Effect.succeed({ openClient: Effect.succeed(client), persist: Effect.void }),
     canLogout: true,
   }).pipe(Effect.provideService(HttpClient.HttpClient, http));
   const state = (predicate: (state: ProviderAuthState) => boolean) =>

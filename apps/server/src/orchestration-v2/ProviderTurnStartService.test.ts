@@ -3,6 +3,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -47,6 +48,7 @@ import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import { queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
 import {
   withCheckpointRestoreReservation,
   withWorkspaceLease,
@@ -109,10 +111,14 @@ const normalize = (target: string) => {
 const layerWorktreeLocation = (
   worktreesDir = managedWorktreesDir,
   skillFailure?: ProviderSkills.ProviderSkillInvocationError,
+  pathLayer: Layer.Layer<Path.Path> = Path.layer,
 ) =>
   Layer.mergeAll(
-    Path.layer,
-    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
+    pathLayer,
+    Layer.mock(ServerConfig.ServerConfig)({
+      worktreesDir,
+      stateDir: `${worktreesDir}/../state`,
+    } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest({
       providerInstances: {
         [ProviderInstanceId.make("codex-personal")]: {
@@ -1184,6 +1190,9 @@ function makeLocalCommandHarness(input: {
       : (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
           startTurn(ProviderAdapter.resumeTurnInput(input)),
   };
+  const releaseIfSilent = vi.fn<
+    ProviderSessionManager.ProviderSessionManagerV2Shape["releaseIfSilent"]
+  >(() => Effect.succeed(true));
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
@@ -1371,7 +1380,7 @@ function makeLocalCommandHarness(input: {
         }),
         IdAllocator.layer,
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
-        layerWorktreeLocation(input.worktreesDir, input.skillFailure),
+        layerWorktreeLocation(input.worktreesDir, input.skillFailure, NodePath.layer),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed(
             input.otherAutoProvider
@@ -1480,6 +1489,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
+          releaseIfSilent,
           isLive: () => Effect.succeed(input.sessionLive === true),
           get: () =>
             Effect.succeed(
@@ -1523,6 +1533,7 @@ function makeLocalCommandHarness(input: {
     createWorktree,
     open,
     freshThread,
+    releaseIfSilent,
     writeIfRunCurrent,
     startRootRun,
     startTurn,
@@ -1533,6 +1544,7 @@ function makeLocalCommandHarness(input: {
     oldInstanceId,
     newInstanceId,
     attemptId,
+    providerSessionId,
     projection: () => projection,
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
@@ -2065,6 +2077,7 @@ effectIt.effect(
         retained: { tip: threadTip, file: "thread.txt", upstream: null, base: "" },
         // A failed removal can leave the folder behind with only dependencies inside.
         leftover: { tip: threadTip, file: "thread.txt", upstream: null, base: "" },
+        released: { tip: projectTip, file: "project.txt", upstream: null, base: "" },
         deleted: { tip: projectTip, file: "project.txt", upstream: null, base: "project-current" },
         pushed: {
           tip: threadTip,
@@ -2108,13 +2121,24 @@ effectIt.effect(
         if (scenario === "detached-no-remote") {
           yield* git(workspaceRoot, ["remote", "remove", "origin"]);
         }
+        if (scenario === "released") {
+          yield* git(worktreePath, ["reset", "--hard", baseTip]);
+          const { file: request } = yield* queueWorktreeRelease({
+            threadId: "thread-native-account-command",
+            runId: "finished",
+            worktreePath,
+            durableRef: "refs/heads/project-current",
+            stateDir: path.join(root, "state"),
+          });
+          yield* fileSystem.rename(request, request + ".released");
+        }
         yield* fileSystem.remove(worktreePath, { recursive: true });
         if (scenario === "leftover") {
           yield* fileSystem.makeDirectory(path.join(worktreePath, "node_modules"), {
             recursive: true,
           });
         }
-        if (scenario !== "retained" && scenario !== "leftover") {
+        if (scenario !== "retained" && scenario !== "leftover" && scenario !== "released") {
           yield* git(workspaceRoot, ["worktree", "prune"]);
           yield* git(workspaceRoot, ["branch", "-D", "feature/restore"]);
         }
@@ -2965,7 +2989,9 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     harness.getThreadRecords.mockImplementationOnce(() =>
       Deferred.succeed(readEntered, undefined).pipe(Effect.as(harness.projection())),
     );
-    const holder = yield* withWorkspaceLease(worktreePath, Deferred.await(release)).pipe(
+    // The service keys its lease by the resolved path, which gains a drive letter on Windows.
+    const resolvedPath = (yield* Path.Path).resolve(worktreePath);
+    const holder = yield* withWorkspaceLease(resolvedPath, Deferred.await(release)).pipe(
       Effect.forkChild({ startImmediately: true }),
     );
     const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
@@ -2981,7 +3007,7 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     yield* Fiber.join(startup);
     expect(harness.open).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
-  }),
+  }).pipe(Effect.provide(NodePath.layer)),
 );
 
 // regression: #15784 superseded provider startups kept running
@@ -3252,6 +3278,16 @@ effectIt.effect(
       yield* Fiber.join(startup);
 
       expect(harness.freshThread).not.toHaveBeenCalled();
+      // Released before the run settles, so its retry cannot reopen the same process.
+      expect(harness.releaseIfSilent).toHaveBeenCalledExactlyOnceWith({
+        providerSessionId: harness.providerSessionId,
+        silentForMs: 5 * 60_000,
+        detail:
+          "The provider sent nothing for 5 minutes while a turn waited on it, so it was stopped. The next turn starts a new one.",
+      });
+      expect(harness.releaseIfSilent.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.writeIfRunCurrent.mock.invocationCallOrder[0]!,
+      );
       expect(harness.projection().runs.at(-1)?.status).toBe("failed");
       expect(
         harness

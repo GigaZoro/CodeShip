@@ -98,6 +98,16 @@ const fileIdentity = (filePath: string) =>
     return `${info.dev}:${info.ino}`;
   });
 
+// Setup hard-links shared files on Windows and symlinks them elsewhere.
+const expectSharedFileLink = Effect.fn("CodexHomeLayout.test.expectSharedFileLink")(function* (
+  link: string,
+  target: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const linked = windowsHost ? yield* fileIdentity(link) : yield* fileSystem.readLink(link);
+  expect(linked).toBe(windowsHost ? yield* fileIdentity(target) : target);
+});
+
 // Windows hard-links a symlink itself, where Node on macOS links the file it points to.
 const windowsLink = (fileSystem: FileSystem.FileSystem) => (from: string, to: string) =>
   fileSystem.readLink(from).pipe(
@@ -239,7 +249,6 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           yield* materializeCodexShadowHome(layout);
 
           const sessionsTarget = yield* fileSystem.readLink(path.join(shadowHome, "sessions"));
-          const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
           const mcpOauthLocksTarget = yield* fileSystem.readLink(
             path.join(shadowHome, "mcp-oauth-locks"),
           );
@@ -255,7 +264,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             .pipe(Effect.result);
 
           expect(sessionsTarget).toBe(path.join(sharedHome, "sessions"));
-          expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+          yield* expectSharedFileLink(
+            path.join(shadowHome, "config.toml"),
+            path.join(sharedHome, "config.toml"),
+          );
           expect(mcpOauthLocksTarget).toBe(path.join(sharedHome, "mcp-oauth-locks"));
           expect(modelsCacheExists).toBe(false);
           expect(authLinkResult._tag).toBe("Failure");
@@ -328,7 +340,6 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       "replaces a Codex-created local sqlite maintenance lock with the shared lock",
       () =>
         Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const sharedHome = yield* makeTempDir("t3code-codex-shared-");
           const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
@@ -348,7 +359,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
           yield* materializeCodexShadowHome(layout);
 
-          expect(yield* fileSystem.readLink(shadowLock)).toBe(sharedLock);
+          yield* expectSharedFileLink(shadowLock, sharedLock);
         }),
     );
 
@@ -448,7 +459,6 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
           yield* materializeCodexShadowHome(layout);
 
-          const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
           const logLinkResult = yield* fileSystem
             .readLink(path.join(shadowHome, "log"))
             .pipe(Effect.result);
@@ -459,7 +469,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             .readLink(path.join(shadowHome, "tmp"))
             .pipe(Effect.result);
 
-          expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+          yield* expectSharedFileLink(
+            path.join(shadowHome, "config.toml"),
+            path.join(sharedHome, "config.toml"),
+          );
           expect(logLinkResult._tag).toBe("Failure");
           expect(memoriesLinkResult._tag).toBe("Failure");
           expect(tmpLinkResult._tag).toBe("Failure");

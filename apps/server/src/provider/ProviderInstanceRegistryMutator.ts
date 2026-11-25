@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 
 /**
  * Each change runs to its end in the registry's scope: a caller that goes away stops waiting, but
@@ -23,6 +24,10 @@ export interface ProviderInstanceRegistryMutatorShape {
     reference: SecretReference,
     value: string,
   ) => Effect.Effect<ReadonlyArray<ProviderInstanceId>>;
+  /** The reservation holds until a changed credential has been applied to its idle instance. */
+  readonly refreshUnattendedSecrets: (
+    reserve: (instanceId: ProviderInstanceId) => Effect.Effect<boolean, never, Scope.Scope>,
+  ) => Effect.Effect<void>;
 }
 
 export class ProviderInstanceRegistryMutator extends Context.Service<

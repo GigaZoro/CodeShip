@@ -14,7 +14,7 @@ import type { ScheduledTaskCopy, SharedScheduledTaskGroup } from "./scheduledTas
 export interface ScheduledTaskGroupSection<T> {
   /** Null for the tasks without a group. */
   readonly key: string | null;
-  /** The first label seen for the group; null for the tasks without one. */
+  /** The saved spelling, or the first task's label. */
   readonly label: string | null;
   readonly items: ReadonlyArray<T>;
 }
@@ -29,13 +29,20 @@ const byLabel = (left: string, right: string) =>
 
 /**
  * Groups by label, in label order, with the tasks without a group last. Items keep their order.
- * A list where no item has a group comes back as one section with a null key.
+ * Saved folders keep their spelling and stay visible while empty.
  */
 export function groupScheduledTaskItems<T>(
   items: ReadonlyArray<T>,
   labelOf: (item: T) => string | null | undefined,
+  savedFolders: Iterable<string> = [],
 ): ReadonlyArray<ScheduledTaskGroupSection<T>> {
   const groups = new Map<string, { label: string; items: T[] }>();
+  for (const folder of savedFolders) {
+    const label = groupLabel(folder);
+    if (label === null) continue;
+    const key = threadFolderKey(label);
+    if (!groups.has(key)) groups.set(key, { label, items: [] });
+  }
   const ungrouped: T[] = [];
   for (const item of items) {
     const label = groupLabel(labelOf(item));

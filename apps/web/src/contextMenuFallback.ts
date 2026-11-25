@@ -132,6 +132,11 @@ const ICON_PATHS: Record<string, ReadonlyArray<{ tag: string; attrs: Record<stri
     },
     { tag: "circle", attrs: { cx: "12", cy: "12", r: "3" } },
   ],
+  download: [
+    { tag: "path", attrs: { d: "M12 15V3" } },
+    { tag: "path", attrs: { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" } },
+    { tag: "path", attrs: { d: "m7 10 5 5 5-5" } },
+  ],
   "user-plus": [
     { tag: "path", attrs: { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" } },
     { tag: "circle", attrs: { cx: "9", cy: "7", r: "4" } },
@@ -210,18 +215,45 @@ function createIconElement(name: string, tone: "neutral" | "destructive"): SVGSV
   return svg;
 }
 
+const MENU_VIEWPORT_MARGIN = 4;
+const SUBMENU_GAP = 4;
+
 function clampMenuPosition(menu: HTMLDivElement, preferredLeft: number, preferredTop: number) {
   const rect = menu.getBoundingClientRect();
   const left = Math.min(
-    Math.max(4, preferredLeft),
-    Math.max(4, window.innerWidth - rect.width - 4),
+    Math.max(MENU_VIEWPORT_MARGIN, preferredLeft),
+    Math.max(MENU_VIEWPORT_MARGIN, window.innerWidth - rect.width - MENU_VIEWPORT_MARGIN),
   );
   const top = Math.min(
-    Math.max(4, preferredTop),
-    Math.max(4, window.innerHeight - rect.height - 4),
+    Math.max(MENU_VIEWPORT_MARGIN, preferredTop),
+    Math.max(MENU_VIEWPORT_MARGIN, window.innerHeight - rect.height - MENU_VIEWPORT_MARGIN),
   );
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
+}
+
+type SubmenuSide = "left" | "right";
+
+/** The preferred side of the trigger when it fits, else the other; with room on neither, the roomier. */
+function placeSubmenu(
+  trigger: DOMRect,
+  width: number,
+  preferred: SubmenuSide,
+): { readonly left: number; readonly side: SubmenuSide } {
+  const lefts = { right: trigger.right + SUBMENU_GAP, left: trigger.left - SUBMENU_GAP - width };
+  const fits = {
+    right: lefts.right + width <= window.innerWidth - MENU_VIEWPORT_MARGIN,
+    left: lefts.left >= MENU_VIEWPORT_MARGIN,
+  };
+  const other = preferred === "right" ? "left" : "right";
+  const side = fits[preferred]
+    ? preferred
+    : fits[other]
+      ? other
+      : window.innerWidth - trigger.right >= trigger.left
+        ? "right"
+        : "left";
+  return { left: lefts[side], side };
 }
 
 function isNodeWithinMenuStack(target: EventTarget | null, menuStack: readonly HTMLDivElement[]) {
@@ -266,6 +298,11 @@ export function showContextMenuFallback<T extends string>(
     const previouslyFocusedElement = focusedElement instanceof HTMLElement ? focusedElement : null;
     const menuStack: HTMLDivElement[] = [];
     const submenuTriggerStack: Array<HTMLButtonElement | undefined> = [];
+    // Submenus open toward the end of a line, and each continues the way its parent opened.
+    const rtl = document.dir === "rtl";
+    const openSubmenuKey = rtl ? "ArrowLeft" : "ArrowRight";
+    const closeSubmenuKey = rtl ? "ArrowRight" : "ArrowLeft";
+    const submenuSides: SubmenuSide[] = [rtl ? "left" : "right"];
     let isDisposed = false;
     let canDismissFromPointer = false;
 
@@ -328,7 +365,7 @@ export function showContextMenuFallback<T extends string>(
         case "End":
           target = buttons.at(-1);
           break;
-        case "ArrowRight":
+        case openSubmenuKey:
           if (buttons[index]?.getAttribute("aria-haspopup") !== "menu") return;
           buttons[index]?.click();
           break;
@@ -338,7 +375,7 @@ export function showContextMenuFallback<T extends string>(
           canDismissFromPointer = true;
           buttons[index]?.click();
           break;
-        case "ArrowLeft":
+        case closeSubmenuKey:
           if (level === 0) return;
         // Fall through to cancel this submenu only.
         case "Escape": {
@@ -392,8 +429,6 @@ export function showContextMenuFallback<T extends string>(
 
     const openMenu = (
       entries: readonly ContextMenuItem<T>[],
-      preferredLeft: number,
-      preferredTop: number,
       level: number,
       parentTrigger?: HTMLButtonElement,
     ) => {
@@ -404,8 +439,6 @@ export function showContextMenuFallback<T extends string>(
         "dropdown-glass fixed z-[10000] min-w-32 max-w-sm overflow-hidden rounded-lg bg-clip-padding text-popover-foreground outline-none";
       menu.style.cssText =
         "position:fixed;z-index:10000;min-width:8rem;max-width:24rem;overflow:hidden;border-radius:var(--radius-lg);background-clip:padding-box;color:var(--contrast-popover-foreground);outline:none;pointer-events:auto;";
-      menu.style.left = `${preferredLeft}px`;
-      menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
       menu.dataset.contextMenu = "true";
       menu.setAttribute("role", "menu");
@@ -449,14 +482,14 @@ export function showContextMenuFallback<T extends string>(
         button.setAttribute("role", "menuitem");
         button.setAttribute("aria-disabled", String(isDisabled));
         const rowBase =
-          "flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-left outline-none transition-colors sm:min-h-7 sm:text-sm min-h-8 text-base";
+          "flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-start outline-none transition-colors sm:min-h-7 sm:text-sm min-h-8 text-base";
         button.className = isDisabled
           ? `${rowBase} pointer-events-none cursor-not-allowed text-muted-foreground opacity-64`
           : isLeafDestructive
             ? `${rowBase} text-destructive-foreground hover:bg-destructive/10 hover:text-destructive-foreground`
             : `${rowBase} text-foreground hover:bg-accent hover:text-accent-foreground`;
         button.style.cssText =
-          "display:flex;width:100%;min-height:1.75rem;align-items:center;gap:0.5rem;border:0;border-radius:var(--radius-sm);background:transparent;padding:0.25rem 0.5rem;color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.875rem;line-height:1.25rem;text-align:left;cursor:default;";
+          "display:flex;width:100%;min-height:1.75rem;align-items:center;gap:0.5rem;border:0;border-radius:var(--radius-sm);background:transparent;padding:0.25rem 0.5rem;color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.875rem;line-height:1.25rem;text-align:start;cursor:default;";
         if (isLeafDestructive) {
           button.style.color = "var(--destructive-foreground)";
         }
@@ -509,7 +542,7 @@ export function showContextMenuFallback<T extends string>(
           if (chevron) {
             chevron.setAttribute(
               "class",
-              "-me-0.5 ms-auto size-4.5 shrink-0 text-muted-foreground opacity-80 sm:size-4",
+              "-me-0.5 ms-auto size-4.5 shrink-0 text-muted-foreground opacity-80 rtl:-scale-x-100 sm:size-4",
             );
             chevron.setAttribute("aria-hidden", "true");
             chevron.dataset.contextMenuChevron = "true";
@@ -555,10 +588,7 @@ export function showContextMenuFallback<T extends string>(
 
           if (hasChildren) {
             const openSubmenu = (focusFirstItem = false) => {
-              const rect = button.getBoundingClientRect();
-              const nextLeft = rect.right + 4;
-              const nextTop = rect.top;
-              openMenu(item.children!, nextLeft, nextTop, level + 1, button);
+              openMenu(item.children!, level + 1, button);
               button.setAttribute("aria-expanded", "true");
 
               const childMenu = menuStack[level + 1];
@@ -608,26 +638,32 @@ export function showContextMenuFallback<T extends string>(
       menuStack[level] = menu;
       submenuTriggerStack[level] = parentTrigger;
 
-      requestAnimationFrame(() => {
-        if (!parentTrigger) {
-          clampMenuPosition(menu, preferredLeft, preferredTop);
+      const place = () => {
+        if (parentTrigger === undefined) {
+          clampMenuPosition(menu, position?.x ?? 0, position?.y ?? 0);
           return;
         }
         // A fixed menu near the right edge shrinks to the space left; measure its real width.
         menu.style.width = "max-content";
         menu.style.maxWidth = "min(24rem, calc(100vw - 0.5rem))";
-        const { width } = menu.getBoundingClientRect();
-        const roomLeft = parentTrigger.getBoundingClientRect().left - 4;
-        const roomRight = window.innerWidth - preferredLeft;
-        const flipLeft = width > roomRight && roomLeft > roomRight;
-        clampMenuPosition(menu, flipLeft ? roomLeft - width : preferredLeft, preferredTop);
-      });
+        const trigger = parentTrigger.getBoundingClientRect();
+        const placement = placeSubmenu(
+          trigger,
+          menu.getBoundingClientRect().width,
+          submenuSides[level - 1]!,
+        );
+        submenuSides[level] = placement.side;
+        clampMenuPosition(menu, placement.left, trigger.top);
+      };
+      place();
+      // Late layout, such as a web font, can still change the menu's size.
+      requestAnimationFrame(place);
     };
 
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("contextmenu", onContextMenu, true);
-    openMenu(items, position?.x ?? 0, position?.y ?? 0, 0);
+    openMenu(items, 0);
     activeContextMenuDismiss = dismiss;
     // A keyboard-opened menu starts on its first action, a pointer-opened one on the menu itself.
     // Text fields always match :focus-visible, so they say nothing about how the menu opened.

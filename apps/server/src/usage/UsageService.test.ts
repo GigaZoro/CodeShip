@@ -2718,6 +2718,7 @@ describe("UsageService", () => {
     () =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
+        const inheritedCodexHome = NodePath.join(home, "inherited-codex ");
         yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
         const service = yield* UsageService.make.pipe(
           Effect.provide(
@@ -2725,7 +2726,7 @@ describe("UsageService", () => {
               prefix: "usage-service-inherited-homes-test",
               home,
               environment: {
-                CODEX_HOME: NodePath.join(home, "inherited-codex"),
+                CODEX_HOME: inheritedCodexHome,
                 CLAUDE_CONFIG_DIR: NodePath.join(home, "claude"),
               },
               settings: {
@@ -2749,7 +2750,7 @@ describe("UsageService", () => {
         assert.strictEqual(
           summary.sources.find((source) => source.fingerprint.provider === "codex")?.fingerprint
             .resolvedHomePath,
-          NodePath.join(home, "inherited-codex", "sessions"),
+          NodePath.join(inheritedCodexHome, "sessions"),
         );
         assert.strictEqual(
           summary.sources.find((source) => source.fingerprint.provider === "grok")?.fingerprint

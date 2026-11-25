@@ -39,6 +39,48 @@ const layerActiveTurns = (
     }),
   );
 
+const layerUnmergedWork = (
+  pullRequest: () => GitManager.GitBranchPullRequest | null = () => null,
+) =>
+  GitWorkflowService.layer.pipe(
+    Layer.provide(VcsDriverRegistry.layer),
+    Layer.provide(
+      Layer.mock(GitManager.GitManager)({ branchPullRequest: () => Effect.sync(pullRequest) }),
+    ),
+    Layer.provide(layerActiveTurns()),
+    Layer.provideMerge(GitVcsDriver.layer),
+    Layer.provideMerge(VcsProcess.layer),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-unmerged-" }).pipe(
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      ),
+    ),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
+
+// A repository on main with one commit and no remote, so the check's fetch gives up at once.
+const unmergedWorkRepo = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const driver = yield* GitVcsDriver.GitVcsDriver;
+  const workflow = yield* GitWorkflowService.GitWorkflowService;
+  const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-unmerged-" });
+  const cwd = `${root}/work`;
+  yield* fileSystem.makeDirectory(cwd);
+  const git = (dir: string, args: ReadonlyArray<string>) =>
+    driver.execute({ operation: "test.setupRepo", cwd: dir, args: [...args] });
+  const commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit"];
+  // Empty commits carry no change, so each commit edits a file of its own.
+  const change = (name: string) =>
+    Effect.gen(function* () {
+      yield* fileSystem.writeFileString(`${cwd}/${name}.txt`, name);
+      yield* git(cwd, ["add", `${name}.txt`]);
+      yield* git(cwd, [...commit, "-m", name]);
+    });
+  yield* git(cwd, ["init", "-b", "main"]);
+  yield* git(cwd, [...commit, "--allow-empty", "-m", "init"]);
+  return { root, cwd, git, change, driver, workflow };
+});
+
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowService", (it) => {
   it.effect("finds a name among the refs of every namespace", () =>
     Effect.gen(function* () {
@@ -148,36 +190,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
     }).pipe(Effect.scoped, Effect.provide(layerWithRegistry(VcsDriverRegistry.layer))),
   );
 
-  it.effect("counts uncommitted files and commits the default branch lacks", () => {
-    let pullRequest: GitManager.GitBranchPullRequest | null = null;
-    return Effect.gen(function* () {
+  it.effect("counts uncommitted files and commits the default branch lacks", () =>
+    Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-unmerged-" });
-      const origin = `${root}/origin.git`;
-      const cwd = `${root}/work`;
-      yield* fileSystem.makeDirectory(origin);
-      yield* fileSystem.makeDirectory(cwd);
-      const workflow = yield* GitWorkflowService.GitWorkflowService;
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const git = (dir: string, args: ReadonlyArray<string>) =>
-        driver.execute({ operation: "test.setupRepo", cwd: dir, args: [...args] });
-      const commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty"];
-      // Empty commits carry no change, so each commit below edits a file of its own.
-      const change = (name: string) =>
-        Effect.gen(function* () {
-          yield* fileSystem.writeFileString(`${cwd}/${name}.txt`, name);
-          yield* git(cwd, ["add", `${name}.txt`]);
-          yield* git(cwd, [...commit.slice(0, -1), "-m", name]);
-        });
-      yield* git(origin, ["init", "--bare", "-b", "main"]);
-      for (const args of [
-        ["init", "-b", "main"],
-        [...commit, "-m", "init"],
-        ["remote", "add", "origin", origin],
-        ["push", "-u", "origin", "main"],
-      ]) {
-        yield* git(cwd, args);
-      }
+      const { cwd, git, change, workflow } = yield* unmergedWorkRepo;
       assert.deepEqual(yield* workflow.unmergedWork({ cwd }), {
         refName: "main",
         changedFileCount: 0,
@@ -193,9 +209,40 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
         changedFileCount: 1,
         unmergedCommitCount: 2,
       });
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
 
+  it.effect("counts each change that config hides from status", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { cwd, git, workflow } = yield* unmergedWorkRepo;
+      const commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit"];
+      // An existing repository at the path is added as is, without a clone.
+      yield* fileSystem.makeDirectory(`${cwd}/vendored`);
+      yield* git(`${cwd}/vendored`, ["init", "-b", "main"]);
+      yield* git(`${cwd}/vendored`, [...commit, "--allow-empty", "-m", "init"]);
+      yield* git(cwd, ["submodule", "add", "./vendored", "vendored"]);
+      yield* git(cwd, [...commit, "-m", "vendored"]);
+      yield* git(cwd, ["config", "submodule.vendored.ignore", "all"]);
+      yield* git(cwd, ["config", "status.showUntrackedFiles", "no"]);
+      yield* fileSystem.writeFileString(`${cwd}/vendored/draft.txt`, "draft");
+      yield* fileSystem.makeDirectory(`${cwd}/drafts`);
+      yield* fileSystem.writeFileString(`${cwd}/drafts/one.txt`, "draft");
+      yield* fileSystem.writeFileString(`${cwd}/drafts/two.txt`, "draft");
+      assert.equal((yield* workflow.unmergedWork({ cwd })).changedFileCount, 3);
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
+
+  it.effect("clears the commits of a merged pull request only up to its head", () => {
+    let pullRequest: GitManager.GitBranchPullRequest | null = null;
+    return Effect.gen(function* () {
+      const { cwd, git, change, driver, workflow } = yield* unmergedWorkRepo;
+      yield* git(cwd, ["switch", "-c", "t3/feature"]);
+      // T3 records the branch a worktree's branch was cut from.
+      yield* git(cwd, ["config", "branch.t3/feature.t3-merge-base", "main"]);
+      yield* change("one");
       const head = yield* driver.resolveCommit({ cwd, revision: "HEAD" });
-      pullRequest = {
+      const merged: GitManager.GitBranchPullRequest = {
         number: 1,
         title: "Feature",
         url: "https://github.com/t3/t3/pull/1",
@@ -206,71 +253,121 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
         updatedAt: null,
         headSha: head.commitSha,
       };
+      pullRequest = merged;
       assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
-      yield* change("after-merge");
-      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 3);
-
-      // Shipped from another checkout: the local default ref lags until the check fetches it.
-      const staleMain = yield* driver.resolveCommit({ cwd, revision: "origin/main" });
-      yield* git(cwd, ["push", "origin", "HEAD:main"]);
-      yield* git(cwd, ["update-ref", "refs/remotes/origin/main", staleMain.commitSha]);
-      pullRequest = null;
-      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
-
-      // The same change reached the default branch under another SHA (cherry-pick, rebase).
-      yield* git(cwd, ["switch", "-c", "t3/picked"]);
-      yield* change("picked");
-      yield* git(cwd, ["switch", "-c", "other", "HEAD~1"]);
-      yield* change("picked");
-      yield* git(cwd, ["push", "origin", "other:main"]);
-      yield* git(cwd, ["switch", "t3/picked"]);
-      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
-      yield* change("real-work");
+      // A merge into another branch leaves the commits outside the branch's base.
+      pullRequest = { ...merged, baseRef: "staging" };
       assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 1);
+      pullRequest = merged;
+      yield* change("after-merge");
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 2);
+      // Without the merged head, the merge cannot vouch for the commits checked out.
+      pullRequest = { ...merged, headSha: null };
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 2);
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork(() => pullRequest)));
+  });
+
+  it.effect("fetches the default branch before counting work shipped from another checkout", () =>
+    Effect.gen(function* () {
+      const { root, cwd, git, change, workflow } = yield* unmergedWorkRepo;
+      const origin = `${root}/origin.git`;
+      for (const args of [
+        ["init", "--bare", "-b", "main", origin],
+        ["remote", "add", "origin", origin],
+        ["push", "origin", "main"],
+        ["switch", "-c", "t3/feature"],
+      ]) {
+        yield* git(cwd, args);
+      }
+      yield* change("one");
+      yield* git(cwd, ["push", "origin", "HEAD:main"]);
+      // The local default ref lags behind the remote until the check fetches it.
+      yield* git(cwd, ["update-ref", "refs/remotes/origin/main", "refs/heads/main"]);
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
+
+  it.effect("counts a commit the remote default branch no longer holds after it was rewound", () =>
+    Effect.gen(function* () {
+      const { root, cwd, git, change, workflow } = yield* unmergedWorkRepo;
+      const origin = `${root}/origin.git`;
+      for (const args of [
+        ["init", "--bare", "-b", "main", origin],
+        ["remote", "add", "origin", origin],
+        ["push", "origin", "main"],
+        ["switch", "-c", "t3/feature"],
+      ]) {
+        yield* git(cwd, args);
+      }
+      yield* change("one");
+      yield* git(cwd, ["push", "origin", "HEAD:main"]);
+      yield* git(cwd, ["fetch", "origin"]);
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
+      // The remote drops the commit; the local remote-tracking ref still holds it.
+      yield* git(cwd, ["push", "--force", "origin", "HEAD~1:refs/heads/main"]);
+      yield* git(cwd, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 1);
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
+
+  it.effect("finds no work in a missing folder but fails on a .git Git rejects", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { root, cwd, git, change, workflow } = yield* unmergedWorkRepo;
       assert.deepEqual(yield* workflow.unmergedWork({ cwd: `${root}/missing` }), {
         refName: null,
         changedFileCount: 0,
         unmergedCommitCount: 0,
       });
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        GitWorkflowService.layer.pipe(
-          Layer.provide(
-            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
-              detect: ({ cwd }) =>
-                Effect.succeed(
-                  cwd.endsWith("/missing")
-                    ? null
-                    : ({ kind: "git" } as VcsDriverRegistry.VcsDriverHandle),
-                ),
-            }),
-          ),
-          Layer.provide(
-            Layer.mock(GitManager.GitManager)({
-              branchPullRequest: () => Effect.succeed(pullRequest),
-            }),
-          ),
-          Layer.provide(layerActiveTurns()),
-          Layer.provideMerge(GitVcsDriver.layer),
-          Layer.provideMerge(VcsProcess.layer),
-          Layer.provideMerge(
-            ServerConfig.layerTest(process.cwd(), { prefix: "t3-unmerged-" }).pipe(
-              Layer.provide(NodeServices.layer),
-            ),
-          ),
-          Layer.provideMerge(NodeServices.layer),
-        ),
-      ),
-    );
-  });
+      // Git rejects this .git as it does a pruned worktree's, yet the folder may hold work.
+      yield* fileSystem.makeDirectory(`${root}/pruned`);
+      yield* fileSystem.writeFileString(`${root}/pruned/.git`, `gitdir: ${root}/gone\n`);
+      const pruned = yield* Effect.flip(workflow.unmergedWork({ cwd: `${root}/pruned` }));
+      assert.include(pruned.message, "does not recognize");
+
+      // The repository stays detected after its HEAD breaks, so status is what finds it rejected.
+      yield* git(cwd, ["switch", "-c", "t3/feature"]);
+      yield* change("one");
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 1);
+      yield* fileSystem.writeFileString(`${cwd}/.git/HEAD`, "not a ref\n");
+      const damaged = yield* Effect.flip(workflow.unmergedWork({ cwd }));
+      assert.include(damaged.message, "does not recognize");
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
+
+  it.effect("fails instead of counting zero when Git cannot count the commits", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { root, cwd, git, change, workflow } = yield* unmergedWorkRepo;
+      yield* git(cwd, ["switch", "-c", "t3/feature"]);
+      yield* change("unpushed");
+      // The default branch's ref names a commit Git stores but cannot parse, so counting fails.
+      yield* fileSystem.writeFileString(`${root}/bogus`, "not a commit\n");
+      const bogus = yield* git(cwd, [
+        "hash-object",
+        "-t",
+        "commit",
+        "--literally",
+        "-w",
+        `${root}/bogus`,
+      ]);
+      yield* git(cwd, ["remote", "add", "origin", `${root}/nowhere`]);
+      yield* fileSystem.makeDirectory(`${cwd}/.git/refs/remotes/origin`, { recursive: true });
+      yield* fileSystem.writeFileString(`${cwd}/.git/refs/remotes/origin/main`, bogus.stdout);
+      const failure = yield* Effect.flip(workflow.unmergedWork({ cwd }));
+      assert.include(failure.message, "GitVcsDriver.countUnmergedCommits.rangeCount");
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
 
   it.effect("refuses to move a checkout while a turn is running in it", () => {
     let active: ActiveTurnWorkspaces = [];
     let projectRoot = "";
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-turn-guard-" });
+      // Resolved, or macOS's /var link puts the missing worktree outside the resolved checkout.
+      const root = yield* fileSystem.realPath(
+        yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-turn-guard-" }),
+      );
       const cwd = `${root}/repo`;
       const nested = `${cwd}/src`;
       const side = `${cwd}/.worktrees/side`;

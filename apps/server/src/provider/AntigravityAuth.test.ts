@@ -58,6 +58,7 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
     readonly interactive?: boolean;
     readonly authorizationUrls?: ReadonlyArray<string>;
     readonly supportsLogout?: boolean;
+    readonly persist?: Effect.Effect<void, ProviderSetupError>;
     readonly beforeInitialize?: Effect.Effect<void>;
     readonly forwardCallback?: Effect.Effect<void, ProviderSetupError>;
   } = {},
@@ -74,8 +75,20 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
   let catalog = ["previous-account-model"];
   const auth = yield* makeAntigravityAuth({
     instanceId,
+    stage: () =>
+      Effect.succeed({
+        home: "private-candidate",
+        persist:
+          options.persist ??
+          Effect.sync(() => {
+            events.push("saved");
+          }),
+        activate: () => Effect.void,
+      }),
     makeRuntime: (input) =>
       Effect.gen(function* () {
+        if (input.onAuthorizationUrl) assert.equal(input.profileDirectory, "private-candidate");
+        else assert.isUndefined(input.profileDirectory);
         receiveAuthorizationUrl = input.onAuthorizationUrl;
         events.push("process-open");
         yield* Effect.addFinalizer(() =>
@@ -186,10 +199,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AntigravityAuth"
   it.effect("keeps a remote flow private and waits for native auth and catalog discovery", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
-      const state = yield* harness.auth.controller.start(owner);
+      const state = yield* harness.auth.controller.start(
+        owner,
+        Effect.sync(() => harness.events.push("sessions-stop")),
+      );
       assert.isNotNull(state.flowId);
       const waiting = yield* phase(harness.auth, "waiting");
       assert.equal(waiting.authorizationUrl, authorizationUrl);
+      assert.notInclude(harness.events, "sessions-stop");
+      yield* harness.auth.withProcess(Effect.void, Effect.void).pipe(Effect.scoped);
 
       const other = yield* phase(harness.auth, "waiting", otherOwner);
       assert.isNull(other.authorizationUrl);
@@ -212,6 +230,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AntigravityAuth"
       yield* Deferred.succeed(harness.discovered, undefined);
       const succeeded = yield* phase(harness.auth, "succeeded");
       assert.deepEqual(harness.catalog(), ["gemini-test"]);
+      assert.isAbove(harness.events.indexOf("sessions-stop"), harness.events.indexOf("saved"));
       assert.isNull(succeeded.authorizationUrl);
       assert.isNull(succeeded.expiresAt);
       assert.equal(harness.events.at(-1), "process-close");
@@ -243,6 +262,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AntigravityAuth"
         assert.deepEqual(harness.catalog(), ["previous-account-model"]);
         yield* Deferred.await(harness.closed);
       }),
+  );
+
+  it.effect("leaves the running account and catalog usable when profile publication fails", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({
+        persist: Effect.fail(
+          new ProviderSetupError({ instanceId, operation: "save", detail: "Storage unavailable" }),
+        ),
+      });
+      let closed = false;
+      yield* h.auth.withProcess(
+        Effect.sync(() => {
+          closed = true;
+        }),
+        Effect.void,
+      );
+      yield* h.auth.controller.start(owner, Effect.die("retired a session before publication"));
+      yield* phase(h.auth, "waiting");
+      yield* Deferred.succeed(h.authenticated, undefined);
+      yield* Deferred.succeed(h.discovered, undefined);
+      assert.equal((yield* phase(h.auth, "failed")).message, "Storage unavailable");
+      assert.deepEqual(h.catalog(), ["previous-account-model"]);
+      assert.isFalse(closed);
+      yield* h.auth.withProcess(Effect.void, Effect.void).pipe(Effect.scoped);
+    }),
   );
 
   it.effect("does not call callback HTTP success a successful Google sign-in", () =>

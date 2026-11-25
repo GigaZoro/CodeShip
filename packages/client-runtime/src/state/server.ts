@@ -106,6 +106,7 @@ export interface ServerUpdateTarget {
   readonly input: EnvironmentRpcInput<typeof WS_METHODS.serverUpdateServer>;
 }
 
+const NO_BLOCKED_THREAD_TAGS: ReadonlyArray<string> = [];
 const IDLE_SERVER_UPDATE_STATE: ServerUpdateState = { status: "idle" };
 const EMPTY_SERVER_UPDATE_STATE_ATOM = Atom.make<ServerUpdateState>(IDLE_SERVER_UPDATE_STATE).pipe(
   Atom.withLabel("environment-data:server:update-state:empty"),
@@ -1488,6 +1489,14 @@ export function createServerEnvironmentAtoms<R, E>(
       Atom.withLabel(`environment-data:server:hidden-thread-tags:${environmentId}`),
     ),
   );
+  // Null until settings load: a tag hidden there would hide its thread once they arrive.
+  const blockedThreadTagsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      get(settingsValueAtom(environmentId)) === null
+        ? null
+        : (get(hiddenThreadTagsAtom(environmentId)) ?? NO_BLOCKED_THREAD_TAGS),
+    ).pipe(Atom.withLabel(`environment-data:server:blocked-thread-tags:${environmentId}`)),
+  );
   const usagePricesAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => {
       const overrides = get(settingsValueAtom(environmentId))?.usagePriceOverrides ?? {};
@@ -1660,6 +1669,7 @@ export function createServerEnvironmentAtoms<R, E>(
     updateStateAtom,
     settingsValueAtom,
     hiddenThreadTagsAtom,
+    blockedThreadTagsAtom,
     usageModelFilterAtom,
     providersValueAtom,
     providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
@@ -2230,6 +2240,12 @@ export function createServerEnvironmentAtoms<R, E>(
     setScheduledTaskPlacement: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-placement",
       tag: WS_METHODS.scheduledTasksSetPlacement,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    setScheduledTaskGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:set-group",
+      tag: WS_METHODS.scheduledTasksSetGroup,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

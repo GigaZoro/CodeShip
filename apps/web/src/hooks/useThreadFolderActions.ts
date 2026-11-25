@@ -13,7 +13,10 @@ import {
 } from "@t3tools/client-runtime/thread-folders";
 import { threadFolderKeyOf, type EnvironmentId, type ScopedThreadRef } from "@t3tools/contracts";
 
-import { requestThreadFolderName } from "../components/ThreadFolderNameDialog";
+import {
+  requestNewFolderName,
+  requestThreadFolderName,
+} from "../components/ThreadFolderNameDialog";
 import {
   THREAD_FOLDER_NEW_ID,
   THREAD_FOLDER_REMOVE_ID,
@@ -141,11 +144,7 @@ export function useThreadFolderActions() {
    * move optimistically, so starting the move with the save shows them in one render.
    */
   const createFolder = async (refs: ReadonlyArray<ScopedThreadRef>) => {
-    const name = await requestThreadFolderName({
-      title: t("New folder"),
-      submitLabel: t("Create folder"),
-      initialName: "",
-    });
+    const name = await requestNewFolderName();
     if (name === null) return;
     await Promise.all([setFolder(refs, name), saveFolder(name)]);
   };

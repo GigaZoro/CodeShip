@@ -13,6 +13,8 @@
 //   vp run check:changed                  compare against the closest merge base with any remote main
 //   vp run check:changed <ref>            compare against the merge base with <ref>
 //   vp run check:changed --concurrency 1  run the steps one at a time
+//   vp run check:changed --suites apps/web --suites apps/server
+//                                         run those packages' full suites on the same budget
 //
 // Uncommitted and untracked files count. Affected packages come from
 // .github/scripts/ci-changes.cjs, the same mapping CI uses to gate its jobs.
@@ -20,8 +22,13 @@
 // and available memory, which every run in this repository's worktrees shares,
 // and each prints its output when it finishes. A step's timeout counts from
 // when it gets its slot; a step running past it is killed with its process
-// group, or its process tree on Windows, and reported as TIMEOUT. A rerun on
-// exactly the files of the last passing run prints that run's summary.
+// group, or its process tree on Windows, and reported as TIMEOUT. Test groups
+// run against a private copy of the shared cache. When the step ends (pass,
+// fail, timeout, or interrupt), it publishes passes if its inputs still match.
+// A killed coordinator leaves the shared cache with its existing results.
+// A matching whole-run pass reuses its summary after validating those groups.
+// Each pass records the tree it checked, and the pre-push hook refuses a push
+// to main without one.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -31,6 +38,10 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  hostCapabilitiesEnv,
+  probeHostCapabilities,
+} from "@t3tools/shared/testing/hostCapabilityProbe";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
@@ -48,20 +59,69 @@ import * as Stream from "effect/Stream";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import {
+  alternateObjectDirectory,
+  recordPass,
+  workingTree,
+} from "../.github/scripts/check-changed-receipt.cjs";
+import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
+import {
+  isRepositoryCommandManifest,
+  isRepositoryCommandSource,
+} from "./lib/repository-command-source.ts";
+import {
+  ARGUMENT_CHARACTERS,
+  cachedTestTasks,
+  changedTestRequestEnv,
+  changedTestRuntime,
+  gitEnvironment,
+  gitPaths,
+  installFingerprint,
+  isFileAt,
+  isReferenceRepoPath,
+  nameKey,
+  unlessAbsent,
+} from "./lib/cached-tests.ts";
+import { isSqliteBusy, stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 
 const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: server tests run one at a time.
 const TEST_FILE_SECONDS = 120;
 // Without an explicit timeout, a test step stops growing here, so a run selecting thousands of files ends.
+// A landing raises it to what its lease has left (CHECK_CHANGED_TEST_STEP_MAX).
 const TEST_STEP_MAX_SECONDS = 3600;
 
-export const testStepTimeoutSeconds = (files: number, timeoutSeconds: number, explicit: boolean) =>
+export const testStepTimeoutSeconds = (
+  files: number,
+  timeoutSeconds: number,
+  explicit: boolean,
+  maxSeconds = TEST_STEP_MAX_SECONDS,
+) =>
   explicit
     ? timeoutSeconds
-    : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), TEST_STEP_MAX_SECONDS);
+    : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), maxSeconds);
+
+export const argumentBatches = (
+  items: ReadonlyArray<string>,
+  limit = ARGUMENT_CHARACTERS,
+): Array<Array<string>> => {
+  const batches: Array<Array<string>> = [];
+  let length = 0;
+  for (const item of items) {
+    const last = batches.at(-1);
+    if (last && length + item.length + 1 <= limit) {
+      last.push(item);
+      length += item.length + 1;
+    } else {
+      batches.push([item]);
+      length = item.length + 1;
+    }
+  }
+  return batches;
+};
 
 // A typecheck or test step can take several cores and gigabytes of memory, so
 // allow one step per two cores and per 6 GiB of available memory.
@@ -70,10 +130,6 @@ export const defaultConcurrency = (cores: number, availableBytes: number) =>
 
 // Another run frees its slots without telling this one, so a run that found none looks again this often.
 const SLOT_POLL_INTERVAL = "1 second";
-
-const SQLITE_BUSY = 5;
-const isSqliteBusy = (cause: unknown) =>
-  cause instanceof Error && "errcode" in cause && cause.errcode === SQLITE_BUSY;
 
 // Every run sharing `directory` draws from this budget. A slot is an open exclusive
 // transaction on its file, which the OS releases when the process exits, killed or not.
@@ -98,7 +154,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
     yield* Deferred.succeed(waiting, undefined);
   });
 
-  // A landing run (the one holding main's landing turn, scripts/landing-turn.cjs) holds a marker file's
+  // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
   // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
   // its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
@@ -274,6 +330,33 @@ const CacheEntry = Schema.fromJsonString(
 );
 const decodeCacheEntry = Schema.decodeEffect(CacheEntry);
 const encodeCacheEntry = Schema.encodeEffect(CacheEntry);
+const TestRequest = Schema.Struct({
+  files: Schema.Array(Schema.String),
+  groupSize: Schema.Number,
+  uncached: Schema.Array(Schema.String),
+  completed: Schema.optional(Schema.Array(Schema.String)),
+});
+const encodeTestRequest = Schema.encodeEffect(Schema.fromJsonString(TestRequest));
+const decodeTestSummary = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      tasks: Schema.Array(
+        Schema.Struct({
+          task_name: Schema.String,
+          result: Schema.Struct({
+            Spawned: Schema.optional(
+              Schema.Struct({
+                outcome: Schema.Struct({
+                  Failed: Schema.optional(Schema.Struct({ exit_code: Schema.Number })),
+                }),
+              }),
+            ),
+          }),
+        }),
+      ),
+    }),
+  ),
+);
 const decodeRootPackageJson = Schema.decodeEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -294,12 +377,17 @@ const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformEr
 export const git = Effect.fn("checkChanged.git")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
+  env: Record<string, string> = {},
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], { cwd }),
+        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
+          cwd,
+          env: { ...REAL_HISTORY_ENV, ...env },
+          extendEnv: true,
+        }),
       );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [collectBytes(handle.stdout), collectBytes(handle.stderr), handle.exitCode],
@@ -318,17 +406,23 @@ export const gitLines = (cwd: string, args: ReadonlyArray<string>) =>
   git(cwd, args).pipe(Effect.map((stdout) => stdout.toString().split("\n").filter(Boolean)));
 
 // Ignored files that checks read: generated sources, declarations, and env files.
-const checkInput = /(^|\/)\.(generated|astro)\/|\.d\.ts$|(^|\/)\.env[^/]*$/;
+const checkInput = (file: string) =>
+  /(^|\/)\.(generated|astro)\/|\.d\.ts$|(^|\/)\.env[^/]*$/.test(file);
+// Ignored files that change a test's result without a diff: env files and generated sources.
+const testInput = (file: string) =>
+  /(^|\/)\.generated\/|(^|\/)\.env[^/]*$/.test(file) && !file.endsWith(".d.ts");
 const inNodeModules = /(^|\/)node_modules\//;
 
 // Pathspecs don't stop git from walking an ignored directory, and on Windows it follows pnpm's
 // junctions in node_modules until MAX_PATH. `--directory` lists one without entering it.
 export const ignoredCheckInputs = Effect.fn("checkChanged.ignoredCheckInputs")(function* (
   root: string,
+  wanted: (file: string) => boolean = checkInput,
 ) {
   const list = (args: ReadonlyArray<string>) =>
     git(root, ["ls-files", "-z", ...args]).pipe(
-      Effect.map((stdout) => stdout.toString().split("\0").filter(Boolean)),
+      Effect.flatMap((stdout) => Effect.try({ try: () => gitPaths(stdout), catch: String })),
+      Effect.map((listed) => listed.filter(Boolean)),
     );
   const ignored = ["--others", "--ignored", "--exclude-standard"];
   // `--directory` hides a directory where the index has a file; `-k` lists those.
@@ -354,28 +448,36 @@ export const ignoredCheckInputs = Effect.fn("checkChanged.ignoredCheckInputs")(f
   }
   // A nested repository is listed by its directory, as the old pathspecs listed it.
   return files
-    .filter((file) => !inNodeModules.test(file) && (file.endsWith("/") || checkInput.test(file)))
+    .filter((file) => !inNodeModules.test(file) && (file.endsWith("/") || wanted(file)))
     .sort();
 });
+
+const gitCommit = (root: string, ref: string) =>
+  git(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]).pipe(
+    Effect.map((stdout) => stdout.toString().trim()),
+  );
 
 export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function* (
   root: string,
   explicitRef: Option.Option<string>,
 ) {
+  const head = yield* gitCommit(root, "HEAD");
   const candidates = Option.isSome(explicitRef)
-    ? [{ ref: explicitRef.value, rev: explicitRef.value }]
+    ? [{ ref: explicitRef.value, rev: yield* gitCommit(root, explicitRef.value) }]
     : (yield* gitLines(root, ["remote"])).map((name) => ({
         ref: name + "/main",
         rev: "refs/remotes/" + name + "/main",
       }));
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
-    const base = yield* git(root, ["merge-base", "HEAD", rev]).pipe(
+    const base = yield* git(root, ["merge-base", head, rev]).pipe(
       Effect.map((stdout) => stdout.toString().trim()),
       Effect.orElseSucceed(() => undefined),
     );
     if (!base) continue;
-    const ahead = Number((yield* git(root, ["rev-list", "--count", base + "..HEAD"])).toString());
+    const ahead = Number(
+      (yield* git(root, ["rev-list", "--count", base + ".." + head])).toString(),
+    );
     if (!closest || ahead < closest.ahead) closest = { ref, base, ahead };
   }
   if (!closest) {
@@ -392,6 +494,30 @@ const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
 // Directories `scripts/i18n-catalog.ts` reads messages from.
 const TRANSLATED_SOURCE = /^(apps\/(web|mobile|desktop)|packages\/(client-runtime|shared))\/src\//;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
+
+// Git can spell a file, its directory and the tests beside it in different cases or Unicode forms.
+const testsByDirectory = (files: Iterable<string>) =>
+  Map.groupBy(
+    [...files].filter((file) => TEST.test(file)),
+    (file) => nameKey(NodePath.posix.dirname(file)),
+  );
+const testsBeside = (testsIn: ReadonlyMap<string, ReadonlyArray<string>>, file: string) => {
+  const prefix = nameKey(`${NodePath.posix.basename(file).replace(CODE, "")}.`);
+  return (testsIn.get(nameKey(NodePath.posix.dirname(file))) ?? []).filter((test) =>
+    nameKey(NodePath.posix.basename(test)).startsWith(prefix),
+  );
+};
+
+/** The changed tests and the tests beside each changed code file, among the checked files. */
+export const adjacentTests = (files: Iterable<string>, code: ReadonlyArray<string>) => {
+  const own = code.filter((file) => !isReferenceRepoPath(file));
+  if (own.length === 0) return new Set<string>();
+  const testsIn = testsByDirectory([...files].filter((file) => !isReferenceRepoPath(file)));
+  const tests = new Set(own.filter((file) => TEST.test(file)));
+  for (const file of own) for (const test of testsBeside(testsIn, file)) tests.add(test);
+  return tests;
+};
+
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
 const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
 const WEB_BROWSER_TEST = /^apps[/\\]web[/\\].*\.browser\.test\.tsx?$/;
@@ -402,31 +528,6 @@ export const splitTests = (tests: Iterable<string>) => {
     nodeTests: all.filter((file) => NODE_TEST.test(file)),
   };
 };
-// Windows caps a command line at 32,767 characters, and macOS caps arguments and environment at
-// 1 MiB together; the rest of each limit is left for the program path and fixed arguments.
-const commandLineLimit = (platform: NodeJS.Platform) =>
-  platform === "win32" ? 30_000 : 256 * 1024;
-
-/** Splits `files` into runs whose arguments stay within `limit` characters, keeping their order. */
-export const argumentBatches = (files: ReadonlyArray<string>, limit: number) => {
-  const batches: Array<Array<string>> = [];
-  let size = limit;
-  for (const file of files) {
-    // A separator and the quotes Windows may add.
-    const cost = file.length + 3;
-    if (size + cost > limit) {
-      batches.push([]);
-      size = 0;
-    }
-    batches.at(-1)!.push(file);
-    size += cost;
-  }
-  return batches;
-};
-
-const batchName = (name: string, index: number, count: number) =>
-  count === 1 ? name : `${name} ${index + 1}/${count}`;
-
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Harnesses, fakes and fixtures: code that exists to drive tests.
@@ -443,6 +544,8 @@ const isTestSupport = (file: string) => {
   );
 };
 // Relative paths in any string count, so `new URL("./x.ndjson", import.meta.url)` reaches data files.
+// Tests that enumerate inputs at runtime can declare relative path patterns.
+const TEST_INPUT = /^\s*\/\/\s*@test-input\s+(\.{1,2}\/\S+)\s*$/gm;
 const RELATIVE_REFERENCE = /["'`](\.\.?\/[^"'`\s$]+)["'`]/g;
 const PACKAGE_IMPORT = /\b(?:from|import|import\s*\(|vi\.mock\()\s*["']([^"'./][^"']*)["']/g;
 const RE_EXPORT =
@@ -482,44 +585,63 @@ export const testsReaching = (input: {
   }>;
   readonly read: (file: string) => string;
 }) => {
+  const byKey = Map.groupBy(input.files, nameKey);
+  // A disk that ignores case and Unicode form opens a file an import spells otherwise than Git, so
+  // an import reaches every file it can open up to the first that Git spells as the import does.
   const resolvePath = (base: string) => {
     const normalized = NodePath.posix.normalize(base);
-    for (const suffix of SOURCE_SUFFIXES) {
-      if (input.files.has(normalized + suffix)) return normalized + suffix;
+    const targets: Array<string> = [];
+    for (const candidate of [
+      ...SOURCE_SUFFIXES.map((suffix) => normalized + suffix),
+      normalized.replace(/\.([cm]?)js$/, ".$1ts"),
+    ]) {
+      targets.push(...(byKey.get(nameKey(candidate)) ?? []));
+      if (input.files.has(candidate)) break;
     }
-    const typescript = normalized.replace(/\.([cm]?)js$/, ".$1ts");
-    return input.files.has(typescript) ? typescript : undefined;
+    return targets;
   };
   const byLongestName = input.packages.toSorted((a, b) => b.name.length - a.name.length);
   const resolvePackage = (specifier: string) => {
     const pkg = byLongestName.find(
       ({ name }) => specifier === name || specifier.startsWith(`${name}/`),
     );
-    if (pkg === undefined) return undefined;
+    if (pkg === undefined) return [];
     const subpath = `.${specifier.slice(pkg.name.length)}`;
     const target = exportTarget(pkg.exports, subpath) ?? subpath;
     return resolvePath(NodePath.posix.join(pkg.dir, target));
   };
 
+  const tests = new Set<string>();
+  const argumentGuard = "scripts/command-arguments.test.ts";
+  if (
+    input.files.has(argumentGuard) &&
+    input.changed.some(
+      (file) => isRepositoryCommandSource(file) || isRepositoryCommandManifest(file),
+    )
+  ) {
+    tests.add(argumentGuard);
+  }
   const importers = new Map<string, Array<string>>();
-  const testsByDir = new Map<string, Array<string>>();
-  for (const file of input.files) {
-    if (!CODE.test(file) || file.startsWith(".repos/")) continue;
-    if (TEST.test(file)) {
-      const dir = NodePath.posix.dirname(file);
-      const known = testsByDir.get(dir);
-      if (known === undefined) testsByDir.set(dir, [file]);
-      else known.push(file);
-    }
+  const sources = [...input.files].filter((file) => CODE.test(file) && !isReferenceRepoPath(file));
+  const testsIn = testsByDirectory(sources);
+  for (const file of sources) {
     const text = input.read(file);
+    if (TEST.test(file)) {
+      for (const [, pattern] of text.matchAll(TEST_INPUT)) {
+        const glob = NodePath.posix.join(NodePath.posix.dirname(file), pattern!);
+        if (input.changed.some((changed) => NodePath.posix.matchesGlob(changed, glob))) {
+          tests.add(file);
+        }
+      }
+    }
     const targets = new Set([
-      ...[...text.matchAll(RELATIVE_REFERENCE)].map(([, specifier]) =>
+      ...[...text.matchAll(RELATIVE_REFERENCE)].flatMap(([, specifier]) =>
         resolvePath(NodePath.posix.join(NodePath.posix.dirname(file), specifier!)),
       ),
-      ...[...text.matchAll(PACKAGE_IMPORT)].map(([, specifier]) => resolvePackage(specifier!)),
+      ...[...text.matchAll(PACKAGE_IMPORT)].flatMap(([, specifier]) => resolvePackage(specifier!)),
     ]);
     for (const target of targets) {
-      if (target === undefined || target === file) continue;
+      if (target === file) continue;
       const known = importers.get(target);
       if (known === undefined) importers.set(target, [file]);
       else known.push(file);
@@ -529,24 +651,121 @@ export const testsReaching = (input: {
   const isBarrel = (file: string) =>
     CODE.test(file) &&
     input.read(file).replace(COMMENT, "").replace(RE_EXPORT, "").trim().length === 0;
-  const queue = input.changed.filter((file) => !isBarrel(file));
+  const queue = input.changed.filter((file) => !input.files.has(file) || !isBarrel(file));
   const seen = new Set(queue);
-  const tests = new Set<string>();
   for (let index = 0; index < queue.length; index += 1) {
     for (const importer of importers.get(queue[index]!) ?? []) {
       if (seen.has(importer)) continue;
       seen.add(importer);
       if (TEST.test(importer)) tests.add(importer);
       else if (isTestSupport(importer)) queue.push(importer);
-      else {
-        const prefix = `${NodePath.posix.basename(importer).replace(CODE, "")}.`;
-        for (const test of testsByDir.get(NodePath.posix.dirname(importer)) ?? []) {
-          if (NodePath.posix.basename(test).startsWith(prefix)) tests.add(test);
-        }
-      }
+      else for (const test of testsBeside(testsIn, importer)) tests.add(test);
     }
   }
   return [...tests].sort();
+};
+
+const packageName = (specifier: string) =>
+  specifier
+    .split("/")
+    .slice(0, specifier.startsWith("@") ? 2 : 1)
+    .join("/");
+const nameOfKey = (key: string) => key.slice(0, key.indexOf("@", 1));
+
+/** What pnpm-lock.yaml says: each resolved `name@version`, and which package names each name depends on. */
+const parseLock = (text: string) => {
+  const versions = new Set<string>();
+  const dependsOn = new Map<string, Set<string>>();
+  let section = "";
+  let name = "";
+  let inDependencies = false;
+  for (const line of text.split("\n")) {
+    const top = /^(\w+):/.exec(line);
+    if (top) section = top[1]!;
+    if (section !== "snapshots") continue;
+    const entry = /^ {2}'?([^'(\s][^'(]*?)(?:\(.*?)?'?:$/.exec(line);
+    if (entry) {
+      versions.add(entry[1]!);
+      name = nameOfKey(entry[1]!);
+      inDependencies = false;
+      continue;
+    }
+    if (/^ {4}\w+:/.test(line)) inDependencies = /^ {4}(?:optionalD|d)ependencies:/.test(line);
+    else if (inDependencies) {
+      const dependency = /^ {6}'?([^':]+)'?:/.exec(line)?.[1];
+      if (dependency === undefined) continue;
+      const known = dependsOn.get(dependency);
+      if (known === undefined) dependsOn.set(dependency, new Set([name]));
+      else known.add(name);
+    }
+  }
+  return { versions, dependents: dependsOn };
+};
+
+/** `patchedDependencies` of pnpm-workspace.yaml: patch file -> the package name it patches. */
+const patchedPackages = (text: string) => {
+  const patches = new Map<string, string>();
+  let inSection = false;
+  for (const line of text.split("\n")) {
+    if (/^\S/.test(line)) inSection = line.startsWith("patchedDependencies:");
+    const entry = inSection ? /^ {2}"?([^":]+?)"?:\s*"?(\S+?)"?\s*$/.exec(line) : null;
+    if (entry) patches.set(entry[2]!, nameOfKey(entry[1]!));
+  }
+  return patches;
+};
+
+/**
+ * Workspace files that import a changed dependency, or a package that depends on one: a patch, a
+ * `patchedDependencies` entry or a version in pnpm-lock.yaml changes what they run, though no code
+ * file changed. The caller selects their tests as it does for a changed source file.
+ */
+export const dependencyChangeFiles = (input: {
+  readonly changed: ReadonlyArray<string>;
+  readonly before: (file: string) => string;
+  readonly after: (file: string) => string;
+  readonly files: ReadonlySet<string>;
+  readonly read: (file: string) => string;
+}) => {
+  const changed = new Set(input.changed);
+  const lockChanged = changed.has("pnpm-lock.yaml");
+  const patchChanged = input.changed.some((file) => file.startsWith("patches/"));
+  if (!lockChanged && !patchChanged && !changed.has("pnpm-workspace.yaml")) return [];
+
+  const names = new Set<string>();
+  const oldPatches = patchedPackages(input.before("pnpm-workspace.yaml"));
+  const newPatches = patchedPackages(input.after("pnpm-workspace.yaml"));
+  for (const patches of [oldPatches, newPatches]) {
+    for (const [file, name] of patches) {
+      if (changed.has(file) || oldPatches.get(file) !== newPatches.get(file)) names.add(name);
+    }
+  }
+  const lock = parseLock(input.after("pnpm-lock.yaml"));
+  if (lockChanged) {
+    const old = parseLock(input.before("pnpm-lock.yaml")).versions;
+    for (const key of [...old, ...lock.versions]) {
+      if (old.has(key) !== lock.versions.has(key)) names.add(nameOfKey(key));
+    }
+  }
+  const queue = [...names];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const dependent of lock.dependents.get(queue[index]!) ?? []) {
+      if (!names.has(dependent)) {
+        names.add(dependent);
+        queue.push(dependent);
+      }
+    }
+  }
+
+  return [...input.files]
+    .filter(
+      (file) =>
+        CODE.test(file) &&
+        !isReferenceRepoPath(file) &&
+        [...input.read(file).matchAll(PACKAGE_IMPORT)].some(([, specifier]) =>
+          names.has(packageName(specifier!)),
+        ),
+    )
+    .sort();
 };
 
 // A flag wins over its environment variable; either must be a positive integer.
@@ -570,10 +789,242 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+// Output is piped, so keep the colors a terminal would get.
+const spawnVp = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  extraEnv: Record<string, string>,
+  collect: (chunk: string) => void,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const [command, commandArgs] = vitePlusCommand(args, platform);
+      const handle = yield* spawner.spawn(
+        ChildProcess.make(command, commandArgs, {
+          cwd,
+          env: { ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}), ...extraEnv },
+          extendEnv: true,
+          forceKillAfter: "5 seconds",
+        }),
+      );
+      let output = "";
+      const [, exitCode] = yield* Effect.all(
+        [
+          Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+            Effect.sync(() => {
+              output += chunk;
+              collect(chunk);
+            }),
+          ),
+          handle.exitCode,
+        ],
+        { concurrency: 2 },
+      );
+      return { ok: exitCode === 0, output };
+    }),
+  ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
+
+// Every worktree of this repository shares its git directory, so their runs share one budget.
+const budgetDirectory = Effect.fn("checkChanged.budgetDirectory")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const gitDirectory = (yield* git(root, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ]))
+    .toString()
+    .trim();
+  const slotDirectory = path.join(gitDirectory, "t3-check-changed");
+  yield* fs.makeDirectory(slotDirectory, { recursive: true });
+  return slotDirectory;
+});
+
+export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
+  cache: string,
+  requestFile: string,
+  request: typeof TestRequest.Type,
+  concurrency: number,
+  platform: string,
+  run: (concurrency: number) => Effect.Effect<{ readonly ok: boolean; readonly output: string }>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const remaining = new Set(
+    cachedTestTasks(yield* encodeTestRequest(request))["test-cache"]?.dependsOn,
+  );
+  const completed: Array<string> = [];
+  let output = "";
+  let ok = true;
+  const killedExit = platform === "win32" ? undefined : 137;
+  const summaries = Effect.gen(function* () {
+    const versions = (yield* fs.exists(cache)) ? yield* fs.readDirectory(cache) : [];
+    return yield* Effect.filter(
+      versions.map((version) => path.join(cache, version, "last-summary.json")),
+      fs.exists,
+    );
+  });
+
+  let limit = concurrency;
+  while (remaining.size > 0) {
+    for (const file of yield* summaries) yield* fs.remove(file);
+    yield* fs.writeFileString(requestFile, yield* encodeTestRequest({ ...request, completed }));
+    const result = yield* run(limit);
+    output += result.output;
+    if (result.ok) break;
+    ok = false;
+
+    // Vite+ 1.4 kills in-flight siblings after a failure. Leave those groups pending so they get a
+    // complete run and report their own failures. Unix reports a killed task as exit 137; Windows
+    // gives it a status a failed task can have, so there only a serial attempt settles one.
+    const [summaryFile] = yield* summaries;
+    if (!summaryFile) break;
+    const summary = yield* decodeTestSummary(yield* fs.readFileString(summaryFile));
+    const settled = summary.tasks
+      .filter((task) => {
+        const failure = task.result.Spawned?.outcome.Failed;
+        return (
+          limit === 1 ||
+          failure === undefined ||
+          (killedExit !== undefined && failure.exit_code !== killedExit)
+        );
+      })
+      .map((task) => task.task_name)
+      .filter((task) => remaining.delete(task));
+    if (settled.length === 0) {
+      if (limit === 1 || !summary.tasks.some((task) => remaining.has(task.task_name))) break;
+      // A task can itself exit 137. A serial attempt makes that distinguishable from fail-fast.
+      limit = 1;
+      continue;
+    }
+    completed.push(...settled);
+    if (killedExit === undefined) limit = 1;
+  }
+  return { ok, output };
+});
+
+/** Each install has its own module cache, and one from an earlier install is never read again. */
+export const keepModuleCache = Effect.fn("checkChanged.keepModuleCache")(function* (
+  current: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const parent = path.dirname(current);
+  if (!(yield* fs.exists(parent))) return;
+  for (const entry of yield* fs.readDirectory(parent)) {
+    if (entry === path.basename(current)) continue;
+    yield* fs.remove(path.join(parent, entry), { recursive: true, force: true });
+  }
+});
+
+// A package's full suite as budgeted steps. Its configs read the worker cap from T3CODE_TEST_MAX_WORKERS
+// (scripts/lib/test-workers.ts), so the suite runs on the slots it holds, not one worker per core.
+export const suiteSteps = (
+  directories: ReadonlyArray<string>,
+  concurrency: number,
+  run: (
+    directory: string,
+    slots: number,
+    collect: (chunk: string) => void,
+  ) => ReturnType<Step<never>["run"]>,
+): Array<Step<never>> =>
+  directories.map((directory) => ({
+    name: `suite ${directory}`,
+    run: (slots, collect) => run(directory, slots, collect),
+    // apps/server runs its test files one at a time, so more workers would sit idle.
+    workers: directory === "apps/server" ? 1 : concurrency,
+    serial: true,
+  }));
+
+// Without -z, Git quotes a path that holds a quote, backslash, control or non-ASCII character.
+const gitNames = (root: string, objects: string, args: ReadonlyArray<string>) =>
+  Effect.flatMap(
+    git(root, args, { GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectory(objects) }),
+    (stdout) => Effect.try({ try: () => gitPaths(stdout), catch: String }),
+  );
+
+// Cached passes key on the files tests read, which leave out modes. Git's modes leave out the
+// execute bits of files it trusts the index for, of symlinks it checks out as files, and of the
+// files in embedded repositories, so also key on HEAD, working-tree types and modes, and the
+// on-disk execute bits and access of every file outside .git and installed node_modules.
+export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (input: {
+  readonly root: string;
+  readonly objects: string;
+  readonly head: string;
+  readonly tree: string;
+}) {
+  const { root, objects, head, tree } = input;
+  const inRoot = (file: string) => NodePath.join(root, file);
+  const names = (args: ReadonlyArray<string>) => gitNames(root, objects, args);
+  const hash = NodeCrypto.createHash("sha256").update(`${head}\0`);
+  const fields = yield* names(["diff-tree", "-r", "-z", "--no-renames", head, tree]);
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const [from, to] = fields[index]!.slice(1).split(" ");
+    const modeChanged = from !== "000000" && to !== "000000" && from !== to;
+    if (modeChanged || (from === "000000" && to !== "100644")) {
+      hash.update(`${to}\0${fields[index + 1]}\0`);
+    }
+  }
+  // Windows files carry no execute bits.
+  if ((yield* HostProcess.Platform) === "win32") return hash.digest("hex");
+  const target = Option.liftThrowable((file: string) => NodeFS.statSync(inRoot(file)));
+  const runnable = Option.liftThrowable((file: string) =>
+    NodeFS.accessSync(inRoot(file), NodeFS.constants.X_OK),
+  );
+  const executables: Array<string> = [];
+  // Git lists an embedded repository, and checks out a gitlink, as one directory.
+  const add = (file: string): void => {
+    const entry = unlessAbsent(() => NodeFS.lstatSync(inRoot(file)));
+    if (entry?.isDirectory()) {
+      for (const child of NodeFS.readdirSync(inRoot(file), {
+        encoding: "buffer",
+        withFileTypes: true,
+      })) {
+        const [name] = gitPaths(child.name);
+        if (!(child.isDirectory() && (name === ".git" || name === "node_modules"))) {
+          add(`${file}/${name}`);
+        }
+      }
+      return;
+    }
+    // A link that leads nowhere or loops is no file anyone may run.
+    const info = entry?.isSymbolicLink() ? Option.getOrUndefined(target(file)) : entry;
+    // A runner in the file's group, or outside it, may run a file its owner may not, so any
+    // execute bit is an input, beside whether this runner may.
+    if (info?.isFile() && (info.mode & 0o111) !== 0) {
+      const bits = (info.mode & 0o111).toString(8);
+      executables.push(`executable on disk\0${bits}\0${Option.isSome(runnable(file))}\0${file}\0`);
+    }
+  };
+  // Where core.ignoreCase is on, Git's listings leave out an untracked file whose name differs from
+  // a tracked one only in case.
+  const others = yield* names([
+    "-c",
+    "core.ignoreCase=false",
+    "ls-files",
+    "-z",
+    "--others",
+    "--",
+    ":(exclude,glob)**/node_modules/**",
+  ]);
+  const listed = new Set([...(yield* names(["ls-files", "-z"])), ...others].filter(Boolean));
+  yield* Effect.try({
+    try: () => {
+      for (const file of listed) add(file.replace(/\/$/, ""));
+    },
+    catch: (cause) => `check:changed cannot read the checkout's files: ${String(cause)}`,
+  });
+  for (const entry of executables.sort()) hash.update(entry);
+  return hash.digest("hex");
+});
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
   readonly timeout: Option.Option<number>;
+  readonly suites: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -602,55 +1053,132 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const timeoutOverride = yield* override("timeout", input.timeout, "CHECK_CHANGED_TIMEOUT");
   const explicitTimeout = Option.isSome(timeoutOverride);
   const timeoutSeconds = Option.getOrElse(timeoutOverride, () => 900);
+  const testStepMaxSeconds = Option.getOrElse(
+    yield* override("test-step-max", Option.none(), "CHECK_CHANGED_TEST_STEP_MAX"),
+    () => TEST_STEP_MAX_SECONDS,
+  );
 
-  const lines = (...args: Array<string>) => gitLines(root, args);
+  if (input.suites.length > 0) {
+    for (const directory of input.suites) {
+      const manifest = path.join(root, directory, "package.json");
+      const hasTest = yield* fs.readFileString(manifest).pipe(
+        Effect.map((text) => text.includes('"test":')),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!hasTest) {
+        return yield* Effect.fail(
+          `check:changed: ${directory} has no package.json with a test script.`,
+        );
+      }
+    }
+    const results = yield* runSteps(
+      suiteSteps(input.suites, concurrency, (directory, slots, collect) =>
+        spawnVp(
+          spawner,
+          platform,
+          ["run", "--filter", `./${directory}`, "test"],
+          root,
+          { T3CODE_TEST_MAX_WORKERS: String(slots) },
+          collect,
+        ),
+      ),
+      {
+        concurrency,
+        timeoutSeconds: explicitTimeout ? timeoutSeconds : TEST_STEP_MAX_SECONDS,
+        slotDirectory: yield* budgetDirectory(root),
+        landing: Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN"))),
+      },
+    );
+    yield* Console.log(
+      [
+        "\ncheck:changed suites summary",
+        ...results.map((r) => `  ${r.outcome}  ${r.name}  ${r.time}`),
+      ].join("\n"),
+    );
+    return results.every((result) => result.outcome === "pass");
+  }
+
+  // The checked tree's objects, which in the repository nothing would reference.
+  const objects = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-objects-" });
+  const names = (args: ReadonlyArray<string>) => gitNames(root, objects, args);
+  const paths = (command: string, ...args: Array<string>) =>
+    names([command, "-z", ...args]).pipe(Effect.map((listed) => listed.filter(Boolean)));
 
   const { ref, base } = yield* comparisonBase(root, input.ref);
-  // --no-renames lists a rename as its old and new path, as CI does.
-  const changedFiles = lines("diff", "--name-only", "--no-renames", base, "--");
-  const untrackedFiles = lines("ls-files", "--others", "--exclude-standard");
-  const files = [...new Set([...(yield* changedFiles), ...(yield* untrackedFiles)])].sort();
+
+  // .vite-hooks/pre-push lets a push to main through only for a tree with a pass recorded here.
+  // Read before the files are listed, and again before a pass is recorded or cached, so a pass
+  // never covers a tree that differs from the one the checks selected their files from.
+  const checkedTree = Effect.try({
+    try: () => workingTree(root, objects),
+    catch: (cause) => `check:changed cannot read the working tree: ${String(cause)}`,
+  });
+  const tree = yield* checkedTree;
+  const treeUnchanged = Effect.gen(function* () {
+    if ((yield* checkedTree) === tree) return true;
+    yield* Console.log(
+      "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
+    );
+    return false;
+  });
+  const recordCheckedPass = Effect.gen(function* () {
+    yield* Effect.try({
+      try: () => recordPass(root, tree, base),
+      catch: (cause) =>
+        `check:changed passed but cannot record it for the push gate: ${String(cause)}`,
+    });
+    const head = (yield* git(root, ["rev-parse", "HEAD^{tree}"])).toString().trim();
+    yield* Console.log(
+      head === tree
+        ? "  push gate: recorded this pass for HEAD"
+        : "  push gate: recorded this pass for the working tree, not HEAD: commit every change as it is, untracked files included, or main refuses the push",
+    );
+    return true;
+  });
+  const recordPassForPush = Effect.gen(function* () {
+    if (!(yield* treeUnchanged)) return false;
+    return yield* recordCheckedPass;
+  });
+
+  // The files the checked tree changes, as a commit of the checkout under Git's own settings would
+  // hold them. --no-renames lists a rename as its old and new path, as CI does.
+  const changedIn = (current: string, against: string) =>
+    paths("diff-tree", "-r", "--name-only", "--no-renames", against, current);
+  const files = (yield* changedIn(tree, base)).sort();
 
   if (files.length === 0) {
     yield* Console.log(`check:changed: no changes since ${base.slice(0, 12)} (${ref}).`);
-    return true;
+    return yield* recordPassForPush;
   }
   yield* Console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)} (${ref})`);
+  const workspaceFiles = new Set(yield* paths("ls-tree", "-r", "--name-only", tree));
+  // Where core.ignoreCase is on for a disk that tells case apart, Git can record a name the disk
+  // does not hold, whose checks would then find nothing.
+  const requireOnDisk = Effect.fn("checkChanged.requireOnDisk")(function* (
+    candidates: Iterable<string>,
+  ) {
+    const missing = yield* Effect.try({
+      try: () =>
+        [...candidates].filter(
+          (file) =>
+            workspaceFiles.has(file) &&
+            unlessAbsent(() => NodeFS.lstatSync(inRoot(file))) === undefined,
+        ),
+      catch: (cause) => `check:changed cannot read the working tree: ${String(cause)}`,
+    });
+    if (missing.length === 0) return;
+    return yield* Effect.fail(
+      `check:changed: the checked tree holds ${missing.join(", ")}, which the disk does not ` +
+        "hold under that name. Git may ignore case (core.ignoreCase) on a disk that tells it apart.",
+    );
+  });
+  yield* requireOnDisk(files);
 
-  // Output is piped, so keep the colors a terminal would get.
-  const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
   const vp = (
     args: ReadonlyArray<string>,
     cwd = root,
     collect: (chunk: string) => void = () => {},
-  ) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const [command, commandArgs] = vitePlusCommand(args, platform);
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(command, commandArgs, {
-            cwd,
-            env,
-            extendEnv: true,
-            forceKillAfter: "5 seconds",
-          }),
-        );
-        let output = "";
-        const [, exitCode] = yield* Effect.all(
-          [
-            Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-              Effect.sync(() => {
-                output += chunk;
-                collect(chunk);
-              }),
-            ),
-            handle.exitCode,
-          ],
-          { concurrency: 2 },
-        );
-        return { ok: exitCode === 0, output };
-      }),
-    ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
+  ) => spawnVp(spawner, platform, args, cwd, {}, collect);
 
   // A rebase or pull can change pnpm-lock.yaml under an older install, so check against the
   // dependencies CI installs from it. Up to date, this takes about a second.
@@ -659,29 +1187,43 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return yield* Effect.fail(`check:changed could not install pnpm-lock.yaml:\n${install.output}`);
   }
 
-  // `source` hashes the change's own files. `inputs` adds the ignored generated sources,
-  // declarations, env files, and install state that affect results but that no large
-  // ignored folder holds. The checks write some of those (typecheck writes
-  // apps/marketing/.astro), so they key the cache but never fail a run.
+  const hostCapabilities = yield* Effect.promise(probeHostCapabilities);
+  const testGit = gitEnvironment();
+  const testRuntime = changedTestRuntime(
+    platform,
+    yield* HostProcess.Architecture,
+    hostCapabilities,
+    testGit,
+  );
   const ci = Option.getOrElse(yield* Config.option(Config.String("CI")), () => "");
-  const fingerprints = Effect.gen(function* () {
+  // Only uncached tasks get the provider variables this opt-in keeps for a live run.
+  const keepProviderEnv =
+    Option.getOrElse(
+      yield* Config.option(Config.String("T3CODE_TEST_KEEP_PROVIDER_ENV")),
+      () => "",
+    ) === "1";
+  const addFiles = (hash: NodeCrypto.Hash, paths: ReadonlyArray<string>) =>
+    Effect.forEach(
+      paths,
+      (file) =>
+        Effect.gen(function* () {
+          hash.update(`\0${file}\0`);
+          // Untracked nested repositories are listed as directories.
+          const info = yield* Effect.option(fs.stat(inRoot(file)));
+          if (Option.isSome(info) && info.value.type === "File") {
+            hash.update(yield* fs.readFile(inRoot(file)));
+          }
+        }),
+      { discard: true },
+    );
+  const sourceFingerprint = Effect.fn("checkChanged.sourceFingerprint")(function* (
+    against: string,
+  ) {
     const hash = NodeCrypto.createHash("sha256");
-    const add = (paths: ReadonlyArray<string>) =>
-      Effect.forEach(
-        paths,
-        (file) =>
-          Effect.gen(function* () {
-            hash.update(`\0${file}\0`);
-            // Untracked nested repositories are listed as directories.
-            const info = yield* Effect.option(fs.stat(inRoot(file)));
-            if (Option.isSome(info) && info.value.type === "File") {
-              hash.update(yield* fs.readFile(inRoot(file)));
-            }
-          }),
-        { discard: true },
-      );
-    // CI changes test behavior (vite.config.ts rejects .only under CI).
-    hash.update(`${process.version}\0${base}\0${ci}\0`);
+    // CI changes test behavior (vite.config.ts rejects .only under CI). The tree holds what the
+    // diff and the bytes below leave out, such as an untracked file's mode.
+    const current = yield* checkedTree;
+    hash.update(`${testRuntime}\0${against}\0${current}\0${ci}\0`);
     hash.update(
       yield* git(root, [
         "diff",
@@ -689,38 +1231,48 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         "--no-renames",
         "--no-ext-diff",
         "--no-textconv",
-        base,
+        against,
         "--",
       ]),
     );
-    // Raw bytes of changed files too: .gitattributes normalizes line endings in
-    // the diff, but the formatter reads the file as it is on disk.
-    yield* add([...(yield* changedFiles), ...(yield* untrackedFiles)]);
-    const source = hash.copy().digest("hex");
-    yield* add([
-      ...(yield* ignoredCheckInputs(root)),
-      "node_modules/.modules.yaml",
-      "node_modules/.pnpm/lock.yaml",
-    ]);
-    return { source, inputs: hash.digest("hex") };
+    // The diff normalizes line endings, but the formatter reads the bytes on disk.
+    yield* addFiles(hash, yield* changedIn(current, against));
+    return hash;
   });
-  const before = yield* fingerprints;
+  const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
+  const testFingerprint = Effect.fn("checkChanged.testFingerprint")(function* (
+    head: string,
+    install: string,
+  ) {
+    const hash = yield* sourceFingerprint(head);
+    yield* addFiles(hash, yield* ignoredCheckInputs(root, testInput));
+    return hash.update(install).digest("hex");
+  });
+  const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
+    const hash = yield* sourceFingerprint(against);
+    const source = hash.copy().digest("hex");
+    yield* addFiles(hash, yield* ignoredCheckInputs(root));
+    return { source, inputs: hash.update(yield* installed()).digest("hex") };
+  });
+  const before = yield* fingerprints(base);
   const key = before.inputs;
   const cachePath = inRoot("node_modules/.cache/check-changed.json");
   // A missing or unreadable cache is a miss, never a failure.
   const cached = yield* fs
     .readFileString(cachePath)
     .pipe(Effect.flatMap(decodeCacheEntry), Effect.option);
-  if (Option.isSome(cached) && cached.value.key === key) {
-    yield* Console.log("Nothing changed since the last passing run.\n");
-    for (const line of cached.value.summary) yield* Console.log(line);
-    return true;
-  }
+  const previousPass = Option.filter(cached, (entry) => entry.key === key);
 
+  // `fs.exists` fails where a file stands in for a directory on the path.
+  const isFile = (file: string) =>
+    Effect.try({
+      try: () => isFileAt(inRoot(file)),
+      catch: (cause) => `check:changed cannot read ${file}: ${String(cause)}`,
+    });
   // .repos holds read-only vendored references: no check reads them, and an upstream sync changes thousands.
   const present = yield* Effect.filter(
-    files.filter((file) => !file.startsWith(".repos/")),
-    (file) => fs.exists(inRoot(file)),
+    files.filter((file) => !isReferenceRepoPath(file)),
+    isFile,
   );
   const code = present.filter((file) => CODE.test(file));
   const packages = readWorkspace();
@@ -730,28 +1282,53 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // (foo.ts -> foo.test.ts, foo.browser.test.tsx), and the tests that reach a
   // changed file through test code, such as a provider's replay fixtures
   // through its adapter's testkit, or through one production importer.
-  const tests = new Set(code.filter((file) => TEST.test(file)));
-  for (const file of code) {
-    const dir = path.dirname(file);
-    const prefix = `${path.basename(file).replace(CODE, "")}.`;
-    for (const entry of yield* fs.readDirectory(inRoot(dir))) {
-      if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry));
+  const tests = adjacentTests(workspaceFiles, code);
+  const dependencyInputs = ["pnpm-lock.yaml", "pnpm-workspace.yaml"];
+  const baseText = (file: string) =>
+    git(root, ["show", `${base}:${file}`]).pipe(
+      Effect.map((stdout) => stdout.toString()),
+      Effect.orElseSucceed(() => ""),
+    );
+  const baseTexts = new Map<string, string>();
+  const afterTexts = new Map<string, string>();
+  if (files.some((file) => dependencyInputs.includes(file) || file.startsWith("patches/"))) {
+    for (const file of dependencyInputs) {
+      baseTexts.set(file, yield* baseText(file));
+      afterTexts.set(
+        file,
+        yield* fs.readFileString(inRoot(file)).pipe(Effect.orElseSucceed(() => "")),
+      );
     }
   }
-  const workspaceFiles = new Set([...(yield* lines("ls-files")), ...(yield* untrackedFiles)]);
   const contents = new Map<string, string>();
   yield* Effect.forEach(
-    [...workspaceFiles].filter((file) => CODE.test(file) && !file.startsWith(".repos/")),
+    [...workspaceFiles].filter((file) => CODE.test(file) && !isReferenceRepoPath(file)),
     (file) =>
       Effect.gen(function* () {
         // A tracked file deleted in the working tree references nothing.
-        if (!(yield* fs.exists(inRoot(file)))) return;
+        if (!(yield* isFile(file))) return;
         contents.set(file, yield* fs.readFileString(inRoot(file)).pipe(Effect.orDie));
       }),
     { concurrency: 64, discard: true },
   );
   for (const test of testsReaching({
-    changed: present,
+    changed: files,
+    files: workspaceFiles,
+    packages,
+    read: (file) => contents.get(file) ?? "",
+  })) {
+    tests.add(test);
+  }
+  const dependencyFiles = dependencyChangeFiles({
+    changed: files,
+    before: (file) => baseTexts.get(file) ?? "",
+    after: (file) => afterTexts.get(file) ?? "",
+    files: workspaceFiles,
+    read: (file) => contents.get(file) ?? "",
+  });
+  for (const test of adjacentTests(workspaceFiles, dependencyFiles)) tests.add(test);
+  for (const test of testsReaching({
+    changed: dependencyFiles,
     files: workspaceFiles,
     packages,
     read: (file) => contents.get(file) ?? "",
@@ -761,14 +1338,18 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   for (const test of docReaderTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
-  const { vitestTests, nodeTests } = splitTests(tests);
+  yield* requireOnDisk(tests);
+  // A test the change deletes has nothing to run.
+  const { vitestTests, nodeTests } = splitTests(yield* Effect.filter([...tests], isFile));
   const allVitestTests = splitTests(
-    [...workspaceFiles].filter((file) => CODE.test(file) && TEST.test(file)),
+    [...workspaceFiles].filter(
+      (file) => CODE.test(file) && TEST.test(file) && !isReferenceRepoPath(file),
+    ),
   ).vitestTests;
   if (vitestTests.length > 0 && vitestTests.length === allVitestTests.length) {
     yield* Console.log(
       `check:changed: this change selects every test file (${vitestTests.length}). The test step ` +
-        `ends within ${explicitTimeout ? "--timeout" : `${TEST_STEP_MAX_SECONDS}s`}; ` +
+        `ends within ${explicitTimeout ? "--timeout" : `${testStepMaxSeconds}s`}; ` +
         "for a full run, use each package's own test script (vp run -r test).",
     );
   }
@@ -904,16 +1485,115 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     name,
     run: (_slots: number, collect: (chunk: string) => void) => vp(args, root, collect),
   });
-  const fileCommands = (name: string, args: ReadonlyArray<string>, files: ReadonlyArray<string>) =>
-    argumentBatches(files, commandLineLimit(platform)).map((batch, index, batches) =>
-      command(batchName(name, index, batches.length), [...args, ...batch]),
-    );
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
+  const batched = <S>(
+    items: ReadonlyArray<string>,
+    step: (batch: Array<string>, part: string) => S,
+  ) => {
+    const batches = argumentBatches(items);
+    return batches.map((batch, index) =>
+      step(batch, batches.length > 1 ? ` ${index + 1}/${batches.length}` : ""),
+    );
+  };
+
   // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
   // so they keep one worker busy however many there are.
-  const testWorkers = (tests: ReadonlyArray<string>) => {
-    const serverTests = tests.filter((file) => file.startsWith("apps/server/")).length;
-    return tests.length - serverTests + Math.min(serverTests, 1);
+  const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
+  const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
+
+  const slotDirectory = yield* budgetDirectory(root);
+  const testStep: Step<never> = {
+    name: `test (${vitestTests.length} files)`,
+    run: (slots, collect) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-tests-" });
+          const head = yield* gitCommit(root, "HEAD");
+          const install = yield* installed();
+          const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+          const cache = path.join(temp, "cache");
+          const { finish } = yield* stageTestCache(
+            yield* testCachePartition(path.join(slotDirectory, "tests"), head),
+            cache,
+            `${yield* testFingerprint(head, install)}\0${state}\0${testGit}`,
+            Effect.gen(function* () {
+              if ((yield* gitCommit(root, "HEAD")) !== head) return "";
+              const fingerprint = yield* testFingerprint(head, yield* installed());
+              const git = yield* Effect.try({ try: () => gitEnvironment(), catch: String });
+              const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+              return `${fingerprint}\0${state}\0${git}`;
+            }),
+          );
+          const request = path.join(temp, "tests.json");
+          const groups = Math.max(1, Math.floor(slots / 3));
+          const workers = Math.floor(slots / groups);
+          const env = {
+            ...changedTestRequestEnv(request, testRuntime, workers, cache, state, install),
+            ...hostCapabilitiesEnv(hostCapabilities),
+          };
+          yield* keepModuleCache(inRoot(`node_modules/.vitest-cache/check-changed/${install}`));
+          const result = yield* runTestGroups(
+            cache,
+            request,
+            {
+              files: vitestTests,
+              groupSize: 16,
+              uncached: keepProviderEnv
+                ? vitestTests
+                : [
+                    "apps/server/integration/transferBudgetV2.integration.test.ts",
+                    // No input covers the programs these run: one a variable names (CC, ComSpec,
+                    // T3CODE_TEST_HEADLESS_SHELL, T3_TEST_NU_PATH), or the shell tools of the
+                    // machine or its WSL distribution, without which they skip cases.
+                    "apps/desktop/scripts/browser-secret-native.test.mjs",
+                    "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
+                    "apps/server/src/cli/uninstall.test.ts",
+                    "apps/server/src/htmlRender/HtmlRender.test.ts",
+                    "packages/shared/src/shell.test.ts",
+                    "scripts/install.test.ts",
+                    // These skip cases without a cgroup this process may join or delegate.
+                    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+                    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+                    // These fixtures start their own Vite+ task cache and file tracker.
+                    "scripts/check-changed.test.ts",
+                    "scripts/lib/cached-tests.test.ts",
+                  ],
+            },
+            groups,
+            platform,
+            (limit) =>
+              spawnVp(
+                spawner,
+                platform,
+                [
+                  "run",
+                  "--remote-cache",
+                  "off",
+                  "--concurrency-limit",
+                  String(limit),
+                  "test-cache",
+                ],
+                root,
+                env,
+                collect,
+              ),
+          );
+          return (yield* finish) ? result : { ...result, ok: false };
+        }),
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.catch((error) => Effect.succeed({ ok: false, output: String(error) })),
+      ),
+    workers: testWorkers,
+    serial: true,
+    timeoutSeconds: testStepTimeoutSeconds(
+      vitestTests.length,
+      timeoutSeconds,
+      explicitTimeout,
+      testStepMaxSeconds,
+    ),
   };
 
   const steps: Array<Step<never>> = [
@@ -922,8 +1602,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     // The web and mobile builds stop on a shipped package without a license notice. Notices come
     // from installed packages and files the license config names anywhere, so this always runs.
     command("third-party licenses", ["run", "licenses:check"]),
-    ...fileCommands("format", ["fmt", "--check", "--no-error-on-unmatched-pattern"], present),
-    ...fileCommands("lint", ["lint", "--no-error-on-unmatched-pattern"], code),
+    ...batched(present, (batch, part) =>
+      command(`format${part}`, ["fmt", "--check", "--no-error-on-unmatched-pattern", ...batch]),
+    ),
+    ...batched(code, (batch, part) =>
+      command(`lint${part}`, ["lint", "--no-error-on-unmatched-pattern", ...batch]),
+    ),
     ...(code.some((file) => TRANSLATED_SOURCE.test(file))
       ? [command("translations", ["run", "i18n:check"])]
       : []),
@@ -942,58 +1626,31 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ...affected.map((name) =>
       command(`typecheck ${name}`, ["run", "--cache", "--filter", name, "typecheck"]),
     ),
-    // From the repo root, the root vite.config.ts hands each file to its package's config.
-    ...argumentBatches(vitestTests, commandLineLimit(platform)).map((batch, index, batches) => ({
-      name: batchName(`test (${batch.length} files)`, index, batches.length),
-      run: (slots: number, collect: (chunk: string) => void) =>
-        vp(
-          ["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...batch],
-          root,
-          collect,
-        ),
-      workers: testWorkers(batch),
-      serial: true,
-      timeoutSeconds: testStepTimeoutSeconds(batch.length, timeoutSeconds, explicitTimeout),
-    })),
-    ...(nodeTests.length > 0
-      ? [
-          command(`node --test (${nodeTests.length} files)`, [
-            "exec",
-            "node",
-            "--test",
-            ...nodeTests,
-          ]),
-        ]
-      : []),
-    ...(compilerApps.length > 0
-      ? [
-          {
-            ...command(`react compiler (${compilerFiles} files)`, [
-              "test",
-              "run",
-              "--maxWorkers",
-              "1",
-              ...compilerApps.map((app) => app.test),
-              "-t",
-              compilerApps.flatMap((app) => app.pattern).join("|"),
-            ]),
-            serial: true,
-          },
-        ]
-      : []),
+    ...(vitestTests.length > 0 ? [testStep] : []),
+    ...batched(nodeTests, (batch, part) =>
+      command(`node --test (${batch.length} files)${part}`, ["exec", "node", "--test", ...batch]),
+    ),
+    ...batched(
+      compilerApps.flatMap((app) => app.pattern),
+      (batch, part) => ({
+        ...command(`react compiler (${compilerFiles} files)${part}`, [
+          "test",
+          "run",
+          "--maxWorkers",
+          "1",
+          ...compilerApps.map((app) => app.test),
+          "-t",
+          batch.join("|"),
+        ]),
+        serial: true,
+      }),
+    ),
   ];
 
-  // Every worktree of this repository shares its git directory, so their runs share one budget.
-  const gitDirectory = (yield* git(root, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-common-dir",
-  ]))
-    .toString()
-    .trim();
-  const slotDirectory = path.join(gitDirectory, "t3-check-changed");
-  yield* fs.makeDirectory(slotDirectory, { recursive: true });
-  const results = yield* runSteps(steps, {
+  const stepsToRun = Option.isSome(previousPass)
+    ? steps.filter((step) => step === testStep)
+    : steps;
+  const results = yield* runSteps(stepsToRun, {
     concurrency,
     timeoutSeconds,
     slotDirectory,
@@ -1021,11 +1678,20 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
-  yield* Console.log(`\n${summary.join("\n")}`);
-
   // A test run keeps the version of each file it loaded first, so its result
   // can mix two versions of the code, and a pass would not describe these files.
-  const after = yield* fingerprints;
+  const after = yield* fingerprints(base);
+  if (
+    Option.isSome(previousPass) &&
+    after.inputs === key &&
+    results.every(({ outcome }) => outcome === "pass")
+  ) {
+    if (!(yield* treeUnchanged)) return false;
+    yield* Console.log("Checks passed with the previous run's summary.\n");
+    for (const line of previousPass.value.summary) yield* Console.log(line);
+    return yield* recordCheckedPass;
+  }
+  yield* Console.log(`\n${summary.join("\n")}`);
   if (after.source !== before.source) {
     yield* Console.log(
       "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
@@ -1033,9 +1699,18 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return false;
   }
   if (results.some((result) => result.outcome !== "pass")) return false;
+  // The cache key was read after the install, so it can hold a file the checks never selected.
+  if (!(yield* treeUnchanged)) return false;
   if (after.inputs !== key) {
+    // A reused pass ran only the test step, so no other check saw the new files.
+    if (Option.isSome(previousPass)) {
+      yield* Console.log(
+        "  FAIL  generated files changed while the previous run's pass was checked. Run again.",
+      );
+      return false;
+    }
     yield* Console.log("  pass not cached: generated files changed during the run");
-    return true;
+    return yield* recordCheckedPass;
   }
   // Write then rename, so a concurrent run never reads half a file.
   const temp = `${cachePath}.${process.pid}`;
@@ -1044,8 +1719,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     yield* fs.writeFileString(temp, yield* encodeCacheEntry({ key, summary }));
     yield* fs.rename(temp, cachePath);
   }).pipe(Effect.catch((error) => Console.warn(`  pass not cached: ${error.message}`)));
-  return true;
-});
+  return yield* recordCheckedPass;
+}, Effect.scoped);
 
 export const checkChangedCommand = Command.make(
   "check-changed",
@@ -1065,6 +1740,12 @@ export const checkChangedCommand = Command.make(
         "Seconds before a step is killed; also CHECK_CHANGED_TIMEOUT. Defaults to 900.",
       ),
       Flag.optional,
+    ),
+    suites: Flag.String("suites").pipe(
+      Flag.withDescription(
+        "Run the full test suite of this package directory (repeatable) through the shared budget instead of checking changed files, e.g. --suites apps/web --suites apps/server.",
+      ),
+      Flag.atLeast(0),
     ),
   },
   (input) =>

@@ -279,7 +279,7 @@ function SidebarFolderHeader(props: {
             : undefined
         }
         className={cn(
-          "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          "flex h-(--sidebar-folder-header-height) w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           // Lines the icon up with the parent folder's name.
           parentRowId && "ps-9",
         )}
@@ -341,7 +341,8 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
   /** Set when the folder sits in a machine folder, so the label lines up with nested titles. */
   nested: boolean;
   state: SidebarFolderMoreState;
-  count: number;
+  /** Null when a filter hides how many older threads match. */
+  count: number | null;
   onToggle: (folderKey: string) => void;
 }) {
   const { folderKey, state } = props;
@@ -349,12 +350,14 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
     <li className="list-none">
       <button
         type="button"
-        data-sidebar-row={sidebarFolderMoreRowId(folderKey)}
+        data-sidebar-row={
+          state === "retry" ? `folder-retry:${folderKey}` : sidebarFolderMoreRowId(folderKey)
+        }
         data-sidebar-parent={sidebarFolderRowId(folderKey)}
         disabled={state === "loading"}
         onClick={() => props.onToggle(folderKey)}
         className={cn(
-          "flex h-8 w-full cursor-pointer items-center rounded-md pe-2.5 text-left text-xs text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
+          "flex h-(--sidebar-folder-header-height) w-full cursor-pointer items-center rounded-md pe-2.5 text-left text-xs text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
           props.nested ? "ps-15.5" : "ps-9",
         )}
       >
@@ -364,7 +367,9 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
             ? t("Could not load older threads. Retry")
             : state === "less"
               ? t("Show less")
-              : t("Show {count} more", { count: props.count })}
+              : props.count === null
+                ? t("Show more")
+                : t("Show {count} more", { count: props.count })}
       </button>
     </li>
   );

@@ -108,10 +108,9 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
                       )
                     : [instance];
                   for (const instance of related) {
-                    if (
-                      instance.auth?.isChangingCredentials &&
-                      (yield* instance.auth.isChangingCredentials)
-                    )
+                    const blocked =
+                      instance.auth?.isAccessBlocked ?? instance.auth?.isChangingCredentials;
+                    if (blocked && (yield* blocked))
                       return yield* new ProviderSetupError({
                         instanceId,
                         operation: "session",
@@ -122,7 +121,17 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
                     ProviderAdapter.ProviderAdapterV2SessionRuntime,
                     ProviderAdapter.ProviderAdapterV2Error | ProviderSetupError,
                     Scope.Scope
-                  > = adapter.openSession(input);
+                  > = Effect.gen(function* () {
+                    // A settings publication can replace this adapter between lookup and admission.
+                    if ((yield* instances.getInstance(instanceId)) !== instance)
+                      return yield* new ProviderSetupError({
+                        instanceId,
+                        operation: "session",
+                        detail:
+                          "This provider account changed while the session was starting. Try again.",
+                      });
+                    return yield* adapter.openSession(input);
+                  });
                   // Shared credential changes must interrupt a peer's startup too.
                   for (const peer of related) {
                     if (peer.auth?.withAccess) admitted = peer.auth.withAccess(admitted);

@@ -1,8 +1,10 @@
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   SourceControlProviderKind,
+  orchestrationV2RunAwaitsMemory,
 } from "@t3tools/contracts";
 import { runLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -402,6 +404,15 @@ const layerTest = Layer.mergeAll(
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
 );
+
+/** Lets a held automatic start go, as the memory admission queue does once there is room. */
+const admitHeldRun = (threadId: ThreadId, runId: RunId, key: string) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const commandId = CommandId.make(`command:memory-admit:${runId}:${key}`);
+    yield* orchestrator.dispatch({ type: "run.memory-admit", commandId, threadId, runId });
+    return commandId;
+  });
 
 const layerLegacyImportTest = Layer.merge(RuntimeLayer.layer, layerProjectionReplayTest).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
@@ -10704,7 +10715,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
 
   it.effect.each(
     (["preparing", "starting", "running"] as const).flatMap((cutWhile) =>
-      (["recovery", "send"] as const).map((resumedBy) => ({ cutWhile, resumedBy })),
+      (["recovery", "agent", "person"] as const).map((resumedBy) => ({ cutWhile, resumedBy })),
     ),
   )(
     "sends a run cut while $cutWhile again after a restart, on $resumedBy, then the messages behind it",
@@ -10798,8 +10809,9 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         } else {
           yield* orchestrator.dispatch({
             type: "message.dispatch",
-            createdBy: "agent",
-            creationSource: "mcp",
+            ...(resumedBy === "agent"
+              ? ({ createdBy: "agent", creationSource: "mcp" } as const)
+              : ({ createdBy: "user", creationSource: "web" } as const)),
             commandId: laterCommandId,
             threadId,
             messageId: messageId("later"),
@@ -10827,9 +10839,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
               restartRetryNoticeId(work.id, 1, cutWhile === "running" ? "unconfirmed" : "unsent"),
           ),
         );
+        // The restart's own retry and an agent's send wait for memory; a person's send does not.
+        assert.equal(orchestrationV2RunAwaitsMemory(again), resumedBy !== "person");
         // The workspace it asked for is prepared again before its message goes out.
         const revivedBy =
-          resumedBy === "recovery" ? `command:restart-retry:${work.id}:1` : laterCommandId;
+          resumedBy === "person"
+            ? laterCommandId
+            : yield* admitHeldRun(threadId, work.id, resumedBy);
         for (const type of ["workspace.prepare", "provider-turn.start"] as const) {
           const effect = yield* outbox.get(`effect:${revivedBy}:${type}:${work.id}`);
           assert.equal(
@@ -10838,9 +10854,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             type,
           );
         }
-        const held = resumed.runs.find((run) => run.id === queued.id)!;
-        assert.isTrue(held.queueHeld);
-        assert.isTrue(held.queueHeldByRestart);
+        const behind = resumed.runs.find((run) => run.id === queued.id)!;
+        // A person's message resumes the queue the restart held.
+        assert.equal(behind.queueHeld, resumedBy !== "person");
+        assert.equal(behind.queueHeldByRestart === true, resumedBy !== "person");
 
         // The user never held their message: it follows once the resumed run completes.
         const queuedStarts = yield* eventSink
@@ -11389,6 +11406,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           yield* continueRestartedRun({ threadId, sourceRunId: work.id }).pipe(
             Effect.provide(ServerSettings.layerTest()),
           );
+          // It starts before the next restart, which cuts it again.
+          yield* admitHeldRun(threadId, work.id, `restart-${restart}`);
         }
         const after = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(after.runs[0]?.status, resent ? "starting" : "cancelled");
@@ -11547,8 +11566,11 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           [after.runs[0]?.status, after.turnItems.find((row) => row.id === failureId)?.status],
           [status, item],
         );
+        // The automatic retry waits for memory, then starts once the queue lets it go.
+        assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+        const admittedBy = yield* admitHeldRun(threadId, run.id, "retry");
         assert.deepEqual(
-          (yield* outbox.listByCommandId(commandId)).map((effect) => effect.request.type),
+          (yield* outbox.listByCommandId(admittedBy)).map((effect) => effect.request.type),
           delivered ? [] : ["provider-turn.start"],
         );
       }),
@@ -13570,8 +13592,15 @@ it.layer(layerSharedApplicationDataPlaneTest)("shared application data plane", (
   );
 });
 
+const RESUMABLE_STOPS = [
+  "interrupted",
+  "usage_limit",
+  "transport_error",
+  "authentication_failed",
+] as const;
+
 it.layer(layerTest)("usage-limit recovery", (it) => {
-  it.effect.each(["interrupted", "usage_limit", "transport_error"] as const)(
+  it.effect.each(RESUMABLE_STOPS)(
     "manually resumes an %s run ahead of its queued message only once",
     (reason) =>
       Effect.gen(function* () {
@@ -13677,22 +13706,28 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
                   startedAt: now,
                   completedAt: now,
                   updatedAt: now,
-                  failure:
-                    reason === "usage_limit"
-                      ? {
-                          class: "usage_limit",
-                          message: "Plan limit reached.",
-                          code: "usageLimitExceeded",
-                          retryable: null,
-                          resetAt,
-                        }
-                      : {
-                          class: "transport_error",
-                          message:
-                            "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
-                          code: "api_error",
-                          retryable: null,
-                        },
+                  failure: {
+                    usage_limit: {
+                      class: "usage_limit" as const,
+                      message: "Plan limit reached.",
+                      code: "usageLimitExceeded",
+                      retryable: null,
+                      resetAt,
+                    },
+                    transport_error: {
+                      class: "transport_error" as const,
+                      message:
+                        "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+                      code: "api_error",
+                      retryable: null,
+                    },
+                    authentication_failed: {
+                      class: "provider_error" as const,
+                      message: "Claude could not authenticate.",
+                      code: AUTHENTICATION_FAILED_FAILURE_CODE,
+                      retryable: null,
+                    },
+                  }[reason],
                 },
               },
             ],
@@ -13855,6 +13890,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
 
   it.effect.each([
     "ordinary",
+    "legacy-ordinary",
     "fresh",
     "superseded",
     "bound-superseded",
@@ -13888,7 +13924,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       });
       const sql = yield* SqlClient.SqlClient;
       const taskId = ScheduledTaskId.make(`recovery-task:${scenario}`);
-      const scheduled = scenario !== "ordinary";
+      const scheduled = scenario !== "ordinary" && scenario !== "legacy-ordinary";
       const intervalMs = 60_000;
       const schedule = scenario.startsWith("fixed-")
         ? { type: "fixed_time", timeOfDay: "00:01" }
@@ -13940,9 +13976,11 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         createdBy: "user",
         creationSource: "web",
       });
-      const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+      const [accepted] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
         OrchestrationV2Run,
       ];
+      const { demandId: _owner, ...historical } = accepted;
+      const source: OrchestrationV2Run = scenario === "legacy-ordinary" ? historical : accepted;
       // A newer run started while this one worked on, and the occurrence's window passed.
       if (scenario === "overlapped") {
         yield* sql`UPDATE scheduled_tasks SET last_run_at = ${DateTime.formatIso(DateTime.add(now, { minutes: 2 }))} WHERE task_id = ${taskId}`;
@@ -14184,6 +14222,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       }
       const skipped = ![
         "ordinary",
+        "legacy-ordinary",
         "fresh",
         "fixed-fresh",
         "manual-expired",
@@ -14212,14 +14251,13 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         );
         return;
       }
+      if (scenario === "ordinary") assert.isString(source.demandId);
+      if (scenario === "legacy-ordinary") assert.isUndefined(source.demandId);
       assert.deepEqual(
-        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
-          run.providerInstanceId,
-          run.status,
-        ]),
+        after.runs.map((run) => [run.providerInstanceId, run.status, run.demandId]),
         [
-          [modelSelection.instanceId, "failed"],
-          [alternateInstanceId, "starting"],
+          [modelSelection.instanceId, "failed", source.demandId],
+          [alternateInstanceId, "starting", source.demandId ?? null],
         ],
       );
       assert.isUndefined(

@@ -4,10 +4,12 @@ import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  MACHINE_SHARED_SETTING_KEYS,
   type MachineSharedSettingKey,
   ProviderInstanceId,
   ProviderDriverKind,
   ServerSettingsError,
+  type ServerSettingsPatch,
   type ServerProvider,
   ThreadId,
   type OrchestrationV2ThreadShell,
@@ -367,10 +369,23 @@ it.effect.each([
     allMachines: false,
     shared: false,
   },
+  {
+    name: "follows shared settings, sharing omitted",
+    follows: true,
+    allMachines: undefined,
+    shared: false,
+  },
   { name: "does not follow shared settings", follows: false, allMachines: true, shared: false },
 ])("allMachines on a machine that $name", ({ follows, allMachines, shared }) =>
   Effect.gen(function* () {
     const writes = yield* Ref.make<ReadonlyArray<"all machines" | "this machine">>([]);
+    const stored = yield* Ref.make({ ...DEFAULT_SERVER_SETTINGS, followSharedSettings: follows });
+    const save = (patch: ServerSettingsPatch, target: "all machines" | "this machine") =>
+      Ref.update(writes, (all) => [...all, target]).pipe(
+        Effect.andThen(
+          Ref.updateAndGet(stored, (current) => applyServerSettingsPatch(current, patch)),
+        ),
+      );
     const dependencies = Layer.mergeAll(
       ThreadCommandExecutor.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
@@ -394,34 +409,46 @@ it.effect.each([
       }),
       Layer.mock(SharedSettings.SharedSettings)({
         accountConfigs: () => Effect.succeed({}),
-        update: (_patch, share) =>
-          Ref.update(writes, (all) => [
-            ...all,
-            share === undefined ? ("this machine" as const) : ("all machines" as const),
-          ]).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
-        updateForAllMachines: () =>
-          Ref.update(writes, (all) => [...all, "all machines" as const]).pipe(
-            Effect.as({
-              settings: DEFAULT_SERVER_SETTINGS,
+        update: (patch, share) =>
+          save(patch, share === undefined ? "this machine" : "all machines"),
+        updateForAllMachines: (patch) =>
+          save(patch, "all machines").pipe(
+            Effect.map((settings) => ({
+              settings,
               share: {
                 stamp: { updatedAt: "2026-11-11T12:00:00.000Z", origin: environmentId },
                 values: [],
               },
-            }),
+            })),
           ),
       }),
       Layer.mock(Settings.ServerSettingsService)({
-        getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, followSharedSettings: follows }),
+        getSettings: Ref.get(stored),
       }),
     );
-    const result = yield* Effect.gen(function* () {
+    yield* Effect.gen(function* () {
       const toolkit = yield* EnvironmentToolkit;
-      return yield* toolkit
+      const resetPreferences = { redeemUsageResets: true, maxPlanResetWaitHours: 168 };
+      const result = yield* toolkit
         .handle("t3_environment_preferences_update", {
           newWorktreesStartFromOrigin: false,
-          allMachines,
+          ...resetPreferences,
+          ...(allMachines === undefined ? {} : { allMachines }),
         })
         .pipe(Stream.unwrap, Stream.runCollect);
+      if (allMachines && !follows) {
+        expect(result.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+        expect(yield* Ref.get(writes)).toEqual([]);
+        return;
+      }
+
+      expect(yield* Ref.get(writes)).toEqual([shared ? "all machines" : "this machine"]);
+      expect(yield* Ref.get(stored)).toMatchObject(resetPreferences);
+      expect(result.at(-1)?.result).toMatchObject(resetPreferences);
+      const read = yield* toolkit
+        .handle("t3_environment_read", {})
+        .pipe(Stream.unwrap, Stream.runCollect);
+      expect(read.at(-1)?.result).toMatchObject({ preferences: resetPreferences });
     }).pipe(
       Effect.provide(
         McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
@@ -429,15 +456,27 @@ it.effect.each([
         ),
       ),
     );
-    if (allMachines && !follows) {
-      // A change that cannot reach the other machines must not report success.
-      expect(result.at(-1)?.result).toMatchObject({ code: "invalid_request" });
-      expect(yield* Ref.get(writes)).toEqual([]);
-    } else {
-      expect(yield* Ref.get(writes)).toEqual([shared ? "all machines" : "this machine"]);
-    }
   }),
 );
+
+it("refuses a plan reset wait longer than 168 hours", () => {
+  const decode = Schema.decodeUnknownSync(
+    EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema,
+  );
+  expect(() => decode({ maxPlanResetWaitHours: 169 })).toThrow(/maxPlanResetWaitHours/);
+});
+
+it("accepts preferences from older linked machines without the reset settings", () => {
+  const {
+    redeemUsageResets: _redeem,
+    maxPlanResetWaitHours: _wait,
+    ...olderPreferences
+  } = EnvironmentHandlers.preferences(DEFAULT_SERVER_SETTINGS);
+  const decode = Schema.decodeUnknownSync(
+    EnvironmentToolkit.tools.t3_environment_read.successSchema.fields.preferences,
+  );
+  expect(decode(olderPreferences)).toEqual(olderPreferences);
+});
 
 const WORK = ProviderInstanceId.make("claudeAgent_work");
 const workAccount = {
@@ -595,67 +634,67 @@ it.effect.each([
   }),
 );
 
-// The tool field agents set each shared preference through, or null when only people set it.
-const AGENT_PREFERENCE_FIELD: Record<MachineSharedSettingKey, string | null> = {
-  defaultModelSelection: "defaultModelSelection",
-  newThreadsUseLastModel: null,
-  scheduledTaskModelSelection: "scheduledTaskModelSelection",
-  fallbackModelSelection: null,
-  textGenerationModelSelection: null,
-  threadTitleInstructions: null,
-  sourceControlWriterModelSelection: null,
-  reviewGuideModelSelection: null,
-  finalReviewByDefault: null,
-  defaultRuntimeMode: null,
-  defaultThreadEnvMode: "defaultThreadEnvMode",
-  responseStreamingMode: null,
-  idleCompaction: null,
-  snoozePresets: null,
-  snoozeLimitedThreads: "snoozeLimitedThreads",
-  autoResumeLimitedThreads: "usageLimitRecovery",
-  failoverLimitedThreads: "usageLimitRecovery",
-  sidebarAutoSettleAfterDays: null,
-  sidebarAutoSettleOnMerge: null,
-  sidebarAutoSettleKeepPullRequests: null,
-  sidebarAutoSettleOpensPullRequests: null,
-  scheduledTaskDefaultPlacement: null,
-  skillAvailability: null,
-  enableAgentBrowserAccess: null,
-  enableAgentDeviceAccess: null,
-  agentTerminalAccess: null,
-  worktreeSubmodules: null,
-  newWorktreesStartFromOrigin: "newWorktreesStartFromOrigin",
-  defaultAutoPull: null,
-  worktreeCleanup: null,
-  branchNamingMode: null,
-  sourceControlWritingStyle: "sourceControlWritingStyle",
-  removeAgentCreditsOnMerge: null,
-  pullRequestMergeMethod: null,
-  reviewGuidesEnabled: null,
-  reviewGuideInstructions: null,
-  importAgentConversations: null,
-  ghqCloneLayout: null,
-  enableProviderUpdateChecks: "enableProviderUpdateChecks",
-  autoUpdateProviders: "providerUpdates",
-  installUpdatesAutomatically: "installUpdatesAutomatically",
-  minHoursBetweenAutomaticUpdates: "minHoursBetweenAutomaticUpdates",
-  continueThreadsAfterServerUpdate: null,
-  backgroundActivity: "backgroundActivity",
-  providerInstanceFailoverOrder: null,
-  redeemUsageResets: null,
-  maxPlanResetWaitHours: null,
-  deviceSettingsProfile: null,
-};
+const SHARED_SETTING_EXCLUSIONS = {
+  newThreadsUseLastModel:
+    "The user chooses whether new chats inherit their last model in Settings.",
+  fallbackModelSelection:
+    "The user chooses which model can replace their selected model in Settings.",
+  textGenerationModelSelection:
+    "The user selects the model for background text generation in Settings.",
+  threadTitleInstructions:
+    "The user controls the instructions for generated thread titles in Settings.",
+  sourceControlWriterModelSelection: "The user selects the model that writes commits and PR text.",
+  reviewGuideModelSelection: "The user selects the model that generates review guides.",
+  finalReviewByDefault: "The user sets when new threads should request a final review.",
+  defaultRuntimeMode: "The user chooses the default approval mode for future agent turns.",
+  responseStreamingMode: "The user controls how streamed responses appear in clients.",
+  idleCompaction: "The user controls automatic compaction of idle conversation context.",
+  snoozePresets: "Clients use these presets in the user's snooze menu.",
+  autoResumeLimitedThreads: "The tools read and update recovery modes through usageLimitRecovery.",
+  failoverLimitedThreads: "The tools read and update recovery modes through usageLimitRecovery.",
+  sidebarAutoSettleAfterDays: "The user decides how long idle threads remain in the sidebar.",
+  sidebarAutoSettleOnMerge: "The user decides whether a merge automatically settles a thread.",
+  sidebarAutoSettleScheduledThreads:
+    "The user decides whether completed scheduled threads settle automatically.",
+  sidebarAutoSettleKeepPullRequests:
+    "The user decides whether pull requests keep their threads visible.",
+  sidebarAutoSettleOpensPullRequests:
+    "The user decides whether auto-settlement may open pull requests.",
+  scheduledTaskDefaultPlacement: "The user chooses the default placement for new scheduled tasks.",
+  skillAvailability: "The user controls the skills their providers can see.",
+  enableAgentBrowserAccess: "The user grants agents access to the browser.",
+  enableAgentDeviceAccess: "The user grants agents access to devices.",
+  agentTerminalAccess: "The user grants agents access to the terminal.",
+  worktreeSubmodules: "The user controls submodule initialization for new worktrees.",
+  defaultAutoPull: "The user controls automatic pulls in their checkouts.",
+  worktreeCleanup: "The user decides when CodeShip can remove worktrees automatically.",
+  branchNamingMode: "The user selects the default branch naming convention.",
+  removeAgentCreditsOnMerge: "The user selects the attribution policy for merges.",
+  pullRequestMergeMethod: "The user selects the default pull request merge method.",
+  reviewGuidesEnabled: "The user decides whether CodeShip generates review guides.",
+  reviewGuideInstructions: "The user controls the instructions for generated review guides.",
+  importAgentConversations: "The user opts in to importing conversations from provider history.",
+  ghqCloneLayout: "The user controls the directory layout for cloned projects.",
+  autoUpdateProviders: "The tools read and update provider update modes through providerUpdates.",
+  continueThreadsAfterServerUpdate:
+    "The user decides whether interrupted turns resume after updates.",
+  providerInstanceFailoverOrder:
+    "The user controls which accounts can be tried first during failover.",
+  deviceSettingsProfile:
+    "Clients synchronize the user's appearance and device preferences as a profile.",
+} satisfies Partial<Record<MachineSharedSettingKey, string>>;
 
-it("lets agents read and set every shared preference meant for them", () => {
+it("exposes every machine-shared setting or documents its exclusion", () => {
   const writable = Object.keys(
     EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema.fields,
   );
   const readable = Object.keys(
     EnvironmentToolkit.tools.t3_environment_read.successSchema.fields.preferences.fields,
   );
-  const missing = Object.entries(AGENT_PREFERENCE_FIELD).filter(
-    ([, field]) => field !== null && !(writable.includes(field) && readable.includes(field)),
+  const exposed = (field: string) => writable.includes(field) && readable.includes(field);
+  const missing = MACHINE_SHARED_SETTING_KEYS.filter(
+    (key) => !exposed(key) && !Object.hasOwn(SHARED_SETTING_EXCLUSIONS, key),
   );
   expect(missing).toEqual([]);
+  expect(["usageLimitRecovery", "providerUpdates"].filter((field) => !exposed(field))).toEqual([]);
 });

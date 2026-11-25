@@ -104,6 +104,11 @@ export interface GitStatusDetails {
 export interface GitLocalStatusOptions {
   readonly includeDivergence?: boolean;
   readonly includeBranchChanges?: boolean;
+  /**
+   * Lists each untracked file and each changed submodule, even where `status.showUntrackedFiles`
+   * or `submodule.<name>.ignore` hides them.
+   */
+  readonly listAllChanges?: boolean;
 }
 
 export interface GitRemoteStatusDetails {
@@ -436,7 +441,8 @@ export class GitVcsDriver extends Context.Service<
     /**
      * Counts HEAD's commits whose changes the base does not have. A commit that reached the base
      * under another SHA (cherry-pick, a rebase shipped from another worktree) is not counted.
-     * Without `baseRef` the branch's own base is used.
+     * Without `baseRef` the branch's own base is used, and a detached HEAD is compared with the
+     * default branch; a detached HEAD in a repository with no default branch fails.
      */
     readonly countUnmergedCommits: (input: {
       readonly cwd: string;

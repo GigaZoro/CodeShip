@@ -252,6 +252,7 @@ const makeSecretResolver = (values: Record<string, string> = {}) =>
     read: (references) =>
       Effect.succeed(references.map((reference) => values[reference.reference])),
     invalidate: () => Effect.void,
+    refreshUnattended: () => Effect.succeedNone,
   });
 
 const layerWith = (secrets: Layer.Layer<SecretResolver.SecretResolver>) =>
@@ -386,6 +387,7 @@ describe("Expo Simulators host", () => {
             read: (references) =>
               Effect.succeed(references.map(() => (readable.value ? "expo-token" : undefined))),
             invalidate: () => Effect.void,
+            refreshUnattended: () => Effect.succeedNone,
           }),
         ),
       ),

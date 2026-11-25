@@ -228,7 +228,8 @@ test files that import a changed file directly or through test-support code (a `
 `testkit/`, `testing/`, `test/` or `fixtures/` folder), and the test files beside each production
 file that imports a changed file. The walk goes no further into production code, so a provider's
 replay suites and the service built on a changed module run, but not every test that loads the server.
-It also runs the checks that read other files: the agent context budget when the server is
+It runs exactly those files, and one that its package's config leaves out passes, as
+`vp test run --passWithNoTests` would. It also runs the checks that read other files: the agent context budget when the server is
 affected, and React Compiler coverage for only the changed web and mobile files. It maps
 files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
 compares against the closest merge base with any remote's `main`, so a fork whose `main` lags
@@ -245,12 +246,55 @@ On a large machine a run takes about as long as its slowest step, usually
 knip's exports pass at about 10 s. Pass `--concurrency <n>` or set `CHECK_CHANGED_CONCURRENCY` to
 change the limit (`1` runs the steps one by one). A step that runs past `--timeout <seconds>` or
 `CHECK_CHANGED_TIMEOUT` (default 900) is killed with every process it started and reported as
-`TIMEOUT`, not as a failing check. When the files are exactly those of the last passing run, it prints that
-run's summary instead of running again. Any change to a file, the install, or a generated file runs
-the checks again. Editing a file of the change while the checks run fails the run: a test run keeps
-the version of each file it loaded first, so its result would mix old and new code. A generated
-file that the checks themselves rewrite only keeps that pass out of the cache. The test step's
+`TIMEOUT`, not as a failing check. Test groups run concurrently within the test step's worker
+budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
+group after another group fails, the test step runs it again and reports failures across the full
+selection. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,
+even after a timeout or interruption, it publishes passed groups if HEAD and runtime inputs still
+match. A change to either fails the test step. A force-killed run leaves its unpublished results in
+the private copy. A HEAD's cache is removed after three days without a run. Retries across worktrees
+and chats, each with its own install, reuse groups at the same commit with the same file modes
+and execute access, matching inputs, install state, tracked environment, user, umask, and host
+capabilities. A group's inputs are the checkout files its tests read, hashed when the group ends.
+The machine's programs, network interfaces and cgroups, Git state beyond the commit, the read and
+write permissions of checkout files, and files another process rewrites during the run are not
+inputs, so a pass still replays after a program its tests run
+changes or goes away. A test whose coverage they decide, such as one that skips cases without a
+program or a cgroup it may join, or runs a program a variable names, or that writes a report another
+step needs, needs an uncached task. A group runs its files with the options of the test script of
+the nearest enclosing package that has one, as CI runs that package's suite. `check:changed` passes a
+test that package's config leaves out, so it refuses a script that adds anything but
+`--passWithNoTests`, `--config`, `--dir` and `--project` with literal values: a filter such as a file
+name or `-t` would pass a test it never ran, and `|| true` would hide a failure. The repository
+command guard checks every package's test script when a manifest changes, so the change that adds
+such a script fails, not the next one that changes a test in that package. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
+reads it from `packages/shared/src/testing/hostCapabilities.ts`. The command probes those
+capabilities once, keys the cache on them and passes them to its tests; a probe of the test's own
+would replay the skip after the host gains the capability. With `T3CODE_TEST_KEEP_PROVIDER_ENV=1`,
+every group runs uncached, because only uncached tasks get the provider variables it keeps. When the
+whole-run cache matches, the command validates the selected groups and reuses the previous summary
+for the other checks.
+
+Editing a changed file during checks fails the run because tests keep the first version they
+load. Editing and restoring a file during a run, or changing an installed package in place, can
+invalidate even an uncached verdict. A generated declaration that the checks themselves rewrite
+keeps the whole-run pass out of the cache, and fails a run that reused an earlier pass, because
+only its tests saw the new file. The test step's
 limit grows by two minutes per selected test file, because server test files run one at a time.
+
+The checks select their files from the tree a commit of the checkout would get under Git's own
+settings: tracked changes and untracked files that are not ignored. Each pass, a cached one
+included, records that tree. The receipt lives in the repository's git
+directory, so every worktree shares it. The tracked pre-push hook
+([.vite-hooks/pre-push](../../.vite-hooks/pre-push), through
+[check-changed-receipt.cjs](../../.github/scripts/check-changed-receipt.cjs)) refuses a push to
+`main` unless a pass covers the pushed commit's tree and compared it against the commit the remote's
+`main` is at, so every change the push brings was checked. Land from a worktree with nothing to commit
+and no scratch files: the landing (below) runs the checks after its rebase, against that commit. Git runs these
+hooks itself because `core.hooksPath` is `.vite-hooks`: `machine-config.json` declares that, and
+`node ~/.agents/tools/machine-config.mjs check <checkout> --fix` applies it. A checkout with no
+install still runs the push gate. `prepare` does not run `vp config`: it would point `core.hooksPath` at its
+generated `.vite-hooks/_` shims, which exist only after an install.
 
 While you iterate, run single checks:
 
@@ -274,9 +318,10 @@ script, so on Windows open the workspace through WSL.
 
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
-The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
-Windows investigation while that suite is not a required gate. A full `apps/server` run there
-splits into eight duration-balanced shards.
+CI runs the `apps/server` suite on Windows too, as eight duration-balanced `Test Server Windows`
+shards. To reproduce one locally on Windows, run `vp test run --shard N/8` from `apps/server`. In a
+fork, [windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed`
+on Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
 
 ### Unused code
 
@@ -298,7 +343,7 @@ Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](
 
 ### Landing on main
 
-A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landings take turns. `node .github/scripts/landing-turn.cjs land` takes a lease on `refs/heads/landing-lease/main` on origin (it expires after three hours, so a dead lander cannot hold it), rebases onto main, runs the checks once and pushes, then gives the lease back. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, and a `check:changed` run started by the lander takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
+A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landers wait in a first-come, first-served queue on origin. The queue drops entries that stop refreshing. `node .github/scripts/landing-turn.cjs land` takes a lease on `refs/heads/landing-lease/main` on origin (it expires after three hours, so a dead lander cannot hold it), pushes, then gives the lease back. Before the wait it rebases onto main and runs the checks, so a conflict or a failing check shows at once and holds no turn, and a turn lasts for the push alone unless main moved during the wait; then the lander rebases and checks again under the turn. A branch that was behind main starts again from the rebased tree, so the wait and the turn run the rebased copy of the script, which holds main's changes to it. A lander pushes the commit its checks passed for, stops if its checkout moved to another commit while it ran, and gives up on a fetch or push of main that does not finish within ten minutes. A lander records the lease it takes in its clone's Git folder, so on Linux a waiter in a worktree of that clone takes over a lease whose lander has exited in the same kernel boot and PID namespace with no push to main in flight, instead of waiting for it to expire. `node .github/scripts/landing-turn.cjs holder` prints the current lease and, when a worktree of this clone took it, the checkout and process that hold it. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, or for a tree no pass covers, and a `check:changed` run the lander starts under the turn takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
 
 ## Desktop artifacts
 
@@ -319,6 +364,26 @@ vp run dist:desktop:artifact --platform linux --target AppImage --arch arm64
 DMGs default to the host architecture. Use `--arch` to choose another target and `--keep-stage`
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
+
+The staged app, the Windows server sidecar and the CLI archive install exactly the versions in the
+root `pnpm-lock.yaml`, with the root workspace's patches, overrides and package extensions. A
+package, dependency or patch the root lockfile does not hold, or a dependency it lists that the
+stage would drop, fails the build instead of resolving from the registry, so run `vp i` and commit
+the lockfile after changing a dependency. Staged installs get only the allowlisted variables in
+`scripts/lib/child-env.ts`, so their install scripts never see signing, notarization or registry
+credentials.
+
+Release jobs build in two steps so no install runs with signing credentials: `--phase stage
+--stage-dir <dir>` builds and installs everything that ships into an empty `<dir>`, and `--phase
+package --stage-dir <dir>` signs and packages that stage for the same platform, arch, target and
+version at the same commit. `scripts/build-cli-archive.ts` takes the same two flags.
+
+Every desktop build stages Electron the same way: it downloads the zip for each target
+architecture into `<stage>/electron-dist` and checks it against the SHA-256 in the locked
+`electron` package's `checksums.json`, and electron-builder unpacks that zip instead of
+downloading its own. `ELECTRON_MIRROR` sets the download host. Mac App Store targets (`mas`,
+`mas-dev`) are rejected: they package Electron's separate Mac App Store build, which staging does
+not download.
 
 ### Prepared server bytecode
 
@@ -407,3 +472,27 @@ passed as `--wsl-runtime`; see the
 Add `--signed` after configuring the platform credentials in the
 [release runbook](./release.md). macOS passkeys need a signed, provisioned app; follow the
 [Connect setup](./connect-setup.md#desktop-passkeys) for local signing and renderer HMR.
+
+## Working notes
+
+- **Home.** The fork lives on GitHub (`GigaZoro/CodeShip`, remote `origin`); there is no Azure DevOps repository or `ado` remote. `gh` in a checkout defaults to upstream `pingdotgg/t3code`, so pass `-R GigaZoro/CodeShip` for the fork's runs and releases, and check `gh api repos/GigaZoro/CodeShip/actions/workflows` before relying on CI: `release-fork.yml` runs no tests, so `check:changed` is the only test gate.
+- **Follow-ups.** The fork's GitHub Issues are off. Implement a suggested fix; what cannot be finished goes in the private Azure DevOps project `CodeShip` through agent-config's `long-term-fix.mjs`, and is started at once.
+- **A worktree without setup.** With no `node_modules` and no `.t3/setup-*` marker, run `T3CODE_PROJECT_ROOT=<main checkout> node scripts/setup-worktree.ts` (about 15 seconds). Without the variable it throws and writes `.t3/setup-failed`.
+- **A stale worktree.** A work order can name a commit newer than the worktree's base. Run `git fetch origin` and `git log --oneline HEAD..origin/main -- <files>` first, and rebase before designing.
+- **Branch names.** A worktree starts on `t3/<id>` and CodeShip renames it to `cs/<slug>`; read `git branch --show-current` before deleting. A hook blocks `git checkout -- <file>` and `git branch -d`; use `git branch --delete`, and set `--set-upstream-to=origin/main` first when the main checkout's HEAD lags and refuses a merged branch.
+- **zsh.** Brace a variable followed by `:` (`"${head}:refs/heads/main"`): `$head:refs` hits the `:r` modifier. `status` is read-only, so use `rc`.
+- **Landing on a busy main.** Each shipment prepends to `docs/release-notes.md`, so the landing's plain `git rebase` stops on that conflict when its base is older than main. Resolve with your entry above main's, `git add`, `GIT_EDITOR=true git rebase --continue`, and land again; re-date your heading when main has a later entry. A tool-text change also conflicts in `agentContextBudget.json`: per key take main + yours − base, then run `AgentContextBudget.test.ts`. Land through `t3_command_run` with `timeoutMinutes: 720`; a full check took about 14 minutes.
+- **Seeding the dev database.** The live database is over the 500 MiB auto-seed limit, so `vp run dev` starts empty. `vp run migrate-dev-db --projects 30 --threads-per-project 3` took about 15 minutes on a 5 GB source: start it early. Otherwise add a scratch git repo with `node apps/server/src/bin.ts project add --base-dir ../../.t3 <path>` from `apps/server`.
+- **Dev server limits.** Provider homes sit under `<worktree>/.t3/userdata/providers/...`, so model-backed features fail with "Not logged in": run the prompt builder from a script with `claude -p --model claude-haiku-5-5` and insert results into the dev database. Before a test that starts chats, set `defaultModelSelection` to `{instanceId: "devReplay", model: "showcase"}` and disable every other provider instance in the dev `settings.json`. No-project threads fail inside a git checkout; copy `.t3/userdata` outside any repo and run `vp run dev --home-dir <folder>`. The default Browser panel profile carries so many localhost cookies that Vite answers 431: open with `profileId: "incognito"` and a token from `node apps/server/src/bin.ts pair --base-dir .t3`. Stop a `nohup` dev run by the owners of its two ports (`lsof -nP -iTCP:<port> -sTCP:LISTEN -t`) after checking their cwd; the wrapper's PID is not enough. Never print a secret file.
+- **Replay tests of the timeline.** Prompts sent with `t3 thread send` are Agent messages with no "Edit from here"; type the prompt in the composer to test that. For the "New since your last visit" divider, open the thread, leave, send another prompt, let it finish, reopen.
+- **A component capture without the Browser panel.** A temporary `*.browser.test.tsx` importing `~/index.css`, with mocked state hooks and `page.screenshot({ path })` inside the repo (`.t3/capture`), run with `vp test run --project browser <file>` from `apps/web`. Delete it afterwards.
+- **Preview guest drawing.** Fake-based host tests cannot show whether Chromium draws a preview guest. Run an Electron main script (`apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron <script.mjs> <DesktopBrowserHost.ts> <effect Effect.js>`) that imports the real host, and test both parkings: the Mac keeps an inactive webview visible offscreen, Windows and Linux use `visibility:hidden`.
+- **Mobile on the Mac.** Android emulators work (`device_list`, then `device_open` the AVD); iOS needs Xcode and an Apple ID sign-in, so say iOS was not checked. `vp run mobile:install android` needs `JAVA_HOME` and `ANDROID_HOME`; the Device panel needs `ffmpeg` with libx264 and `java` on the server's PATH. `open` fails with `DEVICE_IN_USE` while another thread holds the emulator: never close its session, retry with `--wait 120000` (larger values are refused). If the emulator is shut down under you (`SESSION_NOT_FOUND`), `device_open` again.
+- **The mark.** The Angleboat logo (`M14 3v6l-6 6l6 3v4l-12 -6zM18 3l12 13l-12 6v-4l6 -3l-6 -6zM3 25h26l-4 4h-18z` in a 32 grid) is duplicated in both `CodeShipMark.tsx` files, `assets/prod/logo.svg` and `apps/mobile/assets/widget/T3Mark.svg`, and `MARK_BOUNDS` in `scripts/export-android-icons.ts` must match it. After a change run `vp run icons:export`, `icons:export:android` and `icons:check`.
+
+## Diagnosing provider and machine failures
+
+- **Only Codex turns fail** with "did not load/resume the conversation within 5 minutes" while Claude works: the shared Codex app-server (`provider-session:provider-instance:codex:shared`) is stuck on dead connections. Look in `~/.codex/logs_2.sqlite` (query a narrow range; the file is large) for requests with no response, and check that the provider log's `thread/start` and `thread/resume` ids got no reply. `ProviderSessionManager.releaseIfSilent` releases such a session so the retry opens a new process; if the error repeats, look at the network or the account.
+- **`model_not_found` "not supported when using Codex with a ChatGPT account"** usually means the Codex CLI is too old for the model. Compare `cliVersion` in the `thread/start` result (or `cli_version` in the first line of `~/.codex/sessions/.../rollout-*.jsonl`) with the latest, and probe with `CODEX_HOME=<instance>/shadow <codex binary> exec ... < /dev/null`. A running app-server keeps its old binary until it restarts. Never change the user's model pick, and change settings only through CodeShip's tools.
+- **Evals** run on the Codex subscription: set `CODEX_BIN` to the managed binary (`~/.t3/tools/codex/<version>/bin/codex`) and `CODEX_HOME` to the instance's `shadow` folder. Never copy an `auth.json` (two copies sign each other out).
+- **Another machine's database.** Delegate a read-only task there (`delegate_task` with `target.environmentId` and a `projectId` that exists on that machine) whose brief holds a complete script opening `statev2.sqlite` with `new DatabaseSync(path, { readOnly: true })`. Events are in `orchestration_events` (`aggregate_kind = 'thread'`, `stream_id`, `sequence`, `event_type`, `occurred_at`, `payload_json`), not the empty `orchestration_v2_events`; effects in `orchestration_v2_effect_outbox`. Keep output short, and query a live database by sequence range: a full scan of a 17 GB one times out.

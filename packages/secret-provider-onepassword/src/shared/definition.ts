@@ -18,9 +18,23 @@ export const OnePasswordAccount = Schema.String.check(
 ).pipe(Schema.brand("OnePasswordAccount"));
 export type OnePasswordAccount = typeof OnePasswordAccount.Type;
 
-export const OnePasswordSecretProviderConfig = Schema.Struct({
-  account: OnePasswordAccount,
-});
+const LinuxServiceAccountConfig = Schema.declare(
+  (value): value is { readonly auth: "linux-service-account" } =>
+    typeof value === "object" &&
+    value !== null &&
+    "auth" in value &&
+    Object.hasOwn(value, "auth") &&
+    value.auth === "linux-service-account" &&
+    Reflect.ownKeys(value).length === 1,
+);
+
+export const OnePasswordSecretProviderConfig = Schema.Union([
+  Schema.Struct({
+    account: OnePasswordAccount,
+    auth: Schema.optionalKey(Schema.Never),
+  }),
+  LinuxServiceAccountConfig,
+]);
 export type OnePasswordSecretProviderConfig = typeof OnePasswordSecretProviderConfig.Type;
 
 // 1Password secret reference syntax: names outside this charset must be written as item ids.
@@ -30,12 +44,18 @@ const REFERENCE = new RegExp(
   String.raw`^op://${NAME}(?:/${NAME}){2,3}(?:\?[a-z-]+=[A-Za-z0-9_-]+)?$`,
 );
 const MAX_REFERENCE_LENGTH = 1024;
+const isOnePasswordReference = (reference: string) =>
+  reference.length <= MAX_REFERENCE_LENGTH && REFERENCE.test(reference);
+
+// sudoers matches the joined argument string, so a grant must contain a single literal reference.
+export const isOnePasswordLinuxServiceAccountReference = (reference: string) =>
+  isOnePasswordReference(reference) && !/[\s?]/.test(reference);
 
 export const definition = defineSecretProvider({
   kind: SecretProviderKind.make("one_password"),
   label: "1Password",
   configSchema: OnePasswordSecretProviderConfig,
-  isReference: (reference) => reference.length <= MAX_REFERENCE_LENGTH && REFERENCE.test(reference),
+  isReference: isOnePasswordReference,
   referencePlaceholder: "op://vault/item/field",
   invalidReferenceMessage: "Use a 1Password reference like op://vault/item/field.",
 });

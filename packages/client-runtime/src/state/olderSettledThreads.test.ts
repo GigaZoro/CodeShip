@@ -37,9 +37,13 @@ import { EMPTY_SHELL_STATE, type EnvironmentShellState } from "./shell.ts";
 import {
   createOlderSettledThreadAtoms,
   isListedSettledThread,
+  planFilteredOlderSettledPress,
   olderSettledCountKey,
   olderSettledFolderNames,
+  sameOlderSettledMembership,
   settledShelfFrontier,
+  hasMoreOlderSettledPages,
+  settledFooterHiddenCount,
   unloadedOlderSettledCount,
   wantedOlderSettledPages,
   type OlderSettled,
@@ -49,6 +53,7 @@ import {
 const DAY = 24 * 60 * 60 * 1000;
 const environmentId = EnvironmentId.make("env-a");
 const project = ProjectId.make("project-a");
+const otherProject = ProjectId.make("project-b");
 const before = DateTime.formatIso(DateTime.makeUnsafe(50 * DAY));
 const older: OlderSettled = {
   before,
@@ -98,6 +103,7 @@ describe("olderSettledCountKey", () => {
     expect(key([...base, row("woken", { createdDay: 5 })])).not.toBe(start);
     // A local row that turns older (a backdated auto-settle).
     expect(key([base[0]!, row("open", { createdDay: 60, settledDay: 20 })])).not.toBe(start);
+    expect(key([{ ...base[0]!, projectId: otherProject }, base[1]!])).not.toBe(start);
     // An older row filed in a folder, which moves it between folder counts.
     expect(key([row("kept-old", { settledDay: 10, folder: "Autopilot" }), base[1]!])).not.toBe(
       start,
@@ -116,6 +122,42 @@ describe("olderSettledCountKey", () => {
   });
 });
 
+describe("sameOlderSettledMembership", () => {
+  const base = [row("kept-old", { settledDay: 10 }), row("open", { createdDay: 60 })];
+
+  it.each([
+    ["a streaming tick on an open thread", [base[0]!, { ...base[1]!, updatedAt: "tick" }], true],
+    ["a new copy of an older row", [{ ...base[0]! }, base[1]!], true],
+    [
+      "a folder spelled another way",
+      [row("kept-old", { settledDay: 10, folder: " " }), base[1]!],
+      true,
+    ],
+    ["an open row that turns older", [base[0]!, row("open", { settledDay: 20 })], false],
+    [
+      "an older row that moves project",
+      [{ ...base[0]!, projectId: otherProject }, base[1]!],
+      false,
+    ],
+    [
+      "an older row that moves folder",
+      [row("kept-old", { settledDay: 10, folder: "A" }), base[1]!],
+      false,
+    ],
+    ["an older row that unsettles", [row("kept-old", {}), base[1]!], false],
+    ["a row that arrives", [...base, row("new", { createdDay: 70 })], false],
+    ["rows in another order", [base[1]!, base[0]!], false],
+  ] as const)("%s", (_name, next, same) => {
+    expect(
+      sameOlderSettledMembership(
+        base,
+        next as ReadonlyArray<OrchestrationV2ThreadShell>,
+        older.beforeMs,
+      ),
+    ).toBe(same);
+  });
+});
+
 describe("settled shelf listing", () => {
   const pages = (frontier: OlderSettledPages["frontier"]): OlderSettledPages => ({
     reads: [],
@@ -126,30 +168,36 @@ describe("settled shelf listing", () => {
 
   it("lists rows at or above the highest frontier still loading", () => {
     // No page yet: the cut is the frontier, so only rows newer than it list.
-    const one = settledShelfFrontier([{ older, pages: pages({ settledAt: before }) }]);
+    const one = settledShelfFrontier([{ older, unloaded: 3, pages: pages({ settledAt: before }) }]);
     expect(isListedSettledThread(row("recent", { settledDay: 60 }), one)).toBe(true);
     expect(isListedSettledThread(row("old", { settledDay: 30 }), one)).toBe(false);
     // A row that became older inside the loaded range lists at its place.
-    const loaded = settledShelfFrontier([{ older, pages: pages({ settledAt: at(20) }) }]);
+    const loaded = settledShelfFrontier([
+      { older, unloaded: 3, pages: pages({ settledAt: at(20) }) },
+    ]);
     expect(isListedSettledThread(row("old", { settledDay: 30 }), loaded)).toBe(true);
     expect(isListedSettledThread(row("older", { settledDay: 10 }), loaded)).toBe(false);
     // All loaded, or a shell that keeps every settled thread: everything lists.
-    expect(settledShelfFrontier([{ older, pages: pages(null) }])).toBeNull();
-    expect(settledShelfFrontier([{ older: null, pages: pages(null) }])).toBeNull();
+    expect(settledShelfFrontier([{ older, unloaded: 3, pages: pages(null) }])).toBeNull();
+    expect(settledShelfFrontier([{ older: null, unloaded: 0, pages: pages(null) }])).toBeNull();
+    const exhausted = { older, pages: pages(null), unloaded: 0 };
+    expect(
+      isListedSettledThread(row("held", { settledDay: 30 }), settledShelfFrontier([exhausted])),
+    ).toBe(true);
   });
 
   it("holds back another environment's rows below an environment still loading", () => {
     const frontier = settledShelfFrontier([
-      { older, pages: pages({ settledAt: at(40) }) },
-      { older, pages: pages({ settledAt: at(20) }) },
+      { older, unloaded: 3, pages: pages({ settledAt: at(40) }) },
+      { older, unloaded: 3, pages: pages({ settledAt: at(20) }) },
     ]);
     expect(frontier).toEqual({ settledAt: at(40) });
     expect(isListedSettledThread(row("b-loaded", { settledDay: 30 }), frontier)).toBe(false);
     // A failed environment holds no one back.
     expect(
       settledShelfFrontier([
-        { older, pages: { ...pages({ settledAt: at(40) }), status: "failed" } },
-        { older, pages: pages({ settledAt: at(20) }) },
+        { older, unloaded: 3, pages: { ...pages({ settledAt: at(40) }), status: "failed" } },
+        { older, unloaded: 3, pages: pages({ settledAt: at(20) }) },
       ]),
     ).toEqual({ settledAt: at(20) });
   });
@@ -159,7 +207,7 @@ describe("settled shelf listing", () => {
     const afterM = pages({ settledAt: at(30), threadId: ThreadId.make("m") });
     const afterK = pages({ settledAt: at(30), threadId: ThreadId.make("k") });
     const frontier = (...all: ReadonlyArray<OlderSettledPages>) =>
-      settledShelfFrontier(all.map((each) => ({ older, pages: each })));
+      settledShelfFrontier(all.map((each) => ({ older, unloaded: 3, pages: each })));
     expect(frontier(strict, afterM)).toEqual(afterM.frontier);
     expect(frontier(afterM, strict)).toEqual(afterM.frontier);
     expect(frontier(afterM, afterK)).toEqual(afterK.frontier);
@@ -266,7 +314,9 @@ describe("wantedOlderSettledPages", () => {
     wantedOlderSettledPages({
       requested: input.requested ?? new Map(),
       environments: new Map(
-        [...input.environments].map(([id, { pages }]) => [id, { older, pages }] as const),
+        [...input.environments].map(
+          ([id, { pages }]) => [id, { older, unloaded: 3, pages }] as const,
+        ),
       ),
       listedCount: input.listed,
       visibleCount: input.visible,
@@ -306,6 +356,28 @@ describe("wantedOlderSettledPages", () => {
     expect(wanted({ requested, environments: one(full(before)), listed: 0, visible: 0 })).toBe(
       requested,
     );
+  });
+
+  it("plans only one frontier step per filtered press and reveals held matches first", () => {
+    const environments = new Map([
+      [environmentId, { older, unloaded: 3, pages: full(before) }],
+      [otherEnvironment, { older, unloaded: 3, pages: full(before) }],
+    ]);
+    const requested = new Map([
+      [environmentId, 4],
+      [otherEnvironment, 3],
+    ]);
+    const input = { requested, environments, shownCount: 10 };
+    expect(planFilteredOlderSettledPress({ ...input, listedCount: 16 })).toEqual({
+      visibleCount: 35,
+      pages: new Map([
+        [environmentId, 5],
+        [otherEnvironment, 4],
+      ]),
+    });
+    const enough = planFilteredOlderSettledPress({ ...input, listedCount: 100 });
+    expect(enough.visibleCount).toBe(35);
+    expect(enough.pages).toBe(requested);
   });
 });
 
@@ -390,6 +462,7 @@ const makeAtoms = Effect.fn(function* () {
   const shellState = Atom.make<AsyncResult.AsyncResult<EnvironmentShellState>>(
     AsyncResult.success(EMPTY_SHELL_STATE),
   );
+  const held = Atom.make<ReadonlyArray<OrchestrationV2ThreadShell>>([]);
   const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
     Effect.sync(() => registry.dispose()),
   );
@@ -397,10 +470,15 @@ const makeAtoms = Effect.fn(function* () {
     replies,
     requests,
     requestLog,
-    atoms: createOlderSettledThreadAtoms(runtime, () => shellState),
+    atoms: createOlderSettledThreadAtoms(
+      runtime,
+      () => shellState,
+      () => held,
+    ),
     registry,
     setShell: (state: Partial<EnvironmentShellState>) =>
       registry.set(shellState, AsyncResult.success({ ...EMPTY_SHELL_STATE, ...state })),
+    setHeld: (threads: ReadonlyArray<OrchestrationV2ThreadShell>) => registry.set(held, threads),
     // The first value that passes, from a subscription.
     until: <A>(atom: Atom.Atom<A>, done: (value: A) => boolean) =>
       AtomRegistry.toStream(registry, atom).pipe(
@@ -488,11 +566,110 @@ describe("createOlderSettledThreadAtoms", () => {
     }),
   );
 
+  it.effect("keeps a project readable when a held older thread moves into it", () =>
+    Effect.gen(function* () {
+      const { atoms, registry, setShell, setHeld } = yield* makeAtoms();
+      const scope = { environmentId, projectIds: [project] };
+      const shelf = atoms.shelfAtom([{ scope, pages: 0 }]);
+      registry.mount(shelf);
+      const snapshot = shellSnapshot({ sequence: 3, asOfSequence: 3, count: 1 });
+      const held = { ...row("held", { settledDay: 20 }), projectId: otherProject };
+      setHeld([held]);
+      setShell({
+        snapshot: Option.map(snapshot, (value) => ({ ...value, threads: [held] })),
+        generation: 1,
+      });
+      const moved = { ...held, projectId: project };
+      setHeld([moved]);
+      setShell({
+        snapshot: Option.map(snapshot, (value) => ({
+          ...value,
+          snapshotSequence: 4,
+          threads: [moved],
+        })),
+        generation: 1,
+      });
+
+      const environments = registry.get(shelf);
+      expect(settledShelfFrontier([...environments.values()])).toEqual({ settledAt: before });
+      expect(
+        planFilteredOlderSettledPress({
+          requested: new Map(),
+          environments,
+          shownCount: 0,
+          listedCount: 0,
+        }).pages,
+      ).toEqual(new Map([[environmentId, 1]]));
+    }),
+  );
+
+  it.effect("keeps Show more available after a failed count refresh", () =>
+    Effect.gen(function* () {
+      const { replies, requestLog, atoms, registry, setShell, setHeld } = yield* makeAtoms();
+      const scope = { environmentId, projectIds: [project] };
+      const shelf = atoms.shelfAtom([{ scope, pages: 0 }]);
+      registry.mount(shelf);
+      const snapshot = shellSnapshot({ sequence: 3, asOfSequence: 3, count: 1 });
+      setShell({ snapshot, generation: 1 });
+      const settled = row("backdated", { settledDay: 30 });
+      setHeld([settled]);
+      setShell({
+        snapshot: Option.map(snapshot, (value) => ({
+          ...value,
+          snapshotSequence: 4,
+          threads: [...value.threads, settled],
+        })),
+        generation: 1,
+      });
+      const failed = yield* Deferred.make<void>();
+      yield* Queue.offer(
+        replies,
+        Effect.fail(new OrchestrationV2GetShellSnapshotError({ message: "count failed" })).pipe(
+          Effect.ensuring(Deferred.succeed(failed, undefined)),
+        ),
+      );
+      yield* TestClock.adjust("500 millis");
+      expect((yield* Queue.take(requestLog)).input).toEqual({
+        before: { settledAt: before },
+        limit: 0,
+      });
+      yield* Deferred.await(failed);
+
+      const environments = registry.get(shelf);
+      expect(environments.get(environmentId)?.older?.counts.get(project)).toBe(1);
+      expect(settledShelfFrontier([...environments.values()])).toEqual({ settledAt: before });
+      expect(environments.get(environmentId)?.unloaded).toBe(0);
+      for (const filtered of [true, false]) {
+        expect(
+          settledFooterHiddenCount({
+            filtered,
+            hasMorePages: hasMoreOlderSettledPages(environments.get(environmentId)!.pages),
+            hiddenLoaded: 0,
+            displayCount: 0,
+          }),
+        ).toBeNull();
+      }
+      expect(
+        planFilteredOlderSettledPress({
+          requested: new Map(),
+          environments,
+          shownCount: 0,
+          listedCount: 0,
+        }).pages,
+      ).toEqual(new Map([[environmentId, 1]]));
+    }),
+  );
+
   it.effect("reads pages in order until a short one, and retries a failed page", () =>
     Effect.gen(function* () {
-      const { replies, requests, atoms, registry, setShell, until } = yield* makeAtoms();
+      const { replies, requests, atoms, registry, setShell, setHeld, until } = yield* makeAtoms();
       const scope = { environmentId, projectIds: null };
-      const snapshot = shellSnapshot({ sequence: 3, asOfSequence: 3, count: 30 });
+      const snapshot = shellSnapshot({
+        sequence: 3,
+        asOfSequence: 3,
+        count: 30,
+        folderCounts: [{ projectId: project, folder: "Autopilot", count: 10 }],
+      });
 
       // A cached shell holds no other environment back: nothing can load yet.
       setShell({ snapshot });
@@ -504,6 +681,34 @@ describe("createOlderSettledThreadAtoms", () => {
 
       setShell({ snapshot, generation: 1 });
       expect(registry.get(atoms.pagesAtom(scope, 0)).frontier).toEqual({ settledAt: before });
+      const shelf = atoms.shelfAtom([{ scope, pages: 2 }]);
+      const unmountShelf = registry.mount(shelf);
+      const otherShelves = atoms.shelvesAtom([
+        [{ scope: { ...scope, projectIds: [project], folder: "autopilot" }, pages: 0 }],
+        [{ scope: { ...scope, folder: null }, pages: 0 }],
+      ]);
+      const unmountOtherShelves = registry.mount(otherShelves);
+      const hidden = row("hidden-old", { settledDay: 45, folder: " AUTOPILOT" });
+      let heldRowVisits = 0;
+      setHeld([
+        {
+          ...hidden,
+          get lineage() {
+            heldRowVisits += 1;
+            return hidden.lineage;
+          },
+        },
+        row("unfiled-old", { settledDay: 44 }),
+        row("recent", { settledDay: 60, folder: "Autopilot" }),
+      ]);
+      expect(registry.get(shelf).get(environmentId)?.unloaded).toBe(28);
+      expect(
+        registry
+          .get(otherShelves)
+          .map((byEnvironment) => byEnvironment.get(environmentId)?.unloaded),
+      ).toEqual([9, 19]);
+      expect(heldRowVisits).toBe(1);
+      unmountOtherShelves();
       const full = Array.from({ length: 25 }, (_, index) =>
         row(`full-${String(index).padStart(2, "0")}`, { settledDay: 40 - index }),
       );
@@ -524,6 +729,9 @@ describe("createOlderSettledThreadAtoms", () => {
       const done = yield* until(twoPages, (pages) => pages.reads.length === 2);
       expect(done.frontier).toBeNull();
       expect(done.status).toBe("ready");
+      // Pages that reach the end leave nothing unloaded, whatever the counts say.
+      expect(registry.get(shelf).get(environmentId)?.unloaded).toBe(0);
+      unmountShelf();
       // The second page continues from the first page's last row.
       expect(requests).toEqual([
         { before: { settledAt: before }, limit: 25 },
@@ -582,7 +790,12 @@ describe("createOlderSettledThreadAtoms", () => {
 
       // A server that reads by folder gets the folder with each page read.
       setShell({
-        snapshot: shellSnapshot({ sequence: 4, asOfSequence: 4, count: 30, folderCounts: [] }),
+        snapshot: shellSnapshot({
+          sequence: 4,
+          asOfSequence: 4,
+          count: 30,
+          folderCounts: [{ projectId: project, folder: "Autopilot", count: 1 }],
+        }),
         generation: 2,
       });
       const filed = atoms.pagesAtom(folderScope, 1);
@@ -593,6 +806,32 @@ describe("createOlderSettledThreadAtoms", () => {
         { before: { settledAt: before }, limit: 25 },
         { before: { settledAt: before }, folder: "autopilot", limit: 25 },
       ]);
+    }),
+  );
+
+  it.effect("lists a live upsert in a scope empty at the cut without paging it", () =>
+    Effect.gen(function* () {
+      const { requests, atoms, registry, setShell, setHeld } = yield* makeAtoms();
+      const scope = { environmentId, projectIds: [otherProject] };
+      const shelf = atoms.shelfAtom([{ scope, pages: 0 }]);
+      registry.mount(shelf);
+      const snapshot = shellSnapshot({ sequence: 3, asOfSequence: 3, count: 1 });
+      setShell({ snapshot, generation: 1 });
+      const arrived = { ...row("unarchived", { settledDay: 30 }), projectId: otherProject };
+      setHeld([arrived]);
+      setShell({
+        snapshot: Option.map(snapshot, (value) => ({
+          ...value,
+          snapshotSequence: 4,
+          threads: [...value.threads, arrived],
+        })),
+        generation: 1,
+      });
+
+      const frontier = settledShelfFrontier([...registry.get(shelf).values()]);
+      expect(isListedSettledThread(arrived, frontier)).toBe(true);
+      expect(registry.get(atoms.pagesAtom(scope, 1)).frontier).toBeNull();
+      expect(requests).toEqual([]);
     }),
   );
 

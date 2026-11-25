@@ -113,6 +113,33 @@ export function describeMemoryShortage(shortage: MemoryShortage): string {
     : compressor;
 }
 
+// Reading memory starts processes on macOS, so a queue that waits on it takes a shortage as
+// standing for this long before it reads memory again, however often it looks.
+export const SHORTAGE_RECHECK_MS = 15_000;
+
+interface HeldShortage {
+  /** On the clock the reader was given. */
+  readonly readAtMs: number;
+  readonly shortage: MemoryShortage;
+}
+
+/**
+ * Reads `shortage` for a queue that looks often: a shortage it finds stands, unread, until
+ * `recheckMs` after it was read. Room is read again every time.
+ */
+export const holdShortage = (
+  shortage: Effect.Effect<MemoryShortage | null>,
+  recheckMs: number = SHORTAGE_RECHECK_MS,
+) => {
+  let held: HeldShortage | null = null;
+  return Effect.fnUntraced(function* (nowMs: number) {
+    if (held !== null && nowMs - held.readAtMs < recheckMs) return held;
+    const found = yield* shortage;
+    held = found === null ? null : { readAtMs: nowMs, shortage: found };
+    return held;
+  });
+};
+
 export class MemoryAdmission extends Context.Service<
   MemoryAdmission,
   {

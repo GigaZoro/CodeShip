@@ -42,7 +42,9 @@ import {
 import { t } from "@t3tools/shared/i18n";
 
 const RETRY_BASE_DELAY_MS = 1_000;
-const RETRY_MAX_DELAY_MS = 300_000;
+// Nothing tells a client that a host is back, so a machine that returns waits
+// up to this long for the client's next try.
+const RETRY_MAX_DELAY_MS = 30_000;
 const SESSION_LOSS_RETRY_DELAY_MS = 250;
 // Someone is approving this device on the host; check back soon rather than climbing the ladder.
 const APPROVAL_PENDING_RETRY_DELAY_MS = 4_000;

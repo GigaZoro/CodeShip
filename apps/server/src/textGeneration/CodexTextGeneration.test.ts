@@ -20,7 +20,10 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
+import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 
 import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
@@ -40,7 +43,18 @@ const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
 
 const layerCodexTextGenerationTest = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-codex-text-generation-test-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(
+  Layer.provideMerge(
+    // Production wraps the spawner the same way: on Windows a kill ends only the `.cmd` launcher.
+    Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        return endingWindowsTrees(spawner, yield* HostProcess.Platform, "leftBehind");
+      }),
+    ).pipe(Layer.provideMerge(NodeServices.layer)),
+  ),
+);
 
 interface FakeCodexInput {
   output: string;

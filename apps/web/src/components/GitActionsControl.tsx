@@ -115,7 +115,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsActionManager, vcsEnvironment, vcsStatusRevalidation } from "~/state/vcs";
 import { randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
-import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { useComposerDraftStore } from "~/composerDraftStore";
 import {
   THREAD_DETAILS_PANEL_CHEVRON_CLASS,
   THREAD_DETAILS_PANEL_ICON_CLASS,
@@ -139,7 +139,6 @@ import { useOpenLink } from "~/browser/useOpenLink";
 interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadRef: ScopedThreadRef | null;
-  draftId?: DraftId;
   compact?: boolean;
   showActions?: boolean;
   showChanges?: boolean;
@@ -920,7 +919,6 @@ export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
 export default function GitActionsControl({
   gitCwd,
   activeThreadRef,
-  draftId,
   compact = false,
   showActions = true,
   showChanges = true,
@@ -947,11 +945,7 @@ export default function GitActionsControl({
   const threadToastData = activeThreadRef ? { threadRef: activeThreadRef } : undefined;
   const activeServerThreadShell = useQuietThreadShell(activeThreadRef);
   const activeDraftThread = useComposerDraftStore((store) =>
-    draftId
-      ? store.getDraftSession(draftId)
-      : activeThreadRef
-        ? store.getDraftThreadByRef(activeThreadRef)
-        : null,
+    activeThreadRef ? store.getDraftThreadByRef(activeThreadRef) : null,
   );
   const activeServerThreadProjection = useQuietThreadProjection(
     activeDraftThread !== null && activeServerThreadShell === null ? null : activeThreadRef,
@@ -1005,7 +999,7 @@ export default function GitActionsControl({
       return;
     }
 
-    setDraftThreadContext(draftId ?? activeThreadRef, {
+    setDraftThreadContext(activeThreadRef, {
       branch,
       worktreePath: activeDraftThread.worktreePath,
       environmentSelection: manualSelection
@@ -1182,9 +1176,9 @@ export default function GitActionsControl({
     ? (quickAction.hint ?? t("This action is currently unavailable."))
     : null;
   const gitActionProgress = resolveGitActionProgressPresentation(vcsActionState);
-  // A fresh draft or a thread with no turns hides commit, push, and diff rows until there is work.
-  const quietEmptyDraft =
-    (draftId !== undefined || activeServerThreadShell?.latestRun === null) &&
+  // A thread with no turns hides commit, push, and diff rows until there is work.
+  const quietEmptyThread =
+    activeServerThreadShell?.latestRun === null &&
     gitActionProgress === null &&
     !gitStatusError &&
     quickAction.disabled &&
@@ -1531,7 +1525,7 @@ export default function GitActionsControl({
             {initAction.isPending ? t("Initializing...") : t("Initialize Git")}
           </span>
         </ThreadDetailsControl>
-      ) : quietEmptyDraft || (compact && !gitActionProgress && !visibleInlineSuccess) ? null : (
+      ) : quietEmptyThread || (compact && !gitActionProgress && !visibleInlineSuccess) ? null : (
         <>
           <div
             role="group"
@@ -1659,7 +1653,7 @@ export default function GitActionsControl({
         </>
       )}
 
-      {showChanges && isRepo && !quietEmptyDraft ? (
+      {showChanges && isRepo && !quietEmptyThread ? (
         <Tooltip>
           <TooltipTrigger
             render={

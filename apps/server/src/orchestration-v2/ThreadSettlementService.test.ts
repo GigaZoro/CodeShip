@@ -1,4 +1,4 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { GitCommandError, SourceControlProviderKind } from "@t3tools/contracts";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import {
@@ -66,7 +66,12 @@ function at(offsetMs: number): DateTime.Utc {
 type SettlementShell = OrchestrationV2ThreadShell &
   Pick<
     ProjectionStore.ProjectionSettlementCandidate,
-    "latestUserAuthoredMessageAt" | "parentWorktreePath" | "parentResultAt" | "parentDone"
+    | "latestUserAuthoredMessageAt"
+    | "startedByScheduledTask"
+    | "hasPendingScheduledWork"
+    | "parentWorktreePath"
+    | "parentResultAt"
+    | "parentDone"
   >;
 
 function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
@@ -107,6 +112,8 @@ function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
     latestRunCompletedAt: null,
     latestUserMessageAt: null,
     latestUserAuthoredMessageAt: overrides.latestUserMessageAt ?? null,
+    startedByScheduledTask: false,
+    hasPendingScheduledWork: false,
     parentWorktreePath: null,
     parentResultAt: null,
     parentDone: false,
@@ -241,6 +248,43 @@ describe("dropExpiredHolds", () => {
 });
 
 describe("resolveAutoSettlementAt", () => {
+  it("settles scheduled threads at completion only when the setting is on and work is clear", () => {
+    const thread = shell({
+      startedByScheduledTask: true,
+      status: "completed",
+      latestRunCompletedAt: at(-1),
+    });
+    const input = {
+      thread,
+      pullRequest: null,
+      nowMs: NOW_MS,
+      autoSettleAfterDays: null,
+      autoSettleOnMerge: false,
+      autoSettleScheduledThreads: true,
+    };
+    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-1));
+    expect(
+      ThreadSettlementService.resolveAutoSettlementAt({
+        ...input,
+        autoSettleScheduledThreads: false,
+      }),
+    ).toBeNull();
+    for (const changes of [
+      { startedByScheduledTask: false },
+      { status: "failed" as const },
+      { hasPendingScheduledWork: true },
+      { pinnedAt: at(-10) },
+      { pullRequests: [persistedLink("open", at(-10))] },
+    ]) {
+      expect(
+        ThreadSettlementService.resolveAutoSettlementAt({
+          ...input,
+          thread: { ...thread, ...changes },
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("keeps threads with a PR from inactivity settlement only when asked", () => {
     const input = {
       thread: shell({
@@ -416,7 +460,7 @@ describe("resolveAutoSettlementAt", () => {
         pullRequest: { state: "closed", closedAt: DateTime.formatIso(at(-1)) },
         autoSettleOnMerge: false,
       }),
-    ).toEqual(shell().createdAt);
+    ).toBeNull();
   });
 
   it("settles on merge after agent-started runs, but not after the user writes again", () => {
@@ -647,7 +691,11 @@ function makePullRequestSummary(input: {
   };
 }
 
-function makeBranchPullRequest(state: "open" | "closed" | "merged") {
+// The checkout's commits are all in a pull request whose head is WORKTREE_HEAD.
+const WORKTREE_HEAD = "worktree-head";
+const UNFETCHED_HEAD = "unfetched-head";
+
+function makeBranchPullRequest(state: "open" | "closed" | "merged", headSha = WORKTREE_HEAD) {
   return {
     number: 42,
     title: "Pull request",
@@ -659,6 +707,7 @@ function makeBranchPullRequest(state: "open" | "closed" | "merged") {
     updatedAt: NOW,
     closedAt: state === "closed" ? NOW : null,
     mergedAt: state === "merged" ? NOW : null,
+    headSha,
   } satisfies GitManager.GitBranchPullRequest;
 }
 
@@ -849,6 +898,17 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
         Effect.succeed(
           options.unmergedWork ?? { refName: null, changedFileCount: 0, unmergedCommitCount: 0 },
         ),
+      countUnmergedCommits: ({ baseRef }) =>
+        baseRef === UNFETCHED_HEAD
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "test.countUnmergedCommits",
+                command: "git",
+                cwd: "/worktrees/feature",
+                detail: "bad revision",
+              }),
+            )
+          : Effect.succeed(baseRef === WORKTREE_HEAD ? 0 : 1),
       localStatus: () =>
         Effect.succeed({
           isRepo: true,
@@ -1103,7 +1163,25 @@ describe("ThreadSettlementServiceV2 worker", () => {
           { name: "clean", work: undefined, pr: null, settles: true, opensPr: false },
           { name: "no pull request", work: unmerged, pr: null, settles: false, opensPr: true },
           { name: "pushed to open PR", work: pushed, pr: "open", settles: true, opensPr: false },
+          // Commits made after the pull request's head are in no pull request yet.
+          { name: "ahead of open PR", work: pushed, pr: "open", settles: false, opensPr: true },
+          { name: "unfetched open PR", work: pushed, pr: "open", settles: false, opensPr: true },
           { name: "closed PR", work: pushed, pr: "closed", settles: true, opensPr: false },
+          // Work made after the user closed the pull request stays in view without a new one.
+          {
+            name: "ahead of closed PR",
+            work: pushed,
+            pr: "closed",
+            settles: false,
+            opensPr: false,
+          },
+          {
+            name: "edited after closed PR",
+            work: unmerged,
+            pr: "closed",
+            settles: false,
+            opensPr: false,
+          },
           { name: "setting off", work: unmerged, pr: null, settles: false, opensPr: false },
           { name: "no remote", work: unmerged, pr: null, settles: false, opensPr: false },
           // A subagent whose parent is done settles with the parent and never publishes the work
@@ -1146,7 +1224,18 @@ describe("ThreadSettlementServiceV2 worker", () => {
             hasPrimaryRemote: testCase.name !== "no remote",
             unwrittenThreadIds: testCase.name === "nobody wrote" || subagent ? [threadId] : [],
             branchPullRequest: () =>
-              Effect.succeed(testCase.pr === null ? null : makeBranchPullRequest(testCase.pr)),
+              Effect.succeed(
+                testCase.pr === null
+                  ? null
+                  : makeBranchPullRequest(
+                      testCase.pr,
+                      testCase.name.startsWith("ahead of")
+                        ? "pull-request-head"
+                        : testCase.name === "unfetched open PR"
+                          ? UNFETCHED_HEAD
+                          : WORKTREE_HEAD,
+                    ),
+              ),
           });
           yield* Effect.gen(function* () {
             const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
@@ -1189,6 +1278,33 @@ describe("ThreadSettlementServiceV2 worker", () => {
         yield* startHarness(service, fixture.activation, fixture.snapshotReads);
         const commands = yield* Ref.get(fixture.commands);
         expect(commands.map((command) => command.threadId)).toEqual([thread.id]);
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect("settles a closed pull request only in the project whose merge rule is on", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(NOW));
+      const optedIn = makeThread("closed-opted-in", { branch: "feature" });
+      const optedOut = makeThread("closed-opted-out", {
+        branch: "feature",
+        projectId: ProjectId.make("other-project"),
+      });
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot([optedIn, optedOut]),
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          sidebarAutoSettleAfterDays: null,
+          sidebarAutoSettleOnMerge: false,
+          projectSettingsOverrides: { [PROJECT_ID]: { sidebarAutoSettleOnMerge: true } },
+        },
+        branchPullRequest: () => Effect.succeed(makeBranchPullRequest("closed")),
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+        yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+        const commands = yield* Ref.get(fixture.commands);
+        expect(commands.map((command) => command.threadId)).toEqual([optedIn.id]);
       }).pipe(Effect.provide(fixture.layer));
     }),
   );
@@ -2656,6 +2772,33 @@ describe("ThreadSettlementServiceV2 worker", () => {
                 rule: "server:settle-delivered-child",
               },
             ]);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+    );
+
+    it.effect("keeps a delivered own-worktree child active without any pull request work", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(nowMs);
+          const own = child("own-delivered", { worktreePath: "/worktrees/own" });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([own]),
+            // The user wrote in the thread and the setting is on, so only the delivery rule can stop it.
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: 3,
+              sidebarAutoSettleOpensPullRequests: true,
+            },
+            existingWorktreePaths: ["/worktrees/own"],
+            unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+            assert.deepStrictEqual(yield* Ref.get(fixture.branchCalls), []);
+            assert.deepStrictEqual(yield* Ref.get(fixture.stackedActions), []);
           }).pipe(Effect.provide(fixture.layer));
         }),
       ),

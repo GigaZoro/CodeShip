@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { nonBlankPath, parseCommandLine, positiveInteger } from "./lib/command-line.ts";
 
 import { vitePlusCommand } from "./check-changed-command.ts";
 
@@ -113,15 +114,42 @@ export function renderComparison(before: RenderMetrics, after: RenderMetrics, to
   return lines.join("\n");
 }
 
-function option(args: ReadonlyArray<string>, name: string): string | undefined {
-  const index = args.indexOf(name);
-  return index === -1 ? undefined : args[index + 1];
+export function parseRenderMetricsArguments(argv: ReadonlyArray<string>) {
+  const [command, ...args] = argv;
+  if (command === "run") {
+    const { values } = parseCommandLine({
+      args,
+      options: { out: { type: "string" }, runs: { type: "string", default: "3" } },
+    });
+    const out = values.out === undefined ? undefined : nonBlankPath(values.out, "--out");
+    return { command, out, runs: positiveInteger(values.runs, "--runs") } as const;
+  }
+  if (command === "compare") {
+    const { values, positionals } = parseCommandLine({
+      args,
+      allowPositionals: true,
+      options: { top: { type: "string", default: "10" } },
+    });
+    const [before, after, ...unread] = positionals;
+    if (before !== undefined && after !== undefined && unread.length === 0) {
+      return {
+        command,
+        before: nonBlankPath(before, "Before report"),
+        after: nonBlankPath(after, "After report"),
+        top: positiveInteger(values.top, "--top"),
+      } as const;
+    }
+  }
+  if (command === undefined || ((command === "--help" || command === "-h") && args.length === 0)) {
+    return { command: "help" } as const;
+  }
+  throw new Error(HELP);
 }
 
 if (import.meta.main) {
-  const [command, ...args] = process.argv.slice(2);
-  if (command === "run") {
-    const runs = Number(option(args, "--runs") ?? 3);
+  const options = parseRenderMetricsArguments(process.argv.slice(2));
+  if (options.command === "run") {
+    const { runs, out } = options;
     const results = Array.from({ length: runs }, runOnce);
     const unstable = nondeterministic(results);
     if (unstable.length) {
@@ -142,18 +170,14 @@ if (import.meta.main) {
       process.exitCode = 1;
     } else {
       const json = JSON.stringify(results[0], null, 2);
-      const out = option(args, "--out");
       if (out) NodeFS.writeFileSync(out, json + "\n");
       else console.log(json);
       console.error(`${runs} run(s) produced identical counts.`);
     }
-  } else if (command === "compare" && args[0] && args[1]) {
+  } else if (options.command === "compare") {
     const read = (path: string) => JSON.parse(NodeFS.readFileSync(path, "utf8")) as RenderMetrics;
-    console.log(
-      renderComparison(read(args[0]), read(args[1]), Number(option(args, "--top") ?? 10)),
-    );
+    console.log(renderComparison(read(options.before), read(options.after), options.top));
   } else {
     console.log(HELP);
-    if (command !== "--help" && command !== "-h" && command !== undefined) process.exitCode = 1;
   }
 }

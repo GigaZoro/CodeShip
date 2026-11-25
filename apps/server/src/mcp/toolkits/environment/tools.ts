@@ -34,6 +34,9 @@ const PreferenceFields = {
   providerUpdates: Schema.Union([ProviderUpdatesChoice, Schema.Literal("custom")]),
   usageLimitRecovery: Schema.Union([UsageLimitRecoveryChoice, Schema.Literal("custom")]),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
+  // Older linked machines omit these preferences from their responses.
+  redeemUsageResets: ServerSettingsPatch.fields.redeemUsageResets,
+  maxPlanResetWaitHours: ServerSettingsPatch.fields.maxPlanResetWaitHours,
   backgroundActivity: Schema.Struct({ profile: BackgroundActivityProfileSelection }),
   sourceControlWritingStyle: Schema.Struct({
     mode: Schema.String,
@@ -86,7 +89,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    'Update server preferences/model defaults, also on full-access linked machines. Live full-access/default callers only. Omitted fields stay; null clears a role; customInstructions: \'\' clears it. providerUpdates: off/notify/automatic; overrides enableProviderUpdateChecks. Checks off disables automatic updates; automatic enables checks. installUpdatesAutomatically: install releases when idle; minHoursBetweenAutomaticUpdates: least hours between them. usageLimitRecovery: off/resume/switch-and-resume; snoozeLimitedThreads hides independently. Legacy snooze hides with recovery off. Switching is opt-in; some providers forbid extra accounts to bypass limits. allMachines: true shares the change with machines that follow shared settings, even if off now. providerAccounts {accountId: {field: value}} sets only config fields t3_environment_read lists for that account, checked like its settings form; Claude autoCompactWindow is a string from "100000" to "1000000", "" for the default. An added account\'s change reaches machines that follow shared settings (sharedWithMachines); allMachines also shares a value already set here, and refuses built-in accounts, whose fields stay on each machine.',
+    'Update server preferences/model defaults, also on full-access linked machines. Live full-access/default callers only. Omitted fields stay; null clears a role; customInstructions: \'\' clears it. providerUpdates: off/notify/automatic; overrides enableProviderUpdateChecks. Checks off disables automatic updates; automatic enables checks. installUpdatesAutomatically: install releases when idle; minHoursBetweenAutomaticUpdates: least hours between them. usageLimitRecovery: off/resume/switch-and-resume; snoozeLimitedThreads hides independently. Legacy snooze hides with recovery off. Switching is opt-in; some providers forbid extra accounts to bypass limits. Set redeemUsageResets for banked resets and maxPlanResetWaitHours for the plan reset wait limit. allMachines: true shares the change with machines that follow shared settings, even if off now. providerAccounts {accountId: {field: value}} sets only config fields t3_environment_read lists for that account, checked like its settings form; Claude autoCompactWindow is a string from "100000" to "1000000", "" for the default. An added account\'s change reaches machines that follow shared settings (sharedWithMachines); allMachines also shares a value already set here, and refuses built-in accounts, whose fields stay on each machine.',
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     defaultModelSelection: ServerSettingsPatch.fields.defaultModelSelection,
@@ -103,6 +106,8 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
       Schema.Union([UsageLimitRecoveryChoice, Schema.Literal("snooze")]),
     ),
     snoozeLimitedThreads: ServerSettingsPatch.fields.snoozeLimitedThreads,
+    redeemUsageResets: ServerSettingsPatch.fields.redeemUsageResets,
+    maxPlanResetWaitHours: ServerSettingsPatch.fields.maxPlanResetWaitHours,
     backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
     sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
     providerAccounts: Schema.optionalKey(

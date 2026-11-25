@@ -194,10 +194,10 @@ export default defineConfig({
   },
   staged: {
     // In order, so lint reads the formatted file. CI lint failures cost a full round trip.
+    // Each command gets only the staged files. A whole-repo check such as knip belongs in
+    // check:changed, which the landing runs within the memory budget it shares across worktrees
+    // (scripts/pre-commit.test.ts).
     "*": ["vp fmt --no-error-on-unmatched-pattern", "vp lint --no-error-on-unmatched-pattern"],
-    // knip checks the whole repo, so it takes no file list. Any code or manifest change can leave
-    // a file, export, or dependency unused.
-    "{*.{js,jsx,ts,tsx,mjs,cjs,mts,cts},package.json,knip.jsonc}": () => "vp run knip:check",
   },
   fmt: {
     ignorePatterns: [
@@ -688,6 +688,16 @@ export default defineConfig({
         // Directives hide bailouts from mobile's compiler-coverage check; retain hooks until its allowlist is empty.
         files: ["apps/mobile/src/**/*.{ts,tsx}"],
         rules: { "t3code/no-manual-memo": ["error", { allowMemoHooks: true }] },
+      },
+      {
+        // Unlocalized formatting follows the runtime default, which desktop pins to en-US.
+        files: [
+          "apps/web/src/**",
+          "apps/mobile/src/**",
+          "apps/desktop/src/**",
+          "packages/client-runtime/src/**",
+        ],
+        rules: { "t3code/require-formatting-locale": "error" },
       },
       {
         files: ["apps/web/src/**", "apps/mobile/src/**", "packages/*/src/**"],

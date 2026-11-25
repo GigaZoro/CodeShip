@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -16,7 +17,6 @@ import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
@@ -610,6 +610,35 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.prepareCount)).toBe(2);
     }),
+  );
+
+  it.effect("retries a machine that stays unreachable at least every 30 seconds", () =>
+    Effect.gen(function* () {
+      const failures = 12;
+      const harness = yield* makeHarness({
+        prepare: (attempt) =>
+          attempt <= failures ? Effect.fail(transient()) : Effect.succeed(PREPARED_CONNECTION),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      // Advance one deadline at a time so each backoff state is observed; a longer
+      // jump would run several tries at once.
+      for (let attempt = 1; attempt <= failures; attempt += 1) {
+        const waiting = yield* awaitState(
+          supervisor.state,
+          (state) => state.phase === "backoff" && state.attempt === attempt,
+        );
+        const waitMs =
+          (waiting.retryAt ?? Number.POSITIVE_INFINITY) - (yield* Clock.currentTimeMillis);
+        expect(waitMs).toBeLessThanOrEqual(30_000);
+        yield* TestClock.adjust(waitMs);
+      }
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      expect(yield* Ref.get(harness.prepareCount)).toBe(failures + 1);
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("keeps blocked failures idle until an external signal requests another attempt", () =>

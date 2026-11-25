@@ -2,11 +2,15 @@ import { t, tn } from "~/i18n";
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import {
   deriveLatestThreadRun,
+  deriveThreadActivityRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  deriveBlockedOnThreadWait,
+  derivePendingBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
@@ -15,7 +19,11 @@ import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
 import { getProviderModelCapabilities } from "../providerModels";
 import { sanitizeThreadErrorMessage } from "@t3tools/client-runtime/errors";
-import type { EnvironmentThread, ThreadStructure } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentThread,
+  PendingSubagentRequest,
+  ThreadStructure,
+} from "@t3tools/client-runtime/state/shell";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -170,7 +178,13 @@ interface ProactivePanelObservation {
 
 export function observeProactivePanelUserChoice(
   previous: ProactivePanelObservation | null,
-  input: { threadKey: string; runningTurnId: RunId | null; userActionRevision: number },
+  input: {
+    threadKey: string;
+    runningTurnId: RunId | null;
+    userActionRevision: number;
+    /** The thread entered the main view because a panel action in it selected a surface. */
+    revealedBySelection?: boolean;
+  },
 ): ProactivePanelObservation {
   const sameThread = previous?.threadKey === input.threadKey;
   const newTurn =
@@ -180,8 +194,12 @@ export function observeProactivePanelUserChoice(
     runningTurnId: sameThread ? previous.runningTurnId : undefined,
     targetKey: sameThread ? previous.targetKey : undefined,
     userActionTurnId: input.runningTurnId ?? (sameThread ? previous.userActionTurnId : null),
-    userActionRevision:
-      !sameThread || newTurn ? input.userActionRevision : previous.userActionRevision,
+    // The selection that revealed the thread is the user's choice, which a first-entry offer must not undo.
+    userActionRevision: !sameThread
+      ? input.userActionRevision - (input.revealedBySelection ? 1 : 0)
+      : newTurn
+        ? input.userActionRevision
+        : previous.userActionRevision,
   };
 }
 
@@ -1377,7 +1395,8 @@ export function sendTitleFallbackLabels(snapshot: ComposerSendSnapshot) {
 
 /**
  * A thread shell built from its loaded detail, for direct links that hydrate the detail first.
- * `updatedAt` and `lastVisitedAt` are passed live: the thread structure leaves them out.
+ * `updatedAt`, `lastVisitedAt` and the subagent request rolled up from the children's shells are
+ * passed live: the thread structure leaves them out.
  */
 export function presentThreadShellFromProjection(
   environmentId: EnvironmentId,
@@ -1386,43 +1405,58 @@ export function presentThreadShellFromProjection(
   live: {
     readonly updatedAt: ThreadProjection["updatedAt"];
     readonly lastVisitedAt: ThreadProjection["thread"]["lastVisitedAt"];
+    readonly pendingSubagentRequest: PendingSubagentRequest | null;
   },
 ) {
   const { updatedAt, lastVisitedAt } = live;
   const latestRun = deriveLatestThreadRun(projection);
+  const activityRun = deriveThreadActivityRun(projection);
+  const runSelection = (runId: RunId | undefined) =>
+    projection.runs.find((run) => run.id === runId)?.modelSelection ?? null;
   const runtime = deriveThreadRuntime({ ...projection, updatedAt });
   const pendingRuntimeRequest =
     projection.runtimeRequests.findLast((request) => request.status === "pending") ?? null;
   // Direct links can hydrate detail before the thread enters the shell index.
   return {
-    ...presentThreadShell(environmentId, {
-      ...projection.thread,
-      lastVisitedAt,
-      latestRunId: latestRun?.runId ?? null,
-      activeRunId: runtime?.activeRunId ?? null,
-      status: runtime?.status ?? "idle",
-      pendingRuntimeRequest,
-      latestVisibleMessage: null,
-      latestUserMessageAt:
-        projection.messages.findLast((message) => message.role === "user")?.updatedAt ?? null,
-      hasActionableProposedPlan: projection.plans.some(
-        (plan) => plan.kind === "proposed_plan" && plan.status === "active",
-      ),
-      providerInstanceHistory: [
-        ...new Set(
-          projection.providerThreads
-            .filter((thread) => thread.appThreadId === threadId && thread.ownerNodeId === null)
-            .map((thread) => thread.providerInstanceId),
+    ...presentThreadShell(
+      environmentId,
+      {
+        ...projection.thread,
+        lastVisitedAt,
+        latestRunId: latestRun?.runId ?? null,
+        activeRunId: runtime?.activeRunId ?? null,
+        status: runtime?.status ?? "idle",
+        latestRunModelSelection: runSelection(latestRun?.runId),
+        activityRunModelSelection: runSelection(activityRun?.runId),
+        blockedOnThreadWait: deriveBlockedOnThreadWait({
+          activeRun: projection.runs.find((run) => run.id === runtime?.activeRunId) ?? null,
+          turnItems: projection.turnItems,
+        }),
+        pendingBackgroundTasks: deriveThreadPendingBackgroundTasks(projection),
+        pendingRuntimeRequest,
+        latestVisibleMessage: null,
+        latestUserMessageAt:
+          projection.messages.findLast((message) => message.role === "user")?.updatedAt ?? null,
+        hasActionableProposedPlan: projection.plans.some(
+          (plan) => plan.kind === "proposed_plan" && plan.status === "active",
         ),
-      ],
-      goal:
-        projection.providerThreads.find(
-          (thread) => thread.id === projection.thread.activeProviderThreadId,
-        )?.goal ?? null,
-      itemCount: projection.turnItems.length,
-      visibleItemCount: projection.visibleTurnItems.length,
-      updatedAt,
-    }),
+        providerInstanceHistory: [
+          ...new Set(
+            projection.providerThreads
+              .filter((thread) => thread.appThreadId === threadId && thread.ownerNodeId === null)
+              .map((thread) => thread.providerInstanceId),
+          ),
+        ],
+        goal:
+          projection.providerThreads.find(
+            (thread) => thread.id === projection.thread.activeProviderThreadId,
+          )?.goal ?? null,
+        itemCount: projection.turnItems.length,
+        visibleItemCount: projection.visibleTurnItems.length,
+        updatedAt,
+      },
+      live.pendingSubagentRequest,
+    ),
     latestRun,
     runtime,
   };

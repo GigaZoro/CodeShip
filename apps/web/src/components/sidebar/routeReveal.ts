@@ -11,6 +11,8 @@ import { filterSidebarV2VisibleThreads } from "../Sidebar.logic";
 export interface SidebarRouteReveal {
   observedKey: string | null;
   pendingKey: string | null;
+  // The route key whose reveal already widened the scope; a pick the user makes later stands.
+  widenedKey: string | null;
 }
 
 export function pendingSidebarRouteReveal(
@@ -21,8 +23,13 @@ export function pendingSidebarRouteReveal(
   if (reveal.observedKey !== routeKey) {
     reveal.observedKey = routeKey;
     reveal.pendingKey = routeKey;
+    reveal.widenedKey = null;
   }
   return reveal.pendingKey;
+}
+
+export function markSidebarRouteRevealWidened(reveal: SidebarRouteReveal): void {
+  reveal.widenedKey = reveal.observedKey;
 }
 
 export function completeSidebarRouteReveal(reveal: SidebarRouteReveal): void {
@@ -72,14 +79,29 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly findThread: (key: string) => T | undefined;
+  readonly listsThread: (thread: T) => boolean;
 }): { readonly pendingKey: string | null; readonly widensScope: boolean } {
-  const { reveal, routeKey, isSearching, scopedProjectKeys, delegatedUnderParent, findThread } =
-    input;
+  const {
+    reveal,
+    routeKey,
+    isSearching,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    findThread,
+    listsThread,
+  } = input;
   const pendingKey = pendingSidebarRouteReveal(reveal, routeKey);
   // Search results replace the thread list; the reveal waits for it to return.
   const thread = pendingKey === null || isSearching ? undefined : findThread(pendingKey);
+  if (thread !== undefined && !listsThread(thread)) {
+    // Widening could never show the row now, and a scope picked later stands; the row still
+    // scrolls if it mounts later, e.g. once an approval resolves elsewhere.
+    markSidebarRouteRevealWidened(reveal);
+    return { pendingKey, widensScope: false };
+  }
   const widensScope =
     thread !== undefined &&
+    reveal.widenedKey !== reveal.observedKey &&
     scopedProjectKeys !== null &&
     filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent).length === 0 &&
     filterSidebarV2VisibleThreads([thread], null, delegatedUnderParent).length === 1;

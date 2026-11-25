@@ -5,6 +5,7 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   type ChatWidth,
   type EffortDisplay,
+  type InterfaceDensity,
   type EnvironmentIdentificationMode,
   MAX_APPEARANCE_CONTRAST,
   MAX_GLASS_OPACITY,
@@ -38,6 +39,7 @@ import {
 import { searchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
+import { AccentColorPicker } from "./AccentColorPicker";
 import { TypographySection } from "./TypographySettings";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, Message> = {
@@ -80,6 +82,11 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, Message> = {
   comfortable: msg("Comfortable"),
   wide: msg("Wide"),
   full: msg("Full"),
+};
+
+const INTERFACE_DENSITY_LABELS: Record<InterfaceDensity, Message> = {
+  comfortable: msg("Comfortable"),
+  compact: msg("Compact spacing"),
 };
 
 const EFFORT_DISPLAY_LABELS: Record<EffortDisplay, Message> = {
@@ -343,6 +350,67 @@ export function AppearanceSettingsPanel() {
                 </SelectPopup>
               </Select>
             </div>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("interface-density")}
+          description={t("Tighten spacing in the sidebar, the conversation, and settings.")}
+          resetAction={
+            settings.interfaceDensity !== DEFAULT_UNIFIED_SETTINGS.interfaceDensity ? (
+              <SettingResetButton
+                label={t("interface density")}
+                onClick={() =>
+                  updateSettings({ interfaceDensity: DEFAULT_UNIFIED_SETTINGS.interfaceDensity })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="w-full sm:w-40">
+              <Select
+                value={settings.interfaceDensity}
+                onValueChange={(value) => {
+                  if (value === "comfortable" || value === "compact")
+                    updateSettings({ interfaceDensity: value });
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-full min-w-0"
+                  aria-label={t("Interface density")}
+                >
+                  <SelectValue>
+                    {t(INTERFACE_DENSITY_LABELS[settings.interfaceDensity])}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem value="comfortable">{t("Comfortable (default)")}</SelectItem>
+                  <SelectItem value="compact">{t("Compact spacing")}</SelectItem>
+                </SelectPopup>
+              </Select>
+            </div>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("accent-color")}
+          description={t(
+            "Color buttons, selections, and focus rings. Theme keeps the theme's own.",
+          )}
+          resetAction={
+            settings.accentColor !== DEFAULT_UNIFIED_SETTINGS.accentColor ? (
+              <SettingResetButton
+                label={t("accent color")}
+                onClick={() =>
+                  updateSettings({ accentColor: DEFAULT_UNIFIED_SETTINGS.accentColor })
+                }
+              />
+            ) : null
+          }
+          control={
+            <AccentColorPicker
+              value={settings.accentColor}
+              onValueChange={(accentColor) => updateSettings({ accentColor })}
+            />
           }
         />
         <SettingsRow

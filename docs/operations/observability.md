@@ -51,6 +51,18 @@ server starts: production and explicitly configured homes use
 `<worktree>/.t3/userdata/logs/server.trace.ndjson`, and an implicit dev run outside a linked
 worktree uses `~/.t3/dev/logs/server.trace.ndjson`.
 
+For a provider sign-in incident, read `provider-auth.trace.ndjson` in the environment's logs
+directory, including its `.2` and `.1` backups in oldest-first order. Only server-side
+credential operations advance this history. Ordinary trace traffic can rotate out of
+`server.trace.ndjson` while the sign-in evidence remains on disk. The current file and two
+backups are each limited to 1 MiB.
+
+Use `instanceId`, the start and end timestamps, and the span outcome to reconstruct the
+sequence. A successful `ProviderAuthService.start` means the sign-in flow opened. A successful
+`providerAuthFlow.persistCredentials` records a completed save. A `ProviderAuthService.stopSessions`
+span records the number of released sessions in `releasedSessions`. For counts and durations
+in the existing CLI, set `T3CODE_TRACE_FILE` to the provider-auth file and run `t3 trace summary`.
+
 Important fields common to both record types:
 
 - `type`: `effect-span` or `otlp-span`

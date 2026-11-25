@@ -17,6 +17,7 @@ import {
 } from "../../../lib/androidNavigationStyle";
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import type { AccentColor, InterfaceDensity } from "@t3tools/contracts/settings";
 import { normalizeLanguagePreference, type LanguagePreference } from "@t3tools/shared/i18n";
 import { Atom, AsyncResult } from "effect/reactivity";
 
@@ -36,6 +37,7 @@ import {
   readSystemColorPalettes,
   type MaterialYouPalettes,
 } from "../../../lib/materialYouPalette";
+import { applyAccentToMobileThemeVariables } from "../../../lib/mobileAccent";
 import { materialYouPaletteToMobileThemeVariables } from "../../../lib/materialYouTheme";
 import { getMobileThemeRuntimeVariables } from "../../../lib/mobileThemeVariables";
 import type { MobileThemeVariables } from "../../../lib/mobileTheme";
@@ -87,6 +89,10 @@ interface AppearancePreferencesContextValue {
   readonly setCodeWordBreak: (value: boolean) => void;
   readonly mathRenderingEnabled: boolean;
   readonly setMathRenderingEnabled: (value: boolean) => void;
+  readonly interfaceDensity: InterfaceDensity;
+  readonly setInterfaceDensity: (value: InterfaceDensity) => void;
+  readonly accentColor: AccentColor;
+  readonly setAccentColor: (value: AccentColor) => void;
 }
 
 const AppearancePreferencesContext = createContext<AppearancePreferencesContextValue | null>(null);
@@ -123,12 +129,17 @@ const systemColorPalettesAtom = Atom.make((get): MaterialYouPalettes | null => {
 function resolveThemeVariablesByAppearance(
   themeIds: MobileThemeIds,
   palettes: MaterialYouPalettes | null,
+  accentColor: AccentColor,
 ): Readonly<Record<MobileThemeAppearance, MobileThemeVariables>> {
   const resolve = (appearance: MobileThemeAppearance) => {
     const base = getMobileThemeRuntimeVariables(themeIds[appearance], appearance, Platform.OS);
-    return themeIds[appearance] === "material-you" && palettes
-      ? materialYouPaletteToMobileThemeVariables(palettes[appearance], appearance, base)
-      : base;
+    return applyAccentToMobileThemeVariables(
+      themeIds[appearance] === "material-you" && palettes
+        ? materialYouPaletteToMobileThemeVariables(palettes[appearance], appearance, base)
+        : base,
+      accentColor,
+      appearance,
+    );
   };
   return { light: resolve("light"), dark: resolve("dark") };
 }
@@ -230,9 +241,12 @@ export function AppearancePreferencesProvider(props: {
   const themeId = themeIds[themeAppearance];
   const systemColorsActive = themeId === "material-you" && isSystemColorsAvailable;
   const systemColorPalettes = useAtomValue(systemColorPalettesAtom);
+  const accentColor = storedPreferences?.accentColor ?? "theme";
+  const interfaceDensity = storedPreferences?.interfaceDensity ?? "comfortable";
   const themeVariablesByAppearance = resolveThemeVariablesByAppearance(
     themeIds,
     systemColorPalettes,
+    accentColor,
   );
   const themeVariables = themeVariablesByAppearance[themeAppearance];
   const activeThemeName = getMobileUniwindThemeName(themeId, themeAppearance);
@@ -341,6 +355,10 @@ export function AppearancePreferencesProvider(props: {
   const setMathRenderingEnabled = (value: boolean) =>
     updatePreferences({ mathRenderingEnabled: value });
 
+  const setInterfaceDensity = (value: InterfaceDensity) =>
+    updatePreferences({ interfaceDensity: value });
+  const setAccentColor = (value: AccentColor) => updateThemePreferences({ accentColor: value });
+
   const value = useMemo(
     (): AppearancePreferencesContextValue => ({
       appearance,
@@ -368,6 +386,10 @@ export function AppearancePreferencesProvider(props: {
       setCodeWordBreak,
       mathRenderingEnabled,
       setMathRenderingEnabled,
+      interfaceDensity,
+      setInterfaceDensity,
+      accentColor,
+      setAccentColor,
     }),
     [
       appearance,
@@ -394,6 +416,10 @@ export function AppearancePreferencesProvider(props: {
       setCodeWordBreak,
       mathRenderingEnabled,
       setMathRenderingEnabled,
+      interfaceDensity,
+      setInterfaceDensity,
+      accentColor,
+      setAccentColor,
     ],
   );
 

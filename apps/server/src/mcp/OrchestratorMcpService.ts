@@ -163,11 +163,16 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import {
+  advertisedSlug,
+  findAdvertisedModel,
   interactionModeRank,
+  overrideOptions,
+  requireOfferedOptions,
   resolveInteractionMode,
   resolveRuntimeMode,
   runtimeModeRank,
   taskPrompt,
+  withoutUnrunnableInherited,
 } from "./delegatedTaskModes.ts";
 import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
@@ -411,8 +416,12 @@ function scheduledTaskSummary(
   return {
     modelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel ?? false,
+    ...(task.fallbackModelSelections === undefined
+      ? {}
+      : { fallbackModelSelections: task.fallbackModelSelections }),
     scheduledTaskId: task.id,
     title: task.title,
+    ...(task.description == null ? {} : { description: task.description }),
     ...(includePrompt ? { prompt: task.prompt } : {}),
     ...(task.promptFile == null ? {} : { promptFile: task.promptFile }),
     promptPreview: promptPreview(task.prompt),
@@ -576,14 +585,7 @@ function capabilityModelOption(descriptor: ProviderOptionDescriptor): Orchestrat
   };
 }
 
-/** Yields the model a slug or alias names; a provider that lists no models accepts any slug. */
-const findAdvertisedModel = (provider: ServerProvider, model: string) =>
-  provider.models.find((candidate) => candidate.slug === model) ??
-  provider.models.find((candidate) =>
-    candidate.aliases?.some((alias) => alias.toLowerCase() === model.toLowerCase()),
-  );
-
-export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
+const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
   const advertised = findAdvertisedModel(provider, model);
   return provider.models.length > 0 && advertised === undefined
     ? Effect.fail(
@@ -621,6 +623,7 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     input: {
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
+      readonly allowFailover?: boolean;
     },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
@@ -644,73 +647,82 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
  */
 export const requireMemoryForDelegation = Effect.fn(
   "OrchestratorMcpService.requireMemoryForDelegation",
-)(function* (admission: MemoryAdmission.MemoryAdmission["Service"]) {
+)(function* (
+  admission: MemoryAdmission.MemoryAdmission["Service"],
+  peers?: PeerLinks.PeerLinks["Service"],
+) {
   const shortage = yield* admission.shortage;
   if (shortage === null) return;
+  // Heavy work left inline stays on the machine that is out of memory, so name a linked one with room.
+  const linked =
+    peers === undefined
+      ? []
+      : yield* peers.list.pipe(
+          Effect.map((links) =>
+            links.filter((link) => link.status === "reachable" && link.access === "full-access"),
+          ),
+          Effect.orElseSucceed(() => []),
+        );
+  const advice =
+    linked.length > 0
+      ? `Delegate it to a linked machine instead (${linked
+          .map((link) => `${link.label}, environmentId ${link.environmentId}`)
+          .join(
+            "; ",
+          )}): pass target.environmentId, no isolation, on a pushed branch. Another delegation here is refused the same way until memory frees up.`
+      : "Do the work inline in this thread instead; another delegation is refused the same way until memory frees up.";
   return yield* failure(
     "memory_short",
-    `Memory is short on the machine that would run the task: ${MemoryAdmission.describeMemoryShortage(shortage)}. The task was not started. Do the work inline in this thread instead; another delegation is refused the same way until memory frees up.`,
+    `Memory is short on the machine that would run the task: ${MemoryAdmission.describeMemoryShortage(shortage)}. The task was not started. ${advice}`,
   );
 });
 
-/** t3_thread_launch keeps a selection as given, so it can hold options its model does not have. */
+/**
+ * Inherited options as the model runs them, keeping the first of each id it offers by id and value:
+ * a parent's selection, here or on a linked machine, can hold options this model or account lacks.
+ */
 function knownOptions(
   options: ReadonlyArray<ProviderOptionSelection> | undefined,
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
 ): ReadonlyArray<ProviderOptionSelection> | undefined {
-  if (options === undefined || descriptors === undefined) return options;
-  return options.filter((option) => descriptors.some((descriptor) => descriptor.id === option.id));
+  if (options === undefined) return undefined;
+  return withoutUnrunnableInherited(
+    withLegacyUltracodeEffort(descriptors ?? [], options) ?? options,
+    descriptors,
+  );
 }
 
-/** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
-function invalidOptionSelections(
-  selections: ReadonlyArray<ProviderOptionSelection>,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-): ReadonlyArray<string> {
-  const problems: Array<string> = [];
-  const seen = new Set<string>();
-  for (const selection of selections) {
-    if (seen.has(selection.id)) {
-      problems.push(`Option ${selection.id} was specified more than once.`);
-      continue;
-    }
-    seen.add(selection.id);
-    if (descriptors === undefined) continue;
-    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
-    if (descriptor === undefined) {
-      const known = descriptors.map((candidate) => candidate.id).join(", ");
-      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
-      continue;
-    }
-    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
-      problems.push(`Option ${selection.id} expects a boolean value.`);
-      continue;
-    }
-    if (
-      descriptor.type === "select" &&
-      !descriptor.options.some((choice) => choice.id === selection.value)
-    ) {
-      const choices = descriptor.options.map((choice) => choice.id).join(", ");
-      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
-    }
-  }
-  return problems;
-}
-
+/** The selection as its model runs it, with its options checked as requireOfferedOptions does. */
 const requireModelSelection = Effect.fn("OrchestratorMcpService.requireModelSelection")(function* (
   provider: ServerProvider,
   selection: ModelSelection,
+  inheritedIds?: ReadonlySet<string>,
 ) {
   const model = yield* requireAdvertisedModel(provider, selection.model);
-  const invalid = invalidOptionSelections(
-    selection.options ?? [],
+  const options = yield* requireOfferedOptions(
+    selection,
     model?.capabilities?.optionDescriptors,
+    inheritedIds,
   );
-  if (invalid.length > 0)
-    return yield* failure(
-      "invalid_request",
-      `Model ${selection.model} on provider ${provider.instanceId} rejected options: ${invalid.join(" ")}`,
-    );
+  const { options: _named, ...rest } = selection;
+  return options === undefined ? rest : { ...rest, options };
+});
+
+/**
+ * requireModelSelection where the selection's provider is registered here. One this environment
+ * does not have, such as a fallback for another machine, is that machine's to check.
+ */
+export const requireRegisteredModelSelection = Effect.fn(
+  "OrchestratorMcpService.requireRegisteredModelSelection",
+)(function* (
+  providers: ReadonlyArray<ServerProvider>,
+  selection: ModelSelection,
+  inheritedIds?: ReadonlySet<string>,
+) {
+  const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+  return provider === undefined
+    ? selection
+    : yield* requireModelSelection(provider, selection, inheritedIds);
 });
 
 const requireVerifiedModelSelection = Effect.fn(
@@ -1892,8 +1904,6 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
-    /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
-    readonly skipProjectEnablementFilter?: boolean;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
@@ -1924,12 +1934,10 @@ const make = Effect.gen(function* () {
         ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
       ];
       for (const candidate of orderedCandidates) {
-        const enabledForProject =
-          input.skipProjectEnablementFilter === true ||
-          (yield* threadManagement.isProviderInstanceEnabledForProject({
-            projectId: input.parent.thread.projectId,
-            instanceId: candidate.instanceId,
-          }));
+        const enabledForProject = yield* threadManagement.isProviderInstanceEnabledForProject({
+          projectId: input.parent.thread.projectId,
+          instanceId: candidate.instanceId,
+        });
         if (enabledForProject) {
           instanceId = candidate.instanceId;
           break;
@@ -1949,11 +1957,7 @@ const make = Effect.gen(function* () {
         (instanceId === inherited.instanceId
           ? inherited.model
           : candidates.find((provider) => provider.instanceId === instanceId)?.models[0]?.slug);
-      if (
-        input.skipProjectEnablementFilter !== true &&
-        driverModel !== undefined &&
-        Option.isSome(accountRouting)
-      ) {
+      if (driverModel !== undefined && Option.isSome(accountRouting)) {
         const parentCanRun =
           instanceId === inherited.instanceId &&
           inheritedCandidate !== undefined &&
@@ -2033,49 +2037,29 @@ const make = Effect.gen(function* () {
       );
     }
     const slug =
-      requestedModel === undefined
-        ? model
-        : ((yield* requireAdvertisedModel(provider, requestedModel))?.slug ?? model);
+      (requestedModel === undefined
+        ? findAdvertisedModel(provider, model)
+        : yield* requireAdvertisedModel(provider, requestedModel)
+      )?.slug ?? model;
 
-    const advertised = findAdvertisedModel(provider, model);
     const descriptors = provider.models.find((candidate) => candidate.slug === slug)?.capabilities
       ?.optionDescriptors;
     const requestedOptions =
       input.target?.options === undefined
         ? undefined
-        : (withLegacyUltracodeEffort(descriptors ?? [], input.target.options) ?? []);
-    if (requestedOptions !== undefined) {
-      const invalid = invalidOptionSelections(requestedOptions, descriptors);
-      if (invalid.length > 0) {
-        return yield* failure(
-          "invalid_request",
-          `Model ${model} on provider ${instanceId} rejected options: ${invalid.join(" ")}`,
-        );
-      }
-    }
+        : ((yield* requireOfferedOptions(
+            { instanceId, model, options: input.target.options },
+            descriptors,
+          )) ?? []);
 
+    // Either side may name the model by an alias, so both are compared as the account's slug.
     const inheritsOptions =
       instanceId === inheritedSelection.instanceId &&
-      (advertised?.slug ?? model) ===
-        (findAdvertisedModel(provider, inheritedSelection.model)?.slug ?? inheritedSelection.model);
-    let options = inheritsOptions
-      ? knownOptions(
-          withLegacyUltracodeEffort(descriptors, inheritedSelection.options),
-          descriptors,
-        )
-      : undefined;
-    if (requestedOptions !== undefined) {
-      const selections = new Map(
-        (requestedOptions.length === 0 ? [] : (options ?? [])).map((selection) => [
-          selection.id,
-          selection,
-        ]),
-      );
-      for (const selection of requestedOptions) {
-        selections.set(selection.id, selection);
-      }
-      options = [...selections.values()];
-    }
+      slug === advertisedSlug(provider, inheritedSelection.model);
+    const options = overrideOptions(
+      inheritsOptions ? knownOptions(inheritedSelection.options, descriptors) : undefined,
+      requestedOptions,
+    );
     return {
       modelSelection: {
         instanceId,
@@ -2083,8 +2067,10 @@ const make = Effect.gen(function* () {
         ...(options === undefined ? {} : { options }),
         // A child on its parent's Auto model is Auto too; a model the agent names instead is
         // not. A model the user set to Auto, as a reviewer or a role's model, keeps that choice.
-        ...((inheritsOptions && inheritedSelection.autoAccount === true) ||
-        (yield* isConfiguredAutoAccount(instanceId, slug))
+        // Auto runs the options saved for Auto, so a target that gives options runs as named.
+        ...(requestedOptions === undefined &&
+        ((inheritsOptions && inheritedSelection.autoAccount === true) ||
+          (yield* isConfiguredAutoAccount(instanceId, slug)))
           ? { autoAccount: true }
           : {}),
       },
@@ -2329,7 +2315,6 @@ const make = Effect.gen(function* () {
   const awaitTask = Effect.fn("OrchestratorMcpService.awaitTask")(function* (
     scope: McpThreadInvocationScope,
     taskId: NodeId,
-    wakePolicyRequestKey: string,
     requestedTimeoutMs: number | undefined,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     const timeoutMs = Math.min(
@@ -2341,8 +2326,8 @@ const make = Effect.gen(function* () {
         type: "delegated_task.wake-policy",
         commandId: stableCommandId({
           scope,
-          requestKey: wakePolicyRequestKey,
-          operation: "delegate-task-wake-policy",
+          requestKey: taskId,
+          operation: "delegated-task-completion-wake",
         }),
         parentThreadId: scope.thread.threadId,
         taskId,
@@ -2462,9 +2447,11 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     const status: OrchestratorMcpDelegateTaskResult["status"] =
       task.result === null
-        ? (yield* remoteDelegation.runStatus(scope, task)) === "starting"
-          ? "starting"
-          : "running"
+        ? task.status === "pending"
+          ? "queued"
+          : (yield* remoteDelegation.runStatus(scope, task)) === "starting"
+            ? "starting"
+            : "running"
         : task.status === "completed" ||
             task.status === "failed" ||
             task.status === "cancelled" ||
@@ -2523,7 +2510,7 @@ const make = Effect.gen(function* () {
       providerInstanceId: task.providerInstanceId,
       model: task.model,
       executedModel: null,
-      summary: task.result,
+      summary: task.result ?? (status === "queued" ? (task.progress ?? null) : null),
       resultContextTransferId: null,
       latestTerminalRunId: null,
       latestTerminalStatus: terminal
@@ -2611,6 +2598,18 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const requireScheduledTaskFallbacks = Effect.fn(
+    "OrchestratorMcpService.requireScheduledTaskFallbacks",
+  )(function* (selections: ReadonlyArray<ModelSelection> | undefined) {
+    if (selections === undefined) return undefined;
+    // A fallback can name an account of another machine, and a provider not installed here lists
+    // only its built-in models, so only an installed one is checked here.
+    const installed = (yield* loadProviders).filter((provider) => provider.installed);
+    return yield* Effect.forEach(selections, (selection) =>
+      requireRegisteredModelSelection(installed, selection),
+    );
+  });
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
       const modes: Array<{
@@ -2654,14 +2653,14 @@ const make = Effect.gen(function* () {
   const lastRunOf = Effect.fn("OrchestratorMcpService.lastRunOf")(function* (task: ScheduledTask) {
     if (task.lastRunAt === null || task.lastRunStatus === "never") return null;
     const scheduledFor = task.lastRunScheduledFor;
-    const run = {
+    const occurrence = {
       at: task.lastRunAt,
       ...(scheduledFor === undefined
         ? {}
         : { occurrence: scheduledFor === null ? null : occurrenceOf(task, scheduledFor) }),
     };
-    if (task.lastRunStatus === "running") return { ...run, outcome: "working" as const };
-    if (task.lastRunStatus === "failed") return { ...run, outcome: "failed" as const };
+    if (task.lastRunStatus === "running") return { ...occurrence, outcome: "working" as const };
+    if (task.lastRunStatus === "failed") return { ...occurrence, outcome: "failed" as const };
     const threadId = task.lastRunThreadId;
     const records =
       threadId == null
@@ -2670,6 +2669,15 @@ const make = Effect.gen(function* () {
             .getThreadRecords(threadId, ["runs", "subagents", "providerThreads"])
             .pipe(Effect.orElseSucceed(() => undefined));
     const runs = records?.runs ?? [];
+    const launch =
+      task.threadId === null ? runs.find((candidate) => candidate.ordinal === 1) : undefined;
+    const run = {
+      ...occurrence,
+      ...(launch?.modelSelection === undefined ? {} : { modelSelection: launch.modelSelection }),
+      ...(launch?.crossProviderFailoverFrom === undefined
+        ? {}
+        : { crossProviderFailover: "usageLimit" as const }),
+    };
     const started = runs.filter((candidate) => candidate.startedAt !== null);
     // A queued run cancelled before it started says nothing about how the work ended.
     const latest = ThreadManagementService.latestRun({ runs: started.length > 0 ? started : runs });
@@ -2936,6 +2944,9 @@ const make = Effect.gen(function* () {
       }
       if (input.modelSelection !== undefined)
         yield* requireScheduledTaskModel(input.modelSelection, bindToCurrentThread);
+      const fallbackModelSelections = yield* requireScheduledTaskFallbacks(
+        input.fallbackModelSelections,
+      );
       const modelSelection =
         input.modelSelection ??
         parent?.thread.modelSelection ??
@@ -2983,6 +2994,7 @@ const make = Effect.gen(function* () {
       }
       const upsertInput: ScheduledTaskUpsertInput = {
         title,
+        ...(input.description === undefined ? {} : { description: input.description }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.promptFile === undefined ? {} : { promptFile: input.promptFile }),
         enabled: input.enabled ?? true,
@@ -2996,6 +3008,7 @@ const make = Effect.gen(function* () {
             : "new_thread",
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
+        ...(fallbackModelSelections === undefined ? {} : { fallbackModelSelections }),
         followsDefaultModel: input.followsDefaultModel ?? input.modelSelection === undefined,
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
@@ -3228,6 +3241,9 @@ const make = Effect.gen(function* () {
               : null;
         if (input.modelSelection !== undefined)
           yield* requireScheduledTaskModel(input.modelSelection, threadId !== null);
+        const fallbackModelSelections = yield* requireScheduledTaskFallbacks(
+          input.fallbackModelSelections,
+        );
         // Update workspace strategy on rebinding so unbound root tasks cannot run in the shared checkout.
         const workspaceStrategy =
           (threadId === null) === (existing.threadId === null)
@@ -3236,6 +3252,7 @@ const make = Effect.gen(function* () {
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
+          ...(input.description === undefined ? {} : { description: input.description }),
           prompt: input.prompt ?? existing.prompt,
           ...(input.promptFile === undefined ? {} : { promptFile: input.promptFile }),
           enabled: input.enabled ?? existing.enabled,
@@ -3256,6 +3273,7 @@ const make = Effect.gen(function* () {
                   : "continue",
           workspaceStrategy,
           modelSelection: input.modelSelection ?? existing.modelSelection,
+          ...(fallbackModelSelections === undefined ? {} : { fallbackModelSelections }),
           followsDefaultModel:
             input.followsDefaultModel ??
             (input.modelSelection === undefined ? (existing.followsDefaultModel ?? false) : false),
@@ -3532,6 +3550,9 @@ const make = Effect.gen(function* () {
           ? yield* usageResetRedeemer.value.lastRedemptions
           : new Map<string, OrchestratorMcpLastRedemption>();
       const inherited = parent?.thread.modelSelection;
+      const inheritedProvider = providers.find(
+        (provider) => provider.instanceId === inherited?.instanceId,
+      );
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
         parentThreadId: parent?.thread.id ?? null,
@@ -3540,10 +3561,10 @@ const make = Effect.gen(function* () {
         inheritedOptions:
           knownOptions(
             inherited?.options,
-            providers
-              .find((provider) => provider.instanceId === inherited?.instanceId)
-              ?.models.find((model) => model.slug === inherited?.model)?.capabilities
-              ?.optionDescriptors,
+            inherited === undefined || inheritedProvider === undefined
+              ? undefined
+              : findAdvertisedModel(inheritedProvider, inherited.model)?.capabilities
+                  ?.optionDescriptors,
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
@@ -3633,33 +3654,22 @@ const make = Effect.gen(function* () {
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
-      const environmentId =
-        input.target === undefined
-          ? undefined
-          : PeerForwarding.remoteTarget(callerScope, input.target.environmentId);
-      if (input.target !== undefined && environmentId !== undefined) {
-        yield* requireCapability(callerScope);
-        const scope = yield* requireThreadScope(callerScope, "delegate_task");
-        // The task's child runs as an ordinary thread there; this thread keeps the task.
-        const { taskId } = yield* remoteDelegation.delegate(scope, {
-          ...input,
-          target: { ...input.target, environmentId },
-        });
-        return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, taskId, input.timeoutMs)
-          : readTask(scope, taskId, false, true);
-      }
-      const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      const foreignProjectId =
-        input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
-          ? input.target.projectId
-          : undefined;
-      if (foreignProjectId !== undefined && input.isolation !== "worktree") {
-        return yield* failure(
-          "invalid_request",
-          "A local task runs in this thread's project unless it gets its own checkout. Set isolation \"worktree\" to run in a new worktree of target.projectId's repository, omit target.projectId, or pass target.environmentId to run in that environment's project.",
-        );
-      }
+      yield* requireCapability(callerScope);
+      const scope = yield* requireThreadScope(callerScope, "delegate_task");
+      const key = yield* requestKey(input.clientRequestId);
+      const commandId = stableCommandId({ scope, requestKey: key, operation: "delegate-task" });
+      // The local command ID is shared by both routes. Also find remote tasks accepted before it was shared.
+      const legacyCommandId = stableCommandId({
+        scope,
+        requestKey: key,
+        operation: "remote-delegate",
+      });
+      const taskIds = [commandId, legacyCommandId].map((id) =>
+        derive.delegatedTaskNode({ commandId: id }),
+      );
+      const parent = yield* threadManagement
+        .getThreadRecords(scope.thread.threadId, ["runs", "subagents"], { subagentIds: taskIds })
+        .pipe(Effect.mapError(threadManagementFailure));
       const parentRun = parent.runs
         .filter(ThreadManagementService.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -3673,14 +3683,69 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      const [current, legacy] = taskIds.map((id) =>
+        parent.subagents.find((task) => task.id === id && task.origin === "app_owned"),
+      );
+      let original = current ?? legacy;
+      if (current !== undefined && legacy !== undefined) {
+        // Older versions could accept both routes for one key. Sequence orders commits even at the same clock tick.
+        const [sharedSequence, legacySequence] = yield* Effect.all([
+          threadManagement.acceptedCommandSequence(commandId),
+          threadManagement.acceptedCommandSequence(legacyCommandId),
+        ]).pipe(Effect.mapError((error) => failure("orchestration_error", errorMessage(error))));
+        if (
+          sharedSequence === undefined ||
+          legacySequence === undefined ||
+          sharedSequence === legacySequence
+        ) {
+          return yield* failure(
+            "orchestration_error",
+            "Two delegated tasks share this request key and their acceptance order is unknown.",
+          );
+        }
+        original = sharedSequence < legacySequence ? current : legacy;
+      }
+      // A retained task without its receipt is still readable, but its creation cannot be safely dispatched again.
+      if (
+        original !== undefined &&
+        (original.remoteChild !== undefined || !(yield* threadManagement.hasReceipt(commandId)))
+      ) {
+        yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+        yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
+        return yield* input.mode === "wait"
+          ? awaitTask(scope, original.id, input.timeoutMs)
+          : readTask(scope, original.id, false, true);
+      }
+      const environmentId =
+        original === undefined
+          ? PeerForwarding.remoteTarget(scope, input.target?.environmentId)
+          : undefined;
+      if (input.target !== undefined && environmentId !== undefined) {
+        const { taskId } = yield* remoteDelegation.delegate(
+          scope,
+          { thread: parent.thread, runId: parentRun.id, nodeId: parentRun.rootNodeId },
+          { ...input, target: { ...input.target, environmentId } },
+          { key, commandId },
+        );
+        return yield* input.mode === "wait"
+          ? awaitTask(scope, taskId, input.timeoutMs)
+          : readTask(scope, taskId, false, true);
+      }
+      const foreignProjectId =
+        original === undefined &&
+        input.target?.projectId !== undefined &&
+        input.target.projectId !== parent.thread.projectId
+          ? input.target.projectId
+          : undefined;
+      if (foreignProjectId !== undefined && input.isolation !== "worktree") {
+        return yield* failure(
+          "invalid_request",
+          "A local task runs in this thread's project unless it gets its own checkout. Set isolation \"worktree\" to run in a new worktree of target.projectId's repository, omit target.projectId, or pass target.environmentId to run in that environment's project.",
+        );
+      }
       const providers = yield* loadProviders;
-      const key = yield* requestKey(input.clientRequestId);
-      const commandId = stableCommandId({
-        scope,
-        requestKey: key,
-        operation: "delegate-task",
-      });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      const isRetryOfAcceptedDelegation =
+        original !== undefined || (yield* threadManagement.hasReceipt(commandId));
       const committedThread = isRetryOfAcceptedDelegation
         ? yield* threadManagement
             .getThreadShell(derive.delegatedTaskThread({ commandId }))
@@ -3695,7 +3760,7 @@ const make = Effect.gen(function* () {
       const roleSelection =
         committedThread === null ? yield* delegatedTaskRoleSelection(input) : undefined;
       // The role's model stands in for the parent's, so the child inherits it the same way.
-      const target =
+      const primaryTarget =
         committedThread !== null
           ? {
               modelSelection: committedThread.modelSelection,
@@ -3708,23 +3773,62 @@ const make = Effect.gen(function* () {
             : yield* resolveDelegateTarget({
                 thread: { ...parent.thread, modelSelection: roleSelection },
               }).pipe(
-                Effect.catch((cause) =>
-                  Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
-                    role: input.role ?? "general",
-                    instanceId: roleSelection.instanceId,
-                    cause,
-                  }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
+                // The role's model stands in for an inherited one, which resolution does not
+                // check against the account's models, so one the account no longer offers is
+                // caught here, in the snapshot after any recheck of the account.
+                Effect.tap(() =>
+                  loadProviders.pipe(
+                    Effect.flatMap((current) => {
+                      const roleProvider = current.find(
+                        (provider) => provider.instanceId === roleSelection.instanceId,
+                      );
+                      return roleProvider === undefined
+                        ? Effect.void
+                        : requireAdvertisedModel(roleProvider, roleSelection.model);
+                    }),
+                  ),
+                ),
+                // Only a role model that is gone falls back; options it rejects fail as named.
+                Effect.catchIf(
+                  (cause) =>
+                    cause.code === "provider_unavailable" || cause.code === "model_unavailable",
+                  (cause) =>
+                    Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
+                      role: input.role ?? "general",
+                      instanceId: roleSelection.instanceId,
+                      cause,
+                    }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
                 ),
               );
+      const projectId = foreignProjectId ?? parent.thread.projectId;
+      const route =
+        !isRetryOfAcceptedDelegation && input.target === undefined && Option.isSome(accountRouting)
+          ? yield* accountRouting.value.failoverLaunch({
+              selection: primaryTarget.modelSelection,
+              projectId,
+              discoverMcpSignIns: false,
+            })
+          : null;
+      const crossProviderFailoverFrom =
+        route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined;
+      const target =
+        route !== null && crossProviderFailoverFrom !== undefined
+          ? {
+              modelSelection: route.selection,
+              supportedRuntimeModes: providers.find(
+                (provider) => provider.instanceId === route.selection.instanceId,
+              )?.supportedRuntimeModes,
+            }
+          : primaryTarget;
       if (!isRetryOfAcceptedDelegation) {
         yield* requireAccountWithRoom(
           {
             selection: target.modelSelection,
-            projectId: foreignProjectId ?? parent.thread.projectId,
+            projectId,
           },
           accountRouting,
         );
-        yield* requireMemoryForDelegation(memoryAdmission);
+        yield* requireMemoryForDelegation(memoryAdmission, peerLinks);
       }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
@@ -3785,6 +3889,7 @@ const make = Effect.gen(function* () {
           task: taskPrompt(input),
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
+          ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
           runtimeMode,
           interactionMode,
           ...(foreignProjectId === undefined ? {} : { projectId: foreignProjectId }),
@@ -3831,9 +3936,10 @@ const make = Effect.gen(function* () {
         });
       }
 
-      return yield* input.mode === "wait"
-        ? awaitTask(scope, taskId, key, input.timeoutMs)
-        : readTask(scope, taskId, false, true);
+      if (input.mode !== "wait") {
+        return yield* readTask(scope, taskId, false, true);
+      }
+      return yield* awaitTask(scope, taskId, input.timeoutMs);
     }),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
@@ -4129,24 +4235,28 @@ const make = Effect.gen(function* () {
                       parent.thread.projectId,
                     )
                   : undefined;
-              const resolved = yield* resolveTargetRechecking({
-                parent,
-                target:
-                  committedThread !== null
-                    ? {
-                        ...request.target,
-                        providerInstanceId: committedThread.modelSelection.instanceId,
-                      }
-                    : autoPick !== undefined
-                      ? { providerInstanceId: autoPick.instanceId }
-                      : request.target,
-                providers,
-                skipProjectEnablementFilter: isRetryOfAcceptedCreation,
-              });
+              // An accepted entry answers from its committed thread: its provider instance may be gone by now.
+              const resolved: ResolvedTarget =
+                committedThread !== null
+                  ? {
+                      modelSelection: committedThread.modelSelection,
+                      supportedRuntimeModes: providers.find(
+                        (provider) =>
+                          provider.instanceId === committedThread.modelSelection.instanceId,
+                      )?.supportedRuntimeModes,
+                    }
+                  : yield* resolveTargetRechecking({
+                      parent,
+                      target:
+                        autoPick !== undefined
+                          ? { providerInstanceId: autoPick.instanceId }
+                          : request.target,
+                      providers,
+                    });
               const target =
                 autoPick !== undefined
                   ? { ...resolved, modelSelection: autoPick }
-                  : request.auto === false
+                  : request.auto === false && committedThread === null
                     ? {
                         ...resolved,
                         modelSelection: withAutoAccount(resolved.modelSelection, false),
@@ -4167,6 +4277,7 @@ const make = Effect.gen(function* () {
                   {
                     selection: target.modelSelection,
                     projectId: parent.thread.projectId,
+                    allowFailover: true,
                   },
                   accountRouting,
                 ).pipe(
@@ -4270,7 +4381,15 @@ const make = Effect.gen(function* () {
                   );
               }
               const projection = yield* loadThreadRecords(threadId, ["runs"]);
-              const run = projection.runs.at(-1);
+              // A replay reports the run this prompt started, not a later one on the thread.
+              const run =
+                initialMessage === undefined
+                  ? undefined
+                  : projection.runs.find(
+                      (candidate) => candidate.userMessageId === initialMessage.messageId,
+                    );
+              // Routing may move a fresh run to another account, so a started thread reports its run's.
+              const runsOn = run?.modelSelection ?? projection.thread.modelSelection;
               yield* threadManagement
                 .dispatch({
                   type: "thread.created.record",
@@ -4305,8 +4424,8 @@ const make = Effect.gen(function* () {
                 title: projection.thread.title,
                 createdBy: projection.thread.createdBy,
                 creationSource: projection.thread.creationSource,
-                providerInstanceId: resolvedModelSelection.instanceId,
-                model: resolvedModelSelection.model,
+                providerInstanceId: runsOn.instanceId,
+                model: runsOn.model,
               } satisfies OrchestratorMcpCreatedThread;
             }),
           { concurrency: 1 },

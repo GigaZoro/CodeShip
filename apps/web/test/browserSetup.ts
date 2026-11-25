@@ -1,6 +1,8 @@
 import { beforeEach } from "vite-plus/test";
 import { commands } from "vite-plus/test/browser";
 
+import { resetAnnouncements } from "../src/lib/announce";
+
 declare module "vite-plus/test/browser" {
   interface BrowserCommands {
     /** Defined in vite.config.ts. Moves Playwright's mouse off the page. */
@@ -14,4 +16,9 @@ declare module "vite-plus/test/browser" {
 // running and can move the mouse after its own afterEach.
 beforeEach(async () => {
   await commands.resetPointer();
+});
+
+// A message queued by one test would otherwise be spoken together with the next test's.
+beforeEach(() => {
+  resetAnnouncements();
 });

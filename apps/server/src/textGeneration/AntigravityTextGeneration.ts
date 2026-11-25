@@ -127,10 +127,9 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
     return true;
   });
 
-  const available = isAntigravityTextGenerationAvailable(options.profileDirectory).pipe(
-    Effect.provideService(FileSystem.FileSystem, fs),
-    Effect.provideService(Path.Path, path),
-  );
+  const available = Effect.suspend(() =>
+    isAntigravityTextGenerationAvailable(options.profileDirectory),
+  ).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.provideService(Path.Path, path));
 
   const runAntigravityJson = Effect.fn("AntigravityTextGeneration.runJson")(
     function* <S extends Schema.Top>(input: TextGenerationOperations.Request<S>) {
@@ -147,10 +146,11 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
         }
 
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-antigravity-text-" });
+        const profileDirectory = options.profileDirectory;
         let sessionId: string | undefined;
         yield* Effect.addFinalizer(() =>
           removeAntigravitySessionFiles({
-            profileDirectory: options.profileDirectory,
+            profileDirectory,
             sessionId,
             cwd,
           }).pipe(

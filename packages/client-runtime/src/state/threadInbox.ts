@@ -54,27 +54,12 @@ export function threadAwaitsUser(
 /** Why a thread cannot go on without the user. */
 export type NeedsYouReason = "approval" | "input" | "request" | "failed" | "limited";
 
-type FailureInput = ThreadStatusInput & Pick<EnvironmentThreadShell, "latestRun">;
-
-/**
- * A run that stopped on an error: the thread's own failure, or a latest run that failed while
- * the session itself idled on. Notifications and Needs you both count these.
- */
-export function threadFailureStatus(thread: FailureInput): "failed" | "limited" | null {
-  return failureFromStatus(resolveThreadStatus(thread), thread);
-}
-
-function failureFromStatus(
-  status: ReturnType<typeof resolveThreadStatus>,
-  thread: Pick<EnvironmentThreadShell, "latestRun">,
-): "failed" | "limited" | null {
-  if (status === "failed" || status === "limited") return status;
-  return status === "ready" && thread.latestRun?.status === "failed" ? "failed" : null;
-}
-
-export type NeedsYouInput = FailureInput &
+export type NeedsYouInput = ThreadStatusInput &
   ThreadSnoozeShell &
-  Pick<EnvironmentThreadShell, "createdBy" | "settledOverride" | "updatedAt" | "laterAt"> &
+  Pick<
+    EnvironmentThreadShell,
+    "createdBy" | "settledOverride" | "updatedAt" | "laterAt" | "latestRun"
+  > &
   Partial<Pick<EnvironmentThreadShell, "limitRecovery">>;
 
 /**
@@ -98,18 +83,17 @@ export function threadNeedsYouReason(
   const status = resolveThreadStatus(thread);
   if (status === "approval" || status === "request") return status;
   if (status === "input") return effectiveSnoozed(thread, options) ? null : status;
-  const failure = failureFromStatus(status, thread);
-  if (failure === null || !failureWaitsOnUser(thread)) return null;
+  if ((status !== "failed" && status !== "limited") || !failureWaitsOnUser(thread)) return null;
   if (effectiveSnoozed(thread, options)) return null;
   const recovery = thread.limitRecovery;
   if (
-    failure === "limited" &&
+    status === "limited" &&
     recovery?.autoResume === true &&
     recovery.runId === thread.latestRun?.runId
   ) {
     return null;
   }
-  return failure;
+  return status;
 }
 
 /** When the thread started waiting on the user, in epoch milliseconds. */
@@ -147,10 +131,11 @@ export function collectNeedsYouThreads<
       sinceByThread.set(thread, threadNeedsYouSince(thread, reason));
       continue;
     }
+    if (thread.snoozedUntil == null) continue;
+    const status = resolveThreadStatus(thread);
     if (
-      thread.snoozedUntil != null &&
-      (resolveThreadStatus(thread) === "input" ||
-        (failureWaitsOnUser(thread) && threadFailureStatus(thread) !== null))
+      status === "input" ||
+      ((status === "failed" || status === "limited") && failureWaitsOnUser(thread))
     ) {
       const wakeAt = Date.parse(thread.snoozedUntil);
       if (wakeAt > Date.parse(options.now) && (nextChangeAt === null || wakeAt < nextChangeAt)) {
@@ -238,24 +223,28 @@ export function sortInboxThreadsByReturn<T extends InboxThreadInput>(
 
 type WorkingSortInput = Pick<
   EnvironmentThreadShell,
-  "id" | "environmentId" | "createdAt" | "latestRun" | "latestUserAuthoredMessageAt"
+  "id" | "environmentId" | "createdAt" | "latestUserMessageAt" | "latestUserAuthoredMessageAt"
 >;
 
-export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: readonly T[]): T[] {
-  const timestamps = new Map(
-    threads.map((thread) => [
-      thread,
-      Math.max(
-        toSortableTimestamp(thread.createdAt) ?? 0,
-        toSortableTimestamp(
-          (thread.latestUserAuthoredMessageAt === undefined
-            ? thread.latestRun?.requestedAt
-            : thread.latestUserAuthoredMessageAt) ?? undefined,
-        ) ?? 0,
-      ),
-    ]),
+/**
+ * When the user last sent to the thread or created it, in epoch ms; streamed output never moves it.
+ * An older server omits `latestUserAuthoredMessageAt`, so its latest user-role message stands in, which an agent wake also moves.
+ */
+export function threadLastSendAt(thread: WorkingSortInput): number {
+  const authored = thread.latestUserAuthoredMessageAt;
+  return Math.max(
+    toSortableTimestamp(thread.createdAt) ?? 0,
+    toSortableTimestamp(
+      (authored === undefined ? thread.latestUserMessageAt : authored) ?? undefined,
+    ) ?? 0,
   );
-  return sortNewestFirst(threads, timestamps);
+}
+
+export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: readonly T[]): T[] {
+  return sortNewestFirst(
+    threads,
+    new Map(threads.map((thread) => [thread, threadLastSendAt(thread)])),
+  );
 }
 
 function sortNewestFirst<T extends Pick<EnvironmentThreadShell, "id" | "environmentId">>(

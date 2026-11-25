@@ -1,3 +1,4 @@
+import { hiddenScheduledTaskThreadKeysAtom } from "../../state/threads";
 import { useAtomValue } from "@effect/atom-react";
 import type { MenuAction } from "@react-native-menu/menu";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -11,11 +12,11 @@ import {
   pinnedTaskTimingText,
   resolvePinnedTaskStatus,
   resolveScheduledTaskPlacement,
-  scheduledTaskHiddenThreadKeys,
   scheduledTaskPlacementOptions,
   type PinnedTaskRowStatus,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
+import { groupScheduledTaskItems } from "@t3tools/client-runtime/scheduled-task-groups";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import {
   isAtomCommandInterrupted,
@@ -50,9 +51,9 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { startScheduledTaskEditor } from "../settings/scheduled-task-editor-state";
 import { editDraft } from "../settings/scheduledTaskDraft";
 import { describeSchedule } from "../settings/scheduledTaskPresentation";
+import { useScheduledTaskFolderMenu } from "../settings/useScheduledTaskFolderMenu";
 import { useOpenScheduledTasks } from "../layout/workspace/useOpenScheduledTasks";
 import {
-  THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
   getThreadListV2RowAppearance,
 } from "./thread-list-v2-row-appearance";
@@ -60,6 +61,7 @@ import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status
 import { threadStatusLabel } from "./thread-list-v2-items";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
+import { useThreadListRowContentClassName } from "./useThreadListRowDensity";
 import { t } from "../../lib/i18n";
 
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
@@ -75,25 +77,9 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   ).pipe(Atom.withLabel(`mobile:thread-list-pinned-tasks:${environmentIdsKey}`)),
 );
 
-const hiddenThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
-  let previous: ReadonlySet<string> = new Set();
-  return Atom.make((get) => {
-    previous = scheduledTaskHiddenThreadKeys(
-      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
-      (environmentId) =>
-        AsyncResult.getOrElse(
-          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
-          () => null,
-        )?.tasks ?? [],
-      previous,
-    );
-    return previous;
-  }).pipe(Atom.withLabel(`mobile:thread-list-hidden-task-threads:${environmentIdsKey}`));
-});
-
 /** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
 export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
-  return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
+  return useAtomValue(hiddenScheduledTaskThreadKeysAtom(environmentIdsKey));
 }
 
 const STATUS_DISPLAY = {
@@ -153,6 +139,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
   const { environmentId, task } = props;
+  const rowContentClassName = useThreadListRowContentClassName();
   const openScheduledTasks = useOpenScheduledTasks();
   const navigation = useNavigation();
   const theme = useUniwindTheme();
@@ -181,6 +168,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   const canOperate = useAtomValue(
     serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
   );
+  const folderMenu = useScheduledTaskFolderMenu(environmentId);
   const setPlacement = useAtomCommand(serverEnvironment.setScheduledTaskPlacement, {
     label: "thread list task placement",
     reportFailure: false,
@@ -197,6 +185,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   const actions: MenuAction[] = [
     ...(runThread !== null ? [{ id: "open-run", title: t("Open last run") }] : []),
     { id: "edit", title: t("Edit task") },
+    ...folderMenu.actions(task),
     // Webhook tasks run only when their URL receives a request.
     ...(task.schedule.type === "webhook"
       ? []
@@ -236,6 +225,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
       return navigation.navigate("SettingsScheduledTaskEdit");
     }
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+    if (folderMenu.handleAction(task, action)) return;
     const placement = scheduledTaskPlacementOptions().find(
       (option) => `placement:${option.value}` === action,
     )?.value;
@@ -347,7 +337,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
             content
           ) : (
             <View>
-              <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+              <View className={rowContentClassName}>{content}</View>
               {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
             </View>
           )}
@@ -378,22 +368,42 @@ export function ThreadListPinnedTasks(props: {
         )),
   );
   if (entries.length === 0) return null;
+  const sections = groupScheduledTaskItems(entries, ({ task }) => task.group);
+  const grouped = sections.some((section) => section.key !== null);
+  const renderEntries = (items: Readonly<typeof entries>) =>
+    items.map(({ environmentId, task }) => (
+      <PinnedTaskRow
+        key={`${environmentId}:${task.id}`}
+        environmentId={environmentId}
+        task={task}
+        environmentLabel={savedConnectionsById[environmentId]?.environmentLabel ?? environmentId}
+        machineLabel={
+          showMachine ? (savedConnectionsById[environmentId]?.environmentLabel ?? null) : null
+        }
+        pane={props.pane}
+        selectedThreadKey={props.selectedThreadKey}
+        onSelectThread={props.onSelectThread}
+      />
+    ));
   return (
     <View className={cn(props.pane === "sidebar" && "pb-2")}>
-      {entries.map(({ environmentId, task }) => (
-        <PinnedTaskRow
-          key={`${environmentId}:${task.id}`}
-          environmentId={environmentId}
-          task={task}
-          environmentLabel={savedConnectionsById[environmentId]?.environmentLabel ?? environmentId}
-          machineLabel={
-            showMachine ? (savedConnectionsById[environmentId]?.environmentLabel ?? null) : null
-          }
-          pane={props.pane}
-          selectedThreadKey={props.selectedThreadKey}
-          onSelectThread={props.onSelectThread}
-        />
-      ))}
+      {grouped
+        ? sections.map((section) => (
+            <View key={section.key ?? ""}>
+              <View className="flex-row items-center gap-2 px-4 py-2">
+                <SymbolView name="folder" size={14} tintColorClassName="accent-icon" />
+                <Text
+                  accessibilityRole="header"
+                  className="min-w-0 flex-1 text-sm font-t3-medium text-foreground-muted"
+                  numberOfLines={1}
+                >
+                  {section.label ?? t("No group")}
+                </Text>
+              </View>
+              {renderEntries(section.items)}
+            </View>
+          ))
+        : renderEntries(entries)}
     </View>
   );
 }

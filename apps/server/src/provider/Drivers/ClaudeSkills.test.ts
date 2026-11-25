@@ -2,6 +2,8 @@ import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -137,7 +139,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
       const managedInstall = path.join(configDir, "plugins", "managed");
       yield* fs.makeDirectory(path.join(workspace, ".git"), { recursive: true });
       yield* fs.makeDirectory(nestedWorkspace, { recursive: true });
-      yield* fs.symlink(workspace, aliasedWorkspace);
+      yield* linkDirectory(workspace, aliasedWorkspace);
       for (const install of [userInstall, projectInstall, localInstall, managedInstall]) {
         yield* writeSkill(path.join(install, "skills"), "review", "# Review");
       }
@@ -203,9 +205,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
           ["plugin:review", "project", path.join(projectInstall, "skills", "review", "SKILL.md")],
         ],
       );
+      // Windows keeps the local file in cwd, so a nested workspace never sees the root's.
       assert.deepEqual(
         yield* discoverClaudeSkills({ homePath: configDir }, nestedWorkspace),
-        localSettings,
+        isWindowsHost
+          ? localSettings.filter((skill) => skill.name === "plugin:review")
+          : localSettings,
       );
       assert.deepEqual(
         yield* discoverClaudeSkills({ homePath: configDir }, aliasedWorkspace),
@@ -243,9 +248,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
         path.join(worktree, ".git"),
       );
       const linkedWorktree = path.join(tempDir, "linked-worktree");
-      yield* fs.symlink(worktree, linkedWorktree);
+      yield* linkDirectory(worktree, linkedWorktree);
       // A worktree reads the main checkout's settings.local.json, whose extended local@shop entry
-      // enables nothing.
+      // enables nothing. On Windows it reads only its own, so the user's local@shop applies.
       for (const cwd of [worktree, linkedWorktree]) {
         assert.deepEqual(
           (yield* discoverClaudeSkills({ homePath: configDir }, cwd)).map((skill) => [
@@ -253,7 +258,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
             skill.scope,
             skill.path,
           ]),
-          [["plugin:review", "project", path.join(projectInstall, "skills", "review", "SKILL.md")]],
+          [
+            ...(isWindowsHost
+              ? [
+                  [
+                    "local:review",
+                    "project",
+                    path.join(localInstall, "skills", "review", "SKILL.md"),
+                  ],
+                ]
+              : []),
+            ["plugin:review", "project", path.join(projectInstall, "skills", "review", "SKILL.md")],
+          ],
         );
       }
     }),
@@ -1437,11 +1453,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
 
       assert.deepEqual(
         skills.map((skill) => [skill.name, skill.enabled]),
-        [
-          ["cwd-off-root-on", true],
-          ["root-off", false],
-          ["root-off-cwd-on", false],
-        ],
+        // Windows keeps the local file in cwd, so the root's files never apply.
+        isWindowsHost
+          ? [
+              ["cwd-off-root-on", false],
+              ["root-off", true],
+              ["root-off-cwd-on", true],
+            ]
+          : [
+              ["cwd-off-root-on", true],
+              ["root-off", false],
+              ["root-off-cwd-on", false],
+            ],
       );
     }),
   );
@@ -1692,7 +1715,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("setClaudeSkillOverri
     }),
   );
 
-  it.effect("keeps the permission mode of an existing settings file", () =>
+  // Windows has no POSIX mode bits to keep.
+  it.effect.skipIf(isWindowsHost)("keeps the permission mode of an existing settings file", () =>
     Effect.gen(function* () {
       const { fs, configDir, settingsPath } = yield* makeConfigDir;
       yield* fs.writeFileString(settingsPath, "{}");

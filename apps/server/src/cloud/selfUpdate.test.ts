@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -512,7 +513,7 @@ it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
       yield* fs.writeFileString(sentinel, `${version}\n`);
       yield* fs.utimes(sentinel, 0, 0);
     }
-    if (input.symlinkedHome) yield* fs.symlink(realHome, baseDir);
+    if (input.symlinkedHome) yield* linkDirectory(realHome, baseDir);
     const userHome = path.join(tempDir, "user");
     if (input.servicePlistStarts !== undefined) {
       const agentsDir = path.join(userHome, "Library", "LaunchAgents");
@@ -520,7 +521,7 @@ it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
       const programHome = input.servicePlistThroughLink
         ? path.join(tempDir, "alias-home")
         : baseDir;
-      if (input.servicePlistThroughLink) yield* fs.symlink(realHome, programHome);
+      if (input.servicePlistThroughLink) yield* linkDirectory(realHome, programHome);
       const program = path.join(programHome, "runtime", "versions", input.servicePlistStarts, "t3");
       yield* fs.writeFileString(
         path.join(agentsDir, "com.t3tools.t3code.service.plist"),

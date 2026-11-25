@@ -1,5 +1,5 @@
 diff --git a/react-native.js b/react-native.js
-index 4af685dfb961eb0c8a4bf1ae9132c9304cf4fa4d..df4ead7ae4f03cd0fbcd99a3df7d95e15b1852b1 100644
+index 4af685dfb961eb0c8a4bf1ae9132c9304cf4fa4d..02f7343244cd46c44f0a9ecfdd6a99a423009bd2 100644
 --- a/react-native.js
 +++ b/react-native.js
 @@ -1795,7 +1795,35 @@ function resolvePendingNativeMVCPAdjust(ctx, newScroll) {
@@ -38,8 +38,19 @@ index 4af685dfb961eb0c8a4bf1ae9132c9304cf4fa4d..df4ead7ae4f03cd0fbcd99a3df7d95e1
    var _a3, _b, _c;
    const state = ctx.state;
    const { idsInView, positions, props } = state;
+@@ -3474,7 +3502,9 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The scroll saved when the session re-armed can predate the layout of rows added since,
++      // so scroll to the target resolved from the current layout.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 diff --git a/react-native.mjs b/react-native.mjs
-index 9ebfddc183a9b202d35c990a387c9b628feeb185..c414a49e866ecab1393645101fb67d55530a7d00 100644
+index 9ebfddc183a9b202d35c990a387c9b628feeb185..a4a596336888eadc1048bcc8d6b15a543755d0ca 100644
 --- a/react-native.mjs
 +++ b/react-native.mjs
 @@ -1774,7 +1774,35 @@ function resolvePendingNativeMVCPAdjust(ctx, newScroll) {
@@ -78,3 +89,74 @@ index 9ebfddc183a9b202d35c990a387c9b628feeb185..c414a49e866ecab1393645101fb67d55
    var _a3, _b, _c;
    const state = ctx.state;
    const { idsInView, positions, props } = state;
+@@ -3453,7 +3481,9 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The scroll saved when the session re-armed can predate the layout of rows added since,
++      // so scroll to the target resolved from the current layout.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+diff --git a/react-native.web.js b/react-native.web.js
+index 515545471e08426fc90856256db9491db0ca4b92..e0b6af75043596324baedaba9e6de5633833b7d9 100644
+--- a/react-native.web.js
++++ b/react-native.web.js
+@@ -3478,7 +3478,9 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The scroll saved when the session re-armed can predate the layout of rows added since,
++      // so scroll to the target resolved from the current layout.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+diff --git a/react-native.web.mjs b/react-native.web.mjs
+index ce08abe7ee62e8940f9c6ff169829244bd6bb736..98c018f40e0979867398d7783af08d6b351045dd 100644
+--- a/react-native.web.mjs
++++ b/react-native.web.mjs
+@@ -3457,7 +3457,9 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The scroll saved when the session re-armed can predate the layout of rows added since,
++      // so scroll to the target resolved from the current layout.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+diff --git a/react.js b/react.js
+index 515545471e08426fc90856256db9491db0ca4b92..e0b6af75043596324baedaba9e6de5633833b7d9 100644
+--- a/react.js
++++ b/react.js
+@@ -3478,7 +3478,9 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The scroll saved when the session re-armed can predate the layout of rows added since,
++      // so scroll to the target resolved from the current layout.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+diff --git a/react.mjs b/react.mjs
+index ce08abe7ee62e8940f9c6ff169829244bd6bb736..98c018f40e0979867398d7783af08d6b351045dd 100644
+--- a/react.mjs
++++ b/react.mjs
+@@ -3457,7 +3457,9 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The scroll saved when the session re-armed can predate the layout of rows added since,
++      // so scroll to the target resolved from the current layout.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });

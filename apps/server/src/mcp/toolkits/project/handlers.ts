@@ -1,8 +1,10 @@
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
   ThreadId,
   OrchestratorMcpFailure,
+  type OrchestrationV2ThreadShell,
   ProjectId,
 } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
@@ -34,7 +36,16 @@ import { withResolvedAttachments } from "../attachment/references.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
-import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
+import { assertSameLink } from "../../linkOrigin.ts";
+import {
+  assertTargetWithinLimits,
+  type Caller,
+  type CallerLimits,
+  newCommandId,
+  readCaller,
+  resolveProjectId,
+  unavailable,
+} from "../../threadAccess.ts";
 import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
@@ -69,7 +80,7 @@ function worktreeCheckHint(
   }
   return `Pass a branch, tag, or commit that exists there${
     strategy.startFromOrigin === true
-      ? "; no remote of the project has it either."
+      ? "; fetching from the project's remote did not bring it in, so push it there or the project has no usable remote."
       : ", or set startFromOrigin:true if it exists only on a remote."
   }`;
 }
@@ -134,6 +145,37 @@ const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
   return CommandId.make(`mcp:launch:${Hex.encode(digest)}`);
 });
 
+const checkKeyedLaunchTarget = Effect.fn("mcp.checkKeyedLaunchTarget")(function* (
+  caller: Caller,
+  limits: CallerLimits,
+  projectId: ProjectId,
+  thread: Pick<
+    OrchestrationV2ThreadShell,
+    "id" | "projectId" | "deletedAt" | "runtimeMode" | "interactionMode" | "linkOrigin"
+  >,
+) {
+  if (thread.projectId !== projectId || thread.deletedAt !== null) {
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "The launch does not belong to a live thread in that project.",
+    });
+  }
+  yield* assertSameLink(caller, thread);
+  yield* assertTargetWithinLimits(limits, thread);
+});
+
+/** A project's default model, checked as a launch's is where its provider is registered here. */
+const checkedDefaultModel = Effect.fn("mcp.checkedDefaultModel")(function* (
+  selection: ModelSelection | null | undefined,
+) {
+  return selection == null
+    ? selection
+    : yield* OrchestrationMcp.requireRegisteredModelSelection(
+        yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+        selection,
+      );
+});
+
 const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
@@ -153,7 +195,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? yield* newCommandId()
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
-        const threadId = ThreadId.make(commandId);
+        // Only a link's own session launches its agent's delegated task, and only that launch may
+        // set the fields that come with it; an agent in a thread the link started may not.
+        const delegatedFrom =
+          caller === undefined && linkOrigin !== undefined ? input.delegatedFrom : undefined;
+        // The link chooses the id, so its delegated task is on record before the thread exists.
+        const threadId =
+          delegatedFrom !== undefined && input.launchId !== undefined
+            ? ThreadId.make(input.launchId)
+            : ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         if (
           input.scratch === true &&
@@ -184,8 +234,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? null
             : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
-        const launchedModel =
-          launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
+        const limits = { runtimeMode, interactionMode };
+        if (launched !== null) yield* checkKeyedLaunchTarget(context, limits, projectId, launched);
+        const launchedModel = launched?.modelSelection;
         const replaying = launchedModel !== undefined;
         const project = replaying
           ? undefined
@@ -212,13 +263,20 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             code: "invalid_request",
             message: "Pass auto:true or modelSelection, not both.",
           });
-        if (!replaying && input.modelSelection !== undefined) {
-          const { instanceId, model } = input.modelSelection;
-          const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
-          const provider = providers.find((candidate) => candidate.instanceId === instanceId);
-          if (provider !== undefined)
-            yield* OrchestrationMcp.requireAdvertisedModel(provider, model);
-        }
+        let namedSelection = input.modelSelection;
+        if (!replaying && namedSelection !== undefined)
+          // A delegated task's options inherited there need not be offered here, as for
+          // delegate_task: only the ones its agent named. A link that marks none counts all.
+          namedSelection = yield* OrchestrationMcp.requireRegisteredModelSelection(
+            yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+            namedSelection,
+            delegatedFrom === undefined
+              ? undefined
+              : new Set(
+                  input.inheritedOptionIds ??
+                    (namedSelection.options ?? []).map((option) => option.id),
+                ),
+          );
         const autoPick =
           replaying || input.auto !== true
             ? undefined
@@ -280,8 +338,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // within the ceiling it was approved with.
         const projectDefaults = caller === undefined ? projectSettings : undefined;
         const startingSelection =
-          input.modelSelection ??
           launchedModel ??
+          namedSelection ??
           autoPick ??
           caller?.modelSelection ??
           (projectDefaults
@@ -313,11 +371,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             {
               selection: modelSelection,
               projectId,
+              allowFailover: delegatedFrom === undefined,
             },
             yield* Effect.serviceOption(AccountRouting.AccountRouting),
           );
         // Another machine's delegate_task child: judged by this machine's memory, which runs it.
-        if (!replaying && input.delegatedFrom !== undefined && caller === undefined)
+        if (!replaying && delegatedFrom !== undefined)
           yield* OrchestrationMcp.requireMemoryForDelegation(
             yield* MemoryAdmission.MemoryAdmission,
           );
@@ -364,11 +423,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               createdBy: "agent",
               creationSource: "mcp",
               ...(linkOrigin === undefined ? {} : { linkOrigin }),
-              // Only the link's own session may claim a parent there, not an agent in a thread it started.
-              // thread.create also drops it without linkOrigin.
-              ...(input.delegatedFrom === undefined || caller !== undefined
-                ? {}
-                : { delegatedFrom: input.delegatedFrom }),
+              ...(delegatedFrom === undefined ? {} : { delegatedFrom }),
             }).pipe(
               Effect.mapError((error) => {
                 if (error._tag === "AttachmentClaimError") {
@@ -395,6 +450,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             ),
         );
         const thread = result.projection.thread;
+        // A concurrent request can accept the key after the shell lookup.
+        if (input.clientRequestId !== undefined)
+          yield* checkKeyedLaunchTarget(context, limits, projectId, thread);
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
@@ -468,20 +526,32 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
           };
         }
+        const defaultModelSelection = yield* checkedDefaultModel(input.defaultModelSelection);
         const commandId = yield* newCommandId();
         return yield* projects
-          .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
+          .create({
+            ...input,
+            ...(defaultModelSelection === undefined ? {} : { defaultModelSelection }),
+            workspaceRoot,
+            commandId,
+            projectId: ProjectId.make(commandId),
+          })
           .pipe(Effect.mapError(projectFailure));
       }),
     // Linked work may bring the repository it works in; an existing
     // registered workspace is still refused.
     { linkedCallers: "allowed" },
   ),
-  t3_project_update: McpToolAccess.writesEnvironment((input) =>
+  t3_project_update: McpToolAccess.writesEnvironment(({ defaultModelSelection, ...input }) =>
     Effect.gen(function* () {
       const projects = yield* Project.ProjectService;
+      const checked = yield* checkedDefaultModel(defaultModelSelection);
       return yield* projects
-        .update({ ...input, commandId: yield* newCommandId() })
+        .update({
+          ...input,
+          ...(checked === undefined ? {} : { defaultModelSelection: checked }),
+          commandId: yield* newCommandId(),
+        })
         .pipe(Effect.mapError(projectFailure));
     }),
   ),

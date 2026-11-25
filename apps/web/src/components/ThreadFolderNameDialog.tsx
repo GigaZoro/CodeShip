@@ -19,6 +19,9 @@ interface ThreadFolderNameRequest {
   readonly title: string;
   readonly submitLabel: string;
   readonly initialName: string;
+  readonly fieldLabel?: string;
+  readonly maxLength?: number;
+  readonly isValid?: (name: string) => boolean;
   readonly resolve: (name: string | null) => void;
 }
 
@@ -30,6 +33,14 @@ export function requestThreadFolderName(
 ): Promise<string | null> {
   useRequest.getState().request?.resolve(null);
   return new Promise((resolve) => useRequest.setState({ request: { ...options, resolve } }));
+}
+
+export function requestNewFolderName() {
+  return requestThreadFolderName({
+    title: t("New folder"),
+    submitLabel: t("Create folder"),
+    initialName: "",
+  });
 }
 
 function finish(name: string | null) {
@@ -49,8 +60,13 @@ function ThreadFolderNameDialog(props: { request: ThreadFolderNameRequest }) {
   const { request } = props;
   const inputId = useId();
   const [name, setName] = useState(request.initialName);
+  const fieldLabel = request.fieldLabel ?? t("Folder name");
+  const maxLength = request.maxLength ?? MAX_THREAD_FOLDER_LENGTH;
   const trimmed = name.trim();
-  const canSave = trimmed !== "" && trimmed !== request.initialName.trim();
+  const canSave =
+    trimmed !== "" &&
+    trimmed !== request.initialName.trim() &&
+    request.isValid?.(trimmed) !== false;
   return (
     <Dialog
       open
@@ -71,18 +87,18 @@ function ThreadFolderNameDialog(props: { request: ThreadFolderNameRequest }) {
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-2">
-              <Label htmlFor={inputId}>{t("Folder name")}</Label>
+              <Label htmlFor={inputId}>{fieldLabel}</Label>
               <Input
                 nativeInput
                 autoFocus
                 id={inputId}
                 value={name}
-                maxLength={MAX_THREAD_FOLDER_LENGTH}
+                maxLength={maxLength}
                 spellCheck={false}
                 onChange={(event) => setName(event.target.value)}
               />
               <span className="self-end text-xs tabular-nums text-muted-foreground">
-                {`${name.length} / ${MAX_THREAD_FOLDER_LENGTH}`}
+                {`${name.length} / ${maxLength}`}
               </span>
             </div>
           </DialogPanel>

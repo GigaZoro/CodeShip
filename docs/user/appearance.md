@@ -21,6 +21,11 @@ Android uses **Material You Layout** by default unless you have turned it off in
 It changes shapes, spacing, and controls independently
 of the selected theme.
 
+## Density and accent color
+
+- **Interface density**: **Compact spacing** tightens thread rows, folder headers, chat message gaps and settings rows on web and desktop, and the home thread list on mobile. Every button and row stays easy to hit. **Comfortable** is the default.
+- **Accent color** (web, desktop and mobile): pick a color for buttons, selection and focus rings. It applies over any theme, and **Theme** goes back to the theme's own color.
+
 ## The same look on all your devices
 
 Appearance preferences are saved separately on each device, unless you turn on **Use the same
@@ -36,7 +41,7 @@ device to turn it on makes its own settings the profile. When the profile brings
 a message offers to reload, since the app shows a new language only after a reload.
 
 The profile holds fonts and sizes, word wrap, sidebar grouping and sorting, the Working and manual
-steps shelves, confirmations, diff preferences, chat width, effort display, glass opacity, contrast,
+steps shelves, confirmations, diff preferences, chat width, interface density, accent color, effort display, glass opacity, contrast,
 panel animations, time format, language, composer and send behavior, math rendering and
 notifications. Themes, window sizes, browser settings, model favorites and per-project choices stay
 on each device.

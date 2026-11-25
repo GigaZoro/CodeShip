@@ -11,6 +11,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { defineSecretProviderDriver } from "./driver.ts";
@@ -44,6 +45,7 @@ function fakeDriver(
       referencePlaceholder: "fake://item",
       invalidReferenceMessage: "Use fake://item.",
     }),
+    unattended: ({ account }) => account === "unattended",
     read: ({ account }, references) =>
       wait(references).pipe(
         Effect.andThen(
@@ -67,6 +69,34 @@ const resolverLayer = (
   }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 describe("SecretResolver", () => {
+  it.effect("refreshes an unattended batch and keeps cached values when any read fails", () => {
+    let value: string | undefined = "sk-original";
+    const { driver, reads } = fakeDriver(() => value);
+    return Effect.gen(function* () {
+      const resolver = yield* SecretResolver.SecretResolver;
+      const token = ref("fake://token");
+      assert.deepStrictEqual(yield* resolver.read([token]), ["sk-original"]);
+      value = "sk-rotated";
+      assert.isTrue(
+        Option.isNone(yield* resolver.refreshUnattended([token, ref("fake://interactive", work)])),
+      );
+      assert.strictEqual(reads.length, 1);
+      assert.deepStrictEqual(
+        yield* resolver.refreshUnattended([token]),
+        Option.some(["sk-rotated"]),
+      );
+      value = undefined;
+      assert.isTrue(Option.isNone(yield* resolver.refreshUnattended([token])));
+      assert.deepStrictEqual(yield* resolver.read([token]), ["sk-rotated"]);
+    }).pipe(
+      Effect.provide(
+        resolverLayer(driver, () => ({
+          [personal]: fake("unattended"),
+          [work]: fake("interactive"),
+        })),
+      ),
+    );
+  });
   it.effect("reads a reference once and holds it", () => {
     const { driver, reads } = fakeDriver(() => "sk-live");
     return Effect.gen(function* () {

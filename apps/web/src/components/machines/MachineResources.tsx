@@ -19,6 +19,7 @@ import { serverEnvironment } from "../../state/server";
 import { MachineBadge, MachineLastSeen } from "../MachineBadge";
 import type { SidebarMachine } from "../sidebar/SidebarFolderHeader";
 import { machineStateLabel } from "../sidebar/SidebarMachineStrip";
+import { useSidebarMachines } from "../sidebar/useSidebarMachines";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { t } from "~/i18n";
@@ -73,7 +74,9 @@ function MeterRow(props: {
           />
         </span>
       )}
-      <span className={cn("text-end tabular-nums", TEXT_CLASS_NAME[tone])}>{props.value}</span>
+      <span className={cn("text-end whitespace-nowrap tabular-nums", TEXT_CLASS_NAME[tone])}>
+        {props.value}
+      </span>
       {props.detail ? (
         <span className="col-span-2 col-start-2 -mt-1.5 text-muted-foreground tabular-nums">
           {props.detail}
@@ -83,11 +86,19 @@ function MeterRow(props: {
   );
 }
 
-function ResourceMeters(props: { readonly view: HostResourcesView }) {
+function ResourceMeters(props: { readonly view: HostResourcesView; readonly narrow: boolean }) {
   const { view } = props;
   const notReported = t("Not reported");
   return (
-    <div className="grid grid-cols-[4.5rem_minmax(3rem,1fr)_auto] items-center gap-x-3 gap-y-2.5 text-xs">
+    <div
+      className={cn(
+        "grid items-center gap-y-2.5 text-xs",
+        // A side panel is too narrow for the fixed label column, so labels and values take their width.
+        props.narrow
+          ? "grid-cols-[auto_minmax(2rem,1fr)_auto] gap-x-2"
+          : "grid-cols-[4.5rem_minmax(3rem,1fr)_auto] gap-x-3",
+      )}
+    >
       <MeterRow
         label={t("CPU")}
         fraction={view.cpuFraction}
@@ -115,9 +126,12 @@ function ResourceMeters(props: { readonly view: HostResourcesView }) {
   );
 }
 
-function ConnectedMachineResources(props: { readonly environmentId: EnvironmentId }) {
+function ConnectedMachineResources(props: {
+  readonly environmentId: EnvironmentId;
+  readonly narrow?: boolean;
+}) {
   const { view, failed } = useLiveHostResources(props.environmentId);
-  if (view) return <ResourceMeters view={view} />;
+  if (view) return <ResourceMeters view={view} narrow={props.narrow ?? false} />;
   if (failed) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -132,6 +146,11 @@ function ConnectedMachineResources(props: { readonly environmentId: EnvironmentI
       <Skeleton className="h-3 w-full" />
     </div>
   );
+}
+
+/** Only a connected machine answers; one still connecting would leave its meters loading. */
+function machineAnswersLoad(machine: Pick<SidebarMachine, "availability">): boolean {
+  return machine.availability === "live";
 }
 
 function GlanceValue(props: { readonly label: string; readonly fraction: number | null }) {
@@ -154,10 +173,10 @@ function GlanceRow(props: { readonly machine: SidebarMachine }) {
         <MachineBadge environmentId={machine.environmentId} label={machine.label} />
         <span className="truncate">{machine.label}</span>
       </span>
-      {machine.disconnected ? (
-        <span className="text-muted-foreground">{machineStateLabel(machine)}</span>
-      ) : (
+      {machineAnswersLoad(machine) ? (
         <ConnectedGlanceValues environmentId={machine.environmentId} />
+      ) : (
+        <span className="text-muted-foreground">{machineStateLabel(machine)}</span>
       )}
     </li>
   );
@@ -210,11 +229,23 @@ function usePageVisible() {
   return useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "visible");
 }
 
+/** True while the machine is connected and the page is visible, the only time its load is polled. */
+export function useMachineLoadPollable(environmentId: EnvironmentId): boolean {
+  const machine = useSidebarMachines().find((entry) => entry.environmentId === environmentId);
+  const pageVisible = usePageVisible();
+  return machine !== undefined && machineAnswersLoad(machine) && pageVisible;
+}
+
+/** One machine's meters for a narrow side panel, without the card around them; mount only while it is pollable. */
+export function MachineLoadMeters(props: { readonly environmentId: EnvironmentId }) {
+  return <ConnectedMachineResources environmentId={props.environmentId} narrow />;
+}
+
 export function MachineResourcesCard(props: { readonly machine: SidebarMachine }) {
   const { machine } = props;
   const reconnect = useReconnectEnvironment();
   const pageVisible = usePageVisible();
-  const polling = !machine.disconnected && pageVisible;
+  const polling = machineAnswersLoad(machine) && pageVisible;
   return (
     <section
       aria-label={machine.label}

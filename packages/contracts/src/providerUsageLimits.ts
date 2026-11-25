@@ -31,11 +31,19 @@ export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 export const ServerProviderResetKind = Schema.Literals(["full", "weekly", "five_hour", "fable"]);
 export type ServerProviderResetKind = typeof ServerProviderResetKind.Type;
 
+/**
+ * Why a Claude grant has no `kind`: with no grant usable now, Claude names only a total over all
+ * its grants (`totalOnly`).
+ */
+export const ServerProviderResetKindUnknownReason = Schema.Literals(["totalOnly"]);
+export type ServerProviderResetKindUnknownReason = typeof ServerProviderResetKindUnknownReason.Type;
+
 /** One banked reset or grant, without the provider's id for it. */
 export const ServerProviderResetCredit = Schema.Struct({
   program: TrimmedNonEmptyString,
-  /** Absent when the provider names only a total over its resets (Claude's held grants). */
+  /** Absent only when the provider's answer named no kind; `kindUnknownReason` then says why. */
   kind: Schema.optional(ServerProviderResetKind),
+  kindUnknownReason: Schema.optional(ServerProviderResetKindUnknownReason),
   status: Schema.optional(TrimmedNonEmptyString),
   grantedAt: Schema.optional(IsoDateTime),
   expiresAt: Schema.optional(IsoDateTime),
@@ -88,11 +96,15 @@ export const ServerProviderResetPrograms = Schema.Struct({
 });
 export type ServerProviderResetPrograms = typeof ServerProviderResetPrograms.Type;
 
-/** Why `resetCredits` is absent although the account has banked resets to read. */
+/**
+ * Why `resetCredits` is absent although the account has banked resets to read. `lowPriority`:
+ * Claude answered that resets wait while the account runs at lower priority, before reading any.
+ */
 export const ServerProviderResetCreditsError = Schema.Literals([
   "signedOut",
   "unrecognizedScreen",
   "readFailed",
+  "lowPriority",
 ]);
 export type ServerProviderResetCreditsError = typeof ServerProviderResetCreditsError.Type;
 

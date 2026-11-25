@@ -124,16 +124,28 @@ it.live.each(
             assert.equal(effective.config.homePath, sharedHome);
             assert.equal(runtime.homeLayout.mode, "direct");
           } else {
-            assert.include(effective.config.homePath, instanceId);
-            assert.include(effective.config.homePath, "userdata/providers/codex");
+            assert.equal(
+              effective.config.homePath,
+              path.join(
+                (yield* ServerConfig.ServerConfig).stateDir,
+                "providers",
+                "codex",
+                instanceId,
+                "shadow",
+              ),
+            );
             assert.equal(runtime.homeLayout.mode, "authOverlay");
             assert.equal(
-              yield* fs.readLink(path.join(effective.config.homePath, "sessions")),
-              path.join(sharedHome, "sessions"),
+              yield* fs.realPath(path.join(effective.config.homePath, "sessions")),
+              yield* fs.realPath(path.join(sharedHome, "sessions")),
+            );
+            yield* fs.writeFileString(
+              path.join(sharedHome, "config.toml"),
+              "# edited shared config\n",
             );
             assert.equal(
-              yield* fs.readLink(path.join(effective.config.homePath, "config.toml")),
-              path.join(sharedHome, "config.toml"),
+              yield* fs.readFileString(path.join(effective.config.homePath, "config.toml")),
+              "# edited shared config\n",
             );
             assert.isFalse(yield* fs.exists(path.join(effective.config.homePath, "auth.json")));
           }

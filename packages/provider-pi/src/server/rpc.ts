@@ -15,11 +15,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import {
-  stopWindowsProcessTree,
-  withWindowsTreeRoot,
-  withoutWindowsTreeEnding,
-} from "@t3tools/shared/windowsProcessTree";
+import { withWindowsTreeStop, withoutWindowsTreeEnding } from "@t3tools/shared/windowsProcessTree";
 import {
   MAX_TOOL_OUTPUT_IMAGES,
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
@@ -220,7 +216,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
   const spawnCommand = yield* resolveSpawnCommand(options.command, [...options.args], {
     env: options.env,
   }).pipe(Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })));
-  const { handle: child, root } = yield* spawner
+  const { handle: child, stopTree } = yield* spawner
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
@@ -233,7 +229,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
       }),
     )
     .pipe(
-      withWindowsTreeRoot,
+      withWindowsTreeStop,
       Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })),
     );
 
@@ -252,15 +248,12 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
   const hasExited = (): boolean =>
     childExited || !isProcessAlive(Number(child.pid), signalProcessGroup);
 
-  // Windows process.kill leaves extension children and pipes alive, also after Pi exited. Each
-  // walk starts PowerShell, so terminate and the scope's finalizer share one.
+  // Windows process.kill leaves extension children and pipes alive, also after Pi exited.
   const terminateProcess =
     platform === "win32"
-      ? yield* Effect.cached(
-          stopWindowsProcessTree(root).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.ignore({ log: "Error" }),
-          ),
+      ? stopTree.pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.ignore({ log: "Error" }),
         )
       : terminatePiProcess(killProcessGroup, hasExited);
 

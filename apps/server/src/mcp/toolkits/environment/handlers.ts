@@ -51,6 +51,8 @@ export function preferences(settings: ServerSettings) {
     providerUpdates: providerUpdatesChoice(settings),
     usageLimitRecovery: usageLimitRecoveryChoice(settings),
     snoozeLimitedThreads: settings.snoozeLimitedThreads,
+    redeemUsageResets: settings.redeemUsageResets,
+    maxPlanResetWaitHours: settings.maxPlanResetWaitHours,
     sourceControlWritingStyle: {
       ...sourceControlWritingStyle,
       customInstructions: characters.slice(0, 4000).join(""),

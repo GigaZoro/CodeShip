@@ -13,14 +13,16 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadProjection,
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
   repositoryKeysOf,
   repositoryMatchRank,
   type RunId,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -31,27 +33,36 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as Digest from "effect/crypto/Digest";
+import * as Hex from "effect/encoding/Hex";
 import * as Tool from "effect/ai/Tool";
 import { withExecutedModelNote } from "@t3tools/provider-core/server/subagentProjection";
 
+import { withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
+  advertisedSlug,
+  overrideOptions,
+  requireOfferedOptions,
   resolveInteractionMode,
   resolveRuntimeMode,
   taskPrompt,
 } from "../mcp/delegatedTaskModes.ts";
 import { followUpOwnerRun } from "../orchestration-v2/CommandPolicy.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
@@ -89,11 +100,17 @@ export class RemoteDelegation extends Context.Service<
   {
     readonly delegate: (
       scope: ThreadScope,
+      parent: {
+        readonly thread: OrchestrationV2ThreadProjection["thread"];
+        readonly runId: RunId;
+        readonly nodeId: NodeId;
+      },
       input: OrchestratorMcpDelegateTaskInput & {
         readonly target: NonNullable<OrchestratorMcpDelegateTaskInput["target"]> & {
           readonly environmentId: EnvironmentId;
         };
       },
+      request: { readonly key: string; readonly commandId: CommandId },
     ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
     /**
      * A `t3_thread_send` there that started or queued a run on the thread of
@@ -136,6 +153,10 @@ export class RemoteDelegation extends Context.Service<
   }
 >()("t3/peer/RemoteDelegation") {}
 
+const encodeKeyPair = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+);
+
 /** The other side refused because the thread there runs above this caller's modes. */
 const isModeRefusal = (error: OrchestratorMcpFailure) =>
   error.code === "runtime_mode_escalation_denied" ||
@@ -161,6 +182,9 @@ const make = Effect.gen(function* () {
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
+  const git = yield* GitVcsDriver.GitVcsDriver;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
@@ -279,41 +303,67 @@ const make = Effect.gen(function* () {
     return chosen.providerInstanceId;
   });
 
-  const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
-    function* (scope, input) {
-      const parent = yield* threads.getThreadRecords(scope.thread.threadId, ["runs"]).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "thread_not_found",
-              message: "The calling thread was not found.",
-            }),
-        ),
+  /**
+   * A new worktree there, from the commit this thread's checkout is on. The other machine can
+   * only fetch a commit that is pushed, so an unpushed one is refused by name.
+   */
+  const parentCommitWorktree = Effect.fn("RemoteDelegation.parentCommitWorktree")(
+    function* (parent: { readonly projectId: ProjectId; readonly worktreePath: string | null }) {
+      const project = yield* projects.getById(parent.projectId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
       );
-      const parentRun = parent.runs
-        .filter(ThreadManagement.isActiveRun)
-        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-      if (
-        parentRun === undefined ||
-        parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId
-      ) {
-        return yield* new OrchestratorMcpFailure({
-          code: "parent_not_active",
-          message: "Delegated tasks require an active run owned by this MCP provider session.",
-        });
-      }
-      const parentNodeId = parentRun.rootNodeId;
-      const { target } = input;
-      // A worktree there would branch from a commit this checkout has and the
-      // other may not, so a remote task runs in that project's checkout.
-      if (input.isolation === "worktree") {
+      const cwd = parent.worktreePath ?? project?.workspaceRoot;
+      const unresolved = new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message:
+          'Isolation "worktree" in a linked environment branches from this thread\'s checkout commit, which could not be read. Omit isolation, or pass target.projectId and use t3_thread_launch with environmentId and a worktree workspaceStrategy.',
+      });
+      if (cwd === undefined) return yield* unresolved;
+      const head = yield* git
+        .resolveCommit({ cwd, revision: "HEAD" })
+        .pipe(Effect.mapError(() => unresolved));
+      const pushedTo = yield* git
+        .execute({
+          operation: "RemoteDelegation.parentCommitWorktree",
+          cwd,
+          args: [
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            "--contains",
+            head.commitSha,
+            "refs/remotes",
+          ],
+        })
+        .pipe(Effect.mapError(() => unresolved));
+      if (pushedTo.stdout.trim() === "") {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
-          message:
-            'A task in a linked environment runs in that project\'s checkout; isolation "worktree" is not supported there. Omit isolation, or use t3_thread_launch with environmentId and a worktree workspaceStrategy.',
+          message: `Commit ${head.commitSha} is not pushed, so the other environment cannot fetch it. Push it, or omit isolation to run in that project's checkout.`,
         });
       }
+      return { type: "worktree", baseRef: head.commitSha, startFromOrigin: true } as const;
+    },
+  );
+
+  /**
+   * A key built from several parts, fixed in length: the caller's own key may already be at the
+   * 256-character limit the forwarded tool's schema checks before the forwarder shortens it.
+   * Equal parts give the same key, so a retry still finds its first result.
+   */
+  const composedKey = (...parts: ReadonlyArray<string>) =>
+    digest.digest(Digest.sha256, new TextEncoder().encode(JSON.stringify(parts))).pipe(
+      Effect.map((hash) => Hex.encode(hash)),
+      Effect.orDie,
+    );
+
+  const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
+    function* (scope, parent, input, { key, commandId }) {
+      const taskId = derive.delegatedTaskNode({ commandId });
+      const { target } = input;
+      const workspaceStrategy =
+        input.isolation === "worktree" ? yield* parentCommitWorktree(parent.thread) : undefined;
       // The provider and model inherit as they do for a task here. Another
       // provider there has no model to inherit, so the caller names one.
       const inherited = parent.thread.modelSelection;
@@ -325,19 +375,40 @@ const make = Effect.gen(function* () {
               providerInstanceId: target.providerInstanceId,
               inheritedInstanceId: inherited.instanceId,
             });
-      const model =
-        target.model ?? (instanceId === inherited.instanceId ? inherited.model : undefined);
+      // An alias can name another model on the other machine, so the parent's model goes there
+      // by its slug here, and only that name carries the parent's options.
+      const parentProvider = (yield* providerRegistry.getProviders).find(
+        (provider) => provider.instanceId === inherited.instanceId,
+      );
+      const parentModel = advertisedSlug(parentProvider, inherited.model);
+      const model = target.model ?? (instanceId === inherited.instanceId ? parentModel : undefined);
       if (model === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "target_required",
           message: `Pass target.model from orchestrator_capabilities with this environmentId (instance ${instanceId} there).`,
         });
       }
-      const options =
-        target.options ??
-        (instanceId === inherited.instanceId && model === inherited.model
-          ? inherited.options
-          : undefined);
+      // The merge would keep one of two values given for an option; the call names it instead.
+      yield* requireOfferedOptions({ instanceId, model, options: target.options }, undefined);
+      const inherits = instanceId === inherited.instanceId && model === parentModel;
+      // Both sides are read as the parent's model runs them before the merge, as for a task here,
+      // so a given effort keeps the Ultracode that an inherited legacy effort carries.
+      const descriptors = inherits
+        ? (parentProvider?.models.find((candidate) => candidate.slug === parentModel)?.capabilities
+            ?.optionDescriptors ?? [])
+        : [];
+      const given = withLegacyUltracodeEffort(descriptors, target.options) ?? undefined;
+      const options = overrideOptions(
+        inherits
+          ? (withLegacyUltracodeEffort(descriptors, inherited.options) ?? undefined)
+          : undefined,
+        given,
+      );
+      // The other side checks the options against its own catalog: those the agent named must be
+      // offered there, and inherited ones it does not offer are dropped, as for a task here.
+      const inheritedOptionIds = (options ?? [])
+        .map((option) => option.id)
+        .filter((id) => given?.some((option) => option.id === id) !== true);
       // Modes asked for are checked against this thread. Omitted ones are left
       // to the other side, which inherits this thread's modes capped by the
       // link's access, so a narrower link still takes the task.
@@ -358,56 +429,42 @@ const make = Effect.gen(function* () {
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
       // the forwarder scopes the launch's, and the record's names it.
-      const key = input.clientRequestId ?? (yield* random.uuidV4());
       const task = taskPrompt(input);
       const title = input.title ?? parent.thread.title;
-      const launched = yield* forwarding.call(
-        scope,
-        ProjectToolkit.tools.t3_thread_launch,
-        target.environmentId,
-        {
-          ...where,
-          title,
-          modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
-          ...(runtimeMode === undefined ? {} : { runtimeMode }),
-          ...(interactionMode === undefined ? {} : { interactionMode }),
-          message: task,
-          clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
-          // The thread there shows it is this thread's subagent, with a way back.
-          delegatedFrom: {
-            environmentId: hereId,
-            threadId: parent.thread.id,
-            title: parent.thread.title,
-          },
-        },
+      // The thread there is named here, from the same scope and key, so the task is recorded
+      // before the launch: a crash or lost reply after the launch leaves a task whose follower
+      // finds its thread, and one before it a task whose thread is gone, which the follower fails.
+      // A JSON pair keeps the namespace apart from the key.
+      const keyBytes = yield* encodeKeyPair([scope.requestNamespace, key]).pipe(
+        Effect.map((encoded) => new TextEncoder().encode(encoded)),
+        Effect.orDie,
       );
+      const keyDigest = yield* digest.digest(Digest.sha256, keyBytes).pipe(Effect.orDie);
+      const remoteThreadId = ThreadId.make(`remote-delegate:${Hex.encode(keyDigest)}`);
       const link = yield* links.get(target.environmentId).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
-      const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
-      );
-      const remoteChild: OrchestrationV2RemoteTaskChild = {
+      const requestedChild: OrchestrationV2RemoteTaskChild = {
         environmentId: target.environmentId,
-        threadId: launched.threadId,
+        threadId: remoteThreadId,
         label: link?.label ?? target.environmentId,
         title,
-        ...(launched.runId === null ? {} : { runId: launched.runId }),
       };
-      const recorded = yield* threads
+      const modelSelection = { instanceId, model, ...(options === undefined ? {} : { options }) };
+      const record = threads
         .dispatch({
           type: "delegated_task.remote.request",
           commandId,
           parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.nodeId,
           task,
           ...(input.title === undefined ? {} : { title: input.title }),
           // The driver runs there; this side only labels the task with it.
           driver: ProviderDriverKind.make("remote"),
-          modelSelection: launched.modelSelection,
-          remoteChild,
+          modelSelection,
+          remoteChild: requestedChild,
           completionWake: input.mode === "wait" ? "settled_only" : "always",
         })
         .pipe(
@@ -425,37 +482,125 @@ const make = Effect.gen(function* () {
                 message: "Unable to record the delegated task.",
               }),
           ),
-          // Nothing here follows a thread the task was never recorded for, so stop it there.
-          // A crash between the launch and this record still leaves it running there
-          // until a retry with the same clientRequestId records it.
-          Effect.tapError(() =>
-            stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
-              Effect.ignoreCause({ log: true }),
-            ),
-          ),
         );
-      const taskEvent = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      const taskId =
-        taskEvent?.event.type === "subagent.updated"
-          ? taskEvent.event.payload.id
-          : // A replayed request recorded the task the first time.
-            yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
-              Effect.map(
-                ({ subagents }) =>
-                  subagents.find((task) => task.remoteChild?.threadId === launched.threadId)?.id,
-              ),
-              Effect.orElseSucceed(() => undefined),
+      // The first committed command alone sends the launch. Overlapping calls can both finish preflight.
+      return yield* Effect.acquireUseRelease(
+        record,
+        (recorded) =>
+          Effect.gen(function* () {
+            if (recorded.replayed) return { taskId };
+            const stored = recorded.storedEvents.find(
+              ({ event }) => event.type === "subagent.updated" && event.payload.id === taskId,
             );
-      if (taskId === undefined) {
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "The delegated task was not recorded.",
-        });
-      }
-      yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
-      return { taskId };
+            const accepted =
+              stored?.event.type === "subagent.updated" ? stored.event.payload : undefined;
+            const remoteChild = accepted?.remoteChild;
+            if (
+              accepted === undefined ||
+              remoteChild === undefined ||
+              remoteChild.threadId !== remoteThreadId ||
+              remoteChild.environmentId !== target.environmentId
+            ) {
+              return yield* new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The delegated task was not recorded.",
+              });
+            }
+            const launched = yield* forwarding
+              .call(
+                scope,
+                ProjectToolkit.tools.t3_thread_launch,
+                remoteChild.environmentId,
+                {
+                  ...where,
+                  title,
+                  modelSelection,
+                  inheritedOptionIds,
+                  ...(runtimeMode === undefined ? {} : { runtimeMode }),
+                  ...(interactionMode === undefined ? {} : { interactionMode }),
+                  ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+                  message: task,
+                  clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
+                  launchId: remoteThreadId,
+                  // The thread there shows it is this thread's subagent, with a way back.
+                  delegatedFrom: {
+                    environmentId: hereId,
+                    threadId: parent.thread.id,
+                    title: parent.thread.title,
+                  },
+                },
+                // A peer that predates it checks no option, so it runs them all as before.
+                ["inheritedOptionIds"],
+              )
+              .pipe(
+                Effect.filterOrElse(
+                  (result) => result.threadId === remoteThreadId,
+                  // A peer that predates the chosen id launched a thread nothing here follows.
+                  (result) => {
+                    const orphan = { ...remoteChild, threadId: result.threadId };
+                    return stopThere(followScope(scope.thread, orphan), orphan, "stop").pipe(
+                      Effect.ignoreCause({ log: true }),
+                      Effect.andThen(
+                        Effect.fail(
+                          new OrchestratorMcpFailure({
+                            code: "orchestration_error",
+                            message:
+                              "The linked environment is too old to launch a delegated task. Update it.",
+                          }),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                Effect.tapError((error) =>
+                  // The task stays on record so a launch whose reply was lost is followed. It is
+                  // failed here only once nothing is left to stop there.
+                  stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
+                    Effect.as(true),
+                    Effect.catch((stopError) =>
+                      Effect.succeed(stopError.code === "thread_not_found"),
+                    ),
+                    Effect.flatMap((nothingThere) =>
+                      nothingThere
+                        ? complete(
+                            scope.thread.threadId,
+                            taskId,
+                            "failed",
+                            `The task could not be started in ${remoteChild.label}: ${error.message}`,
+                            "stopped",
+                          )
+                        : Effect.void,
+                    ),
+                    Effect.ignoreCause({ log: true }),
+                  ),
+                ),
+              );
+            // The follower waits on this run once it knows it; a failure here leaves it on the
+            // thread's latest run, which is the run it launched.
+            if (launched.runId !== null) {
+              yield* threads
+                .dispatch({
+                  type: "delegated_task.remote.attach-run",
+                  commandId: CommandId.make(`${commandId}:attach-run`),
+                  parentThreadId: scope.thread.threadId,
+                  taskId,
+                  runId: launched.runId,
+                })
+                .pipe(
+                  Effect.tapError((cause) =>
+                    Effect.logWarning("remote-delegation.attach-run-failed", { taskId, cause }),
+                  ),
+                  Effect.ignore,
+                );
+            }
+            return { taskId };
+          }),
+        (recorded) =>
+          recorded.replayed
+            ? Effect.void
+            : // A disconnect can interrupt the first sender after acceptance. Its recorded task still needs its follower.
+              followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers)),
+      );
     },
   );
 
@@ -604,20 +749,19 @@ const make = Effect.gen(function* () {
    * messages, pull request watches and delegated tasks. `key` names the stop (the follower
    * sends one, each cancel its own), and each is recorded there once however often it is sent.
    */
-  const stopThere = (
+  const stopThere = Effect.fn("RemoteDelegation.stopThere")(function* (
     scope: ThreadScope,
     remote: OrchestrationV2RemoteTaskChild,
     key: string,
     reason?: string,
-  ) =>
-    forwarding
-      .interruptThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        stop: true,
-        ...(reason === undefined ? {} : { reason }),
-        clientRequestId: `${key}:${remote.threadId}`,
-      })
-      .pipe(Effect.asVoid);
+  ) {
+    yield* forwarding.interruptThread(scope, remote.environmentId, {
+      threadId: remote.threadId,
+      stop: true,
+      ...(reason === undefined ? {} : { reason }),
+      clientRequestId: yield* composedKey("stop", key, remote.threadId),
+    });
+  });
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its

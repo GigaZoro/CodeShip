@@ -103,6 +103,7 @@ import { previewBridge } from "./preview/previewBridge";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { preventThumbButtonFocus, takeThumbButtonNavigation } from "./preview/thumbButtons";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
+import { useEmbeddableThread } from "./chat/useEmbeddableThread";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
@@ -586,6 +587,8 @@ function surfaceTitle(
       return surface.title ?? surface.target?.name ?? t("Device");
     case "side-chat":
       return t("Side chat");
+    case "thread":
+      return t("Thread");
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return t("Browser");
@@ -674,6 +677,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "thread":
+      return <MessagesSquare className="size-3 shrink-0" />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
     case "device":
@@ -892,8 +897,9 @@ function RightPanelTab(
       ? scopeThreadRef(props.environmentId, surface.threadId)
       : null,
   );
-  const title = sideChatShell?.title ?? props.title;
-  const sideChatState = sideChatTabState(sideChatShell);
+  const embedded = useEmbeddableThread(surface.kind === "thread" ? surface.threadRef : null);
+  const title = (surface.kind === "thread" ? embedded.thread : sideChatShell)?.title ?? props.title;
+  const sideChatState = surface.kind === "side-chat" ? sideChatTabState(sideChatShell) : null;
   const content = (
     <>
       <PanelTabCloseButton label={t("Close {title}", { title })} onClick={() => onClose(surface)}>

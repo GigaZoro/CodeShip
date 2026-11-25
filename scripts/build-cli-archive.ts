@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off - FileSystem.copy resolves relative symlinks to absolute ones; the archive needs them verbatim.
 /** Runtime archives must run without host Node, npm, or compilers. */
+import * as NodeFSP from "node:fs/promises";
+
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
@@ -16,48 +19,35 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { fromYaml } from "@t3tools/shared/schemaYaml";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import {
-  createStagePatchedDependencies,
-  createStageWorkspaceConfig,
+  installStagedDependencies,
+  readWorkspaceConfig,
   resolveFffNativeDependencies,
-  STAGE_INSTALL_ARGS,
+  writeStageWorkspace,
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import {
+  StageDirRequiredError,
+  StagePhase,
+  markStageComplete,
+  prepareStageDir,
+  requireCompletedStage,
+  stageCommitMarker,
+} from "./lib/stage-dir.ts";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64"]);
 type BuildPlatform = typeof BuildPlatform.Type;
 type BuildArch = typeof BuildArch.Type;
 
-const WorkspaceConfig = Schema.Struct({
-  catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-});
-const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-const StageWorkspaceConfig = Schema.Struct({
-  supportedArchitectures: Schema.Struct({
-    os: Schema.Array(Schema.String),
-    cpu: Schema.Array(Schema.String),
-    libc: Schema.optional(Schema.Array(Schema.String)),
-  }),
-  allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
-  patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
-});
-const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -141,9 +131,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const workspace = yield* decodeWorkspaceConfig(
-    yield* fs.readFileString(path.join(input.repoRoot, "pnpm-workspace.yaml")),
-  );
+  const workspace = yield* readWorkspaceConfig();
   const catalog = workspace.catalog ?? {};
   const serverDependencies = resolveCatalogDependencies(
     serverPackageJson.dependencies,
@@ -161,10 +149,6 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     ...selectCliRuntimeExternalDependencies(serverDependencies),
     ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
   };
-  const patchedDependencies = createStagePatchedDependencies(
-    workspace.patchedDependencies ?? {},
-    dependencies,
-  );
 
   yield* fs.writeFileString(
     path.join(input.stageDir, "package.json"),
@@ -176,33 +160,22 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       dependencies,
     })}\n`,
   );
-  yield* fs.writeFileString(
-    path.join(input.stageDir, "pnpm-workspace.yaml"),
-    yield* encodeStageWorkspaceConfig({
-      ...createStageWorkspaceConfig({
-        platform: input.platform,
-        arch: input.arch,
-        ...(workspace.allowBuilds ? { allowBuilds: workspace.allowBuilds } : {}),
-        patchedDependencies,
-        overrides: resolveCatalogDependencies(workspace.overrides ?? {}, catalog, "apps/server"),
-      }),
-      nodeLinker: "hoisted",
-    }),
-  );
-  if (Object.keys(patchedDependencies).length > 0) {
-    yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
-  }
+  yield* writeStageWorkspace({
+    repoRoot: input.repoRoot,
+    stageDir: input.stageDir,
+    platform: input.platform,
+    arch: input.arch,
+    workspace,
+    nodeLinker: "hoisted",
+  });
 
-  const install = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
-  yield* runCommand(
-    ChildProcess.make(install.command, install.args, {
-      cwd: input.stageDir,
-      shell: install.shell,
-      stdout: "inherit",
-      stderr: "inherit",
-    }),
-    "vp install --prod (cli archive runtime externals)",
-  );
+  yield* installStagedDependencies({
+    repoRoot: input.repoRoot,
+    stageDir: input.stageDir,
+    label: "cli archive runtime externals",
+    sourceImporters: ["apps/server"],
+    verbose: true,
+  });
 
   const platformKey = cliArchivePlatformKey(input.platform, input.arch);
   const prebuildsDir = path.join(input.stageDir, "node_modules/node-pty/prebuilds");
@@ -348,7 +321,7 @@ const NotarySubmission = Schema.Struct({
 const rejectedNotaryStatuses: ReadonlySet<string> = new Set(["Invalid", "Rejected"]);
 const decodeNotarySubmission = Schema.decodeEffect(Schema.fromJsonString(NotarySubmission));
 
-/** Notarization runs only for a Developer ID identity with all three App Store Connect key values. */
+/** Notarization needs all three App Store Connect key values; only a Developer ID signature is submitted. */
 const resolveNotaryCredentials = Effect.fn("resolveNotaryCredentials")(function* () {
   const signing = yield* MacSigningConfig;
   const identity = Option.getOrUndefined(signing.identity)?.trim() || "-";
@@ -356,7 +329,7 @@ const resolveNotaryCredentials = Effect.fn("resolveNotaryCredentials")(function*
   const keyId = Option.getOrUndefined(signing.appleApiKeyId);
   const issuer = Option.getOrUndefined(signing.appleApiIssuer);
   const credentials =
-    identity !== "-" && key && keyId && issuer
+    key && keyId && issuer
       ? Option.some(["--key", key, "--key-id", keyId, "--issuer", issuer])
       : Option.none<ReadonlyArray<string>>();
   return { identity, credentials };
@@ -485,16 +458,17 @@ export const awaitCliNotarization = Effect.fn("awaitCliNotarization")(function* 
   submissionFile: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  // The signing identity exists only in the step that signs, so waiting reads the key alone.
   const { credentials } = yield* resolveNotaryCredentials();
   const submitted = yield* fs.exists(submissionFile);
   if (Option.isNone(credentials)) {
     if (submitted) {
       return yield* new CliArchiveInputMissingError({
-        inputPath: "T3CODE_CLI_MAC_SIGN_IDENTITY and APPLE_API_KEY*",
+        inputPath: "APPLE_API_KEY*",
         hint: `${submissionFile} names a submission, but its credentials are not set.`,
       });
     }
-    yield* Effect.log("[cli-archive] No notarization to await (signing or APPLE_API_KEY* unset).");
+    yield* Effect.log("[cli-archive] No notarization to await (APPLE_API_KEY* unset).");
     return;
   }
   if (!submitted) {
@@ -584,19 +558,41 @@ const signWindowsExecutable = Effect.fn("signWindowsExecutable")(function* (
   yield* Effect.log("[cli-archive] Signed t3.exe (Azure Trusted Signing).");
 });
 
-const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
+interface CliArchiveInput {
   readonly platform: BuildPlatform;
   readonly arch: BuildArch;
   readonly version: string;
   readonly outputDir: string;
   readonly resourceMonitorDir: Option.Option<string>;
   readonly notarySubmissionFile: Option.Option<string>;
-}) {
+  readonly phase: Option.Option<StagePhase>;
+  readonly stageDir: Option.Option<string>;
+}
+
+const cliExecutableName = (platform: BuildPlatform) => (platform === "win" ? "t3.exe" : "t3");
+
+const cliStageMarker = Effect.fn("cliStageMarker")(function* (input: CliArchiveInput) {
+  return {
+    platform: input.platform,
+    arch: input.arch,
+    version: input.version,
+    ...(yield* stageCommitMarker(
+      Option.getOrElse(input.phase, (): StagePhase => "all"),
+      yield* RepoRoot,
+    )),
+  };
+});
+
+/** Copies and installs everything the archive ships; runs without signing credentials. */
+const stageCliArchive = Effect.fn("stageCliArchive")(function* (
+  input: CliArchiveInput,
+  stageRoot: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
   const serverDir = path.join(repoRoot, "apps/server");
-  const executableName = input.platform === "win" ? "t3.exe" : "t3";
+  const executableName = cliExecutableName(input.platform);
   // tsdown suffixes cross-built executables; prefer the exact target over the plain host build.
   const targetKey = `${input.platform === "mac" ? "darwin" : input.platform}-${input.arch}`;
   const targetExecutable = path.join(
@@ -628,7 +624,6 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   );
 
   const stem = cliArchiveStem(input.version, input.platform, input.arch);
-  const stageRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-archive-" });
   const contentDir = path.join(stageRoot, stem);
   yield* fs.makeDirectory(contentDir, { recursive: true });
 
@@ -656,6 +651,40 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       catch: (cause) => new CliArchiveLinuxArm64PageError({ executablePath, cause }),
     });
   }
+  yield* markStageComplete(stageRoot, yield* cliStageMarker(input));
+});
+
+/** Signs a finished stage and archives it; the only phase that reads signing credentials. */
+const packageCliArchive = Effect.fn("packageCliArchive")(function* (
+  input: CliArchiveInput,
+  stageRoot: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const repoRoot = yield* RepoRoot;
+  yield* requireCompletedStage(stageRoot, yield* cliStageMarker(input));
+  const hostPlatform = yield* HostProcess.Platform;
+  const stem = cliArchiveStem(input.version, input.platform, input.arch);
+  // Signing rewrites binaries in place, so each attempt signs a fresh copy and a retry starts from the staged bytes.
+  const packageRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-package-" });
+  const contentDir = path.join(packageRoot, stem);
+  yield* Effect.tryPromise({
+    try: () =>
+      NodeFSP.cp(path.join(stageRoot, stem), contentDir, {
+        recursive: true,
+        verbatimSymlinks: true,
+        preserveTimestamps: true,
+      }),
+    catch: (cause) =>
+      PlatformError.systemError({
+        _tag: "Unknown",
+        module: "FileSystem",
+        method: "cp",
+        pathOrDescriptor: path.join(stageRoot, stem),
+        cause,
+      }),
+  });
+  const executablePath = path.join(contentDir, cliExecutableName(input.platform));
   if (input.platform === "mac") {
     yield* signMacArchiveContents({
       repoRoot,
@@ -679,7 +708,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   if (input.platform === "win" && hostPlatform !== "win32") {
     yield* runCommand(
       ChildProcess.make("zip", ["-q", "-r", "-X", path.resolve(archivePath), stem], {
-        cwd: stageRoot,
+        cwd: packageRoot,
       }),
       "zip",
     );
@@ -688,7 +717,15 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     // the Git Bash shell CI uses, a bare `tar` is GNU tar, which neither
     // writes zip nor accepts a drive-letter path.
     yield* runCommand(
-      ChildProcess.make(windowsSystemTar(), ["-a", "-c", "-f", archivePath, "-C", stageRoot, stem]),
+      ChildProcess.make(windowsSystemTar(), [
+        "-a",
+        "-c",
+        "-f",
+        archivePath,
+        "-C",
+        packageRoot,
+        stem,
+      ]),
       "tar (zip)",
     );
   } else {
@@ -699,7 +736,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
         "-czf",
         archivePath,
         "-C",
-        stageRoot,
+        packageRoot,
         stem,
       ]),
       "tar (gzip)",
@@ -708,6 +745,24 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   const stat = yield* fs.stat(archivePath);
   yield* Effect.log(`[cli-archive] Wrote ${archivePath} (${String(stat.size)} bytes).`);
   return archivePath;
+});
+
+const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: CliArchiveInput) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const phase = Option.getOrElse(input.phase, (): StagePhase => "all");
+  const stageDir = Option.getOrUndefined(Option.map(input.stageDir, (dir) => path.resolve(dir)));
+  if (phase !== "all" && stageDir === undefined) {
+    return yield* new StageDirRequiredError({ phase });
+  }
+  const stageRoot = stageDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-archive-" }));
+  if (phase !== "package") {
+    if (stageDir !== undefined) yield* prepareStageDir(stageDir);
+    yield* stageCliArchive(input, stageRoot);
+  }
+  if (phase !== "stage") {
+    yield* packageCliArchive(input, stageRoot);
+  }
 });
 
 const command = Command.make(
@@ -728,6 +783,18 @@ const command = Command.make(
     notarySubmissionFile: Flag.String("notary-submission-file").pipe(
       Flag.withDescription(
         "macOS: submit for notarization without waiting and write the submission id here. Publish only after await-notarization succeeds.",
+      ),
+      Flag.optional,
+    ),
+    phase: Flag.Literals("phase", StagePhase.literals).pipe(
+      Flag.withDescription(
+        "all (default) stages and packages; stage copies and installs without signing; package signs and archives a finished --stage-dir.",
+      ),
+      Flag.optional,
+    ),
+    stageDir: Flag.String("stage-dir").pipe(
+      Flag.withDescription(
+        "Directory the stage phase fills (it must be empty) and the package phase reads. The build never removes it.",
       ),
       Flag.optional,
     ),

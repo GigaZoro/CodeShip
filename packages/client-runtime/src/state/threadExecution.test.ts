@@ -1,4 +1,5 @@
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   TurnItemId,
@@ -312,6 +313,38 @@ describe("thread execution presentation", () => {
       turnItems: [{ ...item, failure: { ...item.failure, class: "transport_error" as const } }],
     };
     expect(deriveResumableRunId(lostConnection, deriveThreadRuntime(lostConnection))).toBe(
+      failed.id,
+    );
+    const rejectedLogin = {
+      ...lostConnection,
+      turnItems: [
+        {
+          ...item,
+          failure: {
+            ...item.failure,
+            class: "provider_error" as const,
+            code: AUTHENTICATION_FAILED_FAILURE_CODE,
+          },
+        },
+      ],
+    };
+    // A continuation would lose the message of an agent that never started; sending it again recovers it.
+    expect(deriveResumableRunId(rejectedLogin, deriveThreadRuntime(rejectedLogin))).toBeNull();
+    const rejectedMidWork = {
+      ...rejectedLogin,
+      turnItems: [
+        {
+          ...item,
+          id: TurnItemId.make("reasoning"),
+          ordinal: 0,
+          type: "reasoning" as const,
+          status: "completed" as const,
+          streaming: false,
+        },
+        ...rejectedLogin.turnItems,
+      ],
+    };
+    expect(deriveResumableRunId(rejectedMidWork, deriveThreadRuntime(rejectedMidWork))).toBe(
       failed.id,
     );
     const setupOffline = {
@@ -826,5 +859,15 @@ describe("presentPendingBackgroundWork", () => {
       },
     ]);
     expect(presentation?.items[0]?.label).toBe("mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF");
+  });
+
+  it("names the work the run waits on and lists what it left running", () => {
+    const presentation = presentPendingBackgroundWork([
+      { taskId: "dev", kind: "command", description: "pnpm dev" },
+      { taskId: "review", kind: "subagent", description: "Review the diff" },
+    ]);
+
+    expect(presentation).toMatchObject({ title: "Waiting · Review the diff", waiting: true });
+    expect(presentation?.items.map((item) => item.taskId)).toEqual(["review", "dev"]);
   });
 });

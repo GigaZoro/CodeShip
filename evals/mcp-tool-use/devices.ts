@@ -7,6 +7,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodePathLayers from "@effect/platform-node/NodePath";
 import {
   DeviceError,
   type DeviceHostId,
@@ -791,6 +792,9 @@ export const makeDeviceTools = Effect.fn("evaluateMcpToolUse.makeDeviceTools")(f
       ),
       Layer.provideMerge(config),
       Layer.provideMerge(files),
+      Layer.provide(
+        environment.platform === "win32" ? NodePathLayers.layerWin32 : NodePathLayers.layerPosix,
+      ),
     ),
   );
   type Entry = Parameters<McpServer.McpServer["Service"]["addTool"]>[0];

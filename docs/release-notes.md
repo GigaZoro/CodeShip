@@ -1,3 +1,513 @@
+## 2026-11-24 — Require Git 2.47 on development machines
+
+- `machine-config.json` now requires Git 2.47.0 or later. `node ~/.agents/tools/machine-config.mjs check <checkout>` reports an older Git, which takes minutes on the UTF-16 rows of the Git driver tests. No change to the app.
+
+## 2026-11-24 — Compact density and an accent colour
+
+- Settings → Appearance has a **Compact spacing** option that tightens thread lists, chat message gaps and settings rows on web and desktop, and the home thread list on mobile.
+- Pick an accent colour from eight hues, or keep your theme's own. It applies over any theme and meets contrast requirements in light and dark.
+
+## 2026-11-24 — Open a thread beside the one you are reading
+
+- Right-click a thread and choose **Open in side panel**, or Alt-click (Option-click on Mac) to open it beside your current thread.
+- In the command palette, highlight a thread and press **Alt+Enter** (**Option+Enter** on Mac). Use **Open in main view** to move the thread into the main view.
+- Opening a file, browser tab, pull request or side chat from a thread in the side panel moves that thread to the main view with it open.
+
+## 2026-11-24 — Scheduler test coverage
+
+- Scheduler changes run the notebook cleanup test and skip 29 unrelated attachment cases. Changes to attachment handling or document extraction still run all 30.
+
+## 2026-11-24 — Changed-file checks resume completed test work
+
+- Maintainers: `vp run check:changed` saves passed test groups when the test step ends and its inputs still match, so a retry after a timeout, in any worktree or chat with its own install, reuses them at the same commit with the same file modes, matching inputs, tracked environment, user, umask, host capabilities, Git version, system Git configuration, and Git ignore and attributes files under `~/.config/git`. Its tests run without your global Git configuration, as on CI, so a setting there such as a hooks path or commit signing no longer changes them.
+- Maintainers: `check:changed` and the weekly upstream sync read Git's file lists as Git wrote them, so a file whose name has a quote, backslash, non-ASCII character or leading space is no longer misread. `check:changed` and `test:cached` stop with the name of a file whose name is not UTF-8 instead of leaving it out, and the upstream sync stops at a conflicted file whose name is not UTF-8. A rebase, merge or upstream sync that merges the release notes keeps a byte in them that is not UTF-8 as it is. `test:cached` stops when `--uncached` names a file the checkout does not hold, instead of running that file cached. `check:changed` skips a test the working tree deleted and no longer fails when a file replaces a tracked directory. `check:changed` takes its files, and the tests beside them, from the tree it records for the push gate, so it checks what a commit of the checkout would hold under Git's own ignore and case settings: an ignored test beside a changed file no longer runs, and a changed file that tree names in a case the disk does not hold stops the run. It finds the tests beside a changed file, and the tests that import it, where Git, the disk and an import spell a name or folder in different cases or Unicode forms. It runs them through the same exact-file runner as `test:cached`, under the test script of the nearest enclosing package that has one, and a test that package's config leaves out passes, as `vp test run --passWithNoTests` would. It refuses a package test script that adds anything but `--passWithNoTests`, `--config`, `--dir` and `--project` with literal values, since a filter such as a file name or `-t` would pass a test it never ran, and `|| true` would hide a failure; a change that adds such a script fails its own check instead of a later one. A change under the vendored `.repos/` references, in any case Git spells the folder, no longer runs their tests, and they no longer count toward a run that selects every test. Both stop at a test Git lists whose path holds a backslash, which Vitest cannot run, instead of passing without running it.
+- Maintainers: the tree `check:changed` records for the push gate now holds a same-size edit made in the second Git last wrote the index, so such an edit no longer fails the run with "files changed while the checks ran" or lets the gate accept a pass for the older tree. It also reads that tree in a checkout or temporary folder whose path holds `:` (`;` on Windows), which Git used to split into two paths.
+
+## 2026-11-24 — Maintainer scripts share one limit for Git output
+
+- Maintainers: the PR size label no longer fails on a pull request that changes thousands of files, such as a sync of the vendored references. It, the release-notes driver, the evals, `test-cached`, the background-live verifier and the mobile showcase read Git output up to the shared 256 MiB limit, instead of Node's 1 MiB default or their own 32 MiB and 64 MiB limits.
+
+## 2026-11-24 — A landing takes over a turn its lander left on the same machine
+
+- Maintainers: a lander records the landing lease it takes in its clone's Git folder, and on Linux a lander waiting in another worktree of that clone takes the turn over once that lander has exited in the same kernel boot and PID namespace with no push to main in flight, instead of waiting up to three hours for its lease to expire. `node .github/scripts/landing-turn.cjs holder` prints the current lease and, when a worktree of this clone took it, the checkout and process that hold it.
+
+## 2026-11-24 — The upstream sync lands the commit it verified
+
+- Maintainers: `node scripts/upstream-sync.ts check` records the commit its pass covered, and `land` pushes only that commit and reports it. Both refuse a checkout with uncommitted or untracked files, and `check` one that does not hold the upstream merge, such as one reset to main or a commit with the merge's files on main's commit.
+- When the checkout is not on the checked commit, `land` reports `unchecked` with both commits instead of pushing, and a push whose reply was lost counts as landed only when main holds the checked commit. When main moved, `land` merges it into the checked commit without moving any branch or the checkout, and returns the merge for the sync to fast-forward to and check again. The release notes merge by date with the repository's merge driver, the sync's entries above main's of the same date, and a merge that leaves Git anything else to decide, such as a directory rename split, holds instead.
+- Maintainers: the upstream sync, landings, the `check:changed` receipt and the release-notes check no longer stop with `ENOBUFS` when Git prints over 1 MiB, such as a merge of main with thousands of conflicts, or release notes past 1 MiB, which they would have reached within weeks.
+
+## 2026-11-24 — A landing checks before it waits and gives the turn back reliably
+
+- Maintainers: `node .github/scripts/landing-turn.cjs land` rebases a branch that is behind main and runs `check:changed` before it waits for the landing turn, so a conflict or a failing check stops it at once and holds no turn. It first lists, once, the other local worktrees with unmerged work on the same files, so a conflict comes with the work to reconcile it with. When main stays still during the wait, the turn lasts for the push alone; when main moved, the lander rebases and checks again under the turn. A landing whose checkout moved to another commit while it ran stops instead of landing a commit its checks did not cover, and a fetch or push of main that stops answering ends the landing after ten minutes instead of holding the turn until it expires.
+- A branch that was behind main starts the landing again from the rebased tree, so the wait and the turn run the rebased copy of the landing script, with main's changes to it, instead of the copy the branch started from. It continues through a command of its own, so a copy that cannot continue such a landing refuses it instead of starting another.
+- A landing tries again when a passing network failure stops it from giving the turn back, instead of leaving the turn held for up to three hours.
+- The pre-push hook lets a push that only gives the landing turn back through without loading the checkout's scripts, so a checkout whose landing script does not load can no longer leave the turn held. It also reads each pushed ref from the right, so a push to main whose source is a revision with a space in it, such as `HEAD^{/fix it}`, no longer skips the landing turn and the `check:changed` pass.
+- The landing turn's timeout test holds its stalled push until it releases it and gives the git reads around that push ten seconds instead of two. The testing guide says how to test a timeout that way.
+
+## 2026-11-24 — Faster replay fixture cleanup checks
+
+- Replay fixture cleanup tests now load only the configuration they exercise, shortening local test runs.
+
+## 2026-11-24 — Agent launches and model changes refuse options the model does not offer
+
+- `t3_thread_launch` now checks the options of a given model as `delegate_task` and `create_threads` do, and refuses one the model or account does not offer, naming it, instead of starting a thread that silently runs without it (such as `serviceTier` on a managed Codex account).
+- A task delegated to a linked machine is refused an option named for it that the model there does not offer. Options it inherits from your chat that the model there does not offer, or that your chat repeats, are dropped, as for a task on this machine. A linked machine on an older version still takes the task with every option, as before, and a task from an older machine has the options its model does not offer dropped rather than refused.
+- A retried launch keeps the model and options it was accepted with.
+- `t3_thread_configure`, a project's default model set with `t3_project_create` or `t3_project_update`, and a scheduled task's fallback models refuse a model or option the provider does not offer, naming it, instead of saving a selection a later turn cannot run. A fallback on an account this machine does not have, or has not installed, is left for the machine that has it.
+
+## 2026-11-24 — See what needs you from a new thread, and submenus that stay on screen
+
+- On web and desktop, a new thread's empty composer lists the threads that need you, as the sidebar's Needs you does, before your recent threads. Recent threads list running threads first, latest started first, then the threads you last sent to, and follow the sidebar's project and machine scope and its scheduled-task placement.
+- On web, a context submenu with no room on the right opens to the left of its item and stays there, and deeper submenus keep going the same way instead of covering the menus they came from. In a right-to-left layout, submenus open to the left and the Left arrow opens them.
+
+## 2026-11-24 — Claude starts with Ultracode exactly as the chat sets it
+
+- A Claude chat or delegated task with Ultracode off could still start with it on when the Claude launch arguments turned it on, with `ultracode` in `--settings` or with `--effort ultracode`. Starting a chat now follows the model's Ultracode toggle and effort, the same as switching models mid-chat, so Ultracode stays off unless you turn it on. Generated titles, commit messages and pull request text follow the model's Ultracode and Fast mode toggles over the launch arguments too. When your organization's managed Claude settings set `ultracode` to the other value, Claude Code would ignore the toggle, so the message is refused with the reason instead, and the chat stays as it was.
+
+## 2026-11-24 — Resume chats promptly after a restart
+
+- A chat ready to resume while the server checks its memory queue now starts as soon as memory permits, including during startup.
+
+## 2026-11-24 — Keep schedule edits made during a missed run
+
+- Editing a task while the scheduler skips a missed run now preserves the new schedule. Run history records the skip only when the scheduler advances that occurrence.
+
+## 2026-11-24 — Preserve ignored symlinks during worktree release
+
+- On macOS, worktree owners can save ignored dependency trees containing relative or dangling symlinks. When a release request fails before publication, CodeShip removes redundant backup links where the checkout still has the original files.
+
+## 2026-11-24 — Release a delivered task’s worktree
+
+- Checkout owners can queue a release for one completed run, save its ignored files, and name the refs that preserve its history. The server waits for delivery and teardown, then releases the checkout. A follow-up opens a fresh checkout.
+- Worktree cleanup can finish a progressing inspection that takes longer than thirty seconds. A stalled or incomplete inspection keeps the checkout.
+- Commands, terminals and providers can start in other checkouts throughout a release. A damaged release request keeps its checkout and allows other releases to finish.
+
+## 2026-11-23 — Cached test results
+
+- The cached test runner applies the package’s Vitest configuration and checks that every selected file produced a result in each scheduled project before caching success.
+- Package filters and runtime settings follow `vp test run`. If overlapping projects produce results that Vitest cannot attribute to a single project, the runner reports an incomplete group and leaves it uncached.
+- A stale Git entry beneath a directory replaced by a file no longer interrupts selection of other tests.
+
+## 2026-11-23 — Relay executable validation
+
+- CodeShip requires the relay’s version command to exit successfully before selecting an executable or activating a download. It retries a failed version check the next time it looks for the relay.
+
+## 2026-11-23 — Windows landing checks
+
+- The landing tests exercise lost Git push replies, expired leases, and large lists of changed files on Windows using temporary repositories.
+
+## 2026-11-23 — OpenCode questions and permissions
+
+- On resumed chats, OpenCode routes questions and permission requests to their originating turn when the native session identifies it.
+
+## 2026-11-23 — Replay of accepted sends and delegations
+
+- Retrying a keyed send recovers its original delivery after the run settles or its thread is archived. Repeated delegations resolve to the task and destination first accepted.
+
+## 2026-11-23 — Replay tests release their temporary files
+
+- Provider replay tests remove their temporary directories when they finish, fail, or are interrupted, preventing repeated runs from filling the disk.
+
+## 2026-11-23 — Accounting for provider background work
+
+- Background completions in ACP, Claude, Codex and Muse carry their originating run when it can be identified. Duplicate ACP completion notices are counted once. Retrying a failed wake retains the original task even when a later task reuses its ID. Replacing an ACP runtime or a Muse host clears its pending reports.
+
+## 2026-11-23 — A scheduled chat starts with what its run condition found
+
+- When a task's **Check before running** command finds work, the chat it starts now gets the check's reason, and the `unit` its JSON answer names (a work item, a pull request or a settlement id), at the end of its first message, so the agent starts on that work instead of looking for it again. **Run history** shows the same reason and unit.
+
+## 2026-11-23 — Remote delegation test coverage
+
+- Remote delegation tests now exercise keyed launches with the destination thread’s actual project, modes, and link ownership.
+
+## 2026-11-23 — Access checks for repeated thread launches
+
+- Retrying a keyed MCP thread launch checks the thread's current project, link access, and modes before returning its details.
+
+## 2026-11-23 — Accounting for messages, failover and review
+
+- New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
+
+## 2026-11-22 — Relay client installs keep each other's locks
+
+- CodeShip checks the version that each managed relay binary reports and reuses the exact pin even when an older release folder contains it. New installs use a separate cache tree and hold a SQLite transaction until they finish. The lock survives a host suspend, and the OS releases it if the installer exits.
+- Upgrades can reuse the pinned relay from either previous cache layout while offline. Cleanup shares the install lock. A later tunnel registration retries cleanup if the lock is busy, a cache scan fails, or an obsolete executable cannot be removed. It retains a rollback binary and removes only identified older executables for this machine’s platform and architecture from the new cache. Legacy files, staging files and binaries reporting the pin or a newer version are preserved.
+- A recent legacy lock gives the older installer time to finish. CodeShip can proceed in its own directory as soon as all identified legacy owners have exited, or after 30 minutes if ownership remains uncertain. It preserves the legacy lock and binary. Relay archive extraction has a two-minute timeout.
+
+## 2026-11-22 — Long keys work for tasks on linked environments
+
+- Starting or cancelling a task on a linked environment no longer fails when the chat's request key is at the 256-character limit.
+
+## 2026-11-22 — Release build tests pass on Windows
+
+- The staged-install tests no longer depend on how the host runs `vp`, and the development launcher's file-permission test is skipped on Windows, which has no POSIX permissions, so the Windows check passes for release build changes.
+
+## 2026-11-22 — Filter, tag, and sort threads
+
+- Filter the thread list by status on web, desktop, and mobile. The list shows when a filter is active and gives you a quick way to clear it.
+- Add, remove, and filter by thread tags on web, desktop, and mobile. On web and desktop you can tag several selected threads together.
+- Sort threads by last activity, creation, or name on web, desktop, and mobile. Pinned threads keep their manual order, and Settled stays in the order threads settled.
+- While a status or tag filter is on, **Show more** in Settled and chat folders reveals loaded matches first. If more are needed, each press loads one page from each available machine at the current cutoff. Changing filters resets folder paging, and **Show less** on web and desktop returns that folder to its preview and releases its pages. A separate retry button handles failed page reads.
+
+## 2026-11-22 — Unclosed display math no longer flattens the lists after it
+
+- A `$$` or `\[` that never closed turned every later list and quote in the message into plain paragraphs, even after a blank line. Display math now ends at a blank line, as in TeX, so an unclosed opener stays text and the lists and quotes after the next blank line keep their structure. Display math that contains a blank line now shows as text.
+
+## 2026-11-22 — Commands wait for memory before they start
+
+- `t3_command_run` now waits until the machine has memory for a command before it starts it, as scheduled runs, delegated tasks, emulators and chats that resume by themselves already do. Before, every command started at once, so when many resumed chats started commands together after a restart, their shell wrappers alone could use up the free memory. A waiting command is never refused: commands start in the order they were asked for, `task_status` reports them as queued with the reason, each time limit counts from when the command starts, and a waiting command keeps its place through a restart. A waiting command whose task is cancelled or whose chat is archived never starts, and its task says why. The **Wait for memory before automated starts** setting in **Settings → Maintenance & about → Background activity** covers them too.
+- The update prompts no longer call every open command "running": a queued command carries on through the update just as a running one does.
+
+## 2026-11-22 — Delegated tasks on an Auto model keep the options they are given
+
+- A delegated task, or a thread an agent launches, on its parent's Auto model or on a role or reviewer model set to Auto ran the effort and other options saved for Auto instead of the ones the agent gave. A target that gives options now runs on that model with them, keeping the parent's other options when it is on the parent's account and model, named by slug or alias (on a linked machine by its slug, since an alias there can name another model); one without options still runs as Auto. Options a role or reviewer model rejects now fail the call instead of quietly running the task on the parent's model, and a task on a linked machine that gives one option twice fails instead of keeping one of them.
+- A role's model that its account no longer offers now falls back to the parent's model, as a removed account does, instead of starting the task on a model that cannot run, also when the account is rechecked first.
+- `create_threads` now reports the account and model its prompt's run starts on, when routing moves it off an account at its usage limit, and a retry of the call reports that run even after the thread has started others.
+
+## 2026-11-22 — Landings take turns in arrival order
+
+- Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
+- A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
+
+## 2026-11-21 — Repository commands refuse arguments they do not take
+
+- The landing, upstream sync, CI, release, translation, task cache, relay push and replay recording scripts check their whole command line before they act. Before, most of them ignored an argument they did not read, so `landing-turn.cjs land --quick-precheck` started a real landing and a mistyped `--uninstall` made the task cache installer install. Replay recorders reject invalid selections and blank output paths before starting a provider. The Claude and Codex package commands preserve Bun’s environment-file settings and run the recorder in Node. Use `--dry-run` to see the output path before recording. Mobile behavior checks that each selected case has a compatible device before preparing one. Changing a package command mapping or adding or deleting a repository command selects the argument checks.
+- The cached test runner on Windows matches nested package filters, discovered shards and cache exceptions using the same paths as Git. It starts the repository’s Vite+ CLI directly for both the test run and verification of cached results.
+- The landing lease test of a push that runs out of time passes on Windows: its unresponsive origin now waits outside the test's folder, which Windows would not delete while a process works in it.
+- `vp run --filter @t3tools/mobile generate` starts again. The theme file it loads imported the app's `i18n.tsx`, which Node cannot load, so the generator failed before it wrote anything; a test now runs it the way the package script does and fails when the committed theme files are out of date.
+- The Android push watcher no longer loads the relay's whole delivery service, database layer included, to build an alert, so it starts in about half the time.
+- The task cache tests pass on Windows. They now point Windows' home folder at the test home as well, and pass the preload to Node as a file URL, the form the installer writes.
+
+## 2026-11-21 — A machine that comes back reconnects without a click
+
+- A linked machine that was away for a while (shut down, asleep, without power, or restarting for an update) could stay **Reconnecting** in the sidebar for up to 5 minutes after it was back, because the wait between tries grew to 5 minutes. While the app is open, it now waits at most 30 seconds after a failed try before trying again, so such a machine reconnects without a click on **Reconnect**.
+
+## 2026-11-21 — A finished subagent no longer opens pull requests from its own worktree
+
+- When a subagent that has its own worktree delivers its result, T3.CodeShip keeps it active while it has unmerged work but no longer looks up or opens a pull request for it. The agent that started the subagent decides how that work lands.
+
+## 2026-11-21 — Recent threads keep their places while chats run
+
+- The recent threads under an empty draft and the thread picker for linking a pull request no longer reorder while chats run. Both now order by when you last sent a message or started the chat, as the sidebar's Working list does, and the draft list shows that time. The draft list also leaves out tasks the sidebar shows under their parent thread, and the web command palette's thread times show when you last sent a message or started the chat.
+
+## 2026-11-21 — Background work on a thread with no run reads the same everywhere
+
+- A thread without a run that still holds background work, such as a finished subagent's, now shows that work in the sidebar the same way auto-settle counts it, so a thread can no longer look idle while settlement treats it as busy.
+
+## 2026-11-21 — A failed worktree launch says why Git refused
+
+- Starting a thread in a new worktree from a commit that exists only on another machine is now refused up front, naming the commit, instead of failing later with only "git worktree add failed". A fetch no longer counts as proof that the remote holds the commit.
+- A failed Git command now reports its exit code, and for worktree and branch creation, status and similar commands with fixed arguments, Git's own last lines. The step that creates the branch is no longer reported as "git worktree add failed".
+
+## 2026-11-21 — Claude uses fewer tokens for one-off text generation
+
+- On Claude versions that support safe mode, thread titles, commit messages and other one-off generations skip your personal `CLAUDE.md` and plugins. Account launch settings still apply.
+
+## 2026-11-21 — Claude's held resets say what they clear, or why they cannot
+
+- In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude gave only a total because no reset can be used now, the reset has `kind: null` and `kindUnknownReason: "total_only"`.
+- When Claude answers that resets wait while the account continues at lower priority, it reads none of them, so `bankedResets` is now `null` with `bankedResetsError: "low_priority"` instead of listing a reset that may not exist.
+- Automatic redemption now uses a Claude reset kept for when the account reaches a limit as soon as the account is at a limit that reset clears, even if CodeShip read Claude's resets before that limit was reached. A reset Claude offers now still goes first, and a reset whose kind Claude did not name is never redeemed automatically.
+
+## 2026-11-21 — Chats that resume by themselves wait for memory and start one at a time
+
+- After a restart, every chat it cut resumed at once, which could overload the machine: one had 1.7 GiB free 13 minutes after it started. Chats that continue by themselves after a restart, a network outage or a usage limit now resume one at a time, the chat that stopped first first, each once the one before it has reached its agent, and none starts while memory is short (**Settings → Maintenance & about → Background activity**). A waiting chat says **Waiting for memory** and keeps its place through another restart; a message you send in it starts it at once. Chats you start are never held.
+
+## 2026-11-21 — Landing flags overlapping local work
+
+- Before a landing rebases and checks, it lists other local worktrees whose unmerged branches change the same files, with the branch, worktree path and shared files, so parallel designs get reconciled before they collide.
+
+## 2026-11-21 — Parallel worktree launches on Windows no longer fail on a busy Git config
+
+- On Windows, starting several worktrees in one repository at once could fail with "unknown error occurred while reading the configuration files" when one Git command read `.git/config` while another replaced it. Git now repeats a command that died at that point, since it had not done anything yet.
+
+## 2026-11-21 — check:changed tests changed dependencies
+
+- A changed dependency patch, `patchedDependencies` entry or lockfile version now selects the tests that run that package, so a patch can no longer pass the checks while it breaks a test.
+
+## 2026-11-21 — A closed pull request settles only where the merge rule is on
+
+- Turning on automatic settlement for one project no longer settles threads in a project that has both settlement rules off because their pull request was closed. A closed pull request now follows the project's "settle when merged" rule.
+
+## 2026-11-21 — Thread details show what the agent is doing
+
+- The thread details card now leads with information instead of buttons. A new **Agent status** section shows whether the agent is working, waiting for you (on its own approval or question, or a subagent's approval), waiting on another thread or a background task, queued, stopped, reverted or at a usage limit, for how long, on which model and effort, and the full command or the edit it is running now. Context and usage meters follow it.
+- Subagent rows show the model and effort, and what each one is doing while it runs or how it ended.
+- A new **Machine load** section shows CPU, memory, swap and disk for the machine the thread runs on, like the Machines page.
+- The machine, branch and open-in controls stay folded until you open them, and fold again when you switch threads. **Git actions** and **Ask the agent** are off by default; turn them back on from **Choose what to show**.
+- Manual steps no longer appear under Needs you or in the details card. They stay on the **Manual steps** page in the sidebar rail, which now has the **Sign in to all** button.
+
+## 2026-11-21 — Release retries ignore runs from other branches
+
+- A release started from another branch no longer replaces main's pending release or gets retried, and the catch-up checks look only at runs on main. A branch fast-forwarded onto main no longer gets a second release run.
+
+## 2026-11-21 — Pin from more places, reopen archived threads, and see what needs you in the title
+
+- Pin or unpin the open thread from a button in the chat header, and pin from a sidebar row on hover or focus. Select several threads and choose **Pin (N)** to pin them in the order you selected them. On mobile, the thread screen's header has Pin and Unpin.
+- The window or tab title starts with how many threads need you, like `(3) Fix login - T3.CodeShip`, and drops the number at zero. It shows whatever your notification settings are.
+- Press `mod+alt+shift+e` or choose **Reopen last archived thread** in the command palette to unarchive the most recently archived thread on any connected machine and open it.
+
+## 2026-11-21 — Recovered commands are matched by their recorded identity
+
+- After a restart, a command run by the agent is recognized by the identity its wrapper recorded at launch, so setting the system clock back can no longer make Stop signal an unrelated process. A command from an older version is reported lost and left running.
+
+## 2026-11-21 — Release builds install only locked versions, before signing
+
+- Release builds of the desktop app, its Windows server sidecar and the CLI archive install exactly the dependency versions in the repository's lockfile and fail on any it does not hold, instead of resolving new versions from the registry while building a release.
+- Those installs now finish before any signing certificate or key reaches the build machine, and signing works only on what they staged.
+- The Electron each release ships is downloaded while staging and checked against the SHA-256 that the locked Electron version lists, so packaging never downloads it with signing credentials loaded. When Electron's own install download did not finish, its fallback download is checked the same way.
+- Code that runs while a release is signed gets only the environment it needs, and the relay tracing token reaches only the CLI executable build. A relay tracing token that ends in `=` keeps it.
+- Dependency installs during a release build get only an allowlisted environment, without signing, notarization or registry credentials, and each platform's build receives only its own signing secrets.
+- Each signing step deletes every certificate, key and keychain it or electron-builder made when it ends, even when one removal fails, and electron-builder starts from a fresh tool cache, so the checks that run the app afterwards never find them. Packaging still runs on the build machine that holds the signing material.
+
+## 2026-11-21 — Start a worktree from a branch that exists only on the remote
+
+- Creating a worktree on a new branch from a base that exists only on the remote, such as a branch pushed from another machine and never checked out here, now starts from the remote copy instead of failing with "git worktree add failed".
+
+## 2026-11-21 — Relay install tests run on Windows
+
+- The relay client install and version-selection tests build every path with the Path service and the host's PATH delimiter, so they run on Windows hosts instead of being skipped.
+
+## 2026-11-21 — Auto mode review target keeps only supported options
+
+- Auto mode's independent review target now lists only the options its model currently offers, so a stored option such as Codex `serviceTier` no longer makes the review delegate fail with "Unknown option".
+
+## 2026-11-21 — A provider that stops answering no longer blocks new chats
+
+- When a provider process sends nothing for the whole time a chat waits for it to start, CodeShip stops that process before the chat retries, so the retry and later chats start a new one. Before, a stuck Codex process failed every retry and every new chat on that account with "The provider did not load the conversation within 5 minutes" until the app restarted. A process still sending events for other chats keeps running.
+
+## 2026-11-21 — A landing reads real git history and refuses marked files
+
+- The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.
+- A landing and a checks run refuse files marked assume-unchanged or skip-worktree, whose edits `git status` hides. A rebase that conflicts is aborted, a worktree in a stopped rebase is refused, and the upstream sync counts a push whose reply was lost as landed when main holds it.
+
+## 2026-11-21 — Commits no longer run knip beside check:changed
+
+- The pre-commit hook ran `knip:check` on every commit that touched code, outside the memory budget that `check:changed` shares across a repository's worktrees. Each knip pass takes about 7 GB, so agents committing in several worktrees at once could use up a machine's memory. The hook now formats and lints the staged files only. `check:changed` still runs knip within that budget, and the standard landing on main (`landing-turn.cjs land`) runs `check:changed`. No change to the app.
+
+## 2026-11-21 — Every checkout runs the tracked push gate again
+
+- The machine configuration listed its Git settings twice, so only the second list applied and the machine check stopped pointing `core.hooksPath` at the tracked hooks in `.vite-hooks`. One list now holds both settings, so the check sets the hooks path and the one-day prune window on every machine.
+
+## 2026-11-21 — Organize tasks into folders from Scheduled
+
+- In **Scheduled**, open a task’s menu and choose **Move to folder** to file it in an existing or new folder. You can also create an empty folder from the **Scheduled tasks** page.
+
+## 2026-11-21 — Search the release history offline
+
+- On web and desktop, Release notes opens with the ten newest entries. Page through older changes or search the full history by date, title, or text, including offline.
+- Pasting a file to restore a draft attachment no longer shows an error after the file is restored. If the draft rejects a duplicate or reaches its attachment limit, the error follows your language setting.
+- The browser profile and device preview guides now point to **Settings → Browser & devices**.
+
+## 2026-11-21 — Renew unattended provider credentials from 1Password
+
+- CodeShip rereads credentials from Linux 1Password service accounts and applies rotated tokens after the provider's live sessions close. If the vault read fails, the provider keeps its last working credential.
+
+## 2026-11-21 — Use 1Password tokens for MCP servers
+
+- In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
+
+## 2026-11-20 — The server test suite runs on Windows in CI
+
+- Every CI run that touches the server now also runs its tests on Windows, in eight shards beside the Linux ones. Maintainers: the manual Windows Tests workflow is gone; its lane is the `Test Server Windows` job in `ci.yml`.
+- Fixed on the way: a Grok or other ACP agent started through a `.cmd` launcher on Windows never received its input, because the session started it detached. Windows sessions now start it attached and still stop its whole process tree.
+- Tests that emulate a POSIX host or need an executable shebang script skip themselves on Windows instead of hanging for two minutes each.
+
+## 2026-11-20 — A chat that cannot read Claude's settings says where and how
+
+- When a chat cannot start because Claude's settings could not be resolved, the failure now names the step (settings files, account worker, `--settings` check or organization policy) and the kind (timeout, could not start, non-zero exit, unreadable output or SDK error) instead of one generic sentence. It never includes settings, launch arguments, command output or other raw error text.
+
+## 2026-11-20 — Turn items stop storing values their columns already hold
+
+- Maintainers: a stored turn item no longer repeats its id, thread, run, node, provider ids, parent, ordinal, type, status and update time inside its JSON, since the row's columns hold them; every read puts them back. A resumable migration (098) converts existing rows in steps, and a test proves the rebuilt payload equals the original. The database and snapshot reads carry less data per item. No change to the app's behavior.
+
+## 2026-11-20 — The machine check compares each machine's Node with the project's pin
+
+- `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. It now reports the mismatch before anyone runs `check:changed`, which refuses to run on the wrong Node. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
+
+## 2026-11-20 — Storage cleanup reports a failed unmerged-work check instead of "not integrated"
+
+- When Git could not count a worktree's unmerged commits (an unreadable branch, a damaged worktree, a timeout), storage cleanup treated it as one unmerged commit and kept the worktree with a misleading reason, logging nothing. The worktree is still kept, but the cleanup report now shows it as failed with Git's detail, and the failure is logged.
+
+## 2026-11-20 — Use 1Password credentials with agent providers
+
+- In **Settings → Secrets**, add a 1Password source and choose which fields to supply to Claude, Codex, or another provider. Linux hosts can use a read-only service account for unattended runs with an administrator grant for each field.
+
+## 2026-11-20 — Shared schedules keep their fallback models
+
+- Shared tasks carry their ordered fallback models when CodeShip syncs them between connected machines. A machine that already has the current task can fill in a missing fallback list from a complete copy.
+
+## 2026-11-20 — Plain-language descriptions for scheduled tasks
+
+- Add a description in a task’s editor to see its purpose on the Scheduled tasks page. Shared tasks carry the description across machines.
+
+## 2026-11-20 — Completed scheduled threads settle automatically
+
+- CodeShip settles threads started by a scheduled task after a successful run when no work is pending. You can turn this off in **Settings → Threads → Auto-settle**.
+
+## 2026-11-20 — Settling and cleanup see commits a rewound default branch no longer holds
+
+- The check for unmerged work trusted its last copy of the remote's default branch, and fetched a fresh one only after that copy showed commits ahead. When the remote's default branch had been rewound, the old copy still held a branch's commits, so the check counted none and settlement or cleanup could remove a worktree whose work was no longer on the default branch. It now fetches the default branch first, within the same 10-second limit, and counts against the result.
+
+## 2026-11-20 — Client tests no longer depend on the machine's language
+
+- Maintainers: the snooze-menu and usage-limit banner tests failed on a computer set to a non-English region, because they expected English dates and times from the system's own format. Web, desktop, mobile and client-runtime tests now start with English and US formatting active and a Ukrainian system locale, so they pass on every machine, and a new test that relies on the system's format fails everywhere, CI included.
+
+## 2026-11-20 — Delegated tasks on linked machines survive a restart mid-launch
+
+- A task delegated to a linked environment is recorded before its chat starts there, so a restart or lost reply no longer leaves a chat running on the other machine that nothing follows. A launch that never happened fails the task instead.
+
+## 2026-11-20 — A command-runner test no longer waits forever for a file that already exists
+
+- Maintainers: the command-runner tests could hang for two minutes under load while waiting for a file their command had already written, because the wait reported only changes from a baseline it read after the file appeared. It now looks at the file on a short timer. No change to the app.
+
+## 2026-11-20 — A Windows command whose launcher fails after its wrapper started is no longer reported unstarted
+
+- On Windows, when the launcher exited with an error or ran past its time limit after it had already started a background command, T3.CodeShip told the agent the command did not start and forgot it, while the command kept running with nothing watching or able to stop it, and an agent that retried ran it twice. The command is now watched and stopped like any other once the launcher printed its process id or the command's own process wrote its pid file.
+
+## 2026-11-20 — A landing's tests may run as long as its lease allows
+
+- The checks a landing runs under main's landing turn no longer stop their test step at one hour while the turn's lease lasts three. The test step now gets what the lease has left, less twenty minutes for the other checks and the push, so a slow day no longer fails a landing with nothing broken, and a landing still ends before its lease expires.
+
+## 2026-11-20 — Checkouts clean up leftover git objects after a day
+
+- Every machine's CodeShip checkout now deletes unreachable git objects after one day instead of two weeks, so automatic git cleanup can keep up with the objects agent worktrees, rebases and checkpoints leave behind. Before, a checkout could collect over 200,000 of them (2 GB) while cleanup only warned.
+- Maintainers: `vp run check:changed` and the push gate no longer write the files of your uncommitted work into the repository as loose git objects just to compute a tree id. Every pass used to leave unreferenced blobs and trees behind.
+
+## 2026-11-20 — The default branch comes from the repository's main remote, not only one named origin
+
+- In a repository whose only remote has another name (for example `github`), a branch named `main` that was not the remote's default branch was treated as the default branch, so the unmerged-work check counted 0 commits and its work could be cleaned up as merged, while the real default branch was not recognized. Status now reads the default branch from the same main remote the rest of the unmerged-work check uses.
+
+## 2026-11-20 — A replayed chat launch no longer prepares a worktree twice
+
+- Replaying a launch while its workspace preparation was being retried could create a second worktree, or fail the run because the branch already existed. A launch, its replay and a retry now share one preparation per run, and a replay reuses the worktree the run already has.
+
+## 2026-11-20 — Stopping a Windows command spares a program that took its process id
+
+- When T3.CodeShip could not read when a background command's process started on Windows, stopping the command could end an unrelated program that had taken that process's id once the command ended, along with everything that program started. The stop now takes a program under that id for the command only if it started between the command's launch and the moment the launch returned, give or take a tenth of a second and allowing for a clock change in between, and never once the command's process was found gone, right after its launch or by a restarted T3.CodeShip. A start read that finds a program started after the launch no longer ties the stop to that program, and a restarted T3.CodeShip that finds under the id a program started more than a second outside that time reports the command lost. A command whose PowerShell ended before it started the command now fails to start with that reason, and one whose PowerShell ended right after is reported lost at once when another program holds its id, instead of looking like it still runs.
+
+## 2026-11-20 — A clock change no longer makes a running command look lost
+
+- Background commands are now recognized by their start in ticks since boot on Linux and by the creation time Windows stored, instead of a start time derived from the wall clock. A clock change after a command started no longer reports it lost or leaves it running unwatched, and on Windows a stop still reaches what the command started.
+
+## 2026-11-20 — A thread opened as a reply streams in stays at the end
+
+- Opening a running thread just as a new reply arrives no longer jumps the timeline to the top and stops following new replies, on web, desktop, mobile and the guest page.
+
+## 2026-11-20 — Chats stopped by a rejected login continue once the account works
+
+- A chat that stopped because its account's login was rejected continues on the same account once that account reads signed in again (after a sign-in, another chat's answer on it, or a restart), when **Resume when the limit resets** is on, including when the login was only unreadable for a moment. It sends the message again when the agent did no work and asks it to continue otherwise. **Resume** in an empty composer now also continues such a chat by hand once its agent had started working.
+- Moving a chat whose login was rejected before any work to another signed-in account works again; the server had refused that continuation. Claude's sign-in hint now says to resume the chat, or send the message again, instead of starting a new one.
+
+## 2026-11-20 — Settling and cleanup keep commits the default branch does not hold
+
+- A Git failure could still make the check count no commits, so automatic settlement could settle a thread whose commits had not reached the default branch. The check counted commits only when the branch status showed some ahead, and status also shows none when Git cannot compare the branch; and a worktree whose `.git` Git no longer recognizes, such as one with a damaged `HEAD`, read as holding no repository. Now both report that the worktree could not be checked, and the thread stays active until a later check succeeds.
+- A worktree checked out on a commit instead of a branch now has its commits counted against the default branch; before, it counted none. In a repository without a default branch, the check now says it could not count them. A merged pull request clears the count only when its host reports the pull request's last commit, that commit is the one checked out, and the pull request merged into the branch the worktree's branch was cut from, usually the default branch.
+- Untracked files and changes inside submodules count as uncommitted work even where the `status.showUntrackedFiles` or `submodule.<name>.ignore` setting hides them, and each untracked file in a new folder counts on its own instead of the folder counting once.
+- Automatic settlement settled a thread whose open pull request lacked commits made after its last update. Now T3.CodeShip pushes those commits to the pull request first, or keeps a thread you never wrote in active, and the thread settles once the pull request has every commit.
+- Automatic settlement also settled a thread whose pull request was closed even when the worktree had commits or changes made after it. Such a thread now stays active, without a new pull request, until that work is shipped or discarded.
+- A commit counted as merged when the default branch held a change that matched it except for whitespace, such as another indent, even though merging the branch would still change the default branch. Storage cleanup could then remove the only copy of that worktree's version. Now a branch counts as merged only when merging it would leave the default branch unchanged, which still covers work that reached it by cherry-pick or rebase.
+
+## 2026-11-20 — Release notes merge an edited entry by entry
+
+- Maintainers: when a rebase or merge of `docs/release-notes.md` meets an entry the incoming side edited, retitled, redated or removed, the merge driver now keeps that change and puts the other side's new entries around it by date. It still leaves the file to git's text merge when both sides changed existing entries, and when it cannot place a new entry or tell it apart from the other side's entries. Before, git merged the whole file as text in that case, so a branch whose later commit reworded its own entry could conflict with shipments that had landed meanwhile, and its landing then failed after it had waited for its turn. No change to the app.
+
+## 2026-11-20 — Stopping a process tree on Windows no longer ends a program that took a process's id after the stop looked
+
+- When T3.CodeShip stops a command, an agent's CLI or a worker on Windows together with what it started, it now opens each process it found, checks that it started at the moment the stop's look at the system saw, to the microsecond, ends it through that open handle and waits until it has ended. Before, it ended each one by its process id, so if a process exited and Windows gave its id to a new, unrelated program after the stop looked, that program was ended instead. The stop keeps every process it ended open until it is done, so their ids cannot pass to another program while it looks again for what they started. A program under the first process's id is taken for that process only if it started within a tenth of a second of the moment T3.CodeShip launched it, where a second was allowed before, and never once T3.CodeShip has seen that process end; when T3.CodeShip does not know the launch moment, it leaves alone a program under that id that started before the command did. If a process T3.CodeShip still counts as running has in fact exited, the stop ends nothing more under its id, still ends what it had already found that process started, waits up to 5 seconds for the exit to be reported, and then ends only what that process started before the earlier of its reported exit and the moment the stop saw it gone, so a missing report no longer leaves that unbounded. Each round of the stop ends the processes it finds together and waits at most 5 seconds for them. A process that already ended still counts as stopped, also when the program that took its id is one T3.CodeShip may not open. A process that cannot be stopped or still runs 5 seconds after its round ended it, and a tree in which the sixth look still finds new processes, is reported as an error once the rest of the tree is stopped, and the next stop of that process tries again, also on each process the failed stop found but did not end and on what those started, while it still runs with the start that stop saw. A stop cut short still passes on each process it already knew it could not end, and that it saw the first process gone.
+
+## 2026-11-20 — On Windows, stopping a process no longer ends an unrelated program that took a reused process id
+
+- Effect's process kill on Windows (`taskkill /T`) ended descendants by id from a snapshot, so a program that took a descendant's id in the meantime could be ended. It now ends only the process it started, and the checked process-tree stop that already follows ends its descendants.
+
+## 2026-11-20 — Commands whose process check failed are re-checked
+
+- A background command whose process identity could not be read when the server picked it up is now checked again on later passes. If another process has taken its pid, the command is reported lost instead of showing as running until its deadline.
+
+## 2026-11-20 — Added Codex accounts keep their own sign-in
+
+- A test now checks that chats on an added Codex account start in that account's own folder. Version 2026.1116 could run them under the default Codex login, which left a resumed chat waiting until it failed.
+
+## 2026-11-20 — Push gate stays on after install
+
+- Installing dependencies no longer repoints Git's hooks at generated shims, so the checked push gate on `main` keeps running in every checkout.
+- Development and testing notes that lived only in agent memory are now in the docs.
+
+## 2026-11-20 — Landings refuse a local merge rule that breaks the release notes
+
+- Maintainers: a landing now stops before it waits for its turn when the checkout's own git attributes give `docs/release-notes.md` another merge than its merge driver, and it names the file to fix. Such an attribute in `.git/info/attributes` outranks the repository's own, so every rebase joined two entries without the blank line between them, and the landing failed its format check only after it had waited for its turn and run its checks. `vp i` warns about it too. No change to the app.
+
+## 2026-11-20 — Landings wait through a passing network failure
+
+- A landing that waits its turn for `main` no longer ends when one look at the landing lease meets a passing network or sign-in failure. It says so and tries again, and gives up when the failures go on for ten minutes or its six-hour wait runs out. A failed step that does not reach GitHub, such as writing the lease commit, still ends it at once; a failed call to GitHub is tried again even when a local git setting causes it. A landing that could not fetch the current holder's lease no longer takes the turn from that holder. A take of the turn that reached GitHub although git reported it failed or ran out of time now counts as taken instead of leaving the landing waiting hours for its own turn to expire, and one GitHub refused is reported instead of waited out. Each lease check gives up after a minute instead of hanging, and a landing that cannot give its turn back says so.
+
+## 2026-11-20 — Thread creation retries survive a removed provider
+
+- When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
+
+## 2026-11-19 — The upstream sync checks against its own base
+
+- Maintainers: `node scripts/upstream-sync.ts check` runs the sync's `check:changed` against the base in the run's state file, with the 3600 s step timeout, so a held or hurried run no longer types a narrower range that skips files only the upstream merge changed. The scheduled task and the upstream-sync skill use it. No change to the app.
+
+## 2026-11-19 — A helper in a linked environment can get its own worktree
+
+- `delegate_task` with `isolation: "worktree"` and a linked environment as target now starts the helper in a new worktree there, branched from the commit your thread's checkout is on, instead of refusing. The commit has to be pushed so the other machine can fetch it; an unpushed one is refused with a message naming it. The helper's worktree is cleaned up with its thread there, as for a helper on this machine.
+
+## 2026-11-19 — A daily scheduled task refused for a usage limit runs when the allowance returns
+
+- A fixed-time scheduled task that catches up missed runs used to lose its whole day when its account was out of usage at its time. It now waits and runs once when the allowance returns, unless its next time comes first. Interval tasks are unchanged.
+
+## 2026-11-19 — Windows Git driver checks
+
+- The Git driver tests use local repositories to check SSH errors, nested paths and submodule checkouts on Windows. Related tests run in separate files within the existing time budget.
+
+## 2026-11-19 — Fresh runs can switch providers when usage runs out
+
+- A new chat or scheduled run can start on another provider when its primary provider has no room. Scheduled tasks can set ordered model alternatives and show which model last ran and whether a usage limit caused the switch.
+
+## 2026-11-19 — Chats keep running during provider sign-in
+
+- Claude, Codex, Cursor, and Antigravity browser sign-in keep chats on their current account until the replacement login is saved. Canceling or a failed save leaves those chats running.
+- ACP agents that change credentials in place ask you to finish active work on the shared account before signing in.
+- A separate sign-in history preserves timing, outcome, and session counts when the general server trace rotates.
+- Codex uses the exact account folder set in `CODEX_HOME` for both chat continuation and usage history, including folder names that end in a space.
+
+## 2026-11-19 — Environment tools can manage banked usage reset preferences
+
+- Agents can read and set whether CodeShip redeems banked usage resets and how long it waits for a plan reset. Changes apply locally unless the agent explicitly requests sharing. A regression check requires read and update support for every shared preference or a documented exception.
+- On Windows, the verification suite now handles escaped attachment paths, checks Claude settings against Windows filesystem behavior, and uses the simulated machine's paths in device evals.
+
+## 2026-11-19 — A refused delegation on a machine short of memory points to a linked machine
+
+- When `delegate_task` is refused because this machine is short of memory and a reachable linked machine has full access, the message now names it and its `environmentId` and says to delegate there with `target.environmentId`. Before, it always said to do the work inline, which kept heavy work such as test runs on the machine that was out of memory. Without such a machine, the advice is unchanged.
+
+## 2026-11-19 — Attachment preview browser tests stop failing on a loaded machine
+
+- Maintainers: the browser tests wait up to 10 seconds, not 1, for rendered output, and each may run 30 seconds, not 15. `AttachmentFilePreview.browser.test.tsx` failed 1 to 4 cases on a busy machine because pdf.js and the office workers outlasted those limits, which kept any change that selects the file from landing. No change to the app.
+
+## 2026-11-19 — A Git failure no longer makes unmerged work read as none
+
+- Settling a chat checks whether its branch has work the default branch lacks. Before, a Git failure while looking up refs (an unreadable ref store, a timed-out command) looked like "no default branch", so the check counted 0 and the chat settled or the settle dialog stayed quiet. Now the check fails and reports that it could not be checked, as it already does for other errors. A repository with no base to compare with still counts 0, and the branch status display is unchanged.
+
+## 2026-11-19 — Main takes only changes whose checks passed, on Windows too
+
+- Maintenance only, with no change in the app. A push to the fork's `main` is refused unless the lander holds the landing turn and `vp run check:changed` passed for exactly the files pushed, compared with the commit `main` is at. Each passing run records what it checked, and the tracked pre-push hook, which a checkout runs once the machine check sets `core.hooksPath`, refuses a push without that record. `landing-turn.cjs land` refuses to start in a worktree with uncommitted or untracked files, whose pass could not cover the commit it pushes.
+- `vp run check:changed` passes on Windows. The agent context budget measures the Windows tool list, which adds the Visual Studio tools, beside the one other systems get, and test fixtures give Git `/dev/null`, which Git for Windows reads as its null device, and name only folders Windows can create. A list of changed files too long for one Windows command line runs in several steps. Its Node version check allows a loaded Windows machine more time to start Node. The lint rule that refuses an early return on the host platform also finds one on the shared host flags such as `isWindowsHost`, and leaves setup and cleanup hooks alone.
+- Every push to the fork's `main` also runs `check:changed` on a GitHub-hosted Windows runner, so a change landed from macOS or Linux meets the Windows tests too.
+
+## 2026-11-19 — Auto stops offering a model its account's login refuses
+
+- When a Codex account's ChatGPT login refuses a model it lists (`The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account`), that model is now held on that account for a few hours, like a model-scoped usage limit. Auto's reviewer and the models it offers then come from another account that can run the model. Before, the refusal was recorded as a plain error, so Auto kept naming the same account and every review on it failed at once.
+
+## 2026-11-19 — Codex installation tests cover native launchers again
+
+- The Codex installation tests tell a native `volta-shim`, `mise` or `aqua-proxy` launcher apart from a script launcher again, and check both sides of the rule for a native Codex: with its code-mode host beside it, it is used; without it, the managed download replaces it. Since every test fixture became a script, losing either rule would have gone unnoticed. No change to the app.
+
+## 2026-11-19 — Release notes keep their order when a rebase meets another shipment's notes
+
+- Maintainers: when a rebase or merge meets new entries on both sides of `docs/release-notes.md`, a merge driver now places the other side's new entries by date. `vp i` sets it up, and the landing turn uses it on every machine. Before, git could splice an entry into the middle of another one's lines, or leave a conflict, so a landing failed its format check after waiting for its turn. An entry that was edited, dropped or reordered still merges as text. No change to the app.
+
 ## 2026-11-19 — Follow-ups to the T3 Code update
 
 - On Windows, when a spawn helper fails, stopping the commands it started now times each command from its own start rather than from when it was queued. This narrows the chance that a process started meanwhile by a reused process id is stopped with them. A tree stop that fails or cannot start is now logged, and no longer falls back to ending the command by a process id that may already name another process. When a command's launch fails, or its spawn helper fails before it starts, its output now ends and its pending input writes fail, and input written or ended after the helper has let a command go fails at once. A command cancelled through its abort signal now reports the cancellation and is stopped with the signal it asked for, as Node does. A command reports that it closed only once its output has ended, also when its spawn helper fails.
@@ -38,6 +548,22 @@
 - The coordinator model list also offers the models of a provider whose accounts all report a warning, such as a Codex account whose model list did not load in time, since Auto still runs on them.
 - When a new thread's Auto default is out of usage on its account, another account of that provider now counts as able to take the thread only when it offers that model and its provider check did not fail, the same as for an Auto fallback model. When no other account can run it, the thread now switches to the fallback model, if that can run, instead of waiting for the reset. Manual-step chats and a default model inherited from another machine also skip accounts whose provider check failed.
 
+## 2026-11-19 — A turn whose worktree folder is gone no longer breaks checkout moves
+
+- Moving a checkout while a turn names a worktree folder that has since been deleted failed with a git error. A folder that is gone now counts as no repository, so the move proceeds.
+
+## 2026-11-18 — Node rows in the state database no longer repeat their columns
+
+- About 800 of a node's 1.3 KB stored payload repeated ids and status that its row's columns already hold. New nodes store only the rest, reads put the values back, and a startup migration converts existing rows in steps while the server answers requests.
+
+## 2026-11-18 — Dates and numbers follow the chosen language everywhere
+
+- A few dates and numbers (access times in Connections settings, message times and snooze pickers on mobile, pull request additions and deletions) were formatted with the device's default locale, so a user who chose Ukrainian on an English system saw US formatting, and desktop always did. They now follow the chosen language, and a new `t3code/require-formatting-locale` lint rule fails client code that formats without a locale. Widget text stays in English formatting to match its copy.
+
+## 2026-11-18 — `vp test run` inside a package uses the repo test settings
+
+- Running `vp test run <files>` from `scripts/` or a package folder now loads the repo's test settings (60 s timeouts, fake-timer list, no retries) instead of Vitest defaults, so a test no longer passes or fails by how it was started. A check fails when a package's test script has no config beside it. No change to the app.
+
 ## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
 
 - A subagent, or a chat an agent handed a task to with `delegate_task` on this machine, now settles as soon as its parent has its result, as a task delegated to another machine already did. Before, it settled only after three days of inactivity, so finished children stayed active in the Agents list. One whose task failed or was interrupted, or that is waiting, queued, working again or still running background work, stays active, and a settled subagent its parent picks up again returns to the active list. This applies even with automatic settlement turned off. Children that had already finished settle at the first check after the update, at the time they finished.
@@ -55,6 +581,10 @@
 ## 2026-11-18 — Script tests fit their time limit on a loaded machine
 
 - The `scripts` cache test and Knip schema test each ran several slow subprocess steps in one test, 50 to 70 s on a busy machine against a 60 s limit. Each behaviour is now its own test with its own budget. No change to the app.
+
+## 2026-11-18 — Full test suites share check:changed's machine budget
+
+- `vp run check:changed --suites <package dir>` runs a package's full test suite on the same machine-wide slot budget as the fast checks, so suites started together no longer oversubscribe the cores and time out. Upstream syncs use it and, after landing merges main, recheck only what main added. No change to the app.
 
 ## 2026-11-18 — Lint rejects two tests with the same name in one file
 

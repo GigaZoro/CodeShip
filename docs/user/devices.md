@@ -70,7 +70,7 @@ back from the device after a change.
 
 When an agent opens a device, it floats over the chat in web and desktop clients
 connected to the thread, the same way an agent-driven browser does. Turn off
-**Auto-show floating preview** in **Settings → Browser** to open a
+**Auto-show floating preview** in **Settings → Browser & devices** to open a
 right-panel tab instead. In the mobile app, open the agent's thread and tap the
 device button above the composer to watch the live screen and control it.
 On iOS layouts with an inspector, the device opens beside the thread. Maximize

@@ -58,6 +58,13 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Get back to work from a new thread
+
+On web and desktop, a new thread's empty composer lists up to five threads to get back to,
+each opening on click: first the ones that need you, longest wait first, then running threads,
+latest started first, and the threads you last sent to. Recent threads follow the
+sidebar's project and machine scope. The list goes away once you start typing.
+
 ## See what needs you
 
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the
@@ -93,7 +100,8 @@ set to resume on its own is not listed.
 Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command palette, to open each
 waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.
 The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,
-and the mobile app icon.
+and the mobile app icon. On web and desktop the window or tab title starts with it, like
+`(3) Fix login - T3.CodeShip`, and drops it at zero, whatever your notification settings.
 
 On web and desktop, other rail icons carry a count too: **Pull requests** (open pull requests with
 failing checks, conflicts or requested changes), **Scheduled tasks** (latest run failed),
@@ -113,14 +121,19 @@ Each scheduled task has a place in the app:
 - **Scheduled section** adds a row for the task in the collapsible **Scheduled** section at the
   top of the thread list, so you can watch its runs and next scheduled start. This is the default.
 
-To change the order of tasks in the Scheduled section on web and desktop, drag one, or right-click
-it and choose **Move up** or **Move down**. Every device shows the same order, and a task newly
-added there goes to the bottom.
+To file a task from **Scheduled**, right-click its row (long-press on mobile) and choose
+**Move to folder**. Pick a folder, choose **New folder…**, or use **Remove from folder**.
+On web and desktop, drag a task within its folder or choose **Move up** or **Move down** to
+change its order. Tasks without a folder can be reordered together.
 
 Change a task's choice with **Show in** in its menu on the **Scheduled tasks** page, in the
 **Automations** card of its thread, in the right-click menu of its row, or in its menu on mobile.
 **Show all in** at the top of the **Scheduled tasks** page moves every task shown there at once.
 The choice is saved on the environment, so every device connected to it shows the same place.
+
+CodeShip automatically settles chats started by a scheduled task after a successful run with no
+pending work. To keep those chats in the active list after completion, turn off **Auto-settle
+completed scheduled threads** under **Settings → Threads → Auto-settle**.
 
 The **Scheduled tasks** page lists tasks from every environment this app is connected to, and
 each task shows its machine and project. Machines your computer links to (see
@@ -131,9 +144,10 @@ there and refresh every few minutes. To change them, add the machine under
 
 ### Group scheduled tasks
 
-Give related tasks the same **Group** in the task editor, such as "Machine care" or "PolyBot
-delivery"; labels match regardless of case. Agents can set it with `schedule_task` too. Once a
-task has a group, the **Scheduled tasks** page lists tasks under a header per group, with tasks
+Choose **New folder** on the **Scheduled tasks** page to create an empty folder. To add a task,
+choose **Move to folder** in its menu or set **Group** in the task editor. Agents can set the
+same field with `schedule_task`. Folder names match regardless of case. The page lists tasks
+under a header per folder, with tasks
 without one under **No group** at the end. Each header shows how many tasks the group has, its
 next run, and its runs, failures and usage-limited runs in the last 24 hours. Click a header to
 collapse it; each device remembers which groups you collapsed. The machine and project filter
@@ -164,10 +178,56 @@ Wherever the task shows, a thread it runs in shows a calendar icon in the thread
 and desktop, hover it for the schedule and next run, or click it to open the task. A task that
 starts a new thread for each run marks only the thread from its latest run.
 
+## Filter the thread list
+
+Open the sidebar’s filter menu on web and desktop, or the thread list filters on
+mobile. Under **Status**, choose **All**, **Needs you**, **Working**, **Unread**,
+or **Failed**. **Needs you** uses the same status rules as Projects, and **Unread**
+shows completed work you have yet to read. The device remembers your choice.
+Choose **All** or clear the filter to see every status again.
+
+Choose tags in the same filter menu to show threads with **any** of those tags.
+Status and tag filters can be combined. Clear the filters to return to the full list.
+While a filter is on, **Settled** counts only the matches already loaded.
+In **Settled** and chat folders, **Show more** reveals another batch of matches.
+If there are too few matches already loaded, the press reads one more page
+from each available machine at the current cutoff. A page may contain no matches.
+In chat folders on web and desktop, **Show less** returns to the preview and releases the pages
+that folder loaded. Changing filters also resets folder paging. If a page read fails, use
+**Could not load older threads. Retry** to try it again.
+
+## Tag threads
+
+Open a thread’s menu, choose **Tags** (**Tags…** on mobile), then select an existing tag to add or
+remove it. Choose **Add tag…** to enter a new tag of up to 64 characters on one line.
+On web and desktop, select several threads to apply tags from the selection menu.
+A tag already on every selected thread is removed from all of them. Otherwise it
+is added to all of them.
+
+Tags follow the thread across devices. When an environment is set to hide tagged
+threads, its hidden threads stay out of the list and the app prevents applying
+its hidden tags there while hiding is on.
+
+## Sort threads
+
+Open the thread list filters and choose **Sort by**. **Last activity** puts the
+most recently updated threads first, **Created** puts the newest first, and
+**Name** sorts alphabetically. Sorting works within the existing shelves and
+folders. Pinned threads keep their manual order, **Needs you** still lists
+the longest waits first, and **Settled** keeps the most recently settled first
+because older settled threads load in that order. Select **Default** to return to the usual order and
+drag to reorder active threads where manual ordering is available. The sort
+choice is saved on each device.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work. The command palette offers the same
 actions for the open thread: Pin or Unpin, Settle or Un-settle, Snooze, Rename, and Archive.
+
+On web and desktop, the chat header has a pin button for the open thread; hover a pinned thread's
+button to see it turn into unpin. Hover or focus an unpinned sidebar row to pin it from the row
+itself, and select several threads to **Pin (N)** them together in the order you selected them. On
+mobile, the thread screen's header has Pin and Unpin too.
 
 On web and desktop, pinned threads list one line each under a **Pinned** header with their count,
 like scheduled tasks. Click the header to collapse or expand the section; the sidebar remembers
@@ -212,7 +272,9 @@ Drag within the pinned or active section to change its order. Other rows slide a
 spot where the thread will land. Drops into either section keep the position you choose. On
 mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
 **Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
-settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
+settle a thread. With a sort other than **Default**, the sheet still moves threads between sections
+and reorders **Pinned**. Reordering within **Active** requires manual ordering.
+The dragged card shows the action before you release it. Expand **Snoozed**
 or **Settled** to drag a parked thread back into either live section. Each drop saves; close the sheet to return to the thread list.
 **Move up** and **Move down** are also available in the thread menu. The server
 saves the order, so it survives a refresh and appears on your other connected devices.
@@ -401,9 +463,14 @@ that action so T3 can stop its terminal and child processes. Commands started th
 agent's own shell tools are managed by the provider.
 
 When a thread has its own worktree, settling it asks first if that worktree has
-uncommitted files or commits the default branch does not have yet, so unshipped
-work does not slip out of view. Commits count as merged once they reach the
-default branch or the branch's pull request merges.
+uncommitted or untracked files, or commits its base branch does not have yet, so
+unshipped work does not slip out of view. The base branch is the one the
+worktree's branch was cut from, usually the default branch. Commits count as
+merged once they or the same changes reach the base branch, for example by
+cherry-pick or a rebase shipped from another worktree, or the branch's pull
+request merges into it. When Git cannot read the worktree, settling says its work
+could not be checked, and automatic settlement leaves the thread active until a
+later check succeeds.
 
 Automatic settlement keeps that work in view too. Before such a thread you wrote
 in settles on its own, T3.CodeShip commits its changes and opens a pull request,
@@ -411,7 +478,10 @@ then settles it. With **Keep threads with a PR** on, the thread stays active wit
 its new pull request. Turn off **Open a PR for unmerged work** in **Settings →
 Threads** to keep these threads active instead. A thread also stays active when
 its pull request cannot be opened, for example in a repository without a remote.
-A thread whose pull request was closed settles without a new one.
+A thread with an open or closed pull request settles once that pull request has
+all of its commits and nothing is left uncommitted. Newer work goes to an open
+pull request first. A thread whose pull request was closed gets no new one: it
+stays active until you ship or discard that work.
 
 A thread you never wrote in, such as a scheduled run, a subagent or a chat an
 agent started, never gets a pull request this way: where a thread you wrote in
@@ -436,8 +506,9 @@ The **Un-settle** and **Wake** buttons work the same way in their sections.
 Press `Escape` while dragging to cancel.
 
 By default, environments settle inactive threads after seven days and settle
-threads whose pull request merged. A closed pull request can also settle an idle
-thread. An empty thread's inactivity counts from when it was created.
+threads whose pull request merged. With the merge rule on, a closed pull request
+settles an idle thread too; with it off, a closed pull request does not. An empty
+thread's inactivity counts from when it was created.
 Work in progress, pending questions or approvals, and background work the agent
 is waiting on prevent automatic settlement. An open pull request does not prevent inactivity
 settlement unless you turn on **Keep threads with a PR** in **Settings → Threads**,
@@ -507,9 +578,10 @@ thread** from its long-press menu on mobile.
 **Limited** means the provider stopped on a usage or rate limit. The conversation
 keeps the provider's explanation. Retry after the limit resets, or switch to
 another provider instance.
-Press **Resume** in an empty composer to continue a limited or interrupted turn
-manually when the provider supports native continuation, or send a message to continue.
-Do this when the provider reports no reset time, because nothing continues the turn on its own.
+Press **Resume** in an empty composer to continue a limited or interrupted turn,
+or one a rejected login stopped after its agent started working, when the provider
+supports native continuation; otherwise send a message to continue. Do this when
+the provider reports no reset time, because nothing continues the turn on its own.
 Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes.
 
@@ -592,7 +664,12 @@ An account whose login Codex, Claude or Muse Code rejected shows as signed out i
 **Providers** and **Manual steps**, and Auto and scheduled tasks skip it until you sign in
 again. With account switching on, a chat that failed this way in the last day, before its
 agent did any work, starts again with the same message on the next account of that
-provider.
+provider. With **Resume when the limit resets** (alone or with switching), a chat that failed
+this way in the last day and stayed on its account continues there once that account reads
+signed in again: after you sign in, after another chat on it gets an answer, or after a
+restart. It sends the message again when the agent did no work, and asks it to continue
+otherwise. By hand, press **Resume** in an empty composer when the agent had started working,
+or send the message again when it had not.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and
@@ -678,19 +755,25 @@ account in **Settings → Browser & devices → Browser profiles** and sign in t
 Claude there. Then pair each assistant with its profile under **Web assistants**
 on the same page. Duet opens at claude.ai, where Anthropic hosts it.
 
-Once a thread has started, the top of the thread details card sums up where it works: the
-machine, the branch and its pull request, and how much changed. Select it to show the workspace and
-Git controls, and again to fold them; each device keeps your choice. Select the pull request number
-to open the pull request. A new thread keeps every control in view, so you can pick where it runs
-before you send it.
+The thread details card shows what is going on rather than a set of buttons. At the top, once a
+thread has started, a summary names the machine, the branch and its pull request, and how much
+changed; select it to show the workspace and Git controls, and again to fold them. They are folded
+whenever you open a thread. **Agent status** shows whether the agent is working, waiting for you
+(its own request or a subagent's approval), waiting on another thread or a background task,
+stopped, reverted or idle, how long the run has taken, the model
+it uses, and what it is doing now, with the full command it runs. Below it
+sit the context window, usage limits, the agent's to-do list for the turn it is on, lineage and side
+chats, **Your prompts**, and **Machine load**: CPU, memory and disk of the machine the chat runs
+on. **Your prompts** lists the messages you sent, as far back as the conversation has loaded; the
+one on screen is marked, and selecting one scrolls back to it. A new thread shows only the controls
+for choosing where it runs: the environment and the branch.
 
-While the agent works through a to-do list, the card shows that list for the turn it is on and how
-many steps are done. **Ask the agent** sends a common request as your message: commit and open a
-pull request, run the tests, or review the changes. Add your own requests, and set their order, in
-**Settings → Chat & diffs → Ask the agent**, or with the settings button beside **Ask the agent** in
-the card; the command palette lists them all as **Ask the agent** items for the open thread. While the agent is working, the request waits until it finishes. If you are writing a
-message, the request is added to it instead, for you to send. **Your prompts** lists the messages you sent, as far back as
-the conversation has loaded; the one on screen is marked, and selecting one scrolls back to it.
+**Git actions** and **Ask the agent** are off by default. **Ask the agent** sends a common request
+as your message: commit and open a pull request, run the tests, or review the changes. Add your own
+requests, and set their order, in **Settings → Chat & diffs → Ask the agent**; the command palette
+lists them all as **Ask the agent** items for the open thread. While the agent is working, the
+request waits until it finishes. If you are writing a message, the request is added to it instead,
+for you to send.
 
 To choose what the thread details card shows, right-click the card or open
 **Settings → Chat & diffs → Thread details**. Hidden rows keep their keyboard
@@ -707,6 +790,13 @@ You can also press `mod+;`, choose **Side chat** from the **+** menu in the righ
 panel, or run **Start side chat** from the command palette. The side chat opens as
 a tab there, with its own composer. Side chats do not show in the
 sidebar. Find one again under **Side chats** in thread details.
+
+To read an existing thread alongside the current one, right-click its sidebar row and choose
+**Open in side panel**, or Alt-click (Option-click on Mac). In the command palette, highlight a
+thread and press **Alt+Enter** (**Option+Enter** on Mac). Choose **Open in main view** to move
+it out of the panel. Use `mod+shift+t` to reopen a closed tab. Opening a file, browser tab, pull
+request or side chat from a thread in the side panel moves that thread to the main view with it
+open.
 
 A side chat works in the same folder as the thread and starts with the permissions,
 model, and reasoning level shown in the thread's composer, including for its first
@@ -726,6 +816,9 @@ answer its questions.
 ## Snooze until later
 
 To change the choices in the snooze menu, open **Settings → Threads → Snooze → Edit**.
+
+To bring back the thread you archived last, press `mod+alt+shift+e` or choose **Reopen last archived thread** in the command palette on web and desktop. It
+unarchives the most recently archived thread on any connected machine and opens it.
 
 Archived threads are not a Settings page. Open them from **Archived threads** in the thread list's filter menu, **Open archived threads** in the command palette, or **View archived** in **Settings → Threads → Behavior**.
 Each option is a duration, such as 3 hours, or a time on a day, such as 9:00 PM

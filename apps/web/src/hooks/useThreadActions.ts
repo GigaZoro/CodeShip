@@ -14,6 +14,10 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import {
+  planPinsAtTop,
+  sortPinnedThreadsByOrderKey,
+} from "@t3tools/client-runtime/state/thread-sort";
+import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   EnvironmentAuthorizationError,
@@ -28,7 +32,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useRouter } from "@tanstack/react-router";
 
-import { getFallbackThreadIdAfterDelete, pinOrderKeyBetween } from "../components/Sidebar.logic";
+import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { environmentSession, readEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -121,13 +125,16 @@ export class ThreadSnoozeBlockedError extends Schema.TaggedError<ThreadSnoozeBlo
   }
 }
 
-function topOfPinnedRunOrderKey(): string | undefined {
-  let firstKey: string | null = null;
-  for (const shell of readThreadShells()) {
-    if (shell.pinnedAt == null || shell.pinOrderKey == null) continue;
-    if (firstKey === null || shell.pinOrderKey < firstKey) firstKey = shell.pinOrderKey;
-  }
-  return pinOrderKeyBetween(null, firstKey) ?? undefined;
+function planPinsAtTopOfShelf(targets: ReadonlyArray<ScopedThreadRef>) {
+  const pinning = new Set(targets.map(scopedThreadKey));
+  const shelf = sortPinnedThreadsByOrderKey(
+    readThreadShells().filter(
+      (shell) =>
+        shell.pinnedAt != null &&
+        !pinning.has(scopedThreadKey(scopeThreadRef(shell.environmentId, shell.id))),
+    ),
+  );
+  return planPinsAtTop({ shelf, count: targets.length });
 }
 
 export class ThreadAutoSettleOptOutUnsupportedError extends Schema.TaggedError<ThreadAutoSettleOptOutUnsupportedError>()(
@@ -788,6 +795,26 @@ export function useThreadActions() {
     });
 
   const sendPin = async (target: ScopedThreadRef, opts: { orderKey?: string } = {}) => {
+    if (opts.orderKey === undefined) return (await pinThreadsAtTop([target]))[0]!;
+    return pinThreadWithKey(target, opts.orderKey);
+  };
+
+  /** Pins the threads at the top of the shelf, first to last. */
+  const pinThreadsAtTop = async (targets: ReadonlyArray<ScopedThreadRef>) => {
+    const plan = planPinsAtTopOfShelf(targets);
+    for (const { thread, orderKey } of plan.rekeyed) {
+      const result = await reorderPinnedThread(
+        scopeThreadRef(thread.environmentId, thread.id),
+        orderKey,
+      );
+      if (result._tag === "Failure") return targets.map(() => result);
+    }
+    return Promise.all(
+      targets.map((target, index) => pinThreadWithKey(target, plan.pinKeys[index]!)),
+    );
+  };
+
+  const pinThreadWithKey = async (target: ScopedThreadRef, orderKey: string) => {
     if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
@@ -798,17 +825,13 @@ export function useThreadActions() {
         ),
       );
     }
-    const orderKey = opts.orderKey ?? topOfPinnedRunOrderKey();
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
     // Pinning clears snooze, so older Settled or Snoozed undos would fight this pin.
     ThreadUndo.invalidate("settle", scopedThreadKey(target));
     ThreadUndo.invalidate("snooze", scopedThreadKey(target));
     return pinThreadMutation({
       environmentId: target.environmentId,
-      input: {
-        threadId: target.threadId,
-        ...(orderKey !== undefined ? { orderKey } : {}),
-      },
+      input: { threadId: target.threadId, orderKey },
     });
   };
 
@@ -1127,6 +1150,7 @@ export function useThreadActions() {
     snoozeThread,
     unsnoozeThread,
     pinThread,
+    pinThreadsAtTop,
     unpinThread,
     confirmAndUnpinThread,
     reorderPinnedThread,

@@ -1,31 +1,37 @@
+import { useAtomValue } from "@effect/atom-react";
+import { threadLastSendAt } from "@t3tools/client-runtime/state/thread-inbox";
 import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
-import { t } from "~/i18n";
+import { t, tn } from "~/i18n";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useNavigate } from "@tanstack/react-router";
+import { Atom } from "effect/reactivity";
+import type { ReactNode } from "react";
 
 import { type ComposerThreadTarget, useComposerDraftStore } from "~/composerDraftStore";
 import { composerDraftHasUserContent } from "~/composerDraftStore";
 import { cn } from "~/lib/utils";
-import { useProjects, useVisibleThreadShells } from "~/state/entities";
+import { useNowMinute } from "~/hooks/useNowMinute";
+import { useSidebarScopedProjectKeys } from "~/hooks/useSidebarProjectGroups";
+import { useDelegatedUnderParent, useProjects, useQuietThreadShells } from "~/state/entities";
+import { environmentPresentations } from "~/state/presentation";
+import { environmentThreadShells, hiddenScheduledTaskThreadKeysAtom } from "~/state/threads";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { useUiStateStore } from "~/uiStateStore";
-import {
-  hasUnseenCompletion,
-  isSidebarHiddenThread,
-  resolveThreadLastVisitedAt,
-} from "../Sidebar.logic";
+import { hasUnseenCompletion, resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threadRowStatus";
+import { selectDraftRecentThreads } from "./DraftRecentThreads.logic";
 
-const RECENT_THREAD_LIMIT = 5;
-
-function selectRecentThreads(threads: ReadonlyArray<EnvironmentThreadShell>) {
-  return threads
-    .filter((thread) => thread.archivedAt === null && !isSidebarHiddenThread(thread))
-    .toSorted((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    .slice(0, RECENT_THREAD_LIMIT);
-}
+// Keyed like the sidebar's, so both read one family entry; a config change that keeps the
+// environments does not re-render the list.
+const draftHiddenTaskThreadKeysAtom = Atom.make((get) =>
+  get(
+    hiddenScheduledTaskThreadKeysAtom(
+      JSON.stringify([...get(environmentPresentations.serverConfigsAtom).keys()]),
+    ),
+  ),
+);
 
 function RecentThreadRow(props: {
   readonly thread: EnvironmentThreadShell;
@@ -38,6 +44,7 @@ function RecentThreadRow(props: {
     (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
   );
   const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
+  const nowMinute = useNowMinute();
   const status = resolveThreadRowStatus({
     status: resolveThreadStatus(thread),
     goalActive: thread.goal?.status === "active",
@@ -68,40 +75,93 @@ function RecentThreadRow(props: {
           </span>
         )}
         <span className="w-16 shrink-0 whitespace-nowrap text-right text-muted-foreground text-xs tabular-nums">
-          {formatRelativeTimeLabel(thread.updatedAt)}
+          {formatRelativeTimeLabel(
+            new Date(threadLastSendAt(thread)).toISOString(),
+            Date.parse(`${nowMinute}:00.000Z`),
+          )}
         </span>
       </button>
     </li>
   );
 }
 
-/** Quick way back into recent work from an empty draft; gone once the user starts typing. */
+function ThreadSection(props: {
+  readonly title: string;
+  readonly threads: readonly EnvironmentThreadShell[];
+  readonly projectNameOf: (thread: EnvironmentThreadShell) => string | null;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <section aria-label={props.title} className="pt-6">
+      <h2 className="px-2 pb-1 font-medium text-muted-foreground text-xs">{props.title}</h2>
+      <ul>
+        {props.threads.map((thread) => (
+          <RecentThreadRow
+            key={`${thread.environmentId}:${thread.id}`}
+            thread={thread}
+            projectName={props.projectNameOf(thread)}
+          />
+        ))}
+        {props.children}
+      </ul>
+    </section>
+  );
+}
+
+/** Quick way back into waiting and recent work from an empty draft; gone once the user types. */
 export function DraftRecentThreads(props: { readonly draftTarget: ComposerThreadTarget }) {
   const hasDraftContent = useComposerDraftStore((store) =>
     composerDraftHasUserContent(store.getComposerDraft(props.draftTarget)),
   );
-  const threads = useVisibleThreadShells(!hasDraftContent);
+  return hasDraftContent ? null : <DraftRecentThreadLists />;
+}
+
+function DraftRecentThreadLists() {
+  const threads = useQuietThreadShells();
+  const { threads: waiting, later } = useAtomValue(environmentThreadShells.needsYouThreadsAtom);
+  const hiddenTaskThreadKeys = useAtomValue(draftHiddenTaskThreadKeysAtom);
+  const delegatedUnderParent = useDelegatedUnderParent();
+  const scopedProjectKeys = useSidebarScopedProjectKeys();
   const projects = useProjects();
-  if (hasDraftContent) return null;
-  const recent = selectRecentThreads(threads);
-  if (recent.length === 0) return null;
+  const lists = selectDraftRecentThreads(threads, {
+    waiting,
+    later,
+    delegatedUnderParent,
+    hiddenTaskThreadKeys,
+    scopedProjectKeys,
+  });
   const projectNameByKey = new Map(
     projects.map((project) => [`${project.environmentId}:${project.id}`, project.title] as const),
   );
+  const projectNameOf = (thread: EnvironmentThreadShell) =>
+    projectNameByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null;
+  const moreNeedYou = lists.needsYouCount - lists.needsYou.length;
   return (
-    <section aria-label={t("Recent threads")} className="pt-6">
-      <h2 className="px-2 pb-1 font-medium text-muted-foreground text-xs">{t("Recent threads")}</h2>
-      <ul>
-        {recent.map((thread) => (
-          <RecentThreadRow
-            key={`${thread.environmentId}:${thread.id}`}
-            thread={thread}
-            projectName={
-              projectNameByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
-            }
-          />
-        ))}
-      </ul>
-    </section>
+    <>
+      {lists.needsYou.length === 0 ? null : (
+        <ThreadSection
+          title={t("Needs you")}
+          threads={lists.needsYou}
+          projectNameOf={projectNameOf}
+        >
+          {moreNeedYou > 0 ? (
+            <li className="px-2 pt-1 text-muted-foreground text-xs">
+              {tn(
+                moreNeedYou,
+                "{count} more needs you in the sidebar",
+                "{count} more need you in the sidebar",
+              )}
+            </li>
+          ) : null}
+        </ThreadSection>
+      )}
+      {lists.recent.length === 0 ? null : (
+        <ThreadSection
+          title={t("Recent threads")}
+          threads={lists.recent}
+          projectNameOf={projectNameOf}
+        />
+      )}
+    </>
   );
 }

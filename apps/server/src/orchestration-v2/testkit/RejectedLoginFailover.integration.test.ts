@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   CodexSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -8,7 +9,6 @@ import {
   type ServerProvider,
   type ServerProviderAuthStatus,
 } from "@t3tools/contracts";
-import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { makeMuseSignedOut } from "@t3tools/provider-muse/testing";
 import { materializeReplayTranscriptWorkspace } from "@t3tools/provider-testing/replayTranscript";
 import {
@@ -214,15 +214,14 @@ describe("rejected login failover", () => {
         const now = run.completedAt;
         assert.isNotNull(now, "the rejected run never completed");
         const candidates = yield* ProjectionStore.ProjectionStoreV2.pipe(
-          Effect.flatMap((store) =>
-            store.getSignedOutFailoverCandidates({ now, maxAgeMs: DAY_MS }),
-          ),
+          Effect.flatMap((store) => store.getSignedOutCandidates({ now, maxAgeMs: DAY_MS })),
           Effect.provide(ProjectionStore.layer.pipe(Layer.provide(databaseLayer))),
         );
         assert.deepEqual(
           candidates.map((candidate) => candidate.latestRunId),
           [run.id],
         );
+        assert.isFalse(candidates[0]?.workDone, "the rejected run counted as work");
       }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 });

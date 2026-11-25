@@ -94,6 +94,7 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
   return {
     id: task.id,
     title: task.title,
+    ...(task.description === undefined ? {} : { description: task.description }),
     prompt: task.prompt,
     enabled: task.enabled,
     schedule: task.schedule,
@@ -101,6 +102,9 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     modelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel === true,
     // Sent whenever the source lists them: a copy without one makes the receiver keep its own.
+    ...(task.fallbackModelSelections === undefined
+      ? {}
+      : { fallbackModelSelections: task.fallbackModelSelections }),
     ...(task.catchUpMissedRun === undefined ? {} : { catchUpMissedRun: task.catchUpMissedRun }),
     ...(task.runCondition === undefined ? {} : { runCondition: task.runCondition }),
     ...(task.delegateProviders === undefined ? {} : { delegateProviders: task.delegateProviders }),
@@ -155,7 +159,14 @@ export function planSharedScheduledTaskSync(
       candidateRevision(candidate),
       candidateRevision(current),
     );
-    if (order > 0 || (order === 0 && candidate.kind === "deletion")) winners.set(id, candidate);
+    const suppliesFallbacks =
+      candidate.kind === "copy" &&
+      current.kind === "copy" &&
+      candidate.copy.fallbackModelSelections !== undefined &&
+      current.copy.fallbackModelSelections === undefined;
+    if (order > 0 || (order === 0 && (candidate.kind === "deletion" || suppliesFallbacks))) {
+      winners.set(id, candidate);
+    }
   };
   for (const snapshot of snapshots) {
     for (const task of snapshot.tasks) {
@@ -177,22 +188,34 @@ export function planSharedScheduledTaskSync(
         ...(local?.shared ? [local.shared.revision] : []),
         ...snapshot.sharedDeletions.filter((entry) => entry.id === taskId).map((e) => e.revision),
       ]);
-      const behind =
-        localRevision === null ||
-        compareScheduledTaskSharedRevisions(localRevision, winnerRevision) < 0;
+      const revisionOrder =
+        localRevision === null
+          ? -1
+          : compareScheduledTaskSharedRevisions(localRevision, winnerRevision);
+      const behind = revisionOrder < 0;
+      let completesFallbacks = false;
       let input: ScheduledTaskApplySharedInput | null = null;
       if (winner.kind === "deletion") {
         if (behind) input = { type: "delete", deletion: winner.deletion };
       } else {
         const excluded = winner.copy.shared.excludedEnvironmentIds.includes(snapshot.environmentId);
-        if (excluded ? local !== undefined : behind) input = { type: "upsert", task: winner.copy };
+        completesFallbacks =
+          !excluded &&
+          revisionOrder === 0 &&
+          local !== undefined &&
+          local.fallbackModelSelections === undefined &&
+          winner.copy.fallbackModelSelections !== undefined;
+        if (excluded ? local !== undefined : behind || completesFallbacks) {
+          input = { type: "upsert", task: winner.copy };
+        }
       }
       if (input === null) continue;
       ops.push({
         environmentId: snapshot.environmentId,
         subject: taskId,
         input,
-        key: `${snapshot.environmentId}:${taskId}:${winnerRevision.at}:${winnerRevision.environmentId}`,
+        // An upsert without fallbacks may have already finished for this revision.
+        key: `${snapshot.environmentId}:${taskId}:${winnerRevision.at}:${winnerRevision.environmentId}${completesFallbacks ? ":fallbacks" : ""}`,
       });
     }
   }

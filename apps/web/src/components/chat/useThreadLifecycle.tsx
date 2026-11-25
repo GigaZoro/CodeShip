@@ -673,6 +673,16 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         }),
       );
     };
+  const toggleActiveThreadPin = () => {
+    if (!activeThreadRef) return;
+    void (
+      activeThreadPinned ? confirmAndUnpinThread(activeThreadRef) : pinThread(activeThreadRef)
+    ).then(
+      toastThreadActionFailure(
+        activeThreadPinned ? t("Failed to unpin thread") : t("Failed to pin thread"),
+      ),
+    );
+  };
   const shortcuts = {
     "thread.settle": () => {
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
@@ -696,13 +706,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       }
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
       if (!activeThreadShell || !activeThreadRef || !serverConfigLoaded) return;
-      void (
-        activeThreadPinned ? confirmAndUnpinThread(activeThreadRef) : pinThread(activeThreadRef)
-      ).then(
-        toastThreadActionFailure(
-          activeThreadPinned ? t("Failed to unpin thread") : t("Failed to pin thread"),
-        ),
-      );
+      toggleActiveThreadPin();
     },
     // The snooze presets live in the palette, so the shortcut opens it on them.
     "thread.snooze": ({ event }) => {
@@ -740,6 +744,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   } satisfies ChatShortcutCommands;
   return {
     shortcuts,
+    threadPin:
+      activeThreadShell && activeThreadRef && serverConfigLoaded && canOperateThread
+        ? { pinned: activeThreadPinned, toggle: toggleActiveThreadPin }
+        : null,
     acknowledgeActiveThreadWoke,
     activeBranchMismatchKey,
     // A Stop that went unanswered needs the user; one in progress is the thread's work.

@@ -3,6 +3,7 @@ import {
   MessageId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type RuntimeRequestId,
   type ThreadId,
@@ -34,6 +35,7 @@ const make = Effect.gen(function* () {
   const wakeParent = Effect.fnUntraced(function* (
     task: OrchestrationV2Subagent,
     request: OrchestrationV2RuntimeRequest,
+    source: OrchestrationV2Run | undefined,
   ) {
     if (task.childThreadId === null) return;
     const key = `${task.threadId}:${request.id}`;
@@ -46,6 +48,7 @@ const make = Effect.gen(function* () {
       type: "message.dispatch",
       commandId: CommandId.make(`server:delegated-task-question:${key}`),
       threadId: task.threadId,
+      demandId: source?.demandId ?? null,
       messageId: MessageId.make(`message:delegated-task-question:${key}`),
       text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
       notification: {
@@ -112,15 +115,28 @@ const make = Effect.gen(function* () {
           const child = yield* projections.getThreadRecords(task.childThreadId, [
             "runtimeRequests",
           ]);
-          for (const request of child.runtimeRequests) {
-            if (
-              request.kind !== "user_input" ||
-              request.status !== "pending" ||
-              request.responseCapability.type !== "live"
-            ) {
+          const pending = child.runtimeRequests.filter(
+            (request) =>
+              request.kind === "user_input" &&
+              request.status === "pending" &&
+              request.responseCapability.type === "live",
+          );
+          if (pending.length === 0) continue;
+          const { nodes } = yield* projections.getThreadRecords(task.childThreadId, ["nodes"], {
+            nodeIds: pending.map((request) => request.nodeId),
+          });
+          const { runs } = yield* projections.getThreadRecords(task.childThreadId, ["runs"], {
+            runIds: nodes.flatMap((node) => (node.runId === null ? [] : [node.runId])),
+          });
+          const byRun = new Map(runs.map((run) => [run.id, run]));
+          const byNode = new Map(
+            nodes.map((node) => [node.id, node.runId === null ? undefined : byRun.get(node.runId)]),
+          );
+          for (const request of pending) {
+            const source = byNode.get(request.nodeId);
+            if (source?.delegatedTaskId !== undefined && source.delegatedTaskId !== task.id)
               continue;
-            }
-            yield* wakeParent(task, request).pipe(
+            yield* wakeParent(task, request, source).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("catching up a delegated task question failed", {
                   taskId: task.id,
@@ -185,10 +201,15 @@ const make = Effect.gen(function* () {
         return;
       }
       const parent = yield* projections.getThreadRecords(parentThreadId, ["subagents", "runs"]);
-      const { runs } = yield* projections.getThreadRecords(child.id, ["runs"]);
+      const sourceRunId =
+        event.runId ??
+        (yield* projections.getThreadRecords(child.id, ["nodes"], { nodeIds: [request.nodeId] }))
+          .nodes[0]?.runId;
       const run =
-        runs.find((run) => run.id === event.runId) ??
-        runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
+        sourceRunId == null
+          ? undefined
+          : (yield* projections.getThreadRecords(child.id, ["runs"], { runIds: [sourceRunId] }))
+              .runs[0];
       const taskId =
         run?.delegatedTaskId ??
         (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined);
@@ -214,7 +235,7 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
-      yield* wakeParent(task, request);
+      yield* wakeParent(task, request, run);
     },
     (effect, event) =>
       effect.pipe(

@@ -17,6 +17,7 @@ import {
 } from "../src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { makeCheckpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { parseRecorderArguments, recorderEnvironmentValue } from "./replayRecorderArguments.ts";
 
 const SCENARIO = "thread_fork_native_fork_local_rollback";
 const DEFAULT_OUTPUT = new URL(
@@ -25,10 +26,6 @@ const DEFAULT_OUTPUT = new URL(
 ).pathname;
 const CLAUDE_PROVIDER = "claudeAgent" as const;
 const PROTOCOL = "claude-agent-sdk.query" as const;
-const MODEL_SELECTION = {
-  instanceId: ProviderInstanceId.make(CLAUDE_PROVIDER),
-  model: process.env.T3_CLAUDE_REPLAY_MODEL ?? "claude-sonnet-4-6",
-} as const;
 const SOURCE_PROMPT =
   "For this fork-local rollback fixture, respond with exactly: fork local source alpha";
 const FORK_FIRST_PROMPT =
@@ -75,12 +72,6 @@ class PromptQueue implements AsyncIterable<ReturnType<typeof makeClaudeUserMessa
       },
     };
   }
-}
-
-function readArgValue(name: string): string | undefined {
-  const args = process.argv.slice(2);
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
 }
 
 function dirname(filePath: string): string {
@@ -134,6 +125,10 @@ function stableOptions(options: ClaudeAgentSdkQueryOptions): ClaudeAgentSdkQuery
 }
 
 function queryOptions(input: {
+  readonly modelSelection: {
+    readonly instanceId: ReturnType<typeof ProviderInstanceId.make>;
+    readonly model: string;
+  };
   readonly cwd: string;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -141,7 +136,7 @@ function queryOptions(input: {
 }): ClaudeAgentSdkQueryOptions {
   return {
     ...makeClaudeQueryOptions({
-      modelSelection: MODEL_SELECTION,
+      modelSelection: input.modelSelection,
       cwd: input.cwd,
       nativeThreadId: input.nativeThreadId,
       resume: input.resume,
@@ -211,148 +206,171 @@ function encodeTranscript(input: {
   ].join("\n");
 }
 
-const outputPath = readArgValue("--out") ?? DEFAULT_OUTPUT;
-const cwd =
-  process.env.T3_CLAUDE_REPLAY_CWD ??
-  (await makeCheckpointWorkspace(`claude-agent-sdk-record-${SCENARIO}`));
-const cwdRealPath = await Effect.runPromise(
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    return yield* fs.realPath(cwd);
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-const pathFragments = [
-  [cwd, `/tmp/claude-replay-${SCENARIO}`],
-  [cwdRealPath, `/tmp/claude-replay-${SCENARIO}`],
-  [process.env.HOME ?? "", "/home/replay-user"],
-] as const;
-const sessionId =
-  process.env.T3_CLAUDE_REPLAY_SESSION_ID ?? (await Effect.runPromise(randomUuidV4));
-const entries: Array<ProviderReplayEntry> = [];
-const metadata: Record<string, unknown> = {
-  prompts: [SOURCE_PROMPT, FORK_FIRST_PROMPT, FORK_SECOND_PROMPT, FORK_AFTER_ROLLBACK_PROMPT],
-  model: MODEL_SELECTION.model,
-  nativeSessionId: sessionId,
-  queryMode: "fork_session_resume_at_fork_cursor",
-  tools: "claude_code",
-  permissionMode: "bypassPermissions",
-  generatedBy: "probeClaudeForkLocalRollbackReplay",
-};
+async function main() {
+  const { values: options } = parseRecorderArguments(
+    { options: { out: { type: "string" } } },
+    process.argv.slice(2),
+  );
+  const MODEL_SELECTION = {
+    instanceId: ProviderInstanceId.make(CLAUDE_PROVIDER),
+    model: recorderEnvironmentValue("T3_CLAUDE_REPLAY_MODEL") ?? "claude-sonnet-4-6",
+  } as const;
+  const outputPath = options.out ?? DEFAULT_OUTPUT;
+  const configuredSessionId = recorderEnvironmentValue("T3_CLAUDE_REPLAY_SESSION_ID");
+  const cwd =
+    recorderEnvironmentValue("T3_CLAUDE_REPLAY_CWD") ??
+    (await makeCheckpointWorkspace(`claude-agent-sdk-record-${SCENARIO}`));
+  const cwdRealPath = await Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return yield* fs.realPath(cwd);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+  const pathFragments = [
+    [cwd, `/tmp/claude-replay-${SCENARIO}`],
+    [cwdRealPath, `/tmp/claude-replay-${SCENARIO}`],
+    [process.env.HOME ?? "", "/home/replay-user"],
+  ] as const;
+  const sessionId = configuredSessionId ?? (await Effect.runPromise(randomUuidV4));
+  const entries: Array<ProviderReplayEntry> = [];
+  const metadata: Record<string, unknown> = {
+    prompts: [SOURCE_PROMPT, FORK_FIRST_PROMPT, FORK_SECOND_PROMPT, FORK_AFTER_ROLLBACK_PROMPT],
+    model: MODEL_SELECTION.model,
+    nativeSessionId: sessionId,
+    queryMode: "fork_session_resume_at_fork_cursor",
+    tools: "claude_code",
+    permissionMode: "bypassPermissions",
+    generatedBy: "probeClaudeForkLocalRollbackReplay",
+  };
 
-const sourceQueue = new PromptQueue();
-const sourceOptions = queryOptions({ cwd, nativeThreadId: sessionId, resume: false });
-entries.push({
-  type: "expect_outbound",
-  label: "query.open:source",
-  frame: { type: "query.open", options: stableOptions(sourceOptions) },
-});
-const sourceRuntime = query({ prompt: sourceQueue, options: sourceOptions });
-try {
-  const sourceCursor = await recordTurn({
-    entries,
-    iterator: sourceRuntime[Symbol.asyncIterator](),
-    promptQueue: sourceQueue,
-    prompt: SOURCE_PROMPT,
-    label: "prompt.offer:source",
-    pathFragments,
-  });
-  sourceQueue.close();
-  sourceRuntime.close();
-  entries.push({ type: "runtime_exit", status: "success" });
-
-  entries.push({
-    type: "expect_outbound",
-    label: "session.fork",
-    frame: {
-      type: "session.fork",
-      sessionId,
-      options: {
-        dir: `/tmp/claude-replay-${SCENARIO}`,
-        upToMessageId: sourceCursor,
-      },
-    },
-  });
-  const forked = await forkSession(sessionId, { dir: cwd, upToMessageId: sourceCursor });
-  metadata.sourceAssistantMessageUuids = [sourceCursor];
-  metadata.forkUpToMessageId = sourceCursor;
-  metadata.forkedNativeSessionId = forked.sessionId;
-  entries.push({
-    type: "emit_inbound",
-    label: "session.forked",
-    frame: { type: "session.forked", sessionId: forked.sessionId },
-  });
-
-  const forkQueue = new PromptQueue();
-  const forkOptions = queryOptions({ cwd, nativeThreadId: forked.sessionId, resume: true });
-  entries.push({
-    type: "expect_outbound",
-    label: "query.open:fork",
-    frame: { type: "query.open", options: stableOptions(forkOptions) },
-  });
-  const forkRuntime = query({ prompt: forkQueue, options: forkOptions });
-  const forkIterator = forkRuntime[Symbol.asyncIterator]();
-  const forkFirstCursor = await recordTurn({
-    entries,
-    iterator: forkIterator,
-    promptQueue: forkQueue,
-    prompt: FORK_FIRST_PROMPT,
-    label: "prompt.offer:fork-first",
-    pathFragments,
-  });
-  const forkSecondCursor = await recordTurn({
-    entries,
-    iterator: forkIterator,
-    promptQueue: forkQueue,
-    prompt: FORK_SECOND_PROMPT,
-    label: "prompt.offer:fork-second",
-    pathFragments,
-  });
-  forkQueue.close();
-  forkRuntime.close();
-  entries.push({ type: "runtime_exit", status: "success" });
-  metadata.forkAssistantMessageUuids = [forkFirstCursor, forkSecondCursor];
-  metadata.resumeSessionAt = forkFirstCursor;
-
-  const resumedQueue = new PromptQueue();
-  const resumedOptions = queryOptions({
+  const sourceQueue = new PromptQueue();
+  const sourceOptions = queryOptions({
+    modelSelection: MODEL_SELECTION,
     cwd,
-    nativeThreadId: forked.sessionId,
-    resume: true,
-    resumeSessionAt: forkFirstCursor,
+    nativeThreadId: sessionId,
+    resume: false,
   });
   entries.push({
     type: "expect_outbound",
-    label: "query.open:fork-resume-at-cursor",
-    frame: { type: "query.open", options: stableOptions(resumedOptions) },
+    label: "query.open:source",
+    frame: { type: "query.open", options: stableOptions(sourceOptions) },
   });
-  const resumedRuntime = query({ prompt: resumedQueue, options: resumedOptions });
-  await recordTurn({
-    entries,
-    iterator: resumedRuntime[Symbol.asyncIterator](),
-    promptQueue: resumedQueue,
-    prompt: FORK_AFTER_ROLLBACK_PROMPT,
-    label: "prompt.offer:fork-after-rollback",
-    pathFragments,
-  });
-  resumedQueue.close();
-  resumedRuntime.close();
-  entries.push({ type: "runtime_exit", status: "success" });
-} catch (error) {
-  sourceQueue.close();
-  sourceRuntime.close();
-  entries.push({
-    type: "runtime_exit",
-    status: "error",
-    error: error instanceof Error ? error.message : String(error),
-  });
-  throw error;
+  const sourceRuntime = query({ prompt: sourceQueue, options: sourceOptions });
+  try {
+    const sourceCursor = await recordTurn({
+      entries,
+      iterator: sourceRuntime[Symbol.asyncIterator](),
+      promptQueue: sourceQueue,
+      prompt: SOURCE_PROMPT,
+      label: "prompt.offer:source",
+      pathFragments,
+    });
+    sourceQueue.close();
+    sourceRuntime.close();
+    entries.push({ type: "runtime_exit", status: "success" });
+
+    entries.push({
+      type: "expect_outbound",
+      label: "session.fork",
+      frame: {
+        type: "session.fork",
+        sessionId,
+        options: {
+          dir: `/tmp/claude-replay-${SCENARIO}`,
+          upToMessageId: sourceCursor,
+        },
+      },
+    });
+    const forked = await forkSession(sessionId, { dir: cwd, upToMessageId: sourceCursor });
+    metadata.sourceAssistantMessageUuids = [sourceCursor];
+    metadata.forkUpToMessageId = sourceCursor;
+    metadata.forkedNativeSessionId = forked.sessionId;
+    entries.push({
+      type: "emit_inbound",
+      label: "session.forked",
+      frame: { type: "session.forked", sessionId: forked.sessionId },
+    });
+
+    const forkQueue = new PromptQueue();
+    const forkOptions = queryOptions({
+      modelSelection: MODEL_SELECTION,
+      cwd,
+      nativeThreadId: forked.sessionId,
+      resume: true,
+    });
+    entries.push({
+      type: "expect_outbound",
+      label: "query.open:fork",
+      frame: { type: "query.open", options: stableOptions(forkOptions) },
+    });
+    const forkRuntime = query({ prompt: forkQueue, options: forkOptions });
+    const forkIterator = forkRuntime[Symbol.asyncIterator]();
+    const forkFirstCursor = await recordTurn({
+      entries,
+      iterator: forkIterator,
+      promptQueue: forkQueue,
+      prompt: FORK_FIRST_PROMPT,
+      label: "prompt.offer:fork-first",
+      pathFragments,
+    });
+    const forkSecondCursor = await recordTurn({
+      entries,
+      iterator: forkIterator,
+      promptQueue: forkQueue,
+      prompt: FORK_SECOND_PROMPT,
+      label: "prompt.offer:fork-second",
+      pathFragments,
+    });
+    forkQueue.close();
+    forkRuntime.close();
+    entries.push({ type: "runtime_exit", status: "success" });
+    metadata.forkAssistantMessageUuids = [forkFirstCursor, forkSecondCursor];
+    metadata.resumeSessionAt = forkFirstCursor;
+
+    const resumedQueue = new PromptQueue();
+    const resumedOptions = queryOptions({
+      modelSelection: MODEL_SELECTION,
+      cwd,
+      nativeThreadId: forked.sessionId,
+      resume: true,
+      resumeSessionAt: forkFirstCursor,
+    });
+    entries.push({
+      type: "expect_outbound",
+      label: "query.open:fork-resume-at-cursor",
+      frame: { type: "query.open", options: stableOptions(resumedOptions) },
+    });
+    const resumedRuntime = query({ prompt: resumedQueue, options: resumedOptions });
+    await recordTurn({
+      entries,
+      iterator: resumedRuntime[Symbol.asyncIterator](),
+      promptQueue: resumedQueue,
+      prompt: FORK_AFTER_ROLLBACK_PROMPT,
+      label: "prompt.offer:fork-after-rollback",
+      pathFragments,
+    });
+    resumedQueue.close();
+    resumedRuntime.close();
+    entries.push({ type: "runtime_exit", status: "success" });
+  } catch (error) {
+    sourceQueue.close();
+    sourceRuntime.close();
+    entries.push({
+      type: "runtime_exit",
+      status: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(dirname(outputPath), { recursive: true });
+      yield* fs.writeFileString(outputPath, encodeTranscript({ entries, metadata }));
+      yield* Console.log(`Wrote ${entries.length} ${PROTOCOL} replay entries to ${outputPath}`);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 }
 
-await Effect.runPromise(
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dirname(outputPath), { recursive: true });
-    yield* fs.writeFileString(outputPath, encodeTranscript({ entries, metadata }));
-    yield* Console.log(`Wrote ${entries.length} ${PROTOCOL} replay entries to ${outputPath}`);
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
+if (import.meta.main) await main();

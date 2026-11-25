@@ -42,6 +42,18 @@ describe("runMigrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 80 });
+      yield* sql`
+        INSERT INTO scheduled_tasks (
+          task_id, title, prompt, enabled, schedule_json, project_id, workspace_strategy_json,
+          model_selection_json, runtime_mode, interaction_mode, created_by, creation_source,
+          created_at, updated_at, last_run_status, run_count
+        ) VALUES (
+          'inbox', 'Inbox', 'Process inbox', 1, '{"type":"interval","everyMs":60000}',
+          'project', '{"type":"root"}', '{"instanceId":"codex","model":"gpt-5.4"}',
+          'full-access', 'default', 'user', 'web', '2026-11-08T00:00:00.000Z',
+          '2026-11-08T00:00:00.000Z', 'succeeded', 1
+        )
+      `;
       yield* ScheduledTaskRunHistory;
       yield* sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at, outcome)
         VALUES ('old-run', 'inbox', 'scheduled', '2026-11-08T01:00:00.000Z', '2026-11-08T01:05:00.000Z', 'succeeded')`;
@@ -50,6 +62,9 @@ describe("runMigrations", () => {
         yield* sql`SELECT run_id, scheduled_for, check_json FROM scheduled_task_runs`,
         [{ run_id: "old-run", scheduled_for: "2026-11-08T01:00:00.000Z", check_json: null }],
       );
+      assert.deepEqual(yield* sql`SELECT title, prompt, description_json FROM scheduled_tasks`, [
+        { title: "Inbox", prompt: "Process inbox", description_json: null },
+      ]);
       assert.deepEqual(yield* sql`SELECT * FROM scheduled_task_run_conditions`, []);
       assert.deepEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -249,7 +264,7 @@ it.effect("registers every migration file", () =>
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each([85, 92, 94, 95, 96])(
+it.effect.each([85, 92, 94, 95, 96, 97, 99, 101])(
   "upgrades released fork history through %s without replaying fork migrations",
   (throughId) =>
     Effect.gen(function* () {
@@ -364,6 +379,29 @@ it.effect(
         [],
       );
       assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect.each([
+  [97, 20],
+  [100, 23],
+] as const)(
+  "moves an interrupted cursor of legacy fork migration %s to fork migration %s",
+  ([legacyId, forkId]) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedLegacyCodeShipDatabase(legacyId - 1);
+      const cursor = JSON.stringify({ last: 7 });
+      yield* sql`CREATE TABLE migration_progress (migration_id INTEGER PRIMARY KEY NOT NULL, cursor_json TEXT NOT NULL)`;
+      yield* sql`INSERT INTO migration_progress VALUES (${legacyId}, ${cursor})`;
+      yield* reconcileCodeShipMigrationLedger();
+      assert.deepEqual(yield* sql`SELECT * FROM codeship_migration_progress`, [
+        { migration_id: forkId, cursor_json: cursor },
+      ]);
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'migration_progress'`,
+        [],
+      );
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 

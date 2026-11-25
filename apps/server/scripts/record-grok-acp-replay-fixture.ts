@@ -5,12 +5,12 @@ import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as Clock from "effect/Clock";
-import * as Console from "effect/Console";
 import * as Config from "effect/Config";
-import * as Option from "effect/Option";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
@@ -36,6 +36,12 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { makeGrokAcpRuntime } from "@t3tools/provider-grok/testing";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as Result from "effect/Result";
+import {
+  parseRecorderArguments,
+  recorderEnvironmentValue,
+  replayScenarioNames,
+  validateReplayOutput,
+} from "./replayRecorderArguments.ts";
 
 const wallClock = Clock.Clock.defaultValue();
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -57,9 +63,32 @@ interface WireMessage {
   readonly message: JsonRpcMessage;
 }
 
-function readArgValues(name: string): ReadonlyArray<string> {
-  const args = process.argv.slice(2);
-  return args.flatMap((arg, index) => (arg === name && args[index + 1] ? [args[index + 1]!] : []));
+export function parseReplayArguments(args: ReadonlyArray<string>, env: NodeJS.ProcessEnv = {}) {
+  const { values } = parseRecorderArguments(
+    {
+      options: {
+        out: { type: "string" },
+        scenario: { type: "string", multiple: true, default: [] },
+      },
+    },
+    args,
+  );
+  const selected = replayScenarioNames(values.scenario).map((fixtureName) => {
+    const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find(
+      (candidate) => candidate.name === fixtureName,
+    );
+    const variant = fixture?.providers.find((provider) => provider.driver === GROK_PROVIDER);
+    if (fixture === undefined || variant === undefined) {
+      throw new Error("No Grok replay fixture named '" + fixtureName + "'.");
+    }
+    return { fixtureName, fixture, variant };
+  });
+  validateReplayOutput(values.out, selected.length);
+  return {
+    selected,
+    out: values.out,
+    binaryPath: recorderEnvironmentValue("T3_GROK_BIN", env) ?? "grok",
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -374,18 +403,16 @@ function normalizeEntries(input: {
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 
 const RecorderEnv = Config.all({
-  T3_GROK_BIN: Config.String("T3_GROK_BIN").pipe(Config.option, Config.map(Option.getOrUndefined)),
   HOME: Config.String("HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   USER: Config.String("USER").pipe(Config.option, Config.map(Option.getOrUndefined)),
 });
 
-const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: string) {
+const recordScenario = Effect.fn("recordGrokScenario")(function* (
+  { fixtureName, fixture, variant }: ReturnType<typeof parseReplayArguments>["selected"][number],
+  out: string | undefined,
+  binaryPath: string,
+) {
   const recorderEnv = yield* RecorderEnv;
-  const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((candidate) => candidate.name === fixtureName);
-  const variant = fixture?.providers.find((provider) => provider.driver === GROK_PROVIDER);
-  if (fixture === undefined || variant === undefined) {
-    return yield* Effect.die(new Error(`No Grok replay fixture named '${fixtureName}'.`));
-  }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const fixtureInput = fixture.buildInput();
@@ -414,7 +441,10 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
   };
 
   const tee = makeWireTee();
-  const settings = { ...DEFAULT_GROK_SETTINGS, binaryPath: recorderEnv.T3_GROK_BIN ?? "grok" };
+  const settings = {
+    ...DEFAULT_GROK_SETTINGS,
+    binaryPath,
+  };
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
       const environment = yield* HostProcess.Environment;
@@ -543,7 +573,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
     ],
   };
 
-  const outputPath = readArgValues("--out")[0] ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const { entries: transcriptEntries, ...header } = transcript;
   yield* fs.writeFileString(
     outputPath,
@@ -561,13 +591,15 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
   }
 });
 
-const scenarios = readArgValues("--scenario").flatMap((value) => value.split(","));
-if (scenarios.length === 0) {
-  throw new Error("Pass --scenario <fixture name>[,<fixture name>...]");
+if (import.meta.main) {
+  const { selected, out, binaryPath } = parseReplayArguments(process.argv.slice(2), process.env);
+  await Effect.runPromise(
+    Effect.forEach(
+      selected,
+      (scenario) => Effect.scoped(recordScenario(scenario, out, binaryPath)),
+      {
+        discard: true,
+      },
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
 }
-
-await Effect.runPromise(
-  Effect.forEach(scenarios, (name) => Effect.scoped(recordScenario(name)), {
-    discard: true,
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
-);

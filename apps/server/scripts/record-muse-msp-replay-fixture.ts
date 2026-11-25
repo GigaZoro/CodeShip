@@ -42,15 +42,16 @@ import {
   checkpointWorkspace,
   makeCheckpointWorkspace,
 } from "@t3tools/provider-testing/replayWorkspace";
+import { parseRecorderArguments, recorderEnvironmentValue } from "./replayRecorderArguments.ts";
 
 const CLOCK_TICK = Duration.millis(20);
 
-function readArgValue(name: string): string | undefined {
-  const index = process.argv.indexOf(name);
-  return index === -1 ? undefined : process.argv[index + 1];
-}
+const { values: options } = parseRecorderArguments(
+  { options: { scenario: { type: "string" }, out: { type: "string" } } },
+  process.argv.slice(2),
+);
 
-const scenario = readArgValue("--scenario");
+const scenario = options.scenario;
 const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((entry) => entry.name === scenario);
 const variant = fixture?.providers.find((provider) => provider.driver === MUSE_PROVIDER_KIND);
 if (fixture === undefined || variant === undefined) {
@@ -60,7 +61,7 @@ if (fixture === undefined || variant === undefined) {
   throw new Error(`Pass --scenario with a fixture that registers Muse: ${names.join(", ")}`);
 }
 
-const museBinary = process.env.T3_MUSE_BIN ?? "muse";
+const museBinary = recorderEnvironmentValue("T3_MUSE_BIN") ?? "muse";
 // Match T3's launch so Windows needs no T3_MUSE_BIN for `muse.cmd`.
 const museStart = Effect.runSync(museLaunch(museBinary));
 const home = process.env.HOME ?? "";
@@ -206,7 +207,7 @@ const record = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const museVersion = yield* readMuseVersion;
-  const outputPath = readArgValue("--out") ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = options.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const fixtureInput = fixture.buildInput();
   const workspace = yield* Effect.promise(() =>
     makeCheckpointWorkspace(`muse-msp-record-${fixture.name}`, fixtureInput.workspaceFiles),

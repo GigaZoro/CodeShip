@@ -3,13 +3,15 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { expect } from "vite-plus/test";
+import * as NodeSqlite from "node:sqlite";
+import { expect, onTestFinished, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
-import { afterAll, assert, describe, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Sink from "effect/Sink";
@@ -17,22 +19,52 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+
 import {
   argumentBatches,
+  adjacentTests,
+  checkoutState,
   comparisonBase,
   defaultConcurrency,
+  dependencyChangeFiles,
   docReaderTests,
   gitLines,
   ignoredCheckInputs,
+  keepModuleCache,
   runSteps,
+  runTestGroups,
   splitTests,
+  suiteSteps,
   testStepTimeoutSeconds,
   type Step,
   testsReaching,
 } from "./check-changed.ts";
+import { cachedTestTasks } from "./lib/cached-tests.ts";
+import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
 
 const GiB = 1024 ** 3;
+
+const cacheDb = (cache: string) => NodePath.join(cache, "v18", "cache.db");
+function storePass(cache: string, key: string, value = "pass") {
+  const file = cacheDb(cache);
+  NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+  using database = new NodeSqlite.DatabaseSync(file);
+  database.exec("CREATE TABLE IF NOT EXISTS passes (key BLOB PRIMARY KEY, value BLOB)");
+  database
+    .prepare("INSERT OR REPLACE INTO passes VALUES (?, ?)")
+    .run(Buffer.from(key), Buffer.from(value));
+}
+
+function storedPasses(cache: string) {
+  using database = new NodeSqlite.DatabaseSync(cacheDb(cache), { readOnly: true });
+  return database
+    .prepare("SELECT CAST(key AS TEXT) AS key FROM passes ORDER BY key")
+    .all()
+    .map((row) => row.key);
+}
 
 describe("check:changed", () => {
   it("bounds the default concurrency by the scarcer of cores and available memory", () => {
@@ -43,15 +75,17 @@ describe("check:changed", () => {
     assert.strictEqual(defaultConcurrency(1, 64 * GiB), 1);
   });
 
-  it("splits file arguments into runs that each fit the command-line limit", () => {
-    const files = Array.from({ length: 10 }, (_, index) => `apps/web/src/file${index}.ts`);
-    const batches = argumentBatches(files, 100);
-    assert.deepStrictEqual(
-      batches.map((batch) => batch.length),
-      [4, 4, 2],
+  it("budgets each full suite as a serial step, one worker for the server", () => {
+    const steps = suiteSteps(["apps/web", "apps/server"], 6, () =>
+      Effect.succeed({ ok: true, output: "" }),
     );
-    assert.deepStrictEqual(batches.flat(), files);
-    assert.deepStrictEqual(argumentBatches([], 100), []);
+    assert.deepStrictEqual(
+      steps.map(({ name, workers, serial }) => [name, workers, serial]),
+      [
+        ["suite apps/web", 6, true],
+        ["suite apps/server", 1, true],
+      ],
+    );
   });
 
   it("runs the server tests for the one guide they read and leaves other docs inert", () => {
@@ -140,6 +174,326 @@ describe("check:changed", () => {
         });
         assert.strictEqual(maxSerial, 1);
       }),
+  );
+
+  type Task = { task_name: string; result: unknown };
+  const failed = (task: string, code: number): Task => ({
+    task_name: task,
+    result: { Spawned: { outcome: { Failed: { exit_code: code } } } },
+  });
+  const hit = (task: string): Task => ({
+    task_name: task,
+    result: { CacheHit: { source: "Local" } },
+  });
+  type Keys = [string, string, string, string];
+  const report = (attempt: { tasks: ReadonlyArray<Task> }) =>
+    `${attempt.tasks.at(-1)!.task_name} failed\n`;
+  // Unix reports a group Vite+ killed as 137; Windows can report it as an ordinary failure.
+  it.effect.each([
+    {
+      platform: "linux",
+      attempts: ([first, middle, last, independent]: Keys) => [
+        {
+          limit: 2,
+          completed: [],
+          tasks: [hit(first), failed(middle, 1), failed(independent, 137)],
+        },
+        { limit: 2, completed: [first, middle], tasks: [failed(last, 1)] },
+        { limit: 2, completed: [first, middle, last], tasks: [failed(independent, 1)] },
+      ],
+    },
+    {
+      platform: "win32",
+      attempts: ([first, middle, last, independent]: Keys) => [
+        { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
+        { limit: 1, completed: [first], tasks: [failed(middle, 1)] },
+        { limit: 1, completed: [first, middle], tasks: [failed(last, 1)] },
+        { limit: 1, completed: [first, middle, last], tasks: [failed(independent, 1)] },
+      ],
+    },
+  ])(
+    "resumes after a middle server failure and an interrupted independent group on $platform",
+    ({ platform, attempts: plan }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* slotDirectory;
+        const cache = NodePath.join(directory, "cache");
+        const version = NodePath.join(cache, "v18");
+        const requestFile = NodePath.join(directory, "request.json");
+        const summaryFile = NodePath.join(version, "last-summary.json");
+        yield* fs.makeDirectory(version, { recursive: true });
+
+        const request = {
+          files: [
+            "apps/server/a.test.ts",
+            "apps/server/b.test.ts",
+            "apps/server/c.test.ts",
+            "packages/client-runtime/d.test.ts",
+          ],
+          groupSize: 1,
+          uncached: [],
+        };
+        const attempts = plan(
+          cachedTestTasks(JSON.stringify(request))["test-cache"]!.dependsOn! as Keys,
+        );
+        const expected = attempts.map(report).join("");
+        const result = yield* runTestGroups(cache, requestFile, request, 2, platform, (limit) =>
+          Effect.gen(function* () {
+            const attempt = attempts.shift()!;
+            assert.strictEqual(limit, attempt.limit);
+            const requested = JSON.parse(yield* fs.readFileString(requestFile));
+            assert.deepStrictEqual(requested.completed, attempt.completed);
+            yield* fs.writeFileString(summaryFile, JSON.stringify({ tasks: attempt.tasks }));
+            return { ok: false, output: report(attempt) };
+          }).pipe(Effect.orDie),
+        );
+        assert.deepStrictEqual(attempts, []);
+        assert.deepStrictEqual(result, { ok: false, output: expected });
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("seeds committed rows and publishes passes after success or interruption", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      const shared = NodePath.join(directory, "shared");
+      const cache = NodePath.join(directory, "private");
+      const interrupted = NodePath.join(directory, "interrupted");
+      storePass(shared, "earlier");
+      using writer = new NodeSqlite.DatabaseSync(cacheDb(shared));
+      writer.exec("PRAGMA journal_mode = WAL");
+      writer.exec("BEGIN IMMEDIATE");
+      writer
+        .prepare("INSERT INTO passes VALUES (?, ?)")
+        .run(Buffer.from("uncommitted"), Buffer.from("pass"));
+      for (const name of ["last-summary.json", "db_open.lock"]) {
+        NodeFS.writeFileSync(NodePath.join(shared, "v18", name), "");
+      }
+
+      const stable = Effect.succeed("unchanged");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* stageTestCache(shared, cache, "unchanged", stable);
+          assert.deepStrictEqual(storedPasses(cache), ["earlier"]);
+          assert.deepStrictEqual(NodeFS.readdirSync(NodePath.join(cache, "v18")), ["cache.db"]);
+          storePass(cache, "success");
+          assert.deepStrictEqual(storedPasses(shared), ["earlier"]);
+          writer.exec("ROLLBACK");
+        }),
+      );
+      assert.deepStrictEqual(storedPasses(shared), ["earlier", "success"]);
+
+      const started = yield* Deferred.make<void>();
+      const fiber = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* stageTestCache(shared, interrupted, "unchanged", stable);
+          assert.deepStrictEqual(storedPasses(interrupted), ["earlier", "success"]);
+          storePass(interrupted, "interrupted");
+          yield* Deferred.succeed(started, undefined);
+          return yield* Effect.never;
+        }),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      assert.deepStrictEqual(storedPasses(shared), ["earlier", "success"]);
+      yield* Fiber.interrupt(fiber);
+      assert.deepStrictEqual(storedPasses(shared), ["earlier", "interrupted", "success"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("leaves previously published passes intact when the guard changes", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      const shared = NodePath.join(directory, "shared");
+      const cache = NodePath.join(directory, "private");
+      storePass(shared, "earlier");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* stageTestCache(shared, cache, "before", Effect.succeed("after"));
+          storePass(cache, "unvalidated");
+        }),
+      );
+      assert.deepStrictEqual(storedPasses(shared), ["earlier"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("merges passes from concurrent runs with private snapshots", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      const shared = NodePath.join(directory, "shared");
+      const firstReady = yield* Deferred.make<void>();
+      const secondReady = yield* Deferred.make<void>();
+      const run = (key: string, ready: typeof firstReady, otherReady: typeof firstReady) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const cache = NodePath.join(directory, key);
+            yield* stageTestCache(shared, cache, "unchanged", Effect.succeed("unchanged"));
+            assert.isFalse(NodeFS.existsSync(cacheDb(cache)));
+            storePass(cache, key);
+            yield* Deferred.succeed(ready, undefined);
+            yield* Deferred.await(otherReady);
+          }),
+        );
+      yield* Effect.all(
+        [run("first", firstReady, secondReady), run("second", secondReady, firstReady)],
+        { concurrency: 2 },
+      );
+      assert.deepStrictEqual(storedPasses(shared), ["first", "second"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("publishes only rows changed since seeding", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      const shared = NodePath.join(directory, "shared");
+      const cache = NodePath.join(directory, "private");
+      storePass(shared, "untouched");
+      storePass(shared, "updated");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* stageTestCache(shared, cache, "stable", Effect.succeed("stable"));
+          storePass(shared, "untouched", "newer");
+          storePass(cache, "updated", "changed");
+        }),
+      );
+      using db = new NodeSqlite.DatabaseSync(cacheDb(shared));
+      assert.deepStrictEqual(
+        db
+          .prepare("SELECT CAST(value AS TEXT) AS value FROM passes ORDER BY key")
+          .all()
+          .map((row) => row.value),
+        ["newer", "changed"],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("starts with an empty private cache when the seed is busy", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      const shared = NodePath.join(directory, "shared");
+      const cache = NodePath.join(directory, "private");
+      storePass(shared, "earlier");
+      using writer = new NodeSqlite.DatabaseSync(cacheDb(shared));
+      writer.exec("BEGIN EXCLUSIVE");
+      let seedTimeout: number | undefined;
+      const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
+      using _observe = vi
+        .spyOn(NodeSqlite.DatabaseSync.prototype, "prepare")
+        .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql) {
+          if (sql.startsWith("VACUUM INTO"))
+            seedTimeout = Number(prepare.call(this, "PRAGMA busy_timeout").get()?.timeout);
+          return prepare.call(this, sql);
+        });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* stageTestCache(shared, cache, "stable", Effect.succeed("stable"));
+          assert.isFalse(NodeFS.existsSync(cacheDb(cache)));
+          writer.exec("ROLLBACK");
+          expect(seedTimeout).toBeLessThan(1000);
+          storePass(cache, "new");
+        }),
+      );
+      assert.deepStrictEqual(storedPasses(shared), ["earlier", "new"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("rolls back a version when a published table has a different schema", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      const shared = NodePath.join(directory, "shared");
+      const cache = NodePath.join(directory, "private");
+      storePass(shared, "earlier");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* stageTestCache(shared, cache, "unchanged", Effect.succeed("unchanged"));
+          storePass(cache, "new");
+          using source = new NodeSqlite.DatabaseSync(cacheDb(cache));
+          using destination = new NodeSqlite.DatabaseSync(cacheDb(shared));
+          source.exec("CREATE TABLE other (key BLOB PRIMARY KEY, value BLOB)");
+          destination.exec("CREATE TABLE other (key BLOB PRIMARY KEY, value TEXT)");
+        }),
+      );
+      assert.deepStrictEqual(storedPasses(shared), ["earlier"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps only the current install's module cache", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const caches = NodePath.join(yield* slotDirectory, "check-changed");
+      const current = NodePath.join(caches, "current");
+      yield* keepModuleCache(current);
+      for (const install of ["earlier", "current"]) {
+        yield* fs.makeDirectory(NodePath.join(caches, install, "modules"), { recursive: true });
+      }
+      yield* keepModuleCache(current);
+      assert.deepStrictEqual(yield* fs.readDirectory(caches), ["current"]);
+      assert.deepStrictEqual(yield* fs.readDirectory(current), ["modules"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("marks the HEAD's test cache used and removes those unused for three days", () =>
+    Effect.gen(function* () {
+      const partitions = NodePath.join(yield* slotDirectory, "tests");
+      const day = 24 * 60 * 60 * 1000;
+      const now = Date.UTC(2026, 0, 10);
+      yield* TestClock.setTime(now);
+      for (const [entry, age] of [
+        ["head", 5 * day],
+        ["recent", 2 * day],
+        ["unused", 4 * day],
+      ] as const) {
+        NodeFS.mkdirSync(NodePath.join(partitions, entry, "v18"), { recursive: true });
+        const used = (now - age) / 1000;
+        NodeFS.utimesSync(NodePath.join(partitions, entry), used, used);
+      }
+      const current = yield* testCachePartition(partitions, "head");
+      assert.strictEqual(current, NodePath.join(partitions, "head"));
+      assert.deepStrictEqual(NodeFS.readdirSync(partitions).toSorted(), ["head", "recent"]);
+      assert.strictEqual(NodeFS.statSync(NodePath.join(partitions, "head")).mtimeMs, now);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("marks its HEAD's test cache used only after another run's removal of it ends", () =>
+    Effect.gen(function* () {
+      const partitions = NodePath.join(yield* slotDirectory, "tests");
+      const partition = NodePath.join(partitions, "head");
+      const now = Date.UTC(2026, 0, 10);
+      yield* TestClock.setTime(now);
+      NodeFS.mkdirSync(NodePath.join(partition, "v18"), { recursive: true });
+      const unused = (now - 4 * 24 * 60 * 60 * 1000) / 1000;
+      NodeFS.utimesSync(partition, unused, unused);
+      // Another run's cleanup holds the lock and has found the partition unused.
+      using cleanup = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
+      cleanup.exec("BEGIN EXCLUSIVE");
+      const run = yield* testCachePartition(partitions, "head").pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      NodeFS.rmSync(partition, { recursive: true });
+      cleanup.exec("ROLLBACK");
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(yield* Fiber.join(run), partition);
+      assert.isTrue(NodeFS.existsSync(partition));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps a run's test cache private when a stalled run holds the lock", () =>
+    Effect.gen(function* () {
+      const partitions = NodePath.join(yield* slotDirectory, "tests");
+      NodeFS.mkdirSync(partitions, { recursive: true });
+      using stalled = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
+      stalled.exec("BEGIN EXCLUSIVE");
+      const run = yield* testCachePartition(partitions, "head").pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 minute");
+      assert.isUndefined(yield* Fiber.join(run));
+      stalled.exec("ROLLBACK");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps a run's test cache private when it cannot mark its partition used", () =>
+    Effect.gen(function* () {
+      const partitions = NodePath.join(yield* slotDirectory, "tests");
+      NodeFS.mkdirSync(partitions, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(partitions, "head"), "");
+      assert.isUndefined(yield* testCachePartition(partitions, "head"));
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("shares one budget between runs that use the same slot directory", () =>
@@ -266,6 +620,17 @@ describe("check:changed", () => {
     assert.strictEqual(testStepTimeoutSeconds(20, 900, false), 2400);
     assert.strictEqual(testStepTimeoutSeconds(5000, 900, false), 3600);
     assert.strictEqual(testStepTimeoutSeconds(5000, 600, true), 600);
+    assert.strictEqual(testStepTimeoutSeconds(5000, 900, false, 9000), 9000);
+  });
+
+  it("splits a path list into steps whose arguments fit a Windows command line", () => {
+    assert.deepStrictEqual(argumentBatches([], 10), []);
+    assert.deepStrictEqual(argumentBatches(["aaaa", "bbbb", "cc", "dddddddddddd", "e"], 10), [
+      ["aaaa", "bbbb"],
+      ["cc"],
+      ["dddddddddddd"],
+      ["e"],
+    ]);
   });
 
   it("runs the .github/scripts node:test files with node --test, not vitest", () => {
@@ -343,6 +708,20 @@ describe("check:changed", () => {
       '// Public API.\nexport * from "./failure.ts";\nexport { type A } from "./a.ts";\n',
     "server/Failure.test.ts": 'import { code } from "@t3/core/failure";\n',
     "server/Barrel.test.ts": 'import { code } from "@t3/core";\n',
+    "server/Token.ts": "export const token = 1;\n",
+    "server/caf\u00e9.ts": 'import { token } from "./Token.ts";\n',
+    "server/cafe\u0301.test.ts": "",
+    "server/R\u00e9sum\u00e9.ts": "export const resume = 1;\n",
+    "server/Reader.test.ts": 'import { resume } from "./Re\u0301sume\u0301.ts";\n',
+    "server/FOO.js": "export const foo = 1;\n",
+    "server/foo.ts": "export const foo = 2;\n",
+    "server/Loader.test.ts": 'import { foo } from "./foo.js";\n',
+    "server/caf\u00e9-\u0131.ts": "export const dotless = 1;\n",
+    "server/caf\u00e9-i.ts": "export const dotted = 1;\n",
+    "server/Menu.test.ts": 'import { dotted } from "./cafe\u0301-i.ts";\n',
+    "server/Clock.ts": "export const clock = 1;\n",
+    "server/Lib/timer.ts": 'import { clock } from "../Clock.ts";\n',
+    "server/lib/timer.test.ts": "",
   };
   it.each([
     ["server/Adapter.ts", ["server/Service.test.ts", "server/testkit/Replay.integration.test.ts"]],
@@ -352,6 +731,16 @@ describe("check:changed", () => {
     ],
     ["core/src/failure.ts", ["server/Failure.test.ts"]],
     ["core/src/index.ts", []],
+    // Git and the disk can spell an importer and its sibling test in different Unicode forms.
+    ["server/Token.ts", ["server/cafe\u0301.test.ts"]],
+    // A disk that ignores Unicode form resolves an import Git spells in another.
+    ["server/R\u00e9sum\u00e9.ts", ["server/Reader.test.ts"]],
+    // A disk that ignores case opens FOO.js for ./foo.js before Vite tries foo.ts.
+    ["server/FOO.js", ["server/Loader.test.ts"]],
+    ["server/foo.ts", ["server/Loader.test.ts"]],
+    // Every file the import's key holds, not the first.
+    ["server/caf\u00e9-i.ts", ["server/Menu.test.ts"]],
+    ["server/Clock.ts", ["server/lib/timer.test.ts"]],
   ])("selects the tests that reach %s", (changed, expected) => {
     assert.deepStrictEqual(
       testsReaching({
@@ -396,6 +785,102 @@ describe("check:changed", () => {
     assert.isTrue(decide(["scripts/smoke-desktop-app.ts"], packages, false).outputs.build);
   });
 
+  describe("dependencyChangeFiles", () => {
+    const workspace = (patch: string) => `patchedDependencies:\n  dep-a@1.0.0: patches/${patch}\n`;
+    const lock = (version: string) =>
+      [
+        "snapshots:",
+        "",
+        `  dep-a@${version}:`,
+        "    dependencies:",
+        "      leaf: 1.0.0",
+        "",
+        "  dep-b@1.0.0:",
+        "    dependencies:",
+        "      dep-a: " + version,
+        "",
+      ].join("\n");
+    const sources: Record<string, string> = {
+      "app/use.ts": 'import { b } from "dep-b/sub";\n',
+      "app/use.test.ts": 'import { x } from "./use.ts";\n',
+      "app/other.ts": 'import { y } from "unrelated";\n',
+      ".REPOS/vendor/use.ts": 'import { b } from "dep-b/sub";\n',
+    };
+    const run = (
+      changed: Array<string>,
+      before: Record<string, string>,
+      after: Record<string, string>,
+    ) =>
+      dependencyChangeFiles({
+        changed,
+        before: (file) => before[file] ?? "",
+        after: (file) => after[file] ?? "",
+        files: new Set(Object.keys(sources)),
+        read: (file) => sources[file] ?? "",
+      });
+
+    it("selects files that import a patched package's dependents when only the patch changes", () => {
+      const same = {
+        "pnpm-workspace.yaml": workspace("dep-a@1.0.0.patch"),
+        "pnpm-lock.yaml": lock("1.0.0"),
+      };
+      assert.deepStrictEqual(run(["patches/dep-a@1.0.0.patch"], same, same), ["app/use.ts"]);
+    });
+
+    it("selects them when a lockfile version changes, and nothing for an unrelated lockfile change", () => {
+      const before = { "pnpm-lock.yaml": lock("1.0.0") };
+      assert.deepStrictEqual(run(["pnpm-lock.yaml"], before, { "pnpm-lock.yaml": lock("1.0.1") }), [
+        "app/use.ts",
+      ]);
+      assert.deepStrictEqual(run(["pnpm-lock.yaml"], before, before), []);
+    });
+  });
+
+  it.each([
+    "infra/task-cache/scripts/install.ts",
+    "infra/tool/scripts/added.mts",
+    ".github/scripts/added.cjs",
+    "tools/added.ts",
+    "removed.ts",
+    "package.json",
+    "apps/server/package.json",
+    "apps/mobile/package.json",
+    "infra/task-cache/package.json",
+    "packages/source-control-github/package.json",
+  ])("selects the repository command guard when %s changes", (changed) => {
+    const test = "scripts/command-arguments.test.ts";
+    const sources = new Map([
+      [test, NodeFS.readFileSync(new URL("./command-arguments.test.ts", import.meta.url), "utf8")],
+      ...(changed === "removed.ts" ? [] : [[changed, "export const command = 1;"] as const]),
+    ]);
+    assert.deepStrictEqual(
+      testsReaching({
+        changed: [changed],
+        files: new Set(sources.keys()),
+        packages: [],
+        read: (file) => sources.get(file) ?? "",
+      }),
+      [test],
+    );
+  });
+
+  it.each([
+    "apps/mobile/src/fixtures/package.json",
+    ".repos/vendor/package.json",
+    ".REPOS/vendor/package.json",
+  ])("does not select the repository command guard for %s", (changed) => {
+    const guard = "scripts/command-arguments.test.ts";
+    assert.deepStrictEqual(
+      testsReaching({
+        changed: [changed],
+        files: new Set([changed, guard]),
+        packages: [],
+        read: () => "",
+      }),
+      [],
+    );
+  });
+
   it.each([
     "packages/shared/src/testing/longTempDir.ts",
     "packages/shared/src/testing/providerEnv.ts",
@@ -405,22 +890,20 @@ describe("check:changed", () => {
 });
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default
-// ~/.config/git/ignore can ignore or sign fixture files.
-// Git for Windows rejects the null device as a config path, so use an empty file.
-const emptyConfigDir = NodeFS.mkdtempSync(
-  NodePath.join(NodeOS.tmpdir(), "t3-check-changed-config-"),
-);
-const emptyConfig = NodePath.join(emptyConfigDir, "empty.gitconfig");
-NodeFS.writeFileSync(emptyConfig, "");
-afterAll(() => NodeFS.rmSync(emptyConfigDir, { recursive: true, force: true }));
+// ~/.config/git/ignore can ignore or sign fixture files. Git for Windows maps /dev/null to its
+// null device but cannot open NodeOS.devNull (\\.\nul).
 const fixtureConfig = {
-  "core.excludesFile": emptyConfig,
+  "core.excludesFile": "/dev/null",
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
-const env = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
-  GIT_CONFIG_GLOBAL: emptyConfig,
+const env: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("GIT_"),
+    ),
+  ),
+  GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_COUNT: String(Object.keys(fixtureConfig).length),
   ...Object.fromEntries(
@@ -437,14 +920,14 @@ function fixture(remotes: Record<string, "A" | "B">) {
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-changed-")),
   );
   const commits: Record<string, string> = {};
+  const write = (file: string, content: string) => {
+    const path = NodePath.join(root, file);
+    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+    NodeFS.writeFileSync(path, content);
+  };
+  const git = (...args: Array<string>) =>
+    NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
   try {
-    const write = (file: string, content: string) => {
-      const path = NodePath.join(root, file);
-      NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-      NodeFS.writeFileSync(path, content);
-    };
-    const git = (...args: Array<string>) =>
-      NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
     git("init");
     for (const name of ["A", "B", "C"]) {
       write(`${name}.txt`, name);
@@ -463,6 +946,8 @@ function fixture(remotes: Record<string, "A" | "B">) {
   return {
     commits,
     root,
+    git,
+    write,
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
     },
@@ -536,6 +1021,11 @@ it("lists the ignored inputs that main's pathspecs list, without entering node_m
   assert.deepStrictEqual(await inFixture(ignoredCheckInputs(project.root)), old);
 });
 
+const providerEnv = NodePath.join(
+  import.meta.dirname,
+  "../packages/shared/src/testing/providerEnv.ts",
+);
+
 function launcherFixture() {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
@@ -548,12 +1038,24 @@ function launcherFixture() {
   for (const file of [
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
+    "scripts/lib/repository-command-source.ts",
+    "scripts/lib/cached-tests.ts",
+    "scripts/lib/cached-vitest-options.ts",
+    "scripts/lib/run-cached-test-group.ts",
+    "scripts/lib/staged-test-cache.ts",
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
+    ".github/scripts/check-changed-receipt.cjs",
+    ".github/scripts/git-history.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
-  write(".gitignore", "node_modules/\nrecords/\n.generated/\n");
+  // Resolve the test runner's Node even when the runtime check removes Vite+'s injected path.
+  const nodeBin = NodePath.join(root, "node_modules", "fixture-node-bin");
+  NodeFS.mkdirSync(NodePath.dirname(nodeBin), { recursive: true });
+  NodeFS.symlinkSync(NodePath.dirname(process.execPath), nodeBin, "junction");
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  write(".gitignore", "node_modules/\nrecords/\n.generated/\n.env*\n");
   write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
   write(
     "package.json",
@@ -566,36 +1068,88 @@ function launcherFixture() {
       },
     }),
   );
-  write("packages/example/package.json", JSON.stringify({ name: "example" }));
+  write(
+    "packages/example/package.json",
+    JSON.stringify({ name: "example", scripts: { test: "vp test run" } }),
+  );
   const source = "packages/example/space & (draft) %PATH% ! 研究.ts";
   write(source, "export const value = 1;\n");
   write(
-    "node_modules/vite-plus/package.json",
+    "scripts/check-changed-command.ts",
+    NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "check-changed-command.ts"),
+      "utf8",
+    ).replace('import.meta.resolve("vite-plus/bin")', 'import.meta.resolve("fixture-vp/bin")'),
+  );
+  write(
+    "node_modules/fixture-vp/package.json",
     JSON.stringify({ type: "module", exports: { "./bin": "./cli.js" } }),
   );
   write(
-    "node_modules/vite-plus/cli.js",
+    "node_modules/fixture-vp/cli.js",
     `
+    import { randomUUID } from 'node:crypto';
+    import { execFileSync, spawnSync } from 'node:child_process';
     import fs from 'node:fs';
     import path from 'node:path';
+    import { fileURLToPath } from 'node:url';
     const args = process.argv.slice(2);
-    fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd() }));
+    // Windows gives a finished step's pid to the next process at once, so a pid-named record could be replaced.
+    fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd() }), { flag: 'wx' });
+    const edit = args[0] === process.env.EDIT_STEP || args.includes(process.env.EDIT_STEP);
+    if (edit && !args.includes('test-cache')) {
+      fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
+    }
+    if (args[0] === 'test' || args.includes('test-cache')) {
+      if (process.env.MOVE_HEAD) {
+        execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=', 'commit', '--allow-empty', '-m', 'move HEAD']);
+      }
+      const result = spawnSync(process.execPath, [fileURLToPath(import.meta.resolve('vite-plus/bin')), ...args], {
+        stdio: 'inherit',
+      });
+      if (edit) fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
+      process.exit(result.status ?? 1);
+    }
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
-    if (args[0] === process.env.EDIT_STEP) fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
     const failing = process.env.FAIL_STEP !== '' && args.join(' ').startsWith(process.env.FAIL_STEP);
     process.exit(failing ? 23 : 0);
   `,
   );
-  // Select the Windows launcher without changing the Effect runtime's host platform.
+  write(
+    "vite.config.mjs",
+    `
+    import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
+    export default {
+      run: { tasks: cachedTestTasks(process.env.T3_CACHED_TESTS) },
+      // As the repository's test config does through scripts/lib/test-workers.ts and its setup.
+      test: {
+        include: ["**/*.test.ts"],
+        maxWorkers: Number(process.env.T3CODE_TEST_MAX_WORKERS) || undefined,
+        setupFiles: [${JSON.stringify(providerEnv)}],
+      },
+    };
+  `,
+  );
+  // Select the Windows launcher without changing the Effect runtime's host platform, and read the
+  // host's capabilities from a file outside the checkout that a test can change.
+  const host = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-host-"));
+  const capabilities = NodePath.join(host, "capabilities.json");
+  NodeFS.writeFileSync(capabilities, JSON.stringify({ symlinks: true, ipv6Loopback: true }));
   write(
     "scripts/check-changed.ts",
-    NodeFS.readFileSync(NodePath.join(import.meta.dirname, "check-changed.ts"), "utf8").replace(
-      "vitePlusCommand(args, platform)",
-      'vitePlusCommand(args, "win32")',
-    ),
+    NodeFS.readFileSync(NodePath.join(import.meta.dirname, "check-changed.ts"), "utf8")
+      .replace("vitePlusCommand(args, platform)", 'vitePlusCommand(args, "win32")')
+      .replace('"@t3tools/shared/testing/hostCapabilityProbe"', '"./fixture-host.ts"'),
   );
-  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared"]) {
+  write(
+    "scripts/fixture-host.ts",
+    `import { readFileSync } from "node:fs";
+    export { hostCapabilitiesEnv } from "@t3tools/shared/testing/hostCapabilityProbe";
+    export const probeHostCapabilities = async () =>
+      JSON.parse(readFileSync(${JSON.stringify(capabilities)}, "utf8"));`,
+  );
+  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared", "vite-plus"]) {
     const dest = NodePath.join(root, "node_modules", name);
     NodeFS.mkdirSync(NodePath.dirname(dest), { recursive: true });
     NodeFS.symlinkSync(
@@ -621,25 +1175,114 @@ function launcherFixture() {
     "-m",
     "fixture",
   );
-  const records = NodePath.join(root, "records");
-  NodeFS.mkdirSync(records);
+  const records = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-records-"));
+  // `vp run check:changed` puts the checkout's bin folder first.
+  const checkEnv = (checkout: string, extraEnv: Record<string, string> = {}) => ({
+    ...env,
+    TEMP: NodeOS.tmpdir(),
+    [pathKey]: [
+      NodePath.join(checkout, "node_modules/.bin"),
+      NodePath.join(import.meta.dirname, "../node_modules/.bin"),
+      NodePath.join(checkout, "node_modules", "fixture-node-bin"),
+      env[pathKey] ?? "",
+    ].join(NodePath.delimiter),
+    RECORDS: records,
+    T3CODE_TEST_MAX_WORKERS: "6",
+    ...extraEnv,
+  });
+  const worktrees: Array<string> = [];
   return {
     root,
     source,
+    capabilities,
+    git,
     write,
-    run(failStep = "", editStep = "", editFile = source) {
-      return NodeChildProcess.spawnSync(process.execPath, ["scripts/check-changed.ts", "HEAD"], {
-        cwd: root,
-        encoding: "utf8",
-        env: {
-          ...env,
-          TEMP: NodeOS.tmpdir(),
-          RECORDS: records,
-          FAIL_STEP: failStep,
-          EDIT_STEP: editStep,
-          EDIT_FILE: NodePath.join(root, editFile),
+    commit(message: string) {
+      git("add", ".");
+      git("commit", "-m", message);
+    },
+    // A linked worktree with its own install, as two checkouts each run `vp i`.
+    checkout(files: Array<string>) {
+      const checkout = NodeFS.realpathSync(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks retry ")),
+      );
+      worktrees.push(checkout);
+      git("worktree", "add", "--detach", checkout, "HEAD");
+      for (const file of ["node_modules", ...files]) {
+        NodeFS.cpSync(NodePath.join(root, file), NodePath.join(checkout, file), {
+          recursive: true,
+          verbatimSymlinks: true,
+        });
+      }
+      const modules = NodePath.join(checkout, "node_modules");
+      const store = (name: string) => NodePath.join(modules, ".pnpm", name, "node_modules");
+      const vitePlus = NodeFS.realpathSync(
+        NodePath.join(import.meta.dirname, "node_modules/vite-plus"),
+      );
+      const copies = new Map([
+        ["vite-plus", vitePlus],
+        ["vitest", NodeFS.realpathSync(NodePath.join(NodePath.dirname(vitePlus), "vitest"))],
+      ]);
+      for (const [name, shared] of copies) {
+        NodeFS.cpSync(shared, NodePath.join(store(name), name), {
+          recursive: true,
+          verbatimSymlinks: true,
+        });
+        const dependencies = NodePath.dirname(shared);
+        for (const entry of NodeFS.readdirSync(dependencies)) {
+          for (const dependency of entry.startsWith("@")
+            ? NodeFS.readdirSync(NodePath.join(dependencies, entry)).map(
+                (scoped) => `${entry}/${scoped}`,
+              )
+            : [entry]) {
+            if (dependency === name) continue;
+            const link = NodePath.join(store(name), dependency);
+            NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+            NodeFS.symlinkSync(
+              copies.has(dependency)
+                ? NodePath.join(store(dependency), dependency)
+                : NodeFS.realpathSync(NodePath.join(dependencies, dependency)),
+              link,
+              "junction",
+            );
+          }
+        }
+      }
+      NodeFS.rmSync(NodePath.join(modules, "vite-plus"));
+      NodeFS.symlinkSync(
+        NodePath.join(store("vite-plus"), "vite-plus"),
+        NodePath.join(modules, "vite-plus"),
+        "junction",
+      );
+      return checkout;
+    },
+    run(
+      failStep = "",
+      editStep = "",
+      editFile = source,
+      checkArgs: ReadonlyArray<string> = [],
+      extraEnv?: Record<string, string>,
+      checkout = root,
+    ) {
+      return NodeChildProcess.spawnSync(
+        process.execPath,
+        [
+          "scripts/check-changed.ts",
+          "HEAD",
+          ...(checkArgs.includes("--concurrency") ? [] : ["--concurrency", "6"]),
+          ...checkArgs,
+        ],
+        {
+          cwd: checkout,
+          encoding: "utf8",
+          env: checkEnv(checkout, {
+            FAIL_STEP: failStep,
+            EDIT_STEP: editStep,
+            EDIT_FILE: NodePath.join(root, editFile),
+            ...extraEnv,
+          }),
         },
-      });
+      );
     },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
       NodeFS.readdirSync(records).map((file) =>
@@ -647,6 +1290,9 @@ function launcherFixture() {
       ),
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
+      NodeFS.rmSync(records, { recursive: true, force: true });
+      NodeFS.rmSync(host, { recursive: true, force: true });
+      for (const checkout of worktrees) NodeFS.rmSync(checkout, { recursive: true, force: true });
     },
   };
 }
@@ -690,6 +1336,161 @@ it("lints an Astro component and runs knip when only it changed", () => {
   expect(commands).toContainEqual(["exec", "knip", "--exports"]);
 });
 
+it("routes a manifest-only change to the repository command guard through the launcher", () => {
+  using project = launcherFixture();
+  const marker = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-guard-"));
+  using _marker = {
+    [Symbol.dispose]: () => NodeFS.rmSync(marker, { recursive: true, force: true }),
+  };
+  const ran = NodePath.join(marker, "ran");
+  const guard = "scripts/command-arguments.test.ts";
+  project.write(
+    guard,
+    `import { writeFileSync } from "node:fs";\nimport { it } from "vite-plus/test";\nit("passes", () => writeFileSync(${JSON.stringify(ran)}, ""));\n`,
+  );
+  project.write(
+    "scripts/unrelated.test.ts",
+    `import { it } from "vite-plus/test";\nit("fails", () => {\n  throw new Error("ran");\n});\n`,
+  );
+  project.commit("add the guard and an unrelated test");
+  project.write(
+    "packages/example/package.json",
+    JSON.stringify({ name: "example", scripts: { verify: "node ./verify.ts" } }),
+  );
+
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.stdout).toContain("pass  test (1 files)");
+  expect(NodeFS.existsSync(ran)).toBe(true);
+});
+
+it("finds sibling tests once each, in any case or Unicode form Git spells them", () => {
+  const directory = "packages/example";
+  const test = `${directory}/related.test.ts`;
+  const code = [
+    `${directory}/related.ts`,
+    test,
+    `${directory}/caf\u00e9.ts`,
+    `${directory}/stra\u00dfe.ts`,
+    `${directory}/Lib/thing.ts`,
+  ];
+  const files = [
+    ...code,
+    `${directory}/cafe\u0301.test.ts`,
+    `${directory}/STRA\u1e9eE.test.ts`,
+    `${directory}/nested/related.test.ts`,
+    `${directory}/lib/thing.test.ts`,
+  ];
+  assert.deepStrictEqual(
+    [...adjacentTests(files, code)],
+    [
+      test,
+      `${directory}/cafe\u0301.test.ts`,
+      `${directory}/STRA\u1e9eE.test.ts`,
+      `${directory}/lib/thing.test.ts`,
+    ],
+  );
+});
+
+it("leaves out vendored tests, changed or beside a changed file", () => {
+  const directory = ".repos/effect-smol/packages/effect";
+  const code = [`${directory}/Schema.ts`, `${directory}/Schema.test.ts`];
+  assert.deepStrictEqual([...adjacentTests(code, code)], []);
+  // A case-insensitive checkout can list a changed file in another case than the disk or its tests.
+  const changed = [".REPOS/vendor/Foo.ts", ".REPOS/vendor/Bar.test.ts"];
+  assert.deepStrictEqual(
+    [...adjacentTests([...changed, ".repos/vendor/Foo.test.ts"], changed)],
+    [],
+  );
+});
+
+// Git ignores a scratch test, which a commit of the checkout leaves out.
+it("leaves out a sibling test that Git ignores", () => {
+  using project = launcherFixture();
+  const ignore = NodePath.join(project.root, ".gitignore");
+  project.write(".gitignore", `${NodeFS.readFileSync(ignore, "utf8")}scratch.test.ts\n`);
+  project.write("scratch.ts", "export const value = 1;\n");
+  project.git("add", ".");
+  project.git("commit", "-m", "scratch");
+  project.write("scratch.ts", "export const value = 2;\n");
+  project.write(
+    "scratch.test.ts",
+    `import { it } from "vite-plus/test";\nit("fails", () => {\n  throw new Error("ran");\n});\n`,
+  );
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+});
+
+// No import reaches app/use.test.ts, so only its name beside app/use.ts selects it.
+it("runs the tests beside a file that a changed dependency patch affects", () => {
+  using project = launcherFixture();
+  project.write(
+    "pnpm-workspace.yaml",
+    "packages:\n  - packages/*\npatchedDependencies:\n  dep-a@1.0.0: patches/dep-a@1.0.0.patch\n",
+  );
+  project.write(
+    "pnpm-lock.yaml",
+    "snapshots:\n\n  dep-a@1.0.0: {}\n\n  dep-b@1.0.0:\n    dependencies:\n      dep-a: 1.0.0\n",
+  );
+  project.write("patches/dep-a@1.0.0.patch", "old\n");
+  project.write("app/use.ts", 'import { b } from "dep-b/sub";\n');
+  project.write(
+    "app/use.test.ts",
+    `import { it } from "vite-plus/test";\nit("passes", () => {});\n`,
+  );
+  project.write("app/other.ts", "export const other = 1;\n");
+  project.write(
+    "app/other.test.ts",
+    `import { it } from "vite-plus/test";\nit("fails", () => {\n  throw new Error("ran");\n});\n`,
+  );
+  project.git("add", ".");
+  project.git("commit", "-m", "patched dependency");
+  project.write("patches/dep-a@1.0.0.patch", "new\n");
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.stdout).toContain("pass  test");
+});
+
+// Only a disk that tells case apart holds a name other than the one Git records.
+it.runIf(isLinuxHost)(
+  "stops at a file the checked tree holds under a name the disk does not",
+  () => {
+    using project = launcherFixture();
+    project.write("Src/old.ts", "export const old = 1;\n");
+    project.git("add", ".");
+    project.git("commit", "-m", "source");
+    project.git("config", "core.ignoreCase", "true");
+    project.write(
+      "src/new.test.ts",
+      `import { it } from "vite-plus/test";\nit("fails", () => {\n  throw new Error("ran");\n});\n`,
+    );
+    const result = project.run();
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout + result.stderr).toContain("the checked tree holds Src/new.test.ts");
+  },
+);
+
+it("runs the tests the checkout holds when the index names others", () => {
+  using project = launcherFixture();
+  const passing = `import { it } from "vite-plus/test";\nit("passes", () => {});\n`;
+  project.write("old/a.test.ts", passing);
+  project.write(".github/scripts/base.cjs", "module.exports = 1;\n");
+  project.write(".github/scripts/user.cjs", 'module.exports = require("./base.cjs");\n');
+  project.write(".github/scripts/user.test.cjs", 'require("./user.cjs");\n');
+  project.git("add", ".");
+  project.git("commit", "-m", "tests");
+  // A file replaces a tracked directory, and the test beside an importer is deleted.
+  NodeFS.rmSync(NodePath.join(project.root, "old"), { recursive: true });
+  project.write("old", "a file\n");
+  NodeFS.rmSync(NodePath.join(project.root, ".github/scripts/user.test.cjs"));
+  project.write(".github/scripts/base.cjs", "module.exports = 2;\n");
+  project.write("fixture.test.ts", passing);
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.stdout).toContain("pass  test");
+  expect(project.calls().filter(({ args }) => args.includes("--test"))).toEqual([]);
+});
+
 it("fails a run whose files changed while its checks ran", () => {
   using project = launcherFixture();
   project.write(project.source, "export const value = 2;\n");
@@ -697,6 +1498,532 @@ it("fails a run whose files changed while its checks ran", () => {
   expect(result.status, result.stdout + result.stderr).toBe(1);
   expect(result.stdout).toContain("pass  lint");
   expect(result.stdout).toContain("files changed while the checks ran");
+});
+
+it("records no push pass for a tree that changed before a cached result", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n// edited\n");
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("", "install");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("files changed while the checks ran");
+  // The second run matched the cached pass, so it ran no lint of its own.
+  expect(project.calls().filter(({ args }) => args[0] === "lint")).toHaveLength(1);
+});
+
+// Git for Windows records no executable bit for an untracked file.
+it.skipIf(isWindowsHost)("checks again after an untracked file's mode changed", () => {
+  using project = launcherFixture();
+  const tool = "packages/example/tool.ts";
+  project.write(tool, "export const tool = 1;\n");
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  NodeFS.chmodSync(NodePath.join(project.root, tool), 0o755);
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(project.calls().filter(({ args }) => args[0] === "lint")).toHaveLength(2);
+});
+
+it("caches no pass for a file that appeared after the files were listed", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("", "install", "packages/example/added.ts");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(
+    NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
+  ).toBe(false);
+});
+
+it("reruns a stable group after an empty commit", () => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { it, expect } from "vite-plus/test";
+    import {execFileSync} from "node:child_process";
+    it("reads the commit subject", () => expect(execFileSync("git", ["log", "-1", "--format=%s"], {encoding:"utf8"}).trim()).toBe("fixture"));`,
+  );
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.git("commit", "--allow-empty", "-m", "different");
+  const next = project.run();
+  expect(next.status, next.stdout + next.stderr).toBe(1);
+  expect(next.stdout).toContain("FAIL  test");
+});
+
+it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ", "TMPDIR"])(
+  "delivers and fingerprints %s",
+  (name) => {
+    using project = launcherFixture();
+    // Folders outside the checkout, because the run writes its own temporary files to TMPDIR.
+    const [first, changed] = [NodePath.dirname(project.capabilities), NodeOS.tmpdir()];
+    project.write(
+      "fixture.test.ts",
+      `import { it, expect } from "vite-plus/test";
+    it("reads the test environment", () => expect(process.env[${JSON.stringify(name)}]).toBe(${JSON.stringify(first)}));`,
+    );
+    const run = (value: string) => project.run("", "", project.source, [], { [name]: value });
+    const firstRun = run(first);
+    expect(firstRun.status, firstRun.stdout + firstRun.stderr).toBe(0);
+    const next = run(changed);
+    expect(next.status, next.stdout + next.stderr).toBe(1);
+    expect(next.stdout).toContain("FAIL  test");
+  },
+);
+
+it("reuses passes in another worktree with the same inputs and tracked environment, at another worker count", () => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { execSync } from "node:child_process";
+     import { readFileSync } from "node:fs";
+     import { isAbsolute } from "node:path";
+     import { it, expect } from "vite-plus/test";
+     it("reads a fixture in a clean environment", () => {
+       expect(readFileSync("input.txt", "utf8")).toBe("pass");
+       expect(process.env.INVOCATION_ID).toBeUndefined();
+       expect(process.env.PLAYWRIGHT_CACHE_FIXTURE).toBe("present");
+       expect(isAbsolute(process.env.PWD ?? "")).toBe(true);
+       expect(execSync("fixture-tool", { cwd: "packages", encoding: "utf8" }).trim()).toBe("tool");
+       expect(process.env.HOME || process.env.USERPROFILE).toBeTruthy();
+     });
+    `,
+  );
+  project.write("input.txt", "pass");
+  project.write("second.test.ts", `import { it } from "vite-plus/test"; it("passes", () => {});`);
+  project.write("node_modules/.bin/fixture-tool", "#!/bin/sh\necho tool\n");
+  NodeFS.chmodSync(NodePath.join(project.root, "node_modules/.bin/fixture-tool"), 0o755);
+  project.write("node_modules/.bin/fixture-tool.cmd", "@echo tool\r\n");
+
+  const passthrough = { INVOCATION_ID: "first", PLAYWRIGHT_CACHE_FIXTURE: "present", TZ: "UTC" };
+  const files = ["fixture.test.ts", "second.test.ts", "input.txt"];
+  project.write(
+    "node_modules/.modules.yaml",
+    JSON.stringify({ layoutVersion: 5, prunedAt: "first" }),
+  );
+  const firstCheckout = project.checkout(files);
+  // Two workers here and one in the retry.
+  const first = project.run(
+    "lint",
+    "",
+    project.source,
+    ["--concurrency", "16"],
+    passthrough,
+    firstCheckout,
+  );
+  expect(first.status, first.stdout + first.stderr).toBe(1);
+  expect(first.stdout).toContain("pass  test (2 files)");
+
+  project.write(
+    "node_modules/.modules.yaml",
+    JSON.stringify({ layoutVersion: 5, prunedAt: "second" }),
+  );
+  const retryCheckout = project.checkout(files);
+  const repeat = project.run(
+    "lint",
+    "",
+    project.source,
+    ["--concurrency", "1"],
+    { ...passthrough, INVOCATION_ID: "retry" },
+    retryCheckout,
+  );
+  expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
+  expect(repeat.stdout).toContain("pass  test (2 files)");
+  expect(repeat.stdout).toContain("cache hit, replaying");
+  expect(NodeFS.readdirSync(NodePath.join(project.root, ".git/t3-check-changed/tests"))).toEqual([
+    project.git("rev-parse", "HEAD").toString().trim(),
+  ]);
+});
+
+it("skips a test by the host capabilities the run probes, which key its cached result", () => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { it } from "vite-plus/test";
+    import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+    it.skipIf(!symlinksSupported)("needs symlinks", () => { throw new Error("ran with symlinks"); });`,
+  );
+  // The run's probe finds no symlinks. The test skips by that even where its own probe, or a value
+  // an outer run passed down, would find them, so the skip is cached under the right key.
+  NodeFS.writeFileSync(
+    project.capabilities,
+    JSON.stringify({ symlinks: false, ipv6Loopback: true }),
+  );
+  const first = project.run("", "", undefined, [], {
+    T3_TEST_HOST_CAPABILITIES: JSON.stringify({ symlinks: true, ipv6Loopback: true }),
+  });
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  NodeFS.writeFileSync(
+    project.capabilities,
+    JSON.stringify({ symlinks: true, ipv6Loopback: true }),
+  );
+  // A malformed value an outer run passed down never reaches the run's own probe either.
+  const next = project.run("", "", undefined, [], { T3_TEST_HOST_CAPABILITIES: "invalid" });
+  expect(next.status, next.stdout + next.stderr).toBe(1);
+  expect(next.stdout).toContain("ran with symlinks");
+});
+
+// workingTree runs Git with this process's environment, which a hook can point at another repository.
+function isolateGit() {
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith("GIT_")) vi.stubEnv(name, undefined);
+  }
+  for (const [name, value] of Object.entries(env)) {
+    if (name.startsWith("GIT_")) vi.stubEnv(name, value);
+  }
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+}
+
+const stateChangesWithMode = (
+  kind: string,
+  mode: string,
+  fileMode: boolean,
+  name: string,
+  from = 0o755,
+) =>
+  Effect.gen(function* () {
+    isolateGit();
+    const project = yield* Effect.acquireRelease(
+      Effect.sync(() => fixture({})),
+      (project) => Effect.sync(() => project[Symbol.dispose]()),
+    );
+    const { git, root, write } = project;
+    const tool = NodePath.join(root, name);
+    const commit = (file = name) => {
+      git("add", file);
+      git("commit", "-m", "tool");
+    };
+    write(".gitignore", ".env*\n");
+    commit(".gitignore");
+    if (kind === "case-folded untracked") {
+      write(name.toLowerCase(), "#!/bin/sh\necho other\n");
+      commit(name.toLowerCase());
+      git("config", "core.ignoreCase", "true");
+    }
+    write(name, "#!/bin/sh\necho tool\n");
+    if (kind === "plain tracked") commit();
+    if (kind === "symlink placeholder") {
+      // Git checks a symlink out as a file holding its target where core.symlinks is false.
+      git("config", "core.symlinks", "false");
+      const blob = git("hash-object", "-w", name);
+      git("update-index", "--add", "--cacheinfo", `120000,${blob},${name}`);
+      commit();
+    }
+    if (kind.endsWith("embedded repository")) {
+      const nested = NodePath.join(root, name.split("/")[0]!);
+      for (const args of [["init"], ["add", "."], ["commit", "--allow-empty", "-m", "nested"]]) {
+        git("-C", nested, ...args);
+      }
+    }
+    NodeFS.chmodSync(tool, from);
+    if (kind === "tracked") commit();
+    git("config", "core.fileMode", String(fileMode));
+    const objects = NodePath.join(root, ".git", "checked-objects");
+    NodeFS.mkdirSync(objects);
+    const head = git("rev-parse", "HEAD");
+    const state = Effect.suspend(() =>
+      checkoutState({ root, objects, head, tree: workingTree(root, objects) }),
+    ).pipe(Effect.provide(NodeServices.layer));
+    const before = yield* state;
+    expect(yield* state).toBe(before);
+    NodeFS.chmodSync(tool, mode);
+    expect(yield* state).not.toBe(before);
+  });
+
+// Git for Windows records no executable bit.
+describe.skipIf(isWindowsHost)("checkoutState", () => {
+  it.effect.each([
+    ["tracked", "644", true, "tool.sh"],
+    ["tracked", "644", false, "tool.sh"],
+    ["tracked", "744", true, "tool.sh"],
+    ["plain tracked", "744", false, "tool.sh"],
+    ["untracked", "644", false, "tool.sh"],
+    ["untracked", "644", false, 'tool"one.sh'],
+    ["ignored", "644", true, ".env.tool"],
+    ["ignored", "655", true, ".env.tool"],
+    ["symlink placeholder", "744", true, "tool.sh"],
+    ["ignored embedded repository", "744", true, ".env.nested/tool.sh"],
+    ["untracked embedded repository", "744", true, "nested/tool.sh"],
+    // Git never lists a file named .git, which only a walk into the repository finds.
+    ["untracked embedded repository", "744", true, "nested/fixture/.git"],
+  ] as const)(
+    "keys the checkout state on a %s file changing from mode 755 to %s, with core.fileMode %s (%s)",
+    ([kind, mode, fileMode, name]) => stateChangesWithMode(kind, mode, fileMode, name),
+  );
+
+  // A runner in the file's group may run it though its owner may not.
+  it.effect(
+    "keys the checkout state on a file only its group may run changing from mode 654 to 644",
+    () => stateChangesWithMode("tracked", "644", true, "tool.sh", 0o654),
+  );
+
+  // Only a disk that tells case apart holds both names.
+  it.effect.runIf(isLinuxHost)(
+    "keys the checkout state on an untracked file whose name differs in case from a tracked one changing mode",
+    () => stateChangesWithMode("case-folded untracked", "744", true, "Tool.sh"),
+  );
+});
+
+// Where core.fileMode is false, Git sees no mode change, so only the checkout state reruns the test.
+it.skipIf(isWindowsHost)(
+  "reruns a test after a tracked file it runs changes mode where Git ignores modes",
+  () => {
+    using project = launcherFixture();
+    const tool = NodePath.join(project.root, "tool.sh");
+    project.write("tool.sh", "#!/bin/sh\necho tool\n");
+    project.git("add", "tool.sh");
+    project.git("commit", "-m", "tool");
+    NodeFS.chmodSync(tool, 0o755);
+    project.git("config", "core.fileMode", "false");
+    project.write(
+      "fixture.test.ts",
+      `import { execFileSync } from "node:child_process";
+      import { statSync } from "node:fs";
+      import { it, expect } from "vite-plus/test";
+      it("runs the tool", () => {
+        expect(statSync("tool.sh").mode & 0o111).toBe(0o111);
+        expect(execFileSync("./tool.sh", { encoding: "utf8" })).toBe("tool\\n");
+      });`,
+    );
+    const first = project.run();
+    expect(first.status, first.stdout + first.stderr).toBe(0);
+    NodeFS.chmodSync(tool, 0o744);
+    const next = project.run();
+    expect(next.status, next.stdout + next.stderr).toBe(1);
+    expect(next.stdout).toContain("FAIL  test");
+  },
+);
+
+// The push gate records the tree a commit of the checkout would hold under Git's own settings.
+it("checks a test that a negated ignore rule keeps where Git ignores case", () => {
+  using project = launcherFixture();
+  const ignore = NodePath.join(project.root, ".gitignore");
+  project.write(
+    ".gitignore",
+    `${NodeFS.readFileSync(ignore, "utf8")}keep*.test.ts\n!Keep.test.ts\n`,
+  );
+  project.git("add", ".gitignore");
+  project.git("commit", "-m", "ignore");
+  project.git("config", "core.ignoreCase", "true");
+  project.write(
+    "keep.test.ts",
+    `import { it } from "vite-plus/test";\nit("fails", () => {\n  throw new Error("ran");\n});\n`,
+  );
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("FAIL  test");
+});
+
+it.skipIf(isWindowsHost)("replays a test after an executable it does not read changes", () => {
+  using project = launcherFixture();
+  for (const name of ["a.sh", "b.sh"]) {
+    project.write(name, "#!/bin/sh\n");
+    NodeFS.chmodSync(NodePath.join(project.root, name), 0o755);
+  }
+  project.git("add", "a.sh", "b.sh");
+  project.git("commit", "-m", "tools");
+  project.write(
+    "fixture.test.ts",
+    `import { it, expect } from "vite-plus/test";
+    it("passes", () => expect(1).toBe(1));`,
+  );
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.write("b.sh", "#!/bin/sh\necho changed\n");
+  const next = project.run();
+  expect(next.status, next.stdout + next.stderr).toBe(0);
+  expect(next.stdout).toContain("cache hit, replaying");
+});
+
+it("fingerprints environment reads reported by the cooperative Vite+ client, without its cache path", () => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { createRequire } from "node:module";
+    import { it, expect } from "vite-plus/test";
+    it("reads a tool input", () => {
+      expect(process.env.COOPERATIVE_FIXTURE).toBeUndefined();
+      expect(process.env.VITE_CACHE_PATH).toBeUndefined();
+      const runner = createRequire(import.meta.url)(process.env.VP_RUN_NODE_CLIENT_PATH).load();
+      expect(runner.getEnv("COOPERATIVE_FIXTURE")).toBe("first");
+    });`,
+  );
+  const run = (value: string) =>
+    project.run("", "", project.source, [], { COOPERATIVE_FIXTURE: value });
+  const first = run("first");
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  const changed = run("changed");
+  expect(changed.status, changed.stdout + changed.stderr).toBe(1);
+  expect(changed.stdout).toContain("FAIL  test");
+});
+
+it("runs tests without the user's global Git config, as CI does", () => {
+  using project = launcherFixture();
+  const home = NodePath.dirname(project.capabilities);
+  NodeFS.writeFileSync(NodePath.join(home, ".gitconfig"), "[user]\n\tname = Leaked\n");
+  project.write(
+    "fixture.test.ts",
+    `import { spawnSync } from "node:child_process";
+    import { it, expect } from "vite-plus/test";
+    it("reads no global Git config", () => {
+      const name = spawnSync("git", ["config", "--global", "user.name"], { encoding: "utf8" });
+      expect(name.stdout).toBe("");
+    });`,
+  );
+  const run = project.run("", "", project.source, [], { HOME: home });
+  expect(run.status, run.stdout + run.stderr).toBe(0);
+});
+
+it("invalidates a replay when a file read by the test changes", () => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { readFileSync } from "node:fs";
+    import { it, expect } from "vite-plus/test";
+    it("reads a fixture", () => expect(readFileSync("input.txt", "utf8")).toBe("pass"));`,
+  );
+  project.write("input.txt", "pass");
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.write("input.txt", "changed");
+  const changed = project.run();
+  expect(changed.status, changed.stdout + changed.stderr).toBe(1);
+  expect(changed.stdout).toContain("FAIL  test (1 files)");
+  expect(changed.stdout).toContain("expected 'changed' to be 'pass'");
+});
+
+it("resumes completed test tasks after another group fails", () => {
+  using project = launcherFixture();
+  const testImport = `import { it } from "vite-plus/test";`;
+  project.write("a-quick.test.ts", `${testImport} it("quick", () => {});`);
+  const failing = "packages/example/z-failing.test.ts";
+  NodeFS.mkdirSync(NodePath.join(project.root, "packages/example/node_modules"));
+  project.write(
+    failing,
+    `${testImport} it("fails", () => { throw new Error("fixture failure"); });`,
+  );
+  const args = ["--concurrency", "1"];
+  const first = project.run("", "", project.source, args);
+  expect(first.status, first.stdout + first.stderr).toBe(1);
+  expect(first.stdout).toContain("a-quick.test.ts (1 test)");
+  expect(first.stdout).toContain("fixture failure");
+  expect(first.stdout).toContain("FAIL  test (2 files)");
+
+  project.write(failing, `${testImport} it("passes", () => {});`);
+  const repeat = project.run("", "", project.source, args);
+  expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
+  expect(repeat.stdout).toMatch(/a-quick\.test\.ts.*cache hit, replaying/);
+  expect(repeat.stdout).toContain("z-failing.test.ts (1 test)");
+});
+
+it("keeps test results when a concurrent check writes generated inputs", () => {
+  using project = launcherFixture();
+  const generated = "packages/example/.generated/types.d.ts";
+  project.write(generated, "export {};\n");
+  project.write(
+    "fixture.test.ts",
+    `import { it } from "vite-plus/test";
+     it("passes", () => {});`,
+  );
+  const first = project.run("lint", "test-cache", generated);
+  expect(first.status, first.stdout + first.stderr).toBe(1);
+  expect(first.stdout).toContain("pass  test (1 files)");
+
+  const repeat = project.run("lint");
+  expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
+  expect(repeat.stdout).toContain("cache hit, replaying");
+});
+
+it("discards test results when an ignored runtime input changes", () => {
+  using project = launcherFixture();
+  project.write(".env.local", "MODE=test\n");
+  project.write(
+    "fixture.test.ts",
+    `import { readFileSync } from "node:fs";
+     import { it, expect } from "vite-plus/test";
+     it("reads an ignored environment file", () => {
+       expect(readFileSync(".env.local", "utf8")).toContain("MODE=test");
+     });`,
+  );
+
+  const first = project.run("", "test-cache", ".env.local");
+  expect(first.status, first.stdout + first.stderr).toBe(1);
+  expect(first.stdout).toContain("FAIL  test (1 files)");
+  const repeat = project.run();
+  expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
+  expect(repeat.stdout).toContain("pass  test (1 files)");
+  expect(repeat.stdout).not.toContain("cache hit, replaying");
+  expect(first.stdout + first.stderr).toContain("runtime inputs or HEAD changed");
+});
+
+it.skipIf(isWindowsHost)(
+  "discards test results when an ignored executable changes mode during the test step",
+  () => {
+    using project = launcherFixture();
+    const tool = ".env.tool";
+    project.write(tool, "#!/bin/sh\n");
+    NodeFS.chmodSync(NodePath.join(project.root, tool), 0o755);
+    project.write(
+      "fixture.test.ts",
+      `import { chmodSync } from "node:fs";
+       import { it } from "vite-plus/test";
+       it("changes a tool's mode", () => chmodSync(${JSON.stringify(tool)}, 0o644));`,
+    );
+
+    const result = project.run();
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout + result.stderr).toContain("runtime inputs or HEAD changed");
+  },
+);
+
+it("passes kept provider variables to every test", () => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { it, expect } from "vite-plus/test";
+     it("reads a provider variable", () => expect(process.env.ANTHROPIC_FIXTURE).toBe("kept"));`,
+  );
+  const result = project.run("", "", project.source, [], {
+    T3CODE_TEST_KEEP_PROVIDER_ENV: "1",
+    ANTHROPIC_FIXTURE: "kept",
+  });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+});
+
+it("discards test results when HEAD moves to a different commit with the same tree", () => {
+  using project = launcherFixture();
+  project.write("fixture.test.ts", `import { it } from "vite-plus/test"; it("passes", () => {});`);
+
+  const first = project.run("", "", project.source, [], { MOVE_HEAD: "1" });
+  expect(first.status, first.stdout + first.stderr).toBe(1);
+  expect(first.stdout).toContain("FAIL  test (1 files)");
+  const repeat = project.run();
+  expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
+  expect(repeat.stdout).toContain("pass  test (1 files)");
+  expect(repeat.stdout).not.toContain("cache hit, replaying");
+  expect(first.stdout + first.stderr).toContain("runtime inputs or HEAD changed");
+});
+
+it("reports failures from every selected test group", () => {
+  using project = launcherFixture();
+  for (const [file, name] of [
+    ["a.test.ts", "root failure"],
+    ["packages/example/b.test.ts", "package failure"],
+  ] as const) {
+    project.write(
+      file,
+      `import { it } from "vite-plus/test";
+       it(${JSON.stringify(name)}, () => { throw new Error(${JSON.stringify(name)}); });`,
+    );
+  }
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("FAIL  test (2 files)");
+  expect(result.stdout).toContain("Error: root failure");
+  expect(result.stdout).toContain("Error: package failure");
 });
 
 it("rejects a package support range without a development pin", () => {
@@ -720,6 +2047,26 @@ it("passes uncached when a check rewrites a generated file", () => {
   const result = project.run("", "lint", "packages/example/.generated/types.d.ts");
   expect(result.status, result.stdout + result.stderr).toBe(0);
   expect(result.stdout).toContain("pass not cached: generated files changed during the run");
+});
+
+it("fails a reused pass when its test step rewrites a generated file", () => {
+  using project = launcherFixture();
+  const generated = "packages/example/.generated/types.d.ts";
+  project.write(project.source, "export const value = 2;\n");
+  project.write(generated, "export {};\n");
+  project.write(
+    "fixture.test.ts",
+    `import { it, expect } from "vite-plus/test";
+    it("passes", () => expect(1).toBe(1));`,
+  );
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  const next = project.run("", "test-cache", generated);
+  expect(next.status, next.stdout + next.stderr).toBe(1);
+  expect(next.stdout).toContain(
+    "generated files changed while the previous run's pass was checked",
+  );
+  expect(project.calls().filter(({ args }) => args[0] === "lint")).toHaveLength(1);
 });
 
 it("stops before any check when the lockfile does not install", () => {

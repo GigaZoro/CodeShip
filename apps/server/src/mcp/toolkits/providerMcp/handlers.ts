@@ -53,7 +53,14 @@ export const layer = McpToolAccess.toLayer(ProviderMcpToolkit, {
                 ? server
                 : server?.url === undefined
                   ? undefined
-                  : { ...server, url: server.url };
+                  : {
+                      transport: "http" as const,
+                      url: server.url,
+                      headers: server.headers,
+                      ...(server.bearerTokenEnvVar == null
+                        ? {}
+                        : { bearerTokenEnvVar: server.bearerTokenEnvVar }),
+                    };
             if (config === undefined) {
               return yield* invalid("`add` needs `server` with its `url` or `command`.");
             }

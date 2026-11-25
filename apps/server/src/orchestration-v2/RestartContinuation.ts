@@ -9,6 +9,7 @@ import {
   isProviderNativeSubagentThread,
   latestProviderTurnForAttempt,
   MessageId,
+  orchestrationV2RunAwaitsMemory,
   type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2TurnItem,
@@ -270,11 +271,15 @@ export function restartRetryRun(
     : run;
 }
 
-/** The run to resume after a restart: started again, or continued where its turn was cut. */
+/**
+ * The run to resume after a restart: started again, or continued where its turn was cut. A run
+ * still waiting for memory started nothing, so it waits on in its place instead.
+ */
 export function restartResumeRun(
   projection: ResumeProjection,
   now: DateTime.Utc,
 ): OrchestrationV2Run | undefined {
+  if (projection.runs.some(orchestrationV2RunAwaitsMemory)) return;
   return restartRetryRun(projection, now) ?? restartContinuationRun(projection, now);
 }
 

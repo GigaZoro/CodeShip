@@ -16,9 +16,16 @@ import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
-import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
+import { collectThreadTags, hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
 import { collectNeedsYouThreads, type NeedsYouThreads } from "./threadInbox.ts";
+import {
+  sortThreadList,
+  threadActivityKey,
+  type ThreadLastActivityOrder,
+  type ThreadListSort,
+} from "./threadSort.ts";
 import { deadlineStore } from "../clock.ts";
+import { scopedThreadKey } from "../environment/scoped.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -468,6 +475,19 @@ export function createEnvironmentThreadShellAtoms(input: {
     }).pipe(Atom.withLabel(`environment-thread-shell:${key}`));
   });
 
+  const threadTagsAtomFamily = Atom.family((key: string) => {
+    const ref = parseThreadKey(key);
+    const noTags: readonly string[] = [];
+    let previous: readonly string[] | null = null;
+    return Atom.make((get) => {
+      const thread = get(environmentThreadIndexAtom(ref.environmentId)).get(ref.threadId);
+      const next = thread === undefined ? null : (thread.tags ?? noTags);
+      if (previous !== null && next !== null && arrayElementsEqual(previous, next)) return previous;
+      previous = next;
+      return next;
+    }).pipe(Atom.withLabel(`environment-thread-tags:${key}`));
+  });
+
   // Keeps the previous shell while only streaming ticks changed. During a run,
   // its timestamps, item counts and latest message are as of the last kept
   // change; anything that needs them current reads threadShellAtom.
@@ -778,12 +798,9 @@ export function createEnvironmentThreadShellAtoms(input: {
     return next;
   }).pipe(Atom.withLabel("environment-delegated-under-parent"));
 
-  // One list of what needs the user, so Needs you, badges, and the next-thread command agree.
-  // Quiet shells keep streaming from rebuilding it.
-  let previousNeedsYou: NeedsYouThreads<EnvironmentThreadShell> | null = null;
-  const needsYouThreadsAtom = Atom.make((get) => {
+  const listedThreadShellsAtom = Atom.make((get) => {
     const underParent = get(delegatedUnderParentAtom);
-    const listed = get(quietThreadShellsAtom).filter(
+    return get(quietThreadShellsAtom).filter(
       (thread) =>
         thread.archivedAt === null &&
         !isShownUnderParent(
@@ -792,6 +809,27 @@ export function createEnvironmentThreadShellAtoms(input: {
           underParent,
         ),
     );
+  }).pipe(Atom.withLabel("environment-listed-thread-shells"));
+
+  const noLastActivityOrder = Atom.make<ThreadLastActivityOrder>(new Map());
+  let previousLastActivityOrder: ThreadLastActivityOrder = new Map();
+  const quietLastActivityOrderAtom = Atom.make((get): ThreadLastActivityOrder => {
+    const ordered = sortThreadList(get(listedThreadShellsAtom), "last-activity");
+    const keys = ordered.map(threadActivityKey);
+    if (
+      keys.length === previousLastActivityOrder.size &&
+      keys.every((key, index) => previousLastActivityOrder.get(key) === index)
+    ) {
+      return previousLastActivityOrder;
+    }
+    previousLastActivityOrder = new Map(keys.map((key, index) => [key, index]));
+    return previousLastActivityOrder;
+  }).pipe(Atom.withLabel("environment-last-activity-order"));
+
+  // One list of what needs the user, so Needs you, badges, and the next-thread command agree.
+  let previousNeedsYou: NeedsYouThreads<EnvironmentThreadShell> | null = null;
+  const needsYouThreadsAtom = Atom.make((get) => {
+    const listed = get(listedThreadShellsAtom);
     // @effect-diagnostics-next-line globalDate:off - A failed thread rejoins when its snooze ends on the wall clock.
     const now = new Date().toISOString();
     const next = collectNeedsYouThreads(listed, { now });
@@ -809,6 +847,39 @@ export function createEnvironmentThreadShellAtoms(input: {
     previousNeedsYou = next;
     return next;
   }).pipe(Atom.withLabel("environment-needs-you-threads"));
+
+  // Quiet shells keep streaming from rescanning every thread's tags.
+  let previousAvailableTags: ReadonlyArray<string> = [];
+  const availableThreadTagsAtom = Atom.make((get) => {
+    const next = collectThreadTags(get(listedThreadShellsAtom));
+    if (arrayElementsEqual(previousAvailableTags, next)) return previousAvailableTags;
+    previousAvailableTags = next;
+    return next;
+  }).pipe(Atom.withLabel("environment-available-thread-tags"));
+
+  const threadFilterTagsAtom = Atom.family(
+    (hiddenScheduledTaskKeys: Atom.Atom<ReadonlySet<string>>) => {
+      let previous: ReadonlyArray<string> = [];
+      return Atom.make((get) => {
+        const hidden = get(hiddenScheduledTaskKeys);
+        if (hidden.size === 0) return get(availableThreadTagsAtom);
+        const { threads, later } = get(needsYouThreadsAtom);
+        const awaiting = new Set([...threads, ...later]);
+        const next = collectThreadTags(
+          get(listedThreadShellsAtom).filter(
+            (thread) =>
+              awaiting.has(thread) ||
+              !hidden.has(
+                scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+              ),
+          ),
+        );
+        if (arrayElementsEqual(previous, next)) return previous;
+        previous = next;
+        return next;
+      }).pipe(Atom.withLabel("environment-thread-filter-tags"));
+    },
+  );
 
   let previousNavigationShells: ReadonlyArray<EnvironmentThreadShell> = [];
   const navigationThreadShellsAtom = Atom.make((get) => {
@@ -844,13 +915,19 @@ export function createEnvironmentThreadShellAtoms(input: {
     hiddenThreadKeysAtom,
     anyEnvironmentHidingAtom,
     quietThreadShellsAtom,
+    listedThreadShellsAtom,
     navigationThreadShellsAtom,
+    lastActivityOrderAtom: (sort: ThreadListSort) =>
+      sort === "last-activity" ? quietLastActivityOrderAtom : noLastActivityOrder,
     needsYouThreadsAtom,
+    availableThreadTagsAtom,
+    threadFilterTagsAtom,
     delegatedUnderParentAtom,
     pendingSubagentRequestsAtom,
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
       threadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),
     threadShellAtom: (ref: ScopedThreadRef) => threadShellAtomFamily(threadKey(ref)),
+    threadTagsAtom: (ref: ScopedThreadRef) => threadTagsAtomFamily(threadKey(ref)),
     quietThreadShellAtom: (ref: ScopedThreadRef) => quietThreadShellAtomFamily(threadKey(ref)),
     childThreadInputsAtom: (ref: ScopedThreadRef) => childThreadInputsAtomFamily(threadKey(ref)),
     sideChatsAtom: (ref: ScopedThreadRef) => sideChatsAtomFamily(threadKey(ref)),

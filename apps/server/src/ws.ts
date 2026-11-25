@@ -282,6 +282,7 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isNetworkPath } from "@t3tools/shared/path";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
@@ -1928,8 +1929,10 @@ export const layerWsRpc = (
           threadFind: true,
           threadFindProgressive: true,
           secretProviderSettings: true,
+          onePasswordServiceAccount: (yield* HostProcess.Platform) === "linux",
           secretReferences: true,
           secretRequestReferences: true,
+          mcpBearerTokenVariables: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
@@ -2338,6 +2341,10 @@ export const layerWsRpc = (
             Effect.andThen(scheduledTasks.setEnabled(input, ScheduledTasks.CHANGED_IN_APP)),
           ),
         [WS_METHODS.scheduledTasksSetPlacement]: (input) => scheduledTasks.setPlacement(input),
+        [WS_METHODS.scheduledTasksSetGroup]: (input) =>
+          Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
+            Effect.andThen(scheduledTasks.setGroup(input, ScheduledTasks.CHANGED_IN_APP)),
+          ),
         [WS_METHODS.scheduledTasksSetGroupPaused]: (input) =>
           scheduledTasks.setGroupPaused(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.threadFoldersRename]: (input) =>

@@ -5,6 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MspError } from "@muse-code/sdk";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   MUSE_DEFAULT_MODEL,
   EnvironmentId,
   MessageId,
@@ -44,7 +45,6 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProviderUsageLimitsReport } from "@t3tools/provider-core/server/snapshot";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { makeMuseAdapterV2, type MuseAdapterV2Options } from "./adapter.ts";
 
 const testLayer = Layer.mergeAll(
@@ -2108,6 +2108,76 @@ describe("MuseAdapterV2", () => {
       const stopped = yield* takeRetryRow();
       assert.deepStrictEqual([stopped?.id, stopped?.status], [stalled?.id, "interrupted"]);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([false, true])(
+    "charges a late Muse background notification only to its own host (replaced: %s)",
+    (replaceHost) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const replacement = yield* makeFakeMuse("replacement");
+        const offered =
+          yield* Deferred.make<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          replacement,
+          undefined,
+          runtimePolicy,
+          {
+            continuationRequests: { offer: (request) => Deferred.succeed(offered, request) },
+          },
+        );
+        const { nativeId } = yield* startConversation(harness, fake);
+        const child = {
+          itemId: "late-child",
+          kind: "subagent",
+          turnId: nativeId,
+          subagentId: "sub",
+          childSessionId: "child",
+          objective: "Inspect",
+        };
+        yield* fake.emit("item/started", {
+          turnId: nativeId,
+          item: { ...child, revision: 1, status: "inProgress", controlStatus: "running" },
+        });
+        yield* harness.takeEvent("app_thread.created");
+        yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+        yield* harness.takeEvent("turn.terminal");
+        if (replaceHost) {
+          yield* fake.disconnect();
+          yield* harness.takeEvent(
+            "provider_session.updated",
+            (event) => event.providerSession.status === "error",
+          );
+          yield* harness.runtime.ensureThread({
+            threadId: THREAD_ID,
+            modelSelection: modelSelection(),
+            runtimePolicy,
+            existingProviderThread: harness.providerThread,
+          });
+          yield* replacement.emit("turn/started", { turnId: "unrelated-report" });
+        } else {
+          yield* fake.emit("item/updated", {
+            turnId: nativeId,
+            item: {
+              ...child,
+              revision: 2,
+              status: "inProgress",
+              controlStatus: "resultReady",
+              result: { summary: "Done" },
+            },
+          });
+          yield* harness.takeEvent(
+            "subagent.updated",
+            (event) => event.subagent.status === "completed",
+          );
+          yield* fake.emit("turn/started", { turnId: "background-report" });
+        }
+        const request = yield* Deferred.await(offered);
+        assert.equal(request.demandSourceRunId, replaceHost ? undefined : RunId.make("run-1"));
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("opens a prompt-and-result child thread for a native subagent", () =>

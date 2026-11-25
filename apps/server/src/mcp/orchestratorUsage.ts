@@ -1,10 +1,12 @@
 import type {
+  OrchestratorMcpBankedReset,
   OrchestratorMcpLastRedemption,
   OrchestratorMcpProviderUsage,
   OrchestratorMcpUsageError,
   OrchestratorMcpUsageMeter,
   ServerProvider,
   ServerProviderResetCreditsError,
+  ServerProviderResetKindUnknownReason,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
@@ -46,7 +48,15 @@ const RESET_READ_ERRORS = {
   signedOut: "signed_out",
   unrecognizedScreen: "unrecognized_screen",
   readFailed: "read_failed",
+  lowPriority: "low_priority",
 } as const satisfies Record<ServerProviderResetCreditsError, OrchestratorMcpUsageError>;
+
+const KIND_UNKNOWN_REASONS = {
+  totalOnly: "total_only",
+} as const satisfies Record<
+  ServerProviderResetKindUnknownReason,
+  NonNullable<OrchestratorMcpBankedReset["kindUnknownReason"]>
+>;
 
 function bankedResets(
   provider: ServerProvider,
@@ -69,6 +79,9 @@ function bankedResets(
         expiresAt: credit.expiresAt ?? null,
         program: credit.program,
         kind: credit.kind ?? null,
+        ...(credit.kindUnknownReason === undefined
+          ? {}
+          : { kindUnknownReason: KIND_UNKNOWN_REASONS[credit.kindUnknownReason] }),
         ...(credit.resetsLeft === undefined ? {} : { resetsLeft: credit.resetsLeft }),
         ...(credit.usableNow === undefined ? {} : { usableNow: credit.usableNow }),
         ...(credit.requiresLimit === undefined ? {} : { requiresLimit: credit.requiresLimit }),

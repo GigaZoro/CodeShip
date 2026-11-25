@@ -5,10 +5,12 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
   type MemoryShortage,
+  type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   type ScheduledTask,
   ScheduledTaskUpsertInput,
+  type ServerProvider,
   ThreadId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
@@ -27,6 +29,9 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -1014,6 +1019,194 @@ it.effect(
           runCount: 1,
           lastRunScheduledFor: "2026-11-10T12:02:00.000Z",
         });
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { scenario: "configured alternative", explicit: true, codexLimited: false },
+  { scenario: "Auto model", explicit: false, codexLimited: false },
+  { scenario: "all providers limited", explicit: true, codexLimited: true },
+])("routes a scheduled occurrence with $scenario", ({ explicit, codexLimited }) =>
+  Effect.gen(function* () {
+    const start = "2026-11-10T12:00:00.000Z";
+    const codexReset = "2026-11-10T14:00:00.000Z";
+    const claudeReset = "2026-11-11T12:00:00.000Z";
+    yield* TestClock.setTime(Date.parse(start));
+    const codex = ProviderInstanceId.make("codex_test");
+    const claude = ProviderInstanceId.make("claude_primary");
+    const alternative = {
+      instanceId: codex,
+      model: "gpt-alternative",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    } satisfies ModelSelection;
+    const provider = (
+      instanceId: ProviderInstanceId,
+      driver: ProviderDriverKind,
+      models: ReadonlyArray<string>,
+    ): ServerProvider => ({
+      instanceId,
+      driver,
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: start,
+      models: models.map((slug) => ({
+        slug,
+        name: slug,
+        aliases: [],
+        isCustom: false,
+        capabilities: null,
+      })),
+      slashCommands: [],
+      skills: [],
+    });
+    const refusals = new Map([
+      [claude, [{ resetAt: claudeReset, refusedAt: start }]],
+      ...(codexLimited ? [[codex, [{ resetAt: codexReset, refusedAt: start }]] as const] : []),
+    ]);
+    const routing = AccountRouting.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest({
+            failoverLimitedThreads: true,
+            autoModeModels: { [ProviderDriverKind.make("codex")]: { model: "gpt-auto" } },
+            providerInstances: {
+              [codex]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+              [claude]: { driver: ProviderDriverKind.make("claudeAgent"), enabled: true },
+            },
+          }).pipe(Layer.orDie),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              provider(claude, ProviderDriverKind.make("claudeAgent"), ["claude-opus-5-5"]),
+              provider(codex, ProviderDriverKind.make("codex"), ["gpt-auto", alternative.model]),
+            ]),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUsageLimitedProviderInstances: () => Effect.succeed(refusals),
+          }),
+          Layer.mock(ProviderMcp.ProviderMcp)({
+            listLoaded: () => Effect.succeedNone,
+            discover: () => Effect.succeedNone,
+          }),
+        ),
+      ),
+    );
+    const launches = yield* Ref.make<ReadonlyArray<ThreadLaunchService.ThreadLaunchInput>>([]);
+    const layer = runHistoryLayer(
+      (input) =>
+        Ref.update(launches, (seen) => [...seen, input]).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-codex"), resumed: false } as never),
+        ),
+      routing,
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const { task } = yield* service.upsert(
+        yield* historyTask("Routed occurrence", {
+          schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          ...(explicit ? { fallbackModelSelections: [alternative] } : {}),
+        }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      if (explicit) expect(task.fallbackModelSelections).toEqual([alternative]);
+      const done = yield* service.subscribeList().pipe(
+        Stream.filter(({ tasks }) =>
+          tasks.some(
+            (row) =>
+              row.id === task.id &&
+              (codexLimited ? row.nextRunAt === codexReset : row.lastRunStatus === "succeeded"),
+          ),
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("35 seconds");
+      yield* Fiber.join(done);
+      const { runs } = yield* service.listRuns({ id: task.id });
+      const sent = yield* Ref.get(launches);
+      if (codexLimited) {
+        expect(sent).toEqual([]);
+        expect(runs).toMatchObject([
+          {
+            outcome: "skipped",
+            skipReason: "usage_limited",
+            usageLimit: { driver: "codex", until: codexReset },
+          },
+        ]);
+      } else {
+        expect(sent).toMatchObject([
+          {
+            modelSelection: explicit ? alternative : { instanceId: codex, model: "gpt-auto" },
+            initialMessage: { crossProviderFailoverFrom: claude },
+          },
+        ]);
+        expect(runs).toMatchObject([
+          { outcome: "succeeded", failover: { from: claude, to: codex, reason: "usageLimit" } },
+        ]);
+      }
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { why: "returns before its next time", untilAt: [10, 12], nextAt: [10, 12] },
+  { why: "returns after its next time", untilAt: [11, 9], nextAt: [11, 7] },
+] as const)(
+  "a fixed-time run skipped for usage waits once for the room when it $why",
+  ({ untilAt, nextAt }) =>
+    Effect.gen(function* () {
+      const at = (day: number, hour: number, minute = 0) =>
+        DateTime.makeZonedUnsafe(
+          { year: 2026, month: 11, day, hour, minute, second: 0, millisecond: 0 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        );
+      const isoAt = (day: number, hour: number) =>
+        DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(10, 6, 59)));
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      const until = isoAt(untilAt[0], untilAt[1]);
+      const block = yield* Ref.make<AccountRouting.UsageBlock | null>({
+        driver: ProviderDriverKind.make("claude"),
+        until,
+        accounts: [ProviderInstanceId.make("claude_primary")],
+      });
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-room"), resumed: false } as never),
+          ),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () => Ref.get(block),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Daily"),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const waiting = yield* service.subscribeList().pipe(
+          Stream.filter(
+            ({ tasks }) => tasks.find((t) => t.id === task.id)?.nextRunAt !== task.nextRunAt,
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("90 seconds");
+        yield* Fiber.join(waiting);
+        expect((yield* service.list()).tasks.find((t) => t.id === task.id)?.nextRunAt).toBe(
+          isoAt(nextAt[0], nextAt[1]),
+        );
+
+        yield* Ref.set(block, null);
+        yield* TestClock.setTime(Date.parse(isoAt(nextAt[0], nextAt[1])) + 5_000);
+        yield* TestClock.adjust("6 seconds");
+        yield* Effect.yieldNow;
+        expect(yield* Ref.get(launched)).toEqual(["Daily"]);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

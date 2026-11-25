@@ -151,9 +151,13 @@ arrive before the corresponding `promptAsync` or `abort` response. Subagent fixt
 both parent and child session ids so root-only terminal behavior remains testable.
 
 Provider transcript recorders live with the server orchestration testkit, not with provider client
-packages. Use `bun run record:codex-replay -- --scenario <name>` for Codex app-server transcripts
-and `bun run record:claude-replay -- --scenario <name>` for Claude Agent SDK transcripts. Use
+packages. Use `vp run record:codex-replay -- --scenario <name>` for Codex app-server transcripts
+and `vp run record:claude-replay -- --scenario <name>` for Claude Agent SDK transcripts. Use
 `pnpm --filter t3 record:cursor-replay --scenario <name>` for Cursor Agent SDK transcripts.
+
+For Codex and Claude, add `--dry-run` to print the selected transcript destination before
+recording. The server’s development dependencies include Bun to load the package’s environment
+files. Node runs the recorder. An explicit output path takes precedence over the configured destination.
 
 ## Contract Test Levels
 

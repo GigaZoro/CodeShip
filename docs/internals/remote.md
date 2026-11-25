@@ -160,6 +160,13 @@ the task holds a completed result, the follower settles it through the same link
 a queued message or a pending request, since settling would hide or cancel them,
 and a refused settle is left to auto-settlement there.
 
+A task with `isolation: "worktree"` branches its child's worktree there from the
+parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
+The other machine can only fetch a pushed commit, so `RemoteDelegation` refuses an
+unpushed one by name, and `ThreadLaunchService` fetches a SHA base from the primary
+remote when the checkout lacks it. This is how a Windows-only test run happens
+at an exact commit.
+
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:
 its agents can already do anything that user can, so the fence would only stop

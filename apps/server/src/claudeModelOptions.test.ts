@@ -34,7 +34,7 @@ describe("compileClaudeModelSelection", () => {
     });
   });
 
-  it("runs Ultracode at the chosen effort and reads the old Ultracode effort as xhigh", () => {
+  it("runs Ultracode at the chosen effort, reads the old Ultracode effort as xhigh, and is off unless chosen", () => {
     expect(
       compileClaudeModelSelection(
         selection("claude-opus-5-5", [
@@ -58,6 +58,10 @@ describe("compileClaudeModelSelection", () => {
     expect(legacyTurnedOff.settings.ultracode).toBe(false);
     expect(
       compileClaudeModelSelection(selection("claude-opus-5-5", [{ id: "effort", value: "high" }]))
+        .settings,
+    ).toMatchObject({ ultracode: false });
+    expect(
+      compileClaudeModelSelection(selection("claude-sonnet-4-6", [{ id: "effort", value: "high" }]))
         .settings,
     ).not.toHaveProperty("ultracode");
   });

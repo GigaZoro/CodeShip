@@ -27,6 +27,10 @@ export class SecretResolver extends Context.Service<
     readonly invalidate: (references?: ReadonlyArray<SecretReference>) => Effect.Effect<void>;
     /** The name the user gave a secret provider, or its id when it has none or is gone. */
     readonly label: (provider: SecretReference["provider"]) => Effect.Effect<string>;
+    /** First checks every reference. An interactive source or a failed read leaves the cache intact. */
+    readonly refreshUnattended: (
+      references: ReadonlyArray<SecretReference>,
+    ) => Effect.Effect<Option.Option<ReadonlyArray<string>>>;
   }
 >()("@t3tools/secret-provider-core/server/SecretResolver") {}
 
@@ -163,7 +167,45 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
       ),
     );
 
-  return SecretResolver.of({ read, invalidate, label });
+  const refreshUnattended: SecretResolver["Service"]["refreshUnattended"] = Effect.fn(
+    "SecretResolver.refreshUnattended",
+  )(function* (references) {
+    if (references.length === 0) return Option.none();
+    return yield* semaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const providers = yield* options.secretProviders;
+        const groups = new Map<
+          string,
+          { plan: ReadablePlan; references: Array<SecretReference> }
+        >();
+        for (const reference of references) {
+          const plan = planFor(providers, reference);
+          if (plan?.driver.unattended?.(plan.config) !== true) return Option.none();
+          const group = groups.get(reference.provider) ?? { plan, references: [] };
+          group.references.push(reference);
+          groups.set(reference.provider, group);
+        }
+
+        const refreshed = new Map<string, CachedSecret & { value: string }>();
+        for (const { plan, references: selected } of groups.values()) {
+          const unique = [...new Set(selected.map(({ reference }) => reference))];
+          const values = yield* plan.driver.read(plan.config, unique);
+          const byReference = new Map(unique.map((reference, index) => [reference, values[index]]));
+          for (const reference of selected) {
+            const value = byReference.get(reference.reference);
+            if (value === undefined) return Option.none();
+            refreshed.set(cacheKey(reference), { config: plan.configKey, value });
+          }
+        }
+        for (const [key, secret] of refreshed) cache.set(key, secret);
+        return Option.some(
+          references.map((reference) => refreshed.get(cacheKey(reference))!.value),
+        );
+      }),
+    );
+  }, Effect.provideContext(context));
+
+  return SecretResolver.of({ read, invalidate, label, refreshUnattended });
 });
 
 export const layer = (options: Parameters<typeof make>[0]) =>

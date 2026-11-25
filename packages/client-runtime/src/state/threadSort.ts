@@ -1,6 +1,66 @@
+import * as Schema from "effect/Schema";
+import { getFormattingLocale, msg } from "@t3tools/shared/i18n";
 import type { ProjectId } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import { scopedThreadKey } from "../environment/scoped.ts";
 import type { EnvironmentThreadShell } from "./models.ts";
+
+export const ThreadListSort = Schema.Literals(["default", "last-activity", "created", "name"]);
+export type ThreadListSort = typeof ThreadListSort.Type;
+
+export const THREAD_LIST_SORT_LABELS = {
+  default: msg("Default"),
+  "last-activity": msg("Last activity"),
+  created: msg("Created"),
+  name: msg("Name"),
+} as const;
+
+export type ThreadLastActivityOrder = ReadonlyMap<string, number>;
+
+export function threadActivityKey(thread: Pick<EnvironmentThreadShell, "environmentId" | "id">) {
+  return scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id });
+}
+
+export function sortThreadList<
+  T extends Pick<
+    EnvironmentThreadShell,
+    "id" | "environmentId" | "title" | "createdAt" | "updatedAt"
+  >,
+>(
+  threads: readonly T[],
+  sort: Exclude<ThreadListSort, "default">,
+  lastActivityOrder?: ThreadLastActivityOrder,
+): T[] {
+  const compareIdentity = (left: T, right: T) =>
+    left.id.localeCompare(right.id, "en") ||
+    left.environmentId.localeCompare(right.environmentId, "en");
+  if (sort === "name") {
+    const collator = new Intl.Collator(getFormattingLocale(), {
+      sensitivity: "base",
+      numeric: true,
+    });
+    return [...threads].sort(
+      (left, right) => collator.compare(left.title, right.title) || compareIdentity(left, right),
+    );
+  }
+  return threads
+    .map((thread) => ({
+      thread,
+      rank:
+        sort === "last-activity"
+          ? (lastActivityOrder?.get(threadActivityKey(thread)) ?? Infinity)
+          : Infinity,
+      timestamp: Date.parse(sort === "created" ? thread.createdAt : thread.updatedAt),
+    }))
+    .sort(
+      (left, right) =>
+        left.rank - right.rank ||
+        (Number.isFinite(right.timestamp) ? right.timestamp : -Infinity) -
+          (Number.isFinite(left.timestamp) ? left.timestamp : -Infinity) ||
+        compareIdentity(left.thread, right.thread),
+    )
+    .map(({ thread }) => thread);
+}
 
 export interface ThreadSortInput {
   readonly createdAt: string;
@@ -243,6 +303,37 @@ export function generateSpreadPinOrderKeys(count: number): string[] {
     keys.push(key);
   }
   return keys;
+}
+
+/** Keys that put `count` new pins at the top of the shelf, first to last. A head key with no
+    room above it, such as an imported `a0`, rekeys the whole shelf in its current order. */
+export function planPinsAtTop<
+  T extends { readonly pinOrderKey?: string | null | undefined },
+>(input: {
+  /** Every pinned thread, in shelf order. */
+  readonly shelf: ReadonlyArray<T>;
+  readonly count: number;
+}): {
+  readonly pinKeys: ReadonlyArray<string>;
+  readonly rekeyed: ReadonlyArray<{ readonly thread: T; readonly orderKey: string }>;
+} {
+  const pinKeys: string[] = [];
+  let bound = input.shelf[0]?.pinOrderKey ?? null;
+  while (pinKeys.length < input.count) {
+    const key = pinOrderKeyBetween(null, bound);
+    if (key === null) break;
+    pinKeys.unshift(key);
+    bound = key;
+  }
+  if (pinKeys.length === input.count) return { pinKeys, rekeyed: [] };
+  const keys = generateSpreadPinOrderKeys(input.count + input.shelf.length);
+  return {
+    pinKeys: keys.slice(0, input.count),
+    rekeyed: input.shelf.flatMap((thread, index) => {
+      const orderKey = keys[input.count + index]!;
+      return thread.pinOrderKey === orderKey ? [] : [{ thread, orderKey }];
+    }),
+  };
 }
 
 export function planPinnedReorder(input: {

@@ -3,6 +3,7 @@ import {
   displayProviderMcpCommand,
   displayProviderMcpUrl,
   PROVIDER_MCP_NEW_SERVER_NAME_PATTERN,
+  ProviderInstanceEnvironmentVariableName,
   ProviderMcpError,
   type ProviderInstanceId,
   type ProviderMcpOperation,
@@ -45,6 +46,7 @@ const MANAGED_CONFIG_LAYERS = new Set([
 const CodexMcpServerEntry = Schema.Struct({
   url: Schema.optional(Schema.String),
   http_headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  bearer_token_env_var: Schema.optional(ProviderInstanceEnvironmentVariableName),
   command: Schema.optional(Schema.String),
   args: Schema.optional(Schema.Array(Schema.String)),
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -95,7 +97,9 @@ function codexStatus(
   status: CodexMcpStatus | undefined,
 ): ProviderMcpServerStatus {
   if (entry?.enabled === false) return "disabled";
-  if (status?.authStatus === "notLoggedIn") return "needsAuth";
+  if (status?.authStatus === "notLoggedIn") {
+    return entry?.bearer_token_env_var === undefined ? "needsAuth" : "failed";
+  }
   if (status === undefined || status.toolsError) return "failed";
   return "connected";
 }
@@ -125,9 +129,11 @@ export function codexMcpServers(
     const message =
       serverStatus !== "failed"
         ? undefined
-        : status === undefined
-          ? "Codex did not report this server."
-          : boundedProviderMcpMessage(status.toolsError);
+        : entry?.bearer_token_env_var !== undefined
+          ? `Check the provider environment variable ${entry.bearer_token_env_var} and the server's token access.`
+          : status === undefined
+            ? "Codex did not report this server."
+            : boundedProviderMcpMessage(status.toolsError);
     const plugin = status?.pluginId ? splitProviderPluginId(status.pluginId).name : undefined;
     // A dotted key path cannot address a name with dots or spaces.
     const changeable =
@@ -156,7 +162,16 @@ export function codexMcpServers(
 function codexStoredMcpServer(
   entry: CodexConfiguredMcpServer,
 ): ProviderMcpServerConfig | undefined {
-  if (entry.url) return { transport: "http", url: entry.url, headers: entry.http_headers ?? {} };
+  if (entry.url) {
+    return {
+      transport: "http",
+      url: entry.url,
+      headers: entry.http_headers ?? {},
+      ...(entry.bearer_token_env_var === undefined
+        ? {}
+        : { bearerTokenEnvVar: entry.bearer_token_env_var }),
+    };
+  }
   if (entry.command) {
     return {
       transport: "stdio",
@@ -178,11 +193,11 @@ function codexMcpServerEdits(
   server: ProviderMcpServerConfig,
 ): ReadonlyArray<CodexSchema.V2ConfigBatchWriteParams__ConfigEdit> {
   const table = codexMcpServerEntry(server);
-  const [own, other] =
+  const ownedKeys =
     server.transport === "http"
-      ? (["http_headers", LOCAL_KEYS] as const)
-      : (["env", REMOTE_KEYS] as const);
-  const stale = [own, ...other].filter((key) => entry.keys.has(key) && !Object.hasOwn(table, key));
+      ? (["http_headers", "bearer_token_env_var", ...LOCAL_KEYS] as const)
+      : (["env", ...REMOTE_KEYS] as const);
+  const stale = ownedKeys.filter((key) => entry.keys.has(key) && !Object.hasOwn(table, key));
   return [
     ...Object.entries(table).map(([key, value]) => ({
       keyPath: `mcp_servers.${name}.${key}`,
@@ -203,6 +218,9 @@ function codexMcpServerEntry(server: ProviderMcpServerConfig) {
     return {
       url: server.url,
       ...(Object.keys(server.headers).length > 0 ? { http_headers: { ...server.headers } } : {}),
+      ...(server.bearerTokenEnvVar === undefined
+        ? {}
+        : { bearer_token_env_var: server.bearerTokenEnvVar }),
     };
   }
   return {

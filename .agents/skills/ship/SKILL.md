@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, land it on main under the landing turn (`vp run check:changed` runs once there), confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
+description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, land it on main under the landing turn (`vp run check:changed` runs before the wait), confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
 ---
 
 # Ship
@@ -19,7 +19,7 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 ## 2. Stage deliberately
 
 - Read the diff. Stage paths by name, never `git add -A`.
-- Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Leave out untracked files you cannot place too, and name them in your report.
+- Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Move untracked files you cannot place out of the worktree, to your scratchpad, and name them in your report. The push gate accepts only the tree `check:changed` checked, and that tree includes untracked files.
 - Prepend a dated entry to `docs/release-notes.md` (`## YYYY-MM-DD — Title`, then user-facing bullets), even for docs or maintenance. See [Release notes](../../../docs/operations/release.md#release-notes-for-every-shipment).
 
 ## 3. Pre-check
@@ -34,14 +34,16 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 
 ## 5. Land
 
-Main has one landing turn, so a pass of `vp run check:changed` covers the tree that is pushed and is never repeated for a main that moved. Run the landing with `t3_command_run` (`timeoutMinutes: 720`; it may wait for the turn behind other landers):
+Main grants its landing turn in arrival order, so a pass of `vp run check:changed` covers the tree that is pushed against the commit main is at when it lands. Run the landing with `t3_command_run` (`timeoutMinutes: 720`; it may wait for the turn behind other landers):
 
 `node .github/scripts/landing-turn.cjs land`
 
-It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. `--check "<command>"` replaces the check. Main refuses a push from anyone who does not hold the turn (`.vite-hooks/pre-push`), so never push to main any other way and never use `--force` or `--force-with-lease`.
+A branch behind main is rebased onto it first, and the landing then starts again from the rebased tree, so it waits with the rebased copy of the script, which holds main's changes to it. It runs `vp run check:changed` against main before the wait, like any other run, then takes the turn (a lease on `refs/heads/landing-lease/main` on origin), pushes `HEAD` to `main` as a fast-forward and gives the turn back. When main moved during the wait, it rebases and runs the checks again under the turn first, where they get the next free check slot ahead of other runs. A pass records the tree it checked, uncommitted and untracked files included, so `land` refuses to start in a worktree with anything uncommitted or untracked. Main refuses a push from anyone who does not hold the turn, or for a tree no `check:changed` pass covers (`.vite-hooks/pre-push`), so never push to main any other way, never pass `--no-verify`, and never use `--force` or `--force-with-lease`.
 
-- A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
-- A rebase that conflicts stops the landing with the turn released: resolve it, then land again.
+- A check that fails ends the landing with exit status 1, before it waits or with the turn released: fix the cause, commit, and land again.
+- A rebase that conflicts stops the landing, before it waits or with the turn released: resolve it, then land again.
+- `head-moved`: the checkout moved to another commit while the landing ran, so it pushed nothing: land again from the commit you mean to land. A landing owns its checkout until it ends, so nothing else switches, commits or edits there meanwhile.
+- A fetch or push of main that stops answering ends the landing after ten minutes, with the turn released. A push that ran out of time may still have landed: land again, and an unchanged commit lands as a no-op.
 - Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
 

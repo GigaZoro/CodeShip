@@ -68,6 +68,7 @@ const FAILURES = {
   unrecognizedScreen: "Claude showed a screen this server does not recognize.",
   programChanged: "Claude now offers a different reset program than its flags said.",
   readFailed: "Claude's limit resets could not be read.",
+  lowPriority: "Claude holds resets while the account continues at lower priority.",
   unavailable: "Claude could not use the reset, and nothing was used. Try again in a moment.",
   accountChanged:
     "Claude is signed in to another account now, so nothing was used. Refresh and try again.",
@@ -533,6 +534,7 @@ export const readClaudeLimitResets = Effect.fn("readClaudeLimitResets")(function
         const answer = parseNoOfferAnswer(result.text, texts, now);
         if (answer === undefined) return yield* fail("unrecognizedScreen");
         if (answer._tag === "transient") return yield* fail("readFailed");
+        if (answer._tag === "lowPriority") return yield* fail("lowPriority");
         return answer.grants;
       }
       const kept = yield* leaveDialog(session, COMMAND, answered, texts, now, timings);

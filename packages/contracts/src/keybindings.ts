@@ -48,6 +48,7 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.snooze",
   "thread.archive",
   "thread.regenerateTitle",
+  "thread.reopenLastArchived",
   "thread.undo",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;

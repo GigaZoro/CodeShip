@@ -72,3 +72,11 @@ that calls no hook. Lint misses some bailouts, notably `try` with `finally` and
 compiles every file and fails on any skip. Async handlers rarely need `try`: an
 atom command settles into a result, so cleanup can follow the `await`. `useStableCallback` still
 marks handlers that leave a large component, as described above.
+
+## React Compiler scopes
+
+The compiler assumes a call may mutate its arguments, so a component-local array passed to a call joins that call's memo scope and takes all of its dependencies: a new call given the local `remarkPlugins` array made `ChatMarkdown` recreate its incremental parser on every token, and nothing failed. On a hot render path pass module-level values or primitives, then compile the file and read the `if ($[n] !== dep)` guards (`babel.transformSync` with `babel-plugin-react-compiler`, `parserOpts.plugins: ["typescript", "jsx"]`); `check:changed` only proves the file compiles. A scope whose range spans a hook call is not memoized, so a value built before `useAtomValue` and used after it is fresh every render. `JSON` is an untyped global, so `JSON.parse` and `JSON.stringify` results count as mutable and do not memoize. Mobile tests compile with the compiler, so a `toBe` identity assertion in a hook test catches both.
+
+## Modal detection
+
+Base UI `AlertDialog` renders `role="alertdialog"` with no `aria-modal`; a check for focus inside a dialog must include it (`apps/web/src/lib/modalDialog.ts`).

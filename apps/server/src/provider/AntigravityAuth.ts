@@ -87,7 +87,19 @@ export interface AntigravityAuthOptions<
   Runtime extends AntigravityAuthRuntime = AcpSessionRuntime.AcpSessionRuntime["Service"],
 > {
   readonly instanceId: ProviderInstanceId;
+  readonly stage:
+    | false
+    | ((id: string) => Effect.Effect<
+        {
+          readonly home: string;
+          readonly persist: Effect.Effect<void, ProviderSetupError>;
+          readonly activate: (retired: boolean) => Effect.Effect<void>;
+        },
+        ProviderSetupError,
+        Scope.Scope
+      >);
   readonly makeRuntime: (input: {
+    readonly profileDirectory?: string;
     readonly onAuthorizationUrl?: (url: string) => Effect.Effect<void, AcpErrors.AcpError>;
   }) => Effect.Effect<Runtime, AcpErrors.AcpError | ProviderSetupError, Scope.Scope>;
   readonly onAuthenticated: (
@@ -96,7 +108,6 @@ export interface AntigravityAuthOptions<
   ) => Effect.Effect<void>;
   readonly onSignedOut: Effect.Effect<void>;
   readonly forwardCallback?: (callback: URL) => Effect.Effect<void, ProviderSetupError>;
-  readonly usesBrowser?: boolean;
 }
 
 function visibleSnapshot(snapshot: AuthSnapshot, ownerSessionId: string): ProviderAuthState {
@@ -147,7 +158,7 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
 ): Effect.fn.Return<AntigravityAuth, never, SecureRandom.SecureRandom | Scope.Scope> {
   const random = yield* SecureRandom.SecureRandom;
   const instanceScope = yield* Scope.Scope;
-  const usesBrowser = options.usesBrowser ?? true;
+  const usesBrowser = options.stage !== false;
   const lock = yield* Semaphore.make(1);
   const closed = yield* Deferred.make<void>();
   const emptyState: ProviderAuthState = {
@@ -164,8 +175,10 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
   });
   const processes = new Set<OwnedProcess>();
   let activeFlow: AuthFlow | undefined;
-  let operation: "idle" | "auth" | "logout" | "cancel" | "closed" = "idle";
+  let operation: "idle" | "auth" | "publishing" | "logout" | "cancel" | "closed" = "idle";
 
+  const accessBlocked = () =>
+    operation !== "idle" && operation !== "auth" && operation !== "cancel";
   const setupError = (name: string, detail: string) =>
     new ProviderSetupError({ instanceId: options.instanceId, operation: name, detail });
   const currentState = (ownerSessionId: string) =>
@@ -197,7 +210,7 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
         const owned: OwnedProcess = { stop, startup: undefined };
         const fiber = yield* lock.withPermits(1)(
           Effect.gen(function* () {
-            if (operation !== "idle") {
+            if (accessBlocked()) {
               return yield* setupError(
                 "startProcess",
                 "Antigravity sign-in or sign-out is in progress. Try again after it finishes.",
@@ -290,34 +303,25 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
 
   const runSignIn = Effect.fn("AntigravityAuth.runSignIn")(
     function* (flow: AuthFlow, stopSessions: Effect.Effect<void, ProviderSetupError>) {
-      yield* stopSessions.pipe(Effect.ensuring(stopOwnedProcesses));
-      const runtime = yield* options.makeRuntime({
-        onAuthorizationUrl: (url) => receiveAuthorizationUrl(flow, url),
-      });
-      const startupHint = yield* publishStartingHint(flow, STARTUP_HINT_MS, NOT_STARTED_MESSAGE);
-      // `start` reuses this memoized handshake.
-      yield* runtime.initialize();
-      flow.initialized = true;
-      yield* Fiber.interrupt(startupHint);
-      yield* publishStartingHint(flow, NO_RESPONSE_HINT_MS, NO_RESPONSE_MESSAGE);
-      const started = yield* runtime.start();
-      yield* lock.withPermits(1)(
-        Effect.gen(function* () {
-          if (activeFlow !== flow) return;
-          flow.pending = undefined;
-          yield* publishFlow(flow, {
-            ...flow.state,
-            phase: "verifying",
-            authorizationUrl: null,
-            message: "Checking Antigravity access and models.",
-          });
+      const candidate = options.stage ? yield* options.stage(flow.id) : undefined;
+      const { runtime, started } = yield* Effect.gen(function* () {
+        const runtime = yield* options.makeRuntime({
+          ...(candidate ? { profileDirectory: candidate.home } : {}),
+          ...(candidate
+            ? { onAuthorizationUrl: (url: string) => receiveAuthorizationUrl(flow, url) }
+            : {}),
+        });
+        const startupHint = yield* publishStartingHint(flow, STARTUP_HINT_MS, NOT_STARTED_MESSAGE);
+        // `start` reuses this memoized handshake.
+        yield* runtime.initialize();
+        flow.initialized = true;
+        yield* Fiber.interrupt(startupHint);
+        yield* publishStartingHint(flow, NO_RESPONSE_HINT_MS, NO_RESPONSE_MESSAGE);
+        return { runtime, started: yield* runtime.start() };
+      }).pipe(
+        Effect.withSpan("providerAuthFlow.authenticate", {
+          attributes: { instanceId: options.instanceId },
         }),
-      );
-      yield* options.onAuthenticated(started, runtime);
-    },
-    (effect, flow, _stopSessions) =>
-      effect.pipe(
-        Effect.scoped,
         Effect.timeoutOrElse({
           duration: AUTH_TIMEOUT_MS,
           orElse: () =>
@@ -332,6 +336,42 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
               ),
             ),
         }),
+      );
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const current = yield* lock.withPermit(
+            Effect.gen(function* () {
+              if (activeFlow !== flow) return false;
+              operation = "publishing";
+              flow.pending = undefined;
+              yield* publishFlow(flow, {
+                ...flow.state,
+                phase: "verifying",
+                authorizationUrl: null,
+                message: "Checking Antigravity access and models.",
+              });
+              return true;
+            }),
+          );
+          if (!current) return;
+          if (candidate) {
+            yield* candidate.persist.pipe(
+              Effect.withSpan("providerAuthFlow.persistCredentials", {
+                attributes: { instanceId: options.instanceId },
+              }),
+            );
+            yield* stopSessions.pipe(
+              Effect.ensuring(stopOwnedProcesses),
+              Effect.onExit((exit) => candidate.activate(Exit.isSuccess(exit))),
+            );
+          }
+          yield* options.onAuthenticated(started, runtime);
+        }),
+      );
+    },
+    (effect, flow, _stopSessions) =>
+      effect.pipe(
+        Effect.scoped,
         Effect.exit,
         Effect.flatMap((result) => finishFlow(flow, result)),
       ),
@@ -342,7 +382,7 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
       Effect.gen(function* () {
         const detached = yield* lock.withPermits(1)(
           Effect.gen(function* () {
-            if (activeFlow !== flow) return false;
+            if (activeFlow !== flow || operation !== "auth") return false;
             activeFlow = undefined;
             operation = "cancel";
             flow.pending = undefined;
@@ -373,7 +413,12 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
     name: string,
   ) {
     const flow = activeFlow;
-    if (!flow || flow.id !== flowId || flow.ownerSessionId !== ownerSessionId) {
+    if (
+      operation !== "auth" ||
+      !flow ||
+      flow.id !== flowId ||
+      flow.ownerSessionId !== ownerSessionId
+    ) {
       return yield* setupError(name, "This sign-in is no longer active in this client.");
     }
     const now = yield* Clock.currentTimeMillis;
@@ -384,6 +429,8 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
   });
 
   const controller: ProviderAuthController = {
+    isChangingCredentials: Effect.sync(() => operation !== "idle"),
+    isAccessBlocked: Effect.sync(accessBlocked),
     start: (ownerSessionId, stopSessions = Effect.void) =>
       lock.withPermits(1)(
         Effect.uninterruptible(

@@ -1,10 +1,4 @@
-const TIME_FORMATTER = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric" });
-const DATE_WITH_YEAR_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  month: "numeric",
-  day: "numeric",
-  year: "numeric",
-});
+import { getFormattingLocale } from "../../lib/i18n";
 
 /** Time only for today's messages; older ones lead with the day and month. */
 export function formatMessageTimestamp(input: string, nowMs: number = Date.now()): string {
@@ -12,8 +6,13 @@ export function formatMessageTimestamp(input: string, nowMs: number = Date.now()
   if (Number.isNaN(timestamp)) return "";
   const date = new Date(timestamp);
   const now = new Date(nowMs);
-  const time = TIME_FORMATTER.format(date);
+  const locale = getFormattingLocale();
+  const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(date);
   if (date.toDateString() === now.toDateString()) return time;
-  const sameYear = date.getFullYear() === now.getFullYear();
-  return `${(sameYear ? DATE_FORMATTER : DATE_WITH_YEAR_FORMATTER).format(date)} ${time}`;
+  const day = new Intl.DateTimeFormat(locale, {
+    month: "numeric",
+    day: "numeric",
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
+  return `${day} ${time}`;
 }

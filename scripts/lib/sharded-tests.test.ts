@@ -12,9 +12,9 @@ it("uses the configured sequencer and discovers every file exactly once", async 
   try {
     await NodeFSP.mkdir(NodePath.join(root, "node_modules"));
     await NodeFSP.symlink(
-      NodePath.resolve(import.meta.dirname, "../../node_modules/vite-plus"),
+      await NodeFSP.realpath(NodePath.resolve(import.meta.dirname, "../../node_modules/vite-plus")),
       NodePath.join(root, "node_modules/vite-plus"),
-      "dir",
+      "junction",
     );
     await NodeFSP.writeFile(NodePath.join(root, "package.json"), '{"type":"module"}');
     await NodeFSP.writeFile(

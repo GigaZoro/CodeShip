@@ -29,6 +29,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import {
@@ -36,6 +37,7 @@ import {
   limitRecoveryCommand,
   limitRecoveryTarget,
   resetCreditResumeCommand,
+  signedInResumeCommand,
   signedOutFailoverCommand,
 } from "./UsageLimitRecoveryWorker.ts";
 
@@ -502,13 +504,14 @@ describe("limitRecoveryTarget", () => {
     >;
     readonly dispatched: Queue.Queue<OrchestrationV2ServerCommand>;
     readonly sweeps?: Queue.Queue<number>;
+    readonly signedOut?: ReadonlyArray<ProjectionStore.ProjectionSignedOutCandidate>;
   }) =>
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getSignedOutFailoverCandidates: () => Effect.succeed([]),
+            getSignedOutCandidates: () => Effect.succeed(input.signedOut ?? []),
             getLimitRecoveryCandidates: () =>
               Clock.currentTimeMillis.pipe(
                 Effect.flatMap((nowMs) =>
@@ -592,6 +595,24 @@ describe("limitRecoveryTarget", () => {
     }),
   );
 
+  it.effect("a sweep continues a chat a rejected login stopped with account switching off", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const layer = sweepLayer({
+        candidate: named,
+        limits: () => new Map([[claudeAgent, [fableHold]]]),
+        dispatched,
+        signedOut: [signedOutThread],
+      });
+      yield* Effect.gen(function* () {
+        const command = yield* Queue.take(dispatched);
+        assert(command.type === "message.dispatch");
+        assert.equal(command.commandId, `signed-in-resume:${signedOutThread.id}:${runId}`);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it("never resumes a thread moved to another account since its stop", () => {
     const moved = { ...stopped, providerInstanceId: ProviderInstanceId.make("claude_first") };
     assert.isNull(limitRecoveryCommand(moved, true, now, false, recoveryTarget()));
@@ -611,7 +632,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
         Layer.mergeAll(
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getSignedOutFailoverCandidates: () => Effect.succeed([]),
+            getSignedOutCandidates: () => Effect.succeed([]),
             getLimitRecoveryCandidates: () =>
               Clock.currentTimeMillis.pipe(
                 Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - startMs)),
@@ -678,6 +699,9 @@ const signedOutThread: ProjectionStore.ProjectionSignedOutCandidate = {
   snoozedUntil: null,
   latestRunId: runId,
   latestRunProviderInstanceId: thread.providerInstanceId,
+  latestRunCompletedAt: DateTime.makeUnsafe(now - 120_000),
+  latestRunUserMessageId: MessageId.make("message:failover"),
+  workDone: false,
   message: {
     text: "Summarise the inbox",
     context: { version: 1, records: [] },
@@ -720,8 +744,7 @@ it.effect.each([
         Layer.mergeAll(
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getSignedOutFailoverCandidates: () =>
-              Effect.succeed(signedOut ? [signedOutThread] : []),
+            getSignedOutCandidates: () => Effect.succeed(signedOut ? [signedOutThread] : []),
             getLimitRecoveryCandidates: () =>
               Clock.currentTimeMillis.pipe(
                 Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - now)),
@@ -1063,7 +1086,103 @@ describe("signedOutFailoverCommand", () => {
       { thread: { ...signedOutThread, settledOverride: "settled" as const } },
     ],
     ["no other account can run it", { providers: [signedOutProviders[0]!] }],
+    // A new account would repeat the work.
+    ["the agent already did work", { thread: { ...signedOutThread, workDone: true } }],
   ] as const)("keeps the thread in place when %s", (_, overrides) => {
     assert.isNull(move(overrides));
+  });
+});
+
+describe("signedInResumeCommand", () => {
+  const resumeSettings = { ...settings, autoResumeLimitedThreads: true };
+  const resume = (overrides: Partial<Parameters<typeof signedInResumeCommand>[0]> = {}) =>
+    signedInResumeCommand({
+      mcpSignInsNeeded: new Map(),
+      thread: signedOutThread,
+      settings: resumeSettings,
+      providers,
+      recordedLimits: new Map(),
+      nowMs: now,
+      ...overrides,
+    });
+  const resumeId = "signed-in-resume:thread:failover:run:failover";
+
+  it("sends the message again on its own account once a later check finds it signed in", () => {
+    assert.deepEqual(resume(), {
+      type: "message.dispatch",
+      commandId: CommandId.make(resumeId),
+      messageId: MessageId.make(resumeId),
+      threadId: thread.id,
+      automaticContinuationOfRunId: runId,
+      manualContinuationOfRunId: runId,
+      ...signedOutThread.message,
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "server",
+    });
+  });
+
+  it("continues a run that did work instead of repeating its message", () => {
+    assert.include(resume({ thread: { ...signedOutThread, workDone: true } }), {
+      text: CONTINUE_PROMPT,
+    });
+  });
+
+  it("resumes a resume again once it did work", () => {
+    assert.isNotNull(
+      resume({
+        thread: {
+          ...signedOutThread,
+          latestRunUserMessageId: MessageId.make(resumeId),
+          workDone: true,
+        },
+      }),
+    );
+  });
+
+  it.each([
+    ["resuming stopped threads is off", { settings }],
+    [
+      "the account still reads signed out",
+      {
+        providers: providers.map((candidate) =>
+          candidate.instanceId === "claudeAgent"
+            ? {
+                ...candidate,
+                status: "error" as const,
+                auth: { status: "unauthenticated" as const },
+              }
+            : candidate,
+        ),
+      },
+    ],
+    // The account's status was read before the rejection reached it.
+    [
+      "no check ran since the stop",
+      { thread: { ...signedOutThread, latestRunCompletedAt: DateTime.makeUnsafe(now) } },
+    ],
+    [
+      "a resume was rejected before doing any work",
+      { thread: { ...signedOutThread, latestRunUserMessageId: MessageId.make(resumeId) } },
+    ],
+    [
+      "the thread moved to another account",
+      {
+        thread: {
+          ...signedOutThread,
+          latestRunProviderInstanceId: ProviderInstanceId.make("codex"),
+        },
+      },
+    ],
+    [
+      "the thread is snoozed",
+      { thread: { ...signedOutThread, snoozedUntil: DateTime.makeUnsafe(now + 60_000) } },
+    ],
+    [
+      "the thread was settled",
+      { thread: { ...signedOutThread, settledOverride: "settled" as const } },
+    ],
+  ] as const)("leaves the thread when %s", (_, overrides) => {
+    assert.isNull(resume(overrides));
   });
 });

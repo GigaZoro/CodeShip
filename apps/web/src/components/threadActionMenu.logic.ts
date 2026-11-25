@@ -20,8 +20,32 @@ export function isThreadFolderMenuAction(action: string): action is ThreadFolder
   );
 }
 
+export type ThreadTagMenuAction = "tag:new" | `tag:add:${string}` | `tag:remove:${string}`;
+
+export function buildThreadTagsMenuItem(state: {
+  readonly entries: readonly { readonly tag: string; readonly checked: boolean }[];
+  readonly canEdit: boolean;
+}): ContextMenuItem<"tags" | ThreadTagMenuAction> {
+  return {
+    id: "tags",
+    label: t("Tags"),
+    disabled: !state.canEdit,
+    children: [
+      ...state.entries.map(({ tag, checked }) => ({
+        id: `tag:${checked ? "remove" : "add"}:${tag}` as const,
+        label: tag,
+        checked,
+      })),
+      { id: "tag:new", label: t("Add tag…"), separatorBefore: state.entries.length > 0 },
+    ],
+  };
+}
+
 export type ThreadActionMenuId =
+  | "tags"
+  | ThreadTagMenuAction
   | "find"
+  | "open-in-side-panel"
   | "new-thread-on-branch"
   | "filter-by-project"
   | "turn-into-project"
@@ -98,6 +122,7 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly canFind?: boolean;
+  readonly canOpenInSidePanel?: boolean;
   readonly branch: string | null;
   readonly projectFilter: {
     readonly label: string;
@@ -131,10 +156,12 @@ export interface ThreadActionMenuState {
   readonly canTurnIntoProject?: boolean;
   /** Absent where the server cannot file chats in sidebar folders. */
   readonly folders?: ThreadFolderMenuState | null;
+  readonly tags?: Parameters<typeof buildThreadTagsMenuItem>[0];
 }
 
 export interface ThreadFolderMenuState {
   readonly entries: ReadonlyArray<ThreadFolderEntry>;
+  readonly canCreate?: boolean;
   /** The folder every chosen thread shares, if any. */
   readonly currentKey: string | null;
   readonly inFolder: boolean;
@@ -142,7 +169,7 @@ export interface ThreadFolderMenuState {
 
 export function buildThreadFolderMenuItem(
   folders: ThreadFolderMenuState,
-): ContextMenuItem<ThreadActionMenuId> {
+): ContextMenuItem<"folder" | ThreadFolderMenuAction> {
   return {
     id: "folder",
     label: t("Move to folder"),
@@ -154,11 +181,15 @@ export function buildThreadFolderMenuItem(
         checked: entry.key === folders.currentKey,
         disabled: entry.key === folders.currentKey,
       })),
-      {
-        id: THREAD_FOLDER_NEW_ID,
-        label: t("New folder…"),
-        separatorBefore: folders.entries.length > 0,
-      },
+      ...(folders.canCreate === false
+        ? []
+        : [
+            {
+              id: THREAD_FOLDER_NEW_ID as ThreadFolderMenuAction,
+              label: t("New folder…"),
+              separatorBefore: folders.entries.length > 0,
+            },
+          ]),
       ...(folders.inFolder
         ? [
             {
@@ -175,6 +206,7 @@ export function buildThreadFolderMenuItem(
 export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean {
   return ![
     "find",
+    "open-in-side-panel",
     "new-thread-on-branch",
     "project-settings",
     "mark-unread",
@@ -193,6 +225,9 @@ export function buildThreadActionMenuItems(
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
     ...(state.canFind
       ? [{ id: "find" as const, label: t("Find in thread"), icon: "text-search" }]
+      : []),
+    ...(state.canOpenInSidePanel
+      ? [{ id: "open-in-side-panel" as const, label: t("Open in side panel") }]
       : []),
     ...(state.branch
       ? [
@@ -264,6 +299,7 @@ export function buildThreadActionMenuItems(
       ? [{ id: "share-guest" as const, label: t("Share with guest"), icon: "user-plus" }]
       : []),
     ...(state.folders ? [buildThreadFolderMenuItem(state.folders)] : []),
+    ...(state.tags ? [buildThreadTagsMenuItem(state.tags)] : []),
     ...(state.projectFilter
       ? [
           {

@@ -217,6 +217,16 @@ export function AutoSettleSettingsRows(props: {
       </SettingsSection>
       <SettingsSection title={t("Auto-settle")}>
         <SettingsSwitchRow
+          icon="clock"
+          label={t("Auto-settle completed scheduled threads")}
+          subtitle={t(
+            "Settle threads started by a scheduled task when they finish and have no pending work.",
+          )}
+          value={referenceSettings.sidebarAutoSettleScheduledThreads}
+          disabled={disabledFor("sidebarAutoSettleScheduledThreads")}
+          onValueChange={(value) => writeToAll({ sidebarAutoSettleScheduledThreads: value })}
+        />
+        <SettingsSwitchRow
           icon="arrow.triangle.branch"
           label={t("Auto-settle merged threads")}
           value={referenceSettings.sidebarAutoSettleOnMerge}
@@ -256,7 +266,11 @@ export function AutoSettleSettingsRows(props: {
             <Button
               label={t("Apply auto-settle defaults")}
               tone="secondary"
-              disabled={disabledFor("sidebarAutoSettleOnMerge", "sidebarAutoSettleAfterDays")}
+              disabled={disabledFor(
+                "sidebarAutoSettleScheduledThreads",
+                "sidebarAutoSettleOnMerge",
+                "sidebarAutoSettleAfterDays",
+              )}
               onPress={() => writeToAll(autoSettlePatch)}
             />
           </View>

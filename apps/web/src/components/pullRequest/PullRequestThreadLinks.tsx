@@ -1,6 +1,7 @@
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { sortWorkingThreadsBySend } from "@t3tools/client-runtime/state/thread-inbox";
 import { visibleLinkedThreads } from "@t3tools/client-runtime/state/threads";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, PullRequestRef, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
@@ -223,16 +224,16 @@ function ThreadPicker({
       .map((project) => [project.id, project.title]),
   );
   const search = query.trim().toLocaleLowerCase();
-  const candidates = threads
-    .filter(
+  const candidates = sortWorkingThreadsBySend(
+    threads.filter(
       (thread) =>
         thread.environmentId === environmentId &&
         thread.archivedAt === null &&
         `${thread.title} ${projectNames.get(thread.projectId) ?? ""}`
           .toLocaleLowerCase()
           .includes(search),
-    )
-    .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    ),
+  );
   return (
     <Command mode="none" value={query} onValueChange={setQuery} aria-label={t("Choose a thread")}>
       <CommandInput placeholder={t("Search threads or projects...")} disabled={pending} />

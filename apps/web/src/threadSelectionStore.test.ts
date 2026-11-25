@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   getThreadKeysToDeselectAfterDelete,
+  publishShownThreadKeys,
   useThreadSelectionStore,
 } from "./threadSelectionStore";
 
@@ -109,6 +110,10 @@ describe("threadSelectionStore", () => {
       expect(state.selectedThreadKeys.has(THREAD_C)).toBe(true);
       expect(state.selectedThreadKeys.has(THREAD_D)).toBe(true);
       expect(state.selectedThreadKeys.size).toBe(4);
+
+      using shown = new DisposableStack();
+      shown.defer(publishShownThreadKeys(new Set<string>([THREAD_E, THREAD_D, THREAD_A])));
+      expect(state.shownSelection()).toEqual([THREAD_A, THREAD_D]);
     });
   });
 });

@@ -24,6 +24,7 @@ import {
 import {
   RUN_CONDITION_FAILING_STREAK,
   ScheduledTaskChangedBy,
+  ScheduledTaskDescription,
   ScheduledTaskGroupLabel,
   ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
@@ -724,8 +725,10 @@ export const OrchestratorMcpBankedReset = Schema.Struct({
   grantedAt: Schema.NullOr(Schema.String),
   expiresAt: Schema.NullOr(Schema.String),
   program: Schema.String,
-  /** Null when the provider names only a total over its resets. */
+  /** What the reset clears; null when the provider's answer named no kind. */
   kind: Schema.NullOr(ServerProviderResetKind),
+  /** Why `kind` is null: `total_only` when Claude named only a total over its grants. */
+  kindUnknownReason: Schema.optional(Schema.Literals(["total_only"])),
   resetsLeft: Schema.optional(Schema.Number),
   usableNow: Schema.optional(Schema.Boolean),
   requiresLimit: Schema.optional(Schema.Boolean),
@@ -741,6 +744,8 @@ export const OrchestratorMcpUsageError = Schema.Literals([
   "read_failed",
   /** The provider's terminal showed a screen this server does not know, so nothing was guessed. */
   "unrecognized_screen",
+  /** Claude answered that resets wait while the account runs at lower priority, before reading any. */
+  "low_priority",
 ]);
 export type OrchestratorMcpUsageError = typeof OrchestratorMcpUsageError.Type;
 
@@ -920,6 +925,10 @@ const scheduledTaskMachineOrderField = {
 };
 
 const scheduledTaskModelFields = {
+  fallbackModelSelections: Schema.optional(Schema.Array(CanonicalModelSelection)).annotate({
+    description:
+      "Ordered alternatives for new-thread runs whose primary provider is out of usage. Omit to keep the saved list; [] clears it.",
+  }),
   modelSelection: Schema.optional(CanonicalModelSelection).annotate({
     description:
       "Own model for new-thread runs; autoAccount:true selects Auto. Not for a bound task.",
@@ -953,6 +962,9 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ...scheduledTaskPromptFileField,
   schedule: OrchestratorMcpSchedule,
   title: Schema.optional(OrchestratorMcpTitle),
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)).annotate({
+    description: "Plain-language summary shown on the Scheduled tasks page. Null clears it.",
+  }),
   enabled: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
@@ -1022,9 +1034,11 @@ export const OrchestratorMcpScheduledOccurrence = IsoDateTime.annotate({
 
 export const OrchestratorMcpScheduledTask = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.optional(Schema.Boolean),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
+  description: Schema.optional(ScheduledTaskDescription),
   prompt: Schema.optional(Schema.String),
   promptFile: Schema.optional(ScheduledTaskPromptFile).annotate({
     description:
@@ -1099,6 +1113,8 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
         outcome: Schema.Literals(["working", "completed", "failed"]),
         stopped: Schema.optional(Schema.Literal(true)),
         occurrence: Schema.optional(Schema.NullOr(OrchestratorMcpScheduledOccurrence)),
+        modelSelection: Schema.optional(ModelSelection),
+        crossProviderFailover: Schema.optional(Schema.Literal("usageLimit")),
       }),
     ),
   ).annotate({
@@ -1187,6 +1203,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   ...scheduledTaskPromptFileField,
   title: Schema.optional(OrchestratorMcpTitle),
   schedule: Schema.optional(OrchestratorMcpSchedule),
+  description: OrchestratorMcpScheduleTaskInput.fields.description,
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   shared: Schema.optional(Schema.Boolean),

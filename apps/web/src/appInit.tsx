@@ -9,6 +9,7 @@ import type { ClientSettings } from "@t3tools/contracts/settings";
 import { createBrowserHistory, createHashHistory } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 
+import { applyAccentColor } from "./appearanceAccent";
 import { applyAppearanceContrast } from "./appearanceContrast";
 import { applyAppearanceFontVariables, TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "./appearanceFonts";
 import { startElectronBrowserHost } from "./browser/ElectronBrowserHost";
@@ -86,6 +87,12 @@ function startClientAppearance(): void {
     }
     if (previous?.chatWidth !== settings.chatWidth) {
       root.dataset.chatWidth = settings.chatWidth;
+    }
+    if (previous?.interfaceDensity !== settings.interfaceDensity) {
+      root.dataset.interfaceDensity = settings.interfaceDensity;
+    }
+    if (previous?.accentColor !== settings.accentColor) {
+      applyAccentColor(root, settings.accentColor);
     }
     if (previous?.appearanceContrast !== settings.appearanceContrast) {
       applyAppearanceContrast(root, settings.appearanceContrast);
@@ -167,6 +174,8 @@ function startDocumentTitle(router: AppRouter): void {
       }),
       projectTitle: project?.title ?? null,
       threadTitle: thread?.title ?? null,
+      needsYouCount: appAtomRegistry.get(environmentThreadShells.needsYouThreadsAtom).threads
+        .length,
       ...(getClientSettings().screenReaderWindowTitle && {
         screenReader: {
           threadStatus: thread === null ? null : resolveWindowTitleThreadStatus(thread),
@@ -207,6 +216,8 @@ function startDocumentTitle(router: AppRouter): void {
   watchOpenThread();
   appAtomRegistry.subscribe(primaryServerConfigAtom, write, { immediate: true });
   appAtomRegistry.subscribe(environmentProjects.projectsAtom, write);
+  // The title count shows whatever the notification mode, unlike the OS badge.
+  appAtomRegistry.subscribe(environmentThreadShells.needsYouThreadsAtom, write);
   subscribeClientSettings(write);
   router.subscribe("onResolved", updateOpenThread);
   useComposerDraftStore.subscribe(updateOpenThread);

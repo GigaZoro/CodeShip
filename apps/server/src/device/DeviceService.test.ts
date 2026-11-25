@@ -722,6 +722,7 @@ const layerSecretResolver = Layer.succeed(SecretResolver.SecretResolver, {
   label: (provider) => Effect.succeed(provider),
   read: (references) => Effect.succeed(references.map(() => undefined)),
   invalidate: () => Effect.void,
+  refreshUnattended: () => Effect.succeedNone,
 });
 
 const WINDOWS_HOST_GUIDANCE = new SshDeviceHost.SshWindowsHostError({ cause: null }).message;

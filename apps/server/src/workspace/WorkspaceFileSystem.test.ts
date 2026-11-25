@@ -352,7 +352,18 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         yield* writeTextFile(config.secretsDir, "example.bin", "example\n");
         yield* writeTextFile(config.stateDir, "statev2.sqlite", "example\n");
 
+        const release = path.join(ServerConfig.WORKTREE_RELEASE_DIRECTORY, "task.json");
+        yield* writeTextFile(config.stateDir, release);
+        const writeError = yield* workspaceFileSystem
+          .writeFile({
+            cwd: config.stateDir,
+            relativePath: release,
+            contents: "{}",
+          })
+          .pipe(Effect.flip);
+        expect(writeError).toBeInstanceOf(WorkspaceFileSystem.WorkspaceFilePathEscapeError);
         for (const input of [
+          { cwd: config.stateDir, relativePath: release },
           { cwd, relativePath: path.join(config.secretsDir, "example.bin") },
           { cwd: config.stateDir, relativePath: "statev2.sqlite" },
         ]) {
@@ -790,7 +801,9 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
             "# Plan\n",
           );
           expect(yield* fileSystem.readFileString(path.join(cwd, "docs/README.md"))).toBe("new\n");
-          expect(yield* fileSystem.readLink(path.join(cwd, "README.md"))).toBe("docs/README.md");
+          expect(yield* fileSystem.readLink(path.join(cwd, "README.md"))).toBe(
+            path.join("docs", "README.md"),
+          );
           expect(yield* fileSystem.readFileString(path.join(cwd, "notes.md"))).toBe("notes\n");
           expect(yield* fileSystem.readFileString(path.join(cwd, "dotdot.md"))).toBe("dotdot\n");
         }),

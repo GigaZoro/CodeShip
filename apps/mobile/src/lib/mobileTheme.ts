@@ -14,7 +14,8 @@ import {
   STANDARD_THEME_PREVIEW_COLORS,
   type ThemePreviewColors,
 } from "@t3tools/shared/themePreview";
-import { msg, type Message } from "./i18n";
+// The theme generator loads this file in Node, which cannot load the app's i18n.tsx, so take msg from its source.
+import { msg, type Message } from "@t3tools/shared/i18n";
 
 export const DEFAULT_MOBILE_THEME_ID = MOBILE_DEFAULT_THEME_ID;
 export const MOBILE_THEME_IDS = [...SHARED_MOBILE_THEME_IDS, "material-you"] as const;

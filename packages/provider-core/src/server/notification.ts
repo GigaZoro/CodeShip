@@ -1,4 +1,5 @@
 import type {
+  RunId,
   OrchestrationV2ConversationMessage,
   OrchestrationV2Notification,
   OrchestrationV2NotificationSource,
@@ -18,7 +19,18 @@ export type BackgroundWork = {
   | { readonly kind: "background_task" }
 );
 
-export type BackgroundWorkReport = BackgroundWork & { readonly outcome: NotificationOutcome };
+export type BackgroundWorkReport = BackgroundWork & {
+  readonly outcome: NotificationOutcome;
+  readonly sourceRunId?: RunId | null;
+};
+
+/** A batch can be attributed only when every constituent has the same known source. */
+export function commonSource<T extends string>(
+  sources: ReadonlyArray<T | null | undefined>,
+): T | undefined {
+  const first = sources[0];
+  return first != null && sources.every((source) => source === first) ? first : undefined;
+}
 
 const LABEL_MAX_LENGTH = 80;
 

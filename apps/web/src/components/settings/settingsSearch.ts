@@ -379,6 +379,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["wide full width column layout messages composer monitor"],
   },
   {
+    id: "interface-density",
+    title: msg("Interface density"),
+    to: "/settings/appearance",
+    searchTerms: ["compact comfortable spacing tight dense rows sidebar padding"],
+  },
+  {
+    id: "accent-color",
+    title: msg("Accent color"),
+    to: "/settings/appearance",
+    searchTerms: ["colour hue palette primary buttons highlight focus ring swatch"],
+  },
+  {
     id: "thread-details-items",
     title: msg("Thread details"),
     to: "/settings/chat",
@@ -505,12 +517,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Working section"),
     to: "/settings/general",
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
-  },
-  {
-    id: "manual-steps-sidebar",
-    title: msg("Manual steps"),
-    to: "/settings/general",
-    searchTerms: ["hide show manual steps hands-on threadpage pending sidebar box details column"],
   },
   {
     id: "sidebar-grouping",
@@ -722,6 +728,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Auto-settle merged threads"),
     to: "/settings/threads",
     searchTerms: ["pull request merge closed automatically sidebar"],
+    requiresThreadAutoSettlement: true,
+    scope: "project-defaults",
+  },
+  {
+    id: "auto-settle-scheduled-threads",
+    title: msg("Auto-settle completed scheduled threads"),
+    to: "/settings/threads",
+    searchTerms: ["schedule automation completed finished pending sidebar"],
     requiresThreadAutoSettlement: true,
     scope: "project-defaults",
   },

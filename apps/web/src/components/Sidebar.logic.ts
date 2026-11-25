@@ -1,4 +1,6 @@
 import {
+  hasUnseenCompletion,
+  isThreadWaitingOnWork,
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
   type ThreadStatus,
@@ -6,6 +8,7 @@ import {
   type ThreadStatusInput as ThreadRowStatusInput,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
+export { hasUnseenCompletion } from "@t3tools/client-runtime/state/thread-status";
 import { t, type Message } from "~/i18n";
 import {
   resolveThreadFolders,
@@ -18,7 +21,6 @@ import type {
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -56,12 +58,28 @@ import {
   toSortableTimestamp,
   type ThreadSortInput,
 } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  pickableProjectGroups,
+  type ProjectGroupingSettings,
+} from "@t3tools/client-runtime/state/project-grouping";
 import type { SidebarThreadSummary, Thread } from "../types";
+import {
+  resolveSidebarProjectScopeKeys,
+  type SidebarProjectSnapshot,
+} from "../sidebarProjectGrouping";
 import { normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { THREAD_STATUS_TEXT } from "@t3tools/client-runtime/state/thread-activity-announcement";
 import { observeIntersection } from "../lib/observeIntersection";
+import { useNowMinute } from "../hooks/useNowMinute";
 import { deadlineAfter, deadlineStore, type ClockStore } from "@t3tools/client-runtime/clock";
+import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
+import {
+  matchesThreadListStatus,
+  type ThreadListStatusFilter,
+} from "@t3tools/client-runtime/state/thread-status";
+import { threadNeedsYouReason } from "@t3tools/client-runtime/state/thread-inbox";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useDeadlinePassed } from "../hooks/useDeadline";
 import { legacyProjectCwdPreferenceKey } from "../uiStateStore";
 import { isElectron } from "../env";
@@ -216,6 +234,30 @@ export function useRetainedValue<T>(key: string | null, value: T | null): T | nu
   }
   if (value !== null) return value;
   return key !== null && retained?.key === key ? retained.value : null;
+}
+
+/**
+ * One timestamp per clock trigger (minute tick, snooze wake, inbox return expiry), so the route
+ * reveal and the partition classify snoozes against the same instant even when a wake timer
+ * fires late.
+ */
+export function useSidebarClock(
+  threads: ReadonlyArray<{ readonly snoozedUntil?: string | null | undefined }>,
+  inboxReturns: {
+    readonly subscribe: (listener: () => void) => () => void;
+    readonly getSnapshot: () => unknown;
+  },
+): number {
+  const wakeClock = useSnoozeWakeClock(threads);
+  const nowMinute = useNowMinute();
+  const inboxVersion = React.useSyncExternalStore(inboxReturns.subscribe, inboxReturns.getSnapshot);
+  const key = `${nowMinute}:${wakeClock}:${String(inboxVersion)}`;
+  const [clock, setClock] = React.useState(() => ({ key, nowMs: Date.now() }));
+  if (clock.key === key) return clock.nowMs;
+  // oxlint-disable-next-line react/purity -- captures the instant once per clock trigger, not per render
+  const next = { key, nowMs: Date.now() };
+  setClock(next);
+  return next.nowMs;
 }
 
 // Sortable owns drag transforms; replaying committed order would animate drops twice.
@@ -693,6 +735,10 @@ export function filterSidebarV2VisibleThreads<
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  scheduledTasks?: {
+    readonly hiddenKeys: ReadonlySet<string>;
+    readonly needsYouKeys: ReadonlySet<string>;
+  },
 ): T[] {
   return threads.filter(
     (thread) =>
@@ -703,7 +749,10 @@ export function filterSidebarV2VisibleThreads<
         delegatedUnderParent,
       ) &&
       (scopedProjectKeys === null ||
-        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)) &&
+      (scheduledTasks === undefined ||
+        !scheduledTasks.hiddenKeys.has(`${thread.environmentId}:${thread.id}`) ||
+        scheduledTasks.needsYouKeys.has(`${thread.environmentId}:${thread.id}`)),
   );
 }
 
@@ -723,6 +772,13 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
     id: "regenerate-title",
     label: t("Regenerate titles ({count})", { count: input.actionableCount }),
   };
+}
+
+export function buildBulkPinContextMenuItem(input: {
+  unpinnedCount: number;
+}): ContextMenuItem<"pin"> | null {
+  if (input.unpinnedCount === 0) return null;
+  return { id: "pin", label: t("Pin ({count})", { count: input.unpinnedCount }) };
 }
 
 export function buildBulkUnpinContextMenuItem(input: {
@@ -862,17 +918,6 @@ export function resolveThreadLastVisitedAt(
   // servers.
   if (serverLastVisitedAt === undefined) return localLastVisitedAt;
   return serverLastVisitedAt ?? undefined;
-}
-
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestRun?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestRun.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return false;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
 }
 
 /** A snooze that woke after the user last looked, which rows flag as Woke until they do. */
@@ -1092,6 +1137,7 @@ export function capSidebarFolderThreads<T>(
   threads: readonly T[],
   limit: number,
   keep: (thread: T) => boolean,
+  revealTo?: number,
 ): { readonly visible: readonly T[]; readonly overflow: readonly T[] } {
   const all = { visible: threads, overflow: [] };
   if (threads.length <= limit + 1) return all;
@@ -1100,7 +1146,37 @@ export function capSidebarFolderThreads<T>(
   for (const [index, thread] of threads.entries()) {
     (index < limit || keep(thread) ? visible : overflow).push(thread);
   }
-  return overflow.length > 1 ? { visible, overflow } : all;
+  if (overflow.length <= 1) return all;
+  const reveal = Math.max(0, (revealTo ?? limit) - visible.length);
+  if (reveal === 0) return { visible, overflow };
+  if (reveal >= overflow.length - 1) return all;
+  const folded = overflow.slice(reveal);
+  const foldedSet = new Set(folded);
+  return { visible: threads.filter((thread) => !foldedSet.has(thread)), overflow: folded };
+}
+
+const NO_BOXED_THREAD_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * The rows a thread selection may hold, in list order. Needs you rows drawn in the box under the
+ * chat show no selection, Later ones may be folded away, so no range or bulk action reaches them.
+ */
+export function resolveSidebarSelectableThreads(input: {
+  readonly orderedThreadKeys: readonly string[];
+  readonly listedThreadKeys: { readonly has: (key: string) => boolean };
+  readonly boxedThreadKeys: readonly string[] | null;
+}): { readonly orderedKeys: readonly string[]; readonly has: (key: string) => boolean } {
+  const boxed =
+    input.boxedThreadKeys === null || input.boxedThreadKeys.length === 0
+      ? NO_BOXED_THREAD_KEYS
+      : new Set(input.boxedThreadKeys);
+  return {
+    orderedKeys:
+      boxed.size === 0
+        ? input.orderedThreadKeys
+        : input.orderedThreadKeys.filter((key) => !boxed.has(key)),
+    has: (key) => input.listedThreadKeys.has(key) && !boxed.has(key),
+  };
 }
 
 /**
@@ -1335,6 +1411,48 @@ export function resolveSidebarScopedProjectKeys(input: {
   );
 }
 
+/** What the sidebar's project and machine pickers narrow its list to. */
+export function resolveSidebarChosenScope<
+  TMachine extends { readonly environmentId: EnvironmentId },
+>(input: {
+  readonly projectGroups: ReadonlyArray<SidebarProjectSnapshot>;
+  readonly projectScopeKeys: ReadonlyArray<string>;
+  readonly machineScopeIds: ReadonlyArray<string>;
+  readonly machines: ReadonlyArray<TMachine>;
+  readonly settings: ProjectGroupingSettings;
+  readonly canClearMissingScope: boolean;
+}) {
+  // A scope whose project is gone reads as all projects once every snapshot has
+  // loaded. The stored keys are left alone, so the scope returns with its project.
+  // An archived project's scope reads as all projects, matching the menu.
+  const archivedProjectKeys = new Set(
+    input.projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
+  );
+  const projectScopeKeys = resolveSidebarProjectScopeKeys({
+    groups: input.projectGroups,
+    keys: input.projectScopeKeys,
+    settings: input.settings,
+    canClearMissingScope: input.canClearMissingScope,
+  }).filter((key) => !archivedProjectKeys.has(key));
+  const projectGroups = pickableProjectGroups(input.projectGroups).filter((project) =>
+    projectScopeKeys.includes(project.projectKey),
+  );
+  // A machine that is gone no longer narrows the scope.
+  const machines = input.machines.filter((machine) =>
+    input.machineScopeIds.includes(machine.environmentId),
+  );
+  return {
+    projectScopeKeys,
+    projectGroups,
+    machines,
+    scopedProjectKeys: resolveSidebarScopedProjectKeys({
+      projectGroups: input.projectGroups,
+      chosenProjectGroups: projectGroups,
+      chosenEnvironmentIds: new Set(machines.map((machine) => machine.environmentId)),
+    }),
+  };
+}
+
 export type SidebarV2TopStatusKind =
   | "approval"
   | "done"
@@ -1525,10 +1643,7 @@ export function resolveThreadStatusPill(input: {
   ) {
     return statusPill("starting", true);
   }
-  if (
-    (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
-  ) {
+  if (isThreadWaitingOnWork(thread)) {
     return statusPill("waiting");
   }
   if (hasUnseenRunFailure(thread)) {
@@ -1629,4 +1744,50 @@ export function sortProjectsByRecentActivity<
         left.project.id.localeCompare(right.project.id),
     )
     .map(({ project }) => project);
+}
+
+function sidebarThreadKey(thread: Pick<EnvironmentThreadShell, "environmentId" | "id">): string {
+  return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+}
+
+export function matchesSidebarThreadFilters(
+  thread: EnvironmentThreadShell,
+  filters: {
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly tagFilter: ReadonlySet<string>;
+    readonly locallyUnreadKeys: ReadonlySet<string>;
+    readonly now: string;
+  },
+) {
+  return (
+    matchesAnyThreadTag(thread.source.tags, filters.tagFilter) &&
+    (filters.statusFilter === "all" ||
+      matchesThreadListStatus(thread, filters.statusFilter, {
+        woke: hasUnseenServerWake(thread, filters.now),
+        locallyUnread: filters.locallyUnreadKeys.has(sidebarThreadKey(thread)),
+      }))
+  );
+}
+
+/**
+ * Whether the sections list the thread as an ordinary row in some project scope. A thread that
+ * waits on the user lives in the Needs you box, and a scheduled task's thread is hidden, so
+ * neither ever mounts a section row.
+ */
+export function sidebarSectionsListThread(
+  thread: EnvironmentThreadShell,
+  filters: {
+    readonly statusFilter: ThreadListStatusFilter;
+    readonly tagFilter: ReadonlySet<string>;
+    readonly locallyUnreadKeys: ReadonlySet<string>;
+    readonly hiddenTaskThreadKeys: ReadonlySet<string>;
+    readonly nowMs: number;
+  },
+) {
+  const now = new Date(filters.nowMs).toISOString();
+  return (
+    matchesSidebarThreadFilters(thread, { ...filters, now }) &&
+    !filters.hiddenTaskThreadKeys.has(sidebarThreadKey(thread)) &&
+    threadNeedsYouReason(thread, { now }) === null
+  );
 }

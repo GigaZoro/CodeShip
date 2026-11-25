@@ -3,16 +3,18 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import { assert, describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeFS from "node:fs";
 
 import { OnePasswordAccount } from "../shared/definition.ts";
@@ -20,6 +22,7 @@ import { driver } from "./driver.ts";
 
 const encoder = new TextEncoder();
 const account = OnePasswordAccount.make("my.1password.com");
+const serviceAccount = { auth: "linux-service-account" } as const;
 
 type OpResult = {
   readonly stdout?: string;
@@ -31,14 +34,17 @@ type OpResult = {
 
 function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
   const invocations: Array<ReadonlyArray<string>> = [];
+  const commands: Array<ChildProcess.StandardCommand> = [];
   const spawned = Deferred.makeUnsafe<void>();
   const layer = Layer.mergeAll(
     Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make((command) =>
         Effect.sync(() => {
-          const { args } = command as unknown as { readonly args: ReadonlyArray<string> };
+          if (!ChildProcess.isStandardCommand(command)) throw new Error("Unexpected pipeline");
+          const { args } = command;
           invocations.push(args);
+          commands.push(command);
           Deferred.doneUnsafe(spawned, Effect.void);
           const result = answer(args);
           return ChildProcessSpawner.makeHandle({
@@ -64,7 +70,7 @@ function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
     NodeFileSystem.layer,
     NodeCrypto.layer,
   );
-  return { layer, invocations, spawned };
+  return { layer, invocations, commands, spawned };
 }
 
 // Answers `op inject` by substituting each `{{ reference }}` in the template file it was handed.
@@ -178,5 +184,76 @@ describe("1Password driver", () => {
 
       assert.isAtMost(yield* Fiber.join(reading), 45_000);
     }).pipe(Effect.provide(Layer.merge(op.layer, templateFile)));
+  });
+
+  it.effect("reads each Linux service account reference with an isolated sudo invocation", () => {
+    const references = ["op://CodeShip/OpenAI/key", "op://CodeShip/Anthropic/key"];
+    const op = fakeOp((args) => ({
+      stdout: args.at(-1) === references[0] ? " first\n" : "second",
+    }));
+
+    return Effect.gen(function* () {
+      const values = yield* driver.read(serviceAccount, references);
+
+      assert.deepStrictEqual(values, [" first\n", "second"]);
+      assert.deepStrictEqual(
+        op.commands.map(({ command, args, options }) => ({ command, args, options })),
+        references.map((reference) => ({
+          command: "/usr/bin/sudo",
+          args: [
+            "-n",
+            "-u",
+            "codeship-op",
+            "--",
+            "/usr/bin/op",
+            "--cache=false",
+            "read",
+            "--no-newline",
+            reference,
+          ],
+          options: { cwd: "/", env: {}, extendEnv: false, shell: false },
+        })),
+      );
+    }).pipe(Effect.provide(op.layer), Effect.provideService(HostProcess.Platform, "linux"));
+  });
+
+  it.effect("leaves denied or invalid Linux service account reads unresolved", () => {
+    const op = fakeOp(() => ({ code: 1, stdout: "partial-value", stderr: "private-error" }));
+    const messages: unknown[] = [];
+    const logger = Logger.make(({ message }) => messages.push(message));
+    const deniedReference = "op://CodeShip/OpenAI/key";
+
+    return Effect.gen(function* () {
+      const values = yield* driver.read(serviceAccount, [
+        deniedReference,
+        "op://CodeShip/Open AI/key",
+        "op://CodeShip/OpenAI/key?attribute=otp",
+        "--version",
+      ]);
+
+      assert.deepStrictEqual(values, [undefined, undefined, undefined, undefined]);
+      assert.deepStrictEqual(
+        op.invocations.map((args) => args.at(-1)),
+        [deniedReference],
+      );
+      assert.include(JSON.stringify(messages), "Could not read secret from 1Password");
+      assert.notInclude(JSON.stringify(messages), deniedReference);
+      assert.notInclude(JSON.stringify(messages), "partial-value");
+      assert.notInclude(JSON.stringify(messages), "private-error");
+    }).pipe(
+      Effect.provide(Layer.merge(op.layer, Logger.layer([logger], { mergeWithExisting: false }))),
+      Effect.provideService(HostProcess.Platform, "linux"),
+    );
+  });
+
+  it.effect("leaves service account reads unresolved outside Linux", () => {
+    const op = fakeOp(() => ({ stdout: "unexpected" }));
+
+    return Effect.gen(function* () {
+      const values = yield* driver.read(serviceAccount, ["op://CodeShip/OpenAI/key"]);
+
+      assert.deepStrictEqual(values, [undefined]);
+      assert.isEmpty(op.invocations);
+    }).pipe(Effect.provide(op.layer), Effect.provideService(HostProcess.Platform, "darwin"));
   });
 });

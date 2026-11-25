@@ -1,5 +1,6 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { useRememberThreadProject } from "./useRememberThreadProject";
+import { useThreadPinAction } from "./useThreadPinAction";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
@@ -366,6 +367,8 @@ function ThreadRouteContent(
     selectedThread?.environmentId ?? null,
     AuthOrchestrationOperateScope,
   );
+  // A queued creation's shell is made up here until the server acknowledges the thread.
+  const threadPin = useThreadPinAction(selectedThreadDetailRef === null ? null : selectedThread);
   const canReadTerminal = useEnvironmentScope(
     selectedThread?.environmentId ?? null,
     AuthTerminalReadScope,
@@ -1052,6 +1055,7 @@ function ThreadRouteContent(
                 inspectorMode={inspectorMode}
                 onOpenFilesInspector={handleOpenFilesInspector}
                 onReturnToThread={props.onReturnToThread}
+                pin={threadPin}
               />
             )
           }

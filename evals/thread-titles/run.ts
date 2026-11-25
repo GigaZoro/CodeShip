@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeCrypto from "node:crypto";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
@@ -29,7 +29,7 @@ import * as GitVcsDriver from "../../apps/server/src/vcs/GitVcsDriver.ts";
 import * as ProcessRunner from "../../apps/server/src/processRunner.ts";
 import * as ServerConfig from "../../apps/server/src/config.ts";
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: {
     model: { type: "string" },
     case: { type: "string", multiple: true },

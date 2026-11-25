@@ -1,3 +1,4 @@
+import { scheduledTaskHiddenThreadKeys } from "@t3tools/client-runtime/scheduled-task-pins";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { createAllSavedThreadFoldersAtom } from "@t3tools/client-runtime/state/saved-thread-folders";
 import { useAtomValue } from "@effect/atom-react";
@@ -27,11 +28,23 @@ import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
 import { threadOutboxManager } from "./thread-outbox";
 
+export const hiddenScheduledTaskThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
+  let previous: ReadonlySet<string> = new Set();
+  return Atom.make((get) => {
+    previous = scheduledTaskHiddenThreadKeys(
+      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
+      (environmentId) =>
+        AsyncResult.getOrElse(
+          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
+          () => null,
+        )?.tasks ?? [],
+      previous,
+    );
+    return previous;
+  }).pipe(Atom.withLabel(`mobile:thread-list-hidden-task-threads:${environmentIdsKey}`));
+});
+
 export const threadFamilies = createThreadFamilyAtoms(
-  connectionAtomRuntime,
-  environmentShell.stateAtom,
-);
-export const olderSettledThreads = createOlderSettledThreadAtoms(
   connectionAtomRuntime,
   environmentShell.stateAtom,
 );
@@ -66,11 +79,26 @@ const steadyShells = createSteadyShellAtoms({
  * changes once when environments connect, not once per environment.
  */
 export const steadyShellsHoldingAtom = steadyShells.holdingAtom;
-export const steadyNavigationThreadShellsAtom = createEnvironmentThreadShellAtoms({
+const steadyThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: steadyShells.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
-}).navigationThreadShellsAtom;
+});
+export const steadyNavigationThreadShellsAtom = steadyThreadShells.navigationThreadShellsAtom;
+export const steadyListedThreadShellsAtom = steadyThreadShells.listedThreadShellsAtom;
+export const threadFilterTagsAtom = Atom.make((get) => {
+  const environmentIdsKey = JSON.stringify([...get(environmentServerConfigsAtom).keys()]);
+  return get(
+    environmentThreadShells.threadFilterTagsAtom(
+      hiddenScheduledTaskThreadKeysAtom(environmentIdsKey),
+    ),
+  );
+});
+export const olderSettledThreads = createOlderSettledThreadAtoms(
+  connectionAtomRuntime,
+  environmentShell.stateAtom,
+  environmentThreadShells.environmentThreadsAtom,
+);
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
   pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,

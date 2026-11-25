@@ -256,6 +256,7 @@ const EMPTY_FORM: McpServerForm = {
   kind: "remote",
   url: "",
   headers: "",
+  bearerTokenEnvVar: "",
   command: "",
   env: "",
 };
@@ -376,6 +377,8 @@ function ServerForm(props: {
   const providerName = props.target.naming.title;
   const environmentId = props.target.environmentId;
   const instanceId = props.target.provider.instanceId;
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const showBearerToken = serverConfig?.mcpBearerTokenVariables === true;
   const keepsUrl =
     stored?.settings.transport === "http" && stored.settings.urlHasSecret && form.kind === "remote";
 
@@ -540,6 +543,29 @@ function ServerForm(props: {
                 </p>
                 <FieldError id={`${id}-url-error`} message={errors.url} />
               </div>
+              {showBearerToken ? (
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor={`${id}-bearerTokenEnvVar`}>
+                    {t("Bearer token variable (optional)")}
+                  </Label>
+                  <Input
+                    {...field("bearerTokenEnvVar")}
+                    spellCheck={false}
+                    placeholder={"THREADPAGE_TOKEN"}
+                    value={form.bearerTokenEnvVar}
+                    onChange={(event) => update("bearerTokenEnvVar", event.currentTarget.value)}
+                  />
+                  <p id={`${id}-bearerTokenEnvVar-hint`} className="text-muted-foreground text-xs">
+                    {t(
+                      "Enter a provider environment variable name. Its value can come from Secrets.",
+                    )}
+                  </p>
+                  <FieldError
+                    id={`${id}-bearerTokenEnvVar-error`}
+                    message={errors.bearerTokenEnvVar}
+                  />
+                </div>
+              ) : null}
               <div className="flex flex-col gap-2">
                 <Label htmlFor={`${id}-headers`}>{t("Headers (optional)")}</Label>
                 <Textarea

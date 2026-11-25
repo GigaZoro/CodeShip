@@ -65,10 +65,28 @@ export function turnItemUpdateCanEndBackgroundWork(
 }
 
 /**
+ * A turn item as far as a thread wait reads it, so a client's structure items, which leave out
+ * the streamed text, qualify too.
+ */
+type ThreadWaitTurnItem =
+  | Pick<
+      Extract<OrchestrationV2TurnItem, { readonly type: "dynamic_tool" }>,
+      "runId" | "type" | "status" | "toolName" | "input"
+    >
+  | Pick<
+      Extract<OrchestrationV2TurnItem, { readonly type: "subagent" }>,
+      "runId" | "type" | "status" | "origin"
+    >
+  | Pick<
+      Exclude<OrchestrationV2TurnItem, { readonly type: "dynamic_tool" | "subagent" }>,
+      "runId" | "type" | "status"
+    >;
+
+/**
  * A `t3_thread_wait`, or a `delegate_task` that blocks until its child finishes. The awaited
  * thread runs its own turns, so this call only waits; it is not work of its own.
  */
-export function waitsOnAnotherThread(item: OrchestrationV2TurnItem): boolean {
+export function waitsOnAnotherThread(item: ThreadWaitTurnItem): boolean {
   if (item.type !== "dynamic_tool") return false;
   const tool = resolveT3McpToolId(item.toolName);
   return (
@@ -81,7 +99,7 @@ export function waitsOnAnotherThread(item: OrchestrationV2TurnItem): boolean {
 
 export function deriveBlockedOnThreadWait(input: {
   readonly activeRun: Pick<OrchestrationV2Run, "id" | "status"> | null;
-  readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly turnItems: ReadonlyArray<ThreadWaitTurnItem>;
 }): boolean {
   if (input.activeRun?.status !== "running") return false;
   let hasWait = false;
@@ -104,9 +122,14 @@ export function deriveBlockedOnThreadWait(input: {
 export function backgroundWorkHoldsCompletion(
   tasks: ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind" | "awaited">>,
 ): boolean {
-  return tasks.some(
-    (task) => task.awaited === true || backgroundWorkKindHoldsCompletion(task.kind),
-  );
+  return tasks.some((task) => backgroundTaskHoldsCompletion(task));
+}
+
+/** Whether the run waits on this task, as against work it started and left running. */
+export function backgroundTaskHoldsCompletion(
+  task: Pick<PendingBackgroundWorkTask, "kind" | "awaited">,
+): boolean {
+  return task.awaited === true || backgroundWorkKindHoldsCompletion(task.kind);
 }
 
 // Commands and monitors are as often a dev server or its watchdog as a wait, so they hold

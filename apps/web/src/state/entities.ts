@@ -6,6 +6,7 @@ import type {
   EnvironmentThread,
   EnvironmentThreadShell,
   EnvironmentThreadStructure,
+  PendingSubagentRequest,
   ThreadStructure,
   ThreadStructureVisibleTurnItem,
 } from "@t3tools/client-runtime/state/shell";
@@ -82,6 +83,9 @@ const EMPTY_UPDATED_AT_ATOM = Atom.make<DateTime.Utc | null>(null).pipe(
 const EMPTY_THREAD_HISTORY_ATOM = Atom.make<ThreadHistoryMeta>(EMPTY_THREAD_HISTORY_META).pipe(
   Atom.withLabel("web-thread-history:empty"),
 );
+const EMPTY_SUBAGENT_REQUESTS_ATOM = Atom.make<ReadonlyMap<ThreadId, PendingSubagentRequest>>(
+  new Map(),
+).pipe(Atom.withLabel("web-subagent-requests:empty"));
 
 export function useThreadRefs(enabled = true): ReadonlyArray<ScopedThreadRef> {
   return useAtomValue(enabled ? environmentThreadShells.threadRefsAtom : EMPTY_THREAD_REFS_ATOM);
@@ -203,6 +207,18 @@ export function useThreadUpdatedAt(ref: ScopedThreadRef | null): DateTime.Utc | 
   return useAtomValue(
     ref === null ? EMPTY_UPDATED_AT_ATOM : environmentThreadDetails.updatedAtAtom(ref),
   );
+}
+
+/** The subagent request the shell index rolls up to this thread, for a thread read without its shell. */
+export function useThreadPendingSubagentRequest(
+  ref: ScopedThreadRef | null,
+): PendingSubagentRequest | null {
+  const requests = useAtomValue(
+    ref === null
+      ? EMPTY_SUBAGENT_REQUESTS_ATOM
+      : environmentThreadShells.pendingSubagentRequestsAtom(ref.environmentId),
+  );
+  return ref === null ? null : (requests.get(ref.threadId) ?? null);
 }
 
 export function useThreadStatus(ref: ScopedThreadRef | null): EnvironmentThreadStatus {

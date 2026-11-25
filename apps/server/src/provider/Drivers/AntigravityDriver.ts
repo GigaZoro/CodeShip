@@ -39,6 +39,7 @@ import {
   antigravityAuthUsesBrowser,
   buildAntigravityAcpSpawnInput,
   isAntigravitySignInRequiredError,
+  makeAntigravityLoginProfiles,
   prepareAntigravityProfile,
   resolveAntigravityInstanceDirectories,
   type AntigravityAuthConfig,
@@ -175,10 +176,20 @@ export const AntigravityDriver: ProviderDriver<
           }),
       ),
     );
-    const profileDirectory = directories.profile;
+    const profiles = yield* makeAntigravityLoginProfiles(directories.profile, instanceId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER,
+            instanceId,
+            detail: "Could not read the Antigravity sign-in profile.",
+            cause,
+          }),
+      ),
+    );
     for (const directory of [
       directories.runtimeTemp,
-      path.join(profileDirectory, "antigravity-acp", "tmp"),
+      path.join(directories.profile, "antigravity-acp", "tmp"),
     ]) {
       const removeRetired = yield* retireAntigravityRuntimeTempDirs(directory).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -204,6 +215,7 @@ export const AntigravityDriver: ProviderDriver<
 
     const makeRuntime = Effect.fn("AntigravityDriver.makeRuntime")(function* (
       input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
+      profileDirectory = profiles.active,
     ): Effect.fn.Return<
       AcpSessionRuntime.AcpSessionRuntime["Service"],
       AcpErrors.AcpError | ProviderSetupError,
@@ -305,8 +317,11 @@ export const AntigravityDriver: ProviderDriver<
     });
 
     const makeDisposableRuntime = Effect.fn("AntigravityDriver.makeDisposableRuntime")(function* (
-      input: Pick<AntigravityAcpRuntimeInput, "onAuthorizationUrl">,
+      input: Pick<AntigravityAcpRuntimeInput, "onAuthorizationUrl"> & {
+        readonly profileDirectory?: string;
+      },
     ) {
+      const profileDirectory = input.profileDirectory ?? profiles.active;
       const cwd = yield* fileSystem
         .makeTempDirectoryScoped({ prefix: "t3-antigravity-setup-" })
         .pipe(
@@ -330,11 +345,14 @@ export const AntigravityDriver: ProviderDriver<
           Effect.provideService(Path.Path, path),
         ),
       );
-      const runtime = yield* makeRuntime({
-        cwd,
-        mcpServers: [],
-        ...(input.onAuthorizationUrl ? { onAuthorizationUrl: input.onAuthorizationUrl } : {}),
-      });
+      const runtime = yield* makeRuntime(
+        {
+          cwd,
+          mcpServers: [],
+          ...(input.onAuthorizationUrl ? { onAuthorizationUrl: input.onAuthorizationUrl } : {}),
+        },
+        profileDirectory,
+      );
       return {
         ...runtime,
         start: () =>
@@ -381,13 +399,13 @@ export const AntigravityDriver: ProviderDriver<
     const authFlow: AntigravityAuth = yield* makeAntigravityAuth({
       instanceId,
       makeRuntime: makeDisposableRuntime,
+      stage: antigravityAuthUsesBrowser(auth.authMethod) ? profiles.stage : false,
       // A new sign-in may be another account; drop any in-flight quota read first.
       onAuthenticated: (started, runtime) =>
         Effect.suspend(() => provider.onSignedIn).pipe(
           Effect.andThen(publishCatalog(started, runtime)),
         ),
       onSignedOut: Effect.suspend(() => provider.onSignedOut),
-      usesBrowser: antigravityAuthUsesBrowser(auth.authMethod),
     });
 
     // The probe must not spawn. The agent is a PyInstaller one-file bundle
@@ -430,7 +448,9 @@ export const AntigravityDriver: ProviderDriver<
     });
 
     const usage = yield* makeAntigravityUsageProbe({
-      profileDirectory,
+      get profileDirectory() {
+        return profiles.active;
+      },
       authMethod: auth.authMethod,
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -445,7 +465,9 @@ export const AntigravityDriver: ProviderDriver<
       probeUsage: usage.probe,
       clearUsage: usage.clear,
       auth: { type: auth.authMethod, label: antigravityAuthLabel(auth.authMethod) },
-      supportsTextGeneration: isAntigravityTextGenerationAvailable(profileDirectory).pipe(
+      supportsTextGeneration: Effect.suspend(() =>
+        isAntigravityTextGenerationAvailable(profiles.active),
+      ).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.orElseSucceed(() => false),
@@ -473,7 +495,7 @@ export const AntigravityDriver: ProviderDriver<
           (snapshot) => snapshot.slashCommands?.some((command) => command.name === "goal") === true,
         ),
       ),
-      profileDirectory,
+      profileDirectory: directories.profile,
       onSessionStarted: provider.onSessionStarted,
       onSessionEvent: (event) => {
         if (event._tag === "ConfigOptionsUpdated") {
@@ -492,7 +514,9 @@ export const AntigravityDriver: ProviderDriver<
         }),
     });
     const textGeneration = yield* makeAntigravityTextGeneration({
-      profileDirectory,
+      get profileDirectory() {
+        return profiles.active;
+      },
       defaultModel,
       withProcess: authFlow.withProcess,
       makeRuntime: (cwd) =>

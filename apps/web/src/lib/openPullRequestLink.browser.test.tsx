@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
@@ -32,7 +32,7 @@ import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { __setClientSettingsForTests } from "../hooks/useSettings";
 import { ToastProvider } from "../components/ui/toast";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { useRightPanelStore } from "../rightPanelStore";
+import { hostRightPanel, selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useDiffPanelStore } from "../diffPanelStore";
 import { useOpenChangeRequestLink } from "./openPullRequestLink";
 
@@ -56,8 +56,14 @@ const project = {
 const commitUrl = `https://github.com/Effect-TS/effect/commit/${"a".repeat(40)}?plain=1#diff-original`;
 const pullRequestCommitUrl = `https://github.com/Effect-TS/effect/pull/1/commits/${"a".repeat(40)}`;
 
-function CommitLink({ url = commitUrl }: { url?: string }) {
-  const open = useOpenChangeRequestLink(threadRef);
+function CommitLink({
+  url = commitUrl,
+  linkThreadRef = threadRef,
+}: {
+  url?: string;
+  linkThreadRef?: ScopedThreadRef;
+}) {
+  const open = useOpenChangeRequestLink(linkThreadRef);
   return (
     <a href={url} onClick={(event) => open(event, url)}>
       Commit
@@ -156,4 +162,32 @@ it("opens an available commit in the closed Diff pane without the pane resetting
       [scopedThreadKey(threadRef)]: { kind: "commit", sha, baseRef: null },
     }),
   );
+});
+
+it("selects a commit clicked in a hosted chat under the thread whose panel shows it", async () => {
+  setup();
+  const sha = "a".repeat(40);
+  const sideChatRef = scopeThreadRef(environmentId, ThreadId.make("side-chat"));
+  state.preview.mockResolvedValue(
+    AsyncResult.success({ sources: [{ kind: "commit", headRef: sha }] }),
+  );
+  const unhost = hostRightPanel(sideChatRef, threadRef);
+  try {
+    await using screen = await render(
+      <AppAtomRegistryProvider>
+        <CommitLink linkThreadRef={sideChatRef} />
+      </AppAtomRegistryProvider>,
+    );
+    await screen.getByRole("link", { name: "Commit" }).click();
+    await vi.waitFor(() =>
+      expect(useDiffPanelStore.getState().byThreadKey).toEqual({
+        [scopedThreadKey(threadRef)]: { kind: "commit", sha, baseRef: null },
+      }),
+    );
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, threadRef)).toBe(
+      "diff",
+    );
+  } finally {
+    unhost();
+  }
 });

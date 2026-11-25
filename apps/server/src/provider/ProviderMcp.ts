@@ -1,6 +1,7 @@
 import {
   ProviderMcpError,
   providerMcpServerSettings,
+  providerMcpBearerTokenError,
   resolveProviderMcpServerEdit,
   type ProviderInstanceId,
   type ProviderMcpAddInput,
@@ -11,6 +12,7 @@ import {
   type ProviderMcpOperation,
   type ProviderMcpReadResult,
   type ProviderMcpServer,
+  type ProviderMcpServerConfig,
   type ProviderMcpServerInput,
   type ProviderMcpSetEnabledInput,
   type ProviderMcpSignInState,
@@ -208,6 +210,25 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const checkBearerToken = (
+    instanceId: ProviderInstanceId,
+    operation: "add" | "edit",
+    server: ProviderMcpServerConfig,
+    stored?: ProviderMcpServerConfig,
+  ) => {
+    const message = providerMcpBearerTokenError(server, stored);
+    return message === undefined
+      ? Effect.void
+      : Effect.fail(
+          new ProviderMcpError({
+            operation,
+            instanceId,
+            reason: "providerFailed",
+            providerMessage: message,
+          }),
+        );
+  };
+
   const openSignIn = Effect.fn("ProviderMcp.openSignIn")(function* (input: ProviderMcpServerInput) {
     yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
     const mcp = yield* management(input.instanceId, "signIn");
@@ -327,6 +348,7 @@ const make = Effect.gen(function* () {
     listLoaded: loadedWithin,
     add: Effect.fn("ProviderMcp.add")(function* (input) {
       yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
+      yield* checkBearerToken(input.instanceId, "add", input.server);
       yield* change(input.instanceId, "add", (mcp) => mcp.add(input.name, input.server));
     }),
     remove: Effect.fn("ProviderMcp.remove")(function* (input) {
@@ -362,7 +384,9 @@ const make = Effect.gen(function* () {
           Effect.flatMap((stored) => {
             const resolved = resolveProviderMcpServerEdit(stored, input.server);
             return "server" in resolved
-              ? mcp.edit(input.name, resolved.server)
+              ? checkBearerToken(input.instanceId, "edit", resolved.server, stored).pipe(
+                  Effect.andThen(mcp.edit(input.name, resolved.server)),
+                )
               : Effect.fail(
                   new ProviderMcpError({
                     operation: "edit",

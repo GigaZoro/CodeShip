@@ -4,11 +4,12 @@ import {
   createEnvironmentPresentationAtoms,
   createEnvironmentSummaryAtoms,
 } from "@t3tools/client-runtime/state/presentation";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, type EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
+import { environmentSession, sessionHasScope } from "./session";
 import { createThreadListEnvironmentsAtom } from "./thread-list-environments";
 
 export const environmentPresentations = createEnvironmentPresentationAtoms({
@@ -22,9 +23,16 @@ export const { connectedEnvironmentIdsAtom } = createEnvironmentSummaryAtoms({
   presentationAtom: environmentPresentations.presentationAtom,
 });
 
+const threadOperatePermissionAtom = Atom.family((id: EnvironmentId) =>
+  Atom.map(environmentSession.sessionStateAtom(id), (session) =>
+    sessionHasScope(session, AuthOrchestrationOperateScope),
+  ),
+);
+
 export const threadListEnvironmentsAtom = createThreadListEnvironmentsAtom(
   environmentServerConfigsAtom,
   connectedEnvironmentIdsAtom,
+  threadOperatePermissionAtom,
 );
 
 const EMPTY_ENVIRONMENT_PRESENTATION_ATOM = Atom.make<EnvironmentPresentation | null>(null).pipe(

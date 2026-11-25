@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
@@ -135,24 +136,50 @@ function installFromElectronCache(electronDir) {
   return false;
 }
 
-function downloadElectronRuntime(electronDir, version) {
+function downloadWithCurl(url, zipPath) {
+  runChecked("curl", [
+    "-fsSL",
+    "--retry",
+    "3",
+    "--retry-all-errors",
+    "--connect-timeout",
+    "30",
+    "--max-time",
+    "300",
+    url,
+    "-o",
+    zipPath,
+  ]);
+}
+
+// The digests ship inside the electron package pnpm verified, so a swapped download never runs.
+function verifyElectronArchive(electronDir, archiveName, zipPath) {
+  const checksums = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(electronDir, "checksums.json"), "utf8"),
+  );
+  const expected = checksums[archiveName];
+  if (typeof expected !== "string") {
+    throw new Error(`electron/checksums.json has no SHA-256 for ${archiveName}`);
+  }
+  const actual = NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(zipPath)).digest("hex");
+  if (actual !== expected) {
+    throw new Error(
+      `${archiveName} has SHA-256 ${actual}, but electron/checksums.json expects ${expected}`,
+    );
+  }
+}
+
+export function downloadElectronRuntime(electronDir, version, download = downloadWithCurl) {
+  const archiveName = `electron-v${version}-${hostPlatform}-${hostArch}.zip`;
   const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-electron-"));
-  const zipPath = NodePath.join(tempDir, `electron-v${version}-${hostPlatform}-${hostArch}.zip`);
+  const zipPath = NodePath.join(tempDir, archiveName);
 
   try {
-    runChecked("curl", [
-      "-fsSL",
-      "--retry",
-      "3",
-      "--retry-all-errors",
-      "--connect-timeout",
-      "30",
-      "--max-time",
-      "300",
-      `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-${hostPlatform}-${hostArch}.zip`,
-      "-o",
+    download(
+      `https://github.com/electron/electron/releases/download/v${version}/${archiveName}`,
       zipPath,
-    ]);
+    );
+    verifyElectronArchive(electronDir, archiveName, zipPath);
     if (hostPlatform === "darwin") {
       runChecked("ditto", ["-x", "-k", zipPath, NodePath.join(electronDir, "dist")]);
     } else {

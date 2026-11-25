@@ -119,10 +119,25 @@ describe("readClaudeLimitResets", () => {
       answer: "Your reset can't be used right now · it is paused · 1 reset left · use by Dec 1",
       grants: [
         {
+          kindUnknownReason: "totalOnly",
           resetsLeft: 1,
           expiresAt: "2026-12-01T00:00:00.000Z",
           usableNow: false,
           paused: true,
+        },
+      ],
+    },
+    {
+      name: "saved for a limit",
+      answer:
+        "You have a reset saved for when you reach a usage limit · run /limit-reset when you do · 2 resets left · use by Dec 1",
+      grants: [
+        {
+          kindUnknownReason: "totalOnly",
+          resetsLeft: 2,
+          expiresAt: "2026-12-01T00:00:00.000Z",
+          usableNow: false,
+          requiresLimit: true,
         },
       ],
     },
@@ -139,6 +154,19 @@ describe("readClaudeLimitResets", () => {
       name: "an answer it does not know",
       script: { reactions: { "/limit-reset": { answer: "Resets work differently now" } } },
       reason: "unrecognizedScreen",
+      submitted: ["/limit-reset"],
+    },
+    {
+      name: "the lower-priority answer, given before any grant is read",
+      script: {
+        reactions: {
+          "/limit-reset": {
+            answer:
+              "Resets can't be used while you continue at lower priority · run /limit-reset after that ends",
+          },
+        },
+      },
+      reason: "lowPriority",
       submitted: ["/limit-reset"],
     },
     {

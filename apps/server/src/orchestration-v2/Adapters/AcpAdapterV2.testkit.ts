@@ -225,7 +225,8 @@ export function makeAcpReplayRuntime(input: {
           spawn: {
             command: process.execPath,
             args: acpReplayAgentArgs(input.scriptPath),
-            cwd: runtimeInput.cwd,
+            // A process whose cwd is the workspace keeps Windows from removing it until the kernel reaps it.
+            cwd: input.statusPath.replace(/[\\/][^\\/]*$/, ""),
             env: {
               ...process.env,
               T3_ACP_REPLAY_TRANSCRIPT_PATH: transcriptPath,
@@ -261,6 +262,7 @@ export function makeTurnInput(input: {
   readonly now: DateTime.Utc;
   readonly ordinal?: number;
   readonly modelSelection?: ModelSelection;
+  readonly messageId?: MessageId;
   readonly messageCreatedBy?: "user" | "agent";
   readonly messageCreationSource?: "web" | "mobile" | "mcp" | "provider" | "server";
   readonly messageText?: string;
@@ -307,7 +309,7 @@ export function makeTurnInput(input: {
     message: {
       createdBy: input.messageCreatedBy ?? "user",
       creationSource: input.messageCreationSource ?? "web",
-      messageId: MessageId.make(`message:${suffix}`),
+      messageId: input.messageId ?? MessageId.make(`message:${suffix}`),
       text: input.messageText ?? "test prompt",
       attachments: [],
     },

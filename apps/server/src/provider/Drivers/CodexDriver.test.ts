@@ -7,11 +7,14 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
-  makeProviderFailure,
-} from "@t3tools/provider-core/server/failure";
+  EnvironmentId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -1105,18 +1108,47 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
         const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-driver-" });
-        const create = (
+        const launchHomes = new Map<string, string>();
+        const create = Effect.fn(function* (
           id: string,
           config: Partial<ReturnType<typeof CodexDriver.defaultConfig>> = {},
           environment: ReadonlyArray<{ name: string; value: string; sensitive: false }> = [],
-        ) =>
-          CodexDriver.create({
-            instanceId: ProviderInstanceId.make(id),
+        ) {
+          const instanceId = ProviderInstanceId.make(id);
+          const instance = yield* CodexDriver.create({
+            instanceId,
             displayName: id,
             enabled: false,
             environment: [...environment],
-            config: { ...CodexDriver.defaultConfig(), ...config },
-          });
+            config: {
+              ...CodexDriver.defaultConfig(),
+              binaryPath: NodePath.join(tempDir, "codex"),
+              ...config,
+            },
+          }).pipe(
+            Effect.provideService(
+              CodexAdapterV2.CodexAppServerClientFactory,
+              CodexAdapterV2.CodexAppServerClientFactory.of({
+                open: (launch) =>
+                  Effect.sync(() => launchHomes.set(id, launch.settings.homePath)).pipe(
+                    Effect.andThen(Effect.die("The fixture stops after recording the launch")),
+                  ),
+              }),
+            ),
+          );
+          yield* instance.orchestrationAdapter
+            .openSession({
+              threadId: ThreadId.make(`${id}-thread`),
+              providerSessionId: ProviderSessionId.make(`${id}-session`),
+              modelSelection: { instanceId, model: "gpt-5.4" },
+              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: tempDir,
+              }),
+            })
+            .pipe(Effect.scoped, Effect.exit);
+        });
         const shadow = (id: string) => NodePath.join(stateDir, "providers", "codex", id, "shadow");
 
         yield* create("codex-added");
@@ -1133,6 +1165,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
 
         yield* create("codex", { privateLogin: true });
         expect(yield* fs.exists(shadow("codex"))).toBe(true);
+
+        // regression: the chat session read the stored config, so an added account's turns ran
+        // under the default Codex login in the shared home.
+        expect(launchHomes.get("codex-added")).toBe(shadow("codex-added"));
+        expect(launchHomes.get("codex")).toBe(shadow("codex"));
+        expect(launchHomes.get("codex-own-home")).toBe(NodePath.join(tempDir, "own"));
+        expect(launchHomes.get("codex-env-home")).toBe(NodePath.join(tempDir, "env"));
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
         Effect.scoped,

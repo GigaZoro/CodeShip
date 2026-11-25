@@ -156,7 +156,12 @@ branch name remains.
 Open the **Tasks** tab to create scheduled tasks or manage existing
 ones across your connected environments. Use the settings filter to narrow the
 list by environment or project. Each task runs on the environment you choose,
-using its project, model, and workspace settings. Fixed-time schedules use that
+using its project, model, and workspace settings. To show what a task does in
+the list, open its editor and fill in **Description**. If you leave it empty,
+the list previews the execution prompt. Editing the description changes only
+what people see.
+
+Fixed-time schedules use that
 environment's time zone, which may differ from your phone's. Choose **Once**
 to run a task a single time at a date and time in your own time zone. If the
 environment is offline then, the task runs when it is back.
@@ -204,7 +209,7 @@ that would run the task, in the project's folder:
 
 | The command exits with                         | What happens                                                                                    |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 0                                              | The chat starts as usual.                                                                       |
+| 0                                              | The chat starts, and its first message ends with what the check found.                          |
 | 10                                             | Nothing starts. **Run history** lists the time as skipped, and the task's row shows the reason. |
 | Anything else, no answer in time, cannot start | The chat starts anyway, and **Run history** says the check failed.                              |
 
@@ -212,6 +217,24 @@ The reason is the last line the command prints. When the output ends with a
 JSON object, on one line or indented over several, its `reason` field (or
 `error`, when it has no `reason`) is used instead, such as
 `{"needsRun": false, "reason": "No open pull requests"}`.
+
+When the command exits with 0, the chat's first message is the task's prompt
+followed by what the check found, so the agent starts on that work instead of
+looking for it again:
+
+```text
+Run condition found work.
+Reason: Pull request 41 waits for review
+Unit: PR #41
+```
+
+`Unit` is the JSON object's `unit` field, a string or a safe integer written without a decimal point or exponent, naming the one
+piece of work to take, such as a work item, a pull request or a settlement id.
+Quote numeric IDs larger than 9007199254740991 to preserve their digits. A successful JSON answer without a reason or error omits the reason line.
+Each line is folded onto one line, without control characters, and shortened:
+the reason to 300 characters and the unit to 150. A line with nothing to say is
+left out, and with neither the message is the prompt alone. **Run history**
+shows the same reason and unit.
 
 When the last 3 scheduled checks on a machine all fail, the task's row shows a
 warning with the latest reason, since each of those runs started anyway. The
@@ -366,8 +389,19 @@ memory. A scheduled run is skipped, and **Run history** names the reading. A
 time. Memory is read again after a run condition answers, and a run that waited
 for the network to read its prompt file fails if memory went short meanwhile.
 A task an agent delegates is refused, so the agent does the work in its own
-chat, and an emulator or simulator an agent asks to start stays off. Chats you
-start, **Run now** and webhook runs always start.
+chat, and an emulator or simulator an agent asks to start stays off. A command
+an agent runs with `t3_command_run` is never refused: it waits its turn and
+starts once memory frees up, in the order the commands were asked for, and
+`task_status` reports it as queued with the reason. Its time limit counts from
+when it starts, and it keeps its place through a restart. Chats you start,
+**Run now** and webhook runs always start.
+
+Chats that continue by themselves after a restart, a network outage or a usage
+limit resume one at a time, each once the one before it has reached its agent,
+the chat that stopped first first, and none resumes while memory is short. A
+waiting chat says **Waiting for memory** and keeps its place through another
+restart. A message you send in a waiting chat starts it at once; one an agent
+sends waits behind it.
 
 - On macOS, memory is short once compressed memory takes 35% of it, or when
   macOS reports memory pressure. On Linux and Windows, memory is short once
@@ -619,6 +653,34 @@ Enable **Delete worktrees with deleted threads** to remove safe worktrees after 
 thread is deleted, including archived threads and worktrees left by earlier deletions. The
 server waits for sessions and terminals to stop and retries skipped worktrees after restart.
 Existing prompts for deleting a worktree manually remain available when this policy is off.
+
+For a single delivered task, the checkout owner can queue a release on the machine running
+the server. Use this for a disposable managed checkout once other users, automation claims
+and external writers have relinquished it. Keep it reserved for the server until removal
+or withdrawal. Pass the thread and run IDs from the task and the full ref containing
+the delivered commits.
+
+```sh
+t3 thread release-worktree "$thread_id" --run "$run_id" --worktree "$checkout" --durable-ref refs/remotes/origin/main
+```
+
+For a local no-change handoff, use the primary checkout's branch, such as `refs/heads/main`.
+If earlier commits are preserved elsewhere, repeat `--also-durable-ref <full-ref>` for each
+additional local branch, remote-tracking branch or archive ref that covers them.
+
+Ignored files, including `.env` and installed dependencies, normally keep the checkout.
+Add `--save-ignored` to preserve them in a private folder on the server before queuing release.
+The command prints its location. This requires hard-link support and a T3 home on the
+checkout's filesystem. The saved files retain their disk space and stay available until the
+checkout owner removes them. Newly created or replaced files without a matching saved file
+keep the checkout. Tracked changes and ordinary untracked files also keep it.
+
+The server checks the request at startup and every minute and waits for delivery and
+process teardown. To withdraw a pending request, remove the printed request file.
+Once it has moved to `.releasing`, wait for the result before reusing the checkout.
+**Storage & cleanup** shows the reason a checkout was kept. A follow-up recreates a released
+checkout from the project's current base. If the owner moved the task branch in the meantime,
+the follow-up uses the new branch tip.
 
 Choose **Delete now** to run the enabled rules immediately. The latest results show which
 worktrees were removed or kept and why, plus any failures.

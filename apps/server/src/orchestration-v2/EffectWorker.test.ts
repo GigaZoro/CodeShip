@@ -121,9 +121,11 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderSessionManager.ProviderSessionManagerV2,
       ProviderSessionManager.ProviderSessionManagerV2.of({
+        occupiedWorkspaces: Effect.succeed([]),
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeedNone,
+        reserveIdleCredentialBinding: () => Effect.die("unused credential reservation"),
         isLive: () => Effect.succeed(false),
         close: () => Effect.void,
         closeInstance: () => Effect.void,
@@ -132,6 +134,7 @@ function layerExecutorFor(input: {
         otherWorkingThreads: () => Effect.succeed([]),
         releaseUnlessBusy: () => Effect.succeed(true),
         subscribePromptSuggestion: () => Stream.empty,
+        releaseIfSilent: () => Effect.die("unused releaseIfSilent"),
       }),
     ),
     Layer.succeed(

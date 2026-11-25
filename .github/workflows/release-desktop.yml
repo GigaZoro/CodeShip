@@ -196,10 +196,10 @@ jobs:
         env:
           pnpm_config_cache_dir: ${{ runner.temp }}/pnpm-metadata
 
-      # The CLI archive and the staged app install without a lockfile, so they
-      # ask the registry about every package and fetch platform packages the
-      # workspace store lacks. They share this registry metadata and store. A
-      # new week starts cold, which bounds how stale cached ranges can get.
+      # The CLI archive and the staged app install the root lockfile's versions,
+      # including platform packages the workspace store lacks, into a store of
+      # their own that this cache keeps. A new week starts cold, which bounds
+      # how much unused content the cache carries.
       - name: Resolve staged install cache
         id: stage_pnpm
         shell: bash
@@ -264,22 +264,6 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ inputs.rust_target }}
-
-      - name: Download relay client tracing config
-        if: inputs.relay_client_tracing
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: relay-client-tracing-config
-          path: ${{ runner.temp }}/relay-client-tracing
-
-      - name: Load relay client tracing config
-        if: inputs.relay_client_tracing
-        shell: bash
-        run: |
-          config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
-          tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
-          cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
@@ -392,6 +376,15 @@ jobs:
       # Setup Vite+ selects the exact engines.node version from package.json.
       # Native builds embed that executable; cross-target builds download the
       # same version for their target.
+      # Only the executable build reads the tracing config: it never reaches
+      # $GITHUB_ENV or outlives that step, so the stage installs never see it.
+      - name: Download relay client tracing config
+        if: inputs.cli_archive && inputs.relay_client_tracing
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: relay-client-tracing-config
+          path: ${{ runner.temp }}/relay-client-tracing
+
       - name: Build CLI single-executable
         if: inputs.cli_archive
         shell: bash
@@ -399,38 +392,27 @@ jobs:
           # The executable bundles the server again, so it needs the same stamp
           # as release.yml's JS bundle.
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
-        run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
-
-      - name: Import macOS signing certificate for the CLI archive
-        if: inputs.cli_archive && inputs.platform == 'mac'
-        shell: bash
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
-            echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
-            exit 0
+          if [[ "${{ inputs.relay_client_tracing }}" == "true" ]]; then
+            config_dir="$RUNNER_TEMP/relay-client-tracing"
+            trap 'rm -rf "$config_dir"' EXIT
+            # read drops a trailing separator, and base64 tokens can end in '='.
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              name="${line%%=*}"
+              value="${line#*=}"
+              case "$name" in
+                T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN)
+                  echo "::add-mask::$value"
+                  export "$name=$value"
+                  ;;
+                T3CODE_RELAY_CLIENT_OTLP_TRACES_URL | T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET)
+                  export "$name=$value"
+                  ;;
+              esac
+            done < "$config_dir/relay-client-tracing.env"
           fi
-          keychain="$RUNNER_TEMP/t3-cli-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 16)"
-          cert_path="$RUNNER_TEMP/t3-cli-signing.p12"
-          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
-          if [[ -z "$identity" ]]; then
-            echo "No Developer ID Application identity found in CSC_LINK." >&2
-            exit 1
-          fi
-          echo "::add-mask::$keychain_password"
-          echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          echo "macOS CLI signing enabled."
+          node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
 
       - name: Stage resource monitor for the CLI archive
         if: inputs.cli_archive
@@ -454,64 +436,35 @@ jobs:
         shell: bash
         run: command -v patchelf || { sudo apt-get update && sudo apt-get install -y patchelf; }
 
-      - name: Build CLI archive
-        id: build_cli
+      # Every install and stage step runs before signing material reaches this
+      # runner and without signing secrets, so no dependency's install script
+      # can read them. The package steps below sign only what the stages built
+      # (scripts/lib/stage-dir.ts); scripts/release-desktop-workflow.test.ts
+      # keeps that order.
+      - name: Stage CLI archive
+        id: stage_cli
         if: inputs.cli_archive
         shell: bash
         env:
           pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
           pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
           pnpm_config_prefer_offline: "true"
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: |
           set -euo pipefail
-          extra_args=()
+          # Older release refs lack deferred notarization; their package step still waits for Apple.
           if [[ "${{ inputs.platform }}" == "mac" ]]; then
-            if [[ -n "${APPLE_API_KEY:-}" ]]; then
-              key_dir="$(mktemp -d "$RUNNER_TEMP/t3-cli-notary.XXXXXXXX")"
-              trap 'rm -rf "$key_dir"' EXIT
-              key_path="$key_dir/AuthKey.p8"
-              (umask 077 && printf '%s' "$APPLE_API_KEY" > "$key_path")
-              export APPLE_API_KEY="$key_path"
-            fi
-            # Older release refs lack deferred notarization and still wait here.
             cli_help="$(node scripts/build-cli-archive.ts --help)"
             if [[ "$cli_help" == *--notary-submission-file* ]]; then
-              extra_args=(--notary-submission-file "$RUNNER_TEMP/t3-cli-notary-submission")
               echo "deferred_notarization=true" >> "$GITHUB_OUTPUT"
             fi
           fi
           node scripts/build-cli-archive.ts \
+            --phase stage \
+            --stage-dir "$RUNNER_TEMP/cli-archive-stage" \
             --platform "${{ inputs.platform }}" \
             --arch "${{ inputs.arch }}" \
             --version "${{ inputs.version }}" \
-            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
-            --output-dir release-cli \
-            ${extra_args[@]+"${extra_args[@]}"}
-
-      - name: Smoke-test CLI archive
-        if: inputs.cli_archive && inputs.verify_runner == ''
-        shell: bash
-        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ inputs.version }}"
-
-      # macOS uploads its archive after "Await CLI notarization" instead.
-      - name: Upload CLI archive
-        if: inputs.cli_archive && inputs.platform != 'mac'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: cli-${{ inputs.platform }}-${{ inputs.arch }}
-          path: release-cli/*
-          if-no-files-found: error
-          # The archive is already gzip or zip; deflating it again saves under 2%.
-          compression-level: 0
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor"
 
       - name: Install Linux desktop build libraries
         if: inputs.platform == 'linux'
@@ -528,6 +481,142 @@ jobs:
           else
               convert -version
           fi
+
+      - name: Stage desktop artifact
+        shell: bash
+        env:
+          # pnpm only goes to the registry for packages or versions the cache lacks.
+          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
+          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
+          pnpm_config_prefer_offline: "true"
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
+          T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
+        run: |
+          vp run dist:desktop:artifact \
+            --phase stage \
+            --stage-dir "$RUNNER_TEMP/desktop-artifact-stage" \
+            --platform "${{ inputs.platform }}" \
+            --target "${{ inputs.target }}" \
+            --arch "${{ inputs.arch }}" \
+            --build-version "${{ inputs.version }}" \
+            --skip-build \
+            --verbose
+
+      # Warm installs only touch the store index, so new content means a fetch.
+      - name: Check staged install cache for new content
+        id: stage_pnpm_changed
+        shell: bash
+        run: |
+          dir="${{ steps.stage_pnpm.outputs.dir }}"
+          new=$(find "$dir/cache/v12" "$dir/store/v11/files" -type f -newer "$RUNNER_TEMP/desktop-stage-pnpm.marker" 2>/dev/null | wc -l | tr -d ' ')
+          echo "Staged installs added $new cached files."
+          echo "changed=$([[ "$new" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Save staged install cache
+        if: steps.stage_pnpm_changed.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.stage_pnpm.outputs.dir }}
+          key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
+
+      - name: Package CLI archive
+        if: inputs.cli_archive
+        shell: bash
+        env:
+          CSC_LINK: ${{ inputs.platform == 'mac' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ inputs.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
+          AZURE_TENANT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME || '' }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME || '' }}
+        run: |
+          set -euo pipefail
+          # Later steps run the archive and the app, so the identity and the notarization key
+          # exist only while this step signs.
+          signing_dir=""
+          keychain=""
+          user_keychains() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
+          # Runs every removal however one fails, and fails the step when one did.
+          cleanup() {
+            local rc=$? entry
+            if [[ -n "$signing_dir" ]]; then
+              if command -v security >/dev/null; then
+                while IFS= read -r entry; do
+                  if [[ "$entry" == "$signing_dir"/* ]]; then security delete-keychain "$entry" || rc=1; fi
+                done < <(user_keychains)
+                if [[ -n "$keychain" && -e "$keychain" ]]; then security delete-keychain "$keychain" || rc=1; fi
+              fi
+              rm -rf "$signing_dir" || rc=1
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          if [[ "${{ inputs.platform }}" == "mac" ]]; then
+            signing_dir="$(mktemp -d "$RUNNER_TEMP/cli-signing.XXXXXX")"
+            if [[ -n "$CSC_LINK" && -n "$CSC_KEY_PASSWORD" ]]; then
+              keychain_password="$(openssl rand -hex 16)"
+              echo "::add-mask::$keychain_password"
+              cert_path="$signing_dir/signing.p12"
+              printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
+              security create-keychain -p "$keychain_password" "$signing_dir/signing.keychain-db"
+              keychain="$signing_dir/signing.keychain-db"
+              security set-keychain-settings -lut 21600 "$keychain"
+              security unlock-keychain -p "$keychain_password" "$keychain"
+              security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+              rm -f "$cert_path"
+              security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+              search_list=()
+              while IFS= read -r entry; do search_list+=("$entry"); done < <(user_keychains)
+              security list-keychains -d user -s "$keychain" ${search_list[@]+"${search_list[@]}"}
+              identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
+              if [[ -z "$identity" ]]; then
+                echo "No Developer ID Application identity found in CSC_LINK." >&2
+                exit 1
+              fi
+              export T3CODE_CLI_MAC_SIGN_IDENTITY="$identity"
+              echo "macOS CLI signing enabled."
+            else
+              echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
+            fi
+            if [[ -n "${APPLE_API_KEY:-}" ]]; then
+              key_path="$signing_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
+              printf '%s' "$APPLE_API_KEY" > "$key_path"
+              export APPLE_API_KEY="$key_path"
+            fi
+          fi
+          deferred=()
+          if [[ "${{ steps.stage_cli.outputs.deferred_notarization }}" == "true" ]]; then
+            deferred=(--notary-submission-file "$RUNNER_TEMP/t3-cli-notary-submission")
+          fi
+          node scripts/build-cli-archive.ts \
+            --phase package \
+            --stage-dir "$RUNNER_TEMP/cli-archive-stage" \
+            --platform "${{ inputs.platform }}" \
+            --arch "${{ inputs.arch }}" \
+            --version "${{ inputs.version }}" \
+            --output-dir release-cli \
+            ${deferred[@]+"${deferred[@]}"}
+
+      - name: Smoke-test CLI archive
+        if: inputs.cli_archive && inputs.verify_runner == ''
+        shell: bash
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ inputs.version }}"
+
+      # macOS uploads its archive after "Await CLI notarization" instead.
+      - name: Upload CLI archive
+        if: inputs.cli_archive && inputs.platform != 'mac'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ inputs.platform }}-${{ inputs.arch }}
+          path: release-cli/*
+          if-no-files-found: error
+          # The archive is already gzip or zip; deflating it again saves under 2%.
+          compression-level: 0
 
       # The WSL backend runs the Linux CLI archive inside the distro, so the
       # Windows desktop embeds the same-arch archive the release attaches.
@@ -590,45 +679,64 @@ jobs:
           name: cli-linux-${{ inputs.arch }}
           path: wsl-runtime
 
-      - name: Build desktop artifact
+      - name: Package desktop artifact
         shell: bash
         env:
-          # pnpm only goes to the registry for packages or versions the cache lacks.
-          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
-          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
-          pnpm_config_prefer_offline: "true"
-          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
-          T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
           T3CODE_DESKTOP_UNTRUSTED_BUNDLE: ${{ inputs.untrusted_bundle }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          CSC_LINK: ${{ inputs.platform == 'mac' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.platform == 'mac' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ inputs.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
-          MACOS_SELF_SIGNED_CERTIFICATE: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE }}
-          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD }}
+          MACOS_PROVISIONING_PROFILE: ${{ inputs.platform == 'mac' && secrets.MACOS_PROVISIONING_PROFILE || '' }}
+          MACOS_SELF_SIGNED_CERTIFICATE: ${{ inputs.platform == 'mac' && secrets.MACOS_SELF_SIGNED_CERTIFICATE || '' }}
+          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ inputs.platform == 'mac' && secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD || '' }}
           T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.CLERK_PASSKEY_RP_DOMAINS }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          AZURE_TENANT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ inputs.platform == 'win' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME || '' }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME || '' }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ inputs.platform == 'win' && secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME || '' }}
         run: |
+          # The launch check after this step runs the app, so the notarization key, the profile
+          # and every keychain, electron-builder's own included, exist only while this step signs.
+          signing_dir=""
+          keychain=""
+          user_keychains() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//'; }
+          # Runs every removal however one fails, and fails the step when one did.
+          cleanup() {
+            local rc=$? entry
+            if [[ -n "$signing_dir" ]]; then
+              if command -v security >/dev/null; then
+                while IFS= read -r entry; do
+                  if [[ "$entry" == "$signing_dir"/* ]]; then security delete-keychain "$entry" || rc=1; fi
+                done < <(user_keychains)
+                if [[ -n "$keychain" && -e "$keychain" ]]; then security delete-keychain "$keychain" || rc=1; fi
+              fi
+              rm -rf "$signing_dir" || rc=1
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/desktop-signing.XXXXXX")"
+          # electron-builder writes its CSC_LINK keychain and certificate here. It trusts an
+          # unpacked tool in its cache by file count, so it starts from a cache no earlier step filled.
+          export APP_BUILDER_TMP_DIR="$signing_dir/tmp"
+          export ELECTRON_BUILDER_CACHE="$signing_dir/electron-builder-cache"
+          mkdir "$APP_BUILDER_TMP_DIR" "$ELECTRON_BUILDER_CACHE"
+
           args=(
+            --phase package
+            --stage-dir "$RUNNER_TEMP/desktop-artifact-stage"
             --platform "${{ inputs.platform }}"
             --target "${{ inputs.target }}"
             --arch "${{ inputs.arch }}"
             --build-version "${{ inputs.version }}"
-            --skip-build
             --verbose
           )
-          if [[ -n "${{ inputs.verify_runner }}" ]]; then
-            args+=(--keep-stage)
-          fi
 
           has_all() {
             for value in "$@"; do
@@ -646,11 +754,11 @@ jobs:
                 exit 1
               fi
 
-              key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+              key_path="$signing_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
               printf '%s' "$APPLE_API_KEY" > "$key_path"
               export APPLE_API_KEY="$key_path"
 
-              profile_path="$RUNNER_TEMP/t3code.provisionprofile"
+              profile_path="$signing_dir/t3code.provisionprofile"
               printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
               security cms -D -i "$profile_path" >/dev/null
               export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
@@ -659,18 +767,20 @@ jobs:
               echo "macOS signing enabled."
               args+=(--signed)
             elif has_all "$MACOS_SELF_SIGNED_CERTIFICATE" "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD"; then
-              keychain="$RUNNER_TEMP/t3-self-signed.keychain-db"
               keychain_password="$(openssl rand -hex 16)"
               echo "::add-mask::$keychain_password"
-              cert_path="$RUNNER_TEMP/t3-self-signed.p12"
+              cert_path="$signing_dir/t3-self-signed.p12"
               printf '%s' "$MACOS_SELF_SIGNED_CERTIFICATE" | base64 -D > "$cert_path"
-              security create-keychain -p "$keychain_password" "$keychain"
+              security create-keychain -p "$keychain_password" "$signing_dir/t3-self-signed.keychain-db"
+              keychain="$signing_dir/t3-self-signed.keychain-db"
               security set-keychain-settings -lut 21600 "$keychain"
               security unlock-keychain -p "$keychain_password" "$keychain"
               security import "$cert_path" -k "$keychain" -P "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
               security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
               # codesign finds no identity in a keychain outside the search list, even with --keychain.
-              security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+              search_list=()
+              while IFS= read -r entry; do search_list+=("$entry"); done < <(user_keychains)
+              security list-keychains -d user -s "$keychain" ${search_list[@]+"${search_list[@]}"}
               rm -f "$cert_path"
               # Untrusted identities are listed with -p codesigning but not with -v.
               identity="$(security find-identity -p codesigning "$keychain" | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) .*/\1/p' | head -n 1)"
@@ -710,21 +820,29 @@ jobs:
       # The CLI was submitted without waiting so Apple reviews it while the
       # desktop builds. Notarization does not change the archive bytes, but
       # nothing uploads them, so nothing publishes them, until Apple accepts.
-      # With signing configured, a missing submission id fails this step.
+      # With notarization configured, a missing submission id fails this step.
       - name: Await CLI notarization
-        if: inputs.cli_archive && inputs.platform == 'mac' && steps.build_cli.outputs.deferred_notarization == 'true'
+        if: inputs.cli_archive && inputs.platform == 'mac' && steps.stage_cli.outputs.deferred_notarization == 'true'
         shell: bash
         env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ inputs.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ inputs.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
         run: |
           set -euo pipefail
+          # The launch check after this step runs the app, so the notarization key exists only
+          # while this step reads it.
+          signing_dir=""
+          cleanup() {
+            local rc=$?
+            if [[ -n "$signing_dir" ]]; then rm -rf "$signing_dir" || rc=1; fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
           if [[ -n "${APPLE_API_KEY:-}" ]]; then
-            key_dir="$(mktemp -d "$RUNNER_TEMP/t3-cli-notary.XXXXXXXX")"
-            trap 'rm -rf "$key_dir"' EXIT
-            key_path="$key_dir/AuthKey.p8"
-            (umask 077 && printf '%s' "$APPLE_API_KEY" > "$key_path")
+            signing_dir="$(mktemp -d "$RUNNER_TEMP/cli-notary.XXXXXX")"
+            key_path="$signing_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
+            printf '%s' "$APPLE_API_KEY" > "$key_path"
             export APPLE_API_KEY="$key_path"
           fi
           node scripts/build-cli-archive.ts await-notarization \
@@ -739,23 +857,6 @@ jobs:
           if-no-files-found: error
           # The archive is already gzip or zip; deflating it again saves under 2%.
           compression-level: 0
-
-      # Warm installs only touch the store index, so new content means a fetch.
-      - name: Check staged install cache for new content
-        id: stage_pnpm_changed
-        shell: bash
-        run: |
-          dir="${{ steps.stage_pnpm.outputs.dir }}"
-          new=$(find "$dir/cache/v12" "$dir/store/v11/files" -type f -newer "$RUNNER_TEMP/desktop-stage-pnpm.marker" 2>/dev/null | wc -l | tr -d ' ')
-          echo "Staged installs added $new cached files."
-          echo "changed=$([[ "$new" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      - name: Save staged install cache
-        if: steps.stage_pnpm_changed.outputs.changed == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.stage_pnpm.outputs.dir }}
-          key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
 
       # A build can package fine and still not open (a missing module in the
       # backend or the bundle). This launches the app from the shipped
@@ -797,8 +898,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p verify
-          unpacked=$(ls -d "${TMPDIR:-/tmp}"/t3code-desktop-${{ inputs.platform }}-stage-*/app/dist/"$UNPACKED_DIR")
-          tar -C "$(dirname "$unpacked")" -cf verify/unpacked.tar "$(basename "$unpacked")"
+          tar -C "$RUNNER_TEMP/desktop-artifact-stage/app/dist" -cf verify/unpacked.tar "$UNPACKED_DIR"
           esbuild=scripts/node_modules/.bin/esbuild
           banner="import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);"
           # build-desktop-artifact.ts's own import.meta.main guard must not run

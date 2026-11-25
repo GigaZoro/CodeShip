@@ -14,6 +14,7 @@ import { formatInlineContextReference } from "../../lib/composerContextReference
 import { rememberCopiedComposerAttachments } from "../../lib/copiedComposerAttachments";
 import { pendingDraftWork } from "./pendingDraftWork";
 import { useComposerContextImport } from "./useComposerContextImport";
+import { toastManager } from "../ui/toast";
 
 vi.mock("~/state/use-atom-query-runner", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/state/use-atom-query-runner")>()),
@@ -50,6 +51,8 @@ it.each([
   { kind: "image", edit: "delete" },
   { kind: "file", edit: "undo" },
   { kind: "file", edit: "retain" },
+  { kind: "file", edit: "reattach" },
+  { kind: "file", edit: "duplicate" },
   { kind: "file", edit: "switch" },
   { kind: "file", edit: "cached" },
   { kind: "file", edit: "question" },
@@ -60,12 +63,24 @@ it.each([
   const target = DraftId.make(`clipboard-${kind}-${edit}`);
   const store = useComposerDraftStore.getState();
   using _draft = { [Symbol.dispose]: () => store.clearComposerContent(target) };
+  const copiedFile = new File(["notes"], "notes.txt", { type: "text/plain" });
+  const hasCachedFile = edit === "cached" || edit === "duplicate";
+  if (edit === "reattach" || edit === "duplicate") {
+    store.addFiles(target, [
+      {
+        type: "file",
+        id: "marker",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 5,
+        file: edit === "reattach" ? null : copiedFile,
+      },
+    ]);
+  }
   const sourceEnvironmentId = EnvironmentId.make("clipboard-source");
   rememberCopiedComposerAttachments(
     sourceEnvironmentId,
-    edit === "cached"
-      ? new Map([["source-attachment", new File(["notes"], "notes.txt")]])
-      : new Map(),
+    hasCachedFile ? new Map([["source-attachment", copiedFile]]) : new Map(),
   );
   using _copy = {
     [Symbol.dispose]: () => rememberCopiedComposerAttachments(sourceEnvironmentId, new Map()),
@@ -87,7 +102,7 @@ it.each([
     pendingUserInputs: [],
     composerContextRecords: new Map(),
     composerImages: [],
-    composerFilesRef: { current: [] },
+    composerFilesRef: { current: store.getComposerDraft(target)?.files ?? [] },
     pendingThreadImportsRef: { current: new Map() },
     promptRef,
     addComposerFilesToDraft: (files: Parameters<typeof store.addFiles>[1]) =>
@@ -102,6 +117,7 @@ it.each([
       }}
     />,
   );
+  using toast = vi.spyOn(toastManager, "add");
   const end = pendingDraftWork.end.bind(pendingDraftWork);
   using _settled = vi.spyOn(pendingDraftWork, "end").mockImplementation((key) => {
     end(key);
@@ -154,17 +170,11 @@ it.each([
     if (edit === "question") pastedPrompt = "Question answer";
     promptRef.current = pastedPrompt;
     store.setPrompt(target, pastedPrompt);
-    if (edit !== "cached") await requested.promise;
+    if (!hasCachedFile) await requested.promise;
   });
-  if (edit !== "cached") expect(pendingDraftWork.has(target)).toBe(true);
+  if (!hasCachedFile) expect(pendingDraftWork.has(target)).toBe(true);
   await act(() => {
-    if (
-      edit !== "annotation" &&
-      edit !== "retain" &&
-      edit !== "cached" &&
-      edit !== "question" &&
-      edit !== "switch"
-    ) {
+    if (edit === "delete" || edit === "delete-annotation" || edit === "undo") {
       promptRef.current = "Keep this edit";
       store.setPrompt(target, promptRef.current);
     }
@@ -183,14 +193,18 @@ it.each([
   expect(draft.prompt).toBe(promptRef.current);
   const attachments = kind === "file" ? draft.files : draft.images;
   expect(attachments.map((file) => file.name)).toEqual(
-    edit === "undo" ||
-      edit === "retain" ||
-      edit === "annotation" ||
-      edit === "cached" ||
-      edit === "question"
-      ? ["notes.txt"]
-      : [],
+    edit === "delete" || edit === "delete-annotation" || edit === "switch" ? [] : ["notes.txt"],
   );
+  if (edit === "reattach") {
+    expect(draft.files[0]?.file).toBeInstanceOf(File);
+    expect(draft.files[0]?.id).not.toBe("marker");
+    expect(toast).not.toHaveBeenCalled();
+  }
+  if (edit === "duplicate") {
+    expect(draft.files[0]?.file).toBe(copiedFile);
+    expect(draft.files[0]?.id).toBe("marker");
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+  }
 });
 
 it.each(["same", "other-environment"] as const)(

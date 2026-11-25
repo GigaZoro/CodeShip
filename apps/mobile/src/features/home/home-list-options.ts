@@ -1,3 +1,5 @@
+import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
+import type { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import type { EnvironmentId, SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -9,6 +11,9 @@ import { updateMobilePreferencesAtom } from "../../state/preferences";
 export interface HomeListOptions {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly selectedTags: readonly string[];
+  readonly sort: ThreadListSort;
 }
 
 export interface ResolvedHomeListOptions extends HomeListOptions {
@@ -19,6 +24,9 @@ function defaultHomeListOptions(filters?: ThreadListFilters): HomeListOptions {
   return {
     selectedEnvironmentId: filters?.environmentId ?? null,
     selectedProjectKey: filters?.projectKey ?? null,
+    statusFilter: filters?.status ?? "all",
+    selectedTags: filters?.tags ?? [],
+    sort: filters?.sort ?? "default",
   };
 }
 
@@ -49,12 +57,18 @@ export function HomeListOptionsProvider({
     registry.set(optionsAtom, next);
     if (
       next.selectedEnvironmentId !== current.selectedEnvironmentId ||
-      next.selectedProjectKey !== current.selectedProjectKey
+      next.selectedProjectKey !== current.selectedProjectKey ||
+      next.statusFilter !== current.statusFilter ||
+      next.selectedTags !== current.selectedTags ||
+      next.sort !== current.sort
     ) {
       savePreferences({
         threadListFilters: {
           environmentId: next.selectedEnvironmentId,
           projectKey: next.selectedProjectKey,
+          ...(next.statusFilter === "all" ? {} : { status: next.statusFilter }),
+          ...(next.selectedTags.length === 0 ? {} : { tags: next.selectedTags }),
+          ...(next.sort === "default" ? {} : { sort: next.sort }),
         },
       });
     }
@@ -94,5 +108,6 @@ export function useHomeListOptions(availableEnvironmentIds: ReadonlySet<Environm
     options: resolvedOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
+    updateOptions,
   } as const;
 }

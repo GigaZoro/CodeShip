@@ -53,6 +53,7 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { readThreadFolderMenuState, useThreadFolderActions } from "./useThreadFolderActions";
+import { readThreadTagsMenuState, useThreadTagActions } from "./useThreadTagActions";
 import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
 
 function failureToast(title: string, error: unknown) {
@@ -101,6 +102,7 @@ export function useThreadActionMenu(input: {
     reportFailure: false,
   });
   const folderActions = useThreadFolderActions();
+  const runThreadTagAction = useThreadTagActions();
   const handleNewThread = useNewThreadHandler();
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
@@ -159,6 +161,7 @@ export function useThreadActionMenu(input: {
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
         folders: readThreadFolderMenuState([threadRef]),
+        ...(configLoaded ? { tags: readThreadTagsMenuState([threadRef]) } : {}),
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
@@ -175,6 +178,10 @@ export function useThreadActionMenu(input: {
       }
       if (isThreadFolderMenuAction(action)) {
         await folderActions.runMenuAction(action, [threadRef]);
+        return;
+      }
+      if (action.startsWith("tag:")) {
+        await runThreadTagAction(action, [threadRef]);
         return;
       }
       if (action.startsWith("snooze:")) {

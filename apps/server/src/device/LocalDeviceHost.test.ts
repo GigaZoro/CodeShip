@@ -659,6 +659,7 @@ it.effect.each([
   },
 ])("configures supported emulator cameras for $name", ({ front, back, code, extra, expected }) =>
   Effect.gen(function* () {
+    const path = yield* Path.Path;
     const result = yield* LocalDeviceHost.__testing
       .hubEnvironment({ ANDROID_HOME: "/sdk", EXPO_DEVICE_HUB_EMULATOR_EXTRA_ARGS: extra })
       .pipe(
@@ -666,7 +667,7 @@ it.effect.each([
         Effect.provideService(HostProcess.UserId, 1000),
         Effect.provideService(ProcessRunner.ProcessRunner, {
           run: (input) => {
-            expect(input.command).toBe("/sdk/emulator/emulator");
+            expect(input.command).toBe(path.join("/sdk", "emulator", "emulator"));
             expect(input.args[0]).toMatch(/^-help-camera-(front|back)$/);
             return Effect.succeed(
               processOutput(code, input.args[0] === "-help-camera-front" ? front : back),
@@ -676,12 +677,13 @@ it.effect.each([
         Effect.provide(NodeServices.layer),
       );
     expect(result.EXPO_DEVICE_HUB_EMULATOR_EXTRA_ARGS).toBe(expected);
-  }),
+  }).pipe(Effect.provide(NodePath.layer)),
 );
 
 it.effect("restarts the hub with an Android SDK installed after it started", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-sdk-" });
     const installDir = `${baseDir}/tools/expo-device-hub/${DEVICE_HUB_VERSION}`;
     yield* fs.makeDirectory(`${installDir}/node_modules/expo-device-hub/dist/server`, {
@@ -728,13 +730,13 @@ it.effect("restarts the hub with an Android SDK installed after it started", () 
     );
     yield* host.ensureReady(() => Effect.void);
     yield* host.ensureReady(() => Effect.void);
-    const sdk = `${baseDir}/Library/Android/sdk`;
+    const sdk = path.join(baseDir, "Library", "Android", "sdk");
     yield* fs.makeDirectory(`${sdk}/platform-tools`, { recursive: true });
     yield* fs.writeFileString(`${sdk}/platform-tools/adb`, "");
     yield* host.ensureReady(() => Effect.void);
     expect(hubEnvironments.map((env) => [env?.ANDROID_HOME, env?.PATH])).toEqual([
       [undefined, "/usr/bin"],
-      [sdk, `${sdk}/platform-tools:${sdk}/emulator:/usr/bin`],
+      [sdk, `${path.join(sdk, "platform-tools")}:${path.join(sdk, "emulator")}:/usr/bin`],
     ]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -743,9 +745,10 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-ffmpeg-" });
-    yield* fs.makeDirectory(`${baseDir}/bin`);
-    yield* fs.writeFileString(`${baseDir}/bin/xcrun`, "#!/bin/sh\nexit 0\n");
-    yield* fs.chmod(`${baseDir}/bin/xcrun`, 0o755);
+    // A relative PATH entry has no drive colon for the darwin delimiter to split.
+    const binDir = yield* fs.makeTempDirectoryScoped({ directory: ".", prefix: ".t3-device-bin-" });
+    yield* fs.writeFileString(`${binDir}/xcrun`, "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(`${binDir}/xcrun`, 0o755);
     for (const [directory, tool] of [
       ["platform-tools", "adb"],
       ["emulator", "emulator"],
@@ -758,7 +761,7 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
       effect.pipe(
         Effect.provideService(HostProcess.Environment, {
           HOME: baseDir,
-          PATH: `${baseDir}/bin`,
+          PATH: binDir,
           ANDROID_HOME: `${baseDir}/sdk`,
         }),
         Effect.provideService(HostProcess.Platform, "darwin"),

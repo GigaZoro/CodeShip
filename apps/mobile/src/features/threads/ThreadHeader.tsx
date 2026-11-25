@@ -11,6 +11,7 @@ import {
   useThreadTerminalMenu,
   type ThreadGitControlsProps,
 } from "./ThreadGitControls";
+import type { ThreadPinAction } from "./useThreadPinAction";
 import { t } from "../../lib/i18n";
 
 export function ThreadHeader(props: {
@@ -22,6 +23,7 @@ export function ThreadHeader(props: {
   readonly hasThreadCwd: boolean;
   readonly inspectorMode: ThreadInspectorMode | null;
   readonly onOpenFilesInspector: () => void;
+  readonly pin?: ThreadPinAction | null;
 }) {
   const goBack = useWorkspaceBackNavigation();
   const { toggleAuxiliaryPane, startNewTask } = useAdaptiveWorkspaceLayout();
@@ -41,6 +43,13 @@ export function ThreadHeader(props: {
         },
       ]
     : [];
+  if (props.pin) {
+    actions.push({
+      accessibilityLabel: props.pin.pinned ? t("Unpin thread") : t("Pin thread"),
+      icon: props.pin.pinned ? "pin.slash" : "pin",
+      onPress: props.pin.onToggle,
+    });
+  }
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
 
   return (

@@ -148,6 +148,8 @@ export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 export interface DraftState extends PromptFileDraft {
   readonly editingId: string | null;
   readonly title: string;
+  readonly description: string;
+  readonly savedDescription: string;
   readonly prompt: string;
   readonly enabled: boolean;
   /** Free text; empty means no group. */
@@ -373,6 +375,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
   return {
     editingId: task.id,
     title: task.title,
+    description: task.description ?? "",
+    savedDescription: task.description ?? "",
     prompt: task.prompt,
     ...promptFileDraft(task),
     enabled: task.enabled,
@@ -449,6 +453,7 @@ export function copyTaskDraft(task: ScheduledTask, title: string): DraftState {
     ...taskToDraft(task),
     editingId: null,
     title,
+    savedDescription: "",
     savedFilters: [],
     savedPromptFile: null,
     promptLastRead: null,

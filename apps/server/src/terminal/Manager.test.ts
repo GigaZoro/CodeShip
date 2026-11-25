@@ -2589,6 +2589,7 @@ it.layer(
         deriveProviderInstanceConfigMap,
         serverSettings,
         path,
+        stateDir: "/state",
         rawProviderInstanceId: "configured_home",
         env: undefined,
       });

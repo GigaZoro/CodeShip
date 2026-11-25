@@ -109,7 +109,10 @@ describe("sidebar header new thread", () => {
     vi.mocked(openCommandPalette).mockClear();
     await using screen = await render(
       <SidebarProvider>
-        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} needsYouPanelTarget={null} />
+        <Sidebar
+          routeReveal={{ observedKey: null, pendingKey: null, widenedKey: null }}
+          needsYouPanelTarget={null}
+        />
       </SidebarProvider>,
     );
 
@@ -173,7 +176,10 @@ describe("sidebar render isolation", () => {
     stack.defer(() => useTerminalUiStateStore.getState().setTerminalOpen(routeThreadRef, false));
     await using screen = await render(
       <SidebarProvider>
-        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} needsYouPanelTarget={null} />
+        <Sidebar
+          routeReveal={{ observedKey: null, pendingKey: null, widenedKey: null }}
+          needsYouPanelTarget={null}
+        />
       </SidebarProvider>,
     );
     await expect.element(screen.getByText("Thread 4").first()).toBeInTheDocument();
@@ -245,7 +251,7 @@ describe("sidebar thread rename", () => {
       const tree = () => (
         <SidebarProvider>
           <Sidebar
-            routeReveal={{ observedKey: null, pendingKey: null }}
+            routeReveal={{ observedKey: null, pendingKey: null, widenedKey: null }}
             needsYouPanelTarget={null}
           />
         </SidebarProvider>
@@ -330,7 +336,10 @@ describe("sidebar settled pagination", () => {
         {...workspaceAreaProps("sidebar", 0, "Threads")}
         style={{ height: 400, minHeight: 400 }}
       >
-        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} needsYouPanelTarget={null} />
+        <Sidebar
+          routeReveal={{ observedKey: null, pendingKey: null, widenedKey: null }}
+          needsYouPanelTarget={null}
+        />
       </SidebarProvider>,
     );
     const shelf = screen.container.querySelector<HTMLElement>(

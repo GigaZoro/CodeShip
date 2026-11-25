@@ -251,6 +251,9 @@ export const layer = Layer.effectDiscard(
             commandId,
             threadId: request.threadId,
             messageId,
+            ...(request.demandSourceRunId === undefined
+              ? {}
+              : { demandSourceRunId: request.demandSourceRunId }),
             text: request.detail ?? CONTINUATION_MESSAGE_TEXT,
             notification: request.notification ?? {
               source: { kind: "background_task" },

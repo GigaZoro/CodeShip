@@ -13,6 +13,10 @@ import {
   type SnoozePreset,
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  hasMoreSettledMatches,
+  settledFooterHiddenCount,
+} from "@t3tools/client-runtime/state/threads";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import {
   threadSearchMatchKey,
@@ -26,23 +30,32 @@ import {
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
+import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
+  hasUnseenCompletion as threadHasUnseenCompletion,
+  matchesThreadListStatus,
   resolveThreadStatus,
+  type ThreadListStatusFilter,
   type ThreadStatus,
 } from "@t3tools/client-runtime/state/thread-status";
+
+export { hasUnseenCompletion as threadHasUnseenCompletion } from "@t3tools/client-runtime/state/thread-status";
 import {
   sortActiveThreadsByOrderKey,
   resolveSettledThreadTimestamp,
   resolveThreadActivityTimestamp,
   sortPinnedThreadsByOrderKey,
   sortSettledThreads,
+  sortThreadList,
+  type ThreadLastActivityOrder,
+  type ThreadListSort,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { isListedThreadLineage, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
 
 import type { ThreadListProvider } from "../../state/thread-list-environments";
-import type { ThreadMoveAvailability } from "./threadOrder";
+import type { ThreadListArrangement, ThreadMoveAvailability } from "./threadOrder";
 
 import { t } from "../../lib/i18n";
 import { relativeTime } from "../../lib/time";
@@ -51,6 +64,7 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   applyPendingThreadOrder,
   reconcilePendingThreadOrder,
+  threadListActiveManualOrder,
   type PendingThreadOrder,
 } from "./threadOrder";
 
@@ -230,19 +244,6 @@ export function threadListV2LayoutTime(input: {
 export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
 export const THREAD_LIST_V2_SETTLED_PAGE_COUNT = 25;
 
-export function threadHasUnseenCompletion(
-  thread: Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt">,
-): boolean {
-  const completedAt = thread.latestRun?.completedAt;
-  if (!completedAt) return false;
-  const completedAtMs = Date.parse(completedAt);
-  if (Number.isNaN(completedAtMs)) return false;
-  if (!thread.lastVisitedAt) return false;
-  const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAtMs)) return true;
-  return completedAtMs > lastVisitedAtMs;
-}
-
 export function resolveThreadListV2WokeAt(
   thread: EnvironmentThreadShell,
   options: { readonly now: string },
@@ -410,7 +411,10 @@ export interface ThreadListV2ChatFolderOlder {
   readonly isListed: (thread: EnvironmentThreadShell) => boolean;
   /** Settled chats of the folder in scope that are not local. */
   readonly unloadedCount: number;
-  readonly state: "loading" | "failed" | null;
+  readonly hasMorePages?: boolean;
+  readonly visibleCount?: number | undefined;
+  readonly state: "loading" | null;
+  readonly failed?: boolean;
 }
 
 /** Active and working threads go in folders; pinned threads and the shelves stay shared. */
@@ -437,10 +441,12 @@ export interface ThreadListV2FolderFooter {
   /** Where the folder's rows end in the layout's items. */
   readonly index: number;
   readonly folderKey: string;
-  readonly hiddenCount: number;
+  /** Null when a filter hides how many of its older chats not loaded yet match. */
+  readonly hiddenCount: number | null;
   /** Settled chats the folder lists now; a press asks it for a page more. */
   readonly listedCount: number;
-  readonly state: "loading" | "failed" | null;
+  readonly state: "loading" | null;
+  readonly failed: boolean;
 }
 
 export interface ThreadListV2Layout {
@@ -451,7 +457,8 @@ export interface ThreadListV2Layout {
   readonly needsYouLaterCount: number;
   readonly folderHeaders: ReadonlyArray<ThreadListV2FolderHeader>;
   readonly folderFooters: ReadonlyArray<ThreadListV2FolderFooter>;
-  readonly hiddenSettledCount: number;
+  /** Null when a filter hides how many older settled threads not loaded yet match. */
+  readonly hiddenSettledCount: number | null;
   /** The settled rows the shelf may list, before its visible limit. */
   readonly listedSettledThreads: ReadonlyArray<EnvironmentThreadShell>;
   /** How many settled chats each chat folder lists, by its key. */
@@ -466,6 +473,8 @@ export interface ThreadListV2Layout {
   readonly nextSnoozeWakeAt: string | null;
   /** Threads listed only because their messages match the search. */
   readonly contentOnlyThreadKeys: ReadonlySet<string>;
+  /** The Pinned and Active rows in the order the list shows them, past every filter. */
+  readonly listedSections: ThreadListArrangement<EnvironmentThreadShell>;
 }
 
 export interface ThreadListV2ThreadListItem {
@@ -528,9 +537,10 @@ export interface ThreadListV2FolderMoreListItem {
   readonly type: "v2-folder-more";
   readonly key: string;
   readonly folderKey: string;
-  readonly hiddenCount: number;
+  readonly hiddenCount: number | null;
   readonly listedCount: number;
-  readonly state: "loading" | "failed" | null;
+  readonly state: "loading" | null;
+  readonly failed: boolean;
 }
 
 export interface ThreadListV2SettledShelfListItem {
@@ -613,7 +623,8 @@ export function threadListV2ListItemsAreEqual(
         previous.key === item.key &&
         previous.hiddenCount === item.hiddenCount &&
         previous.listedCount === item.listedCount &&
-        previous.state === item.state
+        previous.state === item.state &&
+        previous.failed === item.failed
       );
     case "v2-needs-you":
       return (
@@ -709,6 +720,8 @@ export function buildThreadListV2ListItems(input: {
   readonly snoozedShelfExpanded?: boolean;
   readonly snoozedShelfHeaderIndex?: number | null;
   readonly settledCount?: number;
+  /** A filter may still find older settled threads, so the shelf shows while it lists none. */
+  readonly settledUncounted?: boolean;
   readonly settledShelfExpanded?: boolean;
   readonly settledShelfHeaderIndex?: number | null;
   readonly snoozeLabelNow?: string;
@@ -811,6 +824,7 @@ export function buildThreadListV2ListItems(input: {
           hiddenCount: footer.hiddenCount,
           listedCount: footer.listedCount,
           state: footer.state,
+          failed: footer.failed,
         });
         folderFooterIndex += 1;
       } else if (header?.index === index) {
@@ -856,7 +870,7 @@ export function buildThreadListV2ListItems(input: {
     });
     result.push(...threadItems.slice(snoozedShelfHeaderIndex, snoozedEnd));
   }
-  if (settledShelfHeaderIndex !== null && settledCount > 0) {
+  if (settledShelfHeaderIndex !== null && (settledCount > 0 || input.settledUncounted === true)) {
     result.push({
       type: "v2-settled-shelf",
       key: "v2-settled-shelf",
@@ -899,6 +913,14 @@ function sortSettledThreadsReusingLast(
   return lastSettledOutput;
 }
 
+/** A status or tag filter keeps only some threads, including ones in older settled pages not loaded yet. */
+export function isThreadListV2Filtered(input: {
+  readonly statusFilter?: ThreadListStatusFilter | undefined;
+  readonly selectedTags?: readonly string[] | undefined;
+}): boolean {
+  return (input.statusFilter ?? "all") !== "all" || (input.selectedTags?.length ?? 0) > 0;
+}
+
 export function buildThreadListV2Items(input: {
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
@@ -909,6 +931,10 @@ export function buildThreadListV2Items(input: {
   }> | null;
   readonly searchQuery: string;
   readonly matchedThreadKeys?: ReadonlySet<string>;
+  readonly statusFilter?: ThreadListStatusFilter | undefined;
+  readonly sort?: ThreadListSort | undefined;
+  readonly lastActivityOrder?: ThreadLastActivityOrder | undefined;
+  readonly selectedTags?: readonly string[] | undefined;
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly settledLimit?: number;
@@ -925,6 +951,8 @@ export function buildThreadListV2Items(input: {
   readonly isListedSettled?: (thread: EnvironmentThreadShell) => boolean;
   /** Settled threads in scope that are not local (older settled threads not loaded). */
   readonly unloadedSettledCount?: number;
+  readonly hasMoreSettledPages?: boolean;
+  readonly settledReadFailed?: boolean;
   readonly grouping?: ThreadListV2Grouping | null;
   /** User-named folders: their chats, settled ones too, leave the lists below. */
   readonly chatFolders?: ThreadListV2ChatFolders | null;
@@ -952,6 +980,13 @@ export function buildThreadListV2Items(input: {
     : null;
 
   const workingShelfEnabled = input.workingShelfEnabled === true;
+  const grouping = input.grouping ?? null;
+  const sort = input.sort ?? "default";
+  const activeManualOrder = threadListActiveManualOrder({
+    sort,
+    workingShelfEnabled,
+    grouped: grouping !== null,
+  });
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
@@ -962,8 +997,23 @@ export function buildThreadListV2Items(input: {
   const chatSettled: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
+  const statusFilter = input.statusFilter ?? "all";
+  const selectedTags = new Set(input.selectedTags);
+  // Older pages may hold settled threads a filter drops, so it counts only the loaded ones.
+  const filtered = isThreadListV2Filtered(input);
+  const uncountedOlder = (unloaded: number, hasMorePages = unloaded > 0) => ({
+    counted: filtered ? 0 : unloaded,
+    uncounted: (filtered || unloaded === 0) && hasMorePages,
+  });
   const listableThreads = input.threads.filter(
-    (thread) => thread.archivedAt === null && isListedThreadLineage(thread.lineage),
+    (thread) =>
+      thread.archivedAt === null &&
+      isListedThreadLineage(thread.lineage) &&
+      matchesAnyThreadTag(thread.source.tags, selectedTags) &&
+      (statusFilter === "all" ||
+        matchesThreadListStatus(thread, statusFilter, {
+          woke: resolveThreadListV2WokeAt(thread, { now }) !== null,
+        })),
   );
   const awaiting = collectNeedsYouThreads(listableThreads, { now });
   // Put-off threads still wait on the user, so they stay in Needs you, after the others.
@@ -1076,26 +1126,35 @@ export function buildThreadListV2Items(input: {
       settledShelfHeaderIndex: null,
       nextSnoozeWakeAt,
       contentOnlyThreadKeys,
+      listedSections: { pinned: [], active: [], activeManualOrder },
     };
   }
 
-  const grouping = input.grouping ?? null;
+  const groupedActive =
+    grouping === null
+      ? active
+      : [...active, ...working.filter((thread) => !chatActive.includes(thread))];
   // Folders order by the latest message, as on web; one manual order cannot span folders.
   // They hold working threads too, which the Working shelf also lists.
   const orderedActive =
-    grouping !== null
-      ? sortWorkingThreadsBySend([
-          ...active,
-          ...working.filter((thread) => !chatActive.includes(thread)),
-        ])
-      : workingShelfEnabled
-        ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
-        : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
-  const orderedWorking = sortWorkingThreadsBySend(working);
-  const orderedSnoozed = [...snoozed].sort(
-    (left, right) =>
-      parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
-  );
+    sort !== "default"
+      ? sortThreadList(groupedActive, sort, input.lastActivityOrder)
+      : grouping !== null
+        ? sortWorkingThreadsBySend(groupedActive)
+        : workingShelfEnabled
+          ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
+          : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
+  const orderedWorking =
+    sort === "default"
+      ? sortWorkingThreadsBySend(working)
+      : sortThreadList(working, sort, input.lastActivityOrder);
+  const orderedSnoozed =
+    sort !== "default"
+      ? sortThreadList(snoozed, sort, input.lastActivityOrder)
+      : [...snoozed].sort(
+          (left, right) =>
+            parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
+        );
   const selectedThreadKey = input.selectedThreadKey ?? null;
   const visibleWorking =
     input.workingShelfExpanded === true
@@ -1109,12 +1168,14 @@ export function buildThreadListV2Items(input: {
       : orderedSnoozed.filter(
           (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
         );
+  // Older settled threads load in settlement order, so the shelf keeps that order under any sort.
   const orderedSettled = sortSettledThreadsReusingLast(settled);
   const listedSettled =
     input.isListedSettled === undefined
       ? orderedSettled
       : orderedSettled.filter(input.isListedSettled);
-  const settledTotal = orderedSettled.length + (input.unloadedSettledCount ?? 0);
+  const olderSettled = uncountedOlder(input.unloadedSettledCount ?? 0, input.hasMoreSettledPages);
+  const settledTotal = orderedSettled.length + olderSettled.counted;
   const settledLimit = input.settledLimit ?? Number.POSITIVE_INFINITY;
   const limitedSettled =
     listedSettled.length > settledLimit ? listedSettled.slice(0, settledLimit) : listedSettled;
@@ -1145,11 +1206,12 @@ export function buildThreadListV2Items(input: {
     waitingSince: awaiting.sinceOf(thread),
     later: putOff.has(thread),
   }));
-  for (const thread of applyPendingThreadOrder(
+  const orderedPinned = applyPendingThreadOrder(
     sortPinnedThreadsByOrderKey(pinned),
     "pinned",
     pending,
-  )) {
+  );
+  for (const thread of orderedPinned) {
     items.push({
       thread,
       variant: "card",
@@ -1214,7 +1276,12 @@ export function buildThreadListV2Items(input: {
   if (chatFolders !== null) {
     // Active chats first, then settled ones, each in the list's own order.
     const filedByFolder = groupThreads(
-      [...sortWorkingThreadsBySend(chatActive), ...sortSettledThreads(chatSettled)],
+      [
+        ...(sort === "default"
+          ? sortWorkingThreadsBySend(chatActive)
+          : sortThreadList(chatActive, sort, input.lastActivityOrder)),
+        ...sortSettledThreads(chatSettled),
+      ],
       (thread) => chatFolders.folderKeyOf(thread) ?? "",
     );
     const settledChats = new Set(chatSettled);
@@ -1226,12 +1293,31 @@ export function buildThreadListV2Items(input: {
         older === undefined
           ? filed
           : filed.filter((thread) => !settledChats.has(thread) || older.isListed(thread));
-      const unlistedCount = (older?.unloadedCount ?? 0) + filed.length - folderThreads.length;
-      const savedEmpty = showSavedChatFolders && folder.kind === "chats" && folder.saved;
-      if (folderThreads.length === 0 && unlistedCount === 0 && !savedEmpty) continue;
+      const folderOlder = uncountedOlder(older?.unloadedCount ?? 0, older?.hasMorePages);
       const listedCount = folderThreads.filter((thread) => settledChats.has(thread)).length;
+      const shownCount = Math.min(listedCount, older?.visibleCount ?? Infinity);
+      let remainingSettled = shownCount;
+      const visible =
+        shownCount === listedCount
+          ? folderThreads
+          : folderThreads.filter((thread) => !settledChats.has(thread) || remainingSettled-- > 0);
+      const unlistedCount = folderOlder.counted + filed.length - visible.length;
+      const hasMore = hasMoreSettledMatches(
+        older?.hasMorePages ?? (older?.unloadedCount ?? 0) > 0,
+        filed.length,
+        visible.length,
+      );
+      const savedEmpty = showSavedChatFolders && folder.kind === "chats" && folder.saved;
+      if (
+        folderThreads.length === 0 &&
+        unlistedCount === 0 &&
+        !folderOlder.uncounted &&
+        older?.failed !== true &&
+        !savedEmpty
+      )
+        continue;
       listedFolderSettledCounts.set(folder.key, listedCount);
-      for (const thread of pushFolderHeader(folder, folderThreads, unlistedCount)) {
+      for (const thread of pushFolderHeader(folder, visible, unlistedCount)) {
         if (settledChats.has(thread)) {
           items.push({
             thread,
@@ -1245,13 +1331,14 @@ export function buildThreadListV2Items(input: {
           pushFolderThread(thread);
         }
       }
-      if (folder.expanded && unlistedCount > 0) {
+      if (folder.expanded && (hasMore || older?.failed === true)) {
         folderFooters.push({
           index: items.length,
           folderKey: folder.key,
-          hiddenCount: unlistedCount,
-          listedCount,
+          hiddenCount: !hasMore ? 0 : filtered || unlistedCount === 0 ? null : unlistedCount,
+          listedCount: shownCount,
           state: older?.state ?? null,
+          failed: older?.failed === true,
         });
       }
     }
@@ -1304,7 +1391,11 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
-  const settledShelfHeaderIndex = settledTotal > 0 ? items.length : null;
+  // Under a filter older pages may still hold matches, so the shelf stays open to page them.
+  const settledShelfHeaderIndex =
+    settledTotal > 0 || olderSettled.uncounted || input.settledReadFailed === true
+      ? items.length
+      : null;
   for (const thread of visibleSettled) {
     items.push({
       thread,
@@ -1325,7 +1416,12 @@ export function buildThreadListV2Items(input: {
     needsYouLaterCount: needsYou.filter((thread) => putOff.has(thread)).length,
     folderHeaders,
     folderFooters,
-    hiddenSettledCount: Math.max(0, settledTotal - pagedSettled.length),
+    hiddenSettledCount: settledFooterHiddenCount({
+      filtered,
+      hasMorePages: input.hasMoreSettledPages ?? (input.unloadedSettledCount ?? 0) > 0,
+      hiddenLoaded: orderedSettled.length - pagedSettled.length,
+      displayCount: settledTotal - pagedSettled.length,
+    }),
     listedSettledThreads: listedSettled,
     listedFolderSettledCounts,
     workingCount: orderedWorking.length,
@@ -1336,5 +1432,6 @@ export function buildThreadListV2Items(input: {
     settledShelfHeaderIndex,
     nextSnoozeWakeAt,
     contentOnlyThreadKeys,
+    listedSections: { pinned: orderedPinned, active: orderedActive, activeManualOrder },
   };
 }

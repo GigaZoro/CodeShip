@@ -12,6 +12,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 import { type RightPanelSurface } from "./rightPanelStore";
+import { isThreadPanelSurface } from "./rightPanelThreadSurface";
 
 export type ClosedView =
   | {
@@ -83,6 +84,11 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
             typeof surface.target.name === "string" &&
             (surface.target.platform === "ios" || surface.target.platform === "android")))
       );
+    case "thread":
+      return (
+        isThreadPanelSurface(surface) &&
+        scopedThreadKey(surface.threadRef) !== scopedThreadKey(view.threadRef)
+      );
     case "side-chat":
       return typeof surface.threadId === "string" && surface.id === `side-chat:${surface.threadId}`;
     case "pull-request":
@@ -99,6 +105,15 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
       return false;
   }
 };
+
+function migrateClosedViews(persisted: unknown) {
+  const entries = (persisted as Partial<Pick<ClosedViewStoreState, "entries">> | null)?.entries;
+  return {
+    entries: Array.isArray(entries)
+      ? entries.filter(isClosedViewEntry).filter(isPersistentView)
+      : [],
+  };
+}
 
 export const useClosedViewStore = create<ClosedViewStoreState>()(
   persist(
@@ -130,15 +145,8 @@ export const useClosedViewStore = create<ClosedViewStoreState>()(
         resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
       ),
       version: 2,
-      migrate: (persisted) => {
-        const entries = (persisted as Partial<Pick<ClosedViewStoreState, "entries">> | null)
-          ?.entries;
-        return {
-          entries: Array.isArray(entries)
-            ? entries.filter(isClosedViewEntry).filter(isPersistentView)
-            : [],
-        };
-      },
+      migrate: migrateClosedViews,
+      merge: (persisted, current) => ({ ...current, ...migrateClosedViews(persisted) }),
       partialize: ({ entries }) => ({ entries: entries.filter(isPersistentView) }),
     },
   ),

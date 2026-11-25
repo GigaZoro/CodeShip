@@ -4,33 +4,63 @@ import {
   resolveThreadDetailsVisibility,
   setThreadDetailsItem,
   THREAD_DETAILS_ITEMS,
+  threadDetailsVisibilityFor,
 } from "./threadDetailsItems";
 
-const usage = THREAD_DETAILS_ITEMS.find((item) => item.id === "usage")!;
-const servers = THREAD_DETAILS_ITEMS.find((item) => item.id === "servers")!;
+const item = (id: string) => THREAD_DETAILS_ITEMS.find((candidate) => candidate.id === id)!;
 
 describe("thread details items", () => {
   it.each([
-    { legacy: false, items: {}, usage: false, context: false },
-    { legacy: true, items: {}, usage: true, context: true },
-    { legacy: true, items: { usage: false }, usage: false, context: true },
-    { legacy: false, items: { usage: true, retired: false }, usage: true, context: false },
-  ])("resolves Usage and Context from overrides and the retired Labs flag: %o", (row) => {
-    const visibility = resolveThreadDetailsVisibility({
-      threadDetailsItems: row.items,
-      threadDetailsUsageEnabled: row.legacy,
-    });
+    { items: {}, status: true, usage: true, context: true, gitActions: false, agentActions: false },
+    {
+      items: { usage: false, gitActions: true },
+      status: true,
+      usage: false,
+      context: true,
+      gitActions: true,
+      agentActions: false,
+    },
+    {
+      items: { agentActions: true, retired: false },
+      status: true,
+      usage: true,
+      context: true,
+      gitActions: false,
+      agentActions: true,
+    },
+  ])("resolves defaults and overrides: %o", (row) => {
+    const visibility = resolveThreadDetailsVisibility({ threadDetailsItems: row.items });
+    expect(visibility.status).toBe(row.status);
     expect(visibility.usage).toBe(row.usage);
     expect(visibility.context).toBe(row.context);
-    expect(visibility.servers).toBe(true);
+    expect(visibility.gitActions).toBe(row.gitActions);
+    expect(visibility.agentActions).toBe(row.agentActions);
+    expect(visibility.machineLoad).toBe(true);
   });
 
-  it("stores only choices that differ from the default", () => {
-    const legacyOn = { threadDetailsItems: {}, threadDetailsUsageEnabled: true };
-    expect(setThreadDetailsItem(legacyOn, usage, false)).toEqual({ usage: false });
-    expect(setThreadDetailsItem(legacyOn, usage, true)).toEqual({});
+  it("shows a draft only the chosen controls for where it runs", () => {
+    const everything = resolveThreadDetailsVisibility({
+      threadDetailsItems: Object.fromEntries(THREAD_DETAILS_ITEMS.map((entry) => [entry.id, true])),
+    });
+    const shown = (visibility: Record<string, boolean>) =>
+      Object.keys(visibility).filter((id) => visibility[id]);
 
-    const hidden = { threadDetailsItems: { servers: false }, threadDetailsUsageEnabled: false };
-    expect(setThreadDetailsItem(hidden, servers, true)).toEqual({});
+    expect(shown(threadDetailsVisibilityFor(everything, true))).toEqual(["environment", "branch"]);
+    expect(shown(threadDetailsVisibilityFor({ ...everything, branch: false }, true))).toEqual([
+      "environment",
+    ]);
+    expect(threadDetailsVisibilityFor(everything, false)).toBe(everything);
+  });
+
+  it.each([
+    { current: {}, id: "usage", visible: false, stored: { usage: false } },
+    { current: {}, id: "usage", visible: true, stored: {} },
+    { current: {}, id: "gitActions", visible: true, stored: { gitActions: true } },
+    { current: { gitActions: true }, id: "gitActions", visible: false, stored: {} },
+    { current: { servers: false }, id: "servers", visible: true, stored: {} },
+  ])("stores only choices that differ from the default: %o", (row) => {
+    expect(
+      setThreadDetailsItem({ threadDetailsItems: row.current }, item(row.id), row.visible),
+    ).toEqual(row.stored);
   });
 });

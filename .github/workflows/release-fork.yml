@@ -23,8 +23,10 @@ on:
 
 # A newer pending run replaces an older pending one, so a burst of pushes
 # releases only the latest main, and runs never overlap on the version number.
+# The group is per ref: only a run on main publishes, so a dispatch from
+# another branch must never replace main's pending run.
 concurrency:
-  group: release-fork
+  group: release-fork-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -64,6 +66,7 @@ jobs:
             /.env.example
             /docs/release-notes.md
             /.github/scripts/fork-release.cjs
+            /.github/scripts/git-history.cjs
             /.github/scripts/release-notes.cjs
           sparse-checkout-cone-mode: false
 
@@ -234,6 +237,7 @@ jobs:
           sparse-checkout: |
             /docs/release-notes.md
             /.github/scripts/fork-release.cjs
+            /.github/scripts/git-history.cjs
             /.github/scripts/release-notes.cjs
             /scripts/install.sh
           sparse-checkout-cone-mode: false

@@ -91,7 +91,7 @@ export function useComposerContextImport(input: {
   readonly composerFilesRef: ChatComposerProps["composerFilesRef"];
   readonly promptRef: RefObject<string>;
   readonly pendingThreadImportsRef: RefObject<Map<string, number>>;
-  readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => string[];
+  readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => void;
 }) {
   const {
     environmentId,
@@ -233,6 +233,7 @@ export function useComposerContextImport(input: {
       fail(t("The attachment limit has been reached."));
       return;
     }
+    let stored: boolean;
     if (record.kind === "image") {
       const accepted = addComposerDraftImages(
         attachmentDraftTarget,
@@ -254,10 +255,9 @@ export function useComposerContextImport(input: {
             ) ?? false,
         },
       );
-      if (!accepted.includes(localId))
-        fail("The draft rejected this attachment (duplicate or attachment limit reached).");
+      stored = accepted.includes(localId);
     } else {
-      const accepted = addComposerFilesToDraft([
+      addComposerFilesToDraft([
         {
           type: "file",
           id: localId,
@@ -267,8 +267,14 @@ export function useComposerContextImport(input: {
           file,
         },
       ]);
-      if (!accepted.includes(localId))
-        fail("The draft rejected this attachment (duplicate or attachment limit reached).");
+      // A restored file replaces its marker without appearing among the newly appended ids.
+      stored =
+        getComposerDraft(attachmentDraftTarget)?.files.some(
+          (saved) => saved.id === localId && saved.file === file,
+        ) ?? false;
+    }
+    if (!stored) {
+      fail(t("The draft rejected this attachment (duplicate or attachment limit reached)."));
     }
   };
   const importAttachmentRecord = async (

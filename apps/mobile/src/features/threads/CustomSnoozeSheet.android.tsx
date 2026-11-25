@@ -38,7 +38,7 @@ import {
   applySnoozePickerTime,
   snoozeDateToPickerDate,
 } from "./customSnoozeDate";
-import { msg, t } from "../../lib/i18n";
+import { getFormattingLocale, msg, t } from "../../lib/i18n";
 
 type Props = {
   readonly onClose: () => void;
@@ -166,11 +166,14 @@ export function CustomSnoozeSheet(props: Props) {
                       options={[
                         {
                           value: "date",
-                          label: date.toLocaleDateString([], { month: "short", day: "numeric" }),
+                          label: date.toLocaleDateString(getFormattingLocale(), {
+                            month: "short",
+                            day: "numeric",
+                          }),
                         },
                         {
                           value: "time",
-                          label: date.toLocaleTimeString([], {
+                          label: date.toLocaleTimeString(getFormattingLocale(), {
                             hour: "numeric",
                             minute: "2-digit",
                             hourCycle: is24Hour ? "h23" : "h12",

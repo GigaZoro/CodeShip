@@ -7,3 +7,5 @@
 packages/source-control-github/schema/** linguist-generated
 apps/server/schema/** linguist-generated
 **/*.graphql.ts linguist-generated
+# Rebases and merges keep release notes newest first; `vp i` configures the driver.
+docs/release-notes.md merge=release-notes

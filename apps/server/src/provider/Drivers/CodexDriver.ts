@@ -1,10 +1,5 @@
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
-import {
-  CodexSettings,
-  ProviderDriverKind,
-  defaultInstanceIdForDriver,
-  ProviderSetupError,
-} from "@t3tools/contracts";
+import { CodexSettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import type * as Signature from "effect/crypto/Signature";
@@ -23,6 +18,8 @@ import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneratio
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as ServerConfig from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import * as ProviderLoginHome from "../providerLoginHome.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
@@ -68,13 +65,8 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
-import {
-  codexContinuationIdentity,
-  materializeCodexShadowHome,
-  resolveCodexHomeLayout,
-} from "./CodexHomeLayout.ts";
+import { codexContinuationIdentity, materializeCodexShadowHome } from "./CodexHomeLayout.ts";
 import { makeCodexCliAuth } from "./CodexCliAuth.ts";
-import { codexAccountShadowHomePath } from "../CodexManagedHome.ts";
 import { makeManagedCodexProvider } from "./CodexManagedProvider.ts";
 import { codexUsageReader } from "./codexUsage.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
@@ -169,6 +161,7 @@ export type CodexDriverEnv =
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers
   | ServerConfig.ServerConfig
+  | ServerSettingsService
   | ServerSecretStore.ServerSecretStore
   | ServerEnvironment.ServerEnvironmentIdentity
   | CodexInstallation.CodexInstallation
@@ -219,25 +212,26 @@ export const CodexDriver: ProviderDriver<
       environment,
       yield* HostProcess.Environment,
     );
-    const environmentHome = processEnv.CODEX_HOME;
     const { stateDir } = yield* ServerConfig.ServerConfig;
-    const hasOwnHome = config.homePath.trim() || config.shadowHomePath.trim();
-    const privateHome = codexAccountShadowHomePath(pathService, stateDir, instanceId);
-    // An added account, or the built-in one set to a private login, signs in to its own auth
-    // folder; the rest links to the shared Codex home, which the environment's CODEX_HOME names
-    // when no home is set.
-    const homeConfig = hasOwnHome
-      ? !config.homePath.trim() && environmentHome?.trim()
-        ? { ...config, homePath: environmentHome }
-        : config
-      : config.privateLogin === true
-        ? { ...config, homePath: environmentHome?.trim() ?? "", shadowHomePath: privateHome }
-        : environmentHome?.trim()
-          ? { ...config, homePath: environmentHome }
-          : instanceId !== defaultInstanceIdForDriver(DRIVER_KIND)
-            ? { ...config, shadowHomePath: privateHome }
-            : config;
-    const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
+    const platform = yield* HostProcess.Platform;
+    const { layout: baseLayout, bindingKey: credentialKey } = yield* ProviderLoginHome.codexBinding(
+      config,
+      instanceId,
+      stateDir,
+      processEnv,
+    );
+    const loginHomes = yield* ProviderLoginHome.make({
+      driver: DRIVER_KIND,
+      instanceId,
+      bindingKey: credentialKey,
+      generation: config.loginGeneration,
+    });
+    const forLoginHome = (home: string) => ({
+      ...baseLayout,
+      mode: "authOverlay" as const,
+      effectiveHomePath: home,
+    });
+    const homeLayout = loginHomes.activeHome ? forLoginHome(loginHomes.activeHome) : baseLayout;
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampBaseIdentity = withInstanceIdentity({
       instanceId,
@@ -275,7 +269,6 @@ export const CodexDriver: ProviderDriver<
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
-    const platform = yield* HostProcess.Platform;
     const codexOnPath = resolveCommandPath(DEFAULT_BINARY_PATH, { env: processEnv }).pipe(
       Effect.provideService(HostProcess.Platform, platform),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -340,7 +333,11 @@ export const CodexDriver: ProviderDriver<
         accentColor,
         environment,
         enabled,
-        config: homeConfig,
+        config: {
+          ...config,
+          homePath: homeLayout.sharedHomePath,
+          shadowHomePath: homeLayout.mode === "authOverlay" ? homeLayout.effectiveHomePath! : "",
+        },
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
@@ -467,22 +464,24 @@ export const CodexDriver: ProviderDriver<
             ),
           );
 
-    const openAppServerClient = acquireBinaryPath.pipe(
-      Effect.flatMap((binaryPath) =>
-        withCodexAppServerClient({
-          binaryPath,
-          homePath: effectiveConfig.homePath,
-          launchArgs: withPrivateMcpSignIns(
-            resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-            privateMcpSignIns,
-          ),
-          cwd: process.cwd(),
-          environment: processEnv,
-        }),
-      ),
-      Effect.map(({ client }) => client),
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
+    const openClientIn = (homePath: string) =>
+      acquireBinaryPath.pipe(
+        Effect.flatMap((binaryPath) =>
+          withCodexAppServerClient({
+            binaryPath,
+            homePath,
+            launchArgs: withPrivateMcpSignIns(
+              resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+              privateMcpSignIns,
+            ),
+            cwd: process.cwd(),
+            environment: processEnv,
+          }),
+        ),
+        Effect.map(({ client }) => client),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+    const openAppServerClient = openClientIn(effectiveConfig.homePath);
     const plugins = yield* makeCodexPluginManagement({
       instanceId,
       openClient: openAppServerClient,
@@ -509,8 +508,24 @@ export const CodexDriver: ProviderDriver<
 
     const auth = yield* makeCodexCliAuth({
       instanceId,
-      credentialKey: `codex:home:${homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath}`,
+      credentialKey,
       openClient: openAppServerClient,
+      stageLogin: Effect.fn("CodexDriver.stageLogin")(function* (context) {
+        const staged = yield* loginHomes.stage(context.flowId, context.bindingInstances);
+        yield* materializeCodexShadowHome(forLoginHome(staged.home)).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+          Effect.mapError(
+            () =>
+              new ProviderSetupError({
+                instanceId,
+                operation: "start",
+                detail: "Could not prepare the Codex sign-in home.",
+              }),
+          ),
+        );
+        return { openClient: openClientIn(staged.home), persist: staged.persist };
+      }),
       canLogout,
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
     // `subscribe` replays the current state first; skipping that replay when idle keeps a rebuild

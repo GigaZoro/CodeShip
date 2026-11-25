@@ -74,6 +74,11 @@ import {
   validateClaudeReplayRecordingSelection,
   type ClaudeRecordingQueryMode,
 } from "./claudeReplayRecordingConfig.ts";
+import {
+  parseClaudeReplayArguments,
+  recorderEnvironmentValue,
+  selectClaudeReplayPrompts,
+} from "./replayRecorderArguments.ts";
 
 const CLAUDE_RECORDINGS = {
   simple: {
@@ -299,263 +304,259 @@ const CLAUDE_RECORDINGS = {
   },
 } as const;
 
-function readArgValue(name: string): string | undefined {
-  const args = process.argv.slice(2);
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-}
+async function main() {
+  const options = parseClaudeReplayArguments(process.argv.slice(2), process.env);
 
-function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordingQueryMode {
-  const raw = readArgValue("--query-mode") ?? process.env.T3_CLAUDE_REPLAY_QUERY_MODE;
-  if (raw === undefined) {
-    return defaultMode;
-  }
-  if (
-    raw === "streaming" ||
-    raw === "restart" ||
-    raw === "resume_at_cursor" ||
-    raw === "fork_session" ||
-    raw === "fork_session_prior_turn" ||
-    raw === "fork_session_merge_back_siblings" ||
-    raw === "active_steering" ||
-    raw === "interrupt" ||
-    raw === "interrupt_restart"
-  ) {
-    return raw;
-  }
-  throw new Error(
-    `Unsupported Claude replay query mode '${raw}'. Use 'streaming', 'restart', 'resume_at_cursor', 'fork_session', 'fork_session_prior_turn', 'fork_session_merge_back_siblings', 'active_steering', 'interrupt', or 'interrupt_restart'.`,
-  );
-}
-
-const scenario = readArgValue("--scenario") ?? process.env.T3_CLAUDE_REPLAY_SCENARIO ?? "simple";
-const recording = CLAUDE_RECORDINGS[scenario as keyof typeof CLAUDE_RECORDINGS];
-const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-
-if (recording === undefined) {
-  throw new Error(`Claude replay fixture '${scenario}' is not configured.`);
-}
-
-const positionalOutputPath = process.argv[2]?.startsWith("--") ? undefined : process.argv[2];
-const path = await Effect.runPromise(
-  Effect.service(Path.Path).pipe(Effect.provide(NodeServices.layer)),
-);
-const outputPath =
-  readArgValue("--out") ??
-  positionalOutputPath ??
-  (await Effect.runPromise(
-    path.fromFileUrl(
-      new URL(
-        `../src/orchestration-v2/testkit/${recording.defaultTranscriptFile}`,
-        import.meta.url,
-      ),
-    ),
-  ));
-
-function encodeTranscriptNdjson(
-  transcript: Awaited<ReturnType<typeof recordClaudeAgentSdkReplayTranscript>>,
-): string {
-  const { entries, ...metadata } = transcript;
-  return [
-    JSON.stringify({ type: "transcript_start", ...metadata }),
-    ...entries.map((entry) => JSON.stringify(entry)),
-    "",
-  ].join("\n");
-}
-
-function joinPath(directory: string, fileName: string): string {
-  return `${directory.replace(/\/+$/u, "")}/${fileName.replace(/^\/+/u, "")}`;
-}
-
-function runFileSystem<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>): Promise<A> {
-  return Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
-}
-
-function selectedPrompts(): ReadonlyArray<string> {
-  if (process.env.T3_CLAUDE_REPLAY_PROMPTS !== undefined) {
-    return process.env.T3_CLAUDE_REPLAY_PROMPTS.split("\n---\n").filter(
-      (prompt) => prompt.length > 0,
-    );
-  }
-  if (process.env.T3_CLAUDE_REPLAY_PROMPT !== undefined) {
-    return [process.env.T3_CLAUDE_REPLAY_PROMPT];
-  }
-  return recording.prompts;
-}
-
-const prompts = selectedPrompts();
-const queryMode = selectedQueryMode(recording.queryMode);
-validateClaudeReplayRecordingSelection({
-  scenario,
-  configuredQueryMode: recording.queryMode,
-  selectedQueryMode: queryMode,
-  configuredPromptCount: recording.prompts.length,
-  selectedPromptCount: prompts.length,
-});
-
-function runtimePolicyForRecording(input: {
-  readonly cwd: string;
-  readonly override?: RuntimePolicyV2Override;
-}): ProviderAdapter.ProviderAdapterV2RuntimePolicy {
-  return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    cwd: input.override?.cwd ?? input.cwd,
-    ...(input.override?.approvalPolicy === undefined
-      ? {}
-      : { approvalPolicy: input.override.approvalPolicy }),
-    ...(input.override?.sandboxPolicy === undefined
-      ? {}
-      : { sandboxPolicy: input.override.sandboxPolicy }),
-    ...(input.override?.reasoningEffort === undefined
-      ? {}
-      : { reasoningEffort: input.override.reasoningEffort }),
-  });
-}
-
-async function makeToolCallReadOnlyRecordingWorkspace(): Promise<string> {
-  await runFileSystem(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.remove(TOOL_CALL_READ_ONLY_WORKSPACE_ROOT, { recursive: true, force: true });
-      yield* fs.makeDirectory(TOOL_CALL_READ_ONLY_WORKSPACE_ROOT, { recursive: true });
-    }),
-  );
-  return TOOL_CALL_READ_ONLY_WORKSPACE_ROOT;
-}
-
-const cwd =
-  process.env.T3_CLAUDE_REPLAY_CWD ??
-  (scenario === "tool_call_read_only"
-    ? await makeToolCallReadOnlyRecordingWorkspace()
-    : await makeCheckpointWorkspace(`claude-agent-sdk-record-${scenario}`));
-const shouldRemoveCwd = process.env.T3_CLAUDE_REPLAY_CWD === undefined;
-
-const expectedAbsentWorkspacePaths =
-  "expectedAbsentWorkspacePaths" in recording ? recording.expectedAbsentWorkspacePaths : [];
-
-async function assertWorkspacePathsAbsent(phase: "before" | "after"): Promise<void> {
-  const presentPaths = await runFileSystem(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const present: Array<string> = [];
-      for (const relativePath of expectedAbsentWorkspacePaths) {
-        if (yield* fs.exists(joinPath(cwd, relativePath))) {
-          present.push(relativePath);
-        }
-      }
-      return present;
-    }),
-  );
-  if (presentPaths.length > 0) {
+  function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordingQueryMode {
+    const raw = options.queryMode;
+    if (raw === undefined) {
+      return defaultMode;
+    }
+    if (
+      raw === "streaming" ||
+      raw === "restart" ||
+      raw === "resume_at_cursor" ||
+      raw === "fork_session" ||
+      raw === "fork_session_prior_turn" ||
+      raw === "fork_session_merge_back_siblings" ||
+      raw === "active_steering" ||
+      raw === "interrupt" ||
+      raw === "interrupt_restart"
+    ) {
+      return raw;
+    }
     throw new Error(
-      `Claude replay fixture '${scenario}' expected ${presentPaths
-        .map((relativePath) => `'${relativePath}'`)
-        .join(
-          ", ",
-        )} to be absent ${phase} the recorded turn, but found in the recording workspace.`,
+      `Unsupported Claude replay query mode '${raw}'. Use 'streaming', 'restart', 'resume_at_cursor', 'fork_session', 'fork_session_prior_turn', 'fork_session_merge_back_siblings', 'active_steering', 'interrupt', or 'interrupt_restart'.`,
     );
   }
-}
 
-if (shouldRemoveCwd && (scenario === "tool_call_read_only" || scenario === "subagent")) {
-  await runFileSystem(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.writeFileString(
-        joinPath(cwd, "package.json"),
-        encodeUnknownJsonString({
-          name: "claude-read-only-fixture",
-          private: true,
-          scripts: { typecheck: "tsc --noEmit" },
-        }),
-      );
-      yield* fs.writeFileString(
-        joinPath(cwd, "tsconfig.json"),
-        encodeUnknownJsonString({
-          compilerOptions: {
-            module: "ESNext",
-            strict: true,
-            target: "ES2022",
-          },
-        }),
-      );
-    }),
+  const scenario = options.scenario;
+  const recording = CLAUDE_RECORDINGS[scenario as keyof typeof CLAUDE_RECORDINGS];
+  const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+  if (recording === undefined) {
+    throw new Error(`Claude replay fixture '${scenario}' is not configured.`);
+  }
+
+  const path = await Effect.runPromise(
+    Effect.service(Path.Path).pipe(Effect.provide(NodeServices.layer)),
   );
-}
+  const outputPath =
+    options.out ??
+    (await Effect.runPromise(
+      path.fromFileUrl(
+        new URL(
+          `../src/orchestration-v2/testkit/${recording.defaultTranscriptFile}`,
+          import.meta.url,
+        ),
+      ),
+    ));
 
-try {
-  const runtimePolicy = runtimePolicyForRecording({
-    cwd,
-    ...("runtimePolicyOverride" in recording ? { override: recording.runtimePolicyOverride } : {}),
-  });
-  const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(runtimePolicy);
+  function encodeTranscriptNdjson(
+    transcript: Awaited<ReturnType<typeof recordClaudeAgentSdkReplayTranscript>>,
+  ): string {
+    const { entries, ...metadata } = transcript;
+    return [
+      JSON.stringify({ type: "transcript_start", ...metadata }),
+      ...entries.map((entry) => JSON.stringify(entry)),
+      "",
+    ].join("\n");
+  }
 
-  await assertWorkspacePathsAbsent("before");
-  const transcript = await recordClaudeAgentSdkReplayTranscript({
+  function joinPath(directory: string, fileName: string): string {
+    return `${directory.replace(/\/+$/u, "")}/${fileName.replace(/^\/+/u, "")}`;
+  }
+
+  function runFileSystem<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>): Promise<A> {
+    return Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
+  }
+
+  const prompts = selectClaudeReplayPrompts(recording.prompts, process.env);
+  const queryMode = selectedQueryMode(recording.queryMode);
+  validateClaudeReplayRecordingSelection({
     scenario,
-    prompts,
-    modelSelection: {
-      ...CLAUDE_MODEL_SELECTION,
-      model: process.env.T3_CLAUDE_REPLAY_MODEL ?? CLAUDE_MODEL_SELECTION.model,
-    },
-    cwd,
-    ...(process.env.T3_CLAUDE_REPLAY_SESSION_ID === undefined
-      ? {}
-      : { sessionId: process.env.T3_CLAUDE_REPLAY_SESSION_ID }),
-    queryMode,
-    ...("enableTools" in recording && recording.enableTools === true ? { enableTools: true } : {}),
-    ...(queryPolicy.tools === undefined ? {} : { tools: queryPolicy.tools }),
-    permissionMode: queryPolicy.permissionMode,
-    ...(queryPolicy.allowedTools === undefined ? {} : { allowedTools: queryPolicy.allowedTools }),
-    ...(queryPolicy.allowDangerouslySkipPermissions === undefined
-      ? {}
-      : { allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions }),
-    ...(queryPolicy.installPermissionCallback ? { enablePermissionCallback: true } : {}),
-    ...("permissionDecision" in recording
-      ? { permissionDecision: recording.permissionDecision }
-      : {}),
-    ...("interruptAfter" in recording ? { interruptAfter: recording.interruptAfter } : {}),
-    ...("interruptAfterToolUses" in recording
-      ? { interruptAfterToolUses: recording.interruptAfterToolUses }
-      : {}),
-    ...("backgroundWakeCounts" in recording
-      ? { backgroundWakeCounts: recording.backgroundWakeCounts }
-      : {}),
-    ...("offerNextPromptImmediately" in recording
-      ? { offerNextPromptImmediately: recording.offerNextPromptImmediately }
-      : {}),
+    configuredQueryMode: recording.queryMode,
+    selectedQueryMode: queryMode,
+    configuredPromptCount: recording.prompts.length,
+    selectedPromptCount: prompts.length,
   });
-  await assertWorkspacePathsAbsent("after");
-  const transcriptWithEvidence =
-    expectedAbsentWorkspacePaths.length === 0
-      ? transcript
-      : {
-          ...transcript,
-          metadata: {
-            ...transcript.metadata,
-            verifiedAbsentWorkspacePaths: [...expectedAbsentWorkspacePaths],
-          },
-        };
-  await runFileSystem(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
-      yield* fs.writeFileString(outputPath, encodeTranscriptNdjson(transcriptWithEvidence));
-    }),
-  );
-  await Effect.runPromise(
-    Console.log(
-      `Wrote ${transcript.entries.length} ${CLAUDE_AGENT_SDK_REPLAY_PROTOCOL} replay entries to ${outputPath}`,
-    ),
-  );
-} finally {
-  if (shouldRemoveCwd) {
+
+  function runtimePolicyForRecording(input: {
+    readonly cwd: string;
+    readonly override?: RuntimePolicyV2Override;
+  }): ProviderAdapter.ProviderAdapterV2RuntimePolicy {
+    return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: input.override?.cwd ?? input.cwd,
+      ...(input.override?.approvalPolicy === undefined
+        ? {}
+        : { approvalPolicy: input.override.approvalPolicy }),
+      ...(input.override?.sandboxPolicy === undefined
+        ? {}
+        : { sandboxPolicy: input.override.sandboxPolicy }),
+      ...(input.override?.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: input.override.reasoningEffort }),
+    });
+  }
+
+  async function makeToolCallReadOnlyRecordingWorkspace(): Promise<string> {
     await runFileSystem(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        yield* fs.remove(cwd, { recursive: true, force: true });
+        yield* fs.remove(TOOL_CALL_READ_ONLY_WORKSPACE_ROOT, { recursive: true, force: true });
+        yield* fs.makeDirectory(TOOL_CALL_READ_ONLY_WORKSPACE_ROOT, { recursive: true });
+      }),
+    );
+    return TOOL_CALL_READ_ONLY_WORKSPACE_ROOT;
+  }
+
+  if (options.dryRun) {
+    await Effect.runPromise(Console.log(outputPath));
+    return;
+  }
+
+  const configuredModel = recorderEnvironmentValue("T3_CLAUDE_REPLAY_MODEL");
+  const sessionId = recorderEnvironmentValue("T3_CLAUDE_REPLAY_SESSION_ID");
+  const configuredCwd = recorderEnvironmentValue("T3_CLAUDE_REPLAY_CWD");
+  const cwd =
+    configuredCwd ??
+    (scenario === "tool_call_read_only"
+      ? await makeToolCallReadOnlyRecordingWorkspace()
+      : await makeCheckpointWorkspace(`claude-agent-sdk-record-${scenario}`));
+  const shouldRemoveCwd = configuredCwd === undefined;
+
+  const expectedAbsentWorkspacePaths =
+    "expectedAbsentWorkspacePaths" in recording ? recording.expectedAbsentWorkspacePaths : [];
+
+  async function assertWorkspacePathsAbsent(phase: "before" | "after"): Promise<void> {
+    const presentPaths = await runFileSystem(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const present: Array<string> = [];
+        for (const relativePath of expectedAbsentWorkspacePaths) {
+          if (yield* fs.exists(joinPath(cwd, relativePath))) {
+            present.push(relativePath);
+          }
+        }
+        return present;
+      }),
+    );
+    if (presentPaths.length > 0) {
+      throw new Error(
+        `Claude replay fixture '${scenario}' expected ${presentPaths
+          .map((relativePath) => `'${relativePath}'`)
+          .join(
+            ", ",
+          )} to be absent ${phase} the recorded turn, but found in the recording workspace.`,
+      );
+    }
+  }
+
+  if (shouldRemoveCwd && (scenario === "tool_call_read_only" || scenario === "subagent")) {
+    await runFileSystem(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          joinPath(cwd, "package.json"),
+          encodeUnknownJsonString({
+            name: "claude-read-only-fixture",
+            private: true,
+            scripts: { typecheck: "tsc --noEmit" },
+          }),
+        );
+        yield* fs.writeFileString(
+          joinPath(cwd, "tsconfig.json"),
+          encodeUnknownJsonString({
+            compilerOptions: {
+              module: "ESNext",
+              strict: true,
+              target: "ES2022",
+            },
+          }),
+        );
       }),
     );
   }
+
+  try {
+    const runtimePolicy = runtimePolicyForRecording({
+      cwd,
+      ...("runtimePolicyOverride" in recording
+        ? { override: recording.runtimePolicyOverride }
+        : {}),
+    });
+    const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(runtimePolicy);
+
+    await assertWorkspacePathsAbsent("before");
+    const transcript = await recordClaudeAgentSdkReplayTranscript({
+      scenario,
+      prompts,
+      modelSelection: {
+        ...CLAUDE_MODEL_SELECTION,
+        model: configuredModel ?? CLAUDE_MODEL_SELECTION.model,
+      },
+      cwd,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      queryMode,
+      ...("enableTools" in recording && recording.enableTools === true
+        ? { enableTools: true }
+        : {}),
+      ...(queryPolicy.tools === undefined ? {} : { tools: queryPolicy.tools }),
+      permissionMode: queryPolicy.permissionMode,
+      ...(queryPolicy.allowedTools === undefined ? {} : { allowedTools: queryPolicy.allowedTools }),
+      ...(queryPolicy.allowDangerouslySkipPermissions === undefined
+        ? {}
+        : { allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions }),
+      ...(queryPolicy.installPermissionCallback ? { enablePermissionCallback: true } : {}),
+      ...("permissionDecision" in recording
+        ? { permissionDecision: recording.permissionDecision }
+        : {}),
+      ...("interruptAfter" in recording ? { interruptAfter: recording.interruptAfter } : {}),
+      ...("interruptAfterToolUses" in recording
+        ? { interruptAfterToolUses: recording.interruptAfterToolUses }
+        : {}),
+      ...("backgroundWakeCounts" in recording
+        ? { backgroundWakeCounts: recording.backgroundWakeCounts }
+        : {}),
+      ...("offerNextPromptImmediately" in recording
+        ? { offerNextPromptImmediately: recording.offerNextPromptImmediately }
+        : {}),
+    });
+    await assertWorkspacePathsAbsent("after");
+    const transcriptWithEvidence =
+      expectedAbsentWorkspacePaths.length === 0
+        ? transcript
+        : {
+            ...transcript,
+            metadata: {
+              ...transcript.metadata,
+              verifiedAbsentWorkspacePaths: [...expectedAbsentWorkspacePaths],
+            },
+          };
+    await runFileSystem(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
+        yield* fs.writeFileString(outputPath, encodeTranscriptNdjson(transcriptWithEvidence));
+      }),
+    );
+    await Effect.runPromise(
+      Console.log(
+        `Wrote ${transcript.entries.length} ${CLAUDE_AGENT_SDK_REPLAY_PROTOCOL} replay entries to ${outputPath}`,
+      ),
+    );
+  } finally {
+    if (shouldRemoveCwd) {
+      await runFileSystem(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(cwd, { recursive: true, force: true });
+        }),
+      );
+    }
+  }
 }
+
+if (import.meta.main) await main();

@@ -28,6 +28,8 @@ import * as Stream from "effect/Stream";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { queueWorktreeRelease } from "../workspace/worktreeRelease.ts";
 import * as ServerConfig from "../config.ts";
 import { mcpToolSession, type McpToolSession } from "../mcp/AcpMcpStdioBridge.ts";
 import { expandHomePath } from "../os-jank.ts";
@@ -958,6 +960,41 @@ const threadShowCommand = Command.make("show", {
   ),
 );
 
+const releaseWorktreeCommand = Command.make("release-worktree", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  run: Flag.String("run"),
+  worktree: Flag.String("worktree"),
+  durableRef: Flag.String("durable-ref"),
+  alsoDurable: Flag.String("also-durable-ref").pipe(Flag.atLeast(0)),
+  saveIgnored: Flag.Boolean("save-ignored").pipe(
+    Flag.withDescription(
+      "Keep ignored files in a private, same-volume hard-link backup before queuing release.",
+    ),
+  ),
+}).pipe(
+  Command.withDescription(
+    "Hand a disposable checkout to this server after its external owners and claims have released it. Queues removal after this run finishes.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
+      const request = yield* queueWorktreeRelease({
+        stateDir: config.stateDir,
+        threadId: flags.thread,
+        runId: flags.run,
+        worktreePath: flags.worktree,
+        durableRef: flags.durableRef,
+        alsoDurable: flags.alsoDurable,
+        saveIgnored: flags.saveIgnored,
+      }).pipe(Effect.provide(GitVcsDriver.layer.pipe(Layer.provide(ServerConfig.layer(config)))));
+      if (request.savedFiles)
+        yield* Console.log(`Preserved ignored files in ${request.savedFiles}`);
+      yield* Console.log(`Queued worktree release in ${request.file}`);
+    }),
+  ),
+);
+
 export const threadCommand = Command.make("thread").pipe(
   Command.withDescription("Start, message, and read threads on the running server."),
   Command.withSubcommands([
@@ -965,5 +1002,6 @@ export const threadCommand = Command.make("thread").pipe(
     threadStartCommand,
     threadSendCommand,
     threadShowCommand,
+    releaseWorktreeCommand,
   ]),
 );

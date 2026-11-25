@@ -1,11 +1,16 @@
 import {
   type EnvironmentId,
   isListedThreadLineage,
+  ThreadTag,
   type OrchestrationV2ThreadShell,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
 
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+
+import type { EnvironmentThreadShell } from "./models.ts";
 import { threadKey } from "./entities.ts";
 
 type FilterableThread = Pick<
@@ -122,4 +127,84 @@ export function hiddenThreadKeys(
     if (isHidden(key)) hidden.add(key);
   }
   return hidden.size === 0 ? NO_HIDDEN_THREADS : hidden;
+}
+
+const decodeThreadTag = Schema.decodeUnknownOption(ThreadTag);
+
+export function parseThreadTag(value: string): string | null {
+  return Option.getOrNull(decodeThreadTag(value));
+}
+
+export function collectThreadTags(
+  visibleThreads: ReadonlyArray<EnvironmentThreadShell>,
+): readonly string[] {
+  const tags = new Set<string>();
+  for (const thread of visibleThreads) {
+    if (thread.archivedAt !== null || !isListedThreadLineage(thread.lineage)) continue;
+    for (const tag of thread.source.tags ?? []) {
+      if (parseThreadTag(tag) === tag) tags.add(tag);
+    }
+  }
+  return [...tags].sort();
+}
+
+export interface ThreadTagTarget {
+  readonly tags: readonly string[] | undefined;
+  /** Tags hidden where the thread lives, or null while that environment's settings load. */
+  readonly blockedTags: ReadonlyArray<string> | null;
+}
+
+/**
+ * The Tags menu for `targets`: suggestions and the targets' own tags, less any hidden where a
+ * target lives. Null while a target's settings load, since a hidden tag would hide its thread.
+ */
+export function threadTagMenuEntries(
+  suggestions: readonly string[],
+  targets: readonly ThreadTagTarget[],
+): ReadonlyArray<{ readonly tag: string; readonly checked: boolean }> | null {
+  const blocked = new Set<string>();
+  for (const target of targets) {
+    if (target.blockedTags === null) return null;
+    for (const tag of target.blockedTags) blocked.add(tag);
+  }
+  const tags = new Set(suggestions);
+  for (const target of targets) {
+    for (const tag of target.tags ?? []) if (parseThreadTag(tag) === tag) tags.add(tag);
+  }
+  return [...tags]
+    .filter((tag) => !blocked.has(tag))
+    .sort()
+    .map((tag) => ({ tag, checked: targets.every((target) => target.tags?.includes(tag)) }));
+}
+
+/** Why `tag` cannot change on every target, as `threadTagMenuEntries` decides it. */
+export function threadTagBlock(
+  targets: readonly ThreadTagTarget[],
+  tag: string,
+): "loading" | "hidden" | null {
+  if (targets.some((target) => target.blockedTags === null)) return "loading";
+  return targets.some((target) => target.blockedTags?.includes(tag)) ? "hidden" : null;
+}
+
+export function matchesAnyThreadTag(
+  tags: readonly string[] | undefined,
+  selected: ReadonlySet<string>,
+): boolean {
+  return selected.size === 0 || tags?.some((tag) => selected.has(tag)) === true;
+}
+
+/** Selected tags no loaded thread carries stay listed after the rest, so each can be turned off. */
+export function threadTagFilterOptions(
+  available: readonly string[],
+  selected: readonly string[],
+): readonly string[] {
+  const missing = selected.filter((tag) => !available.includes(tag));
+  return missing.length === 0 ? available : [...available, ...missing];
+}
+
+export function toggleThreadTagSelection(
+  selected: readonly string[],
+  tag: string,
+): readonly string[] {
+  return selected.includes(tag) ? selected.filter((value) => value !== tag) : [...selected, tag];
 }

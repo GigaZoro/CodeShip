@@ -1,6 +1,7 @@
 import { uuidv4 } from "../../lib/uuid";
 import { ThreadUndoNotice } from "./ThreadUndoNotice";
 import { use } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import { NativePrimaryColumnContext } from "../../native/v5-workspace-context";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
@@ -13,7 +14,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 
 import { useProjects } from "../../state/entities";
-import { steadyNavigationThreadShellsAtom } from "../../state/threads";
+import { steadyListedThreadShellsAtom, threadFilterTagsAtom } from "../../state/threads";
 import { useLaunchingThreads, usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -45,7 +46,7 @@ import { WorkspaceListEmptyDetail } from "../layout/workspace/WorkspaceListEmpty
 import { WorkspaceListHeader } from "../layout/workspace/WorkspaceListHeader";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
-import { buildHomeListFilterMenuItems } from "./home-list-filter-menu";
+import { buildHomeListFilterMenuItems, threadListRefinementFilters } from "./home-list-filter-menu";
 import { t } from "../../lib/i18n";
 
 export function HomeRouteScreen() {
@@ -56,10 +57,11 @@ export function HomeRouteScreen() {
   const openArchivedThreads = useOpenArchivedThreads();
   const openArtifacts = useOpenArtifacts();
   const projects = useProjects();
-  // Stop rebuilding the streaming thread list while Thread covers Home.
+  const availableTags = useAtomValue(threadFilterTagsAtom);
+  // Stop arranging the thread list while Thread covers Home.
   const visible = useHomeRouteVisible();
   const threads = useLaunchingThreads(
-    useAtomValueWhileVisible(steadyNavigationThreadShellsAtom, visible),
+    useAtomValueWhileVisible(steadyListedThreadShellsAtom, visible),
   );
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
@@ -145,6 +147,7 @@ export function HomeRouteScreen() {
     options: listOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
+    updateOptions,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   const projectScopes = useMemo(
@@ -190,13 +193,23 @@ export function HomeRouteScreen() {
             accessibilityLabel: t("Search threads"),
           }}
           filter={{
-            customized: selectedEnvironmentId !== null || selectedProjectKey !== null,
+            customized:
+              selectedEnvironmentId !== null ||
+              selectedProjectKey !== null ||
+              threadListRefinementFilters(listOptions),
             items: buildHomeListFilterMenuItems({
               environments,
               projects: projectFilterOptions,
               selectedEnvironmentId,
               selectedProjectKey,
               grouping,
+              statusFilter: listOptions.statusFilter,
+              sort: listOptions.sort,
+              onSortChange: (sort) => updateOptions({ sort }),
+              selectedTags: listOptions.selectedTags,
+              availableTags,
+              onTagsChange: (selectedTags) => updateOptions({ selectedTags }),
+              onStatusChange: (statusFilter) => updateOptions({ statusFilter }),
               onEnvironmentChange: setSelectedEnvironmentId,
               onProjectChange: setSelectedProjectKey,
               onProjectGroupingChange: setProjectGrouping,
@@ -208,6 +221,12 @@ export function HomeRouteScreen() {
         />
 
         <HomeScreen
+          statusFilter={listOptions.statusFilter}
+          sort={listOptions.sort}
+          onSortChange={(sort) => updateOptions({ sort })}
+          selectedTags={listOptions.selectedTags}
+          onTagsChange={(selectedTags) => updateOptions({ selectedTags })}
+          onStatusChange={(statusFilter) => updateOptions({ statusFilter })}
           catalogState={catalogState}
           environments={environments}
           onAddConnection={() => openSettings(navigation, "SettingsEnvironmentNew")}

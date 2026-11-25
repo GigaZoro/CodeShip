@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -13,7 +14,15 @@ import {
   resolveServerInstallation,
 } from "./invocation.ts";
 
+const isWindows = HostProcess.Platform.defaultValue() === "win32";
+
 it.layer(NodeServices.layer)("root CLI commands", (it) => {
+  // A relative PATH entry has no drive colon for the POSIX delimiter the tests run under to split.
+  const makePathDirectory = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.makeTempDirectoryScoped({ directory: ".", prefix: ".t3-invocation-" });
+  });
+
   const rootCommand = (input: {
     readonly node: string;
     readonly entry: string;
@@ -33,7 +42,7 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
   const pathWithT3 = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const bin = yield* fs.makeTempDirectoryScoped();
+    const bin = yield* makePathDirectory;
     yield* fs.writeFileString(path.join(bin, "t3"), "#!/bin/sh\n", { mode: 0o755 });
     return bin;
   });
@@ -74,32 +83,30 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     }),
   );
 
+  const desktopLauncher = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fs.makeTempDirectoryScoped();
+    const shim = path.join(home, ".local bin", "t3");
+    yield* fs.makeDirectory(path.dirname(shim), { recursive: true });
+    yield* fs.writeFileString(shim, "#!/bin/sh\n", { mode: 0o755 });
+    return {
+      node: "/tmp/.mount_T3abc/t3code",
+      entry: "/tmp/.mount_T3abc/resources/app.asar/apps/server/dist/bin.mjs",
+      env: { T3CODE_CLI_PATH: shim },
+    };
+  });
+
   it.effect("names this install's launcher when t3 is not on PATH", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const home = yield* fs.makeTempDirectoryScoped();
-      const shim = path.join(home, ".local bin", "t3");
-      yield* fs.makeDirectory(path.dirname(shim), { recursive: true });
-      yield* fs.writeFileString(shim, "#!/bin/sh\n", { mode: 0o755 });
-      const desktop = {
-        node: "/tmp/.mount_T3abc/t3code",
-        entry: "/tmp/.mount_T3abc/resources/app.asar/apps/server/dist/bin.mjs",
-        env: { T3CODE_CLI_PATH: shim },
-      };
+      const desktop = yield* desktopLauncher;
+      const shim = desktop.env.T3CODE_CLI_PATH;
 
       expect(yield* rootCommand(desktop)).toBe(`sudo '${shim}' browser setup`);
 
       // An unrelated `t3` on PATH, such as an older npm global, is another install's CLI.
       expect(yield* rootCommand({ ...desktop, path: yield* pathWithT3 })).toBe(
         `sudo '${shim}' browser setup`,
-      );
-
-      // The link the app installs onto PATH leads to its own launcher, so plain `t3` is right.
-      const linked = yield* fs.makeTempDirectoryScoped();
-      yield* fs.symlink(shim, path.join(linked, "t3"));
-      expect(yield* rootCommand({ ...desktop, path: linked })).toBe(
-        'sudo env "PATH=$PATH" t3 browser setup',
       );
 
       expect(
@@ -120,31 +127,54 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
         }),
       ).toBe("sudo /opt/t3/t3 browser setup");
 
-      // A global npm launcher runs the downloaded executable; PATH's `t3` is that launcher.
-      const prefix = path.join(home, "npm");
-      const npmLauncher = path.join(prefix, "lib/node_modules/t3/bin/t3.mjs");
-      yield* fs.makeDirectory(path.dirname(npmLauncher), { recursive: true });
-      yield* fs.makeDirectory(path.join(prefix, "bin"));
-      yield* fs.writeFileString(npmLauncher, "", { mode: 0o755 });
-      yield* fs.writeFileString(
-        path.join(prefix, "lib/node_modules/t3/package.json"),
-        `{"name":"t3","version":"${packageJson.version}"}`,
+      expect(yield* rootCommand({ ...desktop, env: { T3CODE_CLI_PATH: `${shim}-missing` } })).toBe(
+        'sudo env "PATH=$PATH" t3 browser setup',
       );
-      yield* fs.symlink(npmLauncher, path.join(prefix, "bin/t3"));
-      expect(
-        yield* rootCommand({
-          node: "/home/theo/.t3/runtime/versions/1.0.0/t3",
-          entry: "/home/theo/.t3/runtime/versions/1.0.0/t3",
-          executable: true,
-          path: path.join(prefix, "bin"),
-          env: { T3CODE_NPM_LAUNCHER_PATH: npmLauncher },
-        }),
-      ).toBe('sudo env "PATH=$PATH" t3 browser setup');
+    }).pipe(Effect.scoped),
+  );
 
-      expect(
-        yield* rootCommand({ ...desktop, env: { T3CODE_CLI_PATH: path.join(home, "gone") } }),
-      ).toBe('sudo env "PATH=$PATH" t3 browser setup');
-    }),
+  it.effect.skipIf(!symlinksSupported)(
+    "uses t3 on PATH when a global npm launcher started the downloaded executable",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* makePathDirectory;
+        const prefix = path.join(home, "npm");
+        const npmLauncher = path.join(prefix, "lib/node_modules/t3/bin/t3.mjs");
+        yield* fs.makeDirectory(path.dirname(npmLauncher), { recursive: true });
+        yield* fs.makeDirectory(path.join(prefix, "bin"));
+        yield* fs.writeFileString(npmLauncher, "", { mode: 0o755 });
+        yield* fs.writeFileString(
+          path.join(prefix, "lib/node_modules/t3/package.json"),
+          `{"name":"t3","version":"${packageJson.version}"}`,
+        );
+        yield* fs.symlink(npmLauncher, path.join(prefix, "bin/t3"));
+        expect(
+          yield* rootCommand({
+            node: "/home/theo/.t3/runtime/versions/1.0.0/t3",
+            entry: "/home/theo/.t3/runtime/versions/1.0.0/t3",
+            executable: true,
+            path: path.join(prefix, "bin"),
+            env: { T3CODE_NPM_LAUNCHER_PATH: path.resolve(npmLauncher) },
+          }),
+        ).toBe('sudo env "PATH=$PATH" t3 browser setup');
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "uses t3 on PATH when it links to the desktop launcher",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const desktop = yield* desktopLauncher;
+        const linked = yield* makePathDirectory;
+        yield* fs.symlink(desktop.env.T3CODE_CLI_PATH, path.join(linked, "t3"));
+        expect(yield* rootCommand({ ...desktop, path: linked })).toBe(
+          'sudo env "PATH=$PATH" t3 browser setup',
+        );
+      }).pipe(Effect.scoped),
   );
 });
 
@@ -229,7 +259,8 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
     }),
   );
 
-  it.effect("requires the npm prefix's bin to point to the running package", () =>
+  // Windows never reports an npm-global install, and its backslash paths cannot take the POSIX layout.
+  it.effect.skipIf(isWindows)("requires the npm prefix's bin to point to the running package", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -261,40 +292,42 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
     }),
   );
 
-  it.effect("proves the downloaded executable was started by a global npm launcher", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      // Installation checks compare real paths; macOS tmpdir sits behind /var -> /private/var.
-      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
-      const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/t3");
-      const launcher = path.join(packageRoot, "bin/t3.mjs");
-      const executable = path.join(root, ".t3/runtime/versions/1.0.0/t3");
-      yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
-      yield* fs.makeDirectory(path.dirname(executable), { recursive: true });
-      yield* fs.makeDirectory(path.join(prefix, "bin"));
-      yield* fs.writeFileString(launcher, "");
-      yield* fs.writeFileString(executable, "");
-      yield* fs.symlink(launcher, path.join(prefix, "bin/t3"));
-      const resolve = resolveServerInstallation.pipe(
-        Effect.provideService(HostProcess.ExecutablePath, executable),
-        Effect.provideService(HostProcess.Arguments, [executable, executable]),
-        Effect.provideService(HostProcess.IsExecutable, true),
-        Effect.provideService(HostProcess.Platform, "linux"),
-        Effect.provideService(HostProcess.Environment, { T3CODE_NPM_LAUNCHER_PATH: launcher }),
-      );
-      for (const [version, expected] of [
-        ["0.0.1", null],
-        [packageJson.version, { kind: "npm-global", prefix }],
-      ] as const) {
-        yield* fs.writeFileString(
-          path.join(packageRoot, "package.json"),
-          `{"name":"t3","version":"${version}","bin":{"t3":"./bin/t3.mjs"}}`,
+  it.effect.skipIf(isWindows)(
+    "proves the downloaded executable was started by a global npm launcher",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        // Installation checks compare real paths; macOS tmpdir sits behind /var -> /private/var.
+        const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+        const prefix = path.join(root, "bunx-tools");
+        const packageRoot = path.join(prefix, "lib/node_modules/t3");
+        const launcher = path.join(packageRoot, "bin/t3.mjs");
+        const executable = path.join(root, ".t3/runtime/versions/1.0.0/t3");
+        yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+        yield* fs.makeDirectory(path.dirname(executable), { recursive: true });
+        yield* fs.makeDirectory(path.join(prefix, "bin"));
+        yield* fs.writeFileString(launcher, "");
+        yield* fs.writeFileString(executable, "");
+        yield* fs.symlink(launcher, path.join(prefix, "bin/t3"));
+        const resolve = resolveServerInstallation.pipe(
+          Effect.provideService(HostProcess.ExecutablePath, executable),
+          Effect.provideService(HostProcess.Arguments, [executable, executable]),
+          Effect.provideService(HostProcess.IsExecutable, true),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, { T3CODE_NPM_LAUNCHER_PATH: launcher }),
         );
-        expect(yield* resolve).toEqual(expected);
-      }
-    }),
+        for (const [version, expected] of [
+          ["0.0.1", null],
+          [packageJson.version, { kind: "npm-global", prefix }],
+        ] as const) {
+          yield* fs.writeFileString(
+            path.join(packageRoot, "package.json"),
+            `{"name":"t3","version":"${version}","bin":{"t3":"./bin/t3.mjs"}}`,
+          );
+          expect(yield* resolve).toEqual(expected);
+        }
+      }),
   );
 
   it.effect("names the launcher that started a downloaded runtime", () =>

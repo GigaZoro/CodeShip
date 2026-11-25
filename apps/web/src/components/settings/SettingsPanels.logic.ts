@@ -368,6 +368,8 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/appearance", msg("Glass opacity"), ["glassOpacity"]),
   restorable("/settings/chat", msg("Diff colors"), ["diffColorScheme"]),
   restorable("/settings/appearance", msg("Chat width"), ["chatWidth"]),
+  restorable("/settings/appearance", msg("Interface density"), ["interfaceDensity"]),
+  restorable("/settings/appearance", msg("Accent color"), ["accentColor"]),
   restorable("/settings/appearance", msg("Effort display"), ["effortDisplay"]),
   restorable("/settings/chat", msg("Render math"), ["mathRenderingEnabled"]),
   restorable("/settings/appearance", msg("Panel animations"), ["panelAnimationDurationMs"]),
@@ -387,7 +389,6 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   ]),
   restorable("/settings/general", msg("Project grouping"), ["sidebarProjectGroupingMode"]),
   restorable("/settings/general", msg("Working section"), ["sidebarWorkingShelfEnabled"]),
-  restorable("/settings/general", msg("Manual steps"), ["sidebarManualStepsEnabled"]),
   restorable("/settings/general", msg("Unpin confirmation"), ["confirmThreadUnpin"]),
   restorable("/settings/general", msg("Archive confirmation"), ["confirmThreadArchive"]),
   restorable("/settings/general", msg("Delete confirmation"), ["confirmThreadDelete"]),
@@ -412,6 +413,9 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   ]),
   restorable("/settings/threads", msg("Open a PR for unmerged work"), [
     "sidebarAutoSettleOpensPullRequests",
+  ]),
+  restorable("/settings/threads", msg("Auto-settle completed scheduled threads"), [
+    "sidebarAutoSettleScheduledThreads",
   ]),
   restorable("/settings/threads", msg("Auto-settle merged threads"), ["sidebarAutoSettleOnMerge"]),
   restorable("/settings/threads", msg("When a thread hits a usage limit"), [

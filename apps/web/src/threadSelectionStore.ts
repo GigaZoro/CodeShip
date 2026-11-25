@@ -12,10 +12,19 @@ interface ThreadSelectionStore extends ThreadSelectionState {
   clearSelection: () => void;
   removeFromSelection: (threadKeys: readonly string[]) => void;
   setAnchor: (threadKey: string) => void;
-  hasSelection: () => boolean;
+  shownSelection: () => readonly string[];
 }
 
 const EMPTY_SET = new Set<string>();
+type ShownThreadKeys = { readonly has: (key: string) => boolean };
+let shownThreadKeys: ShownThreadKeys = EMPTY_SET;
+
+export function publishShownThreadKeys(keys: ShownThreadKeys | null): () => void {
+  shownThreadKeys = keys ?? EMPTY_SET;
+  return () => {
+    if (shownThreadKeys === keys) shownThreadKeys = EMPTY_SET;
+  };
+}
 
 export function getThreadKeysToDeselectAfterDelete(
   selectedThreadKeys: readonly string[],
@@ -106,5 +115,5 @@ export const useThreadSelectionStore = create<ThreadSelectionStore>((set, get) =
     });
   },
 
-  hasSelection: () => get().selectedThreadKeys.size > 0,
+  shownSelection: () => [...get().selectedThreadKeys].filter((key) => shownThreadKeys.has(key)),
 }));

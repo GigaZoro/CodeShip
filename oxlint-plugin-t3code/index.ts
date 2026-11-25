@@ -20,6 +20,7 @@ import noNativeTitleTooltip from "./rules/no-native-title-tooltip.ts";
 import noSparklesIcon from "./rules/no-sparkles-icon.ts";
 import noUnreasonedStateSync from "./rules/no-unreasoned-state-sync.ts";
 import noUntranslatedText from "./rules/no-untranslated-text.ts";
+import requireFormattingLocale from "./rules/require-formatting-locale.ts";
 import requireRegisteredListScroll from "./rules/require-registered-list-scroll.ts";
 import noOutsetStateIndicators from "./rules/no-outset-state-indicators.ts";
 import noPlatformEarlyReturnInTests from "./rules/no-platform-early-return-in-tests.ts";
@@ -70,6 +71,7 @@ export default definePlugin({
     "no-sparkles-icon": noSparklesIcon,
     "no-unreasoned-state-sync": noUnreasonedStateSync,
     "no-untranslated-text": noUntranslatedText,
+    "require-formatting-locale": requireFormattingLocale,
     "require-registered-list-scroll": requireRegisteredListScroll,
     "no-outset-state-indicators": noOutsetStateIndicators,
     "no-platform-early-return-in-tests": noPlatformEarlyReturnInTests,

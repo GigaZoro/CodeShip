@@ -7,6 +7,8 @@ import * as NodeVM from "node:vm";
 
 import { assert, describe, it } from "vite-plus/test";
 
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+
 import {
   makeDevelopmentEnvironmentScript,
   makeDevelopmentLauncherScript,
@@ -103,7 +105,7 @@ describe("electron development launcher", () => {
     assert.notInclude(script, "node_modules/electron");
   });
 
-  it("restores execute permissions on an unchanged launcher", () => {
+  it.skipIf(isWindowsHost)("restores execute permissions on an unchanged launcher", () => {
     const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-launcher-"));
     const launcherPath = NodePath.join(directory, "launcher");
     try {
@@ -251,8 +253,7 @@ it("dev supervisor stops Electron and exits once its parent process goes away", 
 });
 
 it
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- Native pgrep is unavailable on Windows.
-  .skipIf(NodeOS.platform() === "win32")
+  .skipIf(isWindowsHost)
   .each([
     "/tmp/t3-feature.one/apps/desktop",
     "/tmp/t3-feature.one [two](three)+?^${four}|back\\slash*/apps/desktop",

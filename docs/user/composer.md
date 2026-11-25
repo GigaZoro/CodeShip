@@ -290,8 +290,9 @@ When a turn stops because the machine lost its internet connection, T3.CodeShip 
 its own once the connection is back, for failures up to a day old. A new thread whose worktree
 could not be set up because Git could not reach the remote is set up again the same way, and
 then your message is sent. So is a message whose agent failed to start, because the connection
-dropped or the computer slept, before it received the message: the agent gets the message once,
-as you wrote it. If it fails again right away three times, the thread stays failed
+dropped, the computer slept or the agent did not answer in time, before it received the message:
+the agent gets the message once, as you wrote it. An agent that sent nothing at all while it was
+awaited is stopped first, so the retry starts a new one. If it fails again right away three times, the thread stays failed
 for you to look at. Press **Stop** to keep a waiting thread from resuming. Turn this off with
 **Retry threads after network errors** in
 **Settings → Threads → Recovery**.

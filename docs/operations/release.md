@@ -26,6 +26,9 @@ the version.
   - The version defaults to the one the nightly previewed (`0.0.39-nightly.*` ships as `0.0.39`).
     Pass the `version` input to override it, for example for a minor bump.
   - The stable tag is created on the nightly's commit when the GitHub Release is published.
+  - The run takes its workflow files from `main` and its build scripts from the nightly's commit,
+    so a build flag the workflows pass that those scripts lack fails the build before anything is
+    signed. Publish a newer nightly and promote that one.
   - Pushing a `vX.Y.Z` tag by hand still works and builds exactly the tagged commit. Use it when
     the commit to ship is not the latest nightly, such as a cherry-picked fix on a release branch.
 - Runs lint, typecheck, and tests alongside artifact builds. Publishing waits for every check.
@@ -58,6 +61,29 @@ the version.
   - stable releases are aliased to the `latest` hosted app channel
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
+- Each build job installs before it signs. It stages the CLI archive and the desktop app first,
+  before any signing secret is in a step's environment or any certificate or key is on the runner,
+  and those installs take exactly the root `pnpm-lock.yaml` versions for that platform. A staged
+  install gets only the allowlisted variables in `scripts/lib/child-env.ts`, so it never sees
+  signing, notarization or registry credentials, whichever step starts it. Staging downloads the
+  Electron zip of each target architecture and checks it against the SHA-256 the locked
+  `electron` package lists. Only then do the package steps import certificates and keys, and they
+  sign and package the staged files, unpacking that Electron zip, without installing anything.
+  Each signing secret reaches only the platform that signs with it: the Apple ones the macOS job,
+  the Azure ones the Windows job.
+- Each package step keeps its certificates, keys and keychain in one folder. The desktop step
+  also points `APP_BUILDER_TMP_DIR` and a fresh `ELECTRON_BUILDER_CACHE` there, so the keychain,
+  certificate and unpacked tools electron-builder makes land in it too, and no tool an earlier
+  step unpacked is trusted. When the step ends, it deletes every keychain in that folder and then
+  the folder. It runs every removal even when one fails, and then fails the step, so the launch
+  check and smoke tests after it, which run the app and the archive, find none.
+- Packaging still runs staged code on the runner that holds the signing material: electron-builder
+  and the bytecode and bundle probes. The probes get only allowlisted variables, but any of this
+  code, or a process an install left running, could reach the certificates and keys on disk. Only
+  a separate signing job that receives just the built output closes that.
+- The relay tracing config is downloaded just before the CLI executable build, the one step that
+  reads it, and deleted when that step ends. `scripts/release-desktop-workflow.test.ts` keeps this
+  order and the cleanup and secret scoping above.
 
 ## Releasing from a fork
 
@@ -148,13 +174,25 @@ Before shipping any change to `main`, prepend an entry to
 `## YYYY-MM-DD — Short title`, followed by concise bullets describing what changed
 for users. Include fixes, maintenance, and documentation-only shipments; use a new
 title when shipping several times on one day. Preserve previous entries unchanged. Entries
-stay newest first by date, so after a rebase put yours below a newer one, re-date it; the check
-matches earlier entries by content, so a shipment may also move one back into date order.
+stay newest first by date. A rebase or merge keeps that order by itself: `.gitattributes` gives
+the file a merge driver, which `vp i` configures and the landing turn passes to its rebase, that
+puts one side's new entries into the other side's notes when only that other side edited,
+retitled, removed or reordered existing entries. Each entry the driver inserts goes between the
+entries around it on its own side, in date order, and the incoming side's entries go above the other side's of the
+same date where the entries around them allow either order. Landings on main keep every entry word
+for word, so a branch can still reword its own entry in a later commit. The driver leaves the file
+to git's text merge, which can conflict, when both sides changed existing entries, when the entries
+around a new entry leave it no place, when both sides added one heading with different text or one
+entry while one of them also rewrote or removed an existing entry, or when a new entry shares its
+title or text with an entry only the other side added or changed: that can be one shipment under
+two dates. The check matches earlier entries by content, so a shipment may also move one back into
+date order.
 
 The web and desktop header's Release notes dialog bundles this history with the
 client, so an older install never presents newer changes as already installed.
 `vp run check:changed` compares notes against the branch base, a push to `main` runs the same
-check against the remote's `main` (`.vite-hooks/pre-push`), and fork release preflight rejects a
+check against the remote's `main` (`.vite-hooks/pre-push`, which also requires a check:changed
+pass for the pushed tree), and fork release preflight rejects a
 push without new notes before building installers. The GitHub
 release uses the same notes, adding all entries since the previous published release
 when several pushes were combined. Rebuilding the same source uses its latest entry.
@@ -751,7 +789,8 @@ Checklist:
 Notes:
 
 - `APPLE_API_KEY` is stored as raw key text in secrets.
-- The workflow writes it to a temporary `AuthKey_<id>.p8` file at runtime.
+- The package step writes it to an `AuthKey_<id>.p8` file in a temporary folder that it deletes
+  when it ends.
 - The workflow decodes `MACOS_PROVISIONING_PROFILE`, validates it with `security cms`, and passes it
   to the desktop packager.
 - In-app browser passkeys depend on the same profile. The packager adds each entitlement only when
@@ -818,3 +857,9 @@ Checklist:
 - Build fails with signing error:
   - Retry with secrets removed to confirm unsigned path still works.
   - Re-check certificate/profile names and tenant/client credentials.
+
+## Every push to `main` releases
+
+Every push to `main` on the fork publishes a signed desktop release (`.github/workflows/release-fork.yml`) so installed apps offer it through the update button. Add no path filters, approval steps or other conditions that let a push skip it; a manual `workflow_dispatch` run is only an extra way to set a version.
+
+A release run can stay `queued` for an hour while later commits release first, so do not watch a commit's own run. Fetch tags and test `git merge-base --is-ancestor <commit> <tag>` against `gh release list -R GigaZoro/CodeShip`. `t3_environment_read` shows the `serverVersion` a machine runs; the desktop app installs an update only from its update button unless `installUpdatesAutomatically` is on.

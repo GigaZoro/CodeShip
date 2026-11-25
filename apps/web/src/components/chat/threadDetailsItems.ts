@@ -8,34 +8,32 @@ export const THREAD_DETAILS_ITEMS = [
   { id: "scripts", label: msg("Project scripts"), defaultVisible: true },
   { id: "assistants", label: msg("Web assistants"), defaultVisible: true },
   { id: "branch", label: msg("Branch and pull request"), defaultVisible: true },
-  { id: "gitActions", label: msg("Git actions"), defaultVisible: true },
+  { id: "gitActions", label: msg("Git actions"), defaultVisible: false },
   { id: "changes", label: msg("Changes"), defaultVisible: true },
+  { id: "status", label: msg("Agent status"), defaultVisible: true },
+  { id: "context", label: msg("Context window"), defaultVisible: true },
+  { id: "usage", label: msg("Usage limits"), defaultVisible: true },
   { id: "tasks", label: msg("Tasks"), defaultVisible: true },
-  { id: "agentActions", label: msg("Ask the agent"), defaultVisible: true },
-  { id: "servers", label: msg("Servers"), defaultVisible: true },
-  { id: "automations", label: msg("Automations"), defaultVisible: true },
   { id: "lineage", label: msg("Lineage"), defaultVisible: true },
   { id: "sideChats", label: msg("Side chats"), defaultVisible: true },
   { id: "outline", label: msg("Your prompts"), defaultVisible: true },
-  { id: "usage", label: msg("Usage limits"), defaultVisible: false },
-  { id: "context", label: msg("Context window"), defaultVisible: false },
+  { id: "machineLoad", label: msg("Machine load"), defaultVisible: true },
+  { id: "servers", label: msg("Servers"), defaultVisible: true },
+  { id: "automations", label: msg("Automations"), defaultVisible: true },
+  { id: "agentActions", label: msg("Ask the agent"), defaultVisible: false },
 ] as const;
 
 export type ThreadDetailsItemId = (typeof THREAD_DETAILS_ITEMS)[number]["id"];
 export type ThreadDetailsVisibility = Readonly<Record<ThreadDetailsItemId, boolean>>;
 
-type ThreadDetailsItem = (typeof THREAD_DETAILS_ITEMS)[number];
-type ThreadDetailsItemSettings = Pick<
-  ClientSettings,
-  "threadDetailsItems" | "threadDetailsUsageEnabled"
->;
+// A draft has no run yet, so it shows only the controls for choosing where it runs.
+const DRAFT_THREAD_DETAILS_ITEMS: ReadonlySet<ThreadDetailsItemId> = new Set([
+  "environment",
+  "branch",
+]);
 
-// People who turned on the retired Labs toggle keep Usage and Context until they change them here.
-function defaultVisible(item: ThreadDetailsItem, settings: ThreadDetailsItemSettings) {
-  return item.id === "usage" || item.id === "context"
-    ? settings.threadDetailsUsageEnabled
-    : item.defaultVisible;
-}
+type ThreadDetailsItem = (typeof THREAD_DETAILS_ITEMS)[number];
+type ThreadDetailsItemSettings = Pick<ClientSettings, "threadDetailsItems">;
 
 export function resolveThreadDetailsVisibility(
   settings: ThreadDetailsItemSettings,
@@ -43,7 +41,21 @@ export function resolveThreadDetailsVisibility(
   return Object.fromEntries(
     THREAD_DETAILS_ITEMS.map((item) => [
       item.id,
-      settings.threadDetailsItems[item.id] ?? defaultVisible(item, settings),
+      settings.threadDetailsItems[item.id] ?? item.defaultVisible,
+    ]),
+  ) as Record<ThreadDetailsItemId, boolean>;
+}
+
+/** The items a thread's card shows: a draft keeps only the chosen ones that pick where it runs. */
+export function threadDetailsVisibilityFor(
+  visibility: ThreadDetailsVisibility,
+  isDraft: boolean,
+): ThreadDetailsVisibility {
+  if (!isDraft) return visibility;
+  return Object.fromEntries(
+    THREAD_DETAILS_ITEMS.map((item) => [
+      item.id,
+      visibility[item.id] && DRAFT_THREAD_DETAILS_ITEMS.has(item.id),
     ]),
   ) as Record<ThreadDetailsItemId, boolean>;
 }
@@ -55,15 +67,13 @@ export function setThreadDetailsItem(
   visible: boolean,
 ): ClientSettings["threadDetailsItems"] {
   const { [item.id]: _previous, ...rest } = settings.threadDetailsItems;
-  return visible === defaultVisible(item, settings) ? rest : { ...rest, [item.id]: visible };
+  return visible === item.defaultVisible ? rest : { ...rest, [item.id]: visible };
 }
 
 export function isDefaultThreadDetailsVisibility(visibility: ThreadDetailsVisibility) {
   return THREAD_DETAILS_ITEMS.every((item) => visibility[item.id] === item.defaultVisible);
 }
 
-/** Also clears the retired Labs flag, so Usage and Context return to off. */
 export const RESET_THREAD_DETAILS_ITEMS = {
   threadDetailsItems: {},
-  threadDetailsUsageEnabled: false,
 } satisfies Partial<ClientSettings>;

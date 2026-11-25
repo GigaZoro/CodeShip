@@ -10,12 +10,13 @@ import * as NodeOS from "node:os";
 import { publicProxy } from "./publicProxy.ts";
 
 const OWN_PUBLIC_IPV4 = "198.51.100.7";
+const OWN_PUBLIC_IPV6 = "2001:db8::7";
+// Fixed addresses rather than the host's, so every machine covers both families.
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeOS>();
   return {
     ...actual,
     networkInterfaces: () => ({
-      ...actual.networkInterfaces(),
       "t3-test": [
         {
           address: OWN_PUBLIC_IPV4,
@@ -24,6 +25,15 @@ vi.mock("node:os", async (importOriginal) => {
           mac: "00:00:00:00:00:00",
           internal: false,
           cidr: `${OWN_PUBLIC_IPV4}/24`,
+        },
+        {
+          address: OWN_PUBLIC_IPV6,
+          netmask: "ffff:ffff:ffff:ffff::",
+          family: "IPv6",
+          mac: "00:00:00:00:00:00",
+          internal: false,
+          cidr: `${OWN_PUBLIC_IPV6}/64`,
+          scopeid: 0,
         },
       ],
     }),
@@ -139,9 +149,7 @@ describe("publicProxy", () => {
   it.effect("refuses every address this machine holds, even a public one", () =>
     Effect.gen(function* () {
       const { port } = yield* publicProxy;
-      const own = Object.values(NodeOS.networkInterfaces())
-        .flatMap((entries) => entries ?? [])
-        .filter((entry) => !entry.internal && !entry.address.startsWith("fe80"));
+      const own = Object.values(NodeOS.networkInterfaces()).flatMap((entries) => entries ?? []);
       const targets = own.flatMap((entry) =>
         entry.family === "IPv6"
           ? [ipv6Target(entry.address, 80)]

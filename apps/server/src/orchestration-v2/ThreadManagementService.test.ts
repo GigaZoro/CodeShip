@@ -14,6 +14,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -222,15 +223,16 @@ it.effect(
   },
 );
 
-it.effect(
-  "the dispatch chokepoint checks an auto-account message against the account routing picks",
-  () => {
+it.effect.each([{ scheduled: false }, { scheduled: true }])(
+  "checks an Auto dispatch against the selected account (scheduled: $scheduled)",
+  ({ scheduled }) => {
     const projectId = ProjectId.make("project:thread-management:chokepoint");
     const threadId = ThreadId.make("thread:thread-management:chokepoint");
     const limited = ProviderInstanceId.make("codex_work");
     const routed = ProviderInstanceId.make("codex_personal");
     const dispatched: Array<OrchestrationV2ServerCommand> = [];
     const routeInputs: Array<unknown> = [];
+    const firstLaunchChecks: Array<unknown> = [];
     const layerTest = layerDispatchChokepointTest(
       ServerSettings.layerTest({
         providerInstances: {
@@ -261,7 +263,11 @@ it.effect(
           retryAccount: () => Effect.void,
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
-          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+          failoverLaunch: (input) =>
+            Effect.sync(() => {
+              firstLaunchChecks.push(input);
+              return { selection: input.selection, failover: null };
+            }),
         }),
       },
     )(dispatched);
@@ -275,6 +281,12 @@ it.effect(
         messageId: MessageId.make("message:thread-management:chokepoint-auto"),
         text: "First message",
         attachments: [],
+        ...(scheduled
+          ? {
+              scheduledTaskId: ScheduledTaskId.make("scheduled-task:chokepoint-auto"),
+              launchAlreadyRouted: true as const,
+            }
+          : {}),
         dispatchMode: { type: "start_immediately" },
         createdBy: "user",
         creationSource: "web",
@@ -287,9 +299,10 @@ it.effect(
           projectId,
           currentInstanceId: null,
           started: false,
-          scheduled: false,
+          scheduled,
         },
       ]);
+      expect(firstLaunchChecks).toHaveLength(scheduled ? 0 : 1);
       expect(dispatched).toMatchObject([
         { type: "message.dispatch", modelSelection: { instanceId: routed, autoAccount: true } },
       ]);

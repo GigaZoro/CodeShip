@@ -304,6 +304,7 @@ export class ServerSettingsService extends Context.Service<
 
     readonly withSettingsSnapshot: <A, E, R>(
       use: (settings: ServerSettings) => Effect.Effect<A, E, R>,
+      representation?: "effective" | "stored",
     ) => Effect.Effect<A, E | ServerSettingsError, R>;
 
     readonly streamChanges: Stream.Stream<ServerSettings>;
@@ -1385,8 +1386,15 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (use) =>
-    writeSemaphore.withPermits(1)(getMaterializedSettings.pipe(Effect.flatMap(use)));
+  const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (
+    use,
+    representation,
+  ) =>
+    writeSemaphore.withPermits(1)(
+      (representation === "stored" ? getSettingsFromCache : getMaterializedSettings).pipe(
+        Effect.flatMap(use),
+      ),
+    );
 
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {

@@ -25,8 +25,11 @@ import { useThreadSearch } from "../state/queries";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { formatRelativeTimeLabel } from "../timestampFormat";
-import { buildThreadActionItems, ITEM_ICON_CLASS } from "./CommandPalette.logic";
+import {
+  buildMessageMatchItem,
+  buildThreadActionItems,
+  ITEM_ICON_CLASS,
+} from "./CommandPalette.logic";
 import { useEnvironmentLookups, useProjectLookups } from "./CommandPaletteLookups";
 import { ThreadCommandSubtitle } from "./ThreadCommandSubtitle";
 import {
@@ -171,20 +174,9 @@ export function useCommandPaletteThreadItems(input: {
   ).flatMap((match) => {
     const item = itemForMatch(match);
     if (!item) return [];
-    // The snippet replaces the project line, so a message row is as tall as a title row.
-    const { description: _description, ...rest } = item;
     return [
       {
-        ...rest,
-        // When the matching message was written, not when the thread last moved.
-        ...(match.messageCreatedAt
-          ? { timestamp: formatRelativeTimeLabel(match.messageCreatedAt) }
-          : {}),
-        threadContentMatch: {
-          source: match.source,
-          snippet: match.snippet,
-          query: messageSearch.query,
-        },
+        ...buildMessageMatchItem(item, match, messageSearch.query),
         // Opens the thread with find on the word at the matched message, so it is in view.
         run: async () => {
           await item.run();

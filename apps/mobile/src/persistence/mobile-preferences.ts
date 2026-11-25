@@ -6,7 +6,9 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import {
+  AccentColor,
   EnvironmentId,
+  InterfaceDensity,
   PullRequestInvolvement,
   PullRequestListFilters,
   PullRequestListState,
@@ -14,6 +16,8 @@ import {
   PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
+import { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import { ToolCallVisibility } from "@t3tools/contracts/settings";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
@@ -41,6 +45,9 @@ export type PullRequestListControls = typeof PullRequestListControls.Type;
 const ThreadListFilters = Schema.Struct({
   environmentId: Schema.NullOr(EnvironmentId),
   projectKey: Schema.NullOr(Schema.String),
+  status: Schema.optionalKey(ThreadListStatusFilter),
+  tags: Schema.optionalKey(Schema.Array(Schema.String)),
+  sort: Schema.optionalKey(ThreadListSort),
 });
 export type ThreadListFilters = typeof ThreadListFilters.Type;
 
@@ -85,6 +92,8 @@ const isThreadListFilters = Schema.is(ThreadListFilters);
 const isFolderExpanded = Schema.is(Schema.Record(Schema.String, Schema.Boolean));
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
+const isInterfaceDensity = Schema.is(InterfaceDensity);
+const isAccentColor = Schema.is(AccentColor);
 const ThreadProject = Schema.Struct({
   environmentId: Schema.NonEmptyString,
   projectId: Schema.NonEmptyString,
@@ -115,6 +124,10 @@ export interface Preferences {
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
   readonly mathRenderingEnabled?: boolean;
+  /** Unset means comfortable. */
+  readonly interfaceDensity?: InterfaceDensity;
+  /** Unset means the theme's own primary. */
+  readonly accentColor?: AccentColor;
   /** Unset means on: crash reports are sent unless the user turns them off. */
   readonly crashReportsEnabled?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
@@ -216,6 +229,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     codeFontSize?: number | null;
     codeWordBreak?: boolean;
     mathRenderingEnabled?: boolean;
+    interfaceDensity?: InterfaceDensity;
+    accentColor?: AccentColor;
     crashReportsEnabled?: boolean;
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
     collapsedProjectGroups?: readonly string[];
@@ -316,6 +331,10 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.codeWordBreak === "boolean") preferences.codeWordBreak = parsed.codeWordBreak;
   if (typeof parsed.mathRenderingEnabled === "boolean")
     preferences.mathRenderingEnabled = parsed.mathRenderingEnabled;
+  if (isInterfaceDensity(parsed.interfaceDensity)) {
+    preferences.interfaceDensity = parsed.interfaceDensity;
+  }
+  if (isAccentColor(parsed.accentColor)) preferences.accentColor = parsed.accentColor;
   if (typeof parsed.crashReportsEnabled === "boolean") {
     preferences.crashReportsEnabled = parsed.crashReportsEnabled;
   }

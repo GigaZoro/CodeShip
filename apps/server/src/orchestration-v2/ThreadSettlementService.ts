@@ -66,7 +66,12 @@ const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
  * Open a pull request for a worktree's unmerged work, or keep the thread active. Keeping it active
  * holds the check for every thread on the worktree, or for this thread only.
  */
-type UnmergedWorkAction = "open-pull-request" | "keep-worktree-active" | "keep-thread-active";
+type UnmergedWorkAction =
+  | "open-pull-request"
+  | "keep-worktree-active"
+  | "keep-thread-active"
+  // A delivered subagent's work lands as its delegating agent decides: no pull request lookup or action.
+  | "keep-for-delegator";
 
 function toMillis(value: DateTime.Utc | null | undefined): number | null {
   return value == null ? null : DateTime.toEpochMillis(value);
@@ -162,9 +167,8 @@ function pullRequestSettles(
   pullRequest: SettlementPullRequest,
   autoSettleOnMerge: boolean,
 ): boolean {
-  if (pullRequest.state !== "closed" && (pullRequest.state !== "merged" || !autoSettleOnMerge)) {
-    return false;
-  }
+  // A closed pull request settles under the same per-project rule as a merged one.
+  if (!autoSettleOnMerge || pullRequest.state === "open") return false;
   const terminalAt = pullRequest.state === "merged" ? pullRequest.mergedAt : pullRequest.closedAt;
   if (terminalAt == null) return false;
   const userAnchorMs = latestMillis([
@@ -183,9 +187,10 @@ export function dropExpiredHolds<K>(holds: Map<K, number>, nowMs: number): void 
 }
 
 /** The fields the inactivity and pull request rules read; delegated children add their parent's. */
+type ScheduledSettlementFields = "startedByScheduledTask" | "hasPendingScheduledWork";
 type SettlementRuleThread = Omit<
   ProjectionStore.ProjectionSettlementCandidate,
-  "parentWorktreePath" | "parentResultAt" | "parentDone"
+  "parentWorktreePath" | "parentResultAt" | "parentDone" | ScheduledSettlementFields
 >;
 
 export function isAutoSettlementCandidate(
@@ -278,11 +283,14 @@ function deliveredChildSettlementAt(
 }
 
 export function resolveAutoSettlementAt(input: {
-  readonly thread: SettlementRuleThread;
+  readonly thread: SettlementRuleThread &
+    Partial<Pick<ProjectionStore.ProjectionSettlementCandidate, ScheduledSettlementFields>>;
   readonly pullRequest: SettlementPullRequest | null;
   readonly nowMs: number;
   readonly autoSettleAfterDays: number | null;
   readonly autoSettleOnMerge: boolean;
+  readonly autoSettleScheduledThreads?: boolean;
+  readonly autoSettleLegacyRules?: boolean;
   readonly autoSettleKeepPullRequests?: boolean;
 }): DateTime.Utc | null {
   const { thread } = input;
@@ -313,6 +321,25 @@ export function resolveAutoSettlementAt(input: {
   }
   if (!isAutoSettlementCandidate(thread, input.nowMs)) return null;
   const activityAtMs = threadActivityAtMs(thread);
+  const hasPullRequest =
+    hasOpenLink ||
+    pullRequest !== null ||
+    thread.linkedPullRequest != null ||
+    thread.branchPullRequest != null;
+  if (
+    input.autoSettleScheduledThreads === true &&
+    thread.startedByScheduledTask &&
+    thread.lineage.parentThreadId === null &&
+    thread.status === "completed" &&
+    thread.hasPendingScheduledWork === false &&
+    !hasOpenLink &&
+    !(thread.pullRequests ?? []).some((link) => link.watch !== undefined) &&
+    pullRequest?.state !== "open" &&
+    (!hasPullRequest || pullRequest !== null)
+  ) {
+    return thread.latestRunCompletedAt ?? null;
+  }
+  if (input.autoSettleLegacyRules === false) return null;
   if (
     pullRequest !== null &&
     !awaitsMergeWake &&
@@ -320,11 +347,6 @@ export function resolveAutoSettlementAt(input: {
   ) {
     return DateTime.makeUnsafe(activityAtMs);
   }
-  const hasPullRequest =
-    hasOpenLink ||
-    pullRequest !== null ||
-    thread.linkedPullRequest != null ||
-    thread.branchPullRequest != null;
   if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
   if (input.autoSettleAfterDays === null) return null;
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
@@ -361,6 +383,7 @@ export function autoSettlementSettingsKey(
   settings: import("@t3tools/contracts").ServerSettings,
 ): string {
   return JSON.stringify([
+    settings.sidebarAutoSettleScheduledThreads,
     settings.sidebarAutoSettleOnMerge,
     settings.sidebarAutoSettleAfterDays,
     settings.sidebarAutoSettleKeepPullRequests,
@@ -368,6 +391,7 @@ export function autoSettlementSettingsKey(
     Object.entries(settings.projectSettingsOverrides)
       .filter(
         ([, entry]) =>
+          entry.sidebarAutoSettleScheduledThreads !== undefined ||
           entry.sidebarAutoSettleOnMerge !== undefined ||
           entry.sidebarAutoSettleAfterDays !== undefined ||
           entry.sidebarAutoSettleKeepPullRequests !== undefined ||
@@ -376,6 +400,7 @@ export function autoSettlementSettingsKey(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([projectId, entry]) => [
         projectId,
+        entry.sidebarAutoSettleScheduledThreads ?? "inherit",
         entry.sidebarAutoSettleOnMerge ?? "inherit",
         entry.sidebarAutoSettleAfterDays === undefined
           ? "inherit"
@@ -438,7 +463,8 @@ export const make = Effect.gen(function* () {
     action: UnmergedWorkAction,
     untilMs: number,
   ) => {
-    if (action === "keep-thread-active") threadsHeldUntilMs.set(threadId, untilMs);
+    if (action === "keep-thread-active" || action === "keep-for-delegator")
+      threadsHeldUntilMs.set(threadId, untilMs);
     else unmergedWorkHeldUntilMs.set(cwd, untilMs);
   };
 
@@ -462,16 +488,24 @@ export const make = Effect.gen(function* () {
       return release();
     }
     const pullRequest =
-      work.refName === null
+      work.refName === null || action === "keep-for-delegator"
         ? null
         : yield* git.branchPullRequest({ cwd, branch: work.refName }, { freshGitState: true });
-    // A closed pull request set the work aside on purpose; an open one already holds the commits.
+    // A pull request accounts for the commits up to its head: an open one ships them and a closed
+    // one set them aside on purpose. Work made after its head is in no pull request yet.
     if (
-      pullRequest?.state === "closed" ||
-      (pullRequest?.state === "open" && work.changedFileCount === 0)
+      (pullRequest?.state === "open" || pullRequest?.state === "closed") &&
+      work.changedFileCount === 0 &&
+      pullRequest.headSha
     ) {
-      return release();
+      // A head pushed from elsewhere may be missing here, so the work stays unaccounted for.
+      const outsidePullRequest = yield* gitWorkflow
+        .countUnmergedCommits({ cwd, baseRef: pullRequest.headSha })
+        .pipe(Effect.orElseSucceed(() => null));
+      if (outsidePullRequest === 0) return release();
     }
+    // The user closed that pull request, so a new one for the same branch is theirs to open.
+    if (pullRequest?.state === "closed") return hold(UNMERGED_WORK_RECHECK_MS);
     if (
       action !== "open-pull-request" ||
       work.refName === null ||
@@ -521,6 +555,7 @@ export const make = Effect.gen(function* () {
   const releasesUnmergedWork = Effect.fnUntraced(function* (
     thread: ProjectionStore.ProjectionSettlementCandidate,
     opensPullRequests: boolean,
+    deliveredToParent: boolean,
     nowMs: number,
   ) {
     const cwd = thread.worktreePath;
@@ -530,11 +565,13 @@ export const make = Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       // Only a thread the user wrote in is theirs to publish; agents and scheduled tasks decide how
       // the work of the threads they started lands.
-      const action: UnmergedWorkAction = !opensPullRequests
-        ? "keep-worktree-active"
-        : (yield* projections.hasUserWrittenMessage(thread.id))
-          ? "open-pull-request"
-          : "keep-thread-active";
+      const action: UnmergedWorkAction = deliveredToParent
+        ? "keep-for-delegator"
+        : !opensPullRequests
+          ? "keep-worktree-active"
+          : (yield* projections.hasUserWrittenMessage(thread.id))
+            ? "open-pull-request"
+            : "keep-thread-active";
       return yield* checkUnmergedWork(thread, cwd, action, nowMs).pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
@@ -585,7 +622,13 @@ export const make = Effect.gen(function* () {
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter(
       (thread) =>
-        (automaticSettlementEnabled || thread.lineage.relationshipToParent === "subagent") &&
+        (automaticSettlementEnabled ||
+          thread.lineage.relationshipToParent === "subagent" ||
+          (thread.startedByScheduledTask &&
+            thread.status === "completed" &&
+            !thread.hasPendingScheduledWork &&
+            resolveProjectSettings(settings, thread.projectId).settings
+              .sidebarAutoSettleScheduledThreads)) &&
         isAutoSettlementCandidate(thread, nowMs),
     );
 
@@ -613,6 +656,8 @@ export const make = Effect.gen(function* () {
             nowMs: decisionNowMs,
             autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
             autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
+            autoSettleScheduledThreads: currentSettings.sidebarAutoSettleScheduledThreads,
+            autoSettleLegacyRules: automaticSettlementEnabled,
             autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
           });
           if (settledAt === null) return thread;
@@ -621,6 +666,7 @@ export const make = Effect.gen(function* () {
             !(yield* releasesUnmergedWork(
               thread,
               currentSettings.sidebarAutoSettleOpensPullRequests,
+              deliveredAt !== null,
               decisionNowMs,
             ))
           ) {
@@ -668,6 +714,8 @@ export const make = Effect.gen(function* () {
           nowMs,
           autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,
           autoSettleOnMerge: projectSettings.sidebarAutoSettleOnMerge,
+          autoSettleScheduledThreads: projectSettings.sidebarAutoSettleScheduledThreads,
+          autoSettleLegacyRules: automaticSettlementEnabled,
           autoSettleKeepPullRequests: projectSettings.sidebarAutoSettleKeepPullRequests,
         });
         return settledAt === null ? Effect.succeed(thread) : settleThread(thread, null);
@@ -754,6 +802,8 @@ export const make = Effect.gen(function* () {
             nowMs: DateTime.toEpochMillis(decisionNow),
             autoSettleAfterDays: settings.sidebarAutoSettleAfterDays,
             autoSettleOnMerge: settings.sidebarAutoSettleOnMerge,
+            autoSettleScheduledThreads: settings.sidebarAutoSettleScheduledThreads,
+            autoSettleLegacyRules: automaticSettlementEnabled,
             autoSettleKeepPullRequests: settings.sidebarAutoSettleKeepPullRequests,
           }) !== null
         );
@@ -1028,6 +1078,10 @@ export const make = Effect.gen(function* () {
           ? enqueueThread(event.threadId)
           : Effect.void;
       }
+      case "runtime-request.updated":
+        return event.payload.status === "pending" ? Effect.void : enqueueThread(event.threadId);
+      case "plan.updated":
+        return event.payload.status === "active" ? Effect.void : enqueueThread(event.threadId);
       case "provider-session.updated":
         return event.payload.status !== "starting" && event.payload.status !== "running"
           ? enqueueThread(event.threadId)

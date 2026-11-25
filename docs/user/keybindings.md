@@ -180,7 +180,9 @@ a shortcut.
 ## Commands with special behavior
 
 `mod+alt+z` snoozes the open thread by opening the command palette on its Snooze options, and
-`mod+alt+e` archives it. Pin, settle, rename and the other thread actions are in the command palette too.
+`mod+alt+e` archives it. `thread.reopenLastArchived` (`mod+alt+shift+e`) unarchives the most recently
+archived thread on any connected machine and opens it; the command palette has the same action as
+"Reopen last archived thread". Pin, settle, rename and the other thread actions are in the command palette too.
 
 `thread.stop` (`mod+.` by default) stops the running turn in the focused thread.
 

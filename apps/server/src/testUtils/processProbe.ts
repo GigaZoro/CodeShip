@@ -20,6 +20,10 @@ export const makeProcessProbe = Effect.gen(function* () {
         }
       }
     });
+    // Windows resets the connection of a killed peer; the close event that follows is the signal.
+    socket.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") socket.destroy(error);
+    });
     socket.on("close", () => {
       sockets.delete(socket);
       Deferred.doneUnsafe(exited, Effect.void);

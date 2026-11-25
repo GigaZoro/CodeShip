@@ -5,11 +5,15 @@ import {
   type ThreadStatusDisplayKey,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
+import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { threadTagPickerTargetAtom } from "./ThreadTagPicker";
+import { orchestrationEnvironment } from "../../state/orchestration";
+import { serverEnvironment } from "../../state/server";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
   THREAD_LIST_V2_MONO_FONT as MONO_FONT,
-  THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
   selectedThreadRowColors,
   getThreadListV2NewBranchMenuTitle,
@@ -79,6 +83,7 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useEnvironmentScope } from "../../state/session";
+import { useThreadShell } from "../../state/entities";
 import { useThreadFolderNames } from "../../state/thread-folders";
 import {
   environmentSupportsThreadFolders,
@@ -130,6 +135,10 @@ import {
 } from "@t3tools/client-runtime/connection";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
+import {
+  useThreadListRowContentClassName,
+  useThreadListSlimRowClassName,
+} from "./useThreadListRowDensity";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { pullRequestStatus } from "../pull-requests/pullRequestStatus";
 import { msg, t, tn, type Message } from "../../lib/i18n";
@@ -601,7 +610,8 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
 
 export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(props: {
   readonly pane?: "screen" | "sidebar";
-  readonly hiddenCount: number;
+  /** Null when a filter hides how many older threads not loaded yet match. */
+  readonly hiddenCount: number | null;
   /** Older settled threads are loading, or their last read failed. */
   readonly state?: "loading" | "failed" | null;
   readonly onPress: () => void;
@@ -611,12 +621,14 @@ export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(pro
       ? t("Loading")
       : props.state === "failed"
         ? t("Could not load older threads. Retry")
-        : t("Show more ({count} settled hidden)", { count: props.hiddenCount });
+        : props.hiddenCount === null
+          ? t("Show more")
+          : t("Show more ({count} settled hidden)", { count: props.hiddenCount });
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={
-        props.state === undefined
+        props.state === undefined && props.hiddenCount !== null
           ? tn(
               Math.min(props.hiddenCount, THREAD_LIST_V2_SETTLED_PAGE_COUNT),
               "Show {count} more settled thread",
@@ -641,6 +653,36 @@ export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(pro
     </Pressable>
   );
 });
+
+export function ThreadListV2OlderThreadsFooter(props: {
+  readonly pane?: "screen" | "sidebar";
+  readonly hiddenCount: number | null;
+  readonly state: "loading" | null;
+  readonly onShowMore: () => void;
+  readonly onRetry?: (() => void) | undefined;
+}) {
+  const pane = props.pane ?? "screen";
+  return (
+    <>
+      {props.onRetry !== undefined ? (
+        <ThreadListV2ShowMoreRow
+          pane={pane}
+          hiddenCount={null}
+          state="failed"
+          onPress={props.onRetry}
+        />
+      ) : null}
+      {props.hiddenCount !== 0 ? (
+        <ThreadListV2ShowMoreRow
+          pane={pane}
+          hiddenCount={props.hiddenCount}
+          {...(props.state === null ? {} : { state: props.state })}
+          onPress={props.onShowMore}
+        />
+      ) : null}
+    </>
+  );
+}
 
 const pendingTaskMenuActions = (): MenuAction[] => [
   { id: "delete", title: t("Delete"), image: "trash", attributes: { destructive: true } },
@@ -667,6 +709,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   readonly simultaneousSwipeGesture?: ComponentProps<typeof ThreadSwipeable>["simultaneousWith"];
 }) {
   const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
+  const rowContentClassName = useThreadListRowContentClassName();
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const titleTypography = useScaledTextRole("body");
   const metadataTypography = useScaledTextRole("label");
@@ -919,7 +962,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
                 rowContent
               ) : (
                 <View>
-                  <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{rowContent}</View>
+                  <View className={rowContentClassName}>{rowContent}</View>
                   {THREAD_LIST_V2_ROW_DIVIDERS && props.showTrailingDivider !== false ? (
                     <View className="ml-5 h-px bg-border-subtle" />
                   ) : null}
@@ -981,6 +1024,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly pinningSupported: boolean;
   readonly autoSettleOptOutSupported: boolean;
   readonly titleRegenerationSupported: boolean;
+  readonly arrangementSupported: boolean;
   readonly reorderSupported?: boolean;
   readonly onMoveThread?: (
     thread: EnvironmentThreadShell,
@@ -995,6 +1039,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly searchQuery?: string;
   readonly simultaneousSwipeGesture?: ComponentProps<typeof ThreadSwipeable>["simultaneousWith"];
 }) {
+  const rowContentClassName = useThreadListRowContentClassName();
+  const slimRowClassName = useThreadListSlimRowClassName();
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const titleTypography = useScaledTextRole("body");
   const metadataTypography = useScaledTextRole("label");
@@ -1007,7 +1053,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const titleLineHeight =
     Platform.OS === "android" ? androidTitleLineHeight : titleTypography.lineHeight * fontScale;
   const {
-    thread,
     variant,
     onSelectThread,
     onOpenThreadPullRequests,
@@ -1025,6 +1070,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onSetThreadAutoSettle,
     onMoveThread,
   } = props;
+  const thread =
+    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
   const snoozedRow = props.snoozed === true;
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
@@ -1160,6 +1207,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
+  const canEditTags = useAtomValue(
+    orchestrationEnvironment.v2.dispatchCommand.permissionAtom(thread.environmentId, {
+      type: "thread.tag.set",
+    }),
+  );
+  const blockedTags = useAtomValue(serverEnvironment.blockedThreadTagsAtom(thread.environmentId));
+  const tags = thread.source.tags;
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
@@ -1228,11 +1282,18 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ],
     [snoozePresets],
   );
-  const reorderMenuItems = useMemo<MenuAction[]>(
+  const arrangeMenuItems = useMemo<MenuAction[]>(
     () =>
-      props.reorderSupported === true
+      props.arrangementSupported
+        ? [{ id: "arrange", title: t("Arrange threads…"), image: "line.3.horizontal" }]
+        : [],
+    [props.arrangementSupported],
+  );
+  const reorderMenuItems = useMemo<MenuAction[]>(
+    () => [
+      ...arrangeMenuItems,
+      ...(props.reorderSupported === true
         ? [
-            { id: "arrange", title: t("Arrange threads…"), image: "line.3.horizontal" },
             {
               id: "move-up",
               title: t("Move up"),
@@ -1246,8 +1307,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               attributes: { disabled: props.canMoveDown !== true },
             } satisfies MenuAction,
           ]
-        : [],
-    [props.canMoveDown, props.canMoveUp, props.reorderSupported],
+        : []),
+    ],
+    [arrangeMenuItems, props.canMoveDown, props.canMoveUp, props.reorderSupported],
   );
   const pinMenuItems = useMemo<MenuAction[]>(
     () =>
@@ -1369,12 +1431,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           ]
         : []),
       ...readOnlyMenuActions,
+      ...(canEditTags && blockedTags !== null
+        ? [{ id: "tags", title: t("Tags…"), image: "tag" }]
+        : []),
     ];
     if (snoozedRow) {
       return layoutThreadListV2RowMenuActions({
         nested,
         direct: [...direct, snoozedBaseActions()[0]!],
-        reorder: [],
+        reorder: arrangeMenuItems,
         pin: [],
         secondary: [
           ...folderMenuItems,
@@ -1439,7 +1504,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ],
     });
   }, [
+    arrangeMenuItems,
     autoSettleMenuItems,
+    blockedTags,
+    canEditTags,
     canUnsettle,
     folderMenuItems,
     laterMenuItems,
@@ -1455,6 +1523,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   ]);
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "tags") {
+        appAtomRegistry.set(threadTagPickerTargetAtom, {
+          environmentId: thread.environmentId,
+          threadId: thread.id,
+        });
+        return;
+      }
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -1601,6 +1676,27 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : null,
     [handleMenuAction, snoozePresetActions, swipeActions.secondary, thread.title],
   );
+  const tagChips = tags?.length ? (
+    <View className="max-w-[34%] shrink flex-row items-center gap-1">
+      {tags.slice(0, 2).map((tag) => (
+        <Text
+          key={tag}
+          className={cn(
+            "shrink rounded bg-subtle px-1 text-xs",
+            rowAppearance.mutedForegroundClassName,
+          )}
+          numberOfLines={1}
+        >
+          {tag}
+        </Text>
+      ))}
+      {tags.length > 2 ? (
+        <Text className={cn("text-xs", rowAppearance.mutedForegroundClassName)}>
+          {t("+{count}", { count: tags.length - 2 })}
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
   // VoiceOver cannot focus buttons inside the accessible row, nor swipe it open.
   const rowAccessibilityActions = useMemo(
     () =>
@@ -1667,6 +1763,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         >
           {thread.title}
         </Text>
+        {tagChips}
         {/* Capped so large text cannot squeeze the title out. */}
         <View
           className="max-w-[50%] shrink flex-row items-center gap-1.5"
@@ -1950,7 +2047,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           fadedCardContent
         ) : (
           <View>
-            <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{fadedCardContent}</View>
+            <View className={rowContentClassName}>{fadedCardContent}</View>
             {THREAD_LIST_V2_ROW_DIVIDERS && props.showTrailingDivider !== false ? (
               <View className="ml-5 h-px bg-border-subtle" />
             ) : null}
@@ -1977,8 +2074,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       >
         <View
           className={cn(
-            THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
-            "min-h-[44px] flex-row items-center gap-2 py-2",
+            rowContentClassName,
+            "flex-row items-center gap-2",
+            slimRowClassName,
             sidebarPane && "px-3",
           )}
         >
@@ -2030,6 +2128,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             ) : null}
           </View>
+          {tagChips}
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
             className={cn(

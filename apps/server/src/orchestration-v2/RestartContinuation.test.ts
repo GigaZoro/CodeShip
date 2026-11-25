@@ -1707,6 +1707,20 @@ it.each(["preparing", "starting", "running"] as const)(
       providerTurns: [],
     } as unknown as OrchestrationV2ThreadProjection;
     assert.equal(restartResumeRun(cut, now)?.id, runId);
+    // An automatic start still waiting for memory keeps its place instead.
+    const waiting = {
+      ...cut,
+      runs: [
+        ...cut.runs,
+        {
+          ...cut.runs[0]!,
+          id: RunId.make("run:waits-for-memory"),
+          status: "starting",
+          memoryAdmission: { waitingSince: now },
+        },
+      ],
+    } as unknown as OrchestrationV2ThreadProjection;
+    assert.isUndefined(restartResumeRun(waiting, now));
     for (const blocked of [
       { ...cut, thread: { ...cut.thread, archivedAt: now } },
       { ...cut, thread: { ...cut.thread, settledOverride: "settled" } },

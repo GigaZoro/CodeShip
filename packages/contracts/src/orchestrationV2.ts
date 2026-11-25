@@ -822,16 +822,33 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
   typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
 
+/**
+ * An automatic start (a restart, network or usage-limit continuation) waits here until memory
+ * leaves room, and starts one at a time: `admittedAt` is set when its turn comes.
+ */
+export const OrchestrationV2RunMemoryAdmission = Schema.Struct({
+  waitingSince: Schema.DateTimeUtc,
+  admittedAt: Schema.optional(Schema.DateTimeUtc),
+});
+export type OrchestrationV2RunMemoryAdmission = typeof OrchestrationV2RunMemoryAdmission.Type;
+
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 /** The agent failed to start before it received the message, so the run can go again. */
 export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
+/** The provider refused the turn because the account's login no longer works; signing in again clears it. */
+export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
 export const OrchestrationV2Run = Schema.Struct({
+  /** The original demand for this work. Historical runs can omit it. */
+  demandId: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^demand:[0-9a-f]{64}$/))),
+  ),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
+  crossProviderFailoverFrom: Schema.optional(ProviderInstanceId),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
   rootNodeId: Schema.NullOr(NodeId),
@@ -866,8 +883,20 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  memoryAdmission: Schema.optional(OrchestrationV2RunMemoryAdmission),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
+
+/** An automatic start still waiting for its turn to start; nothing has started its work yet. */
+export function orchestrationV2RunAwaitsMemory(
+  run: Pick<OrchestrationV2Run, "status" | "memoryAdmission">,
+): boolean {
+  return (
+    (run.status === "preparing" || run.status === "starting") &&
+    run.memoryAdmission !== undefined &&
+    run.memoryAdmission.admittedAt === undefined
+  );
+}
 
 export function orchestrationV2RunWorkStartedAt(
   run: Pick<OrchestrationV2Run, "workStartedAt" | "startedAt" | "requestedAt">,
@@ -1091,6 +1120,8 @@ export function isAppOwnedTaskWork(task: {
 }
 
 export const OrchestrationV2Subagent = Schema.Struct({
+  /** Accounting owner captured when a local delegation was accepted. */
+  demandId: OrchestrationV2Run.fields.demandId,
   id: NodeId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -2410,6 +2441,10 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activityRunStatus: Schema.optional(
     Schema.NullOr(Schema.Literals(["preparing", "starting", "running", "waiting"])),
   ),
+  /** The latest run's own selection; `modelSelection` is what the next run uses and can change first. */
+  latestRunModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  /** The activity run's own selection. */
+  activityRunModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   status: OrchestrationV2ShellThreadStatus,
   lastError: Schema.optional(Schema.NullOr(Schema.String)),
@@ -2693,6 +2728,12 @@ export const OrchestrationV2RunJson = OrchestrationV2Run.mapFields((fields) => (
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   workStartedAt: Schema.optional(Schema.DateTimeUtcFromString),
+  memoryAdmission: Schema.optional(
+    OrchestrationV2RunMemoryAdmission.mapFields(() => ({
+      waitingSince: Schema.DateTimeUtcFromString,
+      admittedAt: Schema.optional(Schema.DateTimeUtcFromString),
+    })),
+  ),
 }));
 export type OrchestrationV2RunJson = typeof OrchestrationV2RunJson.Type;
 
@@ -3628,6 +3669,7 @@ export const OrchestrationV2Command = Schema.Union([
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     /** Start a new provider session without the thread's earlier context. Never steers. */
     freshContext: Schema.optional(Schema.Boolean),
+    compactionForMessageId: Schema.optional(MessageId),
     commandId: CommandId,
     threadId: ThreadId,
     messageId: MessageId,
@@ -4001,9 +4043,22 @@ const OrchestrationV2InternalCommand = Schema.Union([
     taskId: NodeId,
   }),
   /**
+   * Records the run there that carries a remote task, once its launch returned it. The task is
+   * recorded before the launch, so this is the only way its follower learns which run is its
+   * own. A task that has its result, or already names a run, keeps it.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.attach-run"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    runId: RunId,
+  }),
+  /**
    * Records a `t3_command_run` command on the thread that runs it: the task, its node and its
    * turn item, as a remote task is recorded. The ids derive from `commandId`, so a retry records
-   * nothing new.
+   * nothing new. With `waiting`, the command has not started: the task is recorded pending with
+   * that text as its progress, until `delegated_task.command.start`.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.command.request"),
@@ -4015,6 +4070,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     driver: ProviderDriverKind,
     providerInstanceId: ProviderInstanceId,
     command: OrchestrationV2TaskCommand,
+    waiting: Schema.optional(TrimmedNonEmptyString),
+  }),
+  /** Records that a command recorded as waiting has started. A settled task records nothing. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.command.start"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
   }),
   /**
    * Records how a command ended. Its thread wakes exactly as for any delegated task; the first
@@ -4152,10 +4215,51 @@ const OrchestrationV2InternalCommand = Schema.Union([
     providerSessionId: ProviderSessionId,
     reason: Schema.String,
   }),
+  /** Starts an automatic start that waits for memory; nothing when it no longer waits. */
+  Schema.Struct({
+    type: Schema.Literal("run.memory-admit"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+  }),
+  /** Tells the thread its automatic start waits for memory, once per wait. */
+  Schema.Struct({
+    type: Schema.Literal("run.memory-wait"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    shortage: Schema.String,
+  }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+type LaunchCommand =
+  | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      /** A managed send must still target an open thread in the caller's project when accepted. */
+      readonly sendToProjectId?: ProjectId;
+      readonly demandId?: string | null;
+      readonly demandSourceRunId?: RunId;
+    })
+  | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
+type ThreadCreateCommand = Extract<OrchestrationV2Command, { readonly type: "thread.create" }>;
+export type OrchestrationV2ServerCommand =
+  | Exclude<OrchestrationV2Command, LaunchCommand | ThreadCreateCommand>
+  | (LaunchCommand & {
+      readonly crossProviderFailoverFrom?: ProviderInstanceId;
+      readonly requestedModelSelection?: ModelSelection;
+      readonly launchAlreadyRouted?: true;
+    })
+  | (Omit<ThreadCreateCommand, "initialMessage"> & {
+      /** A launch's first message carries what its own message.dispatch would. */
+      readonly initialMessage?:
+        | (NonNullable<ThreadCreateCommand["initialMessage"]> & {
+            readonly demandId?: string | null;
+            readonly crossProviderFailoverFrom?: ProviderInstanceId;
+            readonly launchAlreadyRouted?: true;
+          })
+        | undefined;
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

@@ -58,8 +58,10 @@ class SmokeUnregisteredDeviceError extends Schema.TaggedError<SmokeUnregisteredD
 }
 
 const main = Effect.gen(function* () {
-  const [credentialPath, devicePath, phaseArg] = process.argv.slice(2);
-  if (!credentialPath || !devicePath || !phaseArg) return yield* new SmokeUsageError({});
+  const [credentialPath, devicePath, phaseArg, ...unread] = process.argv.slice(2);
+  if (!credentialPath || !devicePath || !phaseArg || unread.length > 0) {
+    return yield* new SmokeUsageError({});
+  }
   const phase = yield* decodePhase(phaseArg);
   const credentials = yield* Effect.tryPromise({
     try: () => NodeFSP.readFile(credentialPath, "utf8"),

@@ -1,4 +1,9 @@
+import * as Schema from "effect/Schema";
 import { msg, type Message } from "@t3tools/shared/i18n";
+import {
+  backgroundWorkHoldsCompletion,
+  type PendingBackgroundWorkTask,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 import type { EnvironmentThreadShell } from "./models.ts";
 
@@ -21,7 +26,9 @@ export type ThreadStatusInput = Pick<
   | "pendingGuestMessageCount"
   | "runtime"
   | "blockedOnThreadWait"
->;
+> & {
+  readonly latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "status"> | null;
+};
 
 export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
@@ -49,7 +56,25 @@ export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
-  return "ready";
+  return thread.latestRun?.status === "failed" ? "failed" : "ready";
+}
+
+/**
+ * The agent waits on work it started: another thread its running turn awaits, or background work
+ * holding its run. A failed run stays failed, as the shell keeps it, whatever it left running.
+ */
+export function isThreadWaitingOnWork(thread: {
+  readonly runtime: Pick<NonNullable<EnvironmentThreadShell["runtime"]>, "status"> | null;
+  readonly blockedOnThreadWait?: boolean | undefined;
+  readonly pendingBackgroundTasks?:
+    | ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind" | "awaited">>
+    | undefined;
+}): boolean {
+  return (
+    (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
+    (thread.runtime?.status !== "failed" &&
+      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []))
+  );
 }
 
 /**
@@ -93,3 +118,79 @@ export const THREAD_STATUS_DISPLAY = {
 } as const satisfies Record<string, ThreadStatusDisplay>;
 
 export type ThreadStatusDisplayKey = keyof typeof THREAD_STATUS_DISPLAY;
+
+export const ThreadListStatusFilter = Schema.Literals([
+  "all",
+  "attention",
+  "working",
+  "unread",
+  "failed",
+]);
+export type ThreadListStatusFilter = typeof ThreadListStatusFilter.Type;
+
+export const THREAD_LIST_STATUS_LABELS = {
+  all: msg("All"),
+  attention: msg("Needs you"),
+  working: THREAD_STATUS_DISPLAY.working.label,
+  unread: msg("Unread"),
+  failed: THREAD_STATUS_DISPLAY.failed.label,
+  done: THREAD_STATUS_DISPLAY.done.label,
+} satisfies Record<ThreadListStatusFilter | "done", Message>;
+
+export type ProjectThreadState = "attention" | "working" | "done" | "quiet";
+
+type ThreadCompletionInput = {
+  readonly latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "completedAt"> | null;
+  readonly lastVisitedAt?: string | null | undefined;
+};
+
+type ThreadListStatusInput = ThreadStatusInput & ThreadCompletionInput;
+
+export function hasUnseenCompletion(thread: ThreadCompletionInput): boolean {
+  if (!thread.latestRun?.completedAt) return false;
+  const completedAt = Date.parse(thread.latestRun.completedAt);
+  if (Number.isNaN(completedAt) || !thread.lastVisitedAt) return false;
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  return Number.isNaN(lastVisitedAt) || completedAt > lastVisitedAt;
+}
+
+function classifyThreadStatus(
+  status: ThreadStatus,
+  thread: ThreadCompletionInput,
+  flags: { readonly woke?: boolean; readonly locallyUnread?: boolean },
+): ProjectThreadState {
+  switch (status) {
+    case "approval":
+    case "input":
+    case "request":
+    case "limited":
+    case "failed":
+      return "attention";
+    case "working":
+      return "working";
+    case "ready":
+      if (flags.woke) return "attention";
+      return flags.locallyUnread || hasUnseenCompletion(thread) ? "done" : "quiet";
+    case "waiting":
+      if (flags.woke) return "attention";
+      return flags.locallyUnread ? "done" : "quiet";
+  }
+}
+
+export function resolveProjectThreadState(
+  thread: ThreadListStatusInput,
+  flags: Parameters<typeof classifyThreadStatus>[2] = {},
+): ProjectThreadState {
+  return classifyThreadStatus(resolveThreadStatus(thread), thread, flags);
+}
+
+export function matchesThreadListStatus(
+  thread: ThreadListStatusInput,
+  filter: ThreadListStatusFilter,
+  flags: Parameters<typeof classifyThreadStatus>[2] = {},
+): boolean {
+  if (filter === "all") return true;
+  const status = resolveThreadStatus(thread);
+  if (filter === "failed") return status === "failed";
+  return classifyThreadStatus(status, thread, flags) === (filter === "unread" ? "done" : filter);
+}

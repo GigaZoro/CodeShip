@@ -250,7 +250,8 @@ release, their setup in **Settings → Providers** offers an update.
 Add another provider instance for a separate account or configuration. Each
 instance can have its own environment variables, such as API keys or a custom
 base URL. Mark secret values as sensitive; after saving, T3.CodeShip does not display
-their original values.
+their original values. To read a value from 1Password on the environment's host,
+see [Use 1Password for provider variables](./background-service.md#use-1password-for-provider-variables).
 
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),

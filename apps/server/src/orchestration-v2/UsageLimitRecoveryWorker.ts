@@ -11,6 +11,7 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
+import { canAccountRun } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -36,6 +37,7 @@ import {
 } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 // A cooldown this short is cheaper to wait out than to move the thread to another account for good.
@@ -335,18 +337,23 @@ type SignedOutInput = AccountRoutingContext &
     readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
   };
 
+/** Whether the thread still waits on the account whose login its latest run's failure rejected. */
+function waitsOnSignedOutAccount(thread: SignedOutInput["thread"], nowMs: number): boolean {
+  return (
+    thread.archivedAt === null &&
+    thread.settledOverride !== "settled" &&
+    thread.latestRunProviderInstanceId === thread.providerInstanceId &&
+    !snoozeHoldsStop(thread, thread.latestRunId, nowMs)
+  );
+}
+
 /**
  * The search for another account a thread stopped by a rejected login could move to, or null when
- * it stays. Only while the account still reads signed out: signing in again leaves the thread where it is.
+ * it stays: while the account still reads signed out, and only before the agent did any work,
+ * which a new account would repeat.
  */
 function signedOutSearch({ thread, ...input }: SignedOutInput) {
-  if (
-    thread.archivedAt !== null ||
-    thread.settledOverride === "settled" ||
-    thread.latestRunProviderInstanceId !== thread.providerInstanceId ||
-    snoozeHoldsStop(thread, thread.latestRunId, input.nowMs)
-  )
-    return null;
+  if (thread.workDone || !waitsOnSignedOutAccount(thread, input.nowMs)) return null;
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
@@ -381,6 +388,51 @@ export function signedOutFailoverCommand(input: SignedOutInput): DispatchCommand
       model: target.model,
     },
     ...thread.message,
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "user",
+    creationSource: "server",
+  };
+}
+
+const SIGNED_IN_RESUME = "signed-in-resume";
+
+type SignedInResumeInput = SignedOutInput & {
+  readonly settings: Pick<ServerSettingsValue, "autoResumeLimitedThreads">;
+};
+
+/**
+ * Continues a thread a rejected login stopped once a later check reads its account signed in,
+ * resending a message the agent did no work on, since it may never have reached the agent. A
+ * resume rejected before any work stays for the person: a check cannot see every rejected login.
+ */
+export function signedInResumeCommand({
+  thread,
+  ...input
+}: SignedInResumeInput): DispatchCommand | null {
+  if (
+    !input.settings.autoResumeLimitedThreads ||
+    !waitsOnSignedOutAccount(thread, input.nowMs) ||
+    (!thread.workDone && thread.latestRunUserMessageId.startsWith(`${SIGNED_IN_RESUME}:`))
+  )
+    return null;
+  const account = input.providers.find(
+    (provider) => provider.instanceId === thread.providerInstanceId,
+  );
+  if (
+    account === undefined ||
+    !canAccountRun(account, input.settings, thread.projectId) ||
+    !(Date.parse(account.checkedAt) > DateTime.toEpochMillis(thread.latestRunCompletedAt))
+  )
+    return null;
+  const id = `${SIGNED_IN_RESUME}:${thread.id}:${thread.latestRunId}`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(id),
+    messageId: MessageId.make(id),
+    threadId: thread.id,
+    automaticContinuationOfRunId: thread.latestRunId,
+    manualContinuationOfRunId: thread.latestRunId,
+    ...(thread.workDone ? { text: CONTINUE_PROMPT, attachments: [] } : thread.message),
     dispatchMode: { type: "start_immediately" },
     createdBy: "user",
     creationSource: "server",
@@ -436,19 +488,21 @@ const makeSweep = Effect.gen(function* () {
     const preferences = yield* settings.getSettings;
     const switching = preferences.failoverLimitedThreads;
     const resetting = preferences.redeemUsageResets;
+    const resuming = preferences.autoResumeLimitedThreads;
     const candidates = yield* projections
       .getLimitRecoveryCandidates({
         now,
-        autoResume: preferences.autoResumeLimitedThreads,
+        autoResume: resuming,
         snooze: preferences.snoozeLimitedThreads,
         waiting: switching || resetting,
       })
       .pipe(NodeSqliteClient.inBackground);
-    const signedOut = switching
-      ? yield* projections
-          .getSignedOutFailoverCandidates({ now, maxAgeMs: MAX_SIGNED_OUT_FAILURE_AGE_MS })
-          .pipe(NodeSqliteClient.inBackground)
-      : [];
+    const signedOut =
+      switching || resuming
+        ? yield* projections
+            .getSignedOutCandidates({ now, maxAgeMs: MAX_SIGNED_OUT_FAILURE_AGE_MS })
+            .pipe(NodeSqliteClient.inBackground)
+        : [];
     const providers =
       candidates.length > 0 || signedOut.length > 0 ? yield* providerRegistry.getProviders : null;
     const routing =
@@ -488,11 +542,14 @@ const makeSweep = Effect.gen(function* () {
     let acted = false;
     let targetRoomAt = Infinity;
     for (const thread of signedOut) {
-      const command = failover === null ? null : signedOutFailoverCommand({ ...failover, thread });
+      // Moving needs the account still signed out, resuming it signed in, so at most one applies.
+      const command =
+        (failover === null ? null : signedOutFailoverCommand({ ...failover, thread })) ??
+        (routing === null ? null : signedInResumeCommand({ ...routing, thread }));
       if (command === null) continue;
       const outcome = yield* dispatchContinuation(
         command,
-        "orchestration-v2.signed-out-failover.dispatch-failed",
+        "orchestration-v2.signed-out-recovery.dispatch-failed",
       );
       if (outcome !== "refused") acted = true;
     }

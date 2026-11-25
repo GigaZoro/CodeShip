@@ -19,6 +19,7 @@ import {
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
+  ScheduledTaskId,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -368,6 +369,32 @@ it.effect("requires task permission before attaching a prepared worktree to a th
     ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
     expect(handled).toBe(false);
   }),
+);
+
+it.effect("requires operate permission to change a scheduled task's folder", () =>
+  Effect.gen(function* () {
+    const method = WS_METHODS.scheduledTasksSetGroup;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof method> => tag !== method,
+      ),
+    );
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          group.toLayerHandler(method, () => Effect.die("Unauthorized request reached handler")),
+          RpcAuthorization.layer([AuthOrchestrationReadScope]),
+        ),
+      ),
+    );
+
+    const error = yield* client[method]({
+      id: ScheduledTaskId.make("task:test"),
+      group: "Work",
+    }).pipe(Effect.flip);
+
+    expect(error).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+  }).pipe(Effect.scoped),
 );
 
 describe("thread context authorization", () => {

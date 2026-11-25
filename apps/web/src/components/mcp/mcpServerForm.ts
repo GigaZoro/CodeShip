@@ -17,11 +17,18 @@ export interface McpServerForm {
   readonly kind: McpServerKind;
   readonly url: string;
   readonly headers: string;
+  readonly bearerTokenEnvVar: string;
   readonly command: string;
   readonly env: string;
 }
 
-export type McpServerFormField = "name" | "url" | "headers" | "command" | "env";
+export type McpServerFormField =
+  | "name"
+  | "url"
+  | "headers"
+  | "bearerTokenEnvVar"
+  | "command"
+  | "env";
 
 type McpServerFormErrors = Partial<Record<McpServerFormField, string>>;
 
@@ -88,6 +95,7 @@ export function mcpServerFormFromSettings(
       kind: "local",
       url: "",
       headers: "",
+      bearerTokenEnvVar: "",
       command: joinCommandLine([settings.command, ...settings.args]),
       env: settings.envNames.map((variable) => `${variable}=`).join("\n"),
     };
@@ -97,6 +105,7 @@ export function mcpServerFormFromSettings(
     kind: "remote",
     url: settings.urlHasSecret ? "" : settings.url,
     headers: settings.headerNames.map((header) => `${header}: `).join("\n"),
+    bearerTokenEnvVar: settings.bearerTokenEnvVar ?? "",
     command: "",
     env: "",
   };
@@ -155,6 +164,28 @@ function readServer(
       PROVIDER_MCP_HEADER_NAME_PATTERN,
       "header",
     );
+    const bearerTokenEnvVar = form.bearerTokenEnvVar.trim();
+    const keepsBearerTokenTarget =
+      stored?.transport === "http" &&
+      stored.bearerTokenEnvVar === bearerTokenEnvVar &&
+      (keepsUrl || url === stored.url);
+    if (bearerTokenEnvVar !== "") {
+      if (
+        bearerTokenEnvVar.length > 128 ||
+        !PROVIDER_MCP_ENV_NAME_PATTERN.test(bearerTokenEnvVar)
+      ) {
+        errors.bearerTokenEnvVar = t("Enter a valid environment variable name.");
+      } else if (!keepsBearerTokenTarget && !/^https:\/\//iu.test(keepsUrl ? stored.url : url)) {
+        errors.bearerTokenEnvVar = t("A bearer token variable requires an HTTPS endpoint.");
+      } else if (
+        "values" in headers &&
+        Object.keys(headers.values).some((name) => name.toLowerCase() === "authorization")
+      ) {
+        errors.bearerTokenEnvVar = t(
+          "Use either the bearer token variable or an Authorization header.",
+        );
+      }
+    }
     if ("error" in headers) errors.headers = headers.error;
     else {
       const empty = emptyValueError(
@@ -166,7 +197,16 @@ function readServer(
       if (empty) errors.headers = empty;
     }
     if (Object.keys(errors).length > 0 || "error" in headers) return undefined;
-    return { transport: "http", ...(keepsUrl ? {} : { url }), headers: headers.values };
+    return {
+      transport: "http",
+      ...(keepsUrl ? {} : { url }),
+      headers: headers.values,
+      ...(bearerTokenEnvVar !== ""
+        ? { bearerTokenEnvVar }
+        : stored?.transport === "http" && stored.bearerTokenEnvVar !== undefined
+          ? { bearerTokenEnvVar: null }
+          : {}),
+    };
   }
 
   const words = splitCommandLine(form.command);
@@ -202,7 +242,12 @@ export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
   return {
     ok: true,
     name,
-    server: { transport: "http", url: server.url, headers: server.headers },
+    server: {
+      transport: "http",
+      url: server.url,
+      headers: server.headers,
+      ...(server.bearerTokenEnvVar == null ? {} : { bearerTokenEnvVar: server.bearerTokenEnvVar }),
+    },
   };
 }
 

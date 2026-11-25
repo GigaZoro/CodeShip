@@ -551,9 +551,12 @@ export const codexUsageReader: ProviderUsageReader<
   directories: Effect.fn("codexUsageReader.directories")(function* ({ config, environment }) {
     if (config === undefined) return [];
     const path = yield* Path.Path;
-    const environmentHome = environment.CODEX_HOME?.trim();
+    const environmentHome = environment.CODEX_HOME;
     const layout = yield* resolveCodexHomeLayout(
-      config.setupMode !== "managed" && !config.homePath.trim() && environmentHome
+      config.setupMode !== "managed" &&
+        !config.homePath.trim() &&
+        !config.shadowHomePath.trim() &&
+        environmentHome?.trim()
         ? { ...config, homePath: environmentHome }
         : config,
     );

@@ -67,10 +67,11 @@ Browser and terminal sign-in leave credentials in the agent's own store. Agents 
 through environment variables still take those keys in the instance's environment settings.
 A configured environment or agent home applies to both sign-in and chat.
 
-If the agent advertises logout, choose **Sign out**. Changing a shared agent login stops running
-threads for instances of that same agent on the environment. Thread history and workspace files
-are kept. ACP does not describe account isolation, so adding another instance does not guarantee
-a separate account; use the agent's own configuration to isolate accounts when supported.
+If a turn or a session startup is using the shared agent login, CodeShip asks you to finish
+that work before signing in. This also applies to other instances using the same login.
+If the agent advertises logout, **Sign out** explicitly stops sessions using that login.
+Thread history and workspace files stay available. Use the agent's own account isolation
+settings when you need separate accounts.
 
 If an agent cannot complete its advertised flow remotely, its CLI remains available on the
 server. For example, Codex supports `codex login --device-auth`, and Grok Build supports

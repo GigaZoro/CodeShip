@@ -1,15 +1,24 @@
-import { SecretProviderId } from "@t3tools/contracts";
+import { SecretProviderId, SecretProviderKind, SecretProviderLabel } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vite-plus/test";
 
-import { secretProviderFromDraft } from "./SecretProviderDialog.logic";
+import { draftFromSecretProvider, secretProviderFromDraft } from "./SecretProviderDialog.logic";
+
+const personalId = SecretProviderId.make("personal");
+const serviceAccountConfig = {
+  kind: SecretProviderKind.make("one_password"),
+  label: SecretProviderLabel.make("Personal"),
+  config: { auth: "linux-service-account" },
+};
 
 describe("secretProviderFromDraft", () => {
   it("adds a provider keyed by its name and reports every field that blocks it", () => {
     expect(
-      secretProviderFromDraft({ name: "  1Password!  ", account: "my.1password.com" }, new Set(), {
-        mode: "add",
-      }),
+      secretProviderFromDraft(
+        { ...draftFromSecretProvider(), name: "  1Password!  ", account: "my.1password.com" },
+        new Set(),
+        { mode: "add" },
+      ),
     ).toEqual(
       Result.succeed({
         id: "1password",
@@ -22,7 +31,7 @@ describe("secretProviderFromDraft", () => {
     );
 
     const blocked = secretProviderFromDraft(
-      { name: "1Password", account: "--help" },
+      { ...draftFromSecretProvider(), name: "1Password", account: "--help" },
       new Set(["1password"]),
       { mode: "add" },
     );
@@ -33,19 +42,54 @@ describe("secretProviderFromDraft", () => {
   });
 
   it("keeps the id when an edit renames the provider", () => {
-    const id = SecretProviderId.make("personal");
     const result = secretProviderFromDraft(
-      { name: "Personal (team)", account: "team.1password.com" },
+      { name: "Personal (team)", auth: "desktop", account: "team.1password.com" },
       new Set(["personal"]),
-      { mode: "edit", id },
+      { mode: "edit", id: personalId },
     );
     expect(Result.isSuccess(result) && result.success).toEqual({
-      id,
+      id: personalId,
       config: {
         kind: "one_password",
         label: "Personal (team)",
         config: { account: "team.1password.com" },
       },
     });
+  });
+
+  it("adds a Linux service account without validating or saving the desktop account field", () => {
+    const draft = { name: "Personal", auth: "linux-service-account", account: "--help" } as const;
+
+    const result = secretProviderFromDraft(draft, new Set(), { mode: "add" });
+
+    expect(result).toEqual(Result.succeed({ id: personalId, config: serviceAccountConfig }));
+  });
+
+  it("preserves the stored Linux service account when editing the provider", () => {
+    const draft = draftFromSecretProvider(serviceAccountConfig);
+
+    const result = secretProviderFromDraft(draft, new Set([personalId]), {
+      mode: "edit",
+      id: personalId,
+    });
+
+    expect(result).toEqual(Result.succeed({ id: personalId, config: serviceAccountConfig }));
+  });
+
+  it("converts a Linux service account to desktop integration under the same ID", () => {
+    const draft = draftFromSecretProvider(serviceAccountConfig);
+
+    const result = secretProviderFromDraft(
+      { ...draft, auth: "desktop", account: "my.1password.com" },
+      new Set([personalId]),
+      { mode: "edit", id: personalId },
+    );
+
+    expect(result).toEqual(
+      Result.succeed({
+        id: personalId,
+        config: { ...serviceAccountConfig, config: { account: "my.1password.com" } },
+      }),
+    );
   });
 });

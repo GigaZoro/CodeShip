@@ -47,6 +47,7 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import { scratchFolderRoot } from "./project/ManagedProjectFolders.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import { checkpointRefForScopeOrdinal } from "./orchestration-v2/CheckpointService.ts";
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
@@ -55,11 +56,23 @@ import * as WorktreeBranchSync from "./orchestration-v2/WorktreeBranchSync.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
-import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
+import {
+  isFilesystemRoot,
+  managedWorktreesDirectories,
+  makeIsManagedWorktreePath,
+} from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
 import { isLinkedWorktree, removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
-import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
+import {
+  decodeReleaseRequest,
+  worktreeReleaseName,
+  lstatReleaseEntry,
+  releasePath,
+  releaseHold,
+  type ReleaseRequest,
+} from "./workspace/worktreeRelease.ts";
+import { observeWorkspaceStarts, withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
@@ -322,9 +335,11 @@ const make = Effect.gen(function* () {
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
   const gitManager = yield* GitManager.GitManager;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
   const reconcileBranch = yield* WorktreeBranchSync.makeReconcile;
@@ -354,6 +369,15 @@ const make = Effect.gen(function* () {
       !path.isAbsolute(relative)
     );
   };
+  const usesReleasePath = Effect.fn("StorageCleanup.usesReleasePath")(function* (
+    root: string,
+    candidate: string,
+  ) {
+    const cwd = path.resolve(candidate);
+    if (pathKey(cwd) === pathKey(root) || inside(root, cwd)) return true;
+    const real = yield* releasePath(cwd);
+    return pathKey(real) === pathKey(root) || inside(root, real);
+  });
   // pnpm imports packages by clone or reflink when its store shares a device
   // with the worktree. Those files have one link but share blocks with the
   // store, so removing them frees almost nothing. A store on another device
@@ -384,9 +408,13 @@ const make = Effect.gen(function* () {
   );
 
   const measureWorktree = Effect.fn("storageCleanup.measureWorktree")(
-    function* (worktreePath: string, inspectRepositories: boolean | "plain-folder" = false) {
+    function* (
+      worktreePath: string,
+      inspectRepositories: boolean | "plain-folder" = false,
+      measureBytes = true,
+    ) {
       const root = yield* fs.realPath(worktreePath);
-      const skipped = yield* sharedPnpmVirtualStore(root);
+      const skipped = measureBytes ? yield* sharedPnpmVirtualStore(root) : null;
       const incomplete = { bytes: null, reason: "worktree could not be fully inspected" };
       // A plain folder is not a checkout, so a repository at its root counts like one below it.
       const repositories = new Set(inspectRepositories === "plain-folder" ? [] : [pathKey(root)]);
@@ -441,11 +469,12 @@ const make = Effect.gen(function* () {
             if (stat.type === "SymbolicLink") return empty;
             if ((yield* fs.realPath(target)) !== target) return null;
             if (stat.type === "Directory") {
-              if (!inStore) {
+              // Sizes are skipped for the store and when the caller wants no byte count.
+              if (!inStore && measureBytes) {
                 const names = yield* fs.readDirectory(target);
                 return { target, bytes: 0, names, children: names };
               }
-              // The store is excluded from reclaimed bytes; only walk its directories.
+              // Only walk directories: file types come with the entries, with no stat per file.
               const dirents = yield* Effect.tryPromise({
                 try: () => NodeFSP.readdir(target, { withFileTypes: true }),
                 catch: (cause) => new WorktreeDirectoryReadError({ cause }),
@@ -466,7 +495,7 @@ const make = Effect.gen(function* () {
                 isWindows && blocks === 0n ? Number(stat.size) : Number(blocks * 512n),
             });
             return { ...empty, bytes };
-          }),
+          }, Effect.timeout("30 seconds")),
           { concurrency: "unbounded" },
         );
         for (const result of inspected) {
@@ -483,9 +512,10 @@ const make = Effect.gen(function* () {
           }
         }
       }
-      return { bytes, reason: null };
+      return { bytes: measureBytes ? bytes : null, reason: null };
     },
-    Effect.timeout("30 seconds"),
+    // Bound the whole lease as well as each filesystem batch.
+    Effect.timeout("10 minutes"),
     Effect.orElseSucceed(() => ({ bytes: null, reason: "worktree could not be fully inspected" })),
   );
 
@@ -1024,12 +1054,118 @@ const make = Effect.gen(function* () {
       });
   });
 
+  const releaseDirectory = path.join(config.stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+  const pendingRequestFiles = Effect.gen(function* () {
+    if (!(yield* fs.exists(releaseDirectory))) return [];
+    return (yield* fs.readDirectory(releaseDirectory)).filter((name) =>
+      /^[a-f0-9]{64}\.json(?:\.releasing)?$/.test(name),
+    );
+  });
+
+  const deliveryHold = Effect.fn("StorageCleanup.deliveryHold")(function* (
+    shell: OrchestrationV2ThreadShell,
+    request: ReleaseRequest,
+  ) {
+    if (
+      shell.latestRunId !== request.runId ||
+      shell.status !== "completed" ||
+      shell.latestRunCompletedAt == null ||
+      shell.activityRunStatus != null ||
+      shell.queueHeld ||
+      shell.blockedOnThreadWait ||
+      shell.hasActionableProposedPlan ||
+      shell.goal?.status === "active" ||
+      shell.pinnedAt != null ||
+      (shell.pendingGuestMessageCount ?? 0) > 0 ||
+      shell.pullRequests?.some((link) => link.watch !== undefined) ||
+      (shell.latestUserMessageAt !== null &&
+        DateTime.isGreaterThan(shell.latestUserMessageAt, shell.latestRunCompletedAt))
+    )
+      return "requested run has unfinished work or was superseded";
+    if (shell.delegatedFrom) return "remote delegate ownership requires its peer";
+    if (yield* engine.delegatedTaskResultPending(shell.id))
+      return "run result or restart continuation is pending";
+    const pending = yield* sql`
+      SELECT 1 WHERE EXISTS (
+        SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id = ${shell.id}
+          AND status NOT IN ('succeeded','cancelled')
+      ) OR EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${shell.id}
+          AND status IN ('preparing','queued','starting','running','waiting')
+      ) OR EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_subagents
+        WHERE (thread_id = ${shell.id} OR child_thread_id = ${shell.id})
+          AND (status NOT IN ('completed','failed','cancelled','interrupted')
+            OR (origin != 'provider_native' AND coalesce(completion_delivery_state,'') NOT IN ('acknowledged','delivered','disposed')))
+      )
+    `.pipe(NodeSqliteClient.readOnly);
+    if (pending.length) return "run, task delivery or durable effect is pending";
+    if (shell.lineage.relationshipToParent === "subagent") {
+      const delivered = yield* sql`
+        SELECT 1 FROM orchestration_v2_projection_subagents
+        WHERE child_thread_id = ${shell.id} AND thread_id = ${shell.lineage.parentThreadId}
+          AND status = 'completed' AND completion_delivery_state IN ('acknowledged','delivered')
+          AND completed_at >= ${DateTime.formatIso(shell.latestRunCompletedAt)}
+        LIMIT 1
+      `.pipe(NodeSqliteClient.readOnly);
+      if (!delivered.length) return "parent has not received this delegate's result";
+    }
+    const commands = yield* sql<{ cwd: string; thread_id: string }>`
+      SELECT cwd, thread_id FROM command_runs WHERE status IN ('queued','running') OR delivered_at IS NULL
+    `.pipe(NodeSqliteClient.readOnly);
+    for (const row of commands) {
+      if (row.thread_id === shell.id || (yield* usesReleasePath(request.worktreePath, row.cwd)))
+        return "command or command delivery is pending";
+    }
+    for (const cwd of yield* providerSessions.occupiedWorkspaces) {
+      if (yield* usesReleasePath(request.worktreePath, cwd))
+        return "provider workspace is still open or closing";
+    }
+    for (const entries of liveTerminals.values()) {
+      for (const terminal of entries.values()) {
+        if (
+          (terminal.status === "starting" || terminal.status === "running") &&
+          (terminal.threadId === shell.id ||
+            (yield* usesReleasePath(request.worktreePath, terminal.cwd)))
+        )
+          return "open terminal";
+      }
+    }
+    return null;
+  });
+
   const cleanWorktrees = Effect.fn("StorageCleanup.cleanWorktrees")(function* (
     serverSettings: ServerSettings,
     now: number,
     entries: StorageCleanupReportEntry[],
+    requestsOnly: boolean,
   ) {
-    if (!anyWorktreePolicy(serverSettings, worktreeCleanupEnabled))
+    const releases = new Map<string, { file: string; contents: string; request: ReleaseRequest }>();
+    const invalidRequests = new Set<string>();
+    // Read claimed requests first so a newer request for the same path wins.
+    for (const name of (yield* pendingRequestFiles).toSorted().reverse()) {
+      const key = name.replace(/\.releasing$/, "");
+      const file = path.join(releaseDirectory, name);
+      const loaded = yield* Effect.gen(function* () {
+        const stat = yield* lstatReleaseEntry(file);
+        if (!stat.isFile() || stat.size > 1024 * 1024) return null;
+        const contents = yield* fs.readFileString(file);
+        const request = yield* decodeReleaseRequest(contents);
+        return worktreeReleaseName(request.worktreePath) === key
+          ? { file, contents, request }
+          : null;
+      }).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => null),
+      );
+      if (loaded === null) invalidRequests.add(key);
+      else releases.set(key, loaded);
+    }
+    const hasRequests = releases.size > 0 || invalidRequests.size > 0;
+    if (
+      !hasRequests &&
+      (requestsOnly || !anyWorktreePolicy(serverSettings, worktreeCleanupEnabled))
+    )
       return { waiting: false, kept: [] };
     let waiting = false;
     const kept: string[] = [];
@@ -1080,12 +1216,16 @@ const make = Effect.gen(function* () {
     });
     const worktreePathReason = Effect.fn("StorageCleanup.worktreePathReason")(function* (
       worktreePath: string,
+      // A released checkout is recreated from the thread's own layout on resume.
+      requireManagedLayout: boolean,
     ) {
       // Allow symlinked parents, never a symlinked worktree directory.
       const realPath = yield* fs.realPath(worktreePath);
       const realParent = yield* fs.realPath(path.dirname(worktreePath));
       if (realPath !== path.join(realParent, path.basename(worktreePath)))
         return "worktree is a symbolic link";
+      if (requireManagedLayout && !(yield* isManagedWorktreePath(worktreePath)))
+        return "checkout is outside the managed layout for resuming this thread";
       if (!roots.some((root) => inside(root, realPath)))
         return "outside the managed worktree folder";
       const linked = yield* isLinkedWorktree(worktreePath).pipe(
@@ -1173,8 +1313,21 @@ const make = Effect.gen(function* () {
     ];
     for (const thread of candidates) {
       const settings = resolveWorktreeCleanup(serverSettings, thread.projectId);
-      if (!worktreeCleanupEnabled(settings)) continue;
       const worktreePath = path.resolve(thread.worktreePath!);
+      if (!hasRequests && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
+      const releaseRoot = hasRequests
+        ? yield* releasePath(worktreePath).pipe(Effect.orElseSucceed(() => null))
+        : worktreePath;
+      const releaseKey =
+        hasRequests && releaseRoot !== null ? worktreeReleaseName(releaseRoot) : "";
+      const namedKey =
+        hasRequests && releaseRoot !== worktreePath
+          ? worktreeReleaseName(worktreePath)
+          : releaseKey;
+      const invalid =
+        releaseRoot === null || invalidRequests.has(releaseKey) || invalidRequests.has(namedKey);
+      const release = releases.get(releaseKey) ?? releases.get(namedKey);
+      if (!invalid && !release && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
       const worktreeKey = yield* canonical(worktreePath);
       const worktreePaths = [worktreePath, worktreeKey];
       const group = groups.get(worktreeKey) ?? [];
@@ -1208,6 +1361,14 @@ const make = Effect.gen(function* () {
         if (deleted && settings.worktreeOnDelete) kept.push(worktreePath);
         entries.push({ ...entry, reason: sentence(reason) });
       };
+      if (invalid || releaseRoot === null) {
+        keep(
+          releaseRoot === null
+            ? "cannot resolve checkout for release request"
+            : "invalid worktree release request",
+        );
+        continue;
+      }
       // Reasons a provider session stop or finished deletion work can clear.
       const waitForStop = (reason: string) => {
         if (deleted && settings.worktreeOnDelete) waiting = true;
@@ -1224,7 +1385,21 @@ const make = Effect.gen(function* () {
             () => Effect.succeed(false),
           ),
         );
-        if (!exists) return;
+        if (!exists) {
+          if (release?.file.endsWith(".releasing"))
+            yield* fs.rename(release.file, release.file.replace(/\.releasing$/, ".released"));
+          else if (release) yield* fs.remove(release.file);
+          return;
+        }
+        if (
+          release &&
+          (deleted ||
+            group.length !== 1 ||
+            deletedByPath.has(worktreeKey) ||
+            release.request.threadId !== thread.id ||
+            release.request.branch !== thread.branch)
+        )
+          return keep("checkout does not have the requested sole owner");
         if (deleted && !settings.worktreeOnDelete) return keep("no rules apply");
         if (members.length > 1 && worktreeOwner(members) === undefined)
           return keep(`shared by ${members.length} threads`);
@@ -1260,12 +1435,14 @@ const make = Effect.gen(function* () {
         // A worktree is unchanged before its first commit, so only finished threads qualify.
         const unchangedApplies =
           settings.worktreeUnchanged && (settledThread !== undefined || thread.archivedAt !== null);
-        let eligible = deleted || old || settled;
-        let removalReason = deleted
-          ? "thread was deleted"
-          : old
-            ? `inactive for ${Math.floor((now - activityAt) / DAY_MS)} days`
-            : `settled for ${settledDays} days`;
+        let eligible = release !== undefined || deleted || old || settled;
+        let removalReason = release
+          ? "owner released the completed run"
+          : deleted
+            ? "thread was deleted"
+            : old
+              ? `inactive for ${Math.floor((now - activityAt) / DAY_MS)} days`
+              : `settled for ${settledDays} days`;
         const notDueReason =
           !deleted && settings.worktreeAfterDays !== null
             ? `inactive for ${Math.floor((now - activityAt) / DAY_MS)} of ${settings.worktreeAfterDays} days`
@@ -1295,6 +1472,19 @@ const make = Effect.gen(function* () {
           if (yield* containsProjectRoot(worktreePaths, [project, ...latestProjects]))
             return "contains a project checkout";
           const bindings = yield* projections.getThreadWorktreePaths({ includeArchived: true });
+          if (release) {
+            // The sole-owner check above only saw this path's group, so look at every other thread.
+            for (const other of bindings) {
+              if (other.threadId === thread.id) continue;
+              const otherRoot = yield* releasePath(path.resolve(other.worktreePath));
+              if (
+                pathKey(otherRoot) === pathKey(releaseRoot) ||
+                inside(releaseRoot, otherRoot) ||
+                inside(otherRoot, releaseRoot)
+              )
+                return "checkout is shared by another thread";
+            }
+          }
           const bindingKeys = yield* Effect.forEach(bindings, (binding) =>
             canonical(binding.worktreePath),
           );
@@ -1342,6 +1532,15 @@ const make = Effect.gen(function* () {
             })
           )
             return waitForStop("thread activity or shared worktree changed since check");
+          if (release) {
+            const hold = yield* deliveryHold(latestGroup[0]!, release.request);
+            if (hold !== null) return hold;
+            if (
+              !(yield* fs.exists(release.file)) ||
+              (yield* fs.readFileString(release.file)) !== release.contents
+            )
+              return "owner withdrew or replaced the release request";
+          }
           if (settlementChain.length > 1) {
             const ancestors = yield* Effect.forEach(settlementChain.slice(1), (ancestor) =>
               projections.getThreadShell(ancestor.id),
@@ -1374,7 +1573,9 @@ const make = Effect.gen(function* () {
           // Ready persisted sessions may have released their runtime; only live sessions protect the path.
           for (const session of sessions) {
             if (
-              (yield* occupies(worktreePaths, session.cwd)) &&
+              (release
+                ? yield* usesReleasePath(worktreePath, session.cwd)
+                : yield* occupies(worktreePaths, session.cwd)) &&
               (yield* providerSessions.isLive(session.id))
             )
               return waitForStop("provider session is still open");
@@ -1427,7 +1628,7 @@ const make = Effect.gen(function* () {
             }),
           );
         }
-        const pathReason = yield* worktreePathReason(worktreePath);
+        const pathReason = yield* worktreePathReason(worktreePath, release !== undefined);
         if (pathReason !== null) return keep(pathReason);
         if (yield* containsProjectRoot(worktreePaths, [project, ...snapshot.projects]))
           return keep("contains a project checkout");
@@ -1436,9 +1637,11 @@ const make = Effect.gen(function* () {
           if (!deleted) yield* followBranch(worktreePath);
           return keep("repository or branch changed");
         }
-        const changes = yield* localChangesReason(worktreePath, settings);
+        const changes = release ? null : yield* localChangesReason(worktreePath, settings);
         if (changes !== null) return keep(changes);
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
+        if (release && (head.commitSha !== release.request.head || releaseRoot !== worktreePath))
+          return keep("requested checkout or commit changed");
         if (!eligible) {
           const repositoryCwd = path.resolve(project.workspaceRoot);
           const remotes = yield* git.execute({
@@ -1521,9 +1724,7 @@ const make = Effect.gen(function* () {
           // from another worktree) counts as integrated too.
           const integrated =
             ancestor.exitCode === 0 ||
-            (yield* git
-              .countUnmergedCommits({ cwd: worktreePath, baseRef: base.commitSha })
-              .pipe(Effect.orElseSucceed(() => 1))) === 0;
+            (yield* git.countUnmergedCommits({ cwd: worktreePath, baseRef: base.commitSha })) === 0;
           eligible = integrated && unchangedApplies;
           if (eligible)
             removalReason =
@@ -1547,16 +1748,21 @@ const make = Effect.gen(function* () {
             return keep(integrated ? notDueReason : "has commits beyond the project branch");
         }
         if (!eligible) return keep(notDueReason);
+        // Registered before the first check so a process that starts meanwhile holds removal back.
+        const beginRemoval = release
+          ? yield* observeWorkspaceStarts(releaseRoot)
+          : Effect.succeed(null);
         const blocked = yield* blockedSinceCheck();
         if (blocked !== null) return keep(blocked);
         // Inspect before the lease; provider startup must not wait for directory traversal.
-        const inspection = yield* measureWorktree(worktreePath, true);
+        // A released checkout is not reported by size, so its walk only looks for nested repositories.
+        const inspection = yield* measureWorktree(worktreePath, true, release === undefined);
         if (inspection.reason !== null) return keep(inspection.reason);
         const bytes = inspection.bytes;
         yield* withWorkspaceLease(
           worktreePath,
           Effect.gen(function* () {
-            const pathReason = yield* worktreePathReason(worktreePath);
+            const pathReason = yield* worktreePathReason(worktreePath, release !== undefined);
             if (pathReason !== null) return keep(pathReason);
             const blockedWhileMeasuring = yield* blockedSinceCheck();
             if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
@@ -1567,10 +1773,14 @@ const make = Effect.gen(function* () {
               head.commitSha
             )
               return keep("commit changed since check");
-            const finalChanges = yield* localChangesReason(worktreePath, settings);
+            const finalChanges = release
+              ? yield* releaseHold(release.request, project.workspaceRoot)
+              : yield* localChangesReason(worktreePath, settings);
             if (finalChanges !== null) return keep(finalChanges);
             if (yield* settingsChangedSinceCheck) return keep("settings changed since check");
-            const submodules = yield* submoduleRemoval(worktreePath, settings);
+            const submodules = release
+              ? { force: false, reason: null }
+              : yield* submoduleRemoval(worktreePath, settings);
             if (submodules.reason !== null) return keep(submodules.reason);
             if (submodules.force) {
               const changes = yield* localChangesReason(worktreePath, settings);
@@ -1578,9 +1788,9 @@ const make = Effect.gen(function* () {
             }
             const repository = yield* worktreeRepository(worktreePath);
             // Forced removal already discards local files; do not widen its final-check window.
-            if (settings.worktreeKeepWhen === "tracked-changes" && !submodules.force)
+            if (!release && settings.worktreeKeepWhen === "tracked-changes" && !submodules.force)
               yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
-            yield* removeLinkedWorktree({
+            const remove = removeLinkedWorktree({
               operation: "StorageCleanup.cleanupGit",
               cwd: repository,
               worktreePath,
@@ -1589,6 +1799,34 @@ const make = Effect.gen(function* () {
               execute: git.execute,
               run: (args) => cleanupGit(repository, [...args], "git worktree remove"),
             });
+            if (release) {
+              const held = yield* threadCommands.withLock(
+                thread.id,
+                Effect.gen(function* () {
+                  const admissionHold = yield* beginRemoval;
+                  if (admissionHold !== null) return admissionHold;
+                  const lastHold = yield* blockedSinceCheck();
+                  if (lastHold !== null) return lastHold;
+                  const base = release.file.replace(/\.releasing$/, "");
+                  const claimed = base + ".releasing";
+                  const won =
+                    release.file === claimed ||
+                    (yield* fs.rename(release.file, claimed).pipe(
+                      Effect.as(true),
+                      Effect.catchIf(
+                        (error) => error.reason._tag === "NotFound",
+                        () => Effect.succeed(false),
+                      ),
+                    ));
+                  if (!won || (yield* fs.readFileString(claimed)) !== release.contents)
+                    return "owner withdrew or replaced the release request";
+                  yield* remove;
+                  yield* fs.rename(claimed, base + ".released");
+                  return null;
+                }),
+              );
+              if (held !== null) return keep(held);
+            } else yield* remove;
             entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
             yield* gitManager.invalidateStatus(project.workspaceRoot);
             // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
@@ -1596,6 +1834,7 @@ const make = Effect.gen(function* () {
           }),
         );
       }).pipe(
+        Effect.scoped,
         Effect.catch((error) =>
           Effect.gen(function* () {
             entries.push({
@@ -1612,12 +1851,13 @@ const make = Effect.gen(function* () {
         ),
       );
     }
-    yield* reportOrphanWorktrees(
-      roots,
-      yield* projectStore.list({ includeDeleted: true }),
-      entries,
-      scratchRoot,
-    );
+    if (!requestsOnly)
+      yield* reportOrphanWorktrees(
+        roots,
+        yield* projectStore.list({ includeDeleted: true }),
+        entries,
+        scratchRoot,
+      );
     return { waiting, kept };
   });
 
@@ -1777,16 +2017,18 @@ const make = Effect.gen(function* () {
   let sweptDeletions = 0;
   const sweep = Effect.fn("StorageCleanup.sweep")(function* (
     trigger: StorageCleanupReport["trigger"],
+    requestsOnly = false,
   ) {
     const deletionsAtStart = deletions;
     const now = yield* Clock.currentTimeMillis;
     const serverSettings = yield* settingsService.getSettings;
     const settings = serverSettings.storageCleanup;
     const entries: StorageCleanupReportEntry[] = [];
-    yield* cleanCheckpointRefs().pipe(
-      Effect.catch((cause) => Effect.logWarning("checkpoint ref cleanup failed", { cause })),
-    );
-    const deletedWorktrees = yield* cleanWorktrees(serverSettings, now, entries).pipe(
+    if (!requestsOnly)
+      yield* cleanCheckpointRefs().pipe(
+        Effect.catch((cause) => Effect.logWarning("checkpoint ref cleanup failed", { cause })),
+      );
+    const deletedWorktrees = yield* cleanWorktrees(serverSettings, now, entries, requestsOnly).pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
           entries.push({
@@ -1805,9 +2047,11 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
-    deletedWorktreeWaits = deletedWorktrees.waiting;
-    keptDeletedWorktrees = deletedWorktrees.kept;
-    sweptDeletions = deletionsAtStart;
+    if (!requestsOnly) {
+      deletedWorktreeWaits = deletedWorktrees.waiting;
+      keptDeletedWorktrees = deletedWorktrees.kept;
+      sweptDeletions = deletionsAtStart;
+    }
     for (const category of [
       {
         kind: "browser-artifacts" as const,
@@ -1822,7 +2066,7 @@ const make = Effect.gen(function* () {
         label: "rotated logs",
       },
     ]) {
-      if (category.days === null) continue;
+      if (requestsOnly || category.days === null) continue;
       const removed = { files: 0, bytes: 0 };
       yield* cleanFiles(category.root, category.days, now, category.kind === "logs", removed).pipe(
         Effect.map(({ files, bytes }) =>
@@ -1884,12 +2128,22 @@ const make = Effect.gen(function* () {
   });
   const automaticSweepQueued = yield* Ref.make(false);
   const worker = yield* makeDrainableWorker(
-    (completion: Deferred.Deferred<StorageCleanupReport, ServerSettingsError> | undefined) =>
+    (
+      completion:
+        | Deferred.Deferred<StorageCleanupReport, ServerSettingsError>
+        | "release"
+        | undefined,
+    ) =>
       (completion === undefined ? Ref.set(automaticSweepQueued, false) : Effect.void).pipe(
-        Effect.andThen(sweep(completion === undefined ? "automatic" : "manual")),
+        Effect.andThen(
+          sweep(
+            completion === undefined || completion === "release" ? "automatic" : "manual",
+            completion === "release",
+          ),
+        ),
         Effect.exit,
         Effect.flatMap((exit) =>
-          completion === undefined
+          completion === undefined || completion === "release"
             ? exit.pipe(
                 Effect.asVoid,
                 Effect.catchCause((cause) =>
@@ -1933,6 +2187,18 @@ const make = Effect.gen(function* () {
         Effect.andThen(worker.drain),
         Effect.repeat(Schedule.spaced("1 hour")),
         Effect.asVoid,
+      ),
+    );
+    // A request can arrive after its final event or while the server is stopped.
+    yield* forkParked(
+      pendingRequestFiles.pipe(
+        Effect.flatMap((files) =>
+          files.length ? worker.enqueue("release").pipe(Effect.andThen(worker.drain)) : Effect.void,
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("worktree release queue inspection failed", { cause }),
+        ),
+        Effect.repeat(Schedule.spaced("1 minute")),
       ),
     );
     yield* forkParked(
@@ -1987,4 +2253,6 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(StorageCleanup, make);
+export const layer = Layer.effect(StorageCleanup, make).pipe(
+  Layer.provide(ThreadCommandExecutor.layer),
+);

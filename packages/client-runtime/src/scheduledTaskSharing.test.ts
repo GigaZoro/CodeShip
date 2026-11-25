@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ProviderInstanceId,
   ScheduledTaskId,
   type ScheduledTask,
   type ScheduledTaskRunRecord,
@@ -32,6 +33,13 @@ const A = EnvironmentId.make("env-a");
 const B = EnvironmentId.make("env-b");
 const C = EnvironmentId.make("env-c");
 const ID = ScheduledTaskId.make("task-1");
+const fallbackModels = [
+  {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "gpt-6.1-terra",
+    options: [{ id: "reasoningEffort", value: "medium" }],
+  },
+];
 
 const rev = (at: string, environmentId = A): ScheduledTaskSharedRevision => ({
   at: `2026-11-0${at}T00:00:00.000Z`,
@@ -130,16 +138,44 @@ describe("planSharedScheduledTaskSync", () => {
     expect(op?.key).toBe(`env-b:task-1:${rev("1").at}:env-a`);
   });
 
+  it.each([{ fallbackModelSelections: fallbackModels }, { fallbackModelSelections: [] }])(
+    "sends the fallback list %j over the client sync path",
+    ({ fallbackModelSelections }) => {
+      const [op] = planSharedScheduledTaskSync([
+        snap(A, [{ ...shared("1"), fallbackModelSelections }]),
+        snap(B),
+      ]);
+      expect(op?.input).toMatchObject({ type: "upsert", task: { fallbackModelSelections } });
+    },
+  );
+
+  it("fills an omitted fallback list from the same revision even when the incomplete copy is seen first", () => {
+    const complete = { ...shared("2"), fallbackModelSelections: fallbackModels };
+    const [op, extra] = planSharedScheduledTaskSync([
+      snap(B, [shared("2")]),
+      snap(A, [complete]),
+      snap(C, [{ ...complete, fallbackModelSelections: [] }]),
+    ]);
+    expect(extra).toBeUndefined();
+    expect(op).toMatchObject({
+      environmentId: B,
+      input: { type: "upsert", task: { fallbackModelSelections: fallbackModels } },
+    });
+    expect(op?.key).not.toBe(planSharedScheduledTaskSync([snap(A, [complete]), snap(B)])[0]?.key);
+  });
+
   it.each([
     {
-      name: "a source that lists them sends its run condition, catch-up choice, delegate providers and live-run limit, cleared ones too",
+      name: "a source that lists optional fields sends them, including cleared values",
       fields: {
+        description: null,
         runCondition: null,
         catchUpMissedRun: false,
         delegateProviders: [],
         maxLiveRuns: 1,
       },
       expected: {
+        description: null,
         runCondition: null,
         catchUpMissedRun: false,
         delegateProviders: [],
@@ -147,7 +183,7 @@ describe("planSharedScheduledTaskSync", () => {
       },
     },
     {
-      name: "a source on an older version sends neither, so the receiver keeps its own",
+      name: "a source on an older version omits these fields, so the receiver keeps its own",
       fields: {},
       expected: {},
     },
@@ -158,6 +194,7 @@ describe("planSharedScheduledTaskSync", () => {
     ]);
     const copy = op?.input.type === "upsert" ? op.input.task : null;
     expect({
+      ...("description" in (copy ?? {}) ? { description: copy?.description } : {}),
       ...("runCondition" in (copy ?? {}) ? { runCondition: copy?.runCondition } : {}),
       ...("catchUpMissedRun" in (copy ?? {}) ? { catchUpMissedRun: copy?.catchUpMissedRun } : {}),
       ...("delegateProviders" in (copy ?? {})

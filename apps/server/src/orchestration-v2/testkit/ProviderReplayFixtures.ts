@@ -218,9 +218,12 @@ export function findReplayFixture(name: string) {
 export function itRunsReplayFixtures<E>(
   driver: string,
   run: (input: ReplayFixtureCase) => Effect.Effect<unknown, E>,
+  options: { readonly excludeFixtures?: ReadonlyArray<string> } = {},
 ) {
   it.effect.each(
-    ORCHESTRATOR_REPLAY_FIXTURES.flatMap((fixture) =>
+    ORCHESTRATOR_REPLAY_FIXTURES.filter(
+      (fixture) => !options.excludeFixtures?.includes(fixture.name),
+    ).flatMap((fixture) =>
       fixture.providers
         .filter((provider) => provider.driver === driver)
         .map((provider) => [fixture.name, provider.driver, fixture, provider] as const),

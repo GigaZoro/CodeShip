@@ -138,6 +138,8 @@ jobs:
         with:
           script: |
             const { execFileSync } = require("node:child_process");
+            // From the base checkout above, not the pull request.
+            const { GIT_OUTPUT_MAX_BYTES } = require("./.github/scripts/git-history.cjs");
 
             const issueNumber = context.payload.pull_request.number;
             const baseSha = context.payload.pull_request.base.sha;
@@ -209,6 +211,7 @@ jobs:
 
             const resolvedHeadSha = execFileSync("git", ["rev-parse", headTrackingRef], {
               encoding: "utf8",
+              maxBuffer: GIT_OUTPUT_MAX_BYTES,
             }).trim();
 
             if (resolvedHeadSha !== headSha) {
@@ -230,15 +233,12 @@ jobs:
             ];
 
             const totalChangedLines = sumNumstat(
-              execFileSync(
-                "git",
-                diffArgs,
-                { encoding: "utf8" },
-              ),
+              execFileSync("git", diffArgs, { encoding: "utf8", maxBuffer: GIT_OUTPUT_MAX_BYTES }),
             );
             const nonTestChangedLines = sumNumstat(
               execFileSync("git", [...diffArgs, "--", ".", ...testExcludePathspecs], {
                 encoding: "utf8",
+                maxBuffer: GIT_OUTPUT_MAX_BYTES,
               }),
             );
             const testChangedLines = Math.max(0, totalChangedLines - nonTestChangedLines);

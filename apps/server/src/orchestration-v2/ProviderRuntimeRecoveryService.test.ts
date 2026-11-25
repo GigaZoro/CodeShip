@@ -630,6 +630,8 @@ it.effect("tells the thread a running run stopped when the server went down", ()
   const threadId = ThreadId.make("thread_restart_notice");
   const runId = RunId.make("run_restart_notice");
   const rootNodeId = NodeId.make("node_restart_notice");
+  const heldRunId = RunId.make("run_restart_waits_for_memory");
+  const heldNodeId = NodeId.make("node_restart_waits_for_memory");
   let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
     null;
   const projection = {
@@ -657,6 +659,15 @@ it.effect("tells the thread a running run stopped when the server went down", ()
         providerInstanceId: ProviderInstanceId.make("codex"),
         providerThreadId: ProviderThreadId.make("provider_thread_restart_notice"),
       },
+      // An automatic start still waiting for memory started nothing, so it keeps its place.
+      {
+        id: heldRunId,
+        status: "preparing",
+        rootNodeId: heldNodeId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerThreadId: ProviderThreadId.make("provider_thread_restart_notice"),
+        memoryAdmission: { waitingSince: DateTime.makeUnsafe(0) },
+      },
     ],
     attempts: [
       {
@@ -666,10 +677,23 @@ it.effect("tells the thread a running run stopped when the server went down", ()
         status: "running",
       },
     ],
-    nodes: [{ id: rootNodeId, runId, status: "running" }],
+    nodes: [
+      { id: rootNodeId, runId, status: "running" },
+      { id: heldNodeId, runId: heldRunId, status: "pending" },
+    ],
     subagents: [],
     messages: [],
-    turnItems: [],
+    // Its workspace setup, which an automatic retry reopened, runs once its turn comes.
+    turnItems: [
+      {
+        id: "turn-item:held-workspace-setup",
+        type: "command_execution",
+        status: "running",
+        threadId,
+        runId: heldRunId,
+        nodeId: heldNodeId,
+      },
+    ],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
     Layer.provide(ServerSettings.layerTest()),
@@ -703,6 +727,19 @@ it.effect("tells the thread a running run stopped when the server went down", ()
     const summary =
       yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
     assert.equal(summary.terminalizedRuns, 1);
+    assert.deepEqual(
+      committedInput?.events.flatMap((event) =>
+        event.type === "run.updated" ? [event.payload.id] : [],
+      ),
+      [runId],
+    );
+    assert.deepEqual(
+      (committedInput?.events ?? []).filter(
+        (event) => "runId" in event && event.runId === heldRunId,
+      ),
+      [],
+      "a run waiting for memory keeps its records, its workspace setup included",
+    );
     const run = committedInput?.events.find((event) => event.type === "run.updated");
     assert.equal(
       run?.type === "run.updated" && run.payload.completedAt !== null

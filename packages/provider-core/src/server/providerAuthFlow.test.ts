@@ -16,6 +16,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import type * as Tracer from "effect/Tracer";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ProviderAuthFlow from "./providerAuthFlow.ts";
 
@@ -27,20 +29,51 @@ it.effect(
   () =>
     Effect.gen(function* () {
       for (const saveFails of [false, true]) {
-        const saving = yield* Deferred.make<void>();
+        const retired: string[] = [];
+        const saving = yield* Deferred.make<Tracer.Span>();
         const saved = yield* Deferred.make<void, ProviderSetupError>();
         const controller = yield* ProviderAuthFlow.make({
           instanceId,
           credentialBinding: { owner: "provider", key: "token-account" },
           methods: Effect.succeed([method]),
-          authenticate: (_, context) => context.verifying,
-          commitCredentials: Deferred.succeed(saving, undefined).pipe(
-            Effect.andThen(Deferred.await(saved)),
-          ),
+          stage: (_, context) =>
+            Effect.gen(function* () {
+              const authentication = yield* Effect.currentSpan.pipe(Effect.orDie);
+              assert.equal(authentication.name, "providerAuthFlow.authenticate");
+              assert.equal(authentication.attributes.get("instanceId"), instanceId);
+              yield* context.verifying;
+              return Effect.currentSpan.pipe(
+                Effect.orDie,
+                Effect.flatMap((span) => Deferred.succeed(saving, span)),
+                Effect.andThen(Deferred.await(saved)),
+              );
+            }),
           logout: Effect.void,
         });
-        yield* controller.start("owner");
-        yield* Deferred.await(saving);
+        yield* controller.withAccess!(
+          Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              retired.push("owned");
+            }),
+          ),
+        );
+        yield* controller.start(
+          "owner",
+          Deferred.await(saving).pipe(
+            Effect.map((span) => {
+              assert.equal(span.status._tag, "Ended");
+              retired.push("projected");
+            }),
+          ),
+        );
+        const persistence = yield* Deferred.await(saving);
+        assert.equal(persistence.name, "providerAuthFlow.persistCredentials");
+        assert.equal(persistence.attributes.get("instanceId"), instanceId);
+        assert.equal(persistence.status._tag, "Started");
+        assert.deepEqual(retired, []);
+        assert.isTrue(
+          (yield* controller.withAccess!(Effect.void).pipe(Effect.result))._tag === "Failure",
+        );
         const pending = yield* controller
           .subscribe("owner")
           .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
@@ -61,7 +94,12 @@ it.effect(
           Effect.map(Option.getOrThrow),
         );
         assert.equal(finished.phase, saveFails ? "failed" : "succeeded");
+        const status = persistence.status;
+        assert.equal(status._tag, "Ended");
+        if (status._tag === "Ended") assert.equal(Exit.isFailure(status.exit), saveFails);
         if (saveFails) assert.equal(finished.message, "Could not save sign-in.");
+        assert.deepEqual(retired, saveFails ? [] : ["projected", "owned"]);
+        yield* controller.withAccess!(Effect.void);
       }
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
@@ -78,10 +116,12 @@ it.effect(
         instanceId,
         credentialBinding: { owner: "provider", key: "token-account" },
         methods: Effect.succeed([method]),
-        authenticate: (_, context) => context.verifying,
-        commitCredentials: Deferred.succeed(saving, undefined).pipe(
-          Effect.andThen(Deferred.await(saved)),
-        ),
+        stage: (_, context) =>
+          context.verifying.pipe(
+            Effect.as(
+              Deferred.succeed(saving, undefined).pipe(Effect.andThen(Deferred.await(saved))),
+            ),
+          ),
         logout: Effect.void,
       }).pipe(Effect.provideService(Scope.Scope, providerScope));
       yield* controller.start("owner");
@@ -131,7 +171,7 @@ const makeHarness = Effect.gen(function* () {
     instanceId,
     credentialBinding: { owner: "provider", key: "shared-agent" },
     methods: Effect.succeed([method]),
-    authenticate: (_, context) =>
+    stage: (_, context) =>
       Effect.gen(function* () {
         attempts++;
         yield* context.setInteraction(
@@ -150,6 +190,7 @@ const makeHarness = Effect.gen(function* () {
         yield* Deferred.await(approved);
         yield* context.verifying;
         yield* Deferred.await(verified);
+        return Effect.void;
       }),
     logout: Effect.void,
   });
@@ -213,24 +254,36 @@ it.effect("cancellation rejects late consent and permits another login", () =>
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-it.effect("closes admitted provider processes and blocks new ones while login is pending", () =>
-  Effect.gen(function* () {
-    const { controller, started } = yield* makeHarness;
-    let closed = false;
-    yield* controller.withAccess!(
-      Effect.addFinalizer(() =>
+it.effect.each(["cancelled", "abandoned"] as const)(
+  "keeps old and newly admitted sessions when staged sign-in is %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const { controller, started, phase } = yield* makeHarness;
+      let closed = false;
+      yield* controller.withAccess!(
+        Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            closed = true;
+          }),
+        ),
+      );
+      const flow = yield* controller.start(
+        "owner",
         Effect.sync(() => {
           closed = true;
         }),
-      ),
-    );
-    yield* controller.start("owner");
-    yield* Deferred.await(started);
-    assert.isTrue(closed);
-    assert.isTrue(
-      (yield* controller.withAccess!(Effect.void).pipe(Effect.result))._tag === "Failure",
-    );
-  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+      );
+      yield* Deferred.await(started);
+      assert.isFalse(closed);
+      yield* controller.withAccess!(Effect.void);
+      if (outcome === "cancelled") yield* controller.cancel("owner", flow.flowId!);
+      else {
+        yield* TestClock.adjust("5 minutes");
+        yield* phase("failed");
+      }
+      yield* controller.withAccess!(Effect.void);
+      assert.isFalse(closed);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("shared credential invalidation closes admitted processes before permitting reuse", () =>
@@ -570,7 +623,7 @@ it.effect("rebuilding a controller leaves sessions it admitted to their owners",
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-it.effect("profile import stops owned sessions and gates access until credentials are saved", () =>
+it.effect("profile import keeps old sessions alive until credentials are saved", () =>
   Effect.gen(function* () {
     const controller = yield* ProviderAuthFlow.make({
       instanceId,
@@ -591,17 +644,17 @@ it.effect("profile import stops owned sessions and gates access until credential
     const release = yield* Deferred.make<void>();
     const imported = yield* controller.adoptCredentials!(
       Deferred.succeed(writing, undefined).pipe(Effect.andThen(Deferred.await(release))),
-      Effect.sync(() => {
-        assert.isTrue(closed);
-      }),
+      Effect.void,
     ).pipe(Effect.forkChild);
     yield* Deferred.await(writing);
+    assert.isFalse(closed);
     const denied = yield* controller.withAccess!(Effect.succeed("old credential process")).pipe(
       Effect.result,
     );
     assert.strictEqual(denied._tag, "Failure");
     yield* Deferred.succeed(release, undefined);
     assert.strictEqual((yield* Fiber.join(imported)).phase, "succeeded");
+    assert.isTrue(closed);
     assert.strictEqual(
       yield* controller.withAccess!(Effect.succeed("new credential process")),
       "new credential process",

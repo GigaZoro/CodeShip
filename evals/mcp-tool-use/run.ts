@@ -8,7 +8,7 @@ import { autoModeModelFor } from "@t3tools/shared/serverSettings";
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -40,6 +40,7 @@ import { Tool } from "effect/ai";
 import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -2623,7 +2624,7 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const string = { type: "string" } as const;
 
 const main = Effect.gen(function* () {
-  const { values } = NodeUtil.parseArgs({
+  const { values } = parseCommandLine({
     options: {
       model: string,
       provider: string,
@@ -2879,6 +2880,7 @@ const main = Effect.gen(function* () {
       Option.liftThrowable(() =>
         NodeChildProcess.execFileSync("git", ["describe", "--always", "--dirty"], {
           encoding: "utf8",
+          maxBuffer: GIT_OUTPUT_MAX_BYTES,
         }).trim(),
       )(),
       () => "unknown",

@@ -190,6 +190,7 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
     readonly text: string;
     readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
     readonly context?: import("@t3tools/contracts").OrchestrationMessageContext;
+    readonly compactionForMessageId?: MessageId;
     readonly idleCompaction?: import("@t3tools/contracts").OrchestrationV2IdleCompaction;
   };
   readonly modelSelection?: ModelSelection;
@@ -876,6 +877,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
           : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
         text: input.message.text,
         ...(context ? { context } : {}),
+        ...(input.message.compactionForMessageId === undefined
+          ? {}
+          : { compactionForMessageId: input.message.compactionForMessageId }),
         ...(input.message.idleCompaction === undefined
           ? {}
           : { idleCompaction: input.message.idleCompaction }),
@@ -905,6 +909,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       messageId: input.message.messageId,
       text: input.message.text,
       ...(context ? { context } : {}),
+      ...(input.message.compactionForMessageId === undefined
+        ? {}
+        : { compactionForMessageId: input.message.compactionForMessageId }),
       ...(input.message.idleCompaction === undefined
         ? {}
         : { idleCompaction: input.message.idleCompaction }),

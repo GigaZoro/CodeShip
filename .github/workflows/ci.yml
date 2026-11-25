@@ -598,6 +598,57 @@ jobs:
 
   # Split out of Check and Test: both paid ~7-9s to install a Rust toolchain
   # for checks that take under 3s, on the critical path of every PR.
+  # The same shards as test_server on Windows, where path, process and file-lock
+  # behavior differs from Linux and macOS. Shards take 10-20 minutes there. setup-vp's
+  # own cache restores a Linux-shaped store on Windows, which is slower than no
+  # cache (see #7975), so pnpm's Windows store is cached directly.
+  test_server_windows:
+    name: Test Server Windows ${{ matrix.shard }}
+    needs: changes
+    if: ${{ needs.changes.outputs.test_server != 'false' }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        shell: pwsh
+        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
+
+      - name: Cache packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install
+        run: vp install
+
+      - name: Install Chromium for server browser tests
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
+      - name: Test
+        working-directory: apps/server
+        run: vp test run --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
   rust:
     name: Rust
     needs: changes
@@ -706,6 +757,7 @@ jobs:
         test_web,
         test_server,
         test_persistence_latest,
+        test_server_windows,
         rust,
         mobile_native_static_analysis,
         release_smoke,
@@ -722,7 +774,7 @@ jobs:
           # not needed. Gates are keyed by job name, except merged Build and the
           # macOS lint.
           echo "$RESULTS" | jq -e '.changes.outputs as $gates
-            | {build: ["build", "typecheck", "desktop_launch"], mobile_native_static_analysis: ["mobile_native"], test_persistence_latest: ["test_server"]} as $renamed
+            | {build: ["build", "typecheck", "desktop_launch"], mobile_native_static_analysis: ["mobile_native"], test_persistence_latest: ["test_server"], test_server_windows: ["test_server"]} as $renamed
             | all(to_entries[];
                 .value.result == "success"
                 or (.value.result == "skipped"

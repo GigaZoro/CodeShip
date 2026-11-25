@@ -14,7 +14,9 @@ import {
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
+  orchestrationV2RunAwaitsMemory,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ProviderInteractionMode,
   ProjectId,
   type RunId,
@@ -77,8 +79,10 @@ export type ThreadLaunchWorkspaceStrategy =
     };
 
 export interface ThreadLaunchInitialMessage {
+  readonly demandId?: string;
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
+  readonly crossProviderFailoverFrom?: ProviderInstanceId;
   readonly senderThreadId?: ThreadId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -205,6 +209,8 @@ export class ThreadLaunchNotRepositoryError extends Schema.TaggedError<ThreadLau
   }
 }
 
+const isCommitSha = (ref: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(ref);
+
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
@@ -277,7 +283,9 @@ const make = Effect.gen(function* () {
       ? git.currentBranch(workspaceRoot).pipe(Effect.orElseSucceed(() => null))
       : Effect.succeed(strategy.branch ?? null);
   const preparationScope = yield* Scope.make("sequential");
-  const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
+  // Preparation belongs to the run, so a replayed launch and a retry share one reservation.
+  // The value is the command that owns it.
+  const scheduledLaunches = yield* Ref.make<ReadonlyMap<string, CommandId>>(new Map());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
   const mapError =
@@ -360,6 +368,21 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Fetches the primary remote when the checkout lacks `sha`, and says whether it has it now. A
+   * fetch that succeeds proves nothing: the remote only has the commit if some branch holds it.
+   */
+  const fetchCommitFromOrigin = Effect.fn("ThreadLaunchService.fetchCommitFromOrigin")(function* (
+    cwd: string,
+    sha: string,
+  ) {
+    if (yield* git.hasCommit({ cwd, refName: sha })) return true;
+    const remote = yield* git.resolveWorktreeBaseRemote({ cwd, refName: sha });
+    if (remote === null) return false;
+    yield* git.fetchRemote({ cwd, remoteName: remote.remoteName });
+    return yield* git.hasCommit({ cwd, refName: sha });
+  });
+
   const checkWorktreeBase: ThreadLaunchService["Service"]["checkWorktreeBase"] = Effect.fn(
     "ThreadLaunchService.checkWorktreeBase",
   )(function* (input) {
@@ -413,6 +436,9 @@ const make = Effect.gen(function* () {
       hasBaseCommit ||
       (yield* Effect.gen(function* () {
         if (strategy.startFromOrigin === true) {
+          // A commit names no remote branch, so the remote lookup below would find `origin` for
+          // any hash and call a commit the remote does not hold resolved.
+          if (isCommitSha(baseRef)) return yield* fetchCommitFromOrigin(cwd, baseRef);
           const remote = yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef });
           // The remote may have deleted the branch; ask it rather than trusting the name.
           if (
@@ -630,8 +656,32 @@ const make = Effect.gen(function* () {
         const requestedBaseRef = input.workspaceStrategy.baseRef;
         let startRef = requestedBaseRef;
         let baseRefName = requestedBaseRef;
+        // A commit SHA names no branch to fetch; a pushed one is brought in whole.
+        if (
+          input.workspaceStrategy.startFromOrigin === true &&
+          isCommitSha(input.workspaceStrategy.baseRef)
+        ) {
+          const present = yield* fetchCommitFromOrigin(
+            project.workspaceRoot,
+            input.workspaceStrategy.baseRef,
+          ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          if (!present)
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )(
+              new ThreadLaunchBaseRefError({
+                projectId: project.id,
+                projectTitle: project.title,
+                workspaceRoot: project.workspaceRoot,
+                baseRef: input.workspaceStrategy.baseRef,
+              }),
+            );
+        }
         const remote =
-          input.workspaceStrategy.startFromOrigin === true
+          input.workspaceStrategy.startFromOrigin === true &&
+          !isCommitSha(input.workspaceStrategy.baseRef)
             ? yield* git
                 .resolveWorktreeBaseRemote({
                   cwd: project.workspaceRoot,
@@ -1111,18 +1161,29 @@ const make = Effect.gen(function* () {
             ),
           );
 
-  const reservePreparation = (commandId: CommandId) =>
+  const preparationKey = (commandId: CommandId, runId: RunId | null): string => runId ?? commandId;
+
+  // A retry takes over: the run only failed once its earlier attempt stopped, though that
+  // attempt may not have released yet.
+  const reservePreparation = (
+    commandId: CommandId,
+    runId: RunId | null,
+    takeOver: boolean = false,
+  ) =>
     Ref.modify(scheduledLaunches, (scheduled) => {
-      if (scheduled.has(commandId)) return [false, scheduled] as const;
-      const next = new Set(scheduled);
-      next.add(commandId);
+      const key = preparationKey(commandId, runId);
+      if (!takeOver && scheduled.has(key)) return [false, scheduled] as const;
+      const next = new Map(scheduled);
+      next.set(key, commandId);
       return [true, next] as const;
     });
 
-  const releasePreparation = (commandId: CommandId) =>
+  const releasePreparation = (commandId: CommandId, runId: RunId | null) =>
     Ref.update(scheduledLaunches, (scheduled) => {
-      const next = new Set(scheduled);
-      next.delete(commandId);
+      const key = preparationKey(commandId, runId);
+      if (scheduled.get(key) !== commandId) return scheduled;
+      const next = new Map(scheduled);
+      next.delete(key);
       return next;
     });
 
@@ -1167,7 +1228,7 @@ const make = Effect.gen(function* () {
         ),
       ),
       Effect.ignoreCause,
-      Effect.ensuring(releasePreparation(input.commandId)),
+      Effect.ensuring(releasePreparation(input.commandId, runId)),
       Effect.forkIn(preparationScope),
     );
   });
@@ -1272,9 +1333,18 @@ const make = Effect.gen(function* () {
                     .message({ threadId: candidateThreadId, ordinal: 1 })
                     .pipe(Effect.mapError(mapError(input, "dispatch-message", candidateThreadId)))),
                 text: input.initialMessage.text,
+                ...(input.initialMessage.demandId === undefined
+                  ? {}
+                  : { demandId: input.initialMessage.demandId }),
                 ...(input.initialMessage.scheduledTaskId === undefined
                   ? {}
-                  : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
+                  : {
+                      scheduledTaskId: input.initialMessage.scheduledTaskId,
+                      launchAlreadyRouted: true as const,
+                    }),
+                ...(input.initialMessage.crossProviderFailoverFrom === undefined
+                  ? {}
+                  : { crossProviderFailoverFrom: input.initialMessage.crossProviderFailoverFrom }),
                 ...(input.initialMessage.senderThreadId === undefined
                   ? {}
                   : { senderThreadId: input.initialMessage.senderThreadId }),
@@ -1383,43 +1453,54 @@ const make = Effect.gen(function* () {
         }
 
         // Fork preparation before the full projection read; it is only part of the reply.
-        const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : true;
-        if (shouldSchedule && (yield* reservePreparation(input.commandId))) {
+        const current =
+          runId === null
+            ? null
+            : yield* threads
+                .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
+                .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+        const preparingRun = current?.runs.find((run) => run.id === runId);
+        // A run an automatic retry gave to the memory admission prepares once it is admitted.
+        const shouldSchedule =
+          runId === null
+            ? Option.isNone(launchReceipt)
+            : preparingRun?.status === "preparing" && preparingRun.memoryAdmission === undefined;
+        if (shouldSchedule && preparingRun?.workspacePreparation !== undefined) {
+          // The run's own preparation, so a replay reuses a checkout an earlier attempt bound.
+          yield* startRunPreparation({
+            commandId: input.commandId,
+            threadId,
+            runId: preparingRun.id,
+          }).pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+        } else if (shouldSchedule && (yield* reservePreparation(input.commandId, runId))) {
           yield* Effect.gen(function* () {
-            const current =
+            const preparationStillRequired =
               runId === null
-                ? null
-                : yield* threads
-                    .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
-                    .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
-            if (
-              current !== null &&
-              !current.runs.some((run) => run.id === runId && run.status === "preparing")
-            ) {
-              return yield* releasePreparation(input.commandId);
-            }
+                ? true
+                : yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [runId] }).pipe(
+                    Effect.map((latest) =>
+                      latest.runs.some((run) => run.id === runId && run.status === "preparing"),
+                    ),
+                    Effect.mapError(mapError(input, "update-thread", threadId)),
+                  );
+            if (!preparationStillRequired) return yield* releasePreparation(input.commandId, runId);
             const boundWorktreePath = current?.thread.worktreePath ?? null;
-            // A retry prepares the worktree the accepted launch asked for, not the
-            // retry's own strategy, whose defaults may resolve differently.
-            const accepted = current?.runs.find((run) => run.id === runId)?.workspacePreparation;
             const preparationStrategy: ThreadLaunchWorkspaceStrategy =
-              Option.isSome(launchReceipt) && accepted?.type === "worktree"
-                ? accepted
-                : Option.isSome(launchReceipt) &&
-                    workspaceStrategy.type === "root" &&
-                    boundWorktreePath !== null
-                  ? {
-                      type: "existing_worktree",
-                      worktreePath: boundWorktreePath,
-                      branch: workspaceStrategy.branch,
-                    }
-                  : workspaceStrategy;
+              Option.isSome(launchReceipt) &&
+              workspaceStrategy.type === "root" &&
+              boundWorktreePath !== null
+                ? {
+                    type: "existing_worktree",
+                    worktreePath: boundWorktreePath,
+                    branch: workspaceStrategy.branch,
+                  }
+                : workspaceStrategy;
             yield* schedulePreparation(
               { ...input, workspaceStrategy: preparationStrategy },
               threadId,
               runId,
             );
-          }).pipe(Effect.onError(() => releasePreparation(input.commandId)));
+          }).pipe(Effect.onError(() => releasePreparation(input.commandId, runId)));
         }
         const projection = yield* threads
           .getThreadProjection(threadId)
@@ -1440,25 +1521,43 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
-    "ThreadLaunchService.prepareRun",
-  )(function* (input) {
-    const scheduled = yield* Effect.gen(function* () {
-      const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
-        runIds: [input.runId],
-      });
-      const run = runs.find((candidate) => candidate.id === input.runId);
-      const workspacePreparation = run?.workspacePreparation;
-      if (run?.status !== "preparing" || workspacePreparation === undefined) return;
-      if (!(yield* reservePreparation(input.commandId))) return;
-      yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
-        Effect.onError(() => releasePreparation(input.commandId)),
-      );
-    }).pipe(Effect.exit);
+  const startRunPreparation = Effect.fn("ThreadLaunchService.startRunPreparation")(function* (
+    input: ThreadLaunchPreparationInput,
+    takesOver: (run: OrchestrationV2ThreadProjection["runs"][number]) => boolean = () => false,
+  ) {
+    const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
+      runIds: [input.runId],
+    });
+    const run = runs.find((candidate) => candidate.id === input.runId);
+    const workspacePreparation = run?.workspacePreparation;
+    // A run waiting for memory prepares once its turn comes, through its workspace.prepare effect.
+    if (
+      run?.status !== "preparing" ||
+      workspacePreparation === undefined ||
+      orchestrationV2RunAwaitsMemory(run)
+    )
+      return;
+    if (!(yield* reservePreparation(input.commandId, run.id, takesOver(run)))) return;
+    yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
+      Effect.onError(() => releasePreparation(input.commandId, run.id)),
+    );
+  });
+
+  const prepareRunOrFail = Effect.fn("ThreadLaunchService.prepareRunOrFail")(function* (
+    input: ThreadLaunchPreparationInput,
+    takesOver: (run: OrchestrationV2ThreadProjection["runs"][number]) => boolean,
+  ) {
+    const scheduled = yield* startRunPreparation(input, takesOver).pipe(Effect.exit);
     if (Exit.isFailure(scheduled)) {
       yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
     }
   });
+
+  // An admitted run's start prepares it like a retry: the automatic retry that held it came
+  // after its earlier attempt failed, and that attempt may not have released yet.
+  const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
+    "ThreadLaunchService.prepareRun",
+  )((input) => prepareRunOrFail(input, (run) => run.memoryAdmission?.admittedAt !== undefined));
 
   const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
     "ThreadLaunchService.retryPreparation",
@@ -1470,7 +1569,8 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       runId: input.runId,
     });
-    yield* prepareRun(input);
+    // An automatic retry waits for memory; its admission starts the preparation.
+    if (input.automatic !== true) yield* prepareRunOrFail(input, () => true);
     return dispatched;
   });
 

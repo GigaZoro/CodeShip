@@ -10,6 +10,7 @@ import { codexCallbackUrl } from "@t3tools/shared/codexAuthHandoff";
 import { hashTelemetryId } from "@t3tools/shared/telemetryId";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import { openAiUserId } from "../telemetry/Identify.ts";
 import * as Digest from "effect/crypto/Digest";
@@ -27,6 +28,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import type { ProviderAuthFlowContext } from "@t3tools/provider-core/server/providerAuthFlow";
@@ -81,6 +83,9 @@ interface SharedConnection {
   readonly lock: Semaphore.Semaphore;
   readonly signedOut: PubSub.PubSub<void>;
 }
+const AdmittedProfile = Context.Reference<
+  { readonly connection: SharedConnection; readonly key: string | null } | undefined
+>("t3/provider/CodexChatGptAuth/AdmittedProfile", { defaultValue: () => undefined });
 const connections = new WeakMap<
   typeof ServerSecretStore.ServerSecretStore.Service,
   Map<string, SharedConnection>
@@ -145,42 +150,44 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     properties: Readonly<Record<string, string>>,
     task: Effect.Effect<A, E, R>,
     expiresAt?: number,
+    publicationScope?: Scope.Scope,
   ) {
     if (Option.isNone(analytics)) return yield* task;
     const record = (name: string, properties: Readonly<Record<string, unknown>>) =>
       analytics.value.record(name, properties).pipe(Effect.ignoreCause);
     const startedAt = yield* Clock.currentTimeMillis;
     yield* record(`chatgpt.${event}.started`, properties);
-    return yield* task.pipe(
-      Effect.onExit((result) =>
-        Effect.gen(function* () {
-          const endedAt = yield* Clock.currentTimeMillis;
-          const error = Exit.isFailure(result)
-            ? Cause.findErrorOption(result.cause)
-            : Option.none();
-          const counts =
-            Exit.isSuccess(result) &&
-            (event === "transfer" || options.telemetryFlow !== "primary_handoff")
-              ? yield* accountCounts.pipe(Effect.catchCause(() => Effect.succeed({})))
-              : {};
-          yield* record(`chatgpt.${event}.completed`, {
-            ...counts,
-            ...properties,
-            outcome: Exit.isSuccess(result)
-              ? "succeeded"
-              : Cause.hasInterruptsOnly(result.cause)
-                ? expiresAt !== undefined && endedAt >= expiresAt
-                  ? "expired"
-                  : "cancelled"
-                : "failed",
-            durationMs: Math.max(0, endedAt - startedAt),
-            ...(Option.isSome(error) && isSetupError(error.value)
-              ? { failureStage: error.value.operation }
-              : {}),
-          });
-        }),
-      ),
-    );
+    const completed = Effect.fn("CodexChatGptAuth.completed")(function* (
+      result: Exit.Exit<unknown, unknown>,
+    ) {
+      const endedAt = yield* Clock.currentTimeMillis;
+      const error = Exit.isFailure(result) ? Cause.findErrorOption(result.cause) : Option.none();
+      const counts =
+        Exit.isSuccess(result) &&
+        (event === "transfer" || options.telemetryFlow !== "primary_handoff")
+          ? yield* accountCounts.pipe(Effect.catchCause(() => Effect.succeed({})))
+          : {};
+      yield* record(`chatgpt.${event}.completed`, {
+        ...counts,
+        ...properties,
+        outcome: Exit.isSuccess(result)
+          ? "succeeded"
+          : Cause.hasInterruptsOnly(result.cause)
+            ? expiresAt !== undefined && endedAt >= expiresAt
+              ? "expired"
+              : "cancelled"
+            : "failed",
+        durationMs: Math.max(0, endedAt - startedAt),
+        ...(Option.isSome(error) && isSetupError(error.value)
+          ? { failureStage: error.value.operation }
+          : {}),
+      });
+    });
+    if (publicationScope) {
+      yield* Scope.addFinalizerExit(publicationScope, completed);
+      return yield* task;
+    }
+    return yield* Effect.onExit(task, completed);
   });
   const http = yield* HttpClient.HttpClient;
   const store = yield* ProviderCredentialStore.make("codex-chatgpt", options.instanceId);
@@ -617,7 +624,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
                   server.close(() => resolve());
                 }),
             ),
-        );
+        ).pipe(Effect.provideService(Scope.Scope, context.scope));
     const address = server?.address();
     if (!clientCallback && (!address || typeof address === "string"))
       return yield* failure("callback", "Could not start the local sign-in callback.");
@@ -679,8 +686,30 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       try: () => callback.promise,
       catch: () => failure("callback", "ChatGPT sign-in could not be completed."),
     });
+    yield* Scope.addFinalizerExit(context.scope, (result) =>
+      Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            const response = received.response;
+            if (!response || response.destroyed) {
+              resolve();
+              return;
+            }
+            response.once("close", resolve);
+            response
+              .writeHead(200, {
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "no-store",
+                "referrer-policy": "no-referrer",
+                "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${pageNonce}'; base-uri 'none'; frame-ancestors 'none'`,
+                "x-content-type-options": "nosniff",
+              })
+              .end(codexAuthCallbackPage(Exit.isSuccess(result), returnUrl, pageNonce), resolve);
+          }),
+      ),
+    );
     const returned = received.url;
-    yield* Effect.gen(function* () {
+    return yield* Effect.gen(function* () {
       if (returned.searchParams.get("state") !== state)
         return yield* failure("callback", "ChatGPT sign-in could not be verified. Start again.");
       if (returned.searchParams.has("error"))
@@ -781,61 +810,52 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
           "ChatGPT returned an unsupported connection. Sign in again.",
         );
       const scopes = tokens.scope.split(/\s+/).filter(Boolean);
-      yield* withSessionLock(
-        Effect.gen(function* () {
-          yield* saveRegistration({
-            clientId,
-            redirectUri,
-            sharingEnabled: scopes.includes(CHATGPT_SHARING_SCOPE),
-            ...identity,
-          });
-          yield* save(
-            {
+      const sharing = scopes.includes(CHATGPT_SHARING_SCOPE);
+      const expiresAt = (yield* Clock.currentTimeMillis) + tokens.expires_in * 1000;
+      const persist = lock.withPermit(
+        withSessionLock(
+          Effect.gen(function* () {
+            const active = yield* read;
+            // A declined reconnect cannot replace a working registration or its tokens.
+            if (!sharing && Option.isSome(active) && active.value.clientId === clientId) return;
+            yield* saveRegistration({
               clientId,
-              accessToken: tokens.access_token,
-              idToken: tokens.id_token!,
-              issuer: endpoints.issuer,
-              refreshToken: tokens.refresh_token ?? null,
-              expiresAt: (yield* Clock.currentTimeMillis) + tokens.expires_in * 1000,
-              earliestRefreshAt: earliest(tokens.earliest_refresh_at),
-              scopes,
+              redirectUri,
+              sharingEnabled: sharing,
               ...identity,
-            },
-            scopes.includes(CHATGPT_SHARING_SCOPE) || Option.isNone(yield* read),
-          );
-        }),
+            });
+            yield* save(
+              {
+                clientId,
+                accessToken: tokens.access_token,
+                idToken: tokens.id_token!,
+                issuer: endpoints.issuer,
+                refreshToken: tokens.refresh_token ?? null,
+                expiresAt,
+                earliestRefreshAt: earliest(tokens.earliest_refresh_at),
+                scopes,
+                ...identity,
+              },
+              sharing || Option.isNone(active),
+            );
+          }),
+        ),
       );
-      if (!scopes.includes(CHATGPT_SHARING_SCOPE))
+      if (!sharing) {
+        yield* persist.pipe(
+          Effect.withSpan("providerAuthFlow.persistCredentials", {
+            attributes: { instanceId: options.instanceId },
+          }),
+        );
         return yield* failure(
           "sharing",
           previous && previous.clientId !== clientId
             ? "Token sharing was not enabled for the new account. Your existing ChatGPT connection is unchanged."
             : "Signed in with ChatGPT, but token sharing is disabled. Sign in again and enable token sharing, or use another provider.",
         );
-    }).pipe(
-      Effect.onExit((result) =>
-        Effect.promise(
-          () =>
-            new Promise<void>((resolve) => {
-              const response = received.response;
-              if (!response || response.destroyed) {
-                resolve();
-                return;
-              }
-              response.once("close", resolve);
-              response
-                .writeHead(200, {
-                  "content-type": "text/html; charset=utf-8",
-                  "cache-control": "no-store",
-                  "referrer-policy": "no-referrer",
-                  "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${pageNonce}'; base-uri 'none'; frame-ancestors 'none'`,
-                  "x-content-type-options": "nosniff",
-                })
-                .end(codexAuthCallbackPage(Exit.isSuccess(result), returnUrl, pageNonce), resolve);
-            }),
-        ),
-      ),
-    );
+      }
+      return persist;
+    });
   });
   // ID tokens survive renewal but change on sign-in. Bind active children to the
   // launch profile without putting an identity token or subject in their argv.
@@ -883,10 +903,11 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       if (Option.isNone(saved))
         return yield* failure("access", "Sign in with ChatGPT to use managed Codex.");
       let record = saved.value;
-      if (
-        options.expectedProfileKey !== undefined &&
-        (yield* profileKey(record)) !== options.expectedProfileKey
-      )
+      const admitted = yield* AdmittedProfile;
+      const expectedProfileKey =
+        options.expectedProfileKey ??
+        (admitted?.connection === connection ? admitted.key : undefined);
+      if (expectedProfileKey !== undefined && (yield* profileKey(record)) !== expectedProfileKey)
         return yield* failure("access", "The ChatGPT connection changed. Start a new session.");
       if (rejected && (yield* profileKey(record)) !== (yield* profileKey(rejected)))
         return yield* failure("access", "The ChatGPT connection changed. Retry.");
@@ -1036,27 +1057,26 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
         })),
       ];
     }),
-    authenticate: (method, context) =>
-      lock.withPermit(
-        track(
-          "auth",
-          {
-            flow: options.telemetryFlow ?? "direct",
-            intent:
-              options.telemetryFlow === "primary_handoff"
-                ? options.reconnectProfile
+    stage: (method, context) =>
+      track(
+        "auth",
+        {
+          flow: options.telemetryFlow ?? "direct",
+          intent:
+            options.telemetryFlow === "primary_handoff"
+              ? options.reconnectProfile
+                ? "saved_profile"
+                : "different_account"
+              : method === "chatgpt-change-account"
+                ? "different_account"
+                : method.startsWith("chatgpt-profile:")
                   ? "saved_profile"
-                  : "different_account"
-                : method === "chatgpt-change-account"
-                  ? "different_account"
-                  : method.startsWith("chatgpt-profile:")
-                    ? "saved_profile"
-                    : "default",
-            callbackMode: context.callbackMode ?? "server",
-          },
-          authenticate(method, context),
-          context.expiresAt,
-        ),
+                  : "default",
+          callbackMode: context.callbackMode ?? "server",
+        },
+        authenticate(method, context),
+        context.expiresAt,
+        context.scope,
       ),
     removeMethod: Effect.fn("CodexChatGptAuth.removeMethod")(function (methodId) {
       return lock.withPermit(
@@ -1189,8 +1209,20 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       ),
     );
   };
+  // Startup can wait on installation or model discovery before it asks for its first token.
+  const withAccess = Effect.fn("CodexChatGptAuth.withAccess")(function* <A, E, R>(
+    task: Effect.Effect<A, E, R>,
+  ) {
+    const existing = yield* AdmittedProfile;
+    if (existing?.connection === connection) return yield* controller.withAccess!(task);
+    const record = yield* read;
+    const key = Option.isSome(record) ? yield* profileKey(record.value) : null;
+    return yield* controller.withAccess!(
+      Effect.provideService(task, AdmittedProfile, { connection, key }),
+    );
+  });
   return {
-    controller: { ...controller, reconnectProfile, importProfile },
+    controller: { ...controller, withAccess, reconnectProfile, importProfile },
     read,
     access,
     renew: (rejected: CodexChatGptCredentials) => authorize(rejected),

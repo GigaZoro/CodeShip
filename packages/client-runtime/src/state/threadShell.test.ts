@@ -1,3 +1,4 @@
+import { sortThreadList } from "./threadSort.ts";
 import {
   EnvironmentId,
   ProjectId,
@@ -722,14 +723,51 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("offers hidden scheduled thread tags only when the thread needs the user", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    const task = {
+      ...v2ThreadShell,
+      id: ThreadId.make("scheduled"),
+      tags: ["scheduled"],
+      status: "completed" as const,
+    };
+    const hidden = Atom.make<ReadonlySet<string>>(new Set([`${environmentId}:${task.id}`]));
+    const filterTags = threads.threadFilterTagsAtom(hidden);
+    registry.mount(filterTags);
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...v2ThreadShell, tags: ["ui"] }, task],
+    });
+    expect(registry.get(filterTags)).toEqual(["ui"]);
+    expect(registry.get(threads.availableThreadTagsAtom)).toEqual(["scheduled", "ui"]);
+
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [
+        { ...v2ThreadShell, tags: ["ui"] },
+        {
+          ...task,
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("scheduled-approval"),
+            kind: "command",
+            createdAt: v2Now,
+          },
+        },
+      ],
+    });
+    expect(registry.get(filterTags)).toEqual(["scheduled", "ui"]);
+  });
+
   it("lists a task a linked environment runs for a listed thread under that thread", () => {
     const { registry, threads, snapshotAtom, catalogValueAtom } = makeHarness([
       environmentId,
       remoteEnvironmentId,
     ]);
-    const parent = v2ThreadShell;
+    const parent = { ...v2ThreadShell, tags: ["ui"] };
     const task = {
       ...v2ThreadShell,
+      tags: ["delegated"],
       id: ThreadId.make("remote-task"),
       creationSource: "mcp" as const,
       status: "running" as const,
@@ -759,6 +797,7 @@ describe("v2 thread shell lists", () => {
     const parentRef = { environmentId, threadId: parent.id };
     const inputs = threads.childThreadInputsAtom(parentRef);
     const disposeNavigation = registry.mount(threads.navigationThreadShellsAtom);
+    const disposeTags = registry.mount(threads.availableThreadTagsAtom);
     const disposeParent = registry.mount(threads.threadShellAtom(parentRef));
     const disposeInputs = registry.mount(inputs);
     const listed = () =>
@@ -766,6 +805,8 @@ describe("v2 thread shell lists", () => {
         .get(threads.navigationThreadShellsAtom)
         .map((thread) => `${thread.environmentId}/${thread.id}`);
     expect(listed()).toEqual([`${environmentId}/${parent.id}`]);
+    // Filtering by a tag only the task carries would list nothing.
+    expect(registry.get(threads.availableThreadTagsAtom)).toEqual(["ui"]);
 
     // The helper the task started there asks for approval: the parent here hears of it.
     registry.set(snapshotAtom(remoteEnvironmentId), {
@@ -808,6 +849,7 @@ describe("v2 thread shell lists", () => {
     // parent's environment is switched off.
     registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [] });
     expect(listed()).toEqual([`${remoteEnvironmentId}/${task.id}`]);
+    expect(registry.get(threads.availableThreadTagsAtom)).toEqual(["delegated"]);
     // Archiving the parent here leaves the task there unarchived, so it is listed on its own.
     registry.set(snapshotAtom(environmentId), {
       ...v2ShellSnapshot,
@@ -823,6 +865,7 @@ describe("v2 thread shell lists", () => {
     expect(listed()).toEqual([`${remoteEnvironmentId}/${task.id}`]);
     disposeInputs();
     disposeParent();
+    disposeTags();
     disposeNavigation();
     registry.dispose();
   });
@@ -996,15 +1039,24 @@ describe("v2 thread shell lists", () => {
     const ref = { environmentId, threadId: v2ThreadShell.id };
     const quietAtom = harness.threads.quietThreadShellAtom(ref);
     const dispose = harness.registry.mount(quietAtom);
+    const tagsAtom = harness.threads.threadTagsAtom(ref);
+    const disposeTags = harness.registry.mount(tagsAtom);
     try {
       const first = harness.registry.get(quietAtom);
+      const firstTags = harness.registry.get(tagsAtom);
+      expect(firstTags).toEqual([]);
       setThread({ ...running, updatedAt: at(1), itemCount: 4, visibleItemCount: 3 }, 2);
       expect(harness.registry.get(quietAtom)).toBe(first);
       expect(harness.registry.get(harness.threads.threadShellAtom(ref))?.itemCount).toBe(4);
+      expect(harness.registry.get(tagsAtom)).toBe(firstTags);
 
-      setThread({ ...running, updatedAt: at(2), itemCount: 5, title: "Renamed" }, 3);
+      setThread(
+        { ...running, updatedAt: at(2), itemCount: 5, title: "Renamed", tags: ["work"] },
+        3,
+      );
       const renamed = harness.registry.get(quietAtom);
       expect(renamed?.title).toBe("Renamed");
+      expect(harness.registry.get(tagsAtom)).toEqual(["work"]);
 
       const stopped: OrchestrationV2ThreadShell = {
         ...running,
@@ -1018,6 +1070,7 @@ describe("v2 thread shell lists", () => {
       expect(harness.registry.get(quietAtom)?.updatedAt).toBe(DateTime.formatIso(at(4)));
       expect(harness.registry.get(quietAtom)).not.toBe(completed);
     } finally {
+      disposeTags();
       dispose();
       harness.registry.dispose();
     }
@@ -1034,25 +1087,56 @@ describe("v2 thread shell lists", () => {
       itemCount: 1,
       visibleItemCount: 1,
     };
+    const other = {
+      ...v2ThreadShell,
+      id: ThreadId.make("other"),
+      updatedAt: DateTime.add(v2Now, { seconds: 1 }),
+    };
     const setThread = (thread: OrchestrationV2ThreadShell, sequence: number) =>
       harness.registry.set(harness.snapshotAtom(environmentId), {
         ...v2ShellSnapshot,
         snapshotSequence: sequence,
-        threads: [thread],
+        threads: [thread, other],
       });
     setThread(running, 1);
     const listAtom = harness.threads.quietThreadShellsAtom;
     const dispose = harness.registry.mount(listAtom);
+    const listedAtom = harness.threads.listedThreadShellsAtom;
+    const disposeListed = harness.registry.mount(listedAtom);
+    const orderAtom = harness.threads.lastActivityOrderAtom("last-activity");
+    const disposeOrder = harness.registry.mount(orderAtom);
     try {
       const first = harness.registry.get(listAtom);
-      expect(first).toHaveLength(1);
-      setThread({ ...running, updatedAt: DateTime.add(v2Now, { seconds: 1 }), itemCount: 4 }, 2);
+      const firstListed = harness.registry.get(listedAtom);
+      expect(first).toHaveLength(2);
+      const before = harness.registry.get(orderAtom);
+      const order = () =>
+        sortThreadList(
+          harness.registry.get(listedAtom),
+          "last-activity",
+          harness.registry.get(orderAtom),
+        ).map((thread) => thread.id);
+      expect(order()).toEqual([other.id, running.id]);
+      setThread({ ...running, updatedAt: DateTime.add(v2Now, { seconds: 2 }), itemCount: 4 }, 2);
       expect(harness.registry.get(listAtom)).toBe(first);
+      expect(harness.registry.get(listedAtom)).toBe(firstListed);
+      expect(harness.registry.get(orderAtom)).toBe(before);
+      expect(order()).toEqual([other.id, running.id]);
 
       setThread({ ...running, title: "Renamed" }, 3);
       expect(harness.registry.get(listAtom)).not.toBe(first);
       expect(harness.registry.get(listAtom)[0]?.title).toBe("Renamed");
+      expect(harness.registry.get(listedAtom)[0]?.title).toBe("Renamed");
+      expect(harness.registry.get(orderAtom)).toBe(before);
+
+      setThread(
+        { ...running, updatedAt: DateTime.add(v2Now, { seconds: 2 }), title: "Renamed again" },
+        4,
+      );
+      expect(order()).toEqual([running.id, other.id]);
     } finally {
+      disposeOrder();
+      disposeListed();
       dispose();
       harness.registry.dispose();
     }

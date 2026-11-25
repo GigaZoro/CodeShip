@@ -33,6 +33,7 @@ import { DesktopWebLinkCoordinator } from "../components/desktop/DesktopWebLinkC
 import { DesktopAutoUpdateCoordinator } from "../components/desktop/DesktopAutoUpdateCoordinator";
 import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
 import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut";
+import { ReopenLastArchivedShortcut } from "../components/ReopenLastArchivedShortcut";
 import { ScheduledTaskSharingCoordinator } from "../components/ScheduledTaskSharingCoordinator";
 import { DeviceSettingsProfileCoordinator } from "../components/settings/DeviceSettingsProfileCoordinator";
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
@@ -197,6 +198,7 @@ function RootRouteBranch() {
       <SshPasswordPromptDialog />
       <SnapShotCoordinator />
       <ReopenClosedViewShortcut />
+      {primaryEnvironmentAuthenticated ? <ReopenLastArchivedShortcut /> : null}
       <ConfirmDialogHost />
       <CustomSnoozeDialogHost />
       <ThreadFolderNameDialogHost />

@@ -12,6 +12,7 @@ const form = (overrides: Partial<McpServerForm>): McpServerForm => ({
   kind: "local",
   url: "",
   headers: "",
+  bearerTokenEnvVar: "",
   command: "",
   env: "",
   ...overrides,
@@ -98,6 +99,31 @@ describe("mcpServerForm", () => {
         url: "Enter an http:// or https:// URL.",
         headers: "Line 1 needs a header name, then : and its value.",
       },
+    });
+  });
+
+  it("edits or clears the account's bearer token variable without reading its value", () => {
+    const stored = {
+      transport: "http" as const,
+      url: "https://notes.example/mcp",
+      urlHasSecret: false,
+      headerNames: [],
+      bearerTokenEnvVar: "NOTES_TOKEN",
+    };
+    const opened = mcpServerFormFromSettings("notes", stored);
+    expect(readMcpServerEditForm(opened, stored)).toMatchObject({
+      ok: true,
+      server: { bearerTokenEnvVar: "NOTES_TOKEN" },
+    });
+    expect(readMcpServerEditForm({ ...opened, bearerTokenEnvVar: "" }, stored)).toMatchObject({
+      ok: true,
+      server: { bearerTokenEnvVar: null },
+    });
+    expect(
+      readMcpServerEditForm({ ...opened, url: "http://notes.example/mcp" }, stored),
+    ).toMatchObject({
+      ok: false,
+      errors: { bearerTokenEnvVar: "A bearer token variable requires an HTTPS endpoint." },
     });
   });
 });

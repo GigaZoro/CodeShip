@@ -1,6 +1,17 @@
-import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
+import {
+  olderSettledViewRequestSetters,
+  type OlderSettledScope,
+  type OlderSettledViewTargets,
+} from "@t3tools/client-runtime/state/threads";
 import { threadFolderKey, type EnvironmentId } from "@t3tools/contracts";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import {
@@ -12,9 +23,10 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
-  getThreadListV2OrderedSection,
+  isThreadListV2Filtered,
   threadListInboxReturns,
   threadListV2LayoutTime,
+  THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ChatFolderOlder,
   type ThreadListV2ChatFolders,
@@ -38,7 +50,6 @@ function useKeySet(newlineSeparatedKeys: string): ReadonlySet<string> {
 type LayoutInput = Parameters<typeof buildThreadListV2Items>[0];
 
 const NO_FOLDERS: ReadonlyArray<ThreadListV2Folder> = [];
-const NO_FOLDER_TARGETS: ReadonlyMap<string, number> = new Map();
 
 /**
  * The React Compiler drops unread dependencies, so pass the expired-grace version through
@@ -61,6 +72,10 @@ export function useThreadListV2(input: {
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs: LayoutInput["projectRefs"];
   readonly searchQuery: string;
+  readonly statusFilter?: LayoutInput["statusFilter"];
+  readonly sort?: LayoutInput["sort"];
+  readonly lastActivityOrder?: LayoutInput["lastActivityOrder"];
+  readonly selectedTags?: LayoutInput["selectedTags"];
   /** Threads that match the search by content, keyed like `threadSearchMatchKey`. */
   readonly searchMatches: ReadonlyMap<string, unknown>;
   readonly settlementEnvironmentIds: ReadonlySet<EnvironmentId>;
@@ -69,7 +84,7 @@ export function useThreadListV2(input: {
   readonly activeReorderEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys: ReadonlySet<string>;
   readonly hiddenTaskThreadKeys: ReadonlySet<string>;
-  readonly settledLimit: number;
+  readonly settledLimit?: number;
   readonly now: string;
   readonly pendingOrder: LayoutInput["pendingOrder"];
   readonly shelfPreferencesLoaded: boolean;
@@ -95,48 +110,6 @@ export function useThreadListV2(input: {
     () => observeInbox(workingShelfEnabled ? threads : null, inboxVersion),
     [threads, workingShelfEnabled, inboxVersion],
   );
-  // Compute move availability per section; per-row planning is quadratic.
-  const moveAvailability = useMemo(() => {
-    const sectionAvailability = (section: "pinned" | "active") =>
-      computeThreadMoveAvailability({
-        allThreads: threads,
-        section,
-        pendingOrder: input.pendingOrder,
-        reorderableEnvironmentIds:
-          section === "pinned" ? input.pinReorderEnvironmentIds : input.activeReorderEnvironmentIds,
-        ordered: getThreadListV2OrderedSection({
-          threads,
-          section,
-          pendingOrder: input.pendingOrder,
-          now: layoutTime,
-          settlementEnvironmentIds: input.settlementEnvironmentIds,
-          snoozeEnvironmentIds: input.snoozeEnvironmentIds,
-          queuedThreadKeys: input.queuedThreadKeys,
-        }).filter(
-          // Filed chats list in their folders; the Active list's moves step over them.
-          (thread) =>
-            section === "pinned" ||
-            chatFolders === null ||
-            chatFolders.folderKeyOf(thread) === null,
-        ),
-      });
-    return new Map([
-      ...sectionAvailability("pinned"),
-      ...(workingShelfEnabled || grouping !== null ? [] : sectionAvailability("active")),
-    ]);
-  }, [
-    threads,
-    input.pendingOrder,
-    input.pinReorderEnvironmentIds,
-    input.activeReorderEnvironmentIds,
-    layoutTime,
-    input.settlementEnvironmentIds,
-    input.snoozeEnvironmentIds,
-    input.queuedThreadKeys,
-    workingShelfEnabled,
-    grouping,
-    chatFolders,
-  ]);
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const scopes = useMemo(
     () =>
@@ -149,44 +122,88 @@ export function useThreadListV2(input: {
   );
   // A search lists only matches, so a shelf would page forever; loaded pages stay.
   const searching = input.searchQuery.trim().length > 0;
+  const filtered = useMemo(
+    () =>
+      isThreadListV2Filtered({
+        statusFilter: input.statusFilter,
+        selectedTags: input.selectedTags,
+      }),
+    [input.statusFilter, input.selectedTags],
+  );
+  const scopeKey = JSON.stringify([
+    input.environmentId,
+    input.projectRefs == null
+      ? null
+      : [...input.projectRefs]
+          .map((ref) => scopedProjectKey(ref.environmentId, ref.projectId))
+          .sort(),
+    input.searchQuery.trim(),
+  ]);
+  // A target holds only in the view it was raised in; another view starts from the first page.
+  const filterViewKey = JSON.stringify([
+    scopeKey,
+    input.statusFilter ?? "all",
+    [...(input.selectedTags ?? [])].sort(),
+  ]);
+  const [settledTarget, setSettledTarget] = useState<{ scopeKey: string; count?: number }>({
+    scopeKey,
+  });
+  if (settledTarget.scopeKey !== scopeKey) setSettledTarget({ scopeKey });
+  const [viewTargets, setViewTargets] = useState<OlderSettledViewTargets>({
+    viewKey: filterViewKey,
+  });
+  if (viewTargets.viewKey !== filterViewKey) setViewTargets({ viewKey: filterViewKey });
+  const targets = viewTargets.viewKey === filterViewKey ? viewTargets : null;
+  const pageRequestSetters = useMemo(
+    () => olderSettledViewRequestSetters(filterViewKey, setViewTargets),
+    [filterViewKey],
+  );
+  const initialCount = input.settledLimit ?? THREAD_LIST_V2_SETTLED_INITIAL_COUNT;
+  const settledLimit = filtered
+    ? (targets?.settled ?? initialCount)
+    : settledTarget.scopeKey === scopeKey
+      ? (settledTarget.count ?? initialCount)
+      : initialCount;
   // Filed chats list in their folders, which page their own older chats.
   const settledScopes = useMemo(
     () => scopes.map((scope) => ({ ...scope, folder: null })),
     [scopes],
   );
-  const olderSettledShelf = useOlderSettledShelf({
-    scopes: settledScopes,
-    expanded: input.settledShelfExpanded,
-    visibleCount: searching ? 0 : input.settledLimit,
-  });
+  const olderSettledShelf = useOlderSettledShelf(
+    {
+      scopes: settledScopes,
+      expanded: input.settledShelfExpanded,
+      visibleCount: settledLimit,
+      searching,
+      filtered,
+    },
+    {
+      requested: targets?.settledPages,
+      setRequested: pageRequestSetters.settled,
+    },
+  );
   const { isListed, unloadedCount } = olderSettledShelf;
-  const scopedThreads = useMemo(
-    () =>
-      threads.filter(
-        (thread) =>
-          thread.archivedAt === null &&
-          scopes.some(
-            (scope) =>
-              scope.environmentId === thread.environmentId &&
-              (scope.projectIds === null || scope.projectIds.includes(thread.projectId)),
-          ),
-      ),
-    [threads, scopes],
-  );
   // Settled chats each folder shows, once the user asks it for older ones.
-  const [folderTargets, setFolderTargets] = useState(NO_FOLDER_TARGETS);
+  const folderTargets = targets?.folders;
   const folders = chatFolders?.folders ?? NO_FOLDERS;
-  const folderShelves = useOlderSettledShelves(
-    folders.map((folder) => {
-      const target = folderTargets.get(folder.key);
-      return {
-        id: folder.key,
-        scopes: scopes.map((scope) => ({ ...scope, folder: threadFolderKey(folder.label) })),
-        expanded: folder.expanded && target !== undefined,
-        visibleCount: searching ? 0 : (target ?? 0),
-      };
-    }),
+  const folderShelfInputs = useMemo(
+    () =>
+      folders.map((folder) => {
+        return {
+          id: folder.key,
+          scopes: scopes.map((scope) => ({ ...scope, folder: threadFolderKey(folder.label) })),
+          expanded: folder.expanded,
+          visibleCount: filtered ? 0 : (folderTargets?.get(folder.key) ?? 0),
+          searching,
+          filtered,
+        };
+      }),
+    [folders, folderTargets, scopes, searching, filtered],
   );
+  const folderShelves = useOlderSettledShelves(folderShelfInputs, {
+    requested: targets?.folderPages,
+    setRequested: pageRequestSetters.folder,
+  });
   const chatFolderOlder = useMemo(
     () =>
       new Map(
@@ -195,13 +212,16 @@ export function useThreadListV2(input: {
           if (shelf === undefined) return [];
           const older: ThreadListV2ChatFolderOlder = {
             isListed: shelf.isListed,
-            unloadedCount: shelf.unloadedCount(scopedThreads),
-            state: shelf.loading ? "loading" : shelf.failed ? "failed" : null,
+            unloadedCount: shelf.unloadedCount,
+            hasMorePages: shelf.hasMorePages,
+            visibleCount: filtered ? folderTargets?.get(folder.key) : undefined,
+            state: shelf.loading ? "loading" : null,
+            failed: shelf.failed,
           };
           return [[folder.key, older] as const];
         }),
       ),
-    [folders, folderShelves, scopedThreads],
+    [folders, folderShelves, filtered, folderTargets],
   );
   const layout = useMemo(
     () =>
@@ -211,12 +231,16 @@ export function useThreadListV2(input: {
         environmentId: input.environmentId,
         projectRefs: input.projectRefs,
         searchQuery: input.searchQuery,
+        statusFilter: input.statusFilter,
+        sort: input.sort,
+        lastActivityOrder: input.lastActivityOrder,
+        selectedTags: input.selectedTags,
         matchedThreadKeys: new Set(input.searchMatches.keys()),
         settlementEnvironmentIds: input.settlementEnvironmentIds,
         snoozeEnvironmentIds: input.snoozeEnvironmentIds,
         queuedThreadKeys: input.queuedThreadKeys,
         hiddenTaskThreadKeys: input.hiddenTaskThreadKeys,
-        settledLimit: input.settledLimit,
+        settledLimit,
         now: layoutTime,
         workingShelfEnabled,
         workingShelfExpanded: input.workingShelfExpanded,
@@ -229,7 +253,9 @@ export function useThreadListV2(input: {
         chatFolders,
         chatFolderOlder,
         isListedSettled: isListed,
-        unloadedSettledCount: unloadedCount(scopedThreads),
+        unloadedSettledCount: unloadedCount,
+        hasMoreSettledPages: olderSettledShelf.hasMorePages,
+        settledReadFailed: olderSettledShelf.failed,
       }),
     [
       input.pendingOrder,
@@ -237,12 +263,16 @@ export function useThreadListV2(input: {
       input.environmentId,
       input.projectRefs,
       input.searchQuery,
+      input.statusFilter,
+      input.sort,
+      input.lastActivityOrder,
+      input.selectedTags,
       input.searchMatches,
       input.settlementEnvironmentIds,
       input.snoozeEnvironmentIds,
       input.queuedThreadKeys,
       input.hiddenTaskThreadKeys,
-      input.settledLimit,
+      settledLimit,
       layoutTime,
       workingShelfEnabled,
       input.workingShelfExpanded,
@@ -256,9 +286,40 @@ export function useThreadListV2(input: {
       chatFolderOlder,
       isListed,
       unloadedCount,
-      scopedThreads,
+      olderSettledShelf.hasMorePages,
+      olderSettledShelf.failed,
     ],
   );
+  const listedArrangement = useRef(layout.listedSections);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the committed arrangement to callbacks retained by LegendList
+  useLayoutEffect(() => {
+    listedArrangement.current = layout.listedSections;
+  }, [layout.listedSections]);
+  const getListedArrangement = useCallback(() => listedArrangement.current, []);
+
+  // Compute move availability per section; per-row planning is quadratic. Moves step
+  // between the rows the list shows, so a filter cannot hide the row a move passes.
+  const moveAvailability = useMemo(() => {
+    const sectionAvailability = (section: "pinned" | "active") =>
+      computeThreadMoveAvailability({
+        allThreads: threads,
+        section,
+        pendingOrder: input.pendingOrder,
+        reorderableEnvironmentIds:
+          section === "pinned" ? input.pinReorderEnvironmentIds : input.activeReorderEnvironmentIds,
+        ordered: layout.listedSections[section],
+      });
+    return new Map([
+      ...sectionAvailability("pinned"),
+      ...(layout.listedSections.activeManualOrder ? sectionAvailability("active") : []),
+    ]);
+  }, [
+    threads,
+    input.pendingOrder,
+    input.pinReorderEnvironmentIds,
+    input.activeReorderEnvironmentIds,
+    layout.listedSections,
+  ]);
   useOlderSettledShelfGrowth([
     { shelf: olderSettledShelf, listedCount: layout.listedSettledThreads.length },
     ...folders.flatMap((folder, index) => {
@@ -268,16 +329,59 @@ export function useThreadListV2(input: {
         : [{ shelf, listedCount: layout.listedFolderSettledCounts.get(folder.key) ?? 0 }];
     }),
   ]);
-  /** Lists a page more of a chat folder's older chats, and reads again what failed. */
-  const showMoreInFolder = (folderKey: string, listedCount: number) => {
-    folderShelves[folders.findIndex((folder) => folder.key === folderKey)]?.retry();
-    setFolderTargets((current) =>
-      new Map([...current].filter(([key]) => folders.some((folder) => folder.key === key))).set(
-        folderKey,
-        listedCount + THREAD_LIST_V2_SETTLED_PAGE_COUNT,
-      ),
-    );
+  const paging = {
+    showMoreSettled: () => {
+      if (filtered) {
+        const listed = layout.listedSettledThreads.length;
+        const count = olderSettledShelf.showMoreFiltered(Math.min(settledLimit, listed), listed);
+        setViewTargets((current) => ({ ...current, settled: count }));
+      } else {
+        setSettledTarget({
+          scopeKey,
+          count: settledLimit + THREAD_LIST_V2_SETTLED_PAGE_COUNT,
+        });
+      }
+    },
+    showMoreInFolder: (folderKey: string) => {
+      const shelf = folderShelves[folders.findIndex((folder) => folder.key === folderKey)];
+      const footer = layout.folderFooters.find((entry) => entry.folderKey === folderKey);
+      if (shelf === undefined || footer === undefined) return;
+      const count = filtered
+        ? shelf.showMoreFiltered(
+            footer.listedCount,
+            layout.listedFolderSettledCounts.get(folderKey) ?? 0,
+          )
+        : footer.listedCount + THREAD_LIST_V2_SETTLED_PAGE_COUNT;
+      setViewTargets((current) => ({
+        ...current,
+        folders: new Map(
+          [...(current.folders ?? [])].filter(([key]) =>
+            folders.some((folder) => folder.key === key),
+          ),
+        ).set(folderKey, count),
+      }));
+    },
+    retrySettled: olderSettledShelf.retry,
+    retryFolder: (folderKey: string) =>
+      folderShelves[folders.findIndex((folder) => folder.key === folderKey)]?.retry(),
   };
+  // LegendList can keep a footer's handlers across a filter change, since the footer compares
+  // equal, so they act on the committed shelves when pressed.
+  const committedPaging = useRef(paging);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the committed shelves to footer handlers LegendList retains
+  useLayoutEffect(() => {
+    committedPaging.current = paging;
+  });
+  const showMoreSettled = useCallback(() => committedPaging.current.showMoreSettled(), []);
+  const showMoreInFolder = useCallback(
+    (folderKey: string) => committedPaging.current.showMoreInFolder(folderKey),
+    [],
+  );
+  const retrySettled = useCallback(() => committedPaging.current.retrySettled(), []);
+  const retryFolder = useCallback(
+    (folderKey: string) => committedPaging.current.retryFolder(folderKey),
+    [],
+  );
   const contentOnlyThreadKeys = useKeySet([...layout.contentOnlyThreadKeys].sort().join("\n"));
   const pendingTasks = useMemo(() => {
     const scopedProjectKeys =
@@ -313,6 +417,7 @@ export function useThreadListV2(input: {
         snoozedShelfExpanded: input.snoozedShelfExpanded,
         snoozedShelfHeaderIndex: layout.snoozedShelfHeaderIndex,
         settledCount: layout.settledCount,
+        settledUncounted: layout.hiddenSettledCount === null || olderSettledShelf.failed,
         settledShelfExpanded: input.settledShelfExpanded,
         settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
         snoozeLabelNow: `${input.now.slice(0, 16)}:00.000Z`,
@@ -332,9 +437,30 @@ export function useThreadListV2(input: {
       input.queuedThreadKeys,
       moveAvailability,
       input.shelfPreferencesLoaded,
+      olderSettledShelf.failed,
     ],
   );
-  return { layout, items, contentOnlyThreadKeys, olderSettledShelf, showMoreInFolder };
+  return {
+    settledFooter:
+      input.settledShelfExpanded &&
+      layout.settledShelfHeaderIndex !== null &&
+      (layout.hiddenSettledCount !== 0 || olderSettledShelf.failed)
+        ? {
+            hiddenCount: layout.hiddenSettledCount,
+            state: olderSettledShelf.loading ? ("loading" as const) : null,
+            failed: olderSettledShelf.failed,
+          }
+        : null,
+    layout,
+    items,
+    contentOnlyThreadKeys,
+    olderSettledShelf,
+    retryFolder,
+    retrySettled,
+    showMoreInFolder,
+    showMoreSettled,
+    getListedArrangement,
+  };
 }
 
 /** The list's scope per environment: its projects there, or every project. */

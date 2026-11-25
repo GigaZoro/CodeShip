@@ -368,6 +368,11 @@ export const ScheduledTaskRunCheck = Schema.Struct({
    * last line. Why, for one that could not start.
    */
   detail: Schema.NullOr(Schema.String),
+  /**
+   * The `unit` (a work item, pull request, settlement id) of the JSON object a check that found
+   * work ends with. Absent when it named none, and from servers without it.
+   */
+  unit: Schema.optional(Schema.String),
 });
 export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
 
@@ -682,9 +687,16 @@ export function scheduledTaskThreadMode(
   return task.threadMode ?? (task.threadId === null ? "new_thread" : "continue");
 }
 
+export const MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH = 500;
+
+export const ScheduledTaskDescription = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH),
+);
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
   /** With `promptFile`, the text its last read found; runs read the file again. */
   prompt: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
@@ -694,6 +706,7 @@ export const ScheduledTask = Schema.Struct({
   threadMode: Schema.optional(ScheduledTaskThreadMode),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,
@@ -779,6 +792,7 @@ export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 export const LinkedScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: Schema.String,
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
   prompt: Schema.String,
   enabled: Schema.Boolean,
   projectId: ProjectId,
@@ -829,6 +843,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   }),
   commandId: Schema.optional(CommandId),
   title: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)).annotate({
+    description: "Display text for people. Omitted keeps the stored description. Null clears it.",
+  }),
   prompt: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "Needed unless the task reads its prompt from a file; ignored when it does.",
   }),
@@ -844,6 +861,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   threadMode: Schema.optional(ScheduledTaskThreadMode),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
     description: "Run the scheduled tasks default model. Omitted keeps the stored choice.",
   }),
@@ -892,11 +910,14 @@ export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 export const ScheduledTaskSharedCopy = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
+  /** An omitted description keeps the receiving machine's value. */
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
   prompt: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
   schedule: ScheduledTaskSchedule,
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.Boolean,
   /** Absent from machines without catch-up; the receiving machine keeps its own choice. */
   catchUpMissedRun: Schema.optional(Schema.Boolean),
@@ -948,6 +969,12 @@ export const ScheduledTaskSetEnabledInput = Schema.Struct({
   enabled: Schema.Boolean,
 });
 export type ScheduledTaskSetEnabledInput = typeof ScheduledTaskSetEnabledInput.Type;
+
+export const ScheduledTaskSetGroupInput = Schema.Struct({
+  id: ScheduledTaskId,
+  group: Schema.NullOr(ScheduledTaskGroupLabel),
+});
+export type ScheduledTaskSetGroupInput = typeof ScheduledTaskSetGroupInput.Type;
 
 /** Pauses a group's tasks, or turns back on those its pause turned off. */
 export const ScheduledTaskSetGroupPausedInput = Schema.Struct({

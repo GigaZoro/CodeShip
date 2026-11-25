@@ -683,6 +683,7 @@ type SidebarThreadRowProps = {
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
+  onPin: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
@@ -747,6 +748,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     onThreadClick,
     onUnsettle,
     onUnsnooze,
+    onPin,
     onUnpin,
     readOpensPullRequestsInRightPanel,
     renamingTitle,
@@ -824,8 +826,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? resolveThreadCurrentPullRequestLink(thread.pullRequests)
     : null;
 
-  const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarRowStatus({ ...thread, lastVisitedAt });
+  const isUnread =
+    status !== "failed" &&
+    status !== "limited" &&
+    hasUnseenCompletion({ ...thread, lastVisitedAt });
   const isWoke = hasUnseenWake({
     wokeAt: props.wokeAt,
     lastVisitedAt,
@@ -980,6 +985,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     event.preventDefault();
     event.stopPropagation();
     onUnsnooze(threadRef);
+  };
+  const handlePinClick = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onPin(threadRef);
   };
   const handleUnpinClick = (event: ReactMouseEvent) => {
     event.preventDefault();
@@ -1139,6 +1149,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       ) : null}
     </span>
   );
+  const tags = thread.source.tags;
+  const tagChips = tags?.length ? (
+    <span className="flex max-w-[40%] shrink-0 items-center gap-1">
+      {tags.slice(0, 2).map((tag) => (
+        <span
+          key={tag}
+          className="min-w-0 truncate rounded bg-muted px-1 text-2xs text-muted-foreground"
+        >
+          {tag}
+        </span>
+      ))}
+      {tags.length > 2 ? (
+        <span className="shrink-0 text-2xs text-muted-foreground">
+          {t("+{count}", { count: tags.length - 2 })}
+        </span>
+      ) : null}
+    </span>
+  ) : null;
 
   const prBadgeShape = supportsMultiplePullRequests
     ? resolveThreadPullRequestBadge(thread.pullRequests)
@@ -1235,6 +1263,30 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     )
   ) : null;
 
+  const canPinOnHover =
+    !props.isPinned &&
+    props.pinningSupported &&
+    canOperateThread &&
+    !machineUnreachable &&
+    !sortable?.isDragging;
+  const renderPinButton = (className: string, iconClassName: string) => (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={t("Pin thread")}
+            onClick={handlePinClick}
+            className={className}
+          />
+        }
+      >
+        <PinIcon aria-hidden className={iconClassName} />
+      </TooltipTrigger>
+      <TooltipPopup>{t("Pin thread")}</TooltipPopup>
+    </Tooltip>
+  );
+
   const scheduledIndicator = (
     <ThreadScheduledTaskIndicator environmentId={thread.environmentId} threadId={thread.id} />
   );
@@ -1320,8 +1372,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
-          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]",
-          metaLine !== null && multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
+          "list-none [content-visibility:auto]",
+          // A fixed-height row reserves its exact density height; `auto` would keep a stale one.
+          !multiline
+            ? "[contain-intrinsic-size:none_var(--sidebar-thread-row-height)]"
+            : metaLine !== null
+              ? "[contain-intrinsic-size:auto_--spacing(13.5)]"
+              : "[contain-intrinsic-size:auto_--spacing(9)]",
           sortable?.isDragging && "relative z-20",
         )}
       >
@@ -1348,7 +1405,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   rowSurfaceClassName,
                   multiline
                     ? "flex flex-col justify-center px-2.5 py-1.5"
-                    : "flex h-9 items-center gap-2.5 px-2.5",
+                    : "flex h-(--sidebar-thread-row-height) items-center gap-2.5 px-2.5",
                   // Lines titles up with the folder name, past its chevron and icon.
                   indented && (props.inMachineFolder && props.inProjectFolder ? "ps-15.5" : "ps-9"),
                 )}
@@ -1377,12 +1434,21 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {draftIndicator}
               {queuedIndicator}
               {title}
+              {tagChips}
               {multiline ? titleLineIcons : null}
               {scheduledIndicator}
               {variant === "line" && pinIndicator !== null ? (
                 // One-line pinned rows sit under the Pinned header, so the pin shows as Unpin on hover.
-                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none">
+                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 group-focus-visible/sidebar-row:opacity-100 motion-reduce:transition-none">
                   {pinIndicator}
+                </span>
+              ) : canPinOnHover ? (
+                // The slot is always reserved so revealing Pin never moves the title.
+                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 group-focus-visible/sidebar-row:opacity-100 motion-reduce:transition-none">
+                  {renderPinButton(
+                    "inline-flex cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    "size-3 shrink-0",
+                  )}
                 </span>
               ) : (
                 pinIndicator
@@ -1547,7 +1613,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       // The hints are the rendered heights inside py-0.5. Revealing the open thread measures rows
       // that have not rendered yet, so a hint off by a pixel lands it a pixel short per row above.
       className={cn(
-        "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        "list-none py-(--sidebar-row-gap) [content-visibility:auto] [contain-intrinsic-size:auto_var(--sidebar-thread-card-height)]",
         metaLineEmpty && "[contain-intrinsic-size:auto_60px]",
         sortable?.isDragging && "relative z-20",
       )}
@@ -1575,7 +1641,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         >
           <div
             className={cn(
-              "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
+              "relative z-10 h-(--sidebar-thread-card-height) px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
               metaLineEmpty && "h-auto",
             )}
           >
@@ -1674,7 +1740,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       <RelativeTimeLabel timestamp={resolveThreadActivityTimestamp(thread)} />
                     )}
                   </span>
-                  {settlementSupported || showSnoozeButton || hasUnsentDraft ? (
+                  {settlementSupported || showSnoozeButton || hasUnsentDraft || canPinOnHover ? (
                     <span
                       className={cn(
                         // Mouse clicks leave Settle focused; focus-within would pin controls over
@@ -1700,6 +1766,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           <TooltipPopup side="top">{t("Discard draft")}</TooltipPopup>
                         </Tooltip>
                       ) : null}
+                      {canPinOnHover
+                        ? renderPinButton(
+                            "inline-flex cursor-pointer items-center rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground",
+                            "size-3.5",
+                          )
+                        : null}
                       {showSnoozeButton ? (
                         <SnoozeMenuButton
                           open={snoozeMenuOpen}
@@ -1737,6 +1809,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              {tagChips}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   {t("Regenerating title")}

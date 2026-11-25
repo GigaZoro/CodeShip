@@ -334,51 +334,54 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
-  it.effect("verifies a binary the update installed after a lookup cached it as missing", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const binDir = yield* fs.makeTempDirectoryScoped();
-      const isOnPath = resolveCommandPath("native-agent", { env: { PATH: binDir } }).pipe(
-        Effect.map((resolved) => resolved !== null),
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(Path.Path, path),
-      );
-      const { registry, providersRef } = yield* makeRegistry(baseNativeCliProvider);
-      // A status check ran while the installer had the old binary removed.
-      assert.isFalse(yield* isOnPath);
-      const updater = yield* makeTestRunner({
-        ...registry,
-        refreshAfterUpdate: () =>
-          isOnPath.pipe(
-            Effect.flatMap((installed) =>
-              Ref.updateAndGet(providersRef, (providers) =>
-                providers.map((provider) => ({ ...provider, installed })),
+  // A Windows filesystem reports no executable mode bits, so the POSIX lookup under test cannot find the binary there.
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "verifies a binary the update installed after a lookup cached it as missing",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const binDir = yield* fs.makeTempDirectoryScoped();
+        const isOnPath = resolveCommandPath("native-agent", { env: { PATH: binDir } }).pipe(
+          Effect.map((resolved) => resolved !== null),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+        const { registry, providersRef } = yield* makeRegistry(baseNativeCliProvider);
+        // A status check ran while the installer had the old binary removed.
+        assert.isFalse(yield* isOnPath);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          refreshAfterUpdate: () =>
+            isOnPath.pipe(
+              Effect.flatMap((installed) =>
+                Ref.updateAndGet(providersRef, (providers) =>
+                  providers.map((provider) => ({ ...provider, installed })),
+                ),
               ),
             ),
+        }).pipe(
+          Effect.provide(
+            layerMockSpawner(() => ({
+              exitCode: fs
+                .writeFileString(path.join(binDir, "native-agent"), "#!/bin/sh\n", { mode: 0o755 })
+                .pipe(Effect.orDie, Effect.as(ChildProcessSpawner.ExitCode(0))),
+            })),
           ),
+        );
+
+        const result = yield* updater.updateProvider(NATIVE_CLI_DRIVER);
+        assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
       }).pipe(
         Effect.provide(
-          layerMockSpawner(() => ({
-            exitCode: fs
-              .writeFileString(path.join(binDir, "native-agent"), "#!/bin/sh\n", { mode: 0o755 })
-              .pipe(Effect.orDie, Effect.as(ChildProcessSpawner.ExitCode(0))),
-          })),
+          Layer.mergeAll(
+            NodeServices.layer,
+            layerNonWindowsPlatform,
+            layerLatestVersionHttpClient("1.0.0"),
+          ),
         ),
-      );
-
-      const result = yield* updater.updateProvider(NATIVE_CLI_DRIVER);
-      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          NodeServices.layer,
-          layerNonWindowsPlatform,
-          layerLatestVersionHttpClient("1.0.0"),
-        ),
+        Effect.provideService(CommandResolutionCache, new Map()),
       ),
-      Effect.provideService(CommandResolutionCache, new Map()),
-    ),
   );
 
   it.effect.each([

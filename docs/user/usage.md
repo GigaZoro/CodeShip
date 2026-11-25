@@ -194,10 +194,10 @@ current model's limits without leaving the conversation. The result opens above 
 closes when you dismiss it or send your next message. It uses the same snapshot as **Usage → Limits**, so it does not run the agent or refresh
 anything. The command is offered only for providers that appear under **Usage → Limits**.
 
-To keep them in view on web and desktop, turn on **Usage limits** in **Settings → Chat & diffs → Thread details**, or right-click the thread details card.
-The bottom of the thread details card then shows how much is left in each limit window of the
+On web and desktop the thread details card keeps them in view; hide **Usage limits** in **Settings → Chat & diffs → Thread details**, or right-click the card, if you do not want them there.
+The card shows how much is left in each limit window of the
 current provider account. Some windows, such as a weekly Opus limit, count only one model. Hover a
-row to see when it resets and your pace. Turn on **Context window** to also show the thread's
+row to see when it resets and your pace. **Context window** shows the thread's
 context use against the model's limit. A tick on the bar marks where the provider compacts
 automatically, when it reports that point.
 

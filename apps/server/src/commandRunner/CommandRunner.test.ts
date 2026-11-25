@@ -11,9 +11,11 @@ import { vi } from "vite-plus/test";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type MemoryShortage,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -24,7 +26,9 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -32,7 +36,9 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -40,6 +46,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../config.ts";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -50,7 +57,9 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as CommandRunner from "./CommandRunner.ts";
+import { ENDED_IDENTITY, identityWindow } from "./processIdentity.ts";
 
 class ProcessCleanupError extends Schema.TaggedError<ProcessCleanupError>()("ProcessCleanupError", {
   cause: Schema.Defect(),
@@ -123,27 +132,231 @@ const providerShell = (shellEnvironment?: ProviderInstance["shellEnvironment"]) 
           : undefined,
       ),
   });
+const exited = (code: number, stdout: string, stderr = ""): ProcessRunner.ProcessRunOutput => ({
+  stdout,
+  stderr,
+  code: ChildProcessSpawner.ExitCode(code),
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+const isWindowsLaunch = (input: ProcessRunner.ProcessRunInput) =>
+  input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"));
 /** Fails the Windows launch, after its scripts are written, and hands over the launcher's input. */
 const refuseWindowsLaunch = (
   processRunner: ProcessRunner.ProcessRunner["Service"],
   launcher: Deferred.Deferred<ProcessRunner.ProcessRunInput>,
 ): ProcessRunner.ProcessRunner["Service"] => ({
   run: (input) =>
-    !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
+    !isWindowsLaunch(input)
       ? processRunner.run(input)
       : Deferred.succeed(launcher, input).pipe(
-          Effect.as({
-            stdout: "",
-            stderr: "Win32_Process.Create returned 9",
-            code: ChildProcessSpawner.ExitCode(1),
-            timedOut: false,
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            stdoutInvalidUtf8: false,
-            stderrInvalidUtf8: false,
-          }),
+          Effect.as(exited(1, "", "Win32_Process.Create returned 9")),
         ),
 });
+/** How far the wall clock of a runner on `fakeWindows` steps back during a launch, as NTP can. */
+const CLOCK_STEPS_BACK_MS = 60_000;
+/** How long a runner on `fakeWindows` stalls, as a busy scheduler can: both its clocks move on. */
+const CLOCK_PAUSE_MS = 1_000;
+/** The whole second after `at`, which a file's time keeps exactly. */
+const secondAfter = (at: number) => (Math.floor(at / 1_000) + 1) * 1_000;
+/** Writes the pid file a wrapper names itself in, as it does the second after `at`. */
+const nameWrapper = (directory: string, pid: number, at: number) => {
+  const file = NodePath.join(directory, "pid");
+  NodeFS.writeFileSync(file, `${pid}\r\n`);
+  NodeFS.utimesSync(file, secondAfter(at) / 1_000, secondAfter(at) / 1_000);
+};
+/** When the last launch on `fakeWindows` was made, which pid a start read asks about, and when. */
+interface StartReadAt {
+  readonly launched: number;
+  readonly pid: number;
+  readonly read: number;
+}
+/**
+ * Windows on any host: a launch's wrapper is made as it returns, start reads give `startOf`, and
+ * tree stops hand over their arguments. The clock stands still, so load never looks like a step,
+ * but for `readTakes` and `clock`: a step back per launch, and with `stalls` a pause after each
+ * yielded read before the first launch and one outlasting the step at the first after each launch.
+ */
+const fakeWindows = (options: {
+  readonly startOf: (at: StartReadAt) => number | undefined;
+  /** What the launcher prints after the pid: the wrapper's start, or that it found none. */
+  readonly launcherSees?: "start" | "none";
+  /** Whether the wrapper named itself in its pid file, the second after its launch, by then. */
+  readonly namedItself?: boolean;
+  /** The launcher fails after its wrapper started: exits non-zero after the pid, or times out. */
+  readonly launcherFails?: "exits" | "times-out";
+  /** How long each start read takes: both clocks move on by it. */
+  readonly readTakes?: number;
+  readonly clock?: { readonly stepsBack: number; readonly stalls?: boolean };
+}) =>
+  Effect.gen(function* () {
+    const realClock = yield* Clock.Clock;
+    // Not ahead of the real clock, which dates the pid files the tests leave.
+    const wallAt = realClock.currentTimeMillisUnsafe();
+    const monotonicAt = realClock.monotonicTimeNanosUnsafe();
+    let steppedBack = 0;
+    let paused = 0;
+    let launched = false;
+    let stallAfterLaunch = false;
+    const millis = () => wallAt - steppedBack + paused;
+    const monotonic = () => monotonicAt + BigInt(paused) * 1_000_000n;
+    // Spans and logs read the unsafe forms, so only the runner's own yielded reads stall.
+    const thenStall = <A>(read: () => A) =>
+      Effect.sync(() => {
+        const at = read();
+        if (options.clock?.stalls === true && !launched) paused += CLOCK_PAUSE_MS;
+        if (stallAfterLaunch) {
+          stallAfterLaunch = false;
+          paused += CLOCK_STEPS_BACK_MS + CLOCK_PAUSE_MS;
+        }
+        return at;
+      });
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: millis,
+      currentTimeMillis: thenStall(millis),
+      currentTimeNanosUnsafe: () => BigInt(millis()) * 1_000_000n,
+      currentTimeNanos: thenStall(() => BigInt(millis()) * 1_000_000n),
+      monotonicTimeNanosUnsafe: monotonic,
+      monotonicTimeNanos: thenStall(monotonic),
+      sleep: (duration) => realClock.sleep(duration),
+    };
+    const standIn = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        NodeChildProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+          stdio: "ignore",
+        }),
+      ),
+      (child) => Effect.sync(() => child.kill()),
+    );
+    const wrapper = standIn.pid ?? (yield* Effect.die("The stand-in wrapper did not start"));
+    const launches = yield* Queue.unbounded<number>();
+    const stops = yield* Queue.unbounded<ReadonlyArray<string>>();
+    let lastLaunch = Number.NaN;
+    const processRunner: ProcessRunner.ProcessRunner["Service"] = {
+      run: (input) => {
+        if (isWindowsLaunch(input)) {
+          return Effect.gen(function* () {
+            steppedBack += options.clock?.stepsBack ?? 0;
+            launched = true;
+            lastLaunch = millis();
+            stallAfterLaunch = options.clock?.stalls === true;
+            if (options.namedItself === true) {
+              const wrapperPath = /-File "(.+run\.ps1)"/.exec(input.args.join(" "))?.[1] ?? "";
+              nameWrapper(NodePath.dirname(wrapperPath), wrapper, lastLaunch);
+            }
+            yield* Queue.offer(launches, lastLaunch);
+            const seen = {
+              start: DateTime.formatIso(DateTime.makeUnsafe(lastLaunch)),
+              none: ENDED_IDENTITY,
+            };
+            if (options.launcherFails === "times-out") {
+              return yield* new ProcessRunner.ProcessTimeoutError({
+                command: input.command,
+                argumentCount: input.args.length,
+                cwd: input.cwd,
+                spawnCwd: input.spawnCwd,
+                timeoutMs: 30_000,
+              });
+            }
+            if (options.launcherFails === "exits") {
+              return exited(1, `${wrapper}\r\n`, "Exception getting StartTime");
+            }
+            const sees = options.launcherSees;
+            return exited(0, `${wrapper}\r\n${sees === undefined ? "" : `${seen[sees]}\r\n`}`);
+          });
+        }
+        const script = input.args.join(" ");
+        // Before the start read: the stop's script also calls Get-Process.
+        if (script.includes("Stop-T3ProcessTree")) {
+          return Queue.offer(stops, input.args).pipe(Effect.as(exited(0, "")));
+        }
+        const startRead = /Get-Process -Id (\d+)/.exec(script);
+        if (startRead !== null) {
+          return Effect.sync(() => {
+            const at = { launched: lastLaunch, pid: Number(startRead[1]), read: millis() };
+            paused += options.readTakes ?? 0;
+            const startedAt = options.startOf(at);
+            return startedAt === undefined
+              ? exited(1, "", "Get-Process timed out")
+              : exited(0, DateTime.formatIso(DateTime.makeUnsafe(startedAt)));
+          });
+        }
+        return Effect.die(`Not a Windows call the runner makes: ${input.command}`);
+      },
+    };
+    const on = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+        Effect.provideService(Clock.Clock, clock),
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(HostProcess.Environment, { SystemRoot: "C:\\Windows" }),
+      );
+    return { wrapper, launches, stops, on };
+  });
+const PROC_STAT = /^\/proc\/\d+\/stat$/;
+/**
+ * Runs `before` ahead of each read of a process's start, from /proc on Linux and by ps
+ * elsewhere, and fails that read when it gives "fail".
+ */
+const aroundStartReads =
+  (before: Effect.Effect<"fail" | "read">) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const processRunner = yield* ProcessRunner.ProcessRunner;
+      const fs = yield* FileSystem.FileSystem;
+      return yield* effect.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: (input) =>
+            input.command !== "ps"
+              ? processRunner.run(input)
+              : Effect.flatMap(before, (then) =>
+                  then === "fail" ? Effect.succeed(exited(1, "")) : processRunner.run(input),
+                ),
+        }),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: (path, encoding) =>
+            !PROC_STAT.test(path)
+              ? fs.readFileString(path, encoding)
+              : Effect.flatMap(before, (then) =>
+                  then === "fail"
+                    ? Effect.fail(
+                        PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "FileSystem",
+                          method: "readFileString",
+                          pathOrDescriptor: path,
+                        }),
+                      )
+                    : fs.readFileString(path, encoding),
+                ),
+        }),
+      );
+    });
+/** Fails each look for a wrapper's pid file, as a run directory that refuses access does. */
+const pidFileUnseen = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* effect.pipe(
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        exists: (path) =>
+          NodePath.basename(path) !== "pid"
+            ? fs.exists(path)
+            : Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "FileSystem",
+                  method: "exists",
+                  pathOrDescriptor: path,
+                }),
+              ),
+      }),
+    );
+  });
 const layerTest = Layer.mergeAll(
   layerThreads,
   Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
@@ -151,11 +364,16 @@ const layerTest = Layer.mergeAll(
   ProcessRunner.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
+  MemoryAdmission.layerTest(),
 ).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
 
-/** One server's life: a fresh runner that picks up what an earlier one left, until `use` ends. */
+/**
+ * One server's life: a fresh runner that picks up what an earlier one left, until `use` ends.
+ * Memory is read on every pass unless `shortageRecheck` holds a shortage.
+ */
 const withServer = <A, E, R>(
   use: (runner: CommandRunner.CommandRunner["Service"]) => Effect.Effect<A, E, R>,
+  shortageRecheck = Duration.zero,
 ) =>
   Effect.gen(function* () {
     const runner = yield* CommandRunner.CommandRunner;
@@ -165,6 +383,7 @@ const withServer = <A, E, R>(
     Effect.scoped,
     Effect.provide(Layer.fresh(CommandRunner.layer)),
     Effect.provideService(CommandRunner.WatchInterval, Duration.millis(50)),
+    Effect.provideService(CommandRunner.ShortageRecheck, shortageRecheck),
   );
 
 const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
@@ -182,18 +401,19 @@ const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
 
 /**
  * Resolves once `file` exists, from its state rather than folder events: on macOS a file made just
- * after `fs.watch` returns can raise none, and a sandbox refuses the watch.
+ * after `fs.watch` returns can raise none, and a sandbox refuses the watch. It looks on a timer
+ * because `fs.watchFile` reports only a change from a baseline it reads after it returns, which a
+ * file made meanwhile is already part of.
  */
 const awaitFile = (file: string) =>
   Effect.callback<void>((resume) => {
-    const look = () => {
+    // @effect-diagnostics-next-line globalTimersInEffect:off - it.effect's TestClock never advances Effect.sleep, and the file comes from a real process.
+    const timer = setInterval(() => {
       if (!NodeFS.existsSync(file)) return;
-      NodeFS.unwatchFile(file, look);
+      clearInterval(timer);
       resume(Effect.void);
-    };
-    NodeFS.watchFile(file, { interval: 20 }, look);
-    look();
-    return Effect.sync(() => NodeFS.unwatchFile(file, look));
+    }, 20);
+    return Effect.sync(() => clearInterval(timer));
   });
 
 /** Resolves once each of `threadIds` has been offered a wake. */
@@ -216,6 +436,27 @@ const nextWake = (threadId: ThreadId) =>
     ),
   );
 
+describe("awaitFile", () => {
+  it.effect("sees a file made right after the wait began", () =>
+    Effect.gen(function* () {
+      const folder = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-await-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(folder, { recursive: true, force: true })),
+      );
+      // watchFile takes its baseline stat on another thread after it returns, so a file made
+      // just after can already be in that baseline, and no change is ever reported.
+      yield* Effect.forEach(
+        Array.from({ length: 300 }, (_, i) => NodePath.join(folder, String(i))),
+        (file) =>
+          Effect.all([awaitFile(file), Effect.sync(() => NodeFS.writeFileSync(file, ""))], {
+            concurrency: "unbounded",
+          }),
+        { concurrency: "unbounded" },
+      );
+    }),
+  );
+});
+
 const commandRow = (taskId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -223,15 +464,18 @@ const commandRow = (taskId: string) =>
       readonly status: string;
       readonly exit_code: number | null;
       readonly pid: number | null;
+      readonly process_identity: string | null;
       readonly started_at: string;
+      readonly deadline_at: string;
       readonly delivered_at: string | null;
       readonly last_alive_at: string | null;
       readonly probe_error: string | null;
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
+      readonly directory: string;
     }>`
-      SELECT status, exit_code, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
-        lost_output
+      SELECT status, exit_code, pid, process_identity, started_at, deadline_at, delivered_at,
+        last_alive_at, probe_error, lost_reason, lost_output, directory
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -242,10 +486,18 @@ const forgetPid = (taskId: string) =>
   Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql`
-      UPDATE command_runs SET pid = NULL, process_started_at = NULL, last_alive_at = NULL
+      UPDATE command_runs SET pid = NULL, process_identity = NULL, last_alive_at = NULL
       WHERE task_id = ${taskId}
     `,
   );
+
+/** Leaves a pid file naming `pid` as all that names its process, as when its server stopped. */
+const leavePidFile = (taskId: string, pid: number) =>
+  Effect.gen(function* () {
+    const row = (yield* commandRow(taskId))!;
+    yield* forgetPid(taskId);
+    nameWrapper(row.directory, pid, Date.parse(row.started_at));
+  });
 
 const taskOf = (threadId: ThreadId, taskId: string) =>
   Orchestrator.OrchestratorV2.pipe(
@@ -253,7 +505,10 @@ const taskOf = (threadId: ThreadId, taskId: string) =>
     Effect.map((projection) => projection.subagents.find((task) => task.id === taskId)),
   );
 
-/** A chat whose run is live, in its own folder, whose commands are stopped when the test ends. */
+/**
+ * A chat whose run is live, in its own folder, whose commands are stopped, and left to no later
+ * server, when the test ends.
+ */
 const liveChat = (name: string) =>
   Effect.gen(function* () {
     const workspace = NodeFS.realpathSync(
@@ -283,6 +538,14 @@ const liveChat = (name: string) =>
           ),
         ),
         Effect.ignore,
+        // The tests share one database: a later test's server would adopt these, and its fakes
+        // would then answer for them.
+        Effect.andThen(
+          sql`
+            UPDATE command_runs SET delivered_at = COALESCE(delivered_at, started_at)
+            WHERE thread_id = ${parent.threadId}
+          `.pipe(Effect.orDie),
+        ),
         Effect.andThen(
           Effect.sync(() => NodeFS.rmSync(workspace, { recursive: true, force: true })),
         ),
@@ -297,6 +560,80 @@ const deletionOf = (threadId: ThreadId) =>
     commandId: CommandId.make(`command:delete:${threadId}`),
     threadId,
   }) as const;
+
+const archiveOf = (threadId: ThreadId) =>
+  ({
+    type: "thread.archive",
+    commandId: CommandId.make(`command:archive:${threadId}`),
+    threadId,
+  }) as const;
+
+/** Ends the chat's turn, as an agent's ends after it asks, so the chat can be archived. */
+const endTurn = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const sink = yield* EventSink.EventSinkV2;
+    const [turn] = (yield* threads.getThreadRecords(threadId, ["runs"])).runs;
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      commandId: CommandId.make(`command:end-turn:${threadId}`),
+      events: [
+        {
+          id: EventId.make(`event:end-turn:${threadId}`),
+          type: "run.updated",
+          threadId,
+          runId: turn!.id,
+          nodeId: turn!.rootNodeId!,
+          providerInstanceId: turn!.providerInstanceId,
+          occurredAt: now,
+          payload: { ...turn!, status: "completed", completedAt: now },
+        },
+      ],
+    });
+  });
+
+/**
+ * The chat service with its first `lost` hand-overs of a command's end lost, as a dispatch that
+ * fails is. `told` resolves once one is taken; each hand-over is offered to `tries`.
+ */
+const losingEnds = (lost: number) =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const told = yield* Deferred.make<void>();
+    const tries = yield* Queue.unbounded<void>();
+    let attempts = 0;
+    return {
+      told,
+      tries,
+      attempts: () => attempts,
+      on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            dispatch: (command) => {
+              if (command.type !== "delegated_task.command.complete") {
+                return threads.dispatch(command);
+              }
+              attempts += 1;
+              return Queue.offer(tries, undefined).pipe(
+                Effect.andThen(
+                  attempts <= lost
+                    ? Effect.fail(
+                        new Orchestrator.OrchestratorDispatchError({
+                          commandId: command.commandId,
+                          commandType: command.type,
+                        }),
+                      )
+                    : threads
+                        .dispatch(command)
+                        .pipe(Effect.ensuring(Deferred.succeed(told, undefined))),
+                ),
+              );
+            },
+          }),
+        ),
+    };
+  });
 
 /** What task_cancel records for a command. */
 const cancellationOf = (threadId: ThreadId, taskId: string) =>
@@ -425,6 +762,36 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
+    it.effect.each([
+      ["names another process's start", "command-recovered-other", true],
+      ["is missing, as an older server left it", "command-recovered-unowned", false],
+    ] as const)(
+      "leaves running the group of a recovered command whose recorded identity %s",
+      ([, name, otherStart]) =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat(name);
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const file = NodePath.join(NodePath.dirname(started.logPath), "identity");
+          if (otherStart && isLinuxHost) {
+            const [, boot = ""] = NodeFS.readFileSync(file, "utf8").split("\n");
+            NodeFS.writeFileSync(file, `1 (x) S ${"0 ".repeat(18)}1\n${boot}\n`);
+          } else if (otherStart) {
+            NodeFS.writeFileSync(file, "Sat Jan  1 00:00:00 2000\n");
+          } else {
+            NodeFS.rmSync(file);
+          }
+          yield* forgetPid(started.taskId);
+          yield* withServer(() => nextWake(chat.threadId));
+          const row = yield* commandRow(started.taskId);
+          assert.equal(row?.status, "lost");
+          assert.equal(row?.lost_reason, "pid-reused");
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
+    );
+
     it.effect.each([
       ["/t3-agent-tools", true, "command-agent-shell"],
       ["", true, "command-agent-shell-empty-path"],
@@ -586,6 +953,303 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           powershell,
           `ProcessStartInfo]::new([IO.Path]::Combine($t3GitBash, 'bash.exe'), '"${bashScript.replaceAll("\\", "/")}"')`,
         );
+      }),
+  );
+
+  /** Runs a command on `windows`, which a cancel ends while no server runs; then the next server. */
+  const cancelledWhileNoServerRan = (
+    windows: Effect.Success<ReturnType<typeof fakeWindows>>,
+    threadId: ThreadId,
+    between: (taskId: string) => Effect.Effect<void, never, SqlClient.SqlClient> = () =>
+      Effect.void,
+  ) =>
+    Effect.gen(function* () {
+      const started = yield* windows.on(
+        withServer((runner) => runner.run(callerOf(threadId), { command: "Write-Output started" })),
+      );
+      const launched = yield* Queue.take(windows.launches);
+      yield* between(started.taskId);
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch(cancellationOf(threadId, started.taskId));
+      // A run waits until the server has adopted what the earlier one left, stopping this one.
+      yield* windows.on(
+        withServer((runner) => runner.run(callerOf(threadId), { command: "Write-Output next" })),
+      );
+      return { row: (yield* commandRow(started.taskId))!, launched };
+    });
+
+  // Otherwise a process that took the pid after its wrapper ended passes for the wrapper.
+  it.effect.each([
+    ["while the clock held", "command-win-launched", { stepsBack: 0 }],
+    [
+      "once the clock stepped back during it",
+      "command-win-launch-stepped",
+      { stepsBack: CLOCK_STEPS_BACK_MS },
+    ],
+    [
+      "once the clock stepped back during it, and the server stalled around it",
+      "command-win-launch-stalled",
+      { stepsBack: CLOCK_STEPS_BACK_MS, stalls: true },
+    ],
+  ] as const)(
+    "bounds a Windows command's tree stop to a root made between its record and its launch's return, each widened by how far the clock stepped back, %s, when its wrapper's start could not be read",
+    ([, name, clock]) =>
+      Effect.gen(function* () {
+        // First, so its stand-in outlives the chat's cleanup, which signals the recorded pid.
+        const windows = yield* fakeWindows({ startOf: () => undefined, clock });
+        const chat = yield* liveChat(name);
+        const { row, launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
+        const since = Date.parse(row.started_at);
+        const bounds = identityWindow(row.process_identity)!;
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds }),
+        ]);
+        // By the step alone, which no stall widens.
+        assert.equal(since - bounds.from, clock.stepsBack);
+        // Its wrapper is stamped as it was made: after the step, or as much later just before it.
+        assert.isAtMost(bounds.from, launched);
+        assert.isAtLeast(bounds.to, launched + clock.stepsBack);
+      }),
+  );
+
+  it.effect.each([
+    [
+      "its launcher, though the clock stepped back during the launch",
+      "command-win-launcher-read",
+      true,
+      0,
+    ],
+    [
+      "right after its launch, made just before the clock stepped back during it",
+      "command-win-launch-read",
+      false,
+      CLOCK_STEPS_BACK_MS,
+    ],
+  ] as const)(
+    "pins a Windows command's tree stop to its wrapper's start, read by %s",
+    ([, name, launcherReads, madeAfterLaunch]) =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({
+          startOf: ({ launched }) => (launcherReads ? undefined : launched + madeAfterLaunch),
+          ...(launcherReads ? { launcherSees: "start" as const } : {}),
+          clock: { stepsBack: CLOCK_STEPS_BACK_MS },
+        });
+        const chat = yield* liveChat(name);
+        const { launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
+        const made = launched + madeAfterLaunch;
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          windowsStopTreeArgs({
+            pid: windows.wrapper,
+            since: made,
+            created: { from: made, to: made },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    ["a second and a half", "command-win-launch-read-reused", 1_500],
+    // Within the second a later read allows, which the stop's root does not.
+    ["half a second", "command-win-launch-read-reused-soon", 500],
+  ] as const)(
+    "bounds a Windows command's tree stop to its launch, not to a process that took its pid %s after the start read right after the launch began",
+    ([, name, after]) =>
+      Effect.gen(function* () {
+        let holderMade: number | undefined;
+        const windows = yield* fakeWindows({
+          startOf: ({ read }) => (holderMade ??= read + after),
+          readTakes: 2_000,
+        });
+        const chat = yield* liveChat(name);
+        const { row, launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
+        const from = Date.parse(row.started_at);
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          windowsStopTreeArgs({
+            pid: windows.wrapper,
+            since: from,
+            created: { from, to: launched },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    ["finds", "command-win-launcher-found-none", false],
+    ["cannot look for", "command-win-launcher-found-none-unseen", true],
+  ] as const)(
+    "reports a Windows command lost at once without reading its pid's holder, and stops it with no holder of its pid as root from its record, which a clock step back put after its pid file, once its launcher found its wrapper gone and another process holds the pid, with a pid file the launch %s",
+    ([, name, unseen]) =>
+      Effect.gen(function* () {
+        let startReads = 0;
+        const windows = yield* fakeWindows({
+          // Inside the window the clock's step back widened by a minute, which would pass it for
+          // the wrapper.
+          startOf: ({ launched }) => {
+            startReads += 1;
+            return launched + 1_000;
+          },
+          launcherSees: "none",
+          namedItself: true,
+          clock: { stepsBack: CLOCK_STEPS_BACK_MS },
+        });
+        const chat = yield* liveChat(name);
+        const server = windows.on(
+          withServer((runner) =>
+            Effect.gen(function* () {
+              const started = yield* runner.run(callerOf(chat.threadId), {
+                command: "Write-Output started",
+              });
+              yield* nextWake(chat.threadId);
+              const row = (yield* commandRow(started.taskId))!;
+              assert.deepEqual(
+                [row.status, row.lost_reason, startReads, yield* Queue.clear(windows.stops)],
+                [
+                  "lost",
+                  "pid-reused",
+                  0,
+                  [
+                    windowsStopTreeArgs({
+                      pid: windows.wrapper,
+                      since: Date.parse(row.started_at),
+                      created: { from: 0, to: 0 },
+                    }),
+                  ],
+                ],
+              );
+            }),
+          ),
+        );
+        yield* unseen ? pidFileUnseen(server) : server;
+      }),
+  );
+
+  it.effect.each([
+    ["exits non-zero after printing its pid", "command-win-launcher-exits", "exits"],
+    ["times out after its wrapper started", "command-win-launcher-times-out", "times-out"],
+  ] as const)(
+    "watches a Windows command whose launcher %s, instead of reporting it unstarted",
+    ([, name, launcherFails]) =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({
+          startOf: () => undefined,
+          namedItself: true,
+          launcherFails,
+        });
+        const chat = yield* liveChat(name);
+        yield* windows.on(
+          withServer((runner) =>
+            Effect.gen(function* () {
+              const started = yield* runner.run(callerOf(chat.threadId), {
+                command: "Write-Output started",
+              });
+              const row = yield* commandRow(started.taskId);
+              assert.deepEqual([row?.status, row?.pid], ["running", windows.wrapper]);
+            }),
+          ),
+        );
+      }),
+  );
+
+  it.effect(
+    "fails to start a Windows command whose launcher found its wrapper gone before it named itself, and leaves nothing to stop",
+    () =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({ startOf: () => undefined, launcherSees: "none" });
+        const chat = yield* liveChat("command-win-wrapper-ended-unnamed");
+        const failed = yield* windows.on(
+          withServer((runner) =>
+            runner
+              .run(callerOf(chat.threadId), { command: "Write-Output started" })
+              .pipe(Effect.flip),
+          ),
+        );
+        const task = (yield* Orchestrator.OrchestratorV2.pipe(
+          Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(chat.threadId)),
+        )).subagents.find((subagent) => subagent.command !== undefined);
+        assert.deepEqual(
+          [
+            failed.message,
+            task?.status,
+            yield* commandRow(task?.id ?? ""),
+            yield* Queue.clear(windows.stops),
+          ],
+          [
+            "Could not start the command: PowerShell ended before it started the command.",
+            "failed",
+            undefined,
+            [],
+          ],
+        );
+      }),
+  );
+
+  it.effect(
+    "reports a Windows command lost, and stops it bounded to its launch, once a later server finds under its pid a process made after that launch, though its wrapper's own start could not be read",
+    () =>
+      Effect.gen(function* () {
+        const holder: { startedAt: number | undefined } = { startedAt: undefined };
+        // Once: the next command's own start read must not find that process.
+        const windows = yield* fakeWindows({
+          startOf: () => {
+            const startedAt = holder.startedAt;
+            holder.startedAt = undefined;
+            return startedAt;
+          },
+        });
+        const chat = yield* liveChat("command-win-pid-reused");
+        const started = yield* windows.on(
+          withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: "Write-Output started" }),
+          ),
+        );
+        holder.startedAt = (yield* Queue.take(windows.launches)) + 60_000;
+        // A run waits until the server has adopted what the earlier one left.
+        yield* windows.on(
+          withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: "Write-Output next" }),
+          ),
+        );
+        const row = (yield* commandRow(started.taskId))!;
+        const since = Date.parse(row.started_at);
+        const bounds = identityWindow(row.process_identity)!;
+        assert.deepEqual(
+          [row.status, row.lost_reason, row.pid, yield* Queue.clear(windows.stops)],
+          [
+            "lost",
+            "pid-reused",
+            windows.wrapper,
+            [windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds })],
+          ],
+        );
+      }),
+  );
+
+  it.effect.each([
+    [
+      "once its wrapper had ended, with no holder of its pid as root",
+      "command-win-recovered-gone",
+      true,
+    ],
+    // Not from when it named itself: with no window for its start, that also bounds the root.
+    ["while its wrapper ran, its start unread, from its record on", "command-win-recovered", false],
+  ] as const)(
+    "stops a Windows command that a later server recovered from its pid file %s",
+    ([, name, gone]) =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({ startOf: () => undefined });
+        const chat = yield* liveChat(name);
+        // Past any pid_max, so the probe finds no process.
+        const pid = gone ? 2 ** 31 - 1 : windows.wrapper;
+        const { row } = yield* cancelledWhileNoServerRan(windows, chat.threadId, (taskId) =>
+          leavePidFile(taskId, pid).pipe(Effect.orDie),
+        );
+        const recorded = Date.parse(row.started_at);
+        const since = gone ? secondAfter(recorded) : recorded;
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          // Whatever holds a gone wrapper's pid is another process, so it is no root. No clock
+          // reading caps its children: one taken after a step back can come before their starts.
+          windowsStopTreeArgs({ pid, since, ...(gone ? { created: { from: 0, to: 0 } } : {}) }),
+        ]);
       }),
   );
 
@@ -824,10 +1488,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     Effect.gen(function* () {
       const chat = yield* liveChat("command-chat-deleted-late");
       const agentScope = yield* AgentScope;
-      const processRunner = yield* ProcessRunner.ProcessRunner;
       const starting = yield* Deferred.make<void>();
       const proceed = yield* Deferred.make<void>();
-      // Its first process lookup is the one that names the command it just started.
+      // Its first start read is the one of the command it just started.
       let spawning = false;
       const started = yield* withServer((runner) =>
         Effect.gen(function* () {
@@ -851,17 +1514,17 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
               spawning = true;
             }).pipe(Effect.andThen(agentScope.wrap(input))),
         }),
-        Effect.provideService(ProcessRunner.ProcessRunner, {
-          run: (input) => {
-            if (!spawning || input.command !== "ps") return processRunner.run(input);
+        aroundStartReads(
+          Effect.suspend(() => {
+            if (!spawning) return Effect.succeed("read" as const);
             spawning = false;
             return awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
               Effect.andThen(Deferred.succeed(starting, undefined)),
               Effect.andThen(Deferred.await(proceed)),
-              Effect.andThen(processRunner.run(input)),
+              Effect.as("read" as const),
             );
-          },
-        }),
+          }),
+        ),
       );
       assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
     }),
@@ -964,7 +1627,72 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     );
   });
 
+  describe.runIf(isLinuxHost)("Linux process identity", () => {
+    it.effect("still stops a command after a step of the wall clock moved what ps reports", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-clock-step");
+        const started = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+        );
+        yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+        const processRunner = yield* ProcessRunner.ProcessRunner;
+        // ps derives a start from the boot time, which moves with every step of the wall clock.
+        yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "true" }),
+        ).pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: (input) =>
+              input.command === "ps"
+                ? processRunner
+                    .run(input)
+                    .pipe(
+                      Effect.map((result) => ({ ...result, stdout: "Sat Jan  1 00:00:00 2000\n" })),
+                    )
+                : processRunner.run(input),
+          }),
+        );
+        assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
+      }),
+    );
+  });
+
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
+    it.effect(
+      "reports a command lost when a later start read finds another process under its pid",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-unconfirmed-identity");
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const sql = yield* SqlClient.SqlClient;
+          // A start time that differs from the real one stands for a process that took the pid.
+          yield* sql`
+          UPDATE command_runs SET process_identity = CASE WHEN process_identity LIKE 'boot:%'
+            THEN 'boot:other:1' ELSE 'time:0' END
+          WHERE task_id = ${started.taskId}
+        `;
+          let startReads = 0;
+          yield* withServer(() => nextWake(chat.threadId)).pipe(
+            aroundStartReads(
+              Effect.sync(() => {
+                startReads += 1;
+                // Adoption's read fails, as it does on a loaded machine.
+                return startReads === 1 ? "fail" : "read";
+              }),
+            ),
+          );
+          const row = yield* commandRow(started.taskId);
+          assert.equal(row?.status, "lost");
+          assert.equal(row?.lost_reason, "pid-reused");
+          assert.isAbove(startReads, 1);
+        }),
+    );
+
     it.effect.each([
       ["the group its ended wrapper's pid names", "command-rebooted-orphaned", true],
       ["a process of unknown start under its wrapper's pid", "command-rebooted-reused", false],
@@ -986,7 +1714,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const sql = yield* SqlClient.SqlClient;
           // Started before the machine last booted, so what its pid names now is someone else's.
           yield* sql`
-          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z', process_started_at = NULL
+          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z', process_identity = NULL
           WHERE task_id = ${started.taskId}
         `;
           yield* withServer(() => nextWake(chat.threadId));
@@ -1451,6 +2179,22 @@ describe("the shell a command runs in", () => {
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
+  // Windows numbers processes in fours, so none has the id 3.
+  it.each([
+    ["no process has", "3", new RegExp(`^${ENDED_IDENTITY}$`)],
+    ["this PowerShell has", "$PID", /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z$/],
+  ] as const)(
+    "prints after a launch's pid, for an id %s, what it reads there",
+    (_, pid, printed) => {
+      const output = NodeChildProcess.execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", CommandRunner.windowsStartOrEnded(pid)],
+        { encoding: "utf8" },
+      );
+      assert.match(output.trim(), printed);
+    },
+  );
+
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
     // Send returns once the command's own handler has the event, and takes it so the command goes on.
     // No API sends a close event, which ends every process in its console with STATUS_CONTROL_C_EXIT;
@@ -1804,5 +2548,519 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         }),
       );
     },
+  );
+});
+
+const SHORTAGE: MemoryShortage = {
+  kind: "available",
+  totalBytes: 8 * 1024 ** 3,
+  availableBytes: 1024 ** 3,
+  reserveBytes: 2 * 1024 ** 3,
+};
+
+/** A machine short of memory until `clear`, and again after `runShort`; each read is offered to `reads`. */
+const shortMemory = Effect.gen(function* () {
+  let shortage: MemoryShortage | null = SHORTAGE;
+  const reads = yield* Queue.unbounded<MemoryShortage | null>();
+  const read = Effect.sync(() => shortage).pipe(Effect.tap((seen) => Queue.offer(reads, seen)));
+  return {
+    reads,
+    clear: Effect.sync(() => {
+      shortage = null;
+    }),
+    runShort: Effect.sync(() => {
+      shortage = SHORTAGE;
+    }),
+    on: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(MemoryAdmission.MemoryAdmission, {
+          shortage: read,
+          shortageOn: () => read,
+        }),
+      ),
+  };
+});
+
+const MEMORY_WAIT =
+  /^Queued until this machine has memory for it: 1 GiB of 8 GiB is available, under the 2 GiB reserve\. Its time limit counts from when it starts\.$/;
+
+const HOUR_MS = 60 * 60_000;
+
+/** Runs an effect on the real clock, its wall time and monotonic time each moved by `shift`. */
+const shiftedClock = (shift: {
+  readonly wallBehindMs: () => number;
+  readonly monotonicAheadMs: () => number;
+}) =>
+  Effect.gen(function* () {
+    const real = yield* Clock.Clock;
+    const millis = () => real.currentTimeMillisUnsafe() - shift.wallBehindMs();
+    const monotonic = () =>
+      real.monotonicTimeNanosUnsafe() + BigInt(shift.monotonicAheadMs()) * 1_000_000n;
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: millis,
+      currentTimeMillis: Effect.sync(millis),
+      currentTimeNanosUnsafe: () => BigInt(millis()) * 1_000_000n,
+      currentTimeNanos: Effect.sync(() => BigInt(millis()) * 1_000_000n),
+      monotonicTimeNanosUnsafe: monotonic,
+      monotonicTimeNanos: Effect.sync(monotonic),
+      sleep: (duration) => real.sleep(duration),
+    };
+    return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(Effect.provideService(Clock.Clock, clock));
+  });
+
+/**
+ * The real clock an hour behind until `catchUp`, so a start dated after a queueing shows apart
+ * from it. Never ahead: a wrapper dates the end it records by the real clock.
+ */
+const clockBehind = Effect.gen(function* () {
+  let behindMs = HOUR_MS;
+  return {
+    catchUp: Effect.sync(() => {
+      behindMs = 0;
+    }),
+    on: yield* shiftedClock({ wallBehindMs: () => behindMs, monotonicAheadMs: () => 0 }),
+  };
+});
+
+/** The real clock, its monotonic time an hour ahead after `leap`. */
+const monotonicLeap = Effect.gen(function* () {
+  let aheadMs = 0;
+  return {
+    leap: Effect.sync(() => {
+      aheadMs = HOUR_MS;
+    }),
+    on: yield* shiftedClock({ wallBehindMs: () => 0, monotonicAheadMs: () => aheadMs }),
+  };
+});
+
+const START_COMMAND = "command:command-task-start:";
+
+/** Which of `taskIds` started off the queue, in the order they started. */
+const startOrder = (taskIds: ReadonlyArray<string>) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<{ readonly command_id: string }>`
+      SELECT command_id FROM orchestration_events
+      WHERE command_id IN ${sql.in(taskIds.map((taskId) => `${START_COMMAND}${taskId}`))}
+      GROUP BY command_id ORDER BY MIN(sequence)
+    `,
+  ).pipe(Effect.map((rows) => rows.map((row) => row.command_id.slice(START_COMMAND.length))));
+
+it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory", (it) => {
+  it.effect.skipIf(isWindowsHost)(
+    "starts nothing and reads no agent's environment while memory is short, says so in its task, then starts the waiting commands in order, each time limit counted from its start",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* liveChat("command-memory-first");
+        const second = yield* liveChat("command-memory-second");
+        const memory = yield* shortMemory;
+        const clock = yield* clockBehind;
+        let environmentReads = 0;
+        const [one, two, queued] = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const one = yield* runner.run(callerOf(first.threadId), {
+              command: "echo first",
+              timeoutMinutes: 5,
+            });
+            const two = yield* runner.run(callerOf(second.threadId), { command: "echo second" });
+            // A pass that read the shortage after both were queued started neither.
+            yield* Queue.clear(memory.reads);
+            yield* Queue.take(memory.reads);
+            const queued = (yield* commandRow(one.taskId))!;
+            assert.equal(queued.status, "queued");
+            assert.isNull(queued.pid);
+            assert.isFalse(NodeFS.existsSync(NodePath.join(NodePath.dirname(one.logPath), "pid")));
+            assert.equal((yield* commandRow(two.taskId))?.status, "queued");
+            const waiting = yield* taskOf(first.threadId, one.taskId);
+            assert.equal(waiting?.status, "pending");
+            assert.match(waiting?.progress ?? "", MEMORY_WAIT);
+            assert.equal(environmentReads, 0);
+            yield* clock.catchUp;
+            yield* memory.clear;
+            yield* wakesOf([first.threadId, second.threadId]);
+            return [one, two, queued] as const;
+          }),
+        ).pipe(
+          memory.on,
+          clock.on,
+          Effect.provide(
+            providerShell((_cwd, inherited) =>
+              Effect.sync(() => {
+                environmentReads += 1;
+                return inherited;
+              }),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(yield* startOrder([one.taskId, two.taskId]), [
+          one.taskId,
+          two.taskId,
+        ]);
+        assert.equal(environmentReads, 2);
+        const ran = (yield* commandRow(one.taskId))!;
+        assert.isAtLeast(Date.parse(ran.started_at) - Date.parse(queued.started_at), HOUR_MS);
+        assert.equal(Date.parse(ran.deadline_at) - Date.parse(ran.started_at), 5 * 60_000);
+        const task = yield* taskOf(first.threadId, one.taskId);
+        assert.equal(task?.status, "completed");
+        assert.notProperty(task, "progress");
+        assert.match(task?.result ?? "", /Last output:\nfirst\n/);
+        assert.match((yield* taskOf(second.threadId, two.taskId))?.result ?? "", /second/);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps a waiting command waiting through a restart, ahead of the ones queued after it",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* liveChat("command-memory-restart-first");
+        const second = yield* liveChat("command-memory-restart-second");
+        const memory = yield* shortMemory;
+        const one = yield* withServer((runner) =>
+          runner.run(callerOf(first.threadId), { command: "echo first" }),
+        ).pipe(memory.on);
+        const two = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const two = yield* runner.run(callerOf(second.threadId), { command: "echo second" });
+            assert.equal((yield* commandRow(one.taskId))?.status, "queued");
+            yield* memory.clear;
+            yield* wakesOf([first.threadId, second.threadId]);
+            return two;
+          }),
+        ).pipe(memory.on);
+        assert.deepStrictEqual(yield* startOrder([one.taskId, two.taskId]), [
+          one.taskId,
+          two.taskId,
+        ]);
+        assert.match(
+          (yield* taskOf(first.threadId, one.taskId))?.result ?? "",
+          /Last output:\nfirst\n/,
+        );
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)("never starts a waiting command whose task was cancelled", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-memory-cancelled");
+      const other = yield* liveChat("command-memory-cancelled-other");
+      const memory = yield* shortMemory;
+      const cancelled = yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const cancelled = yield* runner.run(callerOf(chat.threadId), {
+            command: "echo > started",
+          });
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, cancelled.taskId));
+          yield* memory.clear;
+          // It starts after the cancelled one would have.
+          yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+          yield* nextWake(other.threadId);
+          return cancelled;
+        }),
+      ).pipe(memory.on);
+      assert.isUndefined(yield* commandRow(cancelled.taskId));
+      assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
+      assert.equal((yield* taskOf(chat.threadId, cancelled.taskId))?.status, "cancelled");
+    }),
+  );
+
+  describe.skipIf(isWindowsHost)("settled as its start is decided", () => {
+    it.effect.each([
+      ["its task cancelled", "command-memory-cancelled-late", "cancelled", "Cancelled."],
+      [
+        "its chat archived",
+        "command-memory-archived-late",
+        "interrupted",
+        "Stopped: the chat was archived.",
+      ],
+    ] as const)(
+      "never starts a waiting command with %s as its start was decided",
+      ([why, name, status, result]) =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat(name);
+          const other = yield* liveChat(`${name}-other`);
+          const memory = yield* shortMemory;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          let settleAfterRead: string | undefined;
+          const settled = yield* withServer((runner) =>
+            Effect.gen(function* () {
+              const settled = yield* runner.run(callerOf(chat.threadId), {
+                command: "echo > started",
+              });
+              if (why === "its chat archived") yield* endTurn(chat.threadId);
+              settleAfterRead = settled.taskId;
+              yield* memory.clear;
+              // It starts after the settled one would have.
+              yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+              yield* nextWake(other.threadId);
+              return settled;
+            }),
+          ).pipe(
+            memory.on,
+            Effect.provideService(ThreadManagement.ThreadManagementService, {
+              ...threads,
+              // Its start reads its task still waiting, and the cancel or the archive lands right after.
+              getThreadRecords: (threadId, fields, filter) =>
+                threads.getThreadRecords(threadId, fields, filter).pipe(
+                  Effect.tap(() => {
+                    const taskId = settleAfterRead;
+                    if (taskId === undefined || filter?.subagentIds?.[0] !== taskId) {
+                      return Effect.void;
+                    }
+                    settleAfterRead = undefined;
+                    return threads.dispatch(
+                      why === "its chat archived"
+                        ? archiveOf(threadId)
+                        : cancellationOf(threadId, taskId),
+                    );
+                  }),
+                ),
+            }),
+          );
+          assert.isUndefined(settleAfterRead);
+          assert.isUndefined(yield* commandRow(settled.taskId));
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
+          const task = yield* taskOf(chat.threadId, settled.taskId);
+          assert.equal(task?.status, status);
+          assert.equal(task?.result, result);
+        }),
+    );
+  });
+
+  it.effect.skipIf(isWindowsHost)(
+    "fails the task of a waiting command whose server stopped as it started it, and never starts it",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-cut-start");
+        const other = yield* liveChat("command-memory-cut-start-other");
+        const memory = yield* shortMemory;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const taskStarted = yield* Deferred.make<void>();
+        const cut = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const cut = yield* runner.run(callerOf(chat.threadId), { command: "echo > started" });
+            yield* memory.clear;
+            yield* Deferred.await(taskStarted);
+            return cut;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            // The server stops once its task runs, before its command does.
+            dispatch: (command) =>
+              command.type === "delegated_task.command.start"
+                ? threads
+                    .dispatch(command)
+                    .pipe(
+                      Effect.andThen(Deferred.succeed(taskStarted, undefined)),
+                      Effect.andThen(Effect.never),
+                    )
+                : threads.dispatch(command),
+          }),
+        );
+        yield* memory.runShort;
+        // Its request waits until the next server has adopted what this one left.
+        yield* withServer((runner) =>
+          runner.run(callerOf(other.threadId), { command: "echo other" }),
+        ).pipe(memory.on);
+        assert.isUndefined(yield* commandRow(cut.taskId));
+        assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "started")));
+        const task = yield* taskOf(chat.threadId, cut.taskId);
+        assert.equal(task?.status, "failed");
+        assert.equal(task?.result, "CodeShip stopped before this command started. Run it again.");
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps a waiting command queued when memory runs short again while it reads its agent's environment",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-short-again");
+        const memory = yield* shortMemory;
+        const environmentRead = yield* Deferred.make<void>();
+        const started = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const started = yield* runner.run(callerOf(chat.threadId), { command: "echo ran" });
+            yield* memory.clear;
+            yield* Deferred.await(environmentRead);
+            // The check after the read, then the next pass's: the pass that read ended unstarted.
+            yield* Queue.take(memory.reads);
+            yield* Queue.take(memory.reads);
+            const waiting = (yield* commandRow(started.taskId))!;
+            assert.equal(waiting.status, "queued");
+            assert.isNull(waiting.pid);
+            yield* memory.clear;
+            yield* nextWake(chat.threadId);
+            return started;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provide(
+            providerShell((_cwd, inherited) =>
+              Effect.gen(function* () {
+                if (yield* Deferred.isDone(environmentRead)) return inherited;
+                // Another process took the memory while the provider read its settings.
+                yield* memory.runShort;
+                yield* Queue.clear(memory.reads);
+                yield* Deferred.succeed(environmentRead, undefined);
+                return inherited;
+              }),
+            ),
+          ),
+        );
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        assert.match(task?.result ?? "", /Last output:\nran\n/);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "hands a waiting command that cannot start its failure until its task takes it",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-end-retried");
+        const memory = yield* shortMemory;
+        // The first hand-over of its end is lost.
+        const ends = yield* losingEnds(1);
+        let starting = false;
+        const failed = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const failed = yield* runner.run(callerOf(chat.threadId), { command: "echo ran" });
+            starting = true;
+            yield* memory.clear;
+            yield* nextWake(chat.threadId);
+            return failed;
+          }),
+        ).pipe(
+          memory.on,
+          Effect.provide(
+            // Only its start's read fails: one with its request would refuse the request instead.
+            providerShell((_cwd, inherited) =>
+              starting
+                ? Effect.fail(
+                    new ProviderDriverError({
+                      driver,
+                      instanceId,
+                      detail: "settings.json is not JSON",
+                    }),
+                  )
+                : Effect.succeed(inherited),
+            ),
+          ),
+          ends.on,
+        );
+        assert.equal(ends.attempts(), 2);
+        assert.isUndefined(yield* commandRow(failed.taskId));
+        const task = yield* taskOf(chat.threadId, failed.taskId);
+        assert.equal(task?.status, "failed");
+        assert.match(
+          task?.result ?? "",
+          /^Could not start the command: .*settings\.json is not JSON/,
+        );
+      }),
+  );
+
+  it.effect.each([
+    // Its first telling is lost, and the next pass tells it again.
+    ["archived", "command-memory-archived", 1],
+    // A deleted chat records nothing, so its task needs no telling once it is gone.
+    ["deleted", "command-memory-deleted", 0],
+  ] as const)(
+    "tells a waiting command's task that its chat was %s, until nothing waits on it",
+    ([why, name, lost]) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(name);
+        const other = yield* liveChat(`${name}-other`);
+        const memory = yield* shortMemory;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const ends = yield* losingEnds(lost);
+        const waiting = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const waiting = yield* runner.run(callerOf(chat.threadId), { command: "echo started" });
+            yield* endTurn(chat.threadId);
+            yield* threads.dispatch(
+              why === "deleted" ? deletionOf(chat.threadId) : archiveOf(chat.threadId),
+            );
+            yield* Deferred.await(ends.told);
+            // Its request takes the lock the task was told under.
+            yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+            return waiting;
+          }),
+        ).pipe(memory.on, ends.on);
+        assert.equal(ends.attempts(), lost + 1);
+        assert.isUndefined(yield* commandRow(waiting.taskId));
+        if (why === "archived") {
+          assert.equal(
+            (yield* taskOf(chat.threadId, waiting.taskId))?.result,
+            "Stopped: the chat was archived.",
+          );
+        }
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "reads memory for a waiting command again only once the shortage it found is a recheck old",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-recheck");
+        const closing = yield* liveChat("command-memory-recheck-closing");
+        const memory = yield* shortMemory;
+        const clock = yield* monotonicLeap;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        // The closed chat's task is told again on each pass, which marks the passes.
+        const ends = yield* losingEnds(2);
+        const ran = yield* withServer(
+          (runner) =>
+            Effect.gen(function* () {
+              const ran = yield* runner.run(callerOf(chat.threadId), { command: "echo ran" });
+              yield* runner.run(callerOf(closing.threadId), { command: "echo closing" });
+              // Each request read memory, and the first pass after them found the shortage.
+              for (let read = 0; read < 3; read++) yield* Queue.take(memory.reads);
+              yield* endTurn(closing.threadId);
+              yield* threads.dispatch(archiveOf(closing.threadId));
+              // The archive told it first; two passes followed, the first of them whole.
+              for (let told = 0; told < 3; told++) yield* Queue.take(ends.tries);
+              assert.equal(yield* Queue.size(memory.reads), 0);
+              yield* memory.clear;
+              yield* clock.leap;
+              yield* nextWake(chat.threadId);
+              return ran;
+            }),
+          Duration.hours(1),
+        ).pipe(memory.on, clock.on, ends.on);
+        assert.match((yield* taskOf(chat.threadId, ran.taskId))?.result ?? "", /ran/);
+      }),
+  );
+
+  it.effect(
+    "tells a waiting command's task that its chat was archived while no server ran, until it takes it",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-memory-archived-restart");
+        const other = yield* liveChat("command-memory-archived-restart-other");
+        const memory = yield* shortMemory;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const waiting = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo started" }),
+        ).pipe(memory.on);
+        yield* endTurn(chat.threadId);
+        yield* threads.dispatch(archiveOf(chat.threadId));
+        // The next server's adoption tells it first, and that telling is lost.
+        const ends = yield* losingEnds(1);
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            yield* Deferred.await(ends.told);
+            // Its request takes the lock the task was told under.
+            yield* runner.run(callerOf(other.threadId), { command: "echo other" });
+          }),
+        ).pipe(memory.on, ends.on);
+        assert.equal(ends.attempts(), 2);
+        assert.isUndefined(yield* commandRow(waiting.taskId));
+        assert.equal(
+          (yield* taskOf(chat.threadId, waiting.taskId))?.result,
+          "Stopped: the chat was archived.",
+        );
+      }),
   );
 });

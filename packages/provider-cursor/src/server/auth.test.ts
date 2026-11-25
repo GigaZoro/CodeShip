@@ -12,6 +12,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import * as Stream from "effect/Stream";
 
 import { makeCursorAuth, type CursorAuthOptions } from "./auth.ts";
@@ -46,6 +47,7 @@ const makeHarness = Effect.fn("makeCursorAuthHarness")(function* (
     displayName: "Personal Cursor",
     enabled: true,
     store,
+    verify: () => Effect.void,
     onChanged: (signedIn) =>
       Effect.sync(() => {
         changes.push(signedIn);
@@ -131,7 +133,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("CursorAuth", (it
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       let stopped = false;
-      expect(yield* harness.auth.readApiKey).toBeUndefined();
+      yield* Effect.promise(() =>
+        harness.store.save({ ...harness.credentials, apiKey: "previous-key" }),
+      );
       const starting = yield* harness.auth.controller.start(
         owner,
         Effect.sync(() => {
@@ -139,20 +143,89 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("CursorAuth", (it
         }),
       );
       const waiting = yield* phase(harness.auth, "waiting");
-      expect(stopped).toBe(true);
+      expect(stopped).toBe(false);
       expect(waiting.authorizationUrl).toBe(authorizationUrl);
       expect(waiting.flowId).toBe(starting.flowId);
       expect(harness.loginOptions()?.openBrowser).toBe(false);
       expect((yield* harness.auth.controller.start(owner)).flowId).toBe(starting.flowId);
-      expect(Exit.isFailure(yield* Effect.exit(harness.auth.requireApiKey))).toBe(true);
+      expect(yield* harness.auth.withAccess(harness.auth.requireApiKey)).toBe("previous-key");
       yield* Effect.sync(() => harness.complete.resolve());
       const succeeded = yield* phase(harness.auth, "succeeded");
       expect(succeeded.authorizationUrl).toBeNull();
+      expect(stopped).toBe(true);
       expect(yield* harness.auth.requireApiKey).toBe("browser-key");
       expect(harness.changes).toEqual([true]);
       expect(Object.values(succeeded)).not.toContain("browser-key");
       expect(yield* Effect.promise(() => harness.store.load())).toEqual(harness.credentials);
     }),
+  );
+
+  it.effect("pins an admitted startup through publication, then admits the saved key", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* Effect.promise(() => h.store.save({ ...h.credentials, apiKey: "old" }));
+      const ready = yield* Deferred.make<void>();
+      const published = yield* Deferred.make<void>();
+      const observed = yield* Deferred.make<string>();
+      yield* h.auth.controller.start(
+        owner,
+        Effect.gen(function* () {
+          expect((yield* Effect.promise(() => h.store.load()))?.apiKey).toBe("browser-key");
+          expect(
+            Exit.isFailure(yield* Effect.exit(h.auth.withAccess(Effect.void).pipe(Effect.scoped))),
+          ).toBe(true);
+          yield* Deferred.succeed(published, undefined);
+          expect(yield* Deferred.await(observed)).toBe("old");
+        }),
+      );
+      yield* phase(h.auth, "waiting");
+      yield* h.auth
+        .withAccess(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(ready, undefined);
+            yield* Deferred.await(published);
+            yield* Deferred.succeed(observed, yield* h.auth.requireApiKey);
+          }),
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(ready);
+      h.complete.resolve();
+      yield* phase(h.auth, "succeeded");
+      expect(yield* h.auth.withAccess(h.auth.requireApiKey)).toBe("browser-key");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("failed storage and an expired browser login preserve admitted sessions", () =>
+    Effect.gen(function* () {
+      const saved = new InMemoryCredentialStore();
+      const h = yield* makeHarness({
+        store: {
+          load: () => saved.load(),
+          save: () => Promise.reject(new Error("storage unavailable")),
+          clear: () => saved.clear(),
+        },
+      });
+      yield* Effect.promise(() => saved.save({ ...h.credentials, apiKey: "previous" }));
+      let closed = false;
+      yield* h.auth.withAccess(
+        Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            closed = true;
+          }),
+        ),
+      );
+      const stop = Effect.die("retired a session before storage succeeded");
+      yield* h.auth.controller.start(owner, stop);
+      yield* phase(h.auth, "waiting");
+      yield* TestClock.adjust("5 minutes");
+      expect((yield* phase(h.auth, "failed")).message).toContain("expired");
+      yield* h.auth.controller.start(owner, stop);
+      yield* phase(h.auth, "waiting");
+      h.complete.resolve();
+      expect((yield* phase(h.auth, "failed")).message).toContain("save");
+      expect(closed).toBe(false);
+      expect(yield* h.auth.withAccess(h.auth.requireApiKey)).toBe("previous");
+    }).pipe(Effect.scoped),
   );
 
   it.effect("keeps the login link private to its owner and rejects other clients' mutations", () =>
@@ -204,8 +277,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("CursorAuth", (it
         "Cursor needs a paid plan to run in T3.CodeShip. Upgrade this account or sign in with a different one.";
       let rejected = true;
       const harness = yield* makeHarness({
-        onChanged: (signedIn) =>
-          signedIn && rejected
+        verify: () =>
+          rejected
             ? Effect.fail(
                 new ProviderSetupError({
                   instanceId,

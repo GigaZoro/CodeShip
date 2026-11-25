@@ -5,7 +5,12 @@ import * as NodePath from "node:path";
 
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { nondeterministic, renderComparison, runOnce } from "./render-metrics.ts";
+import {
+  nondeterministic,
+  parseRenderMetricsArguments,
+  renderComparison,
+  runOnce,
+} from "./render-metrics.ts";
 
 const mountReport = { commits: 2, renders: 10, components: { Row: 10 } };
 
@@ -62,5 +67,64 @@ describe("renderComparison", () => {
     expect(output).toContain("| stream | 40 → 30 (-10, -25%) | 400 → 250 (-150, -37%) |");
     expect(output).toContain("| `Row` | 300 → 150 (-150, -50%) |");
     expect(output).not.toContain("`Header`");
+  });
+});
+
+describe("render metrics arguments", () => {
+  it.each(["oops", "", "0", "-1", "1.5", "2.0", "0x10", "1e3", " 5", "05", "9007199254740992"])(
+    "refuses --runs=%s",
+    (runs) => {
+      expect(() =>
+        parseRenderMetricsArguments(["run", "--runs=" + runs, "--out=report.json"]),
+      ).toThrow("--runs must be a positive safe integer.");
+    },
+  );
+
+  it("accepts a positive run count and rejects a duplicate singleton", () => {
+    expect(parseRenderMetricsArguments(["run", "--runs=2", "--out=report.json"])).toEqual({
+      command: "run",
+      runs: 2,
+      out: "report.json",
+    });
+    expect(() => parseRenderMetricsArguments(["run", "--out=a", "--out=b"])).toThrow(
+      "Pass --out at most once.",
+    );
+  });
+
+  it.each(["", " \t"])("refuses blank output paths %j before running", (path) => {
+    expect(() => parseRenderMetricsArguments(["run", "--out=" + path])).toThrow(
+      "--out must be a non-blank path.",
+    );
+  });
+
+  it("rejects invalid compare inputs and retains the exact supplied paths", () => {
+    expect(() => parseRenderMetricsArguments(["compare", "", "after.json"])).toThrow(
+      "Before report must be a non-blank path.",
+    );
+    expect(() => parseRenderMetricsArguments(["compare", "before.json", " "])).toThrow(
+      "After report must be a non-blank path.",
+    );
+    expect(() =>
+      parseRenderMetricsArguments(["compare", "before.json", "after.json", "--top=0x10"]),
+    ).toThrow("--top must be a positive safe integer.");
+    expect(
+      parseRenderMetricsArguments([
+        "compare",
+        "--top=9007199254740991",
+        "--",
+        " before report.json ",
+        "--after-report.json",
+      ]),
+    ).toEqual({
+      command: "compare",
+      before: " before report.json ",
+      after: "--after-report.json",
+      top: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
+  it.each(["--help", "-h"])("accepts %s only as a standalone argument", (flag) => {
+    expect(parseRenderMetricsArguments([flag])).toEqual({ command: "help" });
+    expect(() => parseRenderMetricsArguments([flag, "--no-such-argument"])).toThrow("Usage:");
   });
 });

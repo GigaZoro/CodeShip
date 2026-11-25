@@ -142,7 +142,8 @@ runtimes are shared on the environment.
 
 All three keep thread history and workspace files. Sending `/logout` by itself in
 a thread signs out its instance, including stopping that instance's other sessions.
-Sign out, then sign in again to replace an account.
+During browser sign-in, chats continue using the current Google account. CodeShip stops
+sessions using the previous login after it saves the replacement. Canceling keeps them running.
 
 Before removing a managed runtime, disable its instances and cancel any active
 installation. Clear any explicit binary path pointing into that runtime. Removal

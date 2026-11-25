@@ -1,7 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is effectful; a sync hash keeps historyPath a plain function.
 import * as NodeCrypto from "node:crypto";
 
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { withWorkspaceLease, withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
@@ -50,6 +50,7 @@ import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Clock from "effect/Clock";
+import * as Digest from "effect/crypto/Digest";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -69,7 +70,11 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  findProviderInstanceEnvironmentVariable,
+  mergeProviderInstanceEnvironment,
+} from "@t3tools/provider-core/server/instanceEnvironment";
+import * as ProviderLoginHome from "../provider/providerLoginHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import type { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
@@ -1647,6 +1652,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   readonly deriveProviderInstanceConfigMap: typeof deriveProviderInstanceConfigMap;
   readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
   readonly path: Path.Path;
+  readonly stateDir: string;
   readonly rawProviderInstanceId: string;
   readonly env: Record<string, string> | undefined;
 }) {
@@ -1660,21 +1666,57 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   }
 
   let resolved = yield* mergeProviderInstanceEnvironment(instance.environment, input.env ?? {});
+  const providerEnvironment = yield* mergeProviderInstanceEnvironment(
+    instance.environment,
+    yield* HostProcess.Environment,
+  );
   if (instance.driver === "codex") {
     const config = decodeCodexSettings(instance.config ?? {});
     if (Option.isSome(config)) {
-      const layout = yield* resolveCodexHomeLayout(config.value).pipe(
-        Effect.provideService(Path.Path, input.path),
-      );
-      if (layout.effectiveHomePath)
-        resolved = { ...resolved, CODEX_HOME: layout.effectiveHomePath };
+      const { layout, bindingKey } = yield* ProviderLoginHome.codexBinding(
+        config.value,
+        providerInstanceId,
+        input.stateDir,
+        providerEnvironment,
+      ).pipe(Effect.provideService(Path.Path, input.path));
+      const { activeHome } = yield* ProviderLoginHome.location(
+        instance.driver,
+        bindingKey,
+        config.value.loginGeneration,
+        input.stateDir,
+      ).pipe(Effect.provideService(Path.Path, input.path));
+      const home =
+        config.value.setupMode === "managed"
+          ? (yield* resolveCodexHomeLayout(config.value).pipe(
+              Effect.provideService(Path.Path, input.path),
+            )).effectiveHomePath
+          : (activeHome ?? layout.effectiveHomePath);
+      if (home) resolved = { ...resolved, CODEX_HOME: home };
     }
   } else if (instance.driver === "claudeAgent") {
     const config = decodeClaudeSettings(instance.config ?? {});
     if (Option.isSome(config)) {
-      resolved = yield* makeClaudeEnvironment(config.value, resolved).pipe(
-        Effect.provideService(Path.Path, input.path),
+      const variable = yield* findProviderInstanceEnvironmentVariable(
+        instance.environment,
+        "CLAUDE_CONFIG_DIR",
       );
+      const { accountHome, bindingKey } = yield* ProviderLoginHome.claudeBinding(
+        config.value,
+        providerInstanceId,
+        input.stateDir,
+        providerEnvironment,
+        variable !== undefined,
+      ).pipe(Effect.provideService(Path.Path, input.path));
+      const { activeHome } = yield* ProviderLoginHome.location(
+        instance.driver,
+        bindingKey,
+        config.value.loginGeneration,
+        input.stateDir,
+      ).pipe(Effect.provideService(Path.Path, input.path));
+      resolved = yield* makeClaudeEnvironment(
+        { homePath: activeHome ?? accountHome ?? config.value.homePath },
+        resolved,
+      ).pipe(Effect.provideService(Path.Path, input.path));
     }
   }
 
@@ -1687,7 +1729,9 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
 export const make = Effect.fn("TerminalManager.make")(function* (
   deriveConfigMap: typeof deriveProviderInstanceConfigMap,
 ) {
-  const { terminalLogsDir, providerStatusCacheDir, baseDir } = yield* ServerConfig.ServerConfig;
+  const { terminalLogsDir, providerStatusCacheDir, baseDir, stateDir } =
+    yield* ServerConfig.ServerConfig;
+  const digest = yield* Digest.Digest;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
@@ -1700,9 +1744,10 @@ export const make = Effect.fn("TerminalManager.make")(function* (
       deriveProviderInstanceConfigMap: deriveConfigMap,
       serverSettings,
       path,
+      stateDir,
       rawProviderInstanceId,
       env,
-    }),
+    }).pipe(Effect.provideService(Digest.Digest, digest)),
   );
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
@@ -3233,7 +3278,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const openLocked = (input: TerminalOpenInput) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
+      withWorkspaceProcessStart(openWithWorkspaceLease(input), [
+        input.cwd,
+        input.worktreePath ?? input.cwd,
+      ]),
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>

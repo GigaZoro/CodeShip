@@ -6,11 +6,12 @@ import {
   type SecretProviderKind,
 } from "@t3tools/contracts";
 import { builtInSecretProviderDefinitions } from "@t3tools/secret-provider-definitions/registry";
+import { isOnePasswordLinuxServiceAccountReference } from "@t3tools/secret-provider-onepassword/shared/definition";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AlertTriangleIcon, CheckIcon, KeyRoundIcon, RefreshCwIcon, TypeIcon } from "lucide-react";
-import { useState, type ComponentProps, type ComponentType, type ReactNode } from "react";
+import { useId, useState, type ComponentProps, type ComponentType, type ReactNode } from "react";
 
 import { t } from "~/i18n";
 import { isSecretsFeatureEnabled } from "../../env";
@@ -24,12 +25,13 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SecretInput } from "./SecretInput";
-import { classifySecretProvider } from "./SecretProviderDialog.logic";
+import { classifySecretProvider, type SecretProviderAuth } from "./SecretProviderDialog.logic";
 
 export interface SecretSource {
   readonly id: SecretProviderId;
   readonly kind: SecretProviderKind;
   readonly label: string;
+  readonly auth: SecretProviderAuth;
 }
 
 const NO_SECRET_SOURCES: ReadonlyArray<SecretSource> = [];
@@ -39,14 +41,22 @@ const decodeSecretReference = Schema.decodeUnknownOption(SecretReference);
 /** Secret providers a setting can point at; empty when the environment cannot read references. */
 export function useSecretSources(environmentId: EnvironmentId): ReadonlyArray<SecretSource> {
   const providers = useEnvironmentSettings(environmentId, (settings) => settings.secretProviders);
-  const supported = useAtomValue(
-    serverEnvironment.configValueAtom(environmentId),
-    (config) => config?.secretReferences === true,
+  const configAtom = serverEnvironment.configValueAtom(environmentId);
+  const supported = useAtomValue(configAtom, (config) => config?.secretReferences === true);
+  const serviceAccountSupported = useAtomValue(
+    configAtom,
+    (config) => config?.onePasswordServiceAccount === true,
   );
   if (!isSecretsFeatureEnabled || !supported) return NO_SECRET_SOURCES;
-  return (Object.entries(providers) as Array<[SecretProviderId, SecretProviderConfig]>)
-    .filter(([, config]) => classifySecretProvider(config).kind !== "unsupported")
-    .map(([id, config]) => ({ id, kind: config.kind, label: config.label }));
+  return (Object.entries(providers) as Array<[SecretProviderId, SecretProviderConfig]>).flatMap(
+    ([id, config]) => {
+      const classified = classifySecretProvider(config);
+      return classified.kind === "unsupported" ||
+        (classified.auth === "linux-service-account" && !serviceAccountSupported)
+        ? []
+        : [{ id, kind: config.kind, label: config.label, auth: classified.auth }];
+    },
+  );
 }
 
 function SourceIcon(props: { readonly icon: ComponentType<{ readonly className?: string }> }) {
@@ -231,12 +241,15 @@ export function SecretSourceInput({
   // A provider picked here applies once a reference for it is committed.
   const [pendingProvider, setPendingProvider] = useState<SecretProviderId | null>(null);
   const [rejectedReference, setRejectedReference] = useState<string | null>(null);
+  const referenceErrorId = useId();
   const secret = typeof value === "string" ? undefined : value;
   const input = { ...rest, value: typeof value === "string" ? value : "" };
-  const provider = pendingProvider ?? secret?.provider ?? null;
+  const availablePendingSource = sources.find((source) => source.id === pendingProvider);
+  const provider = availablePendingSource?.id ?? secret?.provider ?? null;
   const reference = secret !== undefined && secret.provider === provider ? secret.reference : "";
-  const providerSource = sources.find((source) => source.id === provider);
+  const providerSource = availablePendingSource ?? sources.find((source) => source.id === provider);
   const definition = providerSource && builtInSecretProviderDefinitions.find(providerSource.kind);
+  const isServiceAccount = providerSource?.auth === "linux-service-account";
   const label = input["aria-label"] ?? t("Secret");
   const source =
     sources.length === 0 && provider === null ? null : (
@@ -273,14 +286,18 @@ export function SecretSourceInput({
             onCommit={(next) => {
               if (next.trim().length === 0) {
                 setRejectedReference(null);
-                onValidityChange?.(pendingProvider === null && secret !== undefined);
-                if (pendingProvider === null && secret !== undefined) onSecretChange(undefined);
+                onValidityChange?.(availablePendingSource === undefined && secret !== undefined);
+                if (availablePendingSource === undefined && secret !== undefined) {
+                  onSecretChange(undefined);
+                }
                 return;
               }
               const decoded = decodeSecretReference({ provider, reference: next });
               if (
                 Option.isNone(decoded) ||
-                definition?.isReference(decoded.value.reference) === false
+                (isServiceAccount
+                  ? !isOnePasswordLinuxServiceAccountReference(decoded.value.reference)
+                  : definition?.isReference(decoded.value.reference) === false)
               ) {
                 setRejectedReference(next);
                 onValidityChange?.(false);
@@ -296,10 +313,11 @@ export function SecretSourceInput({
             spellCheck={false}
             aria-label={t("{label} reference", { label })}
             aria-invalid={rejectedReference !== null}
+            aria-describedby={rejectedReference !== null ? referenceErrorId : undefined}
           />
           {environmentId !== undefined &&
           secret !== undefined &&
-          pendingProvider === null &&
+          availablePendingSource === undefined &&
           rejectedReference === null ? (
             <SecretCheckButton
               environmentId={environmentId}
@@ -310,8 +328,12 @@ export function SecretSourceInput({
           ) : null}
         </div>
         {rejectedReference !== null ? (
-          <p className="text-2xs text-destructive-foreground">
-            {definition?.invalidReferenceMessage ?? t("Enter a valid secret reference.")}
+          <p id={referenceErrorId} className="text-2xs text-destructive-foreground">
+            {isServiceAccount
+              ? t(
+                  "Use a 1Password reference without spaces or query parameters. Use IDs for names with spaces.",
+                )
+              : (definition?.invalidReferenceMessage ?? t("Enter a valid secret reference."))}
           </p>
         ) : null}
       </div>

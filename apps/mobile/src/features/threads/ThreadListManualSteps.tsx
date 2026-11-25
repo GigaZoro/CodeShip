@@ -28,12 +28,12 @@ import { useManualStepReview, useManualSteps } from "../../state/manualSteps";
 import { openSettings } from "../settings/settings-navigation";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import {
-  THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
   getThreadListV2RowAppearance,
 } from "./thread-list-v2-row-appearance";
 import { ThreadListV2Section } from "./thread-list-v2-items";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
+import { useThreadListRowContentClassName } from "./useThreadListRowDensity";
 
 function UpdatedAgo(props: { readonly at: string }) {
   return formatTimeAgo(props.at, useVisibleSecondClock(true));
@@ -46,6 +46,7 @@ const ManualStepRow = memo(function ManualStepRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
   const { step, onSelectThread } = props;
+  const rowContentClassName = useThreadListRowContentClassName();
   // Only a chat on a machine this phone is connected to resolves.
   const chatShell = useThreadShell(step.chat ?? null);
   const navigation = useNavigation();
@@ -143,7 +144,7 @@ const ManualStepRow = memo(function ManualStepRow(props: {
           content
         ) : (
           <View>
-            <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+            <View className={rowContentClassName}>{content}</View>
             {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
           </View>
         )}
@@ -161,6 +162,7 @@ const DetectedStepRow = memo(function DetectedStepRow(props: {
   readonly pane: "screen" | "sidebar";
 }) {
   const { entry } = props;
+  const rowContentClassName = useThreadListRowContentClassName();
   const navigation = useNavigation();
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
@@ -241,7 +243,7 @@ const DetectedStepRow = memo(function DetectedStepRow(props: {
           content
         ) : (
           <View>
-            <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+            <View className={rowContentClassName}>{content}</View>
             {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
           </View>
         )}
@@ -256,6 +258,7 @@ const SignInAllRow = memo(function SignInAllRow(props: {
   readonly count: number;
   readonly pane: "screen" | "sidebar";
 }) {
+  const rowContentClassName = useThreadListRowContentClassName();
   const navigation = useNavigation();
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
@@ -299,7 +302,7 @@ const SignInAllRow = memo(function SignInAllRow(props: {
           content
         ) : (
           <View>
-            <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+            <View className={rowContentClassName}>{content}</View>
             {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
           </View>
         )}

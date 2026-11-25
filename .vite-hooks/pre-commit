@@ -1,1 +1,8 @@
-vp staged
+#!/bin/sh
+# Git runs this file itself (core.hooksPath is this folder), without Vite+'s dispatcher, which put the
+# install's bin folder on PATH. A checkout with no install still commits: the pre-push gate checks main.
+if [ ! -e node_modules/.bin/vp ]; then
+  echo "pre-commit: no install in this checkout (run vp i), so staged files were not formatted."
+  exit 0
+fi
+PATH="$PWD/node_modules/.bin:$PATH" exec vp staged

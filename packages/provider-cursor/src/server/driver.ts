@@ -140,10 +140,16 @@ export const CursorDriver: ProviderDriver<
       ...(processEnv.CURSOR_API_KEY ? { apiKey: processEnv.CURSOR_API_KEY } : {}),
       store: credentials.store,
       credentialBinding: credentials.binding,
-      onChanged: (signedIn): Effect.Effect<void, ProviderSetupError> =>
-        snapshot.refresh.pipe(
+      verify: (apiKey) =>
+        checkCursorProviderStatus(
+          effectiveConfig,
+          { ...processEnv, CURSOR_API_KEY: apiKey },
+          "browser",
+        ).pipe(
+          Effect.provide(CursorSdkCatalog.layer),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.flatMap((provider) =>
-            !signedIn || provider.auth.status === "authenticated"
+            provider.auth.status === "authenticated"
               ? Effect.void
               : Effect.fail(
                   new ProviderSetupError({
@@ -154,6 +160,7 @@ export const CursorDriver: ProviderDriver<
                 ),
           ),
         ),
+      onChanged: (): Effect.Effect<void> => snapshot.refresh.pipe(Effect.asVoid),
     });
     const stampSnapshot: typeof stampIdentity = (draft) =>
       stampIdentity({

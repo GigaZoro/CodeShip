@@ -749,7 +749,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       });
       expect(plan.program).toEqual([runtime.entryPath, "__service-launcher"]);
       const unit = yield* fs.readFileString(plan.unitPath);
-      expect(unit).toContain(`ExecStart=${runtime.entryPath} __service-launcher`);
+      expect(BootService.bootServiceProgramOf(unit)).toBe(runtime.entryPath);
       expect(unit).toContain("OOMPolicy=continue");
       expect(unit).toContain("CPUWeight=1000");
       expect(unit).toContain("IOWeight=1000");
@@ -931,7 +931,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           protocol: SERVICE_LAUNCHER_PROTOCOL,
           activeVersion: "1.2.4",
         });
-        expect(yield* fs.readFileString(plan.unitPath)).toContain("versions/1.2.4/t3");
+        expect(BootService.bootServiceProgramOf(yield* fs.readFileString(plan.unitPath))).toBe(
+          pinnedRuntimePaths(path, baseDir, "1.2.4", platform).entryPath,
+        );
         expect(
           commands.filter(
             (command) =>
@@ -1598,26 +1600,29 @@ process.disconnect();
   );
 
   // regression: #17532
-  it.effect("puts the runtime an update installs on the launch agent PATH", () =>
-    Effect.gen(function* () {
-      const { makeService, fs, baseDir, runtime } = yield* makeHarness("darwin");
-      const path = yield* Path.Path;
-      const previous = runtime.versionDir;
-      const installed = pinnedRuntimePaths(path, baseDir, "1.2.4", "darwin").versionDir;
-      // The 1.2.3 CLI, or the 1.2.3 service's own PATH, installs 1.2.4.
-      const updated = yield* makeService(
-        `/usr/bin:${previous}:/bin`,
-        "1.2.4",
-        undefined,
-        false,
-        runtime.entryPath,
-      );
-      const plan = yield* updated.install();
+  // A launchd PATH is colon-separated, and a Windows runtime directory's drive letter holds a colon.
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "puts the runtime an update installs on the launch agent PATH",
+    () =>
+      Effect.gen(function* () {
+        const { makeService, fs, baseDir, runtime } = yield* makeHarness("darwin");
+        const path = yield* Path.Path;
+        const previous = runtime.versionDir;
+        const installed = pinnedRuntimePaths(path, baseDir, "1.2.4", "darwin").versionDir;
+        // The 1.2.3 CLI, or the 1.2.3 service's own PATH, installs 1.2.4.
+        const updated = yield* makeService(
+          `/usr/bin:${previous}:/bin`,
+          "1.2.4",
+          undefined,
+          false,
+          runtime.entryPath,
+        );
+        const plan = yield* updated.install();
 
-      expect(yield* fs.readFileString(plan.unitPath)).toContain(
-        `    <key>PATH</key>\n    <string>/usr/bin:${installed}:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin</string>`,
-      );
-    }),
+        expect(yield* fs.readFileString(plan.unitPath)).toContain(
+          `    <key>PATH</key>\n    <string>/usr/bin:${installed}:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin</string>`,
+        );
+      }),
   );
 
   it.effect("drops PATH directories that cannot be represented in a launch agent plist", () =>

@@ -1,5 +1,6 @@
 import {
   DEFAULT_CLIENT_SETTINGS,
+  EnvironmentId,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -155,6 +156,54 @@ describe("reopenClosedView", () => {
       }
     },
   );
+
+  it("restores a file into the recorded owner even while a host routes that thread's actions", async () => {
+    const hostRef = { ...threadRef, threadId: "host" as ScopedThreadRef["threadId"] };
+    const unhost = hostRightPanel(threadRef, hostRef);
+    try {
+      await reopenClosedView(
+        {
+          kind: "panel-tab",
+          threadRef,
+          surface: {
+            kind: "file",
+            id: "file:src/app.ts",
+            relativePath: "src/app.ts",
+            revealLine: null,
+            revealRequestId: 0,
+          },
+        },
+        { openPreview: vi.fn(), workspaceAvailable: true },
+      );
+    } finally {
+      unhost();
+    }
+    const panels = useRightPanelStore.getState().byThreadKey;
+    expect(selectThreadRightPanelState(panels, threadRef).surfaces).toMatchObject([
+      { id: "file:src/app.ts" },
+    ]);
+    expect(selectThreadRightPanelState(panels, hostRef).surfaces).toEqual([]);
+  });
+
+  it("reopens a closed cross-environment thread tab in its original panel", async () => {
+    const targetRef = { ...threadRef, environmentId: EnvironmentId.make("remote") };
+    const store = useRightPanelStore.getState();
+    store.openThread(threadRef, targetRef);
+    store.closeSurface(threadRef, "thread:remote:thread-1");
+
+    const [entry] = useClosedViewStore.getState().entries;
+    expect(entry).toMatchObject({ kind: "panel-tab", threadRef });
+    expect(
+      await reopenClosedView(entry!, { openPreview: vi.fn(), workspaceAvailable: false }),
+    ).toBe(true);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: "thread:remote:thread-1",
+      surfaces: [{ kind: "thread", id: "thread:remote:thread-1", threadRef: targetRef }],
+    });
+  });
 
   it("does not reopen workspace tabs without an available project", async () => {
     const options = {

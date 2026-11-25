@@ -4,7 +4,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useActiveNewTask } from "../../state/active-new-task";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
-import type { ThreadMoveDestination } from "../threads/threadOrder";
+import type { ThreadListArrangement, ThreadMoveDestination } from "../threads/threadOrder";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_SIDEBAR_ROW_LAYOUT } from "../threads/threadListAnimations";
@@ -15,6 +15,7 @@ import {
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
+import { environmentThreadShells } from "../../state/threads";
 import { useAtomValue } from "@effect/atom-react";
 import {
   use,
@@ -78,7 +79,7 @@ import {
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
-  ThreadListV2ShowMoreRow,
+  ThreadListV2OlderThreadsFooter,
   ThreadListV2SnoozedShelfHeader,
   ThreadListV2NeedsYouHeader,
   ThreadListV2WorkingShelfHeader,
@@ -88,8 +89,6 @@ import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-reque
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
   threadListV2ListItemsAreEqual,
-  THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
-  THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2Folder,
   type ThreadListV2ListItem,
 } from "../threads/threadListV2";
@@ -99,7 +98,12 @@ import {
   useScheduledTaskHiddenThreadKeys,
 } from "../threads/ThreadListPinnedTasks";
 import { ThreadListManualSteps } from "../threads/ThreadListManualSteps";
-import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
+import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
+import type { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
+import {
+  threadListRefinementFilters,
+  type HomeListFilterMenuEnvironment,
+} from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
   buildHomeChatFolders,
@@ -116,6 +120,7 @@ import { holdLaunchSplashForHomeRows, settleLaunchSplashHomeRows } from "./home-
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
 import { t } from "../../lib/i18n";
+import { useThreadListEstimatedRowHeight } from "../threads/useThreadListRowDensity";
 
 interface HomeScreenProps {
   /** Whether this list is the one on screen; see `useHomeRouteVisible`. */
@@ -131,6 +136,12 @@ interface HomeScreenProps {
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly statusFilter: ThreadListStatusFilter;
+  readonly sort: ThreadListSort;
+  readonly onSortChange: (sort: ThreadListSort) => void;
+  readonly selectedTags: readonly string[];
+  readonly onTagsChange: (tags: readonly string[]) => void;
+  readonly onStatusChange: (status: ThreadListStatusFilter) => void;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
@@ -158,6 +169,7 @@ interface HomeScreenProps {
   readonly onMoveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
+    getArrangement: () => ThreadListArrangement,
   ) => Promise<boolean>;
   readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -167,7 +179,6 @@ interface HomeScreenProps {
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
 }
 
-const ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT = 72;
 // Rows away from the viewport skip their swipe actions (see
 // swipe-row-activation), so render further ahead: a fast fling then reaches
 // rows that are already built instead of rows still being rebuilt.
@@ -206,6 +217,7 @@ function renderHomeScrollView(props: ScrollViewProps) {
 }
 
 export function HomeScreen(props: HomeScreenProps) {
+  const estimatedRowHeight = useThreadListEstimatedRowHeight();
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const workspace = useWorkspaceTabs();
   const [initialScrollOffset] = useState(() => workspace?.getScrollOffset("threads") ?? 0);
@@ -378,7 +390,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const handleSnoozeThread = props.onSnoozeThread;
   const handleUnsnoozeThread = props.onUnsnoozeThread;
   const handlePinThread = props.onPinThread;
-  const handleMoveThread = props.onMoveThread;
   const handleUnpinThread = props.onUnpinThread;
   const handleSetThreadAutoSettle = props.onSetThreadAutoSettle;
   const handleSetThreadLater = props.onSetThreadLater;
@@ -386,17 +397,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const handleRenameThread = props.onRenameThread;
   const handleDeleteThread = props.onDeleteThread;
   const handleUnsettleThread = props.onUnsettleThread;
-  const [settledVisibleCount, setSettledVisibleCount] = useState(
-    THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
-  );
-  const settledResetKey = `${props.selectedEnvironmentId ?? "all"}:${v2ProjectScopeKey ?? "all"}:${props.searchQuery.trim()}`;
-  const [lastSettledResetKey, setLastSettledResetKey] = useState(settledResetKey);
-  if (lastSettledResetKey !== settledResetKey) {
-    setLastSettledResetKey(settledResetKey);
-    setSettledVisibleCount(THREAD_LIST_V2_SETTLED_INITIAL_COUNT);
-  }
-  const showMoreSettled = () =>
-    setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT);
   const {
     loaded: shelfPreferencesLoaded,
     settledShelfExpanded,
@@ -456,18 +456,27 @@ export function HomeScreen(props: HomeScreenProps) {
   const hiddenTaskThreadKeys = useScheduledTaskHiddenThreadKeys(
     JSON.stringify([...settlementEnvironmentIds]),
   );
+  const lastActivityOrder = useAtomValue(environmentThreadShells.lastActivityOrderAtom(props.sort));
   const {
     layout: threadListV2Layout,
     items: threadListV2Items,
     contentOnlyThreadKeys,
-    olderSettledShelf,
+    settledFooter,
+    retryFolder,
+    retrySettled,
     showMoreInFolder,
+    showMoreSettled,
+    getListedArrangement,
   } = useThreadListV2({
     threads: props.threads,
     pendingTasks: props.pendingTasks,
     environmentId: props.selectedEnvironmentId,
     projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
     searchQuery: props.searchQuery,
+    statusFilter: props.statusFilter,
+    sort: props.sort,
+    lastActivityOrder,
+    selectedTags: props.selectedTags,
     searchMatches: threadSearchMatchByKey,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
@@ -475,7 +484,6 @@ export function HomeScreen(props: HomeScreenProps) {
     activeReorderEnvironmentIds,
     queuedThreadKeys,
     hiddenTaskThreadKeys,
-    settledLimit: settledVisibleCount,
     now,
     pendingOrder,
     shelfPreferencesLoaded,
@@ -487,6 +495,8 @@ export function HomeScreen(props: HomeScreenProps) {
     grouping,
     chatFolders,
   });
+  const handleMoveThread = (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) =>
+    props.onMoveThread(thread, direction, getListedArrangement);
   // Called as `props.onSelectThread(...)`, the compiler would cache this handler on the whole
   // props object, which is new on every render of Home's parent.
   const { onSelectThread } = props;
@@ -562,11 +572,12 @@ export function HomeScreen(props: HomeScreenProps) {
     }
     if (item.type === "v2-folder-more") {
       return (
-        <ThreadListV2ShowMoreRow
+        <ThreadListV2OlderThreadsFooter
           pane={primaryColumn ? "sidebar" : "screen"}
           hiddenCount={item.hiddenCount}
           state={item.state}
-          onPress={() => showMoreInFolder(item.folderKey, item.listedCount)}
+          onShowMore={() => showMoreInFolder(item.folderKey)}
+          onRetry={item.failed ? () => retryFolder(item.folderKey) : undefined}
         />
       );
     }
@@ -665,12 +676,12 @@ export function HomeScreen(props: HomeScreenProps) {
         snoozePresets={snoozePresetsByEnvironmentId.get(thread.environmentId)}
         pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
         autoSettleOptOutSupported={autoSettleOptOutEnvironmentIds.has(thread.environmentId)}
+        arrangementSupported={activeReorderEnvironmentIds.has(thread.environmentId)}
         reorderSupported={
           item.item.needsYou !== true &&
           (item.item.pinned
             ? pinReorderEnvironmentIds.has(thread.environmentId)
-            : !workingShelfEnabled &&
-              grouping === null &&
+            : threadListV2Layout.listedSections.activeManualOrder &&
               activeReorderEnvironmentIds.has(thread.environmentId))
         }
         canMoveUp={item.canMoveUp}
@@ -718,7 +729,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const hasAnyThreads =
     props.threads.some((thread) => thread.archivedAt === null) ||
     props.pendingTasks.length > 0 ||
-    threadListV2Layout.settledCount > 0;
+    threadListV2Layout.settledShelfHeaderIndex !== null;
   // A hidden list gets no layout, so it never reports its rows as laid out.
   const hasRowsToLayOut = props.visible && hasAnyThreads && threadListV2Items.length > 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- holds the native launch splash, which is outside React, until the rows are gone or this list unmounts; a layout effect runs before the splash hides in this commit
@@ -733,6 +744,8 @@ export function HomeScreen(props: HomeScreenProps) {
   const resetFilters = () => {
     props.onEnvironmentChange(null);
     props.onProjectChange(null);
+    props.onStatusChange("all");
+    props.onTagsChange([]);
   };
   const emptyState = hasAnyThreads
     ? null
@@ -757,6 +770,12 @@ export function HomeScreen(props: HomeScreenProps) {
           selectedEnvironmentId={props.selectedEnvironmentId}
           selectedProjectKey={props.selectedProjectKey}
           grouping={groupBy}
+          statusFilter={props.statusFilter}
+          sort={props.sort}
+          onSortChange={props.onSortChange}
+          selectedTags={props.selectedTags}
+          onTagsChange={props.onTagsChange}
+          onStatusChange={props.onStatusChange}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
           onProjectGroupingChange={setProjectGrouping}
@@ -832,6 +851,14 @@ export function HomeScreen(props: HomeScreenProps) {
           detail={t('No threads matching "{query}".', { query: props.searchQuery })}
           variant={plainEmpty}
         />
+      ) : threadListRefinementFilters(props) ? (
+        <EmptyState
+          title={t("No threads match your filters")}
+          detail={t("Try a different status or tag.")}
+          actionLabel={t("Show all threads")}
+          onAction={resetFilters}
+          variant={plainEmpty}
+        />
       ) : v2ScopedProjectGroup !== null ? (
         <EmptyState
           title={t("No threads in {name}", { name: v2ScopedProjectGroup.title })}
@@ -880,7 +907,7 @@ export function HomeScreen(props: HomeScreenProps) {
                 keyExtractor={v2KeyExtractor}
                 getItemType={(item) => item.type}
                 itemsAreEqual={threadListV2ListItemsAreEqual}
-                estimatedItemSize={ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT}
+                estimatedItemSize={estimatedRowHeight}
                 drawDistance={THREAD_LIST_V2_DRAW_DISTANCE}
                 recycleItems
                 extraData={v2ExtraData}
@@ -888,18 +915,12 @@ export function HomeScreen(props: HomeScreenProps) {
                 // Lifted above the rows so an iOS filter menu's dismissal morph is not covered.
                 ListHeaderComponentStyle={{ zIndex: 1 }}
                 ListFooterComponent={
-                  settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0 ? (
-                    <ThreadListV2ShowMoreRow
-                      hiddenCount={threadListV2Layout.hiddenSettledCount}
-                      {...(olderSettledShelf.loading
-                        ? { state: "loading" as const }
-                        : olderSettledShelf.failed
-                          ? { state: "failed" as const }
-                          : {})}
-                      onPress={() => {
-                        olderSettledShelf.retry();
-                        showMoreSettled();
-                      }}
+                  settledFooter !== null ? (
+                    <ThreadListV2OlderThreadsFooter
+                      hiddenCount={settledFooter.hiddenCount}
+                      state={settledFooter.state}
+                      onShowMore={showMoreSettled}
+                      onRetry={settledFooter.failed ? retrySettled : undefined}
                     />
                   ) : null
                 }

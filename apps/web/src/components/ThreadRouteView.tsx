@@ -1,11 +1,8 @@
 import { t } from "~/i18n";
-import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
-import { visibilityParentKey } from "@t3tools/client-runtime/state/threads";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { Atom } from "effect/reactivity";
 import { Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
@@ -14,23 +11,17 @@ import { SidebarInset } from "./ui/sidebar";
 import { toastManager } from "./ui/toast";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
-import {
-  useEnvironmentThreadRefs,
-  useAnyEnvironmentHiding,
-  useQuietThreadShell,
-} from "../state/entities";
-import { serverEnvironment } from "../state/server";
+import { useEnvironmentThreadRefs, useQuietThreadShell } from "../state/entities";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentShellStatus } from "../state/shell";
-import { environmentThreadShells, threadFamilies, useEnvironmentThread } from "../state/threads";
+import { useThreadHiding } from "../state/threadHiding";
+import { threadFamilies, useEnvironmentThread } from "../state/threads";
 import {
   buildThreadRouteParams,
   isThreadRouteSnapshotAuthoritative,
   resolveThreadRouteRenderState,
   type ThreadRouteTarget,
 } from "../threadRoutes";
-
-const NO_HIDDEN_TAGS = Atom.make<ReadonlyArray<string> | null>(null);
 
 /**
  * Keeps the family of an open thread the shell leaves out (an older settled thread) in the shell
@@ -107,39 +98,13 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     unlistedThreadRef?.threadId ?? null,
   );
   useOpenThreadFamily(serverThreadRef, bootstrapComplete && unlistedThreadRef !== null);
-  const hiddenKeys = useAtomValue(environmentThreadShells.hiddenThreadKeysAtom);
   const unlistedThread = Option.getOrNull(Option.map(unlistedThreadDetail.data, (p) => p.thread));
-  const unlistedParentKey =
-    unlistedThreadRef === null || unlistedThread === null
-      ? null
-      : visibilityParentKey(unlistedThreadRef.environmentId, unlistedThread);
-  const unlistedParentShell = useQuietThreadShell(
-    unlistedParentKey === null ? null : parseThreadKey(unlistedParentKey),
-  );
-  const hidingAnywhere = useAnyEnvironmentHiding();
-  const unlistedHiddenTags = useAtomValue(
-    unlistedThreadRef === null
-      ? NO_HIDDEN_TAGS
-      : serverEnvironment.hiddenThreadTagsAtom(unlistedThreadRef.environmentId),
+  const { hiddenKeys, hidingAnywhere, hiddenByTagFilter, offShellBlocked } = useThreadHiding(
+    serverThreadRef,
+    unlistedThreadRef,
+    unlistedThread,
   );
   const draftRedirectShell = useQuietThreadShell(draftRedirect ?? null);
-  const hiddenByTagFilter = serverThreadRef !== null && hiddenKeys.has(threadKey(serverThreadRef));
-  // Archived threads are never in the shell; a top-level one opens unless its own tags are hidden.
-  const visibleArchivedRoot =
-    unlistedThread?.archivedAt != null &&
-    unlistedParentKey === null &&
-    !(unlistedThread.tags ?? []).some((tag) => unlistedHiddenTags?.includes(tag) === true);
-  // Cached detail can predate a tag or an archive, so while hiding an off-shell thread opens only
-  // as the child of a loaded, visible parent (lineage never changes); anything else stays closed.
-  const offShellBlocked =
-    hidingAnywhere &&
-    unlistedThreadRef !== null &&
-    !visibleArchivedRoot &&
-    !(
-      unlistedParentKey !== null &&
-      unlistedParentShell !== null &&
-      !hiddenKeys.has(unlistedParentKey)
-    );
   const renderState = resolveThreadRouteRenderState({
     bootstrapComplete,
     serverThreadExists: serverThreadShell !== null,

@@ -116,7 +116,7 @@ function subscriptionUsageProps(
                 reset: window.resets[0]
                   ? `${isUpcoming(window.resets[0]) ? "Next reset" : "Reset"} ${new Date(
                       window.resets[0].at,
-                    ).toLocaleString(undefined, {
+                    ).toLocaleString("en-US", {
                       month: "short",
                       day: "numeric",
                       hour: "numeric",

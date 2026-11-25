@@ -2,6 +2,7 @@ import { deriveProviderInstanceConfigMap } from "./provider/ProviderInstanceRegi
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   type ManagedPolicyDocument,
@@ -44,8 +45,14 @@ import * as ServerSettingsModule from "./serverSettings.ts";
 import { SECRET_REDACTED } from "./settingsSecrets.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
-import { saveClaudeOAuthToken, claudeOAuthTokenExpiry } from "./provider/claudeOAuthToken.ts";
+import {
+  saveClaudeOAuthToken,
+  claudeOAuthTokenExpiry,
+  withClaudeOAuthToken,
+} from "./provider/claudeOAuthToken.ts";
+import * as ProviderLoginHome from "./provider/providerLoginHome.ts";
 
+const decodeClaudeSettings = Schema.decodeUnknownEffect(ClaudeSettings);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
@@ -1543,12 +1550,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         const store = yield* ServerSecretStore.ServerSecretStore;
         const instanceId = ProviderInstanceId.make("claudeAgent_token_test");
         const token = "sk-ant-oat01-synthetic-test-credential";
+        const path = yield* Path.Path;
+        const sharedHome = path.join(config.stateDir, "shared-claude");
+        yield* fileSystem.makeDirectory(sharedHome);
+        const credentials = ".credentials.json";
+        yield* fileSystem.writeFileString(path.join(sharedHome, credentials), "old test account");
         yield* service.updateProviderInstance({
           operation: "create",
           instanceId,
           instance: {
             driver: ProviderDriverKind.make("claudeAgent"),
             displayName: "Scheduled account",
+            config: { homePath: sharedHome },
             environment: [{ name: "KEEP_ME", value: "yes", sensitive: false }],
           },
         });
@@ -1579,7 +1592,116 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           new TextDecoder().decode(Option.getOrThrow(yield* store.get(secretName))),
           token,
         );
-        const removed = yield* saveClaudeOAuthToken(instanceId, undefined);
+        const alias = ProviderInstanceId.make("claudeAgent_alias");
+        const driver = ProviderDriverKind.make("claudeAgent");
+        yield* service.updateProviderInstance({
+          operation: "create",
+          instanceId: alias,
+          instance: { driver, config: { homePath: sharedHome } },
+        });
+        const aliasConfig = yield* decodeClaudeSettings(
+          (yield* service.getSettings).providerInstances[alias]?.config,
+        );
+        const { bindingKey: sharedBinding } = yield* ProviderLoginHome.claudeBinding(
+          aliasConfig,
+          alias,
+          config.stateDir,
+          {},
+          false,
+        );
+        const homes = yield* ProviderLoginHome.make({
+          driver,
+          instanceId,
+          bindingKey: sharedBinding,
+          generation: undefined,
+          select: (entry) => withClaudeOAuthToken(entry),
+        });
+        const peers = [instanceId, alias];
+        const discarded = yield* homes.stage("35925804-aad9-4d4b-a68a-b018a5ab307d", peers).pipe(
+          Effect.map(({ home }) => home),
+          Effect.scoped,
+        );
+        assert.isFalse(yield* fileSystem.exists(discarded));
+        const conflicted = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const staged = yield* homes.stage("15cd5f58-a20b-48fd-9f8d-7d8e887ab005", peers);
+            yield* service.updateProviderInstance({
+              operation: "upsert",
+              instanceId: alias,
+              instance: {
+                driver,
+                config: { homePath: path.join(config.stateDir, "other-account") },
+              },
+            });
+            assert.equal((yield* staged.persist.pipe(Effect.result))._tag, "Failure");
+            return staged.home;
+          }),
+        );
+        assert.isFalse(yield* fileSystem.exists(conflicted));
+        assert.equal(
+          (yield* service.getSettings).providerInstances[instanceId]?.environment?.at(-1)?.value,
+          token,
+        );
+        yield* service.updateProviderInstance({
+          operation: "upsert",
+          instanceId: alias,
+          instance: { driver, config: { homePath: sharedHome } },
+        });
+        const id = "f2802677-b3b4-4c9b-b79d-e5c56dcf0676";
+        const active = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const staged = yield* homes.stage(id, peers);
+            yield* fileSystem.writeFileString(
+              path.join(staged.home, credentials),
+              "new test account",
+            );
+            assert.equal(
+              yield* fileSystem.readFileString(path.join(sharedHome, credentials)),
+              "old test account",
+            );
+            yield* staged.persist;
+            return staged.home;
+          }),
+        );
+        assert.isTrue(yield* fileSystem.exists(active));
+        const removed = yield* service.getSettings;
+        const generation = (yield* decodeClaudeSettings(removed.providerInstances[alias]?.config))
+          .loginGeneration;
+        assert.equal(generation?.id, id);
+        assert.equal(
+          (yield* ProviderLoginHome.make({
+            driver,
+            instanceId: alias,
+            bindingKey: sharedBinding,
+            generation,
+          })).activeHome,
+          active,
+        );
+        assert.isUndefined(
+          (yield* ProviderLoginHome.make({
+            driver,
+            instanceId: alias,
+            bindingKey: "unrelated-login",
+            generation,
+          })).activeHome,
+        );
+        const terminal = yield* resolveProviderInstanceTerminalEnvironment({
+          deriveProviderInstanceConfigMap,
+          path: yield* Path.Path,
+          serverSettings: service,
+          stateDir: config.stateDir,
+          rawProviderInstanceId: alias,
+          env: undefined,
+        });
+        assert.equal(terminal.CLAUDE_CONFIG_DIR, active);
+        assert.equal(
+          yield* fileSystem.readFileString(path.join(active, credentials)),
+          "new test account",
+        );
+        assert.equal(
+          yield* fileSystem.readFileString(path.join(sharedHome, credentials)),
+          "old test account",
+        );
         assert.isTrue(Option.isNone(yield* store.get(secretName)));
         assert.deepEqual(removed.providerInstances[instanceId]?.environment, [
           { name: "KEEP_ME", value: "yes", sensitive: false },
@@ -2241,6 +2363,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         deriveProviderInstanceConfigMap,
         serverSettings,
         path,
+        stateDir: serverConfig.stateDir,
         rawProviderInstanceId: instanceId,
         env: undefined,
       });

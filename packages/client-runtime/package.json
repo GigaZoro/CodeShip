@@ -107,6 +107,10 @@
       "types": "./src/scheduledTaskPromptFile.ts",
       "default": "./src/scheduledTaskPromptFile.ts"
     },
+    "./scheduled-task-description": {
+      "types": "./src/scheduledTaskDescription.ts",
+      "default": "./src/scheduledTaskDescription.ts"
+    },
     "./scheduled-task-pins": {
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"
@@ -446,6 +450,10 @@
     "./state/thread-outbox": {
       "types": "./src/state/threadOutbox.ts",
       "default": "./src/state/threadOutbox.ts"
+    },
+    "./state/thread-tag-filter": {
+      "types": "./src/state/threadTagFilter.ts",
+      "default": "./src/state/threadTagFilter.ts"
     },
     "./state/thread-status": {
       "types": "./src/state/threadStatus.ts",

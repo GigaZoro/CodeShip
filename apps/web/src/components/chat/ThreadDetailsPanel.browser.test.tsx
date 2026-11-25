@@ -179,6 +179,8 @@ function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
         onUpdateProjectScript={scriptResult}
         onDeleteProjectScript={scriptResult}
         agentActions={null}
+        model={{ label: "Model", effortLabel: null }}
+        threadShell={null}
         usage={{} as never}
       />
     </ChatCanvasContext>

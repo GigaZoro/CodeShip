@@ -1,5 +1,6 @@
 import * as NodeSqlite from "node:sqlite";
 
+import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { assert, it, vi } from "@effect/vitest";
 import {
   ChatAttachmentId,
@@ -31,6 +32,7 @@ import {
   RuntimeRequestId,
   RunAttemptId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
   type ThreadPullRequestLink,
@@ -1273,6 +1275,49 @@ it.effect("a compacted thread reads every run, and run records only for its rece
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect(
+  "settlement distinguishes a scheduled opening prompt from a later scheduled message",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      for (const opening of ["scheduled", "legacy", "manual"] as const) {
+        const threadId = yield* addRolledBackRecoveryCandidate(`settle-${opening}`);
+        for (const [index, source] of [opening, "scheduled"].entries()) {
+          const createdAt = DateTime.add(now, { seconds: index });
+          const id = MessageId.make(
+            source === "legacy"
+              ? `scheduled-task-message:fixture:${threadId}`
+              : `${threadId}:${index}`,
+          );
+          yield* store.apply({
+            id: EventId.make(`event:${id}`),
+            type: "message.updated",
+            threadId,
+            occurredAt: createdAt,
+            payload: {
+              id,
+              threadId,
+              runId: null,
+              nodeId: null,
+              createdBy: source === "manual" ? "user" : "agent",
+              creationSource: source === "manual" ? "web" : "server",
+              role: "user",
+              text: "Prompt",
+              attachments: [],
+              streaming: false,
+              createdAt,
+              updatedAt: createdAt,
+              ...(source === "scheduled" ? { scheduledTaskId: ScheduledTaskId.make("task") } : {}),
+            },
+          });
+        }
+        const [candidate] = yield* store.getSettlementCandidates(threadId);
+        assert.equal(candidate?.startedByScheduledTask, opening !== "manual");
+      }
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("record reads filter notification sources without dropping matching message bodies", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -1484,6 +1529,59 @@ it.effect("SQL queue readiness skips held runs without bypassing active work", (
       assert.equal(yield* store.canStartQueuedRun(threadId), status === "queued");
     }
     assert.deepEqual((yield* store.getThreadProjection(threadId)).runs[0], held);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("reads the memory admission queue through the recovery index", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = yield* addRolledBackRecoveryCandidate("memory-queue");
+    const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+    const now = yield* DateTime.now;
+    const waiting = {
+      ...run,
+      status: "preparing" as const,
+      completedAt: null,
+      memoryAdmission: { waitingSince: now },
+    };
+    const admitted = {
+      ...run,
+      id: RunId.make("run:memory-queue:admitted"),
+      ordinal: 2,
+      status: "starting" as const,
+      completedAt: null,
+      memoryAdmission: { waitingSince: now, admittedAt: now },
+    };
+    for (const payload of [waiting, admitted]) {
+      yield* store.apply({
+        id: EventId.make(`memory-queue:${payload.id}`),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+    }
+    const { statements, tracer } = traceSqlStatements();
+
+    const queue = yield* store.getMemoryAdmissionQueue().pipe(Effect.withTracer(tracer));
+
+    assert.deepEqual(
+      queue.waiting.map((queued) => queued.id),
+      [waiting.id],
+    );
+    assert.isTrue(queue.admittedStarting);
+    const queueStatements = statements.filter((statement) => statement.includes("memoryAdmission"));
+    assert.lengthOf(queueStatements, 2);
+    for (const statement of queueStatements) {
+      const plan = yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${statement}`,
+      );
+      assert.isTrue(
+        plan.some((row) => row.detail.includes("orchestration_v2_projection_runs_recovery_idx")),
+        plan.map((row) => row.detail).join("; "),
+      );
+    }
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -8124,6 +8222,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.equal(shell?.status, "waiting");
       assert.isNull(shell?.activeRunId);
       const later = DateTime.add(now, { hours: 1 });
+      const newerSelection = { ...run.modelSelection, model: "newer-run-model" };
       for (const status of ["queued", "cancelled"] as const) {
         yield* projectionStore.apply({
           id: EventId.make(`event:clock:newer:${status}`),
@@ -8134,6 +8233,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             ...run,
             id: RunId.make("run:clock:newer"),
             ordinal: 2,
+            modelSelection: newerSelection,
             status,
             requestedAt: later,
             startedAt: null,
@@ -8164,8 +8264,17 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           assert.equal(timestamp(sqlShell.activityRunStartedAt), expected);
           assert.equal(timestamp(memoryShell.activityRunStartedAt), expected);
           // A queued message steered or removed before it started never ran, so the run that did presents.
+          // Each presented run carries the selection it was started with, not the thread's.
           for (const shell of [sqlShell, memoryShell]) {
             assert.equal(shell.latestRunId, status === "cancelled" ? runId : "run:clock:newer");
+            assert.deepEqual(
+              shell.latestRunModelSelection,
+              status === "cancelled" ? run.modelSelection : newerSelection,
+            );
+            assert.deepEqual(
+              shell.activityRunModelSelection,
+              activityStatus === "completed" ? null : run.modelSelection,
+            );
           }
         }
       }
@@ -8590,7 +8699,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("lists threads a rejected login stopped before the agent did any work", () =>
+  it.effect("lists threads a rejected login stopped, and whether the agent did any work", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
       const threadId = yield* addRolledBackRecoveryCandidate("signed-out");
@@ -8610,7 +8719,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       };
       const listed = (maxAgeMs = 60_000) =>
         store
-          .getSignedOutFailoverCandidates({ now: DateTime.add(now, { seconds: 2 }), maxAgeMs })
+          .getSignedOutCandidates({ now: DateTime.add(now, { seconds: 2 }), maxAgeMs })
           .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
       const screenshot = {
         type: "image" as const,
@@ -8702,6 +8811,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const candidate = yield* listed();
       assert.equal(candidate?.latestRunId, failedRunId);
       assert.equal(candidate?.latestRunProviderInstanceId, providerInstanceId);
+      assert.deepEqual(candidate?.latestRunCompletedAt, run.completedAt);
+      assert.equal(candidate?.latestRunUserMessageId, messageId);
+      assert.isFalse(candidate?.workDone);
       assert.deepEqual(candidate?.message, {
         text: "Summarise the inbox",
         attachments: [screenshot],
@@ -8726,7 +8838,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           input: "ls",
         },
       });
-      assert.isUndefined(yield* listed(), "a run that did work is not repeated on a new account");
+      assert.isTrue((yield* listed())?.workDone);
     }),
   );
 
@@ -9027,6 +9139,38 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.deepEqual(
         [...(yield* store.getUsageLimitedProviderInstances(holdEnd, coversScope))],
         [],
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:model-not-supported"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...limitItem,
+          failure: {
+            class: "provider_error",
+            message:
+              "The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account.",
+            code: MODEL_NOT_SUPPORTED_FAILURE_CODE,
+            retryable: null,
+            modelScope: "gpt_6_2_astra",
+          },
+        },
+      });
+      // A refused model holds that model on the account, though the failure is no usage limit.
+      assert.deepEqual(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).get(providerInstanceId),
+        [
+          {
+            resetAt: null,
+            refusedAt: DateTime.formatIso(limitItem.updatedAt),
+            modelScope: "gpt_6_2_astra",
+          },
+        ],
       );
       yield* store.apply({
         id: EventId.make("event:limit-shell:model-scoped"),
@@ -11378,7 +11522,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         JSON.stringify(retainedPlan),
       );
       assert.lengthOf(
-        statements.filter((statement) => statement.includes("SELECT node.payload_json")),
+        statements.filter((statement) => statement.includes("json_set(node.payload_json")),
         1,
       );
       assert.lengthOf(boundedFork.projection.turnItems, 0);
@@ -12487,6 +12631,78 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.deepEqual((yield* store.getThreadShell(threadId))?.pendingBackgroundTasks, []);
       assert.equal(yield* phase, "completed");
     }),
+  );
+
+  it.effect(
+    "reads a runless thread's pending background work the same in the shell and settlement",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = ThreadId.make("thread:runless-background");
+        const providerThreadId = ProviderThreadId.make("provider-thread:runless-background");
+        const at = DateTime.makeUnsafe("2026-09-28T12:00:00.000Z");
+        yield* store.apply({
+          id: EventId.make("event:runless-background:thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: at,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project:runless-background"),
+            title: "Runless",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: at,
+            updatedAt: at,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+        yield* store.apply({
+          id: EventId.make("event:runless-background:provider-thread"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId,
+          occurredAt: at,
+          payload: {
+            id: providerThreadId,
+            driver,
+            providerInstanceId,
+            providerSessionId: null,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            status: "idle" as const,
+            firstRunOrdinal: 1,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            pendingBackgroundTasks: [
+              { taskId: "watch", kind: "monitor" as const, awaited: true as const },
+            ],
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+        const shell = yield* store.getThreadShell(threadId);
+        const [candidate] = yield* store.getSettlementCandidates(threadId);
+        assert.deepEqual(candidate?.pendingBackgroundTasks, shell?.pendingBackgroundTasks);
+        assert.equal(shell?.pendingBackgroundTasks?.length, 1);
+      }),
   );
 
   it.effect("dates a completion released by held background work at the release", () =>

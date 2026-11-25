@@ -1,7 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's symlink has no type argument, and Windows needs a junction to link without elevation.
 import * as NodeFSP from "node:fs/promises";
 
-import type { AntigravityAuthMethod, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ProviderSetupError,
+  type AntigravityAuthMethod,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
 import * as Digest from "effect/crypto/Digest";
@@ -18,6 +22,7 @@ import * as AcpErrors from "effect-acp/errors";
 
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { linkPath } from "./Drivers/ClaudeAccountHome.ts";
 import {
   antigravityUserSkillDirectories,
@@ -189,6 +194,117 @@ export const resolveAntigravityInstanceDirectories = Effect.fn(
     runtimeTemp: path.join(stateDir, "antigravity-tmp", key.slice(0, 12)),
   } satisfies AntigravityInstanceDirectories;
 });
+
+/** Each native process keeps its GEMINI_HOME for life. Only the selector changes on publication. */
+export const makeAntigravityLoginProfiles = Effect.fn("AntigravityAuth.makeLoginProfiles")(
+  function* (base: string, instanceId: ProviderInstanceId) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const platform = yield* HostProcess.Platform;
+    const generations = path.join(path.dirname(base), "sign-ins", path.basename(base));
+    const selector = path.join(generations, "active-login");
+    const decodeId = Schema.decodeUnknownEffect(Schema.String.check(Schema.isUUID(4)));
+    const selectedId = yield* fs.readFileString(selector).pipe(
+      Effect.flatMap(decodeId),
+      Effect.catchIf(
+        (error) => error._tag === "PlatformError" && error.reason._tag === "NotFound",
+        () => Effect.undefined,
+      ),
+    );
+    let active = selectedId ? path.join(generations, selectedId) : base;
+    const stage = Effect.fn("AntigravityAuth.stageProfile")(
+      function* (flowId: string) {
+        const id = yield* decodeId(flowId);
+        const home = path.join(generations, id);
+        let published = false;
+        yield* fs.makeDirectory(generations, { recursive: true, mode: 0o700 });
+        yield* Effect.acquireRelease(fs.makeDirectory(home, { mode: 0o700 }), () =>
+          Effect.suspend(() =>
+            published
+              ? Effect.void
+              : fs.remove(home, { recursive: true }).pipe(Effect.ignore({ log: true })),
+          ),
+        );
+        const previous = active;
+        const acp = "antigravity-acp";
+        yield* fs.makeDirectory(path.join(home, acp), { mode: 0o700 });
+        for (const name of ["conversations", "brain"]) {
+          const target = path.join(base, acp, name);
+          yield* fs.makeDirectory(target, { recursive: true, mode: 0o700 });
+          yield* linkPath(target, path.join(home, acp, name), platform, true);
+        }
+        for (const name of ["hooks.json", "mcp_config.json"]) {
+          const source = path.join(previous, "config", name);
+          if (yield* fs.exists(source)) {
+            yield* fs.makeDirectory(path.join(home, "config"), { recursive: true, mode: 0o700 });
+            const target = yield* fs.realPath(source);
+            const profileLocal = yield* Effect.isFailure(fs.readLink(source));
+            if (name === "mcp_config.json" && profileLocal) {
+              // The native MCP setup preserves a profile-local file but replaces a stale link.
+              yield* fs.copyFile(source, path.join(home, "config", name));
+            } else {
+              yield* linkPath(target, path.join(home, "config", name), platform, false);
+            }
+          }
+        }
+        const tokenFile = (profile: string) => path.join(profile, acp, "acp_token.json");
+        const persist = fs.stat(tokenFile(home)).pipe(
+          Effect.filterOrFail(
+            (info) => info.type === "File" && info.size > 0n,
+            () => new Error("Native sign-in did not store a credential"),
+          ),
+          Effect.andThen(
+            writeFileStringAtomically({
+              filePath: selector,
+              contents: id,
+              mode: 0o600,
+            }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              published = true;
+            }),
+          ),
+          Effect.mapError(
+            () =>
+              new ProviderSetupError({
+                instanceId,
+                operation: "save",
+                detail: "Could not save the Antigravity sign-in. Try again.",
+              }),
+          ),
+        );
+        return {
+          home,
+          persist,
+          activate: (retired: boolean) =>
+            Effect.suspend(() => {
+              active = home;
+              return retired
+                ? fs.remove(tokenFile(previous), { force: true }).pipe(Effect.ignore({ log: true }))
+                : Effect.void;
+            }),
+        };
+      },
+      Effect.mapError(
+        () =>
+          new ProviderSetupError({
+            instanceId,
+            operation: "start",
+            detail: "Could not prepare a private Antigravity sign-in profile.",
+          }),
+      ),
+    );
+    return {
+      get active() {
+        return active;
+      },
+      stage,
+    };
+  },
+);
 
 function quoteBrowserArgument(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;

@@ -4,7 +4,12 @@ import {
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import type { AcpRegistrySettings } from "../settings.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Hex from "effect/encoding/Hex";
+import * as FileSystem from "effect/FileSystem";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -49,6 +54,8 @@ export const formatFailureDetail = (detail: string, cause?: unknown): string => 
   return detail;
 };
 
+const encodeCommand = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 type Runtime = Pick<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
   "initialize" | "authenticate" | "start" | "handleElicitation" | "logout"
@@ -67,12 +74,32 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const random = yield* SecureRandom.SecureRandom;
+  const digester = yield* Digest.Digest;
   const pty = yield* Effect.serviceOption(PtyAdapter.PtyAdapter);
   const coordinator = yield* Effect.serviceOption(
     AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
   );
   const agentKey =
     options.settings.source === "local" ? `local:${options.instanceId}` : options.settings.agentId;
+  let credentialKey = `acp:${agentKey}`;
+  if (options.settings.source === "local" && options.settings.commandPath) {
+    const platform = yield* HostProcess.Platform;
+    const resolveExecutable = yield* SpawnExecutableResolution;
+    const executable =
+      resolveExecutable(options.settings.commandPath, platform, options.environment) ??
+      options.settings.commandPath;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* fs.realPath(executable).pipe(Effect.orElseSucceed(() => executable));
+    // Local launcher arguments can identify different agents and can contain secrets.
+    const command = encodeCommand([
+      platform === "win32" ? path.toLowerCase() : path,
+      ...options.settings.commandArgs,
+    ]);
+    const digest = yield* digester
+      .digest(Digest.sha256, new TextEncoder().encode(command))
+      .pipe(Effect.map(Hex.encode), Effect.orDie);
+    credentialKey = `acp:local-command:${digest}`;
+  }
   const failure = (operation: string, detail: string, cause?: unknown) =>
     new ProviderSetupError({
       instanceId: options.instanceId,
@@ -382,7 +409,7 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   return yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     // ACP omits credential scope; assume an agent's instances share credentials in this environment.
-    credentialBinding: { owner: "provider", key: `acp:${agentKey}` },
+    credentialBinding: { owner: "provider", key: credentialKey },
     methods,
     ...(options.settings.authMethodId ? { defaultMethodId: options.settings.authMethodId } : {}),
     authenticate,

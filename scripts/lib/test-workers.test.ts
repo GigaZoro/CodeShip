@@ -36,4 +36,19 @@ describe("vitest configs", () => {
     expect(tracked.length).toBeGreaterThan(4);
     expect(uncapped).toEqual([]);
   });
+
+  // Without a config beside it, `vp test run <file>` from the package folder uses Vitest's defaults
+  // (5 s timeouts, real timers), so a test passes or fails depending on how it was started.
+  it("every package whose test script runs vitest has a Vite config beside it", () => {
+    const manifests = NodeFS.globSync("{scripts,packages/*}/package.json", { cwd: root });
+    const unconfigured = manifests.filter((file) => {
+      const manifest = JSON.parse(NodeFS.readFileSync(NodePath.join(root, file), "utf8"));
+      const runsVitest = /\bvp test run\b/.test(manifest.scripts?.test ?? "");
+      return (
+        runsVitest &&
+        !NodeFS.existsSync(NodePath.join(root, NodePath.dirname(file), "vite.config.ts"))
+      );
+    });
+    expect(unconfigured).toEqual([]);
+  });
 });

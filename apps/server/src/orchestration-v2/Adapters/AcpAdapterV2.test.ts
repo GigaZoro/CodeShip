@@ -20,10 +20,12 @@ import { assert, beforeAll, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
   EnvironmentId,
+  MessageId,
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  RunId,
   ThreadId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
@@ -81,6 +83,7 @@ import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
   AcpProviderCapabilitiesV2,
+  AcpWakeEvidence,
   acpPerTurnPromptUsage,
   acpScopedNativeId,
   acpPostSettleContinuationOfferEvidence,
@@ -1343,6 +1346,7 @@ describe("AcpAdapterV2", () => {
           now,
           ordinal: 3,
           messageCreatedBy: "agent",
+          messageId: offeredContinuation!.messageId!,
           messageCreationSource: "provider",
           messageText: "Background task completed.",
         }),
@@ -8696,6 +8700,7 @@ describe("AcpAdapterV2", () => {
       assert.isTrue(yield* hasPendingBackgroundWork, "buffered spawn ACK still requires a drain");
 
       const continuationNow = yield* DateTime.now;
+      yield* continuationRequests[0]!.dispatchIfCurrent!(Effect.void);
       const continuationInput = makeTurnInput({
         threadId,
         providerThread,
@@ -8704,6 +8709,7 @@ describe("AcpAdapterV2", () => {
         now: continuationNow,
         ordinal: 2,
         messageCreatedBy: "agent",
+        messageId: continuationRequests[0]!.messageId!,
         messageCreationSource: "provider",
         messageText: "Background task completed.",
       });
@@ -8846,9 +8852,14 @@ describe("AcpAdapterV2", () => {
           runtimePolicy,
         });
         const now = yield* DateTime.now;
-        yield* runtime.startTurn(
-          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
-        );
+        const sourceTurn = makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now,
+        });
+        yield* runtime.startTurn(sourceTurn);
         yield* Deferred.await(promptSettled);
 
         const firstProviderTurnId = idAllocator.derive.providerTurn({
@@ -8929,6 +8940,7 @@ describe("AcpAdapterV2", () => {
           1,
           "root-session post-settle subagent terminal must offer a continuation",
         );
+        assert.equal(continuationRequests[0]?.demandSourceRunId, sourceTurn.runId);
         assert.isTrue(
           yield* hasPendingBackgroundWork,
           "interrupted unprojected terminal must pin hasPendingBackgroundWork until attach",
@@ -8990,6 +9002,7 @@ describe("AcpAdapterV2", () => {
         );
 
         const continuationNow = yield* DateTime.now;
+        yield* continuationRequests[0]!.dispatchIfCurrent!(Effect.void);
         yield* runtime.startTurn(
           makeTurnInput({
             threadId,
@@ -8999,6 +9012,7 @@ describe("AcpAdapterV2", () => {
             now: continuationNow,
             ordinal: 3,
             messageCreatedBy: "agent",
+            messageId: continuationRequests[0]!.messageId!,
             messageCreationSource: "provider",
             messageText: "Background task completed.",
           }),
@@ -9707,6 +9721,7 @@ describe("AcpAdapterV2", () => {
           now: yield* DateTime.now,
           ordinal: 3,
           messageCreatedBy: "agent",
+          messageId: continuationRequest.messageId!,
           messageCreationSource: "provider",
           messageText: "Background task completed.",
         }),
@@ -9737,9 +9752,17 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  it.effect(
-    "staggered pre-settle completion keeps midTurn marks until last background task ends post-finalize",
-    () =>
+  it.effect.each([
+    "known",
+    "unknown first",
+    "earlier first",
+    "unknown middle",
+    "unknown last",
+    "mixed",
+    "reused",
+  ] as const)(
+    "staggered pre-settle completion keeps the sources of all terminal monitors (%s)",
+    (ownership) =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -9750,7 +9773,8 @@ describe("AcpAdapterV2", () => {
           [];
         type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
         let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
-        const promptGate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+        const promptCalls =
+          yield* Queue.unbounded<Deferred.Deferred<EffectAcpSchema.PromptResponse>>();
         const capturedMutation: {
           current:
             | ((mutation: {
@@ -9768,8 +9792,11 @@ describe("AcpAdapterV2", () => {
             capabilities: AcpProviderCapabilitiesV2,
             enablePostSettleContinuation: true,
             extractBackgroundTaskId: (toolCall) => {
-              if (toolCall.toolCallId === "tool-call-monitor-a") return "task-monitor-a";
-              if (toolCall.toolCallId === "tool-call-monitor-b") return "task-monitor-b";
+              if (toolCall.toolCallId === "tool-call-monitor-a" && ownership !== "unknown first")
+                return "task-monitor-a";
+              if (toolCall.toolCallId === "tool-call-monitor-b" && ownership !== "unknown last") {
+                return "task-monitor-b";
+              }
               return undefined;
             },
             extractBackgroundToolMutation: (text) => {
@@ -9796,7 +9823,12 @@ describe("AcpAdapterV2", () => {
                   Effect.sync(() => {
                     sessionUpdateHandler = handler;
                   }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
-                prompt: () => Deferred.await(promptGate),
+                prompt: () =>
+                  Effect.gen(function* () {
+                    const gate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+                    yield* Queue.offer(promptCalls, gate);
+                    return yield* Deferred.await(gate);
+                  }),
               }),
             }),
           },
@@ -9834,23 +9866,19 @@ describe("AcpAdapterV2", () => {
           runtimePolicy,
         });
         const now = yield* DateTime.now;
-        yield* runtime
-          .startTurn(
-            makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 1 }),
-          )
-          .pipe(Effect.forkScoped);
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
-        assert.isDefined(sessionUpdateHandler);
-        const applyMutation = capturedMutation.current;
-        if (applyMutation === null) {
-          return yield* Effect.die("registerExtensions must capture applyBackgroundTaskMutation");
-        }
+        const turn = (ordinal: number) =>
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now,
+            ordinal,
+          });
 
-        for (const [toolCallId, title] of [
-          ["tool-call-monitor-a", "Monitor: staggered A"],
-          ["tool-call-monitor-b", "Monitor: staggered B"],
-        ] as const) {
+        const startMonitor = Effect.fnUntraced(function* (id: "a" | "b") {
+          const toolCallId = `tool-call-monitor-${id}`;
+          const title = `Monitor: staggered ${id}`;
           yield* sessionUpdateHandler!({
             sessionId: "mock-session-1",
             update: {
@@ -9870,7 +9898,40 @@ describe("AcpAdapterV2", () => {
               status: "in_progress",
             },
           });
+        });
+        const waitForCompletion = Effect.fnUntraced(function* (ordinal: number) {
+          const providerTurnId = idAllocator.derive.providerTurn({
+            driver: ACP_TEST_DRIVER,
+            nativeTurnId: acpScopedNativeId(instanceId, `mock-session-1:turn:${ordinal}`),
+          });
+          while (true) {
+            const event = yield* Queue.take(events);
+            if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
+              assert.equal(event.status, "completed");
+              return;
+            }
+          }
+        });
+        const earlierTurn =
+          ownership === "mixed" || ownership === "reused" || ownership === "earlier first";
+        if (earlierTurn) {
+          yield* runtime.startTurn(turn(1)).pipe(Effect.forkScoped);
+          const firstGate = yield* Queue.take(promptCalls);
+          yield* startMonitor(ownership === "earlier first" ? "a" : "b");
+          yield* Deferred.succeed(firstGate, { stopReason: "end_turn" });
+          yield* waitForCompletion(1);
         }
+        const ordinal = earlierTurn ? 2 : 1;
+        const sourceTurn = turn(ordinal);
+        yield* runtime.startTurn(sourceTurn).pipe(Effect.forkScoped);
+        const promptGate = yield* Queue.take(promptCalls);
+        const applyMutation = capturedMutation.current;
+        if (applyMutation === null) {
+          return yield* Effect.die("registerExtensions must capture applyBackgroundTaskMutation");
+        }
+
+        if (ownership !== "earlier first") yield* startMonitor("a");
+        if (ownership !== "mixed") yield* startMonitor("b");
         yield* applyMutation({
           sessionId: "mock-session-1",
           taskId: "task-monitor-a",
@@ -9893,24 +9954,25 @@ describe("AcpAdapterV2", () => {
         );
 
         yield* Deferred.succeed(promptGate, { stopReason: "end_turn" });
-        const providerTurnId = idAllocator.derive.providerTurn({
-          driver: ACP_TEST_DRIVER,
-          nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
-        });
-        let terminalStatus: string | null = null;
-        while (terminalStatus === null) {
-          const event = yield* Queue.take(events);
-          if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
-            terminalStatus = event.status;
-          }
-        }
-        assert.equal(terminalStatus, "completed");
+        yield* waitForCompletion(ordinal);
         assert.lengthOf(
           continuationRequests,
           0,
           "finalize must not offer while B is still running",
         );
 
+        if (ownership === "unknown middle") {
+          yield* applyMutation({
+            sessionId: "mock-session-1",
+            taskId: "unattributed",
+            status: "running",
+          });
+          yield* applyMutation({
+            sessionId: "mock-session-1",
+            taskId: "unattributed",
+            status: "completed",
+          });
+        }
         const bEndNotice = {
           sessionId: "mock-session-1",
           update: {
@@ -9931,6 +9993,15 @@ describe("AcpAdapterV2", () => {
           "mutation-only end-notice must not count as post-settle wake evidence",
         );
         yield* sessionUpdateHandler!(bEndNotice);
+        if (ownership === "earlier first" || ownership === "unknown first") {
+          yield* sessionUpdateHandler!({
+            sessionId: "mock-session-1",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "Both monitors have ended." },
+            },
+          });
+        }
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
         assert.lengthOf(
@@ -9938,7 +10009,11 @@ describe("AcpAdapterV2", () => {
           1,
           "exactly one continuation when the last running task ends post-finalize with kept midTurn marks",
         );
-      }).pipe(Effect.provide(layerTest)),
+        assert.equal(
+          continuationRequests[0]?.demandSourceRunId,
+          ownership === "known" ? sourceTurn.runId : undefined,
+        );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
   it.effect(
@@ -10302,6 +10377,349 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(layerTest)),
   );
 
+  it("a consumed terminal stays consumed after churn while fresh unknown work still contributes", () => {
+    const wake = new AcpWakeEvidence();
+    const a = RunId.make("run-a"),
+      b = RunId.make("run-b");
+    wake.start("task-83", a, "old-registration");
+    wake.terminal("task-83", { kind: "command", label: "old command", outcome: "completed" });
+    wake.offer();
+    wake.consume();
+    for (let index = 0; index < 140; index++) {
+      const key = `ended-${index}`;
+      wake.start(key, a, key);
+      wake.terminal(key);
+      wake.offer();
+      wake.consume();
+    }
+    wake.start("current", b, "new-registration");
+    wake.terminal("current");
+    wake.terminal("task-83", { kind: "command", label: "stale detail", outcome: "completed" });
+    assert.deepEqual(wake.offer(), [{ sourceRunId: b }]);
+    wake.consume();
+    wake.start("next", b, "next-registration");
+    wake.terminal("next");
+    // task-1974 and task-83 occupy the same low 16 bits of Effect's string hash.
+    wake.terminal("task-1974");
+    assert.deepEqual(
+      wake.offer().map((entry) => entry.sourceRunId),
+      [b, null],
+    );
+  });
+
+  it("retries the original terminal while a successor using its native ID still runs", () => {
+    const wake = new AcpWakeEvidence();
+    const first = RunId.make("first"),
+      later = RunId.make("later");
+    wake.start("shared", first, "producer-a");
+    wake.terminal("shared", { kind: "command", label: "original", outcome: "failed" });
+    const original = wake.offer();
+    wake.start("shared", later, "producer-b");
+    wake.retryOffered();
+    assert.deepEqual(wake.offer(), original);
+    wake.accepted();
+    wake.attached();
+    assert.deepEqual(wake.offer(), []);
+    wake.terminal("shared", { kind: "command", label: "ambiguous", outcome: "completed" });
+    wake.start("separate", later, "producer-c");
+    wake.terminal("separate");
+    assert.deepEqual(wake.offer(), [{ sourceRunId: null }, { sourceRunId: later }]);
+  });
+
+  const wakeRuntime = Effect.fnUntraced(function* () {
+    type Update = Parameters<
+      AcpSessionRuntime.AcpSessionRuntime["Service"]["handleSessionUpdate"]
+    >[0];
+    const updates: Update[] = [];
+    const extensions: AcpAdapterV2ExtensionContext[] = [];
+    const inputs: AcpAdapterV2RuntimeInput[] = [];
+    const offers: ProviderContinuationRequests.ProviderContinuationRequest[] = [];
+    let replyToPrompt = false;
+    const sent: string[] = [];
+    const prompts = yield* Queue.unbounded<Deferred.Deferred<EffectAcpSchema.PromptResponse>>();
+    const path = yield* Path.Path;
+    const mock = makeMockRuntime({
+      childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+      mockAgentPath: yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      ),
+      wrapRuntime: (service) => ({
+        ...service,
+        handleSessionUpdate: (handler) =>
+          Effect.sync(() => {
+            updates.push(handler);
+          }).pipe(Effect.andThen(service.handleSessionUpdate(handler))),
+        prompt: ({ prompt }) =>
+          Effect.gen(function* () {
+            if (replyToPrompt) {
+              sent.push(
+                prompt
+                  .filter((block) => block.type === "text")
+                  .map((block) => block.text)
+                  .join("\n"),
+              );
+              return { stopReason: "end_turn" } as const;
+            }
+            const gate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+            yield* Queue.offer(prompts, gate);
+            return yield* Deferred.await(gate);
+          }),
+      }),
+    });
+    const instanceId = ProviderInstanceId.make("acp-test-wake");
+    const adapter = yield* makeAcpAdapterV2({
+      instanceId,
+      selfInvocation: yield* resolveSelfInvocation(),
+      continuationRequests: {
+        offer: (request) =>
+          Effect.sync(() => {
+            offers.push(request);
+          }),
+      },
+      flavor: {
+        driver: ACP_TEST_DRIVER,
+        capabilities: AcpProviderCapabilitiesV2,
+        enablePostSettleContinuation: true,
+        extractBackgroundTaskId: (tool) =>
+          tool.toolCallId.startsWith("producer-") ? "shared" : undefined,
+        registerExtensions: (context) =>
+          Effect.sync(() => {
+            extensions.push(context);
+          }),
+        makeRuntime: (input) =>
+          Effect.sync(() => {
+            inputs.push(input);
+          }).pipe(Effect.andThen(mock(input))),
+      },
+    });
+    const threadId = ThreadId.make("thread-acp-wake");
+    const modelSelection = { instanceId, model: "default" } as const;
+    const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: process.cwd(),
+    });
+    const session = yield* adapter.openSession({
+      threadId,
+      modelSelection,
+      runtimePolicy,
+      providerSessionId: ProviderSessionId.make("session-wake"),
+    });
+    const providerThread = yield* session.ensureThread({ threadId, modelSelection, runtimePolicy });
+    const sessionId = providerThread.nativeThreadRef!.nativeId;
+    assert(typeof sessionId === "string");
+    const turn = Effect.fnUntraced(function* (ordinal: number, register: boolean) {
+      const input = makeTurnInput({
+        threadId,
+        providerThread,
+        instanceId,
+        runtimePolicy,
+        ordinal,
+        now: yield* DateTime.now,
+      });
+      yield* session.startTurn(input);
+      const gate = yield* Queue.take(prompts);
+      if (register)
+        yield* updates.at(-1)!({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: `producer-${ordinal}`,
+            title: "Monitor",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: {},
+          },
+        });
+      yield* Deferred.succeed(gate, { stopReason: "end_turn" });
+      const done = yield* session.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.runHead,
+      );
+      assert.equal(Option.getOrThrow(done).status, "completed");
+      return input.runId;
+    });
+    const end = (processIndex: number, label: string) =>
+      extensions[processIndex]!.applyBackgroundTaskMutation({
+        sessionId,
+        taskId: "shared",
+        status: "completed",
+        report: { kind: "command", label },
+      });
+    const text = (processIndex: number, output = "Result available") =>
+      updates[processIndex]!({
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: output },
+        },
+      });
+    const terminate = () =>
+      inputs[0]!.onTermination!(
+        new EffectAcpErrors.AcpTransportError({ detail: "Mock runtime terminated", cause: "test" }),
+      );
+    const attach = Effect.fnUntraced(function* (
+      ordinal: number,
+      messageId: MessageId | undefined,
+      messageText = "Background task completed.",
+      user = false,
+    ) {
+      replyToPrompt = true;
+      yield* session.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          ordinal,
+          now: yield* DateTime.now,
+          ...(messageId === undefined ? {} : { messageId }),
+          messageCreatedBy: user ? "user" : "agent",
+          messageCreationSource: user ? "web" : "provider",
+          messageText,
+        }),
+      );
+      const events = yield* session.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      replyToPrompt = false;
+      assert.isTrue(
+        events.some((event) => event.type === "turn.terminal" && event.status === "completed"),
+      );
+      return events.flatMap((event) =>
+        event.type === "message.updated" && event.message.role === "assistant"
+          ? [event.message.text]
+          : [],
+      );
+    });
+    const resume = session.resumeThread({ providerThread, modelSelection, runtimePolicy });
+    return { turn, end, text, terminate, offers, inputs, resume, attach, sent };
+  });
+
+  it.effect("a failed ACP wake keeps its producer through a later turn reusing its task ID", () =>
+    Effect.gen(function* () {
+      const { turn, end, text, offers, attach } = yield* wakeRuntime();
+      const source = yield* turn(1, true);
+      yield* end(0, "original");
+      yield* text(0);
+      assert.lengthOf(offers, 1);
+      assert.equal(offers[0]?.demandSourceRunId, source);
+      yield* turn(2, true);
+      yield* offers[0]!.dispatchIfCurrent!(Effect.fail("retry")).pipe(Effect.flip);
+      yield* text(0);
+      assert.lengthOf(offers, 2);
+      assert.equal(offers[1]?.demandSourceRunId, source);
+      assert.deepEqual(offers[1]?.notification, offers[0]?.notification);
+      assert.isTrue(Option.isSome(yield* offers[1]!.dispatchIfCurrent!(Effect.void)));
+      yield* attach(3, offers[1]!.messageId);
+      yield* end(0, "successor");
+      yield* text(0);
+      assert.lengthOf(offers, 3);
+      assert.isUndefined(offers[2]?.demandSourceRunId);
+      assert.isUndefined(offers[2]?.notification);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect("an accepted ACP wake drains only the matching message from its own runtime", () =>
+    Effect.gen(function* () {
+      const { turn, end, text, offers, attach, sent, terminate, resume } = yield* wakeRuntime();
+      yield* turn(1, true);
+      yield* end(0, "original task");
+      yield* text(0, "old process result");
+      const old = offers[0]!;
+      assert.isTrue(Option.isSome(yield* old.dispatchIfCurrent!(Effect.void)));
+      yield* terminate();
+      yield* resume;
+      yield* turn(2, true);
+      yield* end(1, "replacement task");
+      yield* text(1, "replacement process result");
+      const fresh = offers[1]!;
+      // The old message was already enqueued, but the new offer still awaits its dispatch.
+      assert.deepEqual(yield* attach(3, old.messageId, "deliver old wake"), []);
+      assert.include(sent.at(-1)!, "deliver old wake");
+      assert.isTrue(Option.isSome(yield* fresh.dispatchIfCurrent!(Effect.void)));
+      assert.deepEqual(yield* attach(4, fresh.messageId, "ordinary user input", true), []);
+      assert.include(sent.at(-1)!, "ordinary user input");
+      assert.deepEqual(
+        yield* attach(5, MessageId.make("unrecognized-wake"), "deliver legacy wake"),
+        [],
+      );
+      assert.include(sent.at(-1)!, "deliver legacy wake");
+      assert.include(yield* attach(6, fresh.messageId), "replacement process result");
+      assert.lengthOf(sent, 3);
+      assert.deepEqual(yield* attach(7, fresh.messageId, "replayed delivered wake"), []);
+      assert.include(sent.at(-1)!, "replayed delivered wake");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect.each(["same process", "new process"] as const)(
+    "a terminal for a native session resumed in the %s uses only that process's producer",
+    (process) =>
+      Effect.gen(function* () {
+        const { turn, end, text, terminate, inputs, offers, resume } = yield* wakeRuntime();
+        const first = yield* turn(1, true);
+        const replaced = process === "new process";
+        if (replaced) yield* terminate();
+        yield* resume;
+        yield* turn(2, false);
+        assert.lengthOf(inputs, replaced ? 2 : 1);
+        if (replaced) {
+          yield* end(0, "late from dead process");
+          yield* text(0);
+          assert.lengthOf(offers, 0);
+        }
+        const active = replaced ? 1 : 0;
+        yield* end(active, "native completion");
+        yield* text(active);
+        assert.lengthOf(offers, 1);
+        assert.equal(offers[0]?.demandSourceRunId, replaced ? undefined : first);
+        assert.equal(offers[0]?.notification?.summary, 'Command "native completion" finished');
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect(
+    "termination invalidates a queued ACP offer before another process can reuse its native ID",
+    () =>
+      Effect.gen(function* () {
+        const { turn, end, text, terminate, offers } = yield* wakeRuntime();
+        yield* turn(1, true);
+        yield* end(0, "original");
+        yield* text(0);
+        const queued = offers[0]!;
+        yield* terminate();
+        assert.isTrue(Option.isNone(yield* queued.dispatchIfCurrent!(Effect.succeed("stale"))));
+        const replacement = yield* turn(2, true);
+        yield* end(1, "fresh");
+        yield* text(1);
+        assert.lengthOf(offers, 2);
+        yield* queued.clearIfCurrent!();
+        assert.equal(offers[1]?.demandSourceRunId, replacement);
+        assert.equal(offers[1]?.notification?.summary, 'Command "fresh" finished');
+        assert.isTrue(Option.isSome(yield* offers[1]!.dispatchIfCurrent!(Effect.void)));
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it("a reused task cannot enrich an accepted wake or consume a later offer on attach", () => {
+    const wake = new AcpWakeEvidence();
+    const first = RunId.make("first"),
+      later = RunId.make("later");
+    wake.start("shared", first, "first tool");
+    wake.terminal("shared", { kind: "command", label: "original", outcome: "completed" });
+    assert.equal(wake.offer()[0]?.sourceRunId, first);
+    wake.start("shared", later, "different tool");
+    wake.terminal("shared", { kind: "command", label: "possibly stale", outcome: "completed" });
+    wake.accepted();
+    assert.deepEqual(wake.offer(), [{ sourceRunId: null }]);
+    wake.attached();
+    wake.retryOffered();
+    assert.deepEqual(wake.offer(), [{ sourceRunId: null }]);
+    wake.accepted();
+    wake.attached();
+    wake.terminal("shared", { kind: "command", label: "stale", outcome: "failed" });
+    assert.deepEqual(wake.offer(), []);
+  });
+
   it.effect("a wake names work that ended while the previous wake was queued", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -10420,6 +10838,7 @@ describe("AcpAdapterV2", () => {
       yield* endCommand("task-b", "sleep b");
       assert.lengthOf(continuationRequests, 1);
 
+      yield* continuationRequests[0]!.dispatchIfCurrent!(Effect.void);
       yield* runtime.startTurn(
         makeTurnInput({
           threadId,
@@ -10429,6 +10848,7 @@ describe("AcpAdapterV2", () => {
           now: yield* DateTime.now,
           ordinal: 2,
           messageCreatedBy: "agent",
+          messageId: continuationRequests[0]!.messageId!,
           messageCreationSource: "provider",
           messageText: "Background task completed.",
         }),
@@ -10436,6 +10856,8 @@ describe("AcpAdapterV2", () => {
       yield* TestClock.adjust("3 seconds");
       assert.equal(yield* awaitTerminal(2), "completed");
 
+      // A stale terminal can arrive with richer details after the previous continuation consumed it.
+      yield* endCommand("task-a", "stale label from A");
       yield* agentText("B_DONE");
       assert.lengthOf(continuationRequests, 2);
       assert.deepEqual(continuationRequests[1]?.notification, {

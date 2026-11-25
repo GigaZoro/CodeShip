@@ -2,6 +2,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeUtil from "node:util";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -26,10 +27,13 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -1775,6 +1779,7 @@ const withRunConditions = <A, E>(
   }) => Effect.Effect<A, E, Scope.Scope>,
   policy?: Parameters<typeof ManagedPolicy.layerTest>[0],
   memory: Layer.Layer<MemoryAdmission.MemoryAdmission> = MemoryAdmission.layerTest(),
+  database = SqlitePersistence.layerMemory,
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<LaunchInput>();
@@ -1926,10 +1931,140 @@ const withRunConditions = <A, E>(
         whenTask,
       });
     }).pipe(Effect.scoped, Effect.provide(layer));
-  }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+  }).pipe(Effect.provide(database));
 
 const runsOf = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
   service.listRuns({ id: ScheduledTaskId.make("task:checked") }).pipe(Effect.map((r) => r.runs));
+
+it.effect.each([
+  "edited to 09:00",
+  "replaced",
+  "weekdays edited",
+  "catch-up enabled",
+  "unchanged",
+  "history insert fails",
+] as const)("settles a missed 07:00 occurrence (%s)", (change) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped();
+    const database = SqlitePersistence.layerFromPath(path.join(directory, "state.sqlite")).pipe(
+      Layer.provide(NodeServices.layer),
+      Layer.orDie,
+    );
+    yield* withRunConditions(
+      () => Effect.succeed(FOUND_WORK),
+      ({ service, sql, poll }) =>
+        Effect.gen(function* () {
+          const at = (day: number, hour: number, minute = 0) =>
+            DateTime.makeZonedUnsafe(
+              { year: 2026, month: 7, day, hour, minute, second: 0, millisecond: 0 },
+              { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+            );
+          const input = conditionTask({
+            schedule: { type: "fixed_time", timeOfDay: "07:00" },
+            catchUpMissedRun: false,
+          });
+          const save = (input: ScheduledTaskUpsertInput) =>
+            service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+          yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6)));
+          const { task } = yield* save(input);
+          yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6, 30)));
+          const observed = (yield* save(input)).task;
+          yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 8)));
+
+          const hasWriter = yield* Deferred.make<void>();
+          const decided = yield* Deferred.make<void>();
+          const tracer = Tracer.make({
+            span(options) {
+              if (options.name === "ScheduledTaskService.rescheduleMissedRun") {
+                Deferred.doneUnsafe(decided, Effect.void);
+              }
+              return new Tracer.NativeSpan(options);
+            },
+          });
+          // The poll can read through the reader pool. Its skip must wait for this writer.
+          const writer = yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(hasWriter, undefined);
+                yield* Deferred.await(decided);
+                if (change === "edited to 09:00") {
+                  yield* save({ ...input, schedule: { type: "fixed_time", timeOfDay: "09:00" } });
+                } else if (change === "replaced") {
+                  yield* service.delete({ id: task.id });
+                  // Give both rows the same due time and edit timestamp, but distinct creation times.
+                  yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6, 30)));
+                  const replacement = (yield* save(input)).task;
+                  assert.notEqual(replacement.createdAt, task.createdAt);
+                  assert.equal(replacement.updatedAt, observed.updatedAt);
+                  assert.equal(replacement.nextRunAt, observed.nextRunAt);
+                } else if (change === "weekdays edited" || change === "catch-up enabled") {
+                  yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6, 30)));
+                  const edit =
+                    change === "weekdays edited"
+                      ? {
+                          ...input,
+                          schedule: {
+                            type: "fixed_time" as const,
+                            timeOfDay: "07:00",
+                            weekdays: [3],
+                          },
+                        }
+                      : { ...input, catchUpMissedRun: true };
+                  const edited = (yield* save(edit)).task;
+                  assert.equal(edited.updatedAt, observed.updatedAt);
+                  assert.equal(edited.nextRunAt, observed.nextRunAt);
+                } else if (change === "history insert fails") {
+                  yield* sql`CREATE TRIGGER reject_skip BEFORE INSERT ON scheduled_task_runs
+                      BEGIN SELECT RAISE(ABORT, 'history unavailable'); END`;
+                }
+              }),
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(hasWriter);
+          let reportedSkips = 0;
+          yield* poll.pipe(
+            Effect.withTracer(tracer),
+            Effect.provide(
+              Logger.layer([
+                Logger.make(({ message }) => {
+                  if (
+                    Array.isArray(message) &&
+                    message[0] === "Skipping missed schedule task run"
+                  ) {
+                    reportedSkips++;
+                  }
+                }),
+              ]),
+            ),
+          );
+          yield* Fiber.join(writer);
+
+          const skipped = change === "unchanged";
+          const expectedNext =
+            change === "edited to 09:00" ? at(1, 9) : skipped ? at(2, 7) : at(1, 7);
+          const [current] = (yield* service.list()).tasks;
+          assert.equal(current?.nextRunAt, DateTime.formatIso(expectedNext));
+          const runs = yield* runsOf(service);
+          assert.deepEqual(
+            runs.map(({ outcome, skipReason, scheduledFor }) => ({
+              outcome,
+              skipReason,
+              scheduledFor,
+            })),
+            skipped
+              ? [{ outcome: "skipped", skipReason: "missed", scheduledFor: task.nextRunAt }]
+              : [],
+          );
+          assert.equal(reportedSkips, skipped ? 1 : 0);
+        }),
+      undefined,
+      undefined,
+      database,
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.effect("a check that finds no work starts no chat and records the occurrence as skipped", () =>
   withRunConditions(
@@ -2026,6 +2161,39 @@ it.effect.each([
           const byTask = (id: string) =>
             launched.find((input) => input.initialMessage?.scheduledTaskId === id)!;
           assert.deepEqual(comparable(byTask("task:checked")), comparable(byTask("task:plain")));
+          const [run] = yield* runsOf(service);
+          assert.deepEqual(run?.check, check);
+        }),
+    ),
+);
+
+// The run condition's contract with the chat it starts: skills read these lines to take the work.
+it.effect.each([
+  {
+    name: "a JSON answer's reason and unit",
+    check: { ...FOUND_WORK, detail: "New unit", unit: "AB#6663" },
+    block: "Run condition found work.\nReason: New unit\nUnit: AB#6663",
+  },
+  {
+    name: "a plain answer's reason line",
+    check: { ...FOUND_WORK, detail: "3 open PRs" },
+    block: "Run condition found work.\nReason: 3 open PRs",
+  },
+] satisfies ReadonlyArray<{ name: string; check: ScheduledTaskRunCheck; block: string }>)(
+  "a check that found work starts the chat with $name at the end of its first prompt",
+  ({ check, block }) =>
+    withRunConditions(
+      () => Effect.succeed(check),
+      ({ service, poll, launches }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            conditionTask(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+          yield* poll;
+          const launched = yield* Queue.take(launches);
+          assert.equal(launched.initialMessage?.text, `Review the open pull requests\n\n${block}`);
           const [run] = yield* runsOf(service);
           assert.deepEqual(run?.check, check);
         }),

@@ -10,6 +10,7 @@ import {
   type OrchestrationV2ThreadProjection,
   isAppOwnedTaskWork,
   isOrchestrationV2WorkActive,
+  orchestrationV2RunAwaitsMemory,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -111,14 +112,16 @@ export class ProviderRuntimeRecoveryService extends Context.Service<
   }
 >()("t3/orchestration-v2/ProviderRuntimeRecoveryService") {}
 
+/** Runs a restart cuts. One still waiting for memory has started nothing, so it keeps its place. */
 function nonterminalRuns(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
   return projection.runs.filter((run) => {
     const status: string = run.status;
     return (
-      status === "preparing" ||
-      run.status === "starting" ||
-      run.status === "running" ||
-      run.status === "waiting"
+      (status === "preparing" ||
+        run.status === "starting" ||
+        run.status === "running" ||
+        run.status === "waiting") &&
+      !orchestrationV2RunAwaitsMemory(run)
     );
   });
 }
@@ -310,7 +313,10 @@ function changesRestartHold(event: OrchestrationV2DomainEvent): boolean {
 
 /** A turn that is answering now: a restart cuts it mid-answer. */
 function isRunningTurn(run: ProjectionStore.ProjectionRuntimeRecoveryState["runs"][number]) {
-  return run.status === "preparing" || run.status === "starting" || run.status === "running";
+  return (
+    (run.status === "preparing" || run.status === "starting" || run.status === "running") &&
+    !orchestrationV2RunAwaitsMemory(run)
+  );
 }
 
 /**
@@ -1073,10 +1079,13 @@ export const make = Effect.gen(function* () {
           payload: { ...task, completionWake: "always", updatedAt: now },
         });
       }
-      const recoveredNonterminalRunIds = new Set(runs.map((run) => run.id));
+      // A run still waiting for memory keeps its records, its workspace setup included, for its turn.
+      const keptRunIds = new Set(
+        [...runs, ...projection.runs.filter(orchestrationV2RunAwaitsMemory)].map((run) => run.id),
+      );
       const cancelledStaleNodeIds = new Set<string>();
       for (const item of projection.turnItems ?? []) {
-        if (item.runId !== null && recoveredNonterminalRunIds.has(item.runId)) {
+        if (item.runId !== null && keptRunIds.has(item.runId)) {
           continue;
         }
         if (!isBackgroundCapableTurnItemType(item.type)) {

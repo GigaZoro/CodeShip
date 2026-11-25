@@ -43,6 +43,10 @@
       "types": "./src/composerPullRequestMatches.ts",
       "import": "./src/composerPullRequestMatches.ts"
     },
+    "./accentPalette": {
+      "types": "./src/accentPalette.ts",
+      "import": "./src/accentPalette.ts"
+    },
     "./themePalettes": {
       "types": "./src/themePalettes.ts",
       "import": "./src/themePalettes.ts"
@@ -419,6 +423,14 @@
       "types": "./src/testing/hostPlatform.ts",
       "import": "./src/testing/hostPlatform.ts"
     },
+    "./testing/hostCapabilities": {
+      "types": "./src/testing/hostCapabilities.ts",
+      "import": "./src/testing/hostCapabilities.ts"
+    },
+    "./testing/hostCapabilityProbe": {
+      "types": "./src/testing/hostCapabilityProbe.ts",
+      "import": "./src/testing/hostCapabilityProbe.ts"
+    },
     "./testing/symlinks": {
       "types": "./src/testing/symlinks.ts",
       "import": "./src/testing/symlinks.ts"
@@ -646,7 +658,7 @@
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir ."
+    "test": "vp test run"
   },
   "dependencies": {
     "@noble/curves": "catalog:",

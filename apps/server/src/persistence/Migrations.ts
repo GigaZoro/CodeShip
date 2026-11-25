@@ -130,7 +130,12 @@ import CodeShipMigration0016 from "./CodeShipMigrations/016_ManualStepReviewLang
 import CodeShipMigration0017 from "./CodeShipMigrations/017_PullRequestReviewGuideLanguages.ts";
 import CodeShipMigration0018 from "./CodeShipMigrations/018_CommandRunLossEvidence.ts";
 import CodeShipMigration0019 from "./CodeShipMigrations/019_MonitoringThreadAnalyses.ts";
-import CodeShipMigration0020 from "./CodeShipMigrations/020_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0020 from "./CodeShipMigrations/020_NodePayloadWithoutColumnKeys.ts";
+import CodeShipMigration0021 from "./CodeShipMigrations/021_CommandRunProcessIdentity.ts";
+import CodeShipMigration0022 from "./CodeShipMigrations/022_ScheduledTaskDescriptions.ts";
+import CodeShipMigration0023 from "./CodeShipMigrations/023_TurnItemPayloadWithoutColumnKeys.ts";
+import CodeShipMigration0024 from "./CodeShipMigrations/024_CommandRunShell.ts";
+import CodeShipMigration0025 from "./CodeShipMigrations/025_PayloadIndexesJsonValid.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -250,7 +255,12 @@ const codeShipMigrationEntries = [
   [17, "PullRequestReviewGuideLanguages", CodeShipMigration0017],
   [18, "CommandRunLossEvidence", CodeShipMigration0018],
   [19, "MonitoringThreadAnalyses", CodeShipMigration0019],
-  [20, "PayloadIndexesJsonValid", CodeShipMigration0020],
+  [20, "NodePayloadWithoutColumnKeys", CodeShipMigration0020],
+  [21, "CommandRunProcessIdentity", CodeShipMigration0021],
+  [22, "ScheduledTaskDescriptions", CodeShipMigration0022],
+  [23, "TurnItemPayloadWithoutColumnKeys", CodeShipMigration0023],
+  [24, "CommandRunShell", CodeShipMigration0024],
+  [25, "PayloadIndexesJsonValid", CodeShipMigration0025],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

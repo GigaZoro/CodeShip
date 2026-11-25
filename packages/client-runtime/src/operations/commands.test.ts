@@ -251,6 +251,31 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestRandom)),
   );
 
+  it.effect("forwards the triggering message for an on-return compaction", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const trigger = MessageId.make("owner-next-message");
+      yield* startThreadTurn({
+        threadId: v2ThreadId,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        message: {
+          messageId: MessageId.make("automatic-compact"),
+          role: "user",
+          text: "/compact",
+          attachments: [],
+          idleCompaction: "onReturn",
+          compactionForMessageId: trigger,
+        },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(commands[0]).toMatchObject({
+        type: "message.dispatch",
+        compactionForMessageId: trigger,
+      });
+    }).pipe(Effect.provide(layerTestRandom)),
+  );
+
   it.effect("preserves an existing worktree and branch during first-message launch", () =>
     Effect.gen(function* () {
       const launches: OrchestrationV2ThreadLaunchInput[] = [];

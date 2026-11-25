@@ -40,10 +40,8 @@ import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/process
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import {
   endingWindowsTrees,
-  stopWindowsProcessTree,
-  withWindowsTreeRoot,
+  withWindowsTreeStop,
   withoutWindowsTreeEnding,
-  type WindowsProcessTreeRoot,
 } from "@t3tools/shared/windowsProcessTree";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -1026,18 +1024,6 @@ export function terminatePosixOwnedProcessTree(input: {
   }).pipe(withWallClock);
 }
 
-const stopAcpWindowsProcessTree = (root: WindowsProcessTreeRoot) =>
-  stopWindowsProcessTree(root).pipe(
-    Effect.mapError(
-      (cause) =>
-        new AcpProcessGroupTerminationError({
-          cause,
-          detail: `Failed to stop ACP process tree ${root.pid}`,
-          pid: root.pid,
-        }),
-    ),
-  );
-
 export function selectAcpAgentAuthMethod(
   authMethods: ReadonlyArray<EffectAcpSchema.AuthMethod> | undefined,
   preferredMethodId?: string,
@@ -1444,14 +1430,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ELECTRON_RUN_AS_NODE: "1",
           T3_ACP_CGROUP_WRAPPER: "1",
         };
-  const { handle: child, root: childTreeRoot } = yield* spawner
+  const { handle: child, stopTree: stopWindowsTree } = yield* spawner
     .spawn(
       ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
         ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
         ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
         extendEnv: options.spawn.extendEnv ?? true,
-        // Windows `detached` gives the child its own console, which breaks stdio pipes through
-        // `.cmd` shims; taskkill /T cleans up the tree there without it.
+        // A detached Windows child starts without a console, and a .cmd launcher then never
+        // receives stdin. Windows owns no process group; its tree is stopped through PowerShell.
         ...(options.ownDetachedProcessGroup === undefined
           ? {}
           : { detached: options.ownDetachedProcessGroup && hostPlatform !== "win32" }),
@@ -1459,8 +1445,8 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       }),
     )
     .pipe(
+      withWindowsTreeStop,
       Effect.provideService(Scope.Scope, runtimeScope),
-      withWindowsTreeRoot,
       Effect.mapError(
         (cause) =>
           new EffectAcpErrors.AcpSpawnError({
@@ -1545,11 +1531,16 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         return cause?.code === "ESRCH" ? Effect.succeed(false) : Effect.fail(error);
       }),
     );
-  // Each walk starts PowerShell, so terminating the group and the scope's finalizer share one.
-  const stopChildTree = yield* Effect.cached(
-    stopAcpWindowsProcessTree(childTreeRoot).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+  const stopChildTree = stopWindowsTree.pipe(
+    Effect.mapError(
+      (cause) =>
+        new AcpProcessGroupTerminationError({
+          cause,
+          detail: `Failed to stop ACP process tree ${child.pid}`,
+          pid: Number(child.pid),
+        }),
     ),
+    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
   );
   const terminateWindowsProcessTree =
     options.windowsProcessTreeTerminator?.(Number(child.pid)) ?? stopChildTree;

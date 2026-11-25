@@ -26,6 +26,14 @@ function formulas(markdown: string) {
   });
 }
 
+const CONTAINERS = new Set(["root", "list", "listItem", "blockquote", "footnoteDefinition"]);
+
+/** Containers with their children, other blocks by type. */
+function structure(node: Nodes): string {
+  if (!CONTAINERS.has(node.type) || !("children" in node)) return node.type;
+  return `${node.type}(${node.children.map(structure).join(",")})`;
+}
+
 function text(markdown: string) {
   return collect(parse(markdown))
     .flatMap((node) => (node.type === "text" ? [node.value] : []))
@@ -118,9 +126,40 @@ describe("chat math parsing", () => {
   it("keeps block syntax inside display blocks as TeX", () => {
     expect(formulas("\\[\nx\n- y\n# z\n\\]\nafter")).toEqual([["display", "x\n- y\n# z"]]);
     expect(formulas("> $$\n> x\n> $$")).toEqual([["display", "x"]]);
+    expect(formulas("$$\n- x\n> y\n$$")).toEqual([["display", "- x\n> y"]]);
     // Same-line content is not a fence; it stays one formula.
     expect(formulas("$$x^2\n+y^2$$")).toEqual([["display", "x^2\n+y^2"]]);
     expect(text("$$E=mc^2")).toBe("$$E=mc^2");
+  });
+
+  it("ends an unclosed display opener at a blank line, so the blocks after it parse as in GFM", () => {
+    const gfm = unified().use(remarkParse).use(remarkGfm).freeze();
+    for (const prefix of ["", "Text\n\n", "> q\n\n"])
+      for (const opener of ["$$", "$$a", "$$$", "\\[", "\\[a", "  $$", "   \\["])
+        for (const lines of ["", "\ny", "\n\\frac{a}{b}\n= c"])
+          for (const blank of ["\n\n", "\n  \n", "\n\t\n"])
+            for (const next of ["- b", "1. b", "> b", "[^a]: b\n\nc[^a]", "# b", "| a |\n| - |"]) {
+              const source = prefix + opener + lines + blank + next;
+              const tree = parse(source);
+              expect(
+                collect(tree).some((node) => node.type === "math"),
+                source,
+              ).toBe(false);
+              expect(structure(tree), source).toBe(structure(gfm.parse(source)));
+            }
+  });
+
+  it("ends an unclosed opener inside a list item at a blank line", () => {
+    const [list] = parse("- $$a\n\n  - b").children;
+    expect(list).toMatchObject({
+      type: "list",
+      children: [{ children: [{ type: "paragraph" }, { type: "list" }] }],
+    });
+  });
+
+  it("reads display math with a blank line in it as text, as TeX does", () => {
+    expect(formulas("$$\na\n\nb\n$$")).toEqual([]);
+    expect(formulas("\\[\na\n \t\nb\n\\]")).toEqual([]);
   });
 
   it("keeps prices, shell variables, and skill tokens as prose", () => {

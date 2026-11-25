@@ -2,6 +2,9 @@ import * as NodeSqlite from "node:sqlite";
 
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
   CommandId,
   MessageId,
   EventId,
@@ -45,6 +48,7 @@ import * as UnattendedApprovalReactor from "./UnattendedApprovalReactor.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { finalReviewCommand } from "./FinalReview.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -1208,6 +1212,124 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each([false, true])(
+  "carries the original request through a final review (mixed MCP history: %s)",
+  (mixed) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:review-demand");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-review-demand"),
+        threadId,
+        projectId: ProjectId.make("project:review-demand"),
+        title: "Implementation",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      if (mixed) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("earlier-work"),
+          threadId,
+          messageId: MessageId.make("message:earlier-work"),
+          text: "Do earlier work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const earlier = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("stop-earlier"),
+          threadId,
+          runId: earlier.id,
+        });
+      }
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("start-owner-demand"),
+        threadId,
+        messageId: MessageId.make("message:owner-demand"),
+        text: "Make the change",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const now = yield* DateTime.now;
+      const owner = (yield* projections.getThreadProjection(threadId)).runs.at(-1)!;
+      assert.isString(owner.demandId);
+      yield* projections.apply({
+        id: EventId.make("event:review-owner-complete"),
+        type: "run.updated",
+        threadId,
+        runId: owner.id,
+        occurredAt: now,
+        payload: { ...owner, status: "completed", completedAt: now },
+      });
+      const projection = yield* projections.getThreadProjection(threadId);
+      const review = finalReviewCommand({
+        projection: {
+          ...projection,
+          checkpoints: [
+            {
+              id: CheckpointId.make("review-checkpoint"),
+              threadId,
+              scopeId: CheckpointScopeId.make("review-scope"),
+              runId: owner.id,
+              nodeId: owner.rootNodeId!,
+              parentCheckpointId: null,
+              ordinalWithinScope: 1,
+              appRunOrdinal: owner.ordinal,
+              ref: CheckpointRef.make("refs/t3/review"),
+              status: "ready",
+              files: [{ path: "app.ts", kind: "modified", additions: 1, deletions: 0 }],
+              capturedAt: now,
+            },
+          ],
+        },
+        runId: owner.id,
+        settings: {
+          finalReviewByDefault: true,
+          finalReviewModelSelections: [modelSelection],
+          finalReviewInstructions: "",
+        },
+        providers: [],
+      });
+      assert.isNotNull(review);
+      yield* orchestrator.dispatch(review!);
+      const coordinator = (yield* projections.getThreadProjection(threadId)).runs.find(
+        (run) => run.userMessageId === review!.messageId,
+      )!;
+      assert.equal(coordinator.demandId, owner.demandId);
+      yield* orchestrator.dispatch({
+        type: "delegated_task.request",
+        commandId: CommandId.make("delegate-final-review"),
+        parentThreadId: threadId,
+        parentRunId: coordinator.id,
+        parentNodeId: coordinator.rootNodeId!,
+        task: "Review the change",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const task = (yield* projections.getThreadProjection(threadId)).subagents[0]!;
+      const reviewer = (yield* projections.getThreadProjection(task.childThreadId!)).runs[0]!;
+      assert.equal(task.demandId, mixed ? null : owner.demandId);
+      assert.equal(reviewer.demandId, task.demandId);
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("keeps delegated child pull-request links independent of the parent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1347,6 +1469,8 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     });
     const task = (yield* projections.getThreadProjection(parentThreadId)).subagents[0]!;
     const childRun = (yield* projections.getThreadRecords(task.childThreadId!, ["runs"])).runs[0]!;
+    assert.isString(parentRun.demandId);
+    assert.equal(childRun.demandId, parentRun.demandId);
     const now = yield* DateTime.now;
     const requestEvent = (
       eventId: string,
@@ -1435,6 +1559,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       (run) => run.userMessageId === wakes[0]!.id,
     )!;
     assert.equal(wakeRun.status, "queued");
+    assert.equal(wakeRun.demandId, parentRun.demandId);
     const resolved = {
       ...asyncQuestion,
       id: EventId.make("event:question-resolved"),
@@ -1625,6 +1750,20 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     ])).messages.find((message) =>
       message.text.includes(`requestId ${followupQuestion.payload.id}`),
     )!;
+    const followupParent = yield* projections.getThreadRecords(parentThreadId, [
+      "subagents",
+      "runs",
+    ]);
+    assert.isString(followup.demandId);
+    assert.notEqual(followup.demandId, parentRun.demandId);
+    assert.equal(
+      followupParent.subagents.find((row) => row.id === followup.delegatedTaskId)?.demandId,
+      followup.demandId,
+    );
+    assert.equal(
+      followupParent.runs.find((row) => row.userMessageId === followupWake.id)?.demandId,
+      followup.demandId,
+    );
     assert.deepEqual(followupWake.notification?.source, {
       kind: "delegated_task",
       taskIds: [followup.delegatedTaskId],

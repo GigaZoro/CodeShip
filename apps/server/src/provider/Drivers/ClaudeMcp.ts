@@ -163,7 +163,21 @@ const decodeStoredMcpServer = Schema.decodeUnknownOption(ClaudeStoredMcpServer);
 function claudeStoredMcpServer(entry: unknown): ProviderMcpServerConfig | undefined {
   const stored = Option.getOrUndefined(decodeStoredMcpServer(entry));
   if (stored?.type === "http" && stored.url) {
-    return { transport: "http", url: stored.url, headers: stored.headers ?? {} };
+    const headers = { ...stored.headers };
+    const authorization = Object.keys(headers).find(
+      (name) => name.toLowerCase() === "authorization",
+    );
+    const variable =
+      authorization === undefined
+        ? undefined
+        : /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]{0,127})\}$/iu.exec(headers[authorization] ?? "")?.[1];
+    if (variable !== undefined && authorization !== undefined) delete headers[authorization];
+    return {
+      transport: "http",
+      url: stored.url,
+      headers,
+      ...(variable === undefined ? {} : { bearerTokenEnvVar: variable }),
+    };
   }
   if ((stored?.type === undefined || stored.type === "stdio") && stored?.command) {
     return {
@@ -292,10 +306,14 @@ function claudeTurnedOffMcpServers(settings: Readonly<Record<string, unknown>>) 
 /** The entry Claude keeps for a server, without empty header or environment tables. */
 export function claudeMcpServerEntry(server: ProviderMcpServerConfig): Record<string, unknown> {
   if (server.transport === "http") {
+    const headers =
+      server.bearerTokenEnvVar === undefined
+        ? server.headers
+        : { ...server.headers, Authorization: `Bearer \${${server.bearerTokenEnvVar}}` };
     return {
       type: "http",
       url: server.url,
-      ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
     };
   }
   return {

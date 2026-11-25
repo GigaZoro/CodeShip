@@ -1,14 +1,16 @@
-import { RunId } from "@t3tools/contracts";
+import { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   generateSpreadPinOrderKeys,
   pinOrderKeyBetween,
   planPinnedReorder,
+  planPinsAtTop,
   resolveSettledThreadTimestamp,
   sortActiveThreadsByOrderKey,
   sortSettledThreads,
   sortThreads,
+  sortThreadList,
   type SettledThreadTimestampInput,
   type ThreadSortInput,
 } from "./threadSort.ts";
@@ -25,6 +27,24 @@ function makeThread(overrides: Partial<TestThread> = {}): TestThread {
     ...overrides,
   };
 }
+
+it("sorts by latest activity, creation, or natural name order", () => {
+  const row = (id: string, title: string, createdAt: string, updatedAt: string) => ({
+    id: ThreadId.make(id),
+    environmentId: EnvironmentId.make("local"),
+    title,
+    createdAt,
+    updatedAt,
+  });
+  const first = row("a", "Build 10", "2026-03-09T10:00:00Z", "2026-03-10T10:00:00Z");
+  const second = row("b", "build 2", "2026-03-09T12:00:00Z", "2026-03-09T12:00:00Z");
+  const third = row("c", "Docs", "2026-03-09T11:00:00Z", "2026-03-09T11:00:00Z");
+  const threads = [third, first, second];
+  expect(sortThreadList(threads, "last-activity")).toEqual([first, second, third]);
+  expect(sortThreadList(threads, "created")).toEqual([second, third, first]);
+  expect(sortThreadList(threads, "name")).toEqual([second, first, third]);
+  expect(threads).toEqual([third, first, second]);
+});
 
 describe("resolveSettledThreadTimestamp", () => {
   it("prefers the persisted settlement stamp over later activity", () => {
@@ -229,6 +249,34 @@ describe("planPinnedReorder with hidden rows", () => {
     expect(keys).toEqual([...keys].sort());
     expect(new Set(keys).size).toBe(3);
     expect(keys.every((key) => !reserved.includes(key))).toBe(true);
+  });
+});
+
+describe("planPinsAtTop", () => {
+  const shelfOrder = (
+    shelf: ReadonlyArray<{ readonly id: string; readonly pinOrderKey: string | null }>,
+    plan: ReturnType<
+      typeof planPinsAtTop<{ readonly id: string; readonly pinOrderKey: string | null }>
+    >,
+  ) => {
+    const keys = new Map(shelf.map((thread) => [thread.id, thread.pinOrderKey]));
+    for (const { thread, orderKey } of plan.rekeyed) keys.set(thread.id, orderKey);
+    plan.pinKeys.forEach((key, index) => keys.set(`new-${index}`, key));
+    return [...keys].toSorted(([, left], [, right]) => (left! < right! ? -1 : 1)).map(([id]) => id);
+  };
+
+  it.each([
+    { name: "a usable head", head: "n", rekeys: 0 },
+    // The V1 cutover keeps `a0`, which leaves no key above it.
+    { name: "an imported head", head: "a0", rekeys: 2 },
+  ])("puts new pins on top in order with $name", ({ head, rekeys }) => {
+    const shelf = [
+      { id: "head", pinOrderKey: head },
+      { id: "next", pinOrderKey: "t" },
+    ];
+    const plan = planPinsAtTop({ shelf, count: 2 });
+    expect(plan.rekeyed).toHaveLength(rekeys);
+    expect(shelfOrder(shelf, plan)).toEqual(["new-0", "new-1", "head", "next"]);
   });
 });
 

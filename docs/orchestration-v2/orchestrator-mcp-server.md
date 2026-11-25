@@ -258,7 +258,17 @@ when unavailable. Selecting a different provider without a model uses that
 provider's first advertised model.
 
 Set `target.options` using the options returned by `orchestrator_capabilities`, such as
-`{effort: "max"}`. Supplied values override inherited selections; `{}` or `[]` clears them.
+`{effort: "max"}`. A child on its parent's provider instance and model, named by slug or alias,
+inherits the parent's options, and given `options` override them one by one
+(`[]` or `{}` clears them; an option given twice fails the call). An alias can
+name another model in a linked environment, so a child there inherits them only
+on the parent's model named by its slug in this environment, and an omitted
+model is sent as that slug. A child on an Auto model would run the options
+saved for Auto instead, so a target that gives options runs on that model as
+named, not as Auto; without options it stays Auto. A role's model whose account
+is gone, or no longer offers it, falls back to the parent's; one that rejects
+the given options fails the call.
+
 For local delegation, use `isolation: "worktree"` for a separate prepared checkout from
 the parent's commit; the default `"shared"` uses the parent's checkout. Uncommitted parent
 edits are not copied. A linked-environment target (`target.environmentId`) runs in the remote

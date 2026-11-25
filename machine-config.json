@@ -1,9 +1,13 @@
 {
-  "$comment": "The machines that run T3.CodeShip's scheduled tasks share this configuration (~/.agents/rules/machines.md). Check a machine with: node ~/.agents/tools/machine-config.mjs check <checkout>. Only 'machines' differs per machine. 'automations' says where each task runs and 'scheduled_tasks' its prompt file, schedule and model; the check compares each machine's CodeShip tasks with them.",
+  "$comment": "The machines that work on T3.CodeShip share this configuration (~/.agents/rules/machines.md). Check a machine with: node ~/.agents/tools/machine-config.mjs check <checkout>. Only 'machines' differs per machine. 'automations' says where each task runs and 'scheduled_tasks' its prompt file, schedule and model; the check compares each machine's CodeShip tasks with them. 'toolchain.node' makes the check compare the machine's Node with package.json engines.node, the version check:changed requires.",
   "schema": 1,
   "project": "CodeShip",
   "repository": "https://github.com/GigaZoro/CodeShip.git",
   "branch": "main",
+  "$git_config": "Git runs the tracked hooks in .vite-hooks itself, so they work with no install, and `prepare` must not run `vp config`, which would repoint core.hooksPath at its generated .vite-hooks/_ shims. Their pre-push hook refuses a push to main unless `vp run check:changed` passed for the exact tree it pushes. gc.pruneExpire lets `git gc --auto` delete unreachable objects after a day instead of two weeks: agent worktrees, rebases and checkpoint capture leave far more than gc.auto (6,700) loose objects within two weeks, and with the default window auto gc cannot delete them, only warns in gc.log, and that log keeps it from running again. A day is the safety window: objects a rebase or fetch has just written are never that old. machine-config check --fix sets both on every machine.",
+  "git_config": { "core.hooksPath": ".vite-hooks", "gc.pruneExpire": "1.day.ago" },
+  "$ignore_local": ".claude/settings.local.json is Claude Code's own per-checkout list of commands a person approved in a chat. It holds nothing to share, so it stays local.",
+  "ignore_local": [".claude/settings.local.json"],
   "$automation_order": "\"one\" runs each occurrence on the first machine that is up, in this order. Each task's settings exclude Zoro-PC. The job machine gets no copy: it is not linked to these machines, and CodeShip accepts no exclusion for a machine no copy reaches.",
   "automation_order": ["Zoro-VPS", "MacBook-Pro-Andrii"],
   "automations": {
@@ -23,11 +27,19 @@
       "model": { "model": "claude-opus-5-5", "options": { "effort": "xhigh" }, "autoAccount": true }
     }
   },
+  "toolchain": {
+    "node": "package.json"
+  },
+  "$tools": "git needs 2.47.0 or later: older git builds a hex dump of every UTF-16 working-tree-encoding conversion even with tracing off, so the utf16le rows of the GitVcsDriverCore tests run minutes past their limit. machine-config check reports an older git as drift.",
   "tools": {
-    "git": {},
+    "git": { "min_version": "2.47.0" },
     "vp": {}
   },
   "machines": {
+    "Zoro-PC": {
+      "checkout": "C:/Users/Admin/source/repos/CodeShip",
+      "codeship_environment_id": "432bb6b2-fa71-4676-8ba7-3fe3e55b9941"
+    },
     "Zoro-VPS": {
       "checkout": "/home/zoro/Projects/CodeShip",
       "codeship_environment_id": "52d42658-8c86-4dcd-a55c-fa12e79ebb54"

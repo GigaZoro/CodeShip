@@ -12,8 +12,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   type ArchivedThreadsView,
+  type ArchivedThreadSnapshotsState,
   createArchivedThreadSnapshotsAtomFamily,
   makeArchivedThreadsViewKey,
+  resolveLatestArchivedThread,
 } from "./archivedThreads.ts";
 import { v2Project, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 
@@ -218,6 +220,111 @@ describe("archived pages from several machines", () => {
       ThreadId.make("kestrel"),
     ]);
     expect(state.hasMore).toBe(false);
+    registry.dispose();
+  });
+});
+
+describe("resolveLatestArchivedThread", () => {
+  const laptop = EnvironmentId.make("env-laptop");
+  const desktop = EnvironmentId.make("env-desktop");
+  const archived = (id: string, minute: number, tags: ReadonlyArray<string> = []) => ({
+    ...v2ThreadShell,
+    id: ThreadId.make(id),
+    tags,
+    archivedAt: DateTime.makeUnsafe(Date.UTC(2026, 5, 20, 0, minute)),
+  });
+  const entry = (
+    environmentId: EnvironmentId,
+    threads: ReadonlyArray<ReturnType<typeof archived>>,
+  ) => ({
+    environmentId,
+    snapshot: { schemaVersion: 1, snapshotSequence: 1, projects: [v2Project], threads },
+  });
+  const state = (
+    overrides: Partial<ArchivedThreadSnapshotsState>,
+  ): ArchivedThreadSnapshotsState => ({
+    snapshots: [],
+    error: null,
+    isLoading: false,
+    hasMore: false,
+    ...overrides,
+  });
+  const found = (result: ReturnType<typeof resolveLatestArchivedThread>) =>
+    result._tag === "Found" ? [result.environmentId, result.thread.id] : result._tag;
+
+  it.each([
+    {
+      name: "picks the newest archive across machines",
+      state: state({
+        snapshots: [
+          entry(laptop, [archived("a", 5), archived("b", 1)]),
+          entry(desktop, [archived("c", 9)]),
+        ],
+      }),
+      expected: [desktop, "c"],
+    },
+    {
+      name: "breaks an archive-time tie by thread id, like the server order",
+      state: state({
+        snapshots: [entry(laptop, [archived("b", 5)]), entry(desktop, [archived("a", 5)])],
+      }),
+      expected: [desktop, "a"],
+    },
+    {
+      name: "waits for a machine still loading, which may hold a newer archive",
+      state: state({ snapshots: [entry(laptop, [archived("a", 5)])], isLoading: true }),
+      expected: "Pending",
+    },
+    {
+      name: "fails when a machine failed, rather than pick another machine's older archive",
+      state: state({
+        snapshots: [entry(laptop, [archived("a", 5)])],
+        error: "Failed to load archived threads.",
+      }),
+      expected: "Failed",
+    },
+    { name: "is empty when nothing is archived", state: state({}), expected: "Empty" },
+  ])("$name", ({ state: input, expected }) => {
+    expect(found(resolveLatestArchivedThread(input))).toEqual(expected);
+  });
+
+  it("reads on past a first page the tag filter hides entirely", () => {
+    const hiddenPage = [archived("private", 9, ["private"])];
+    const snapshotsAtom = createArchivedThreadSnapshotsAtomFamily<Error>({
+      getPageAtom: (_environmentId, input) =>
+        Atom.make(
+          AsyncResult.success({
+            schemaVersion: 1,
+            snapshotSequence: 1,
+            projects: [v2Project],
+            ...(input.after === undefined
+              ? {
+                  threads: hiddenPage,
+                  nextCursor: {
+                    archivedAt: DateTime.formatIso(hiddenPage[0]!.archivedAt),
+                    threadId: hiddenPage[0]!.id,
+                  },
+                }
+              : { threads: [archived("visible", 2)], nextCursor: null }),
+          }),
+        ),
+      hiddenThreadTagsAtom: () => Atom.make(["private"]),
+      hiddenThreadKeysAtom: Atom.make((): ReadonlySet<string> => new Set()),
+      liveThreadRefsAtom: Atom.make((): ReadonlyArray<ScopedThreadRef> => []),
+      anyEnvironmentHidingAtom: Atom.make(true),
+      labelPrefix: "test:latest-archived",
+    });
+    const registry = AtomRegistry.make();
+    const resolve = (pages: number) =>
+      found(
+        resolveLatestArchivedThread(
+          registry.get(
+            snapshotsAtom(makeArchivedThreadsViewKey({ environmentIds: [laptop], pages })),
+          ),
+        ),
+      );
+    expect(resolve(1)).toBe("LoadMore");
+    expect(resolve(2)).toEqual([laptop, "visible"]);
     registry.dispose();
   });
 });

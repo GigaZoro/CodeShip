@@ -206,7 +206,7 @@ function ScheduledTaskGroupHeader({
         </span>
       </button>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-        {!anyOn ? (
+        {count > 0 && !anyOn ? (
           <span>{t("Paused")}</span>
         ) : nextRunAt !== null ? (
           <span>
@@ -226,14 +226,17 @@ function ScheduledTaskGroupHeader({
  */
 export function ScheduledTaskGroupSections({
   items,
+  savedFolders,
   renderItem,
 }: {
   readonly items: ReadonlyArray<ScheduledTaskListItem>;
+  readonly savedFolders: ReadonlyArray<string>;
   readonly renderItem: (item: ScheduledTaskListItem) => ReactNode;
 }) {
   const sections = groupScheduledTaskItems(
     items,
     (item) => scheduledTaskListItemGroupCopy(item).task.group,
+    savedFolders,
   );
   const { environments } = useEnvironments();
   const nowMinute = useNowMinute();
@@ -282,7 +285,7 @@ export function ScheduledTaskGroupSections({
         const label = section.label ?? t("No group");
         const expanded = !isCollapsed(section.key);
         return (
-          <div key={section.key ?? "none"}>
+          <div key={storedGroupKey(section.key)}>
             <ScheduledTaskGroupHeader
               label={section.label}
               count={summary.count}
@@ -306,7 +309,7 @@ export function ScheduledTaskGroupSections({
                 )
               }
             />
-            {expanded ? (
+            {expanded && section.items.length > 0 ? (
               <div className="divide-y divide-border/50 border-t border-border/50">
                 {section.items.map((item) => (
                   <Fragment key={itemKey(item)}>{renderItem(item)}</Fragment>

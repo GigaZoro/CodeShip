@@ -86,6 +86,92 @@ A missing file is ignored; other read failures stop service startup.
 If the file contains credentials, restrict access to that file with `chmod 600`
 (for the default T3 home, `chmod 600 ~/.t3/service.env`).
 
+## Use 1Password for provider variables
+
+In **Settings → Secrets**, select the environment that runs the provider and add
+a 1Password source. Then open that instance in **Settings → Providers & models**.
+In **Environment variables**, select the source for a sensitive value and enter
+its `op://` field reference. T3.CodeShip saves the reference and resolves it on
+the environment's host for that provider instance. The provider process receives
+the resolved value.
+
+### Mac desktop integration
+
+Install 1Password CLI on the Mac, sign in to the 1Password app, and turn on
+**Settings → Developer → Integrate with 1Password CLI** in that app. Confirm
+`op --version` works for the user who runs T3.CodeShip, then select
+**Desktop integration** and enter your 1Password account when adding the source. Keep the
+Mac logged in and approve the app prompt when a provider needs to read a secret.
+[1Password CLI setup](https://www.1password.dev/cli/get-started)
+
+### Linux service account
+
+Use a dedicated custom vault with just this host's automation credentials. Create
+a 1Password service account with only `read_items` on that vault and install
+1Password CLI 2.18 or later at `/usr/bin/op` from the vendor's signed package.
+Keep the CLI executable and its parent directories root-owned and writable only
+by root. A 1Password desktop app and interactive unlock are unnecessary.
+CodeShip checks instances whose secret references all allow unattended reads
+about every five minutes. It applies changed values after the provider has no
+live sessions and keeps the last working value if the vault cannot be read.
+A running session keeps the credentials it started with.
+[Install 1Password CLI](https://www.1password.dev/cli/get-started),
+[set up a 1Password service account](https://www.1password.dev/service-accounts/get-started).
+
+Have a host administrator create a dedicated unprivileged `codeship-op` OS
+account with a locked password, a non-login shell, and a private home owned by
+`codeship-op`. Give that account no other workloads or sudo privileges. Put the
+service account token in an `OP_SERVICE_ACCOUNT_TOKEN` assignment in
+`/etc/codeship-op.env`, owned by root with mode `0600`. Provision the file through
+a protected administrative session and keep the token out of shell history,
+terminal recordings, `service.env`, and T3.CodeShip settings.
+
+Edit `/etc/sudoers.d/codeship-op` with `sudo visudo -f /etc/sudoers.d/codeship-op`.
+Replace `codeship-host-user` with the OS user running T3.CodeShip. To use this
+example, create the `Setup` item in the `CodeShip` vault with a `check` field
+containing a harmless nonempty value.
+
+```sudoers
+Cmnd_Alias CODESHIP_OP_READ = /usr/bin/op --cache=false read --no-newline op\://CodeShip/Setup/check
+Defaults!CODESHIP_OP_READ env_reset, !env_keep, !env_check, always_set_home, !use_pty, env_file=/etc/codeship-op.env
+codeship-host-user ALL=(codeship-op) NOPASSWD: NOSETENV: NOLOG_INPUT: NOLOG_OUTPUT: CODESHIP_OP_READ
+```
+
+List each allowed reference as a separate exact command in the alias. Use stable
+vault, item, section, or field IDs when the names contain spaces or punctuation
+the source does not accept. Escape the colon in sudoers as shown and enter the
+ordinary `op://` reference in T3.CodeShip. Keep this grant free of wildcards,
+extra flags, and `SETENV`. Keep the sudoers fragment root-owned with mode
+`0440`, run `sudo visudo -c`, and review the effective rules with
+`sudo -l -U codeship-host-user`. Check that the T3.CodeShip user has no broader
+grant to run commands as root or `codeship-op` and that PAM or other sudo
+configuration does not supply competing `OP_*` values. Ordinary sudo audit
+events can record the reference. Keep command input and output out of logs.
+[Ubuntu sudoers manual](https://manpages.ubuntu.com/manpages/noble/man5/sudoers.5.html)
+
+Run this in Bash as the OS user running T3.CodeShip. It checks that the read
+succeeded and returned a value while discarding the field output. Use a shell
+without tracing or terminal recording.
+
+```bash
+(
+  set -o pipefail
+  bytes=$(
+    /usr/bin/sudo -n -u codeship-op -- /usr/bin/op --cache=false read --no-newline \
+      'op://CodeShip/Setup/check' </dev/null | wc -c
+  ) && test "$bytes" -gt 0
+)
+```
+
+Select **Linux service account** when adding the source, then map only
+the approved fields to the provider instances that need them. Any process running
+as the T3.CodeShip OS user can ask sudo for those same fields, so use a dedicated
+host user when that access needs isolation. Sudo passes the token to `op` under
+`codeship-op` without placing it in the T3.CodeShip process environment. After
+rotating the token, replace the protected file, rerun the check, and refresh
+provider status. Restart any running provider session that needs a newly resolved
+field value.
+
 ## Platform support
 
 Linux needs systemd user services. Setup enables lingering so T3.CodeShip starts at

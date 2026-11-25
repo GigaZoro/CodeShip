@@ -61,6 +61,7 @@ it.effect("keeps malformed source URLs encodable for config subscribers", () =>
         label: (provider) => Effect.succeed(provider),
         read: (references) => Effect.succeed(references.map(() => undefined)),
         invalidate: () => Effect.void,
+        refreshUnattended: () => Effect.succeedNone,
       }),
       ServerSettings.layerTest({
         usageLimitSources: {
@@ -160,6 +161,7 @@ it.effect("reads a management key from its secret provider", () => {
             ),
           ),
         invalidate: () => Effect.void,
+        refreshUnattended: () => Effect.succeedNone,
       }),
       Layer.succeed(
         HttpClient.HttpClient,

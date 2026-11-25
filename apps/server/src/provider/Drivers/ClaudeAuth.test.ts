@@ -15,6 +15,7 @@ import { ClaudeOAuthTokenOutput } from "../claudeOAuthToken.ts";
 
 const instanceId = ProviderInstanceId.make("claudeAgent_personal");
 const environment = { PATH: "/tools", CLAUDE_CONFIG_DIR: "/state/home" };
+const stagedEnvironment = { ...environment, CLAUDE_CONFIG_DIR: "/state/staged" };
 
 it("redacts every token split, including ANSI styling, repeated tokens and trailing tokens", () => {
   const token = "sk-ant-oat01-synthetic-test-token";
@@ -55,10 +56,20 @@ const makeHarness = (termsReviews: ReadonlyArray<boolean> = [], token?: string) 
       prepare: Effect.sync(() => void events.push("prepare")),
       canLogout: true,
       saveToken: (token) => Effect.sync(() => void tokens.push(token)),
-      needsTermsReview: Effect.sync(() => {
-        events.push("check terms");
-        return termsReviews[termsChecks++] ?? false;
-      }),
+      stageLogin: () =>
+        Effect.succeed({
+          home: stagedEnvironment.CLAUDE_CONFIG_DIR,
+          persist: Effect.sync(() => {
+            events.push("persist");
+            if (token) tokens.push(undefined);
+          }),
+        }),
+      needsTermsReview: (home) =>
+        Effect.sync(() => {
+          assert.equal(home, stagedEnvironment.CLAUDE_CONFIG_DIR);
+          events.push("check terms");
+          return termsReviews[termsChecks++] ?? false;
+        }),
     }).pipe(
       Effect.provideService(PtyAdapter.PtyAdapter, {
         spawn: (input) =>
@@ -102,19 +113,19 @@ const makeHarness = (termsReviews: ReadonlyArray<boolean> = [], token?: string) 
     };
   });
 
-it.effect("signs the account's own folder in with claude auth login", () =>
+it.effect("keeps Claude login in its private folder until publication", () =>
   Effect.gen(function* () {
     const h = yield* makeHarness();
     yield* h.auth.controller.start("owner");
     yield* h.state((value) => value.phase === "waiting");
-    assert.deepEqual(h.events, ["prepare", "spawn auth login"]);
+    assert.deepEqual(h.events, ["spawn auth login"]);
     assert.deepEqual(h.spawnedInputs[0], {
       shell: "claude",
       args: ["auth", "login"],
       cwd: "/state",
       cols: 80,
       rows: 24,
-      env: environment,
+      env: stagedEnvironment,
     });
     h.print("Opening browser to sign in…");
     yield* h.state(
@@ -124,6 +135,11 @@ it.effect("signs the account's own folder in with claude auth login", () =>
     );
     h.exit(0);
     yield* h.state((value) => value.phase === "succeeded");
+    assert.include(h.events, "persist");
+    assert.equal(
+      (yield* h.auth.controller.withAccess!(Effect.void).pipe(Effect.result))._tag,
+      "Failure",
+    );
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
@@ -140,16 +156,15 @@ it.effect("opens Claude after sign-in when the account must review Anthropic's t
         value.interaction.output.includes("Consumer Terms"),
     );
     assert.deepEqual(h.spawnedInputs[1]?.args, []);
-    assert.deepEqual(h.spawnedInputs[1]?.env, environment);
+    assert.deepEqual(h.spawnedInputs[1]?.env, stagedEnvironment);
     h.exit(0);
     yield* h.state((value) => value.phase === "succeeded");
     assert.deepEqual(h.events, [
-      "prepare",
       "spawn auth login",
       "check terms",
-      "prepare",
       "spawn ",
       "check terms",
+      "persist",
     ]);
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
@@ -201,7 +216,8 @@ it.effect("offers regular sign-in and token renewal while a token overrides the 
       prepare: Effect.void,
       canLogout: true,
       saveToken: () => Effect.void,
-      needsTermsReview: Effect.succeed(false),
+      stageLogin: () => Effect.die("unexpected login"),
+      needsTermsReview: () => Effect.succeed(false),
     }).pipe(Effect.provideService(PtyAdapter.PtyAdapter, { spawn: () => Effect.die("spawned") }));
     assert.isTrue(auth.canAuthenticate);
     const ready = yield* auth.controller.subscribe("owner").pipe(
@@ -282,7 +298,7 @@ it.effect(
       yield* harness.auth.controller.start("owner", Effect.void, "login");
       yield* harness.reviewing;
       assert.deepEqual(harness.spawnedInputs[1]?.args, ["auth", "login"]);
-      assert.deepEqual(harness.spawnedInputs[1]?.env, environment);
+      assert.deepEqual(harness.spawnedInputs[1]?.env, stagedEnvironment);
       harness.exit(0);
       yield* harness.state((state) => state.phase === "succeeded");
       assert.deepEqual(harness.tokens, [undefined]);

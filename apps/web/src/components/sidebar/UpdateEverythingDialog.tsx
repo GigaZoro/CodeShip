@@ -27,7 +27,7 @@ import {
 } from "./updateEverything.logic";
 import { runningThreadCountAtom } from "./runningThreads";
 import { useRestartingCommandCount } from "./localInstallWait";
-import { runningCommandsCarryOnLabel } from "../desktopUpdate.logic";
+import { commandsCarryOnLabel } from "../desktopUpdate.logic";
 
 import { msg, t, tn, tx } from "~/i18n";
 interface UpdateEverythingDialogProps {
@@ -155,7 +155,7 @@ function UpdateEverythingDialogContent({
           "{count} can resume after the restart.",
         )
       : null,
-    commands === 0 ? null : runningCommandsCarryOnLabel(commands),
+    commands === 0 ? null : commandsCarryOnLabel(commands),
   ]
     .filter((sentence) => sentence !== null)
     .join(" ");

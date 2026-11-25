@@ -1,7 +1,7 @@
 import type { AnyRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 
-import { useThreadSelectionStore } from "../threadSelectionStore";
+import { publishShownThreadKeys, useThreadSelectionStore } from "../threadSelectionStore";
 import { installChatRouteCommands } from "./chatRouteCommands";
 
 type Match = { readonly routeId: string; readonly pathname: string };
@@ -37,6 +37,7 @@ describe("chat route commands", () => {
     const { router } = routerAt(CHAT);
     using stack = new DisposableStack();
     stack.defer(installChatRouteCommands(router));
+    stack.defer(publishShownThreadKeys(new Set(["env:thread-1"])));
     stack.defer(() => useThreadSelectionStore.getState().clearSelection());
 
     selectThread("env:thread-1");
@@ -44,14 +45,21 @@ describe("chat route commands", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(useThreadSelectionStore.getState().selectedThreadKeys.size).toBe(0);
-    // With nothing selected, Escape is left for other handlers.
+    // With nothing selected, Escape is left for other handlers and keeps the range anchor.
+    useThreadSelectionStore.getState().setAnchor("env:thread-1");
     expect(pressEscape().defaultPrevented).toBe(false);
+    expect(useThreadSelectionStore.getState().anchorThreadKey).toBe("env:thread-1");
+    // A selection a filter hides is dropped without taking Escape.
+    selectThread("env:folded-thread");
+    expect(pressEscape().defaultPrevented).toBe(false);
+    expect(useThreadSelectionStore.getState().selectedThreadKeys.size).toBe(0);
   });
 
   it("stays out of the way off the chat route", () => {
     const { router, navigate } = routerAt([{ routeId: "__root__", pathname: "/pair" }]);
     using stack = new DisposableStack();
     stack.defer(installChatRouteCommands(router));
+    stack.defer(publishShownThreadKeys(new Set(["env:thread-1"])));
     stack.defer(() => useThreadSelectionStore.getState().clearSelection());
     selectThread("env:thread-1");
 

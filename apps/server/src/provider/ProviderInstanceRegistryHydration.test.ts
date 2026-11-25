@@ -197,6 +197,7 @@ describe("layerSettingsSync", () => {
           reconcile: () => Queue.offer(reconciled, undefined),
           reloadSecrets: () => Effect.sync(() => void reloads++),
           applySecret: () => Effect.succeed([]),
+          refreshUnattendedSecrets: () => Effect.void,
         },
       );
       yield* Layer.build(

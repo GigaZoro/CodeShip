@@ -95,6 +95,7 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
+  commonSource,
   backgroundWorkNotification,
   type BackgroundWorkReport,
 } from "@t3tools/provider-core/server/notification";
@@ -228,6 +229,7 @@ export interface MuseAdapterV2Options {
 }
 
 interface ActiveTurn {
+  readonly hostEpoch: number;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   providerTurn: OrchestrationV2ProviderTurn;
   readonly nativeId: string;
@@ -801,8 +803,13 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         if (item.kind === "subagent" || item.kind === "workflow") {
           const wasRunning = observedChildren.has(item.itemId);
           if (status === "running") observedChildren.set(item.itemId, turn);
-          else if (observedChildren.delete(item.itemId) && active !== turn)
+          else if (
+            observedChildren.delete(item.itemId) &&
+            active !== turn &&
+            turn.hostEpoch === hostEpoch
+          )
             finishedBackground.push({
+              sourceRunId: turn.input.runId,
               kind: item.kind === "subagent" ? "subagent" : "background_task",
               label: item.objective ?? item.entryId ?? item.fallbackText,
               outcome:
@@ -1491,7 +1498,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           else if (!active && !wake) {
             const held = { nativeId: params.turnId, events: [] };
             wake = held;
-            const notification = backgroundWorkNotification(finishedBackground.splice(0));
+            const reports = finishedBackground.splice(0);
+            const notification = backgroundWorkNotification(reports);
+            const source = commonSource(reports.map((report) => report.sourceRunId));
             if (thread?.appThreadId && options.continuationRequests)
               yield* options.continuationRequests.offer({
                 threadId: thread.appThreadId,
@@ -1499,6 +1508,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 driver: MUSE_PROVIDER,
                 detail: null,
                 ...(notification ? { notification } : {}),
+                ...(source === undefined ? {} : { demandSourceRunId: source }),
                 dispatchIfCurrent: (dispatch) =>
                   Effect.suspend(() => {
                     if (wake !== held) return Effect.succeedNone;
@@ -1836,6 +1846,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
+        finishedBackground.length = 0;
         const mcpSession = yield* mcpSessions.read(input.threadId);
         const environment = McpProviderSession.withAgentDeviceEnvironment(
           options.environment,
@@ -2189,6 +2200,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           completedAt: null,
         };
         const turn: ActiveTurn = {
+          hostEpoch,
           input: turnInput,
           providerTurn,
           nativeId,

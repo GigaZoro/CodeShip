@@ -1,6 +1,7 @@
 import * as WorktreeBranchSync from "./WorktreeBranchSync.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
+import * as MemoryAdmissionQueue from "./MemoryAdmissionQueue.ts";
 import * as NetworkRecoveryWorker from "./NetworkRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Effect from "effect/Effect";
@@ -454,6 +455,9 @@ export const layerProduction = Layer.mergeAll(
         layerOrchestratorProvided,
       ),
     ),
+  ),
+  MemoryAdmissionQueue.layer.pipe(
+    Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerOrchestratorProvided, layerEventSink)),
   ),
   FinalReview.layer.pipe(
     Layer.provide(Layer.mergeAll(layerThreadManagementProvided, layerOrchestratorProvided)),

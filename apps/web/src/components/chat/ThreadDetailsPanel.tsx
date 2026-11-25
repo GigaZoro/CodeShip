@@ -22,9 +22,9 @@ import type {
   ProjectScriptSaveResult,
 } from "@t3tools/client-runtime/state/projectScriptSaves";
 import { memo, useState, type ComponentProps } from "react";
-import * as Schema from "effect/Schema";
-import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { ThreadAgentActionsPanel } from "./ThreadAgentActionsPanel";
+import { ThreadAgentStatusPanel } from "./ThreadAgentStatusPanel";
+import { ThreadMachineLoadPanel } from "./ThreadMachineLoadPanel";
 import { ThreadDetailsSummary } from "./ThreadDetailsSummary";
 import { ThreadOutlinePanel } from "./ThreadOutlinePanel";
 import { ThreadTasksPanel } from "./ThreadTasksPanel";
@@ -40,8 +40,11 @@ import {
   type ThreadDetailsUsageInput,
 } from "./ThreadDetailsUsage";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
-import { ManualStepsMenuItems } from "../manualSteps/ManualSteps";
-import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
+import {
+  resolveThreadDetailsVisibility,
+  THREAD_DETAILS_ITEMS,
+  threadDetailsVisibilityFor,
+} from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useBrowserAssistants } from "../../browser/browserAssistants";
 import { usePreviewAvailable } from "../../browser/previewRuntime";
@@ -60,8 +63,6 @@ import { Menu, MenuPopup } from "../ui/menu";
 import { t } from "~/i18n";
 
 const GitActionsControl = memo(BaseGitActionsControl);
-
-const THREAD_DETAILS_CONTROLS_EXPANDED_KEY = "t3code:thread-details:controls-expanded";
 
 interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
@@ -108,6 +109,10 @@ interface ThreadDetailsPanelProps extends Pick<
   ) => Promise<ProjectScriptSaveResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptSaveResult>;
   usage: ThreadDetailsUsageInput;
+  /** The model and reasoning effort the thread runs on, as the composer labels them. */
+  model: { readonly label: string; readonly effortLabel: string | null };
+  /** The thread as the chat shows it; null on a draft. */
+  threadShell: ComponentProps<typeof ThreadAgentStatusPanel>["shell"];
   /** Sends a request to the thread's agent; null hides the actions, as on a draft or before the thread has started. */
   agentActions: {
     readonly onAsk: (prompt: string) => void;
@@ -119,16 +124,21 @@ interface ThreadDetailsPanelProps extends Pick<
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
-  const visible = useClientSettings(resolveThreadDetailsVisibility);
-  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const [controlsExpanded, setControlsExpanded] = useLocalStorage(
-    THREAD_DETAILS_CONTROLS_EXPANDED_KEY,
-    false,
-    Schema.Boolean,
+  const isDraft = props.draftId !== undefined;
+  const visible = threadDetailsVisibilityFor(
+    useClientSettings(resolveThreadDetailsVisibility),
+    isDraft,
   );
-  // A draft picks its machine and branch here before it is sent, so it keeps every control open.
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  // The card opens information-first: the controls fold again for every thread.
+  const threadKey = `${props.environmentId}:${props.threadId}`;
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  // The panel outlives a thread switch, so leaving a thread forgets that it was expanded.
+  if (expandedKey !== null && expandedKey !== threadKey) setExpandedKey(null);
+  const controlsExpanded = expandedKey === threadKey;
+  // A draft picks its machine and branch here before it is sent, so it keeps those controls open.
   const foldsControls =
-    props.draftId === undefined &&
+    !isDraft &&
     (visible.environment ||
       visible.openIn ||
       visible.scripts ||
@@ -136,7 +146,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       visible.branch ||
       visible.gitActions ||
       visible.changes);
-  const showControls = props.draftId !== undefined || controlsExpanded;
+  const showControls = isDraft || controlsExpanded;
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
@@ -216,7 +226,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           assistants:
             density !== "essential" &&
             visible.assistants &&
-            !props.draftId &&
             assistants.length > 0 &&
             previewAvailable &&
             canOperatePreview,
@@ -244,7 +253,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                     gitCwd={props.gitCwd}
                     isGitRepo={props.isGitRepo}
                     expanded={controlsExpanded}
-                    onToggle={() => setControlsExpanded((expanded) => !expanded)}
+                    onToggle={() => setExpandedKey(controlsExpanded ? null : threadKey)}
                   />
                 </ThreadDetailsSection>
               ) : null}
@@ -332,7 +341,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         gitCwd={props.gitCwd}
                         workspaceMutationId={props.workspaceMutationId}
                         activeThreadRef={activeThreadRef}
-                        {...(props.draftId ? { draftId: props.draftId } : {})}
                         {...(props.onOpenChanges ? { onOpenChanges: props.onOpenChanges } : {})}
                       />
                     ) : null}
@@ -340,31 +348,28 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
-              {!props.draftId && visible.tasks ? (
+              {visible.status ? (
+                <ThreadAgentStatusPanel
+                  environmentId={props.environmentId}
+                  threadId={props.threadId}
+                  shell={props.threadShell}
+                  workspaceRoot={props.gitCwd ?? undefined}
+                  modelLabel={props.model.label}
+                  effortLabel={props.model.effortLabel}
+                />
+              ) : null}
+
+              {visible.context && props.usage.contextWindow ? (
+                <ThreadDetailsContext usage={props.usage.contextWindow} />
+              ) : null}
+
+              {density === "full" && visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
+
+              {visible.tasks ? (
                 <ThreadTasksPanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
 
-              {props.agentActions && visible.agentActions ? (
-                <ThreadAgentActionsPanel
-                  isGitRepo={props.isGitRepo}
-                  hasChanges={props.agentActions.hasChanges}
-                  unavailableReason={props.agentActions.unavailableReason}
-                  onAsk={props.agentActions.onAsk}
-                />
-              ) : null}
-
-              {density === "full" && !props.draftId && visible.servers ? (
-                <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
-              ) : null}
-
-              {density === "full" && !props.draftId && visible.automations ? (
-                <ThreadAutomationsPanel
-                  environmentId={props.environmentId}
-                  threadId={props.threadId}
-                />
-              ) : null}
-
-              {density === "full" && !props.draftId && (visible.lineage || visible.sideChats) ? (
+              {visible.lineage || visible.sideChats ? (
                 <ThreadRelationshipsPanel
                   environmentId={props.environmentId}
                   threadId={props.threadId}
@@ -373,14 +378,32 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {!props.draftId && visible.outline ? (
+              {visible.outline ? (
                 <ThreadOutlinePanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
 
-              {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
+              {density === "full" && visible.machineLoad ? (
+                <ThreadMachineLoadPanel environmentId={props.environmentId} />
+              ) : null}
 
-              {visible.context && props.usage.contextWindow ? (
-                <ThreadDetailsContext usage={props.usage.contextWindow} />
+              {density === "full" && visible.servers ? (
+                <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
+              ) : null}
+
+              {density === "full" && visible.automations ? (
+                <ThreadAutomationsPanel
+                  environmentId={props.environmentId}
+                  threadId={props.threadId}
+                />
+              ) : null}
+
+              {density === "full" && props.agentActions && visible.agentActions ? (
+                <ThreadAgentActionsPanel
+                  isGitRepo={props.isGitRepo}
+                  hasChanges={props.agentActions.hasChanges}
+                  unavailableReason={props.agentActions.unavailableReason}
+                  onAsk={props.agentActions.onAsk}
+                />
               ) : null}
 
               {/* Shown only when no section above has content, so an emptied card can be refilled. */}
@@ -419,9 +442,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 align="start"
                 side="bottom"
               >
-                <ThreadDetailsItemsMenuItems>
-                  <ManualStepsMenuItems />
-                </ThreadDetailsItemsMenuItems>
+                <ThreadDetailsItemsMenuItems />
               </MenuPopup>
             </Menu>
           </>

@@ -1,7 +1,12 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- only a token fingerprint belongs in settings.
 import * as NodeCrypto from "node:crypto";
 
-import { ClaudeSettings, ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ProviderInstanceId,
+  type ProviderInstanceConfig,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -82,6 +87,33 @@ export class ClaudeOAuthTokenOutput {
   }
 }
 
+export function withClaudeOAuthToken(
+  instance: ProviderInstanceConfig,
+  token?: string,
+  issuedAt?: number,
+): ProviderInstanceConfig {
+  const { oauthToken: _previousToken, ...config } = decodeConfig(instance.config ?? {});
+  return {
+    ...instance,
+    environment: [
+      ...(instance.environment ?? []).filter((variable) => variable.name !== TOKEN_VARIABLE),
+      { name: TOKEN_VARIABLE, value: token ?? "", sensitive: token !== undefined },
+    ],
+    config: {
+      ...config,
+      ...(token !== undefined && issuedAt !== undefined
+        ? {
+            oauthToken: {
+              issuedAt: DateTime.formatIso(DateTime.makeUnsafe(issuedAt)),
+              expiresAt: DateTime.formatIso(DateTime.makeUnsafe(issuedAt + TOKEN_YEAR_MS)),
+              fingerprint: fingerprint(token),
+            },
+          }
+        : {}),
+    },
+  };
+}
+
 export const saveClaudeOAuthToken = Effect.fn("ClaudeOAuthToken.save")(function* (
   instanceId: ProviderInstanceId,
   token: string | undefined,
@@ -95,29 +127,10 @@ export const saveClaudeOAuthToken = Effect.fn("ClaudeOAuthToken.save")(function*
         ? { driver: ProviderDriverKind.make("claudeAgent") }
         : undefined);
     if (!instance || instance.driver !== "claudeAgent") return undefined;
-    const { oauthToken: _previousToken, ...config } = decodeConfig(instance.config ?? {});
     return {
       operation: "upsert",
       instanceId,
-      instance: {
-        ...instance,
-        environment: [
-          ...(instance.environment ?? []).filter((variable) => variable.name !== TOKEN_VARIABLE),
-          { name: TOKEN_VARIABLE, value: token ?? "", sensitive: token !== undefined },
-        ],
-        config: {
-          ...config,
-          ...(token === undefined
-            ? {}
-            : {
-                oauthToken: {
-                  issuedAt: DateTime.formatIso(DateTime.makeUnsafe(issuedAt)),
-                  expiresAt: DateTime.formatIso(DateTime.makeUnsafe(issuedAt + TOKEN_YEAR_MS)),
-                  fingerprint: fingerprint(token),
-                },
-              }),
-        },
-      },
+      instance: withClaudeOAuthToken(instance, token, issuedAt),
     };
   });
 });

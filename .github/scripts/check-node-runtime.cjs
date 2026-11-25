@@ -47,7 +47,9 @@ function checkNodeRuntime() {
       // Windows cannot spawn a .cmd shim without a shell; the arguments are constant.
       // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
       shell: process.platform === "win32",
-      timeout: 30_000,
+      // A hang guard: on Windows this starts cmd.exe, Vite+'s node trampoline, vp and node, and a
+      // loaded machine can take 30 seconds for each start.
+      timeout: 120_000,
     });
     if (result.error || result.status !== 0) {
       failures.push(`${dir}: cannot resolve Node: ${result.error?.message ?? result.stderr}`);
