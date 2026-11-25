@@ -40,17 +40,21 @@ function checkNodeRuntime() {
         `${dir}: set devEngines.runtime to node ${expected}; keep engines.node as the published support range.`,
       );
     }
-    const result = spawnSync("node", ["--version"], {
-      cwd,
-      env,
-      encoding: "utf8",
-      // Windows cannot spawn a .cmd shim without a shell; the arguments are constant.
-      // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
-      shell: process.platform === "win32",
-      // A hang guard: on Windows this starts cmd.exe, Vite+'s node trampoline, vp and node, and a
-      // loaded machine can take 30 seconds for each start.
-      timeout: 120_000,
-    });
+    const probe = () =>
+      spawnSync("node", ["--version"], {
+        cwd,
+        env,
+        encoding: "utf8",
+        // Windows cannot spawn a .cmd shim without a shell; the arguments are constant.
+        // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+        shell: process.platform === "win32",
+        // A hang guard: on Windows this starts cmd.exe, Vite+'s node trampoline, vp and node, and a
+        // loaded machine can take 30 seconds for each start.
+        timeout: 120_000,
+      });
+    let result = probe();
+    // The limit counts a Mac's sleep, so a probe the Mac slept under runs once more.
+    if (result.error?.code === "ETIMEDOUT") result = probe();
     if (result.error || result.status !== 0) {
       failures.push(`${dir}: cannot resolve Node: ${result.error?.message ?? result.stderr}`);
     } else if (result.stdout.trim() !== `v${expected}`) {

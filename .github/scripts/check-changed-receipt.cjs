@@ -10,6 +10,7 @@ const {
   GIT_OUTPUT_MAX_BYTES,
   REAL_HISTORY_ENV,
   markedFiles,
+  rerunAfterTimeout,
 } = require("./git-history.cjs");
 
 const RECEIPT_DAYS = 30;
@@ -29,7 +30,7 @@ const git = (cwd, args, env = process.env) =>
 // Every worktree of a repository shares its git directory, so a pass in one worktree covers a push from another.
 const receiptDirectory = (cwd) =>
   path.join(
-    git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    rerunAfterTimeout(() => git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])),
     "t3-check-changed",
     "passed",
   );
@@ -38,11 +39,14 @@ const receiptDirectory = (cwd) =>
 const alternateObjectDirectory = (directory) =>
   `"${directory.replace(/["\\]/g, (character) => `\\${character}`)}"`;
 
+// Each run makes its own scratch index, so a rerun finds no lock a killed git left.
+const workingTree = (cwd, objects) => rerunAfterTimeout(() => readWorkingTree(cwd, objects));
+
 // The tree a commit of everything check:changed reads would get, staged or not. The index copy
 // keeps its stat cache and its timestamp, without which Git trusts that cache for a same-size edit
 // made in the second the index was written. New objects go to `objects`, which the caller reads
 // through GIT_ALTERNATE_OBJECT_DIRECTORIES and removes: nothing would ever reference them.
-function workingTree(cwd, objects) {
+function readWorkingTree(cwd, objects) {
   const marked = markedFiles(cwd);
   if (marked.length > 0) {
     throw new Error(
@@ -96,7 +100,9 @@ function recordPass(cwd, tree, base) {
 // against an older main, a file main changed and the push changes back looks unchanged and goes unchecked.
 // `remoteSha` is empty when the push creates the branch.
 function requirePass(cwd, localSha, remoteSha) {
-  const tree = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${localSha}^{tree}`]);
+  const tree = rerunAfterTimeout(() =>
+    git(cwd, ["rev-parse", "--verify", "--end-of-options", `${localSha}^{tree}`]),
+  );
   const directory = receiptDirectory(cwd);
   const bases = (fs.existsSync(directory) ? fs.readdirSync(directory) : [])
     .filter((name) => name.startsWith(`${tree}.`))

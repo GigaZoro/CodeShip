@@ -254,6 +254,16 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
 
 export type Outcome = "pass" | "FAIL" | "TIMEOUT";
 
+// Not traced: it only waits. On macOS a timer counts the time asleep, so one long timer would end on
+// the first wake past it. Each tick counts as a second however late it fires: a sleep costs one.
+const awakeSeconds = Effect.fnUntraced(function* (seconds: number) {
+  for (let second = 0; second < seconds; second++) yield* Effect.sleep("1 second");
+});
+
+/** `None` once `effect` has run for `seconds` of the machine's time awake, and is interrupted. */
+const awakeTimeoutOption = <A, E, R>(effect: Effect.Effect<A, E, R>, seconds: number) =>
+  Effect.raceFirst(Effect.asSome(effect), Effect.as(awakeSeconds(seconds), Option.none<A>()));
+
 export interface Step<R> {
   readonly name: string;
   // Gets the number of budget slots the step holds, which is how many workers it may run.
@@ -297,11 +307,11 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
         let collected = "";
-        const result = yield* Effect.timeoutOption(
+        const result = yield* awakeTimeoutOption(
           step.run(slots, (chunk) => {
             collected += chunk;
           }),
-          `${timeoutSeconds} seconds`,
+          timeoutSeconds,
         );
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
@@ -394,11 +404,13 @@ const gitRun = Effect.fn("checkChanged.gitRun")(function* (
       return { stdout, stderr, exitCode };
     }),
   );
-  return yield* Effect.timeoutOrElse(run, {
-    duration: GIT_TIMEOUT,
-    orElse: () =>
-      Effect.fail(`check:changed: git ${args.join(" ")} did not finish within ${GIT_TIMEOUT}`),
-  });
+  const result = yield* awakeTimeoutOption(run, GIT_CALL_TIMEOUT_MS / 1000);
+  if (Option.isNone(result)) {
+    return yield* Effect.fail(
+      `check:changed: git ${args.join(" ")} did not finish within ${GIT_TIMEOUT}`,
+    );
+  }
+  return result.value;
 });
 
 // Fails on an exit `allowed` does not name, with git's message: an empty file list from a broken
@@ -1934,7 +1946,7 @@ export const checkChangedCommand = Command.make(
     ),
     timeout: Flag.Int("timeout").pipe(
       Flag.withDescription(
-        "Seconds before a step is killed; also CHECK_CHANGED_TIMEOUT. Defaults to 900.",
+        "Seconds awake before a step is killed; also CHECK_CHANGED_TIMEOUT. Defaults to 900.",
       ),
       Flag.optional,
     ),

@@ -2061,6 +2061,37 @@ setTimeout(() => {}, 60_000);
   }
 });
 
+test("a lander runs a fetch of main again when a Mac's sleep used up its time limit", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    // The first connection never answers, as one the Mac slept under; later ones reach origin.
+    const slept = path.join(root, "slept").replaceAll("\\", "/");
+    git(lander, "config", "protocol.ext.allow", "always");
+    git(
+      lander,
+      "remote",
+      "add",
+      "sleepy",
+      `ext::sh -c if% test% -e% '${slept}';% then% exec% %S% '${origin.replaceAll("\\", "/")}';% fi;% touch% '${slept}';% exec% sleep% 30`,
+    );
+    const result = land({
+      cwd: lander,
+      remote: "sleepy",
+      mainCallMs: 5000,
+      // No time awake passes, so every limit that runs out here ran out asleep.
+      awakeClock: () => 0,
+      check: () => true,
+      report: () => {},
+    });
+    assert.equal(result.status, "landed");
+    assert.equal(git(origin, "rev-parse", "main"), result.commit);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a replace ref cannot make main look contained in a commit that does not hold it", () => {
   const { root, origin, git, clone, commit } = setup();
   try {

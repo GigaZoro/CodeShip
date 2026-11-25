@@ -5,7 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
+import { GIT_OUTPUT_MAX_BYTES, rerunAfterTimeout } from "../../.github/scripts/git-history.cjs";
 
 // vp test supplies these defaults before Node loads Vitest, preserving even empty overrides.
 const vitePlusTestDefaults = {
@@ -230,11 +230,16 @@ export function gitEnvironment(env: NodeJS.ProcessEnv = process.env) {
     ...testGitEnv,
   };
   const git = (args: ReadonlyArray<string>) => {
-    const result = NodeChildProcess.spawnSync("git", args, {
-      cwd: NodeOS.tmpdir(),
-      env: gitEnv,
-      timeout: GIT_PROBE_TIMEOUT_MS,
-      maxBuffer: GIT_OUTPUT_MAX_BYTES,
+    const result = rerunAfterTimeout(() => {
+      const probe = NodeChildProcess.spawnSync("git", args, {
+        cwd: NodeOS.tmpdir(),
+        env: gitEnv,
+        timeout: GIT_PROBE_TIMEOUT_MS,
+        maxBuffer: GIT_OUTPUT_MAX_BYTES,
+      });
+      if (probe.error && "code" in probe.error && probe.error.code === "ETIMEDOUT")
+        throw probe.error;
+      return probe;
     });
     if (result.error) {
       if ("code" in result.error && result.error.code === "ENOENT") return undefined;

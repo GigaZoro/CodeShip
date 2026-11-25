@@ -20,6 +20,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -617,6 +618,45 @@ describe("check:changed", () => {
           ["allowed longer", "TIMEOUT", "killed after 20s"],
         ],
       );
+    }),
+  );
+
+  it.effect("does not count a Mac's sleep against a step's timeout", () =>
+    Effect.gen(function* () {
+      // A timer of a Mac that sleeps: it fires once, however long past its time the Mac woke.
+      const timers = yield* Queue.unbounded<Deferred.Deferred<void>>();
+      const clock = yield* Clock.Clock;
+      let asleepMillis = 0;
+      const fiber = yield* runSteps([{ name: "hangs", run: () => Effect.never }], {
+        concurrency: 1,
+        timeoutSeconds: 10,
+        slotDirectory: yield* slotDirectory,
+      }).pipe(
+        Effect.provideService(Clock.Clock, {
+          ...clock,
+          currentTimeMillis: Effect.sync(() => asleepMillis),
+          sleep: () =>
+            Effect.suspend(() => {
+              const wake = Deferred.makeUnsafe<void>();
+              return Queue.offer(timers, wake).pipe(Effect.andThen(Deferred.await(wake)));
+            }),
+        }),
+        Effect.forkChild,
+      );
+      const nextTimer = Effect.raceFirst(
+        Queue.take(timers),
+        Fiber.join(fiber).pipe(Effect.andThen(Effect.die("the step was killed"))),
+      );
+      const first = yield* nextTimer;
+      asleepMillis = 900_000;
+      yield* Deferred.succeed(first, undefined);
+      // Nine of its ten seconds awake are left.
+      for (let second = 1; second < 10; second++) {
+        yield* Deferred.succeed(yield* nextTimer, undefined);
+      }
+      const [result] = yield* Fiber.join(fiber);
+
+      assert.deepStrictEqual([result?.outcome, result?.time], ["TIMEOUT", "killed after 10s"]);
     }),
   );
 

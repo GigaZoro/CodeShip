@@ -15,6 +15,7 @@ const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 // A check:changed run took 2 hours on a busy day. A holder that dies is replaced once its lease has expired.
+// Wall-clock time, a holder's sleep included: other machines wait on it.
 const LEASE_TTL_MS = 3 * 60 * 60 * 1000;
 // What a landing keeps back from its lease for the checks that are not the test step, and for the push.
 const LEASE_RESERVE_MS = 20 * 60 * 1000;
@@ -55,7 +56,22 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
     ? `did not finish within ${timeoutMs / 1000} seconds.`
     : result.stderr.trim();
   if (!ok && !allowFailure) throw new Error(`git ${args[0]} failed: ${stderr}`);
-  return { ok, stdout: result.stdout.trim(), stderr };
+  return { ok, timedOut, stdout: result.stdout.trim(), stderr };
+}
+
+/**
+ * One fetch or push of main, given `timeoutMs` of `awakeClock`. spawnSync's limit counts a Mac's sleep, so a call that
+ * ran out of it with less time awake runs again; a push that had reached main then finds it up to date.
+ */
+function mainGit(cwd, args, { timeoutMs, awakeClock, env }) {
+  const started = awakeClock();
+  for (;;) {
+    const result = git(cwd, args, { env, timeoutMs, allowFailure: true });
+    if (result.ok) return result;
+    if (!result.timedOut || awakeClock() - started >= timeoutMs) {
+      throw new Error(`git ${args[0]} failed: ${result.stderr}`);
+    }
+  }
 }
 
 /**
@@ -476,22 +492,24 @@ function withTurn(options, run) {
  * Pushes `ref` under `turn`. A git push goes on after its lander dies, and one that failed may still land, so the
  * lander's record shows the push in flight until it gives the turn back, and no waiter takes the turn over meanwhile.
  */
-function pushUnderTurn({ cwd, remote, ref, turn, timeoutMs }) {
+function pushUnderTurn({ cwd, remote, ref, turn, timeoutMs, awakeClock }) {
   recordHolder(cwd, turn, { pushing: true });
-  git(cwd, ["push", "--quiet", remote, ref], { env: { [TURN_ENV]: turn }, timeoutMs });
+  const env = { [TURN_ENV]: turn };
+  mainGit(cwd, ["push", "--quiet", remote, ref], { env, timeoutMs, awakeClock });
 }
 
 /**
  * Pushes `head`, a commit verified against main's current commit elsewhere (the upstream sync, the weekly dependency
  * upgrade). The push is a fast-forward, so it takes the turn alone and a main that moved makes git refuse it.
  */
-function pushChecked({ cwd, remote, head }) {
-  withTurn({ cwd, remote }, (turn) => {
+function pushChecked({ cwd, remote, head, awakeClock = awakeNow }) {
+  withTurn({ cwd, remote, awakeClock }, (turn) => {
     // A checkout that left the commit during the wait is being changed by something else.
     if (git(cwd, ["rev-parse", "HEAD"]).stdout !== head) {
       throw new Error(`landing turn: the checkout moved off ${head} while it waited for the turn.`);
     }
-    pushUnderTurn({ cwd, remote, ref: `${head}:refs/heads/main`, turn, timeoutMs: MAIN_CALL_MS });
+    const ref = `${head}:refs/heads/main`;
+    pushUnderTurn({ cwd, remote, ref, turn, timeoutMs: MAIN_CALL_MS, awakeClock });
   });
 }
 
@@ -509,7 +527,8 @@ function verifyPush({ cwd, remote, env = process.env, refs }) {
 
 /**
  * Seconds a check may spend on its longest step and still end, with the push, before the lease expires: `leftMs` is
- * what the lease had left when the turn started, `elapsedMs` the time since.
+ * what the lease had left when the turn started, `elapsedMs` the time since. The check counts them awake, so a Mac that
+ * sleeps under it can outlast the lease. It then pushes only while no other lander took the turn over (verifyPush).
  */
 function checkBudgetSeconds(leftMs, elapsedMs) {
   return Math.max(1, Math.floor((leftMs - LEASE_RESERVE_MS - elapsedMs) / 1000));
@@ -532,9 +551,9 @@ function stoppedRebase(cwd) {
  * read. Atomic, because a named remote's fetch also updates its tracking ref, and a failure there must not leave this
  * one behind.
  */
-function fetchMain(cwd, remote, branch, name, callMs) {
+function fetchMain(cwd, remote, branch, name, { timeoutMs, awakeClock }) {
   const fetched = `refs/worktree/landing-turn/${name}`;
-  git(
+  mainGit(
     cwd,
     [
       "fetch",
@@ -545,7 +564,7 @@ function fetchMain(cwd, remote, branch, name, callMs) {
       remote,
       `+refs/heads/${branch}:${fetched}`,
     ],
-    { timeoutMs: callMs },
+    { timeoutMs, awakeClock },
   );
   const base = git(cwd, ["rev-parse", fetched]).stdout;
   git(cwd, ["update-ref", "-d", fetched]);
@@ -653,9 +672,11 @@ function land({
   mainCallMs = MAIN_CALL_MS,
   turnClock = () => performance.now(),
   now = Date.now,
+  awakeClock = awakeNow,
   report = (text) => console.error(text),
   ...rest
 }) {
+  const mainCall = { timeoutMs: mainCallMs, awakeClock };
   // Read first, so the checks below, these on the working tree included, are for this commit.
   let tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
   if (rebased && tip !== rebased.head) return { status: "head-moved" };
@@ -672,7 +693,7 @@ function land({
   if (problem) throw new Error(problem);
   // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
   // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
-  const checked = rebased?.base ?? fetchMain(cwd, remote, branch, randomUUID(), mainCallMs);
+  const checked = rebased?.base ?? fetchMain(cwd, remote, branch, randomUUID(), mainCall);
   // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
   if (!rebased) {
     const overlap = formatOverlaps(overlappingWorktrees({ cwd, base: checked }));
@@ -693,10 +714,10 @@ function land({
   ) {
     return { status: "check-failed" };
   }
-  return withTurn({ cwd, remote, now, ...rest }, (turn) => {
+  return withTurn({ cwd, remote, now, awakeClock, ...rest }, (turn) => {
     const turnStarted = turnClock();
     const leftMs = leaseLeftMs(cwd, turn, now);
-    const base = fetchMain(cwd, remote, branch, turn, mainCallMs);
+    const base = fetchMain(cwd, remote, branch, turn, mainCall);
     // The checks passed for this commit, not for one checked out during the wait or this fetch.
     if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
     if (base !== checked) {
@@ -711,7 +732,7 @@ function land({
         return { status: "check-failed" };
       }
     }
-    pushUnderTurn({ cwd, remote, ref: `${tip}:refs/heads/${branch}`, turn, timeoutMs: mainCallMs });
+    pushUnderTurn({ cwd, remote, ref: `${tip}:refs/heads/${branch}`, turn, ...mainCall });
     return { status: "landed", commit: tip };
   });
 }

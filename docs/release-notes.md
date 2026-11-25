@@ -1,3 +1,9 @@
+## 2026-11-25 — A Mac's sleep no longer times out checks or landings
+
+- For people who work on T3.CodeShip: `vp run check:changed` now counts its step and Git time limits in time the machine is awake. Before, a Mac that slept during a run came back to find healthy steps killed as `TIMEOUT`.
+- A landing's fetch or push of `main` that ran out of time because the Mac slept now runs again instead of ending the landing.
+- The short Git and Node version reads of a check or a push now run once more when they time out, so one the Mac slept under no longer fails the check.
+
 ## 2026-11-25 — Restore Codex metadata packaging for releases
 
 - Linux, Windows and macOS release builds now fetch the Codex metadata build files from the exact release commit. An unrelated vendored Git submodule had stopped packaging before the runtime could be built.

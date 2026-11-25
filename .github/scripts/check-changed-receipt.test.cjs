@@ -263,6 +263,30 @@ test("a push that moves only the landing lease or a topic passes the hook from a
     assert.equal(git("ls-remote", "origin", "refs/heads/landing-lease/main"), "");
   }));
 
+// spawnSync's limit counts a Mac's sleep, so a call the Mac slept under times out when it wakes.
+test("a receipt read whose git call timed out once runs again past its lock, and twice fails", (t) =>
+  withRoot((root) => {
+    const { work, objects } = fixture(root);
+    const childProcess = require("node:child_process");
+    const real = childProcess.execFileSync;
+    let timeouts = 1;
+    t.mock.method(childProcess, "execFileSync", (file, args, options) => {
+      if (!args.includes("add") || timeouts === 0) return real(file, args, options);
+      timeouts -= 1;
+      // A killed git leaves the lock of the index it was writing.
+      fs.writeFileSync(`${options.env.GIT_INDEX_FILE}.lock`, "");
+      throw Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" });
+    });
+    const load = () => {
+      delete require.cache[require.resolve("./check-changed-receipt.cjs")];
+      return require("./check-changed-receipt.cjs");
+    };
+    const { workingTree } = load();
+    assert.match(workingTree(work, objects), /^[0-9a-f]{40}/);
+    timeouts = 2;
+    assert.throws(() => workingTree(work, objects), { code: "ETIMEDOUT" });
+  }));
+
 // A runaway git would hold the push the pre-push hook checks until someone noticed, so each git call the receipt
 // makes, and the marked-file listing's, is killed past the landing's limit.
 test("every git call the receipt makes is killed past the landing's limit", (t) =>
