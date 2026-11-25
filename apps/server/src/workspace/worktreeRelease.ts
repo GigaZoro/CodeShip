@@ -7,9 +7,11 @@ import * as NodeUtil from "node:util";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodePath from "node:path";
 import { GitCommandError, type OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import { existingWorkspacePath, resolveWorkspacePath } from "./workspaceLease.ts";
@@ -48,10 +50,9 @@ import {
   familyCheckoutHook,
   familyHookUnavailable,
   pendingFamilyCheckoutHook,
-  runningFamilyCheckoutHook,
   requireUnstartedFamilyHook,
+  settleFamilyCheckoutHook,
   supportsFamilyCheckoutHook,
-  unconfirmedFamilyHook,
 } from "../vcs/familyWorktreeCheckout.ts";
 
 /** Only a complete subagent or side chat chain within this worktree shares ownership. */
@@ -306,6 +307,18 @@ const gitFileIdentity = (file: string) =>
     return [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs].join("/");
   });
 
+// A network volume stamps new files with its server's clock.
+const CHECKOUT_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
+
+// Git writes a linked checkout's pointer file before any of its files, so no work inside the
+// checkout predates it. Null when the volume records no creation time.
+export const checkoutActivityFloor = (identity: string) => {
+  const birth = /^\d+\/[1-9]\d*\/([1-9]\d*)\/\d+$/.exec(identity)?.[1];
+  return birth === undefined
+    ? null
+    : new Date(Number(BigInt(birth) / 1_000_000n) - CHECKOUT_CLOCK_SKEW_MS).toISOString();
+};
+
 const holdsOnlyFolders = (folder: string) =>
   Effect.tryPromise(
     async () =>
@@ -514,8 +527,10 @@ async function verifySavedDirectories(
           encoding: "buffer",
         });
       const [original, backup] = await Promise.all([readValues(cwd), readValues(saved)]);
-      const readErrors = Buffer.concat([original.stderr, backup.stderr]).toString().trimEnd();
-      if (readErrors) throw new Error(`Directory attribute read reported: ${readErrors}`);
+      if (original.stderr.length || backup.stderr.length) {
+        const readErrors = Buffer.concat([original.stderr, backup.stderr]).toString().trimEnd();
+        throw new Error(`Directory attribute read reported: ${readErrors || "blank output"}`);
+      }
       if (!original.stdout.equals(backup.stdout))
         throw new Error("Saved directory provenance differs");
       return;
@@ -828,10 +843,34 @@ const readCheckoutSetupProof = (cwd: string, admin: string, projectRoot: string)
       await NodeFSP.realpath(projectRoot),
       setupFileStamp(await NodeFSP.lstat(NodePath.join(cwd, ".git"), { bigint: true })),
     ),
-  ).pipe(
-    Effect.timeout("5 seconds"),
-    Effect.orElseSucceed(() => null),
-  );
+  ).pipe(Effect.timeout("5 seconds"));
+
+const IGNORED_COPY_HOLD = "ignored files have changed or lack a preserved copy";
+const SETUP_OUTPUT_HOLD = "standard setup output changed or could not be verified";
+
+// Effect wraps a rejected check in an error that only says a promise failed, so follow the causes
+// to the ones that say what failed, and to a failed command's own complaint.
+const failureText = (error: unknown) => {
+  const parts: string[] = [];
+  const add = (text: unknown) => {
+    const line = (Buffer.isBuffer(text) ? text.toString() : typeof text === "string" ? text : "")
+      .split("\n")
+      .map((value) => value.trim())
+      .find(Boolean)
+      ?.slice(0, 200);
+    if (line && !parts.includes(line)) parts.push(line);
+  };
+  for (let current = error, depth = 0; current instanceof Object && depth < 8; depth++) {
+    if (current instanceof Error && !Cause.isUnknownError(current)) add(current.message);
+    if ("stderr" in current) add(current.stderr);
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return parts.slice(0, 4).join(": ") || "no error detail";
+};
+
+// A held checkout names what failed, so its owner can tell a slow disk from a changed file.
+const failedCheckHold = (reason: string, check: string, error: unknown) =>
+  Cause.isTimeoutError(error) ? `${check} timed out` : `${reason} (${failureText(error)})`;
 
 const setupExtras = Effect.fn("WorktreeRelease.setupExtras")(function* (
   proof: SetupProof,
@@ -843,10 +882,7 @@ const setupExtras = Effect.fn("WorktreeRelease.setupExtras")(function* (
   const setup = records.filter((record) => hasSetupOnlyStatus(proof, record));
   const additions = yield* Effect.tryPromise((signal) =>
     inspectSetupProof(proof, cwd, setup.join("\0"), signal),
-  ).pipe(
-    Effect.timeout("10 minutes"),
-    Effect.orElseSucceed(() => null),
-  );
+  ).pipe(Effect.timeout("10 minutes"));
   if (additions === null) return null;
   const owned = new Set(setup);
   // Git collapses these roots into the ignored node_modules entry.
@@ -950,7 +986,15 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
   });
   const extras = input.saveIgnored
     ? null
-    : yield* captureSetupExtras(cwd).pipe(Effect.orElseSucceed(() => null));
+    : yield* captureSetupExtras(cwd).pipe(
+        // Without the setup baseline nothing is preserved, so ignored output keeps the checkout.
+        Effect.catch((cause) =>
+          Effect.logError("Setup output could not be captured for a worktree release", {
+            cwd,
+            cause,
+          }).pipe(Effect.as(null)),
+        ),
+      );
   const capture: BackupCapture = {
     pending: Promise.resolve(),
     inodes: new Set(),
@@ -1053,14 +1097,15 @@ const windowsInspectionHold = (
   reason: string,
 ) =>
   Effect.tryPromise((signal) => checkWindowsWorktreeFiles(root, { ...options, signal })).pipe(
+    Effect.timeout(timeout),
     Effect.as(null),
-    Effect.catch(({ cause }) =>
+    Effect.catch((error) =>
       Effect.succeed(
-        cause instanceof WindowsWorktreeInspectionError ? `${reason} (${cause.check})` : reason,
+        error.cause instanceof WindowsWorktreeInspectionError
+          ? `${reason} (${error.cause.check})`
+          : failedCheckHold(reason, "inspecting Windows worktree files", error),
       ),
     ),
-    Effect.timeout(timeout),
-    Effect.orElseSucceed(() => reason),
   );
 
 const worktreeRegistration = Effect.fn("WorktreeRelease.registration")(function* (
@@ -1129,9 +1174,8 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   )
     return yield* refuse("The restored checkout belongs to another repository or branch.");
   const { admin } = registration;
-  const adminFiles = yield* fs.readDirectory(admin);
-  if (adminFiles.includes(runningFamilyCheckoutHook))
-    return yield* unconfirmedFamilyHook(cwd, path.join(admin, runningFamilyCheckoutHook));
+  const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
+  const adminFiles = yield* settleFamilyCheckoutHook(cwd, admin, head);
   if (adminFiles.includes("locked") || adminFiles.some((entry) => entry.endsWith(".lock")))
     return yield* refuse("The restored checkout is locked.");
   const verifyVisibleTrackedFiles = readGit(cwd, ["ls-files", "-v", "-z"], {
@@ -1171,12 +1215,10 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     !options.original && (!hasIndex || adminFiles.includes(pendingFamilyCheckoutHook));
   const verifyRepair = Effect.fnUntraced(function* () {
     if (!adminFiles.includes(pendingFamilyCheckoutHook)) return;
-    const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
     yield* requireUnstartedFamilyHook(cwd, path.join(admin, pendingFamilyCheckoutHook), head);
   });
   const hook = Effect.fnUntraced(function* (stage: "prepare" | "finish") {
     if (!pendingHook) return;
-    const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
     const git = yield* GitVcsDriver.GitVcsDriver;
     yield* familyCheckoutHook(
       cwd,
@@ -1238,8 +1280,15 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
         .join("\0");
       let records = ignored;
       if (verifySetup) {
-        const proof = yield* readCheckoutSetupProof(cwd, admin, projectRoot);
-        const extras = proof && (yield* setupExtras(proof, cwd, ignored));
+        const unverified = (error: unknown) =>
+          refuse(
+            `The original checkout's setup files could not be verified: ${failureText(error)}`,
+          );
+        const proof = yield* readCheckoutSetupProof(cwd, admin, projectRoot).pipe(
+          Effect.mapError(unverified),
+        );
+        const extras =
+          proof && (yield* setupExtras(proof, cwd, ignored).pipe(Effect.mapError(unverified)));
         if (extras === null)
           return yield* refuse("The original checkout lost or changed its setup files.");
         records = extras;
@@ -1290,9 +1339,12 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   if (yield* fs.exists(path.join(common, "info", "grafts"))) return "repository uses grafts";
   {
     const current = yield* readReleasedBranchBase(cwd, request.branch);
-    // Legacy receipts did not record absence; requeue if any base now exists.
-    const recorded = request.branchBase ?? { name: null, ref: null, legacyName: undefined };
-    if (
+    const recorded = request.branchBase;
+    // A receipt queued before bases were recorded vouches only for a branch without one.
+    if (recorded === undefined) {
+      if (current.name !== null || current.ref !== null || current.legacyName !== undefined)
+        return "the release receipt predates base recording; queue the release again";
+    } else if (
       current.name !== recorded.name ||
       current.ref !== recorded.ref ||
       current.legacyName !== recorded.legacyName
@@ -1335,7 +1387,14 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     if (name === setupProofName) {
-      setupProof = yield* readCheckoutSetupProof(cwd, admin, projectRoot);
+      const read = yield* Effect.result(readCheckoutSetupProof(cwd, admin, projectRoot));
+      if (Result.isFailure(read))
+        return failedCheckHold(
+          "worktree setup metadata requires its owner",
+          "reading worktree setup metadata",
+          read.failure,
+        );
+      setupProof = read.success;
       if (!setupProof) return "worktree setup metadata requires its owner";
       continue;
     }
@@ -1433,28 +1492,36 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     );
     if (hold) return hold;
   }
+  const ignoredCopyHold = (savedFiles: string, records: string) =>
+    inspectIgnored(cwd, savedFiles, records).pipe(
+      Effect.map((matches) => (matches ? null : IGNORED_COPY_HOLD)),
+      Effect.catch((error) =>
+        Effect.succeed(
+          failedCheckHold(
+            IGNORED_COPY_HOLD,
+            "comparing ignored files with their preserved copy",
+            error,
+          ),
+        ),
+      ),
+    );
   if (request.savedFiles && !request.savedSetupExtras) {
-    if (
-      status &&
-      !(yield* inspectIgnored(cwd, request.savedFiles, status).pipe(
-        Effect.orElseSucceed(() => false),
-      ))
-    )
-      return "ignored files have changed or lack a preserved copy";
+    const hold = status ? yield* ignoredCopyHold(request.savedFiles, status) : null;
+    if (hold) return hold;
   } else if (status || setupProof || request.savedSetupExtras) {
     // An in-place receipt only authorizes a setup retry. It never vouches for the installed files.
     if (!setupProof || setupProof.inPlace)
       return "worktree contains tracked, untracked or ignored local data";
-    const extras = yield* setupExtras(setupProof, cwd, status);
-    if (extras === null) return "standard setup output changed or could not be verified";
+    const checked = yield* Effect.result(setupExtras(setupProof, cwd, status));
+    if (Result.isFailure(checked))
+      return failedCheckHold(SETUP_OUTPUT_HOLD, "verifying standard setup output", checked.failure);
+    const extras = checked.success;
+    if (extras === null) return SETUP_OUTPUT_HOLD;
     if (extras) {
-      if (
-        !request.savedFiles ||
-        !(yield* inspectIgnored(cwd, request.savedFiles, extras).pipe(
-          Effect.orElseSucceed(() => false),
-        ))
-      )
-        return "ignored files have changed or lack a preserved copy";
+      const hold = request.savedFiles
+        ? yield* ignoredCopyHold(request.savedFiles, extras)
+        : IGNORED_COPY_HOLD;
+      if (hold) return hold;
       if (windowsSetupHost) {
         // Setup output is vouched for by the receipt. Anything added inside it is ordinary data.
         const additions = setupAdditionsInside(setupProof, extras);

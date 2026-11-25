@@ -15,12 +15,20 @@ const vitePlusTestDefaults = {
 };
 
 // On macOS file tracking replaces Bash and resolves PATH before applying a child's
-// working directory. These suites rely on native shells, job control, or exec lookup.
-const darwinNativeProcessTests = [
+// working directory. It also runs /bin/ls and other system tools as Vite+'s bundled
+// coreutils, which refuse BSD flags such as ls -O. These suites rely on native shells,
+// job control, exec lookup, or the BSD tools that check a released worktree's backup.
+export const darwinNativeProcessTests = [
+  "apps/server/src/cli/thread.test.ts",
   "apps/server/src/cli/triage.test.ts",
+  "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
   "apps/server/src/preview/PortScanner.test.ts",
   "apps/server/src/process/WorkerProcessSpawner.test.ts",
   "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "apps/server/src/storageCleanup.test.ts",
+  "apps/server/src/vcs/GitVcsDriverCore.worktrees.test.ts",
+  "apps/server/src/workspace/worktreeRelease.test.ts",
+  "apps/server/src/ws.test.ts",
   "scripts/release-desktop-workflow.test.ts",
 ];
 

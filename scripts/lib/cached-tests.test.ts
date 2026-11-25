@@ -14,6 +14,7 @@ import {
   changedTestRequestEnv,
   changedTestRuntime,
   checkoutSearchPath,
+  darwinNativeProcessTests,
   gitEnvironment,
   gitPaths,
   installFingerprint,
@@ -48,6 +49,24 @@ describe("cachedTestTasks", () => {
       }
     },
   );
+
+  it("runs every suite that releases a worktree outside macOS file tracking", async () => {
+    const root = NodePath.resolve(import.meta.dirname, "../..");
+    const tests = NodeChildProcess.execFileSync(
+      "git",
+      ["ls-files", "-z", "--", "*.test.ts", "*.test.tsx", "*.test.mjs", ":(exclude).repos"],
+      { cwd: root, encoding: "utf8" },
+    )
+      .split("\0")
+      .filter((file) => file !== "");
+    const releasing = [];
+    for (const file of tests) {
+      const source = await NodeFSP.readFile(NodePath.join(root, file), "utf8");
+      if (/\/(?:worktreeRelease|storageCleanup)\.ts["']/.test(source)) releasing.push(file);
+    }
+    expect(releasing).toContain("apps/server/src/storageCleanup.test.ts");
+    expect(releasing.filter((file) => !darwinNativeProcessTests.includes(file))).toEqual([]);
+  });
 
   it("matches Git and shard selections to the same package, file and cache exception", () => {
     const root = NodePath.resolve(import.meta.dirname, "../..");

@@ -58,6 +58,7 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { gitErrorLines, isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
 import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import {
+  checkoutActivityFloor,
   decodeReleaseRequest,
   hasNonDirectoryParent,
   interruptedRemovalHold,
@@ -293,43 +294,22 @@ const taskHasCompletedObserver = (sql: SqlClient.SqlClient) => sql`
   ELSE 0 END
 `;
 
-// Both server commands must attest to the same terminal result the projection still holds.
-const unstartedCommandEventSequence = (sql: SqlClient.SqlClient, phase: "complete" | "dispose") => {
-  const dispose = phase === "dispose";
-  return sql`(
-    SELECT e.sequence
-    FROM orchestration_events e INDEXED BY idx_orch_events_command_id
-    JOIN orchestration_command_receipts r ON r.command_id = e.command_id
-      AND r.aggregate_kind = 'thread' AND r.aggregate_id = e.stream_id AND r.status = 'accepted'
-    WHERE e.command_id = ${dispose ? "command:command-task-unstarted-dispose:" : "command:command-task-unstarted:"} || t.subagent_id
-      AND r.command_type = ${dispose ? "delegated_task.completion-delivery.dispose" : "delegated_task.command.complete"}
-      AND e.application_event_version = 2 AND e.aggregate_kind = 'thread'
-      AND e.stream_id = t.thread_id AND e.actor_kind = 'server' AND e.event_type = 'subagent.updated'
-      AND json_extract(e.metadata_json, '$.nodeId') = t.subagent_id
-      AND json_extract(e.payload_json, '$.id') = t.subagent_id
-      AND json_extract(e.payload_json, '$.runId') = t.run_id
-      AND json_extract(e.payload_json, '$.status') = t.status
-      AND json_extract(e.payload_json, '$.completedAt') = t.completed_at
-      AND json_extract(e.payload_json, '$.result') = json_extract(t.payload_json, '$.result')
-      ${dispose ? sql`AND json_extract(e.payload_json, '$.completionDelivery.state') = 'disposed'` : sql``}
-    LIMIT 1
-  )`;
-};
-
-// Only a cancel or Stop gives a task the cancelled status, so its disposed result, even a
-// "Cancelled." note or a child's partial reply, was abandoned on purpose and needs no reader.
-// Any other disposed result stays held until a completed parent run reads it.
+// Every disposal but one was decided by someone: a cancel, a Stop, an archive, a deleted thread, a
+// removed wake or a launch failure answered in the tool reply. A Stop or archive also closes the
+// spawning run's delivery, which ends a wake already delivered. Nothing will deliver those
+// results again, so they need no reader. Only a result whose spawning run is gone was dropped
+// without such a decision, so it stays held until a completed parent run reads it.
 const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
   NOT (${taskHasCompletedObserver(sql)})
   AND NOT (
-    CASE WHEN t.completion_delivery_state = 'disposed'
-      AND json_extract(t.payload_json, '$.completionDelivery.state') IS 'disposed' THEN
-      t.status = 'cancelled'
-      OR (t.status IN ('failed','interrupted')
-        AND json_type(t.payload_json, '$.command') IS 'object'
-        AND json_type(t.payload_json, '$.result') IS 'text'
-        AND coalesce(${unstartedCommandEventSequence(sql, "complete")} < ${unstartedCommandEventSequence(sql, "dispose")}, 0))
-    ELSE 0 END
+    t.status IN ('completed','failed','cancelled','interrupted')
+    AND EXISTS (
+      SELECT 1 FROM orchestration_v2_projection_runs spawner
+      WHERE spawner.run_id = t.run_id AND spawner.thread_id = t.thread_id
+        AND ((t.completion_delivery_state = 'disposed'
+            AND json_extract(t.payload_json, '$.completionDelivery.state') IS 'disposed')
+          OR json_extract(spawner.payload_json, '$.delegatedCompletion.disposition') IN ('stopped','disposed'))
+    )
   )
 `;
 
@@ -351,8 +331,8 @@ export const familyDelegateResultConsumed = Effect.fn(
   const parentId = child.lineage.parentThreadId;
   const originalTaskId = child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : null;
   if (parentId === null) return false;
-  const [task] = yield* sql<TaskResultCandidate & { verifiedObserver: number }>`
-      SELECT ${taskResultCandidate(sql)}, (${taskHasCompletedObserver(sql)}) AS verifiedObserver
+  const [task] = yield* sql<TaskResultCandidate & { needsReader: number }>`
+      SELECT ${taskResultCandidate(sql)}, (${taskRequiresResultCheck(sql)}) AS needsReader
       FROM orchestration_v2_projection_runs child_run
       JOIN orchestration_v2_projection_subagents t
         ON t.subagent_id = coalesce(json_extract(child_run.payload_json, '$.delegatedTaskId'), ${originalTaskId})
@@ -367,7 +347,7 @@ export const familyDelegateResultConsumed = Effect.fn(
             AND json_extract(result.payload_json, '$.sourcePoint.runId') = child_run.run_id
         )
     `.pipe(NodeSqliteClient.readOnly);
-  return task !== undefined && (!!task.verifiedObserver || (yield* taskWakeConsumed(sql, task)));
+  return task !== undefined && (!task.needsReader || (yield* taskWakeConsumed(sql, task)));
 });
 
 const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* (
@@ -1120,6 +1100,7 @@ const make = Effect.gen(function* () {
   const workspaceActivityHold = Effect.fn("StorageCleanup.workspaceActivityHold")(function* (
     checkout: string,
     memberIds: ReadonlySet<string>,
+    activityFloor: string | null,
   ) {
     const overlapsByCwd = new Map<string, boolean>();
     const overlaps = Effect.fn("StorageCleanup.commandOverlapsCheckout")(function* (cwd: string) {
@@ -1160,7 +1141,9 @@ const make = Effect.gen(function* () {
       after = commands.at(-1)!.id;
     }
 
-    // CommandRunner prunes command_runs while task results remain in the durable projection.
+    // CommandRunner prunes command_runs while task results remain in the durable projection. A task
+    // that finished before this checkout existed worked in an earlier one at the same path, so only
+    // tasks changed since then are read; an unreadable timestamp is read too.
     const memberIdsJson = encodeMemberIds([...memberIds]);
     after = "";
     for (;;) {
@@ -1171,6 +1154,8 @@ const make = Effect.gen(function* () {
           AND t.thread_id NOT IN (SELECT value FROM json_each(${memberIdsJson}))
           AND json_type(t.payload_json, '$.command') = 'object'
           AND json_type(t.payload_json, '$.command.cwd') = 'text'
+          AND (t.status NOT IN ('completed','failed','cancelled','interrupted')
+            OR coalesce(julianday(t.updated_at) >= julianday(${activityFloor}), 1))
           AND ${taskRequiresResultCheck(sql)}
         ORDER BY t.subagent_id LIMIT ${RESULT_CHECK_PAGE_SIZE}
       `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
@@ -1736,6 +1721,7 @@ const make = Effect.gen(function* () {
             const activity = yield* workspaceActivityHold(
               release.request.worktreePath,
               new Set(latestGroup.map((member) => member.id)),
+              checkoutActivityFloor(release.request.identity),
             );
             if (activity !== null) return activity;
             if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)

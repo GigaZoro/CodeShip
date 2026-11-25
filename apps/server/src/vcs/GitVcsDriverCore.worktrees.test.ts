@@ -278,6 +278,68 @@ it.layer(layerTest)("Git worktree creation", (it) => {
         assert.equal(yield* fs.readFileString(path.join(cwd, "hook-calls")), "calledrecovered");
       }),
   );
+  it.effect("settles a family checkout hook record left by a stop between two record writes", () =>
+    Effect.gen(function* () {
+      const repo = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(repo);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const cwd = yield* existingWorkspacePath(yield* makeTmpDir());
+      yield* git(repo, ["worktree", "add", "-b", "settle-hook", cwd, initialBranch]);
+      const admin = yield* existingWorkspacePath(
+        yield* git(cwd, ["rev-parse", "--absolute-git-dir"]),
+      );
+      const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+      const contents = head + "\n" + cwd;
+      const waiting = path.join(admin, pendingFamilyCheckoutHook);
+      const running = path.join(admin, runningFamilyCheckoutHook);
+      yield* writeTextFile(
+        repo,
+        ".git/hooks/post-checkout",
+        "#!/bin/sh\nprintf ran >> hook-calls\n",
+      );
+      yield* fs.chmod(path.join(repo, ".git", "hooks", "post-checkout"), 0o755);
+      const currentGit = (args: string[]) =>
+        driver
+          .execute({ operation: "test.familyCheckoutHook", cwd, args })
+          .pipe(Effect.map((result) => result.stdout));
+      const finish = (followUpAt?: number) =>
+        familyCheckoutHook(cwd, admin, head, "finish", currentGit, followUpAt);
+      const calls = () => fs.readFileString(path.join(cwd, "hook-calls"));
+
+      yield* fs.writeFileString(waiting, contents);
+      yield* fs.writeFileString(running, contents);
+      yield* finish();
+      assert.equal(yield* calls(), "ran");
+      assert.isFalse(yield* fs.exists(waiting));
+      assert.isFalse(yield* fs.exists(running));
+
+      const failedAt = yield* Clock.currentTimeMillis;
+      yield* fs.writeFileString(waiting, [contents, "7", String(failedAt)].join("\0"));
+      yield* fs.writeFileString(running, contents);
+      const failed = yield* Effect.flip(finish(failedAt));
+      assert.include(failed.message, "exited with 7");
+      assert.isFalse(yield* fs.exists(running));
+      assert.equal(yield* calls(), "ran");
+      yield* finish(failedAt + 1);
+      assert.equal(yield* calls(), "ranran");
+      assert.isFalse(yield* fs.exists(waiting));
+
+      for (const [pending, active, record] of [
+        [contents + "\0x", contents, waiting],
+        [contents, contents + "x", running],
+      ] as const) {
+        yield* fs.writeFileString(waiting, pending);
+        yield* fs.writeFileString(running, active);
+        const changed = yield* Effect.flip(finish(failedAt + 1));
+        assert.include(changed.message, `record changed at ${record}`);
+        assert.equal(yield* fs.readFileString(running), active);
+        assert.equal(yield* fs.readFileString(waiting), pending);
+      }
+      assert.equal(yield* calls(), "ranran");
+    }),
+  );
   it.effect(
     "keeps explicit worktree locks, index writers and interrupted hooks during family recovery",
     () =>
