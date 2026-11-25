@@ -1,4 +1,5 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ThreadId,
   type MonitoringThreadDetail,
@@ -16,6 +17,7 @@ import {
   type ServerLifecycleWelcomePayload,
   WS_METHODS,
 } from "@t3tools/contracts";
+import { usageScanSettingsKey } from "@t3tools/shared/usageScanSettings";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -1436,22 +1438,27 @@ describe("server state projection", () => {
 });
 
 describe("server config commands", () => {
+  const configOnlyAtoms = Effect.fn("test.configOnlyAtoms")(function* (initial: ServerConfig) {
+    const config = Atom.make<ServerConfig>(initial);
+    const runtime = Atom.runtime(
+      Layer.merge(
+        Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
+          followStream: () => Stream.empty,
+          run: () => Effect.never,
+        } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
+        Layer.succeed(Persistence.EnvironmentCacheStore, {} as never),
+      ),
+    );
+    const atoms = createServerEnvironmentAtoms(runtime, { initialConfigValueAtom: () => config });
+    const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
+      Effect.sync(() => value.dispose()),
+    );
+    return { config, atoms, registry };
+  });
+
   it.effect("updates thread preference capabilities only when their values change", () =>
     Effect.gen(function* () {
-      const config = Atom.make<ServerConfig>(CONFIG);
-      const runtime = Atom.runtime(
-        Layer.merge(
-          Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
-            followStream: () => Stream.empty,
-            run: () => Effect.never,
-          } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
-          Layer.succeed(Persistence.EnvironmentCacheStore, {} as never),
-        ),
-      );
-      const atoms = createServerEnvironmentAtoms(runtime, { initialConfigValueAtom: () => config });
-      const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
-        Effect.sync(() => value.dispose()),
-      );
+      const { config, atoms, registry } = yield* configOnlyAtoms(CONFIG);
       const atom = atoms.threadPreferenceCapabilitiesAtom(TARGET.environmentId);
       expect(atoms.threadPreferenceCapabilitiesAtom(TARGET.environmentId)).toBe(atom);
       const observed: unknown[] = [];
@@ -1474,6 +1481,20 @@ describe("server config commands", () => {
         { threadNotificationLevel: false, threadColor: false },
         { threadNotificationLevel: false, threadColor: true },
       ]);
+    }),
+  );
+
+  it.effect("keys Usage on the server's usage key, or on the settings when it sends none", () =>
+    Effect.gen(function* () {
+      const withSettings = { ...CONFIG, settings: DEFAULT_SERVER_SETTINGS };
+      const { config, atoms, registry } = yield* configOnlyAtoms({
+        ...withSettings,
+        usageSettingsKey: "server-key",
+      });
+      const atom = atoms.usageScanSettingsKeyAtom(TARGET.environmentId);
+      expect(registry.get(atom)).toBe("server-key");
+      registry.set(config, withSettings);
+      expect(registry.get(atom)).toBe(usageScanSettingsKey(DEFAULT_SERVER_SETTINGS));
     }),
   );
 

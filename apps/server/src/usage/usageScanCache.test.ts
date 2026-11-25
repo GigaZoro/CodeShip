@@ -438,6 +438,16 @@ describe("scan cache merge", () => {
       row({ needsReparse: true }),
     ],
     ["the larger of two current rows", row({ size: 200 }), row()],
+    [
+      "a read whose speed tier resolved over the same read before it did",
+      row(),
+      row({ records: [record({ unresolvedServiceTierTurnId: "turn-a" })] }),
+    ],
+    [
+      "the read with fewer unresolved speed tiers counting its tail",
+      row({ tailRecords: [record()] }),
+      row({ tailRecords: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
+    ],
   ])("keeps %s in either order", (_name, winner, loser) => {
     expect(mergeScanEntry(winner, loser)).toBe(winner);
     expect(mergeScanEntry(loser, winner)).toBe(winner);

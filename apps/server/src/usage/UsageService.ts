@@ -362,6 +362,10 @@ export const make = Effect.gen(function* () {
   );
 
   const readSettings = settingsService.getSettings.pipe(
+    Effect.map((current) => ({
+      settings: usageScanSettings(current),
+      key: usageScanSettingsKey(current),
+    })),
     Effect.mapError(
       (cause) =>
         new UsageReadError({
@@ -1922,9 +1926,8 @@ export const make = Effect.gen(function* () {
     ]);
     let admitted: ScanFlight | undefined;
     return yield* Effect.gen(function* () {
-      const current = yield* readSettings;
-      const settings = usageScanSettings(current);
-      const key = encodeUsageRecordKey([query, usageScanSettingsKey(current)]);
+      const { settings, key: settingsKey } = yield* readSettings;
+      const key = encodeUsageRecordKey([query, settingsKey]);
       const now = yield* monotonicMillis;
       const cached = completed.get(key);
       if (
@@ -1986,7 +1989,7 @@ export const make = Effect.gen(function* () {
 
   const priceTokens: UsageService["Service"]["priceTokens"] = Effect.fn("UsageService.priceTokens")(
     function* (items) {
-      const settings = yield* readSettings;
+      const { settings } = yield* readSettings;
       yield* ensureRates(false);
       const overrides = createOverrideRateTable(settings.usagePriceOverrides);
       const aliases = resolveModelAliases(settings.usageModelAliases);

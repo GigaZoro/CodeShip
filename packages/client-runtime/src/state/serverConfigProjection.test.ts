@@ -67,6 +67,7 @@ describe("applyServerConfigProjection settingsUpdated", () => {
   it.each([
     { usageSettingsKey: "usage-a", keepsConfig: true },
     { usageSettingsKey: "usage-b", keepsConfig: false },
+    { usageSettingsKey: undefined, keepsConfig: false },
   ])(
     "keeps the settings object when an update repeats the current settings ($usageSettingsKey)",
     ({ usageSettingsKey, keepsConfig }) => {
