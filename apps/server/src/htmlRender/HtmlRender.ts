@@ -35,6 +35,7 @@ import * as ServerConfig from "../config.ts";
 import * as HeadlessChrome from "./headlessChrome.ts";
 import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import * as PreviewBrowserHost from "../preview/PreviewBrowserHost.ts";
+import * as HostSandboxProfiles from "../hostSandboxProfiles.ts";
 
 const MIB = 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * MIB;
@@ -353,7 +354,7 @@ const make = Effect.gen(function* () {
   const browsers = yield* Semaphore.make(MAX_CONCURRENT_BROWSERS);
   // Keep Chrome sandboxed unless explicitly disabled; root must opt out to run.
   const noSandbox = PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment);
-  const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
+  const setupCommand = yield* resolveRootCliCommand(HostSandboxProfiles.SETUP_SUBCOMMAND);
 
   const launching = <A>(
     executable: string,

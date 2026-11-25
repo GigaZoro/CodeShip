@@ -301,7 +301,10 @@ The server shows the exact line for how you started it, such as
 for your user. Where `t3` is not on your `PATH`, such as with only the
 desktop app installed, it names the full path of the app's own `t3` instead. It allows Chrome's sandbox with an AppArmor profile and installs
 any missing libraries and system fonts with apt; pages that load without text
-can mean the host has no fonts. It is safe to run again. Without `sudo`, it only
+can mean the host has no fonts. On the same hosts it also allows the sandbox
+Codex metadata requests read your repository in, which the server log reports
+with the same command; until then, generated titles and commit messages are
+written without the repository. It is safe to run again. Without `sudo`, it only
 reports what it would change.
 
 The browser runs in Chrome's sandbox by default. Chrome cannot start that sandbox

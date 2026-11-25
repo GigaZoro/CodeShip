@@ -10,6 +10,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { resolveRootCliCommand } from "../cli/invocation.ts";
+import * as HostSandboxProfiles from "../hostSandboxProfiles.ts";
+
 export const SeaRequiresCodexMetadata = Context.Reference<boolean>(
   "t3/codex/SeaRequiresCodexMetadata",
   {
@@ -62,5 +65,27 @@ export const resolvePackagedCodexMetadataBinary = Effect.fn("codex.resolvePackag
       "bin",
       (yield* HostProcess.Platform) === "win32" ? "codex.exe" : "codex",
     );
+  },
+);
+
+/** Codex reports the denied sandbox only to the model, which then answers from the prompt alone. */
+class CodexMetadataSandboxBlocked extends Data.TaggedError("CodexMetadataSandboxBlocked")<{
+  readonly setupCommand: string;
+}> {
+  override get message(): string {
+    return `This host blocks the sandbox Codex metadata requests read the repository in (AppArmor on Ubuntu 23.10+), so titles, commit messages and other generated text are written without the repository. Run \`${this.setupCommand}\` on the host once to allow it.`;
+  }
+}
+
+/** The packaged runtime's bundled bubblewrap cannot create its namespaces on this host. */
+export const packagedMetadataSandboxProblem = Effect.fn("codex.packagedMetadataSandboxProblem")(
+  function* (binary: string | undefined) {
+    if (binary === undefined) return undefined;
+    if (!(yield* HostSandboxProfiles.profileMissing(HostSandboxProfiles.CODEX_METADATA_PROFILE))) {
+      return undefined;
+    }
+    return new CodexMetadataSandboxBlocked({
+      setupCommand: yield* resolveRootCliCommand(HostSandboxProfiles.SETUP_SUBCOMMAND),
+    });
   },
 );

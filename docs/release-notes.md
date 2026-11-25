@@ -1,3 +1,7 @@
+## 2026-11-25 — Codex metadata requests read the repository on Ubuntu 23.10 and later
+
+- On Ubuntu 23.10 and later, AppArmor kept the bundled Codex metadata runtime from starting its read-only sandbox, so generated titles, commit messages and other text were written without reading the repository. `sudo t3 browser setup` now also installs an AppArmor profile that allows that sandbox, and the server log names the exact command when the profile is missing.
+
 ## 2026-11-25 — Deleting a transcript no longer shrinks past usage early
 
 - Usage keeps the saved figures of a deleted transcript for 92 days after T3.CodeShip first finds it gone. Before, they expired 92 days after the file's last write, so deleting an old transcript could drop its usage from a past window within days. If the file comes back, it counts as a live transcript again.

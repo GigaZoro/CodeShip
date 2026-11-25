@@ -22,7 +22,10 @@ import {
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { codexExecArgsWithoutMcp } from "./codexStockMcpArgs.ts";
-import { resolvePackagedCodexMetadataBinary } from "./packagedCodexMetadata.ts";
+import {
+  packagedMetadataSandboxProblem,
+  resolvePackagedCodexMetadataBinary,
+} from "./packagedCodexMetadata.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { codexExecLaunchArgs, resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
@@ -82,6 +85,22 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       : resolvePackagedCodexMetadataBinary(),
   );
   const platform = yield* HostProcess.Platform;
+  if (
+    hostOverride === undefined &&
+    !nativeCustomLauncher &&
+    selectedMetadataPath._tag === "Success"
+  ) {
+    yield* packagedMetadataSandboxProblem(selectedMetadataPath.success).pipe(
+      Effect.flatMap((problem) =>
+        problem === undefined
+          ? Effect.void
+          : Effect.logWarning(problem.message, { setupCommand: problem.setupCommand }),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("could not check the Codex metadata sandbox", { cause }),
+      ),
+    );
+  }
 
   const resolveMetadataBinary = Effect.fn("CodexTextGeneration.resolveMetadataBinary")(function* (
     operation: TextGenerationOperations.Operation,

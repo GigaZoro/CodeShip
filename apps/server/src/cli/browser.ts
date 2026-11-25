@@ -9,6 +9,7 @@ import { Command } from "effect/cli";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import * as HostSandboxProfiles from "../hostSandboxProfiles.ts";
 import * as PreviewBrowserHost from "../preview/PreviewBrowserHost.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import { baseDirFlag } from "./config.ts";
@@ -105,13 +106,13 @@ const FONT_PACKAGES = ["fontconfig", "fonts-liberation"];
 
 const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe(
   Command.withDescription(
-    "Set up this Linux host for T3.CodeShip's browser: allow Chrome's sandbox and install its libraries and fonts.",
+    "Set up this Linux host for T3.CodeShip's browser and Codex metadata requests: allow their sandboxes and install the browser's libraries and fonts.",
   ),
   Command.withHandler(({ baseDir }) =>
     Effect.gen(function* () {
       if ((yield* HostProcess.Platform) !== "linux") {
         return yield* Console.log(
-          "Nothing to set up: T3.CodeShip's browser runs as is on this system.",
+          "Nothing to set up: T3.CodeShip's browser and Codex metadata requests run as is on this system.",
         );
       }
       const fs = yield* FileSystem.FileSystem;
@@ -120,7 +121,7 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
       const baseDirPath = yield* setupBaseDir(baseDir);
       // sudo resets the environment, so a chosen home has to be on the command line.
       const setupCommand = yield* resolveRootCliCommand(
-        PreviewBrowserHost.SETUP_SUBCOMMAND,
+        HostSandboxProfiles.SETUP_SUBCOMMAND,
         Option.isSome(baseDir) || env.T3CODE_HOME !== undefined ? ["--base-dir", baseDirPath] : [],
       );
       // Root, unless sudo came from another user, is likely the server's own account.
@@ -129,7 +130,10 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
           ? new PreviewBrowserHost.PreviewBrowserRootError().message
           : undefined;
 
-      const needsProfile = yield* PreviewBrowserHost.sandboxBlocked;
+      const missingProfiles = yield* Effect.filter(
+        HostSandboxProfiles.PROFILES,
+        HostSandboxProfiles.profileMissing,
+      );
       const browser = yield* installedBrowser(baseDirPath);
       const missing = Option.isSome(browser)
         ? yield* PreviewBrowserHost.missingLibraries(browser.value)
@@ -137,7 +141,7 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
       const needsFonts = !(yield* fontAvailable);
       const hasApt = yield* fs.exists("/usr/bin/apt-get").pipe(Effect.orElseSucceed(() => false));
 
-      if (!needsProfile && missing.length === 0 && !needsFonts) {
+      if (missingProfiles.length === 0 && missing.length === 0 && !needsFonts) {
         return yield* Console.log(
           rootWarning ??
             (Option.isSome(browser)
@@ -147,9 +151,9 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
       }
 
       if (!isRoot) {
-        if (needsProfile) {
+        for (const profile of missingProfiles) {
           yield* Console.log(
-            `This host blocks the sandbox T3.CodeShip's browser runs in. Setup installs an AppArmor profile at ${PreviewBrowserHost.APPARMOR_PROFILE_PATH} that allows it.`,
+            `This host blocks the sandbox for ${profile.subject}. Setup installs an AppArmor profile at ${profile.path} that allows it.`,
           );
         }
         if (missing.length > 0) {
@@ -165,26 +169,17 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
         return yield* Console.log(`\nThis needs root. Run:\n\n  ${setupCommand}\n`);
       }
 
-      if (needsProfile) {
+      for (const profile of missingProfiles) {
         yield* fs
-          .writeFileString(
-            PreviewBrowserHost.APPARMOR_PROFILE_PATH,
-            PreviewBrowserHost.APPARMOR_PROFILE,
-          )
+          .writeFileString(profile.path, profile.text)
           .pipe(
             Effect.mapError(
               (cause) =>
-                new BrowserSetupStepError({
-                  step: `write ${PreviewBrowserHost.APPARMOR_PROFILE_PATH}`,
-                  detail: cause.message,
-                }),
+                new BrowserSetupStepError({ step: `write ${profile.path}`, detail: cause.message }),
             ),
           );
-        yield* runStep("load the AppArmor profile", "apparmor_parser", [
-          "-r",
-          PreviewBrowserHost.APPARMOR_PROFILE_PATH,
-        ]);
-        yield* Console.log("Allowed Chrome's sandbox for T3.CodeShip's browser.");
+        yield* runStep("load the AppArmor profile", "apparmor_parser", ["-r", profile.path]);
+        yield* Console.log(`Allowed the sandbox for ${profile.subject}.`);
       }
 
       if ((missing.length > 0 || needsFonts) && !hasApt) {
