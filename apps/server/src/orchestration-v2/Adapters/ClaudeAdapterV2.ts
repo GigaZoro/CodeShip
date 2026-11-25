@@ -5119,6 +5119,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ReadonlyMap<
               string,
               {
+                readonly taskId: string;
                 readonly report: BackgroundWorkReport;
                 readonly turn: number;
                 readonly sourceRunId: RunId | null;
@@ -5135,15 +5136,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           nativeThreadId: string,
           notification: Extract<SDKMessage, { subtype: "task_notification" }>,
           report: BackgroundWorkReport,
-          sourceRunId: RunId | null = report.sourceRunId ?? null,
+          options: { readonly sourceRunId?: RunId | null } = {},
         ) =>
           Ref.update(wakeReportsByNativeThread, ({ userTurns, reports }) => ({
             userTurns,
             reports: new Map(reports).set(
               nativeThreadId,
               new Map(reports.get(nativeThreadId)).set(notification.uuid, {
+                taskId: notification.task_id,
                 report,
-                sourceRunId,
+                sourceRunId: options.sourceRunId ?? report.sourceRunId ?? null,
                 turn: userTurns.get(nativeThreadId) ?? 0,
               }),
             ),
@@ -8402,7 +8404,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 outcome: claudeTaskOutcome(message.status),
                 childThreadId: registered?.childThreadId,
               },
-              registered?.task.runId ?? null,
+              { sourceRunId: registered?.task.runId ?? null },
             );
           }
           if (message.type === "result") {
@@ -8466,7 +8468,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const reports = yield* takeWakeReports(wakeInput.nativeThreadId);
           const reported = [...(reports?.values() ?? [])];
           const sourceRunId = commonSource(reported.map((entry) => entry.sourceRunId));
-          const notification = backgroundWorkNotification(reported.map((entry) => entry.report));
+          // Each terminal keeps its own identity, but a task is summarized once.
+          const notification = backgroundWorkNotification([
+            ...new Map(reported.map((entry) => [entry.taskId, entry.report])).values(),
+          ]);
+          const wakeEventId = (uuid: string) =>
+            JSON.stringify([CLAUDE_PROVIDER, wakeInput.nativeThreadId, "notification", uuid]);
+          const identified = [...(reports ?? [])].filter(([uuid]) => uuid.trim().length > 0);
           yield* Effect.logInfo("orchestration-v2.claude-wake-turn-detected", {
             providerSessionId: input.providerSessionId,
             threadId: route.threadId,
@@ -8484,16 +8492,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : {
                   notification: {
                     ...notification,
-                    wakeEventIds: Array.from(reports?.keys() ?? [])
-                      .filter((id) => typeof id === "string" && id.trim().length > 0)
-                      .map((id) =>
-                        JSON.stringify([
-                          CLAUDE_PROVIDER,
-                          wakeInput.nativeThreadId,
-                          "notification",
-                          id,
-                        ]),
-                      ),
+                    wakeEventIds: identified.map(([uuid]) => wakeEventId(uuid)),
                   },
                 }),
           });
@@ -9156,6 +9155,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   status: "running",
                   startedAt: context.startedAt,
                   completedAt: null,
+                  ...(context.nativeWakeStarted ? { nativeWakeStarted: true } : {}),
                   tokenUsage: {
                     usedTokens: afterTokenCount,
                     maxTokens,
@@ -9563,7 +9563,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     outcome: claudeTaskOutcome(message.status),
                     childThreadId: registered?.childThreadId,
                   },
-                  registered?.task.runId ?? null,
+                  { sourceRunId: registered?.task.runId ?? null },
                 );
               }
             }

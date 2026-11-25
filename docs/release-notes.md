@@ -1,6 +1,6 @@
 ## 2026-11-25 — Identify provider wake events
 
-- Background wake records now retain provider event identities and the parent run that first acknowledged a delegated result, so usage reports can trace repeated deliveries.
+- Background wake records now retain provider event identities, whether the provider actually started the wake, and the parent run that first acknowledged a delegated result, so usage reports can trace repeated deliveries.
 
 ## 2026-11-25 — CodeShip's own scheduled tasks share one group
 

@@ -1250,6 +1250,8 @@ interface ActiveAcpTurn {
   readonly promptWireSettled: Deferred.Deferred<void, never>;
   promptUsage: EffectAcpSchema.Usage | undefined;
   backgroundFinalizeGeneration: number;
+  // Set only on a native wake turn: whether the provider produced output for it.
+  nativeWakeStarted: boolean | undefined;
 }
 
 type AcpRuntimeTeardownState =
@@ -4986,6 +4988,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             (yield* Ref.get(stoppedRunQuarantine))
           )
             return;
+          if (
+            context?.nativeWakeStarted === false &&
+            !context.finalized &&
+            notification.sessionId === context.nativeThreadId &&
+            acpRootSessionUpdateIngestsOutput(notification)
+          ) {
+            context.nativeWakeStarted = true;
+            const runningTurn = providerTurnPayload(context, "running", null);
+            yield* Ref.update(providerTurns, (current) =>
+              new Map(current).set(String(runningTurn.id), runningTurn),
+            );
+            yield* emitProviderEvent({
+              type: "provider_turn.updated",
+              driver,
+              threadId: context.input.threadId,
+              providerTurn: runningTurn,
+            });
+          }
           if (yield* projectAgentTerminalUpdate(notification, context)) return;
           if (
             update.sessionUpdate === "usage_update" ||
@@ -7423,6 +7443,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           status,
           startedAt: context.startedAt,
           completedAt,
+          ...(context.nativeWakeStarted === undefined ||
+          (completedAt === null && !context.nativeWakeStarted)
+            ? {}
+            : { nativeWakeStarted: context.nativeWakeStarted }),
           ...(status === "running" || status === "pending"
             ? {}
             : {
@@ -8042,6 +8066,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               promptWireSettled,
               promptUsage: undefined,
               backgroundFinalizeGeneration: 0,
+              nativeWakeStarted: frames === null ? undefined : false,
             };
             const carryover = yield* Ref.getAndSet(carryoverSubagents, null);
             let rehydratedCarryoverSubagents: ReadonlyArray<ActiveAcpSubagent> = [];

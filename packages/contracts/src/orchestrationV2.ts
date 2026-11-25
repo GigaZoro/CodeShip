@@ -1504,7 +1504,6 @@ export type OrchestrationV2NotificationSource = typeof OrchestrationV2Notificati
 
 export const OrchestrationV2Notification = Schema.Struct({
   wakeEventIds: Schema.optional(Schema.Array(Schema.String)),
-  previouslyHandledWakeEventIds: Schema.optional(Schema.Array(Schema.String)),
   source: OrchestrationV2NotificationSource,
   outcome: Schema.Literals(["completed", "failed", "cancelled", "updated", "unknown"]),
   summary: TrimmedNonEmptyString,

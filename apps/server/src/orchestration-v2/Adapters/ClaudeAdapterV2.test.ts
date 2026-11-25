@@ -12452,15 +12452,102 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* TestClock.adjust("5 minutes");
         assert.lengthOf(harness.terminalEvents(), 1);
 
+        // Compaction mid-wake must keep the start evidence a crash would otherwise settle without.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "compact_boundary",
+            compact_metadata: { trigger: "auto", pre_tokens: 1500, post_tokens: 400 },
+            uuid: "00000000-0000-4000-8000-000000000c01",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
         for (const frame of rest) yield* harness.offerAndWait(frame);
         yield* harness.awaitTerminal(2);
         assert.equal(harness.terminalEvents()[1]?.status, "completed");
         assert.lengthOf(harness.continuationRequests, 1);
+        const compacted = harness.events.findLast(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.tokenUsage?.usedTokens === 400,
+        );
+        assert.equal(
+          compacted?.type === "provider_turn.updated"
+            ? compacted.providerTurn.nativeWakeStarted
+            : undefined,
+          true,
+        );
         assert.isTrue(
           harness.events.some(
             (event) => event.type === "message.updated" && event.message.text === WAKE_RESULT_TEXT,
           ),
         );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("summarizes a subagent resumed within one wake once while keeping each terminal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const TASK_ID = "task-resumed-in-turn";
+        const DESCRIPTION = "Summarize the logs";
+        const startedFrame = (toolUseId: string, uuid: string) =>
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: TASK_ID,
+            tool_use_id: toolUseId,
+            description: DESCRIPTION,
+            is_backgrounded: true,
+            task_type: "local_agent",
+            uuid,
+            session_id: WAKE_NATIVE_SESSION,
+          });
+        const terminalFrame = (toolUseId: string, uuid: string) =>
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: TASK_ID,
+            tool_use_id: toolUseId,
+            status: "completed",
+            output_file: `/tmp/${TASK_ID}.output`,
+            summary: "Logs summarized.",
+            uuid,
+            session_id: WAKE_NATIVE_SESSION,
+          });
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-wake-resumed-in-turn"),
+            text: "Summarize the logs in the background, then resume it.",
+            attachments: [],
+          }),
+        );
+        for (const frame of [
+          startedFrame("toolu-first-run", "00000000-0000-4000-8000-000000000d01"),
+          terminalFrame("toolu-first-run", "00000000-0000-4000-8000-000000000d02"),
+          startedFrame("toolu-resume-run", "00000000-0000-4000-8000-000000000d03"),
+          terminalFrame("toolu-resume-run", "00000000-0000-4000-8000-000000000d04"),
+        ]) {
+          yield* harness.offerAndWait(frame);
+        }
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.awaitTerminal(1);
+
+        yield* Queue.offer(harness.sdkMessages, wakeTurnInit);
+        yield* harness.awaitContinuation(1);
+        const notification = harness.continuationRequests[0]?.notification;
+        assert.lengthOf(notification?.wakeEventIds ?? [], 2);
+        assert.equal(notification?.summary, `Subagent "${DESCRIPTION}" finished`);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
