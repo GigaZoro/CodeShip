@@ -12,6 +12,7 @@ import {
   sealSetupMarkers,
   sealSetupTrees,
   setupFileStamp,
+  setupProofName,
   writeSetupProof,
 } from "../../../../scripts/lib/worktree-setup-proof.ts";
 import { layerRealGit } from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
@@ -20,6 +21,7 @@ import {
   decodeReleaseRequest,
   listWorktreeBackups,
   queueWorktreeRelease,
+  recoverInterruptedWorktree,
   releaseHold,
 } from "./worktreeRelease.ts";
 
@@ -101,6 +103,40 @@ const queueRelease = (fixture: { root: string; checkout: string }, runId = "fini
       durableRef: "refs/heads/main",
     });
   });
+
+it.live.each(["saved cache", "installed dependency", "setup proof"] as const)(
+  "keeps an interrupted removal claimed after losing its %s",
+  (lost) =>
+    Effect.gen(function* () {
+      const fixture = yield* sealedCheckout();
+      const { fs, path, project, checkout, admin, modules } = fixture;
+      const cache = path.join(modules, ".vite-temp");
+      if (lost === "saved cache") {
+        yield* fs.makeDirectory(cache);
+        yield* fs.writeFileString(path.join(cache, "private.txt"), "local build contents");
+      }
+      const { file } = yield* queueRelease(fixture);
+      const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
+      yield* fs.rename(file, file + ".releasing");
+      const verify = recoverInterruptedWorktree(checkout, project, "feature", {
+        original: { ...request, backupDirectory: path.dirname(file) },
+      });
+      yield* verify;
+      if (lost === "saved cache") yield* fs.remove(cache, { recursive: true });
+      else if (lost === "installed dependency")
+        yield* fs.remove(path.join(modules, "installed.js"));
+      else yield* fs.remove(path.join(admin, setupProofName));
+      expect(yield* Effect.isFailure(verify)).toBe(true);
+      expect(yield* fs.exists(file + ".releasing")).toBe(true);
+      if (request.savedFiles) {
+        expect(
+          yield* fs.readFileString(
+            path.join(request.savedFiles, "node_modules/.vite-temp/private.txt"),
+          ),
+        ).toBe("local build contents");
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
 
 it.live("retains unknown ignored build files without relinking installed dependencies", () =>
   Effect.gen(function* () {

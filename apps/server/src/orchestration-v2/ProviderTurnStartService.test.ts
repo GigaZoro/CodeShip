@@ -1613,6 +1613,8 @@ for (const scenario of [
   "released with an empty directory",
   "removal interrupted with the original checkout",
   "removal interrupted with a saved backup",
+  "removal interrupted with a missing saved file",
+  "removal interrupted with a missing saved root",
   "removal interrupted with a missing tracked file",
   "removal interrupted with replaced Git metadata",
   "removal interrupted after the branch moved",
@@ -1681,22 +1683,45 @@ for (const scenario of [
         relationshipToParent: "subagent" as const,
         rootThreadId: owner,
       };
-      const { file } = yield* queueWorktreeRelease({
+      const hasBackup =
+        scenario === "removal interrupted with a saved backup" ||
+        scenario.startsWith("removal interrupted with a missing saved");
+      const ignoredDir = path.join(worktreePath, "private-cache");
+      if (hasBackup) {
+        yield* fileSystem.writeFileString(
+          path.join(workspaceRoot, ".git/info/exclude"),
+          "private-cache/\n",
+        );
+        yield* fileSystem.makeDirectory(ignoredDir);
+        yield* fileSystem.writeFileString(path.join(ignoredDir, "settings"), "private data");
+        yield* fileSystem.writeFileString(path.join(ignoredDir, "cache"), "other data");
+      }
+      const { file, savedFiles } = yield* queueWorktreeRelease({
         threadId: owner,
         runId: "finished",
         worktreePath,
         durableRef: "refs/heads/main",
         stateDir: path.join(root, "state"),
+        saveIgnored: hasBackup,
       });
       const request = yield* decodeReleaseRequest(yield* fileSystem.readFileString(file));
       const removalInterrupted = scenario.startsWith("removal interrupted");
       const intactRemoval =
         scenario === "removal interrupted with the original checkout" ||
         scenario === "removal interrupted with a saved backup";
-      const savedFiles =
-        scenario === "removal interrupted with a saved backup"
-          ? yield* fileSystem.makeTempDirectoryScoped({ directory: root, prefix: "saved-" })
-          : undefined;
+      if (hasBackup) {
+        // An older release may hold the only pointer to the private backup in its claim.
+        yield* fileSystem.remove(savedFiles + ".json");
+        if (scenario === "removal interrupted with a saved backup")
+          yield* fileSystem.writeFileString(
+            path.join(worktreePath, "new-note"),
+            "owner's new note",
+          );
+        if (scenario === "removal interrupted with a missing saved file")
+          yield* fileSystem.remove(path.join(ignoredDir, "settings"));
+        if (scenario === "removal interrupted with a missing saved root")
+          yield* fileSystem.remove(ignoredDir, { recursive: true });
+      }
       const partialRestore = scenario.startsWith("partially restored");
       const newlyReleased = isNewThread || scenario.startsWith("released with");
       const receipt =
@@ -1712,7 +1737,6 @@ for (const scenario of [
         file,
         JSON.stringify({
           ...request,
-          ...(savedFiles ? { savedFiles } : {}),
           family: [
             {
               threadId: owner,
@@ -1836,6 +1860,12 @@ for (const scenario of [
             },
           });
         }
+        if (hasBackup) {
+          expect(
+            yield* fileSystem.readFileString(path.join(savedFiles!, "private-cache/settings")),
+          ).toBe("private data");
+          expect(yield* fileSystem.exists(path.join(ignoredDir, "settings"))).toBe(false);
+        }
         if (scenario === "removal interrupted with a missing tracked file")
           expect(yield* fileSystem.exists(path.join(worktreePath, "remaining"))).toBe(false);
         if (
@@ -1864,12 +1894,169 @@ for (const scenario of [
             yield* fileSystem.readFileString(path.join(path.dirname(receipt), withdrawn[0]!)),
           );
           expect(savedRequest.savedFiles).toBe(savedFiles);
+          expect(yield* fileSystem.readFileString(path.join(worktreePath, "new-note"))).toBe(
+            "owner's new note",
+          );
+          // A withdrawn claim from an older server is discoverable without a separate backup index.
+          yield* fileSystem.remove(savedFiles + ".json");
+          expect(yield* listWorktreeBackups(path.join(root, "state"))).toMatchObject([
+            { savedFiles, threadId: owner, runId: "finished" },
+          ]);
+          expect(yield* fileSystem.readFileString(path.join(ignoredDir, "settings"))).toBe(
+            "private data",
+          );
         }
         expect(harness.open).toHaveBeenCalledOnce();
       }
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
   );
 }
+
+effectIt.effect(
+  "starts a new checkout at a released family's path only for its own project and branch",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-reallocation-" }),
+      );
+      const project = path.join(root, "project");
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "feature-restore");
+      const git = (cwd: string, args: string[]) =>
+        driver.execute({ operation: "test.reallocation", cwd, args });
+      yield* fs.makeDirectory(project);
+      yield* git(project, ["init", "-b", "main"]);
+      yield* git(project, ["config", "user.name", "Test"]);
+      yield* git(project, ["config", "user.email", "test@example.com"]);
+      yield* fs.writeFileString(path.join(project, "tracked"), "base");
+      yield* git(project, ["add", "tracked"]);
+      yield* git(project, ["commit", "-m", "base"]);
+      yield* git(project, ["worktree", "add", "-b", "feature/restore", worktreePath]);
+      const owner = ThreadId.make("released-owner");
+      const { file } = yield* queueWorktreeRelease({
+        threadId: owner,
+        runId: "finished",
+        worktreePath,
+        durableRef: "refs/heads/main",
+        stateDir: path.join(root, "state"),
+      });
+      const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
+      const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" as const }));
+      const makeHarness = (workspaceRoot: string) =>
+        makeLocalCommandHarness({
+          text: "Continue",
+          worktreesDir,
+          worktreePath,
+          workspaceRoot,
+          fileSystem: fs,
+          gitWorkflow,
+          runSetup,
+        });
+      const { projectId } = makeHarness(project).projection().thread;
+      const contents = JSON.stringify({
+        ...request,
+        family: [
+          {
+            threadId: owner,
+            runId: "finished",
+            projectId,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: owner },
+          },
+          {
+            threadId: "released-child",
+            runId: "finished-child",
+            projectId,
+            lineage: {
+              parentThreadId: owner,
+              relationshipToParent: "subagent",
+              rootThreadId: owner,
+            },
+          },
+        ],
+      });
+      yield* fs.writeFileString(file, contents);
+      yield* fs.rename(file, file + ".released");
+      const start = Effect.fnUntraced(function* (
+        workspaceRoot: string,
+        branch: string,
+        originalFamily = false,
+      ) {
+        const harness = makeHarness(workspaceRoot);
+        const projection = harness.projection();
+        harness.setProjection({
+          ...projection,
+          thread: {
+            ...projection.thread,
+            branch,
+            projectId: workspaceRoot === project ? projectId : ProjectId.make("new-project"),
+            ...(originalFamily
+              ? {
+                  lineage: {
+                    parentThreadId: owner,
+                    relationshipToParent: "fork" as const,
+                    rootThreadId: owner,
+                  },
+                }
+              : {}),
+          },
+        });
+        yield* harness.start;
+        return harness.open.mock.calls.length;
+      });
+      yield* git(worktreePath, ["switch", "-c", "renamed-original"]);
+      const pointer = path.join(worktreePath, ".git");
+      yield* fs.writeFileString(pointer, yield* fs.readFileString(pointer));
+      expect(yield* start(project, "renamed-original")).toBe(0);
+      yield* git(project, ["worktree", "remove", worktreePath]);
+      yield* git(project, ["worktree", "add", worktreePath, "feature/restore"]);
+      expect(yield* start(project, "feature/restore")).toBe(0);
+      yield* git(project, ["worktree", "remove", worktreePath]);
+      yield* git(project, [
+        "worktree",
+        "add",
+        "--no-checkout",
+        "-b",
+        "feature-restore",
+        worktreePath,
+      ]);
+      expect(yield* start(project, "feature-restore")).toBe(0);
+      expect(yield* fs.exists(path.join(worktreePath, "tracked"))).toBe(false);
+      yield* git(worktreePath, ["reset", "--hard", "HEAD"]);
+      yield* fs.writeFileString(path.join(worktreePath, "tracked"), "new owner's edit");
+      const otherProject = path.join(root, "other-project");
+      yield* git(root, ["clone", "--quiet", project, otherProject]);
+      for (const suffix of [".releasing", ".restoring", ".setup"]) {
+        yield* fs.rename(file + ".released", file + suffix);
+        expect(yield* start(project, "feature-restore")).toBe(0);
+        yield* fs.rename(file + suffix, file + ".released");
+      }
+      expect(yield* start(otherProject, "feature-restore")).toBe(0);
+      expect(yield* start(project, "feature/restore")).toBe(0);
+      expect(yield* start(project, "feature/restore", true)).toBe(0);
+      expect(yield* start(project, "feature-restore", true)).toBe(0);
+      yield* fs.writeFileString(
+        file + ".released",
+        JSON.stringify({ ...(yield* decodeReleaseRequest(contents)), identity: "unknown" }),
+      );
+      expect(yield* start(project, "feature-restore")).toBe(0);
+      yield* fs.writeFileString(file + ".released", contents);
+      expect(yield* start(project, "feature-restore")).toBe(1);
+      expect(yield* fs.readFileString(file + ".released")).toBe(contents);
+      expect(yield* fs.readFileString(path.join(worktreePath, "tracked"))).toBe("new owner's edit");
+      yield* git(worktreePath, ["add", "tracked"]);
+      yield* git(worktreePath, ["commit", "-m", "new owner's work"]);
+      yield* git(project, ["worktree", "remove", worktreePath]);
+      yield* git(otherProject, ["worktree", "add", "-b", "feature/restore", worktreePath]);
+      expect(yield* start(otherProject, "feature/restore")).toBe(1);
+      expect(yield* start(project, "feature/restore", true)).toBe(0);
+      expect(yield* fs.readFileString(file + ".released")).toBe(contents);
+      expect(runSetup).not.toHaveBeenCalled();
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
 
 effectIt.effect("cancels recovered synchronous setup and unblocks the awaiting run", () =>
   Effect.gen(function* () {
