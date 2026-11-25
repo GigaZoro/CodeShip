@@ -1,3 +1,7 @@
+## 2026-11-25 — Deleting a transcript no longer shrinks past usage early
+
+- Usage keeps the saved figures of a deleted transcript for 92 days after T3.CodeShip first finds it gone. Before, they expired 92 days after the file's last write, so deleting an old transcript could drop its usage from a past window within days. If the file comes back, it counts as a live transcript again.
+
 ## 2026-11-25 — A tool call a failed run left open no longer holds automatic updates
 
 - When T3.CodeShip has to stop a chat's provider itself, because it could not record the turn's output or found the turn still running when the next message started, it now also closes the tool calls that turn had open. Before, such a call stayed "running" for ever, and an automatic update waited on it as background work until the server restarted.

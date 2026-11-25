@@ -225,6 +225,7 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 
 const CURSOR_NOW = Date.parse("2026-08-02T12:00:00Z");
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 function makeFakeCursor() {
   const state = {
@@ -340,6 +341,16 @@ const storedFileKeys = (stateDir: string) =>
       ),
     ),
   ]);
+
+/** Reads with a fresh service, which loads saved usage and saves it again as it shuts down. */
+const outputTokensAfterRestart = Effect.scoped(
+  Effect.gen(function* () {
+    const service = yield* UsageService.make;
+    const tokens = totalOutputTokens(yield* service.readSummary(WINDOW));
+    yield* service.awaitPersisted;
+    return tokens;
+  }),
+);
 
 let seededSnapshots = 0;
 /** Writes a snapshot as another process would, under a writer id no service uses. */
@@ -3730,25 +3741,97 @@ describe("UsageService", () => {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
         const archive = NodePath.join(stateDir, "usage-scan-cache-v10.json");
-        const seed = yield* UsageService.make;
-        yield* seed.readSummary(WINDOW);
-        yield* seed.awaitPersisted;
-        const { document: original } = yield* onlySnapshot(stateDir);
-        yield* fs.remove(transcript);
-        yield* TestClock.adjust("93 days");
-        yield* seed.readSummary(WINDOW);
-        yield* seed.awaitPersisted;
-        assert.isEmpty(yield* storedFileKeys(stateDir));
-        yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...original, version: 10 }));
-
-        yield* Effect.scoped(
+        const shutDownWithoutScan = Effect.scoped(
           Effect.flatMap(UsageService.make, (service) => service.awaitPersisted),
         );
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* fs.remove(transcript);
+        yield* TestClock.adjust("93 days");
+        // No scan saw the deletion, so the write starts the row's retention instead of pruning it.
+        yield* shutDownWithoutScan;
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        const { document: missing } = yield* onlySnapshot(stateDir);
+        yield* TestClock.adjust("93 days");
+        assert.strictEqual(yield* outputTokensAfterRestart, 0);
+        assert.isEmpty(yield* storedFileKeys(stateDir));
+        yield* fs.writeFileString(archive, encodeUnknownJsonString({ ...missing, version: 10 }));
+
+        yield* shutDownWithoutScan;
         assert.isFalse(yield* fs.exists(archive));
         assert.isEmpty(yield* storedFileKeys(stateDir));
         assert.isFalse((yield* readStore(stateDir)).some(({ name }) => name.startsWith("legacy-")));
       }).pipe(Effect.provide(layerService({ prefix: "usage-cache-retention", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("counts a transcript deleted at age 91 days until 92 days after the deletion", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const deletedAt = CURSOR_NOW + 91 * DAY_MS;
+      yield* TestClock.setTime(deletedAt);
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* fs.remove(transcript);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* TestClock.adjust("2 days");
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* TestClock.setTime(deletedAt + 92 * DAY_MS);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* TestClock.adjust("1 millis");
+        assert.strictEqual(yield* outputTokensAfterRestart, 0);
+        assert.isEmpty(yield* storedFileKeys(stateDir));
+      }).pipe(Effect.provide(layerService({ prefix: "usage-deleted-retention", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live.each(["came back", "could not be listed"] as const)(
+    "starts the retention of a transcript that %s at its deletion",
+    (scenario) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const writeTranscript = Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+          await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+        });
+        yield* writeTranscript;
+        const projectDir = yield* Effect.promise(() =>
+          NodeFSP.realpath(NodePath.dirname(transcript)),
+        );
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        let denied = false;
+        using _readdir = vi.spyOn(NodeFSP, "readdir").mockImplementation(async (...args) => {
+          if (denied && args[0] === projectDir) throw new Error("permission denied");
+          return actual.readdir(...args);
+        });
+        yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          if (scenario === "came back") yield* fs.remove(transcript);
+          else denied = true;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* TestClock.adjust("50 days");
+          if (scenario === "came back") {
+            yield* writeTranscript;
+            assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          }
+          yield* fs.remove(transcript);
+          denied = false;
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+          yield* TestClock.adjust("43 days");
+          assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        }).pipe(
+          Effect.provide(layerService({ prefix: "usage-returned-retention", home, settings })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.live("answers a warm scan while a sync is blocked on disk", () =>
