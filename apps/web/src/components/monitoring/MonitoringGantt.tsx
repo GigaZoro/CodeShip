@@ -3,11 +3,13 @@ import type {
   MonitoringSegmentStatus,
   MonitoringThreadDetail,
 } from "@t3tools/contracts";
-import { detailExtent } from "@t3tools/client-runtime/monitoring";
+import { detailExtent, formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { formatDateTimeShort, formatTokens } from "@t3tools/shared/usageFormat";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 
+import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
+import { resolveHour12 } from "../../timestampFormat";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   MARKER_PRESENTATION,
@@ -58,6 +60,7 @@ const STATUS_ORDER: ReadonlyArray<MonitoringSegmentStatus> = [
 ];
 
 export function MonitoringGantt({ detail }: { readonly detail: MonitoringThreadDetail }) {
+  const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const { lanes, markers, omitted } = detail;
   const { start, span } = detailExtent(detail);
   const percent = (instant: string) => ((Date.parse(instant) - start) / span) * 100;
@@ -93,12 +96,13 @@ export function MonitoringGantt({ detail }: { readonly detail: MonitoringThreadD
                 at={marker.at}
                 offsetMs={Date.parse(marker.at) - start}
                 detail={marker.detail}
+                hour12={hour12}
               />
             ),
           )}
         </div>
         {lanes.map((lane) => (
-          <LaneRow key={lane.id} lane={lane} start={start} span={span} />
+          <LaneRow key={lane.id} lane={lane} start={start} span={span} hour12={hour12} />
         ))}
         <div />
         <div className="relative h-4 text-xs text-muted-foreground" aria-hidden>
@@ -177,6 +181,7 @@ function MarkerTick({
   at,
   offsetMs,
   detail,
+  hour12,
 }: {
   readonly kind: MonitoringMarkerKind;
   readonly left: number;
@@ -184,6 +189,7 @@ function MarkerTick({
   readonly at: string;
   readonly offsetMs: number;
   readonly detail: string | null;
+  readonly hour12: boolean;
 }) {
   return (
     <Tooltip>
@@ -206,7 +212,7 @@ function MarkerTick({
       <TooltipPopup>
         <span className="block font-medium">{label}</span>
         <span className="block">
-          +{formatDuration(offsetMs)} · {formatDateTimeShort(at)}
+          +{formatDuration(offsetMs)} · {formatMonitoringTime(at, hour12)}
         </span>
         {detail ? <span className="block max-w-64 break-words">{detail}</span> : null}
       </TooltipPopup>
@@ -218,10 +224,12 @@ function LaneRow({
   lane,
   start,
   span,
+  hour12,
 }: {
   readonly lane: MonitoringThreadDetail["lanes"][number];
   readonly start: number;
   readonly span: number;
+  readonly hour12: boolean;
 }) {
   const color = modelColor(lane.model);
   return (
@@ -279,7 +287,8 @@ function LaneRow({
                     {status} · {formatDuration(duration)}
                   </span>
                   <span className="block text-muted-foreground">
-                    +{formatDuration(from - start)} · {formatDateTimeShort(segment.startedAt)}
+                    +{formatDuration(from - start)} ·{" "}
+                    {formatMonitoringTime(segment.startedAt, hour12)}
                   </span>
                   {lane.tokens !== null ? (
                     <span className="block text-muted-foreground">

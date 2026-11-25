@@ -286,6 +286,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   shellOlderSettled: Schema.optionalKey(Schema.Boolean),
   /** Publishes a pull request refresh when linked-thread answers change; older servers need polling. */
   linkedThreadRefreshes: Schema.optionalKey(Schema.Boolean),
+  /** Server pages `monitoring.chats` by offset; Monitoring counts only environments that set it. */
+  monitoringPages: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -17,18 +17,23 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
   collectLimitAccounts,
+  limitAccountWorkspaces,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  findLimitAccountWindow,
   elapsedShare,
   limitsFreshness,
   exhaustedUsageWindow,
   paceOf,
   paceRemainingPercent,
   poolResetSummary,
+  formatDuration,
+  formatResetsIn,
   tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  showsRelativeLimitTimes,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -561,7 +566,7 @@ describe("pools", () => {
     const accounts = collectLimitAccounts(input);
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
-      key: "env-a:claude",
+      key: "claudeAgent:same@example.com",
       sourceLabel: null,
       redeem: { environmentId: "env-b", input: { instanceId: "claude" } },
       environments: [
@@ -628,6 +633,29 @@ describe("pools", () => {
         { label: "Desktop · hub", checkedAt: "2026-09-03T05:00:00.000Z" },
       ],
     });
+  });
+
+  it("keeps relative times ticking for a pool that has no countdown", () => {
+    const untimed = provider({
+      auth: { status: "authenticated", email: "untimed@example.com" },
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [{ ...window, resetsAt: undefined }],
+      },
+    });
+    const accounts = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          { ...laptop, connection: { phase: "connected" }, serverConfig: { providers: [untimed] } },
+        ],
+      ]),
+    );
+    const [pool] = collectLimitPools(accounts, now);
+    expect(pool?.windows.flatMap(({ resets }) => resets).some(({ at }) => at > now)).toBe(false);
+    expect(limitsFreshness(pool!.accounts).checkedAt).toBe("2026-09-03T11:00:00.000Z");
+    expect(showsRelativeLimitTimes(accounts)).toBe(true);
+    expect(showsRelativeLimitTimes([])).toBe(false);
   });
 
   it("uses the freshest reported plan even when the newest quota has no plan", () => {
@@ -961,6 +989,167 @@ describe("pools", () => {
     expect(account?.redeem?.environmentId).toBe("env-2");
   });
 
+  it("keeps a login's column and detail key when its first reporter fails", () => {
+    const login = (displayName: string, email: string) =>
+      provider({
+        displayName,
+        auth: { status: "authenticated", email, workspaceId: "work" },
+        usageLimits: { checkedAt, windows: [window] },
+      });
+    const alpha = login("Alpha", "a@example.com");
+    const input = (first: ServerProvider) =>
+      new Map([
+        [EnvironmentId.make("alpha"), { ...laptop, serverConfig: { providers: [first] } }],
+        [
+          EnvironmentId.make("zulu"),
+          { ...laptop, serverConfig: { providers: [login("Zulu", "a@example.com")] } },
+        ],
+        [
+          EnvironmentId.make("beta"),
+          { ...laptop, serverConfig: { providers: [login("Beta", "b@example.com")] } },
+        ],
+      ]);
+    const keys = (presentations: ReturnType<typeof input>) =>
+      collectLimitPools(
+        collectLimitAccounts(presentations),
+        Date.parse(checkedAt),
+      )[0]?.accounts.map(({ key }) => key);
+
+    const healthy = keys(input(alpha));
+    const failed = keys(
+      input({
+        ...alpha,
+        usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+      }),
+    );
+
+    expect(healthy).toEqual(["codex:a@example.com:work", "codex:b@example.com:work"]);
+    expect(failed).toEqual(healthy);
+  });
+
+  it("keeps the same account lookup key when either native or hub loses its reading", () => {
+    const native = provider({
+      auth: { status: "authenticated", email: "a@example.com" },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const hub = {
+      id: "a.json",
+      email: "A@example.com",
+      workspaceId: "work",
+      driver: native.driver,
+      usageLimits: native.usageLimits!,
+    };
+    const reports = (providers: ServerProvider[], accounts: (typeof hub)[], error?: string) =>
+      new Map([
+        [
+          EnvironmentId.make("desk"),
+          {
+            ...laptop,
+            serverConfig: {
+              providers,
+              usageLimitSources: [{ ...source, accounts, ...(error ? { error } : {}) }],
+            },
+          },
+        ],
+      ]);
+    const both = reports([native], [hub]);
+    const known = limitAccountWorkspaces(both);
+    const work = "codex:a@example.com:work";
+    const lookup = (live: typeof both, key = work) =>
+      findLimitAccountWindow(
+        collectLimitPools(collectLimitAccounts(live, limitAccountWorkspaces(live, known)), now),
+        key,
+        window.id,
+        window.kind,
+      );
+    expect(lookup(both)?.account.key).toBe(work);
+    expect(lookup(reports([native], [], "Hub temporarily unavailable"))?.account.key).toBe(work);
+    expect(lookup(reports([], [hub]))?.account.key).toBe(work);
+    // A successful snapshot replaces the hub's evidence. An absent hub retires it too.
+    const personal = { ...hub, id: "personal.json", workspaceId: "personal" };
+    expect(lookup(reports([native], [personal]))).toBeNull();
+    expect(lookup(reports([native], [personal]), "codex:a@example.com:personal")?.account.key).toBe(
+      "codex:a@example.com:personal",
+    );
+    expect(lookup(reports([native], []))).toBeNull();
+    expect(lookup(reports([native], []), "codex:a@example.com")?.account.key).toBe(
+      "codex:a@example.com",
+    );
+  });
+
+  it("keeps a mobile account lookup through a native timeout and retires disabled or removed readers", () => {
+    const reader = provider({
+      auth: { status: "authenticated", email: "a@example.com", workspaceId: "work" },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const hub = {
+      id: "a.json",
+      email: "a@example.com",
+      driver: reader.driver,
+      usageLimits: { checkedAt, windows: [window] },
+    };
+    const presentations = (providers: readonly ServerProvider[]) =>
+      new Map([
+        [
+          EnvironmentId.make("desk"),
+          {
+            ...laptop,
+            serverConfig: { providers, usageLimitSources: [{ ...source, accounts: [hub] }] },
+          },
+        ],
+      ]);
+    const ready = presentations([reader]);
+    const known = limitAccountWorkspaces(ready);
+    const timeout: ServerProvider = {
+      ...reader,
+      auth: { status: "unknown" },
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+    };
+    const stale = presentations([timeout]);
+    const saved = limitAccountWorkspaces(stale, known);
+    const key = "codex:a@example.com:work";
+    const lookup = (live: typeof ready, evidence: typeof known) =>
+      findLimitAccountWindow(
+        collectLimitPools(collectLimitAccounts(live, evidence), now),
+        key,
+        window.id,
+        window.kind,
+      );
+    expect(lookup(stale, saved)?.account.key).toBe(key);
+    for (const changed of [
+      presentations([{ ...timeout, enabled: false }]),
+      presentations([]),
+      presentations([
+        {
+          ...reader,
+          auth: { status: "authenticated", email: "a@example.com", workspaceId: "personal" },
+        },
+      ]),
+    ]) {
+      expect(lookup(changed, limitAccountWorkspaces(changed, saved))).toBeNull();
+    }
+  });
+
+  it("keeps workspace keys when one workspace stops reporting for a shared email", () => {
+    const login = (workspaceId: string) =>
+      provider({
+        instanceId: ProviderInstanceId.make(workspaceId),
+        auth: { status: "authenticated", email: "a@example.com", workspaceId },
+        usageLimits: { checkedAt, windows: [window] },
+      });
+    const presentations = (providers: ServerProvider[]) =>
+      new Map([[EnvironmentId.make("desk"), { ...laptop, serverConfig: { providers } }]]);
+    const work = login("work");
+    const personal = login("personal");
+    const known = limitAccountWorkspaces(presentations([work, personal]));
+    for (const active of [work, personal]) {
+      const live = presentations([active]);
+      expect(
+        collectLimitAccounts(live, limitAccountWorkspaces(live, known)).map(({ key }) => key),
+      ).toEqual([`codex:a@example.com:${active.auth.workspaceId}`]);
+    }
+  });
+
   it("keeps one email in two workspaces apart while merging each workspace's duplicates", () => {
     const login = (instanceId: string, workspaceId: string, usedPercent: number) =>
       provider({
@@ -998,8 +1187,8 @@ describe("pools", () => {
     ]);
     const accounts = collectLimitAccounts(input);
     expect(accounts.map((account) => account.key)).toEqual([
-      "env-a:business",
-      "env-a:personal",
+      "codex:same@example.com:ws-business",
+      "codex:same@example.com:ws-plus",
       "env-a:hub:x.json",
     ]);
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(8);
@@ -1066,7 +1255,7 @@ describe("pools", () => {
       ]);
     const unrelated = provider({ instanceId: ProviderInstanceId.make("codex-2") });
     expect(collectLimitAccounts(withOther(unrelated)).map((account) => account.key)).toEqual([
-      "env-a:codex",
+      "claudeAgent:same@example.com:org-a",
     ]);
     const unreadable = provider({
       ...native,
@@ -1075,7 +1264,7 @@ describe("pools", () => {
       usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
     });
     expect(collectLimitAccounts(withOther(unreadable)).map((account) => account.key)).toEqual([
-      "env-a:codex",
+      "claudeAgent:same@example.com:org-a",
       "env-a:hub:claude.json",
     ]);
   });
@@ -1568,6 +1757,36 @@ describe("pooled account columns", () => {
     expect(cursorUsageWindowDetails(ids.at(-1)!, pool)?.label).toBe(label);
   });
 
+  it("advances the multi-account refill summary past elapsed deadlines", () => {
+    const before = account("before", [
+      { ...window, usedPercent: 100, resetsAt: "2026-09-03T12:00:30Z" },
+    ]);
+    const after = account("after", [
+      { ...window, usedPercent: 20, resetsAt: "2026-09-03T12:02:00Z" },
+    ]);
+    const pool = collectLimitPools([before, after], now)[0]!.windows[0]!;
+    expect(poolResetSummary(pool, now)?.text).toBe("+50% back in <1m");
+    expect(poolResetSummary(pool, now + 60_000)?.text).toBe("+10% back in 1m");
+    expect(poolResetSummary(pool, now + 120_000)).toBeNull();
+  });
+
+  it("words a reset under a minute away to fit each form", () => {
+    const soon = { ...window, resetsAt: "2026-09-03T12:00:30.000Z" };
+    expect(
+      (["full", "sentence", "after", "arrow", "duration"] as const).map((form) =>
+        formatResetsIn(soon, now, form),
+      ),
+    ).toEqual(["resets in <1m", "Resets in <1m", "in <1m", "↻ <1m", "<1m"]);
+  });
+
+  it("formats a time left under a minute as <1m, not 0m", () => {
+    expect([formatDuration(30_000), formatDuration(59_999), formatDuration(60_000)]).toEqual([
+      "<1m",
+      "<1m",
+      "1m",
+    ]);
+  });
+
   // regression: #20349 sessions stay visible while the weekly quota is exhausted
   it.each([
     ["claudeAgent", "13:00", 40, "14:00", 100],
@@ -1626,7 +1845,7 @@ describe("pooled account columns", () => {
     expect(accounts).toEqual(snapshot);
   });
 
-  it("keeps session columns across rows with opposite reset and usage orders", () => {
+  it("keeps account columns across rows with opposite reset and usage orders", () => {
     const accounts = [
       account("a", [
         { ...weekly, usedPercent: 80, resetsAt: "2026-09-05T12:00:00.000Z" },
@@ -1638,10 +1857,10 @@ describe("pooled account columns", () => {
       ]),
     ];
     const [pool] = collectLimitPools(accounts, now);
-    expect(pool!.accounts.map((account) => account.key)).toEqual(["b", "a"]);
+    expect(pool!.accounts.map((account) => account.key)).toEqual(["a", "b"]);
     expect(keys(pool!)).toEqual([
-      ["b", "a"],
-      ["b", "a"],
+      ["a", "b"],
+      ["a", "b"],
     ]);
     expect(pool!.windows[1]!.resets.map((reset) => reset.member.account.key)).toEqual(["a", "b"]);
     expect(pool!.windows[1]!.remainingPercent).toBe(50);
@@ -1681,7 +1900,7 @@ describe("pooled account columns", () => {
     },
   );
 
-  it("orders by usable session refill and clears suppression after a fresh weekly reading", () => {
+  it("keeps account order when a fresh weekly reading clears session suppression", () => {
     const blocked = account("blocked", [
       { ...window, resetsAt: "2026-09-03T13:00:00.000Z" },
       { ...weekly, usedPercent: 100, resetsAt: "2026-09-03T15:00:00.000Z" },
@@ -1698,7 +1917,7 @@ describe("pooled account columns", () => {
       },
     };
     const [after] = collectLimitPools([refreshed, available], now);
-    expect(after!.accounts.map((account) => account.key)).toEqual(["blocked", "available"]);
+    expect(after!.accounts.map((account) => account.key)).toEqual(["available", "blocked"]);
     expect(after!.windows[0]!.remainingPercent).toBe(60);
     expect(after!.windows[0]!.resets[0]).toMatchObject({
       at: Date.parse("2026-09-03T13:00:00.000Z"),
@@ -1749,7 +1968,7 @@ describe("pooled account columns", () => {
     },
   );
 
-  it("falls back to weekly resets when no account reports a session", () => {
+  it("keeps weekly-only accounts in name order, with reset times still chronological", () => {
     const [pool] = collectLimitPools(
       [
         account("a", [{ ...weekly, resetsAt: "2026-09-06T12:00:00.000Z" }]),
@@ -1757,7 +1976,8 @@ describe("pooled account columns", () => {
       ],
       now,
     );
-    expect(keys(pool!)).toEqual([["b", "a"]]);
+    expect(keys(pool!)).toEqual([["a", "b"]]);
+    expect(pool!.windows[0]!.resets.map((reset) => reset.member.account.key)).toEqual(["b", "a"]);
   });
 });
 

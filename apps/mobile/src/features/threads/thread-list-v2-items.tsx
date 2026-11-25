@@ -25,6 +25,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useExportThreadMarkdown } from "./useExportThreadMarkdown";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
 import { useThreadHasScheduledTask } from "./use-thread-has-scheduled-task";
 import type { ThreadMoveDestination } from "./threadOrder";
@@ -1196,6 +1197,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const exportThreadMarkdown = useExportThreadMarkdown();
   const handleAcknowledgeWoke = useCallback(() => {
     if (props.wokeAt === null) return;
     void visitThread({
@@ -1412,6 +1414,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     () => [
       { id: "copy-thread", title: t("Copy thread"), image: "text.bubble" },
       { id: "copy-thread-id", title: t("Copy thread ID"), image: "doc.on.doc" },
+      { id: "export-markdown", title: t("Export as Markdown"), image: "square.and.arrow.up" },
       ...(canShareWithGuest
         ? [{ id: "share-guest", title: t("Share with guest"), image: "person.badge.plus" }]
         : []),
@@ -1562,6 +1565,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           if (!didCopy) Dialog.alert(target.failureTitle, t("Try copying this thread again."));
         });
       }
+      if (nativeEvent.event === "export-markdown") {
+        void exportThreadMarkdown({
+          environmentId: thread.environmentId,
+          threadId: thread.id,
+          projectName: props.project?.title ?? null,
+          thread: thread.source,
+          createdAt: thread.createdAt,
+        });
+      }
       if (nativeEvent.event === "copy-thread-id") {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
@@ -1596,6 +1608,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       moveThreadToFolder,
       promptNewFolder,
       onNewThreadOnBranch,
+      exportThreadMarkdown,
+      props.project?.title,
       thread,
       navigation,
       handleArchive,

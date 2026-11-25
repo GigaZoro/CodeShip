@@ -159,6 +159,11 @@ export const OrchestratorMcpInteractionMode = Schema.Union([
 ]);
 export type OrchestratorMcpInteractionMode = typeof OrchestratorMcpInteractionMode.Type;
 
+const OrchestratorMcpAuto = Schema.Boolean.annotate({
+  description:
+    "true: Auto mode, on the model and account Settings pick. Not with `target`. Omit to inherit.",
+});
+
 export const OrchestratorMcpTaskRole = DelegatedTaskRole;
 export type OrchestratorMcpTaskRole = DelegatedTaskRole;
 
@@ -188,6 +193,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
+  auto: Schema.optional(OrchestratorMcpAuto),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
@@ -333,12 +339,7 @@ export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   target: Schema.optional(OrchestratorMcpTarget),
-  auto: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "true: Auto mode, on the model and account Settings pick. Not with `target`. Omit to inherit.",
-    }),
-  ),
+  auto: Schema.optional(OrchestratorMcpAuto),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 });
@@ -1459,6 +1460,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_credential_required",
       "target_required",
       "memory_short",
+      /** Auto mode is off where the thread would start, or its provider has no enabled account there. */
+      "auto_mode_unavailable",
       /** A linked environment answered, but its version answers in a way this one cannot read. */
       "version_mismatch",
     ]),

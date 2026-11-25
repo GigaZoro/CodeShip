@@ -1,9 +1,38 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
-import type { DailyTotals } from "@t3tools/shared/usageMerge";
+import type { DailyTotals, MergedUsage } from "@t3tools/shared/usageMerge";
+import { usageEmptyMessage } from "@t3tools/shared/usageFormat";
 
-import { PROVIDER_ORDER } from "./usageProviders";
+export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
+  "codex",
+  "claude",
+  "grok",
+  "cursor",
+  "opencode",
+  "antigravity",
+  "pi",
+  "muse",
+];
 
 export type UsageChartMetric = "cost" | "tokens";
+
+export function usageChartTotals(
+  merged: Pick<MergedUsage, "daily" | "hourly">,
+  hourly: boolean,
+): readonly DailyTotals[] {
+  return hourly
+    ? merged.hourly.map((period) => ({ ...period, day: period.hourStart }))
+    : merged.daily;
+}
+
+export function usageChartEmptyMessage(
+  periods: readonly DailyTotals[],
+  usage: MergedUsage,
+  metric: UsageChartMetric,
+): string | null {
+  return periods.some((period) => (metric === "cost" ? period.costUsd : period.totalTokens) > 0)
+    ? null
+    : usageEmptyMessage(usage, metric);
+}
 
 export interface UsageChartDay {
   readonly day: string;

@@ -1,5 +1,7 @@
 import {
   EnvironmentId,
+  ThreadId,
+  type MonitoringThreadDetail,
   type EnvironmentStartup,
   ProviderDriverKind,
   ServerSelfUpdateError,
@@ -111,6 +113,100 @@ function session(client: WsRpcProtocolClient): RpcSession {
     closed: Effect.never,
   };
 }
+
+it.effect("marks cached detail on reopen until the replacement session answers", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const answer = {
+        detail: { summary: { title: "Cached chat" } } as MonitoringThreadDetail,
+        revision: 3,
+        serverEpoch: "same-server",
+      };
+      const started = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      const client = (detail: Effect.Effect<typeof answer>) =>
+        ({
+          [WS_METHODS.monitoringThread]: () => detail,
+          [WS_METHODS.monitoringSubscribeChanges]: () => Stream.never,
+        }) as unknown as WsRpcProtocolClient;
+      const first = session(client(Effect.succeed(answer)));
+      const replacement = session(
+        client(
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(finished)),
+            Effect.as(answer),
+          ),
+        ),
+      );
+      const state = yield* SubscriptionRef.make<SupervisorConnectionState>({
+        ...AVAILABLE_CONNECTION_STATE,
+        desired: true,
+        network: "online",
+        phase: "connected",
+        attempt: 1,
+        generation: 1,
+      });
+      const sessions = yield* SubscriptionRef.make(Option.some(first));
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state,
+        session: sessions,
+        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const environments = EnvironmentRegistry.EnvironmentRegistry.of({
+        run: (_id, effect) =>
+          Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        followStream: (_id, stream) =>
+          Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+      const atoms = createServerEnvironmentAtoms(
+        Atom.runtime(
+          Layer.merge(
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
+            Layer.succeed(Persistence.EnvironmentCacheStore, {} as never),
+          ),
+        ),
+        { initialConfigValueAtom: () => Atom.make(CONFIG) },
+      );
+      const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+        Effect.sync(() => registry.dispose()),
+      );
+      const environmentId = TARGET.environmentId;
+      const threadId = ThreadId.make("cached");
+      const view = atoms.monitoringThreadView(environmentId, threadId);
+      const displayed = yield* Queue.unbounded<Atom.Type<typeof view>>();
+      const observe = () =>
+        registry.subscribe(view, (value) => Queue.offerUnsafe(displayed, value), {
+          immediate: true,
+        });
+      const nextDetail = (retained: boolean, waiting: boolean) =>
+        Stream.fromQueue(displayed).pipe(
+          Stream.filter(
+            (value) =>
+              value.detail !== null &&
+              value.retained === retained &&
+              value.result.waiting === waiting,
+          ),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+      const unmount = observe();
+      expect(yield* nextDetail(false, false)).toMatchObject({ detail: answer.detail });
+      unmount();
+      yield* Queue.clear(displayed);
+
+      yield* SubscriptionRef.set(sessions, Option.some(replacement));
+      yield* Effect.acquireRelease(Effect.sync(observe), (close) => Effect.sync(close));
+      yield* Deferred.await(started);
+      expect(yield* nextDetail(true, true)).toMatchObject({ detail: answer.detail });
+      yield* Deferred.succeed(finished, undefined);
+      expect(yield* nextDetail(false, false)).toMatchObject({ detail: answer.detail });
+    }),
+  ),
+);
 
 describe("update restart reconnect nudges", () => {
   it.effect("retries a desktop commit that was lost before delivery", () =>

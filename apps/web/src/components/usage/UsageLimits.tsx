@@ -1,3 +1,4 @@
+import { useUsageLimitNow, useUsageLimitWorkspaces } from "../../hooks/useUsageNow";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import {
   AuthProvidersManageScope,
@@ -13,6 +14,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   collectAccountFailover,
+  collectLimitAccounts,
+  showsRelativeLimitTimes,
   formatResetsIn,
   type LimitPace,
   paceOf,
@@ -268,18 +271,31 @@ const OUTCOME_TEXT: Record<ProviderConsumeResetCreditOutcome, Message> = {
   alreadyRedeemed: msg("That credit was already redeemed."),
 };
 
-export function useResetCredit(environmentId: EnvironmentId) {
+export function useResetCredit(
+  environmentId: EnvironmentId | null,
+  input: ProviderConsumeResetCreditInput | null,
+) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, { reportFailure: false });
   // Kept after close so the dialog's text survives its exit animation.
   const [choice, setChoice] = useState<ResetCreditChoice | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const target =
+    environmentId === null || input === null ? null : JSON.stringify([environmentId, input]);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  if (confirmation !== null && confirmation !== target) setConfirmation(null);
+  const confirming = confirmation !== null && confirmation === target;
+  const setConfirming = (open: boolean) => setConfirmation(open ? target : null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const redeem = async () => {
     setConfirming(false);
-    if (!choice || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    if (
+      environmentId === null ||
+      !choice ||
+      !readEnvironmentScope(environmentId, AuthProvidersManageScope)
+    )
+      return;
     setBusy(true);
     setStatus(null);
     const result = await consume({ environmentId, input: choice.input });
@@ -296,7 +312,8 @@ export function useResetCredit(environmentId: EnvironmentId) {
   };
 
   const confirm = (next: ResetCreditChoice) => {
-    if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    if (environmentId === null || !readEnvironmentScope(environmentId, AuthProvidersManageScope))
+      return;
     setChoice(next);
     setConfirming(true);
   };
@@ -349,7 +366,7 @@ export function ResetCredits({
   readonly now: number;
 }) {
   const { canManageProviders, choice, confirming, setConfirming, confirm, busy, status, redeem } =
-    useResetCredit(environmentId);
+    useResetCredit(environmentId, input);
   if (credits.availableCount === 0 && status === null) return null;
   return (
     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -380,17 +397,15 @@ export function ResetCredits({
   );
 }
 
-/** Advance now only on explicit refresh to avoid page repaints from ticking. */
 export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
-  now,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
-  readonly now: number;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
+  const workspaces = useUsageLimitWorkspaces();
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
     [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
   );
@@ -420,6 +435,8 @@ export function UsageLimitsSection({
       ];
     }),
   );
+  const accounts = collectLimitAccounts(selected, workspaces);
+  const now = useUsageLimitNow(undefined, showsRelativeLimitTimes(accounts));
   // Limits arrive with the server config, so a machine still connecting has none to show yet.
   const connecting = [...selected.values()].filter(
     (presentation) =>
@@ -435,9 +452,10 @@ export function UsageLimitsSection({
       : undefined;
   return (
     <UsageLimitsPooled
+      workspaces={workspaces}
       presentations={selected}
       now={now}
-      failover={collectAccountFailover(selected, now)}
+      getFailover={(now) => collectAccountFailover(selected, now)}
       {...(emptyMessage === undefined ? {} : { emptyMessage })}
     />
   );

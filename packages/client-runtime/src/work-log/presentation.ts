@@ -260,6 +260,26 @@ function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
   return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
 }
 
+function t3ToolResultFailed(toolName: string | null | undefined, output: unknown): boolean {
+  return resolveT3McpToolDefinition(toolName) !== null && t3ToolResultIndicatesFailure(output);
+}
+
+/** Whether the item's own result marks its tool failed: a command's exit code or a T3 tool's error. */
+export function turnItemResultIndicatesFailure(item: OrchestrationV2TurnItem): boolean | undefined {
+  if (item.type === "dynamic_tool")
+    return t3ToolResultFailed(item.toolName, item.output) || undefined;
+  if (item.type !== "command_execution") return undefined;
+  // An exit code settles the result; without one, the work log can still check its display text.
+  if (item.exitCode !== undefined) return item.exitCode !== 0;
+  if (
+    item.outputIndicatesFailure ||
+    (item.output && toolOutputIndicatesFailure(item.output.slice(0, 32_768)))
+  ) {
+    return true;
+  }
+  return undefined;
+}
+
 function workEntryIndicatesToolFailureFromOutput(
   entry: WorkLogPresentationEntry,
   includeCommand: boolean,
@@ -275,21 +295,10 @@ function workEntryIndicatesToolFailureFromOutput(
   // output: scanning it is slow on long threads and misreads phrases like
   // "that exit code 2 is expected" as a failed tool.
   if (!workLogEntryIsToolLike(entry) || entry.itemType === "reasoning") return false;
-  if (
-    resolveT3McpToolDefinition(workEntryToolName(entry)) &&
-    t3ToolResultIndicatesFailure(workEntryToolOutput(entry))
-  ) {
-    return true;
-  }
+  if (t3ToolResultFailed(workEntryToolName(entry), workEntryToolOutput(entry))) return true;
   const item = entry.structuredPayload;
-  if (item?.type === "command_execution") {
-    // The exit code outranks text in the output or the command itself.
-    if (item.exitCode !== undefined) return item.exitCode !== 0;
-    if (item.outputIndicatesFailure) return true;
-    if (item.output && toolOutputIndicatesFailure(item.output.slice(0, 32_768))) {
-      return true;
-    }
-  }
+  const failed = item === undefined ? undefined : turnItemResultIndicatesFailure(item);
+  if (failed !== undefined) return failed;
   const output = includeCommand
     ? [entry.detail, entry.command].filter(Boolean).join("\n")
     : (entry.detail ?? "");

@@ -31,6 +31,19 @@ describe("scheduled task description", () => {
     },
     { supported: false, savedDescription: "", description: "Queue health", expected: null },
     { supported: false, savedDescription: "", description: "", expected: {} },
+    // An unknown target is not an older one: the edit is kept until its config arrives.
+    {
+      supported: null,
+      savedDescription: "",
+      description: " Nightly review ",
+      expected: { description: "Nightly review" },
+    },
+    {
+      supported: null,
+      savedDescription: "Queue health",
+      description: "",
+      expected: { description: null },
+    },
   ])(
     "prepares the description change for a machine with description support $supported",
     ({ expected, ...input }) => {

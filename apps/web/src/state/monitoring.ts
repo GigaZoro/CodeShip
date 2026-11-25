@@ -1,56 +1,74 @@
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
   MonitoringOverviewInput,
   MonitoringThreadDetail,
 } from "@t3tools/contracts";
 import {
-  mergeMonitoringOverviews,
-  type MonitoringEnvironmentReport,
-  type MonitoringOverviewView,
+  presentMonitoringChats,
+  presentMonitoringOverview,
+  type MonitoringChatsRequest,
 } from "@t3tools/client-runtime/monitoring";
-import { AsyncResult, Atom } from "effect/reactivity";
+import {
+  createMonitoringAtoms,
+  createMonitoringOperation,
+  executeMonitoringQuery,
+  monitoringRefreshTimedOut,
+} from "@t3tools/client-runtime/monitoring/atoms";
+import { useContext, useState } from "react";
 
+import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { formatEnvironmentQueryError } from "./query";
 import { serverEnvironment } from "./server";
 
-/** Connected environments answer; their chats merge. A chat stays in the list while it refreshes. */
-const monitoringOverviewAtom = Atom.family((inputKey: string) =>
-  Atom.make((get): MonitoringOverviewView => {
-    const input = JSON.parse(inputKey) as MonitoringOverviewInput;
-    const reports: MonitoringEnvironmentReport[] = [];
-    for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
-      if (presentation.connection.phase !== "connected") continue;
-      const result = get(serverEnvironment.monitoringOverview({ environmentId, input }));
-      reports.push({
-        environmentId,
-        label: presentation.entry.target.label,
-        isPending: result.waiting,
-        error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
-        result: AsyncResult.getOrElse(result, () => null),
-      });
-    }
-    return mergeMonitoringOverviews(reports);
-  }).pipe(Atom.withLabel(`web-monitoring:overview:${inputKey}`)),
-);
+const monitoring = createMonitoringAtoms({
+  label: "web-monitoring",
+  registry: appAtomRegistry,
+  server: serverEnvironment,
+  presentations: environmentPresentations,
+  catalog: environmentCatalog,
+  describeFailure: formatEnvironmentQueryError,
+});
 
-export function useMonitoringOverview(input: MonitoringOverviewInput): MonitoringOverviewView {
-  return useAtomValue(monitoringOverviewAtom(JSON.stringify(input)));
+export function useMonitoringOverview(input: MonitoringOverviewInput) {
+  const key = JSON.stringify(input);
+  const view = useAtomValue(monitoring.overviewAtom(key));
+  const next = { key, view, days: input.days };
+  const [shown, setShown] = useState(next);
+  const { keep, ...displayed } = presentMonitoringOverview(shown, next);
+  if (!keep && (shown.key !== key || shown.view !== view)) setShown(next);
+  return displayed;
 }
 
-export function refreshMonitoringOverview(
-  environmentIds: ReadonlyArray<EnvironmentId>,
-  input: MonitoringOverviewInput,
-) {
-  for (const environmentId of environmentIds) {
-    appAtomRegistry.refresh(serverEnvironment.monitoringOverview({ environmentId, input }));
-  }
+export function useMonitoringChats(request: MonitoringChatsRequest) {
+  const view = useAtomValue(monitoring.chatsAtom(JSON.stringify(request)));
+  const next = { request, view };
+  const [shown, setShown] = useState(next);
+  const { keep, ...displayed } = presentMonitoringChats(shown, next);
+  if (!keep && shown.view !== view) setShown(next);
+  return displayed;
+}
+
+export const refreshMonitoring = monitoring.refresh;
+
+export function useMonitoringRefresh(key: string | null = null) {
+  const registry = useContext(RegistryContext);
+  const [current, setCurrent] = useState(() => ({ key, operation: createMonitoringOperation() }));
+  const next = current.key === key ? current : { key, operation: createMonitoringOperation() };
+  if (next !== current) setCurrent(next);
+  const state = useAtomValue(next.operation.state);
+  return {
+    refreshing: state === "pending",
+    timedOut: state === "timed-out",
+    run: (refresh: () => Promise<boolean>) => next.operation.run(registry, refresh),
+  };
 }
 
 export interface MonitoringThreadView {
   readonly detail: MonitoringThreadDetail | null;
+  readonly retained: boolean;
   readonly isPending: boolean;
   readonly error: string | null;
 }
@@ -59,21 +77,30 @@ export function useMonitoringThread(
   environmentId: EnvironmentId,
   threadId: MonitoringThreadDetail["summary"]["threadId"],
 ): MonitoringThreadView {
-  const result = useAtomValue(
-    serverEnvironment.monitoringThread({ environmentId, input: { threadId } }),
+  const { result, detail, retained } = useAtomValue(
+    serverEnvironment.monitoringThreadView(environmentId, threadId),
   );
   return {
-    detail: AsyncResult.getOrElse(result, () => null),
+    retained,
+    detail,
     isPending: result.waiting,
     error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
   };
 }
 
-export function refreshMonitoringThread(
+/** Asks for the chat's analysis again and, as Refresh on the list does, every failure a view read. */
+export async function refreshMonitoringThread(
   environmentId: EnvironmentId,
   threadId: MonitoringThreadDetail["summary"]["threadId"],
 ) {
-  appAtomRegistry.refresh(
-    serverEnvironment.monitoringThread({ environmentId, input: { threadId } }),
-  );
+  const [detail, other] = await Promise.all([
+    executeMonitoringQuery(
+      appAtomRegistry,
+      serverEnvironment.monitoringThread({ environmentId, input: { threadId } }),
+      environmentId,
+      { refresh: true },
+    ),
+    monitoring.refresh({}),
+  ]);
+  return monitoringRefreshTimedOut(detail) || other.some(monitoringRefreshTimedOut);
 }

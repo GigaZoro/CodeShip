@@ -3092,14 +3092,17 @@ function ScheduledTaskEditorForm({
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
   const offersCatchUp =
     environment?.serverConfig?.environment.capabilities.scheduledTaskRunHistory === true;
+  // Null until the target's config arrives: a missing config says nothing about its version.
+  const targetCapabilities = environment?.serverConfig?.environment.capabilities ?? null;
   const targetSupportsRunConditions =
-    environment?.serverConfig?.environment.capabilities.scheduledTaskRunConditions === true;
-  const offersRunCondition = targetSupportsRunConditions && draft.scheduleMode !== "webhook";
+    targetCapabilities === null ? null : targetCapabilities.scheduledTaskRunConditions === true;
+  const offersRunCondition =
+    targetSupportsRunConditions === true && draft.scheduleMode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles =
-    environment?.serverConfig?.environment.capabilities.scheduledTaskPromptFiles === true;
+    targetCapabilities === null ? null : targetCapabilities.scheduledTaskPromptFiles === true;
   const supportsDescriptions =
-    environment?.serverConfig?.environment.capabilities.scheduledTaskDescriptions === true;
+    targetCapabilities === null ? null : targetCapabilities.scheduledTaskDescriptions === true;
   const descriptionField = scheduledTaskDescriptionField({
     supported: supportsDescriptions,
     description: draft.description,
@@ -3123,7 +3126,7 @@ function ScheduledTaskEditorForm({
     draft,
   });
   const promptFileRead = promptFileReadFor(draft);
-  const offersGroups = supportsScheduledTaskGroups(environment);
+  const offersGroups = supportsScheduledTaskGroups(environment) === true;
   const groupQueries = useAtomValue(
     scheduledTasksListAtom(
       environmentIdsKey(connectedEnvironments.map((entry) => entry.environmentId)),
@@ -3208,6 +3211,8 @@ function ScheduledTaskEditorForm({
       saving ||
       editingTaskMissing ||
       !connected ||
+      // An upsert is shaped by what the target stores, so it waits for the target's config.
+      supportsPromptFiles === null ||
       tasksQuery.data === null
     )
       return;
@@ -3699,7 +3704,9 @@ function ScheduledTaskEditorForm({
             />
           </Field>
 
-          {supportsDescriptions || draft.description !== "" || draft.savedDescription !== "" ? (
+          {supportsDescriptions === true ||
+          draft.description !== "" ||
+          draft.savedDescription !== "" ? (
             <Field label={t("Description (optional)")} htmlFor="scheduled-task-description">
               <Textarea
                 id="scheduled-task-description"

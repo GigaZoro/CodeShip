@@ -62,6 +62,7 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 
 const mockEventSink = (implementation: Partial<EventSink.EventSinkV2["Service"]>) =>
   Layer.mock(EventSink.EventSinkV2)({
@@ -75,6 +76,8 @@ const mockEventSink = (implementation: Partial<EventSink.EventSinkV2["Service"]>
   });
 
 const driver = ProviderDriverKind.make("codex");
+const recordStartFailure = (error: unknown) =>
+  Effect.succeed(makeProviderFailure({ cause: error, class: "provider_error" }));
 const rootAppThread = (id: ThreadId) =>
   ({
     id,
@@ -886,6 +889,7 @@ it.effect("rechecks run ownership immediately before calling the provider", () =
       attempt,
       attemptId,
       providerTurnOrdinal: 1,
+      startFailure: recordStartFailure,
       shouldStartProviderTurn: () =>
         Ref.modify(guardCalls, (calls) => [calls === 0, calls + 1] as const),
       message: {
@@ -951,6 +955,7 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
       attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
       attemptId,
       providerTurnOrdinal: 1,
+      startFailure: recordStartFailure,
       message: {
         messageId: MessageId.make("message:run-execution-app-context"),
         text: "What is on my list?",
@@ -1057,6 +1062,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
         attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
         attemptId,
         providerTurnOrdinal: 1,
+        startFailure: recordStartFailure,
         shouldStartProviderTurn: () =>
           Ref.getAndUpdate(guardCalls, (calls) => calls + 1).pipe(
             Effect.flatMap((calls) =>
@@ -1164,6 +1170,7 @@ it.effect(
           attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
           attemptId,
           providerTurnOrdinal: 1,
+          startFailure: recordStartFailure,
           message: {
             messageId: MessageId.make(`message:compact-routing:${index}`),
             text: testCase.text,
@@ -1274,6 +1281,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
         } as OrchestrationV2RunAttempt,
         attemptId,
         providerTurnOrdinal: 1,
+        startFailure: recordStartFailure,
         message: {
           messageId: MessageId.make("message:run-execution-baseline-failure"),
           text: "Start the provider without a baseline.",
@@ -1396,6 +1404,7 @@ it.effect("prompts the provider only after a forked baseline capture finishes", 
               networkAccess: false,
             },
           },
+          startFailure: recordStartFailure,
         })
         .pipe(Effect.forkChild);
       yield* TestClock.adjust("1 second");
@@ -1508,6 +1517,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
           } as OrchestrationV2RunAttempt,
           attemptId,
           providerTurnOrdinal: 1,
+          startFailure: recordStartFailure,
           ...(scenario === "start-guard"
             ? { shouldStartProviderTurn: () => Effect.succeed(false) }
             : {}),
@@ -1808,6 +1818,7 @@ it.effect("ingests new member threads of an owned child after the root turn term
         } as OrchestrationV2RunAttempt,
         attemptId,
         providerTurnOrdinal: 1,
+        startFailure: recordStartFailure,
         message: {
           messageId: MessageId.make("message:run-execution-late-child:user"),
           text: "Spawn a child and finish.",
@@ -1963,6 +1974,7 @@ it.effect("ends a nested native subagent and its thread when the root run is int
         attempt: { id: attemptId, providerTurnId: rootProviderTurnId } as OrchestrationV2RunAttempt,
         attemptId,
         providerTurnOrdinal: 1,
+        startFailure: recordStartFailure,
         message: {
           messageId: MessageId.make(`message:${key}:user`),
           text: "Spawn a nested subagent.",
@@ -2755,6 +2767,7 @@ it.effect(
           attemptId: ids.attemptId,
           relatedThreadIds: [unrelatedChildThreadId, memberThreadId],
           providerTurnOrdinal: 1,
+          startFailure: recordStartFailure,
           message: {
             messageId: MessageId.make("message:subagent-interrupt-cascade:user"),
             text: "Spawn a subagent then stop.",
@@ -3062,6 +3075,7 @@ it.effect("settles native subagents when a workspace handoff completes the root 
             networkAccess: false,
           },
         },
+        startFailure: recordStartFailure,
       });
     }).pipe(Effect.provide(layerTest));
 
@@ -3315,6 +3329,110 @@ it.effect("does not refresh pull requests for auxiliary or stale provider termin
         ]),
     });
     assert.deepEqual(observed, ["run:cancelled", "pull-requests-refreshed"]);
+  }),
+);
+
+it.effect("records a provider turn that failed to start as its starter classifies it", () =>
+  Effect.gen(function* () {
+    const key = "start-failure-classified";
+    const ids = backgroundScenarioIds(key);
+    const classified = makeProviderFailure({
+      message: "The starter classified this failure.",
+      code: "prompt_not_sent",
+      class: "transport_error",
+    });
+    const classifiedErrors: Array<unknown> = [];
+    const subscriptionClosedOnReturn: Array<boolean> = [];
+    const { written, observed, previewActivityEnded } = yield* captureRootRunTermination({
+      key,
+      shouldFinalizeRun: () => Effect.succeed(true),
+      events: () => Stream.never,
+      startTurn: () =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterTurnStartError({
+            driver,
+            threadId: ids.threadId,
+            providerThreadId: ids.providerThreadId,
+            runId: ids.runId,
+            cause: new Error("Query closed before response received"),
+          }),
+        ),
+      startFailure: (error) =>
+        Effect.sync(() => {
+          classifiedErrors.push(error);
+          return classified;
+        }),
+      onStartFailure: () => Effect.void,
+      // Ends a subscription left open so the assertions below report it.
+      afterStart: (closed) =>
+        Deferred.isDone(closed).pipe(
+          Effect.tap((done) => Effect.sync(() => subscriptionClosedOnReturn.push(done))),
+          Effect.andThen(Deferred.succeed(closed, undefined)),
+          Effect.asVoid,
+        ),
+    });
+    assert.deepEqual(subscriptionClosedOnReturn, [true]);
+    assert.isTrue(previewActivityEnded);
+    assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
+    assert.deepEqual(
+      classifiedErrors.map((error) => (error as { readonly _tag: string })._tag),
+      ["ProviderAdapterTurnStartError"],
+    );
+    assert.deepEqual(
+      written.flatMap((item) => (item.type === "error" ? [item.failure] : [])),
+      [classified],
+    );
+  }),
+);
+
+it.effect.each([
+  "a Stop while it reads the context",
+  "a Stop while it prepares the turn",
+  "a run settled while it prepares the turn",
+] as const)("ends the event consumer after %s, before the provider turn", (scenario) =>
+  Effect.gen(function* () {
+    const blocked = yield* Deferred.make<void>();
+    const block = Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Effect.never));
+    const turnsStarted: Array<string> = [];
+    const notAccepted: Array<unknown> = [];
+    const owned = yield* Ref.make(true);
+    const subscriptionClosedOnReturn: Array<boolean> = [];
+    const { previewActivityEnded } = yield* captureRootRunTermination({
+      key: `start-stopped:${scenario.replaceAll(" ", "-")}`,
+      shouldFinalizeRun: () => Effect.succeed(true),
+      events: () => Stream.never,
+      ...(scenario === "a Stop while it reads the context"
+        ? { appContext: block, stopStartWhen: Deferred.await(blocked) }
+        : scenario === "a Stop while it prepares the turn"
+          ? { prepareTurn: () => block, stopStartWhen: Deferred.await(blocked) }
+          : {
+              // Another start owns the run once the turn is ready.
+              prepareTurn: (turnInput) =>
+                Ref.set(owned, false).pipe(
+                  Effect.as({
+                    turnInput,
+                    accepted: Effect.void,
+                    notAccepted: (error) => Effect.sync(() => void notAccepted.push(error)),
+                  }),
+                ),
+              shouldStartProviderTurn: () => Ref.get(owned),
+            }),
+      startTurn: (turn) => Effect.sync(() => void turnsStarted.push(turn.runId)),
+      // Ends a subscription left open so the assertions below report it.
+      afterStart: (closed) =>
+        Deferred.isDone(closed).pipe(
+          Effect.tap((done) => Effect.sync(() => subscriptionClosedOnReturn.push(done))),
+          Effect.andThen(Deferred.succeed(closed, undefined)),
+          Effect.asVoid,
+        ),
+    });
+    assert.deepEqual(subscriptionClosedOnReturn, [true]);
+    assert.isTrue(previewActivityEnded);
+    assert.deepEqual(turnsStarted, []);
+    assert.deepEqual(
+      notAccepted,
+      scenario === "a run settled while it prepares the turn" ? [undefined] : [],
+    );
   }),
 );
 
@@ -3815,9 +3933,15 @@ it.effect("does not start a turn whose run settled during the app context read",
     const runFailed = yield* Deferred.make<void>();
     const current = yield* Ref.make(true);
     const providerCalls = yield* Ref.make(0);
+    const preparations = yield* Ref.make(0);
     const { observed } = yield* captureRootRunTermination({
       key: "stream-end:context-read",
       shouldStartProviderTurn: () => Ref.get(current),
+      // Preparing injects history into the provider and records handoffs, so it waits for ownership too.
+      prepareTurn: (turnInput) =>
+        Ref.update(preparations, (count) => count + 1).pipe(
+          Effect.as({ turnInput, accepted: Effect.void, notAccepted: () => Effect.void }),
+        ),
       shouldFinalizeRun: () => Ref.get(current),
       events: () => Stream.unwrap(Deferred.await(contextReadStarted).pipe(Effect.as(Stream.empty))),
       appContext: Deferred.succeed(contextReadStarted, undefined).pipe(
@@ -3831,6 +3955,7 @@ it.effect("does not start a turn whose run settled during the app context read",
     });
     assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
     assert.equal(yield* Ref.get(providerCalls), 0);
+    assert.equal(yield* Ref.get(preparations), 0);
   }),
 );
 
@@ -3868,15 +3993,19 @@ function captureRootRunTermination(input: {
   readonly onStartFailure?: (
     error: RunExecutionService.RunExecutionServiceV2Error,
   ) => Effect.Effect<void>;
+  readonly startFailure?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["startFailure"];
   readonly refreshAfterTurn?: Effect.Effect<void>;
   readonly onSubscriptionClose?: Effect.Effect<void>;
   readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
+  readonly prepareTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["prepareTurn"];
   readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
   readonly ingestNormalized?: ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"];
   readonly beforeTerminalWrite?: (
     request: Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0],
   ) => Effect.Effect<boolean, EventSink.EventSinkV2Error>;
   readonly threadCommands?: ThreadCommandExecutor.ThreadCommandExecutor["Service"];
+  /** Interrupts the start once this completes, as the effect worker does for a Stop. */
+  readonly stopStartWhen?: Effect.Effect<void>;
   readonly afterStart?: (
     closed: Deferred.Deferred<void>,
   ) => Effect.Effect<
@@ -4046,6 +4175,7 @@ function captureRootRunTermination(input: {
         } as OrchestrationV2RunAttempt,
         attemptId: ids.attemptId,
         providerTurnOrdinal: 1,
+        startFailure: input.startFailure ?? recordStartFailure,
         shouldFinalizeRun: input.shouldFinalizeRun,
         ...(input.loadRunInterruptReason === undefined
           ? {}
@@ -4053,6 +4183,7 @@ function captureRootRunTermination(input: {
         ...(input.shouldStartProviderTurn === undefined
           ? {}
           : { shouldStartProviderTurn: input.shouldStartProviderTurn }),
+        ...(input.prepareTurn === undefined ? {} : { prepareTurn: input.prepareTurn }),
         ...(input.hasUnpairedRunInterruptRequest === undefined
           ? {}
           : {
@@ -4081,9 +4212,9 @@ function captureRootRunTermination(input: {
           },
         },
       });
-      yield* start.pipe(
-        Effect.catch((error) => input.onStartFailure?.(error) ?? Effect.fail(error)),
-      );
+      yield* (
+        input.stopStartWhen === undefined ? start : Effect.raceFirst(start, input.stopStartWhen)
+      ).pipe(Effect.catch((error) => input.onStartFailure?.(error) ?? Effect.fail(error)));
       yield* input.afterStart?.(ingestionDone) ?? Effect.void;
       yield* Deferred.await(ingestionDone);
       const activity = yield* PreviewAgentActivity.PreviewAgentActivity;
@@ -4603,6 +4734,7 @@ function runBackgroundItemScenario(
               loadInheritedBackgroundTurnItems: options.loadInheritedBackgroundTurnItems,
             }),
         providerTurnOrdinal: 1,
+        startFailure: recordStartFailure,
         message: {
           messageId: MessageId.make(`message:${key}:user`),
           text: "Start a background item and finish.",

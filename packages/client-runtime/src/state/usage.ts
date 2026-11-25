@@ -1,6 +1,6 @@
 import type { EnvironmentId, UsageModelFilter, UsageSummaryInput } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import type { AtomRegistry } from "effect/reactivity";
+import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type { createEnvironmentPresentationAtoms } from "./presentation.ts";
@@ -72,6 +72,7 @@ export async function refreshUsage({
       };
       const unsubscribe = registry.subscribe(presentation, abortWhenDisconnected);
       abortWhenDisconnected();
+      changeUsageRefreshCount(registry, environmentId, 1);
       try {
         const ratesResult = await runAtomCommand(
           registry,
@@ -90,7 +91,30 @@ export async function refreshUsage({
         });
       } finally {
         unsubscribe();
+        changeUsageRefreshCount(registry, environmentId, -1);
       }
     }),
   );
+}
+
+const usageRefreshCountsAtom = Atom.make<ReadonlyMap<EnvironmentId, number>>(new Map()).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("usage-manual-refresh-counts"),
+);
+
+export const usageRefreshingEnvironmentIdsAtom = usageRefreshCountsAtom.pipe(
+  Atom.map((counts) => new Set(counts.keys())),
+  Atom.withLabel("usage-refreshing-environments"),
+);
+
+function changeUsageRefreshCount(
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+  delta: 1 | -1,
+) {
+  const counts = new Map(registry.get(usageRefreshCountsAtom));
+  const next = (counts.get(environmentId) ?? 0) + delta;
+  if (next > 0) counts.set(environmentId, next);
+  else counts.delete(environmentId);
+  registry.set(usageRefreshCountsAtom, counts);
 }

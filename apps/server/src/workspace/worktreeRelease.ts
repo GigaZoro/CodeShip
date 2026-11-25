@@ -435,8 +435,9 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     let file = path.join(admin, name);
-    // Git 2.56 creates this directory with every worktree; it holds refs/worktree and refs/bisect.
     if (name === "refs") {
+      // Git leaves refs/ folders here, empty or holding worktree-only refs (refs/worktree, refs/bisect).
+      if (!(yield* lstatReleaseEntry(file)).isDirectory()) return "worktree has private refs";
       const entries = yield* fs.readDirectory(file, { recursive: true });
       if (entries.length > 256) return "worktree metadata exceeds inspection limit";
       for (const entry of entries)
@@ -449,7 +450,7 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";
       file = path.join(file, "HEAD");
     } else if (!["ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG"].includes(name))
-      return "worktree metadata requires its owner";
+      return `worktree metadata ${name} requires its owner`;
     const stat = yield* lstatReleaseEntry(file);
     if (stat.size > 4 * 1024 * 1024 || !stat.isFile())
       return "worktree metadata exceeds inspection limit";

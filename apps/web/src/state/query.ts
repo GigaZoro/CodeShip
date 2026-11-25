@@ -1,13 +1,16 @@
+import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { t } from "~/i18n";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useContext } from "react";
 
 const EMPTY_ASYNC_RESULT_ATOM = Atom.make(AsyncResult.initial<never, never>(false)).pipe(
   Atom.withLabel("web-environment-query:empty"),
 );
+const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
 export interface EnvironmentQueryView<A, E = unknown> {
   readonly data: A | null;
@@ -21,6 +24,8 @@ export interface EnvironmentQueryView<A, E = unknown> {
 
 export function formatEnvironmentQueryError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
+  if (isEnvironmentRpcUnavailable(error) && error.reason === "timeout")
+    return t("The request timed out.");
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
     : t("The environment request failed.");

@@ -74,3 +74,21 @@ limit. Chats the user starts are never gated.
 - Readings go stale. The scheduler judges again after a run condition answers, and after
   a prompt-file read that waited for the network. That run already shows as running, so a
   shortage there fails it instead of skipping it.
+
+## CPU admission
+
+`t3_command_run` also holds a new command while the CPUs are saturated
+([`CpuAdmission`](../../apps/server/src/resourceTelemetry/CpuAdmission.ts)): memory had room
+when 18 commands, mostly test suites, started together and left a 12-core machine at 1.00 busy
+per core, slow enough to fail the timeouts they were guarded by.
+
+- The reading is the busy share per core over a half-second window of `os.cpus()` times,
+  against the 0.95 limit Machine health's `cpu-overload` check uses. A reading stands for two
+  seconds so a burst of commands shares it.
+- The hold applies only while another `t3_command_run` command of this server is running. With
+  none running the first queued command starts whatever the reading: other programs can keep
+  the CPUs busy for hours, and a gate that waited for them would starve every command.
+- `delegate_task` and the chat-resume queue do not use it. A delegate refuses on memory instead
+  of queueing, so a CPU refusal would fail a task that only needs to wait out a burst. The
+  resume queue already starts one run at a time, and what a run does on the CPU goes through
+  commands.

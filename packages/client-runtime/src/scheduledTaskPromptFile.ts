@@ -31,21 +31,29 @@ export function promptFileDraft(
   };
 }
 
-/** The prompt source in effect: a server without prompt files only holds text. */
+/**
+ * The prompt source in effect: a server without prompt files only holds text. `null` means the
+ * target's config has not arrived, so the draft keeps its own source until the target is known.
+ */
 export function effectivePromptSource(input: {
-  readonly supportsPromptFiles: boolean;
+  readonly supportsPromptFiles: boolean | null;
   readonly draft: Pick<PromptFileDraft, "promptSource">;
 }): PromptSource {
-  return input.supportsPromptFiles ? input.draft.promptSource : "text";
+  return input.supportsPromptFiles === false ? "text" : input.draft.promptSource;
 }
 
-/** The target cannot read prompt files, so saving there would silently turn the task into text. */
+/**
+ * The target cannot read prompt files, so saving there would silently turn the task into text.
+ * An unknown target (`null`) is not an older one, so it gets no verdict.
+ */
 export function promptFileLostOnTarget(input: {
-  readonly supportsPromptFiles: boolean;
+  readonly supportsPromptFiles: boolean | null;
   readonly isWebhook: boolean;
   readonly draft: Pick<PromptFileDraft, "promptSource">;
 }): boolean {
-  return !input.supportsPromptFiles && !input.isWebhook && input.draft.promptSource === "file";
+  return (
+    input.supportsPromptFiles === false && !input.isWebhook && input.draft.promptSource === "file"
+  );
 }
 
 /** The saved read applies only while the path is the one the task stores. */

@@ -29,11 +29,11 @@ import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useNowMinuteMs } from "../../lib/clock";
 import {
   environmentIdsKey,
   limitsAutoRefreshSetAtom,
   limitsRefreshFailuresAtom,
+  limitsRefreshingEnvironmentIdsAtom,
   refreshEnvironmentLimits,
 } from "./usageLimitsRefresh";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
@@ -326,7 +326,6 @@ export function useRefreshLimits(
 ) {
   const registry = useContext(RegistryContext);
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const now = useNowMinuteMs();
   const [refreshing, setRefreshing] = useState(false);
   const refreshingRef = useRef(false);
   const selected = [...presentations].filter(
@@ -337,10 +336,10 @@ export function useRefreshLimits(
     .filter(([, presentation]) => presentation.connection.phase === "connected")
     .map(([environmentId]) => environmentId);
   const connectedKey = environmentIdsKey(connectedIds);
+  const idsKey = environmentIdsKey(presentations.keys());
   useAtomMount(active && connectedKey !== "" ? limitsAutoRefreshSetAtom(connectedKey) : IDLE_ATOM);
-  const failedIds = new Set(
-    useAtomValue(limitsRefreshFailuresAtom(environmentIdsKey(selected.map(([id]) => id)))),
-  );
+  const failedIds = new Set(useAtomValue(limitsRefreshFailuresAtom(idsKey)));
+  const refreshingEnvironmentIds = useAtomValue(limitsRefreshingEnvironmentIdsAtom(idsKey));
   const failedLabels = selected
     .filter(([environmentId]) => failedIds.has(environmentId))
     .map(([, presentation]) => presentation.entry.target.label);
@@ -360,8 +359,9 @@ export function useRefreshLimits(
     });
   };
   return {
-    now,
     refreshing,
+    refreshingEnvironmentIds,
+    failedIds,
     failedLabels,
     refresh: refreshManually,
   };

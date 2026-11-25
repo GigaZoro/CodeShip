@@ -519,7 +519,8 @@ class SpawnWorker {
         child.pid = message.pid;
         if (message.pid !== undefined) {
           const created = { from: message.createdFrom, to: message.createdTo };
-          child.treeRoot = { pid: message.pid, since: created.from, created };
+          // fail() stops only a tree whose exit this process has not seen.
+          child.treeRoot = { pid: message.pid, since: created.from, created, ended: "running" };
         }
         child.started();
         break;

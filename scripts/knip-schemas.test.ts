@@ -18,8 +18,11 @@ function withFixture(
     cwd: string,
   ) => void,
 ) {
-  // Keeping the disposable project here gives it the same Effect installation as the scripts.
-  const cwd = NodeFS.mkdtempSync(NodePath.join(import.meta.dirname, ".knip-test-"));
+  // Under scripts/, the disposable project resolves the same Effect installation as the scripts.
+  const root = NodePath.join(import.meta.dirname, "tmp");
+  NodeFS.mkdirSync(root, { recursive: true });
+  // oxlint-disable-next-line t3code/no-checkout-temp-dir-in-tests -- scripts/tmp/ is gitignored.
+  const cwd = NodeFS.mkdtempSync(NodePath.join(root, "knip-test-"));
   const write = (file: string, content: string) =>
     NodeFS.writeFileSync(NodePath.join(cwd, file), content);
   const run = (filtered: boolean) =>

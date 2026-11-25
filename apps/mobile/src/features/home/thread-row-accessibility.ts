@@ -91,6 +91,7 @@ export function threadRowAccessibilityActions(input: {
           { name: "delete", label: t("Delete") },
         ]
       : []),
+    { name: "export-markdown", label: t("Export as Markdown") },
     ...(input.pullRequest ? [{ name: "openPullRequests", label: input.pullRequest }] : []),
     ...(input.dismissWoke ? [{ name: "dismissWoke", label: t("Dismiss Woke notification") }] : []),
   ];

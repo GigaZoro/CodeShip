@@ -4806,6 +4806,26 @@ it("builds Auto model-choice and control cases from the current coordinator brie
   }
 });
 
+it("names the other provider's reviewer by the id its account lists for an aliased primary", () => {
+  const line = NodeFS.readFileSync(new URL("./cases/auto-mode.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .find((candidate) => candidate.includes('"id":"auto-coordinator-picks-model-per-piece"'))!;
+  const raw = JSON.parse(line);
+  raw.setup.autoModeModels.codex.model = "astra";
+  raw.setup.otherAutoProviders[0].models[0].aliases = ["astra"];
+  const base = buildBase(template, { model: "claude-opus-5-5", keepUserInstructions: false });
+  const prompt =
+    buildMessages(makeSample(decodeDeviceCase(JSON.stringify(raw)), base))
+      .at(-1)
+      ?.content.map((part) => part.text)
+      .join("\n") ?? "";
+  assert.include(
+    prompt,
+    'independent review from the other provider\'s Settings primary: `delegate_task` role "review", target `{"model":"gpt-6-astra","options":{"reasoningEffort":"xhigh"},"providerInstanceId":"codex"}`',
+  );
+});
+
 it("sends the Auto brief to Codex as a developer message, not inline", () => {
   const testCase = NodeFS.readFileSync(new URL("./cases/auto-mode.ndjson", import.meta.url), "utf8")
     .trim()

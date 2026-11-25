@@ -97,6 +97,7 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
   readonly staleTimeMs?: number;
   readonly idleTtlMs?: number;
   readonly refreshIntervalMs?: number;
+  readonly requestTimeoutMs?: number;
   readonly refreshTrigger?: (target: {
     readonly environmentId: EnvironmentIdType;
     readonly input: Input;
@@ -135,6 +136,7 @@ export type AtomCommandSuccess<R> = R extends AtomCommandResult<infer A, infer _
 export type AtomCommandFailure<R> = R extends AtomCommandResult<infer _A, infer E> ? E : never;
 
 export interface AtomCommandOptions {
+  readonly signal?: AbortSignal;
   readonly label?: string;
   readonly reportFailure?: boolean;
   readonly reportDefect?: boolean;
@@ -147,7 +149,11 @@ export interface AtomCommandReporter {
 
 export interface AtomCommand<W, A, E> {
   readonly label: string;
-  readonly run: (registry: AtomRegistry.AtomRegistry, input: W) => Promise<AtomCommandResult<A, E>>;
+  readonly run: (
+    registry: AtomRegistry.AtomRegistry,
+    input: W,
+    signal?: AbortSignal,
+  ) => Promise<AtomCommandResult<A, E>>;
 }
 
 export type AtomCommandConcurrency<W> =
@@ -342,7 +348,10 @@ export async function runAtomCommand<W, A, E>(
   options: AtomCommandOptions = {},
   reporter: AtomCommandReporter = console,
 ): Promise<AtomCommandResult<A, E>> {
-  const result = await settleAtomCommandResult(() => command.run(registry, input));
+  const { signal } = options;
+  const result = await settleAtomCommandResult(() =>
+    signal === undefined ? command.run(registry, input) : command.run(registry, input, signal),
+  );
   reportAtomCommandResult(result, { ...options, label: options.label ?? command.label }, reporter);
   return result;
 }
@@ -393,15 +402,16 @@ export interface AtomQueryOptions extends AtomCommandOptions {
    * verification flows where a cached failure must not satisfy a retry.
    */
   readonly refresh?: boolean;
-  readonly signal?: AbortSignal;
 }
 
-export async function executeAtomQuery<A, E>(
+export async function executeAtomQuery<A, E, F = never>(
   registry: AtomRegistry.AtomRegistry,
   atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
-  options: AtomQueryOptions = {},
+  options: AtomQueryOptions & {
+    readonly deadline?: { readonly milliseconds: number; readonly error: F };
+  } = {},
   reporter: AtomCommandReporter = console,
-): Promise<AtomCommandResult<A, E>> {
+): Promise<AtomCommandResult<A, E | F>> {
   const query = Effect.scoped(
     Effect.gen(function* () {
       yield* AtomRegistry.mount(registry, atom);
@@ -418,8 +428,20 @@ export async function executeAtomQuery<A, E>(
       });
     }),
   );
+  const deadline = options.deadline;
   return executeAtomCommand(
-    () => Effect.runPromiseExit(query, { signal: options.signal }),
+    () =>
+      Effect.runPromiseExit(
+        deadline === undefined
+          ? query
+          : query.pipe(
+              Effect.timeoutOrElse({
+                duration: deadline.milliseconds,
+                orElse: () => Effect.fail(deadline.error),
+              }),
+            ),
+        { signal: options.signal },
+      ),
     options,
     reporter,
   );
@@ -438,13 +460,17 @@ export function createRuntimeCommand<R, ER, W, A, E>(
   const concurrency = options.concurrency ?? { mode: "parallel" as const };
   return {
     label: options.label,
-    run: (registry, input) =>
+    run: (registry, input, signal) =>
       settleAtomCommandResult(() =>
         scheduler.schedule(registry, concurrency, input, () => {
           const atom = runtime
             .atom(options.execute(input, registry))
             .pipe(Atom.withLabel(options.label));
-          return executeAtomQuery(registry, atom, { reportDefect: false, reportFailure: false });
+          return executeAtomQuery(registry, atom, {
+            reportDefect: false,
+            reportFailure: false,
+            ...(signal === undefined ? {} : { signal }),
+          });
         }),
       ),
   };
@@ -662,6 +688,17 @@ const sessionGenerationAtomsByRuntime = new WeakMap<
   (environmentId: EnvironmentIdType) => Atom.Atom<number>
 >();
 
+export const connectedEnvironmentSessionAtom = <R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentIdType,
+) => {
+  const connection = environmentConnectionAtoms(runtime)(environmentId);
+  return Atom.make((get) => {
+    const current = AsyncResult.getOrElse(get(connection), () => null);
+    return current?.[0].phase === "connected" ? Option.getOrNull(current[1]) : null;
+  });
+};
+
 /**
  * Counts established sessions; it changes only when a new one comes up, so failed one-shot reads
  * can watch it to run again. Keyed on the session object because the supervisor's `generation`
@@ -810,11 +847,27 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
               );
           }
         };
+        const fetch = () =>
+          options.requestTimeoutMs === undefined
+            ? execute()
+            : execute().pipe(
+                Effect.timeoutOrElse({
+                  duration: options.requestTimeoutMs,
+                  orElse: () =>
+                    Effect.fail(
+                      new EnvironmentRpcUnavailableError({
+                        environmentId: target.environmentId,
+                        message: "The request timed out.",
+                        reason: "timeout",
+                      }),
+                    ),
+                }),
+              );
         const onAnswer = options.onAnswer;
         const answer = () =>
           onAnswer === undefined
-            ? execute().pipe(Effect.map(share))
-            : execute().pipe(
+            ? fetch().pipe(Effect.map(share))
+            : fetch().pipe(
                 Effect.map(share),
                 Effect.tap((value) => onAnswer(target, value, get.registry)),
               );
@@ -982,6 +1035,7 @@ export function createEnvironmentRpcQueryAtomFamily<
     readonly staleTimeMs?: number;
     readonly idleTtlMs?: number;
     readonly refreshIntervalMs?: number;
+    readonly requestTimeoutMs?: number;
     readonly refreshTrigger?: (target: {
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
@@ -998,6 +1052,9 @@ export function createEnvironmentRpcQueryAtomFamily<
     ...(options.refreshIntervalMs === undefined
       ? {}
       : { refreshIntervalMs: options.refreshIntervalMs }),
+    ...(options.requestTimeoutMs === undefined
+      ? {}
+      : { requestTimeoutMs: options.requestTimeoutMs }),
     ...(options.refreshTrigger === undefined ? {} : { refreshTrigger: options.refreshTrigger }),
     ...(options.isFinal === undefined ? {} : { isFinal: options.isFinal }),
     ...(options.onAnswer === undefined ? {} : { onAnswer: options.onAnswer }),

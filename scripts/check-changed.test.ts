@@ -24,6 +24,8 @@ import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform
 import {
   argumentBatches,
   adjacentTests,
+  changedPaths,
+  changedWhileCheckingMessage,
   checkoutState,
   comparisonBase,
   defaultConcurrency,
@@ -39,6 +41,7 @@ import {
   testStepTimeoutSeconds,
   type Step,
   testsReaching,
+  uncachedTests,
 } from "./check-changed.ts";
 import { cachedTestTasks } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
@@ -98,6 +101,23 @@ describe("check:changed", () => {
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
     assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
+  });
+
+  it("keeps every test that starts bash with bash's own flags out of the file tracker", () => {
+    const root = NodePath.join(import.meta.dirname, "..");
+    const tests = NodeChildProcess.execFileSync(
+      "git",
+      ["ls-files", "-z", "--", "*.test.ts", "*.test.tsx", "*.test.mjs", ":(exclude).repos"],
+      { cwd: root, encoding: "utf8" },
+    )
+      .split("\0")
+      .filter(
+        (file) =>
+          file !== "" &&
+          /--no(?:profile|rc)\b/.test(NodeFS.readFileSync(NodePath.join(root, file), "utf8")),
+      );
+    expect(tests).toContain("apps/server/src/project/ProjectSetupScriptRunner.test.ts");
+    expect(tests.filter((file) => !uncachedTests.includes(file))).toEqual([]);
   });
 
   const slotDirectory = Effect.gen(function* () {
@@ -631,6 +651,27 @@ describe("check:changed", () => {
       ["dddddddddddd"],
       ["e"],
     ]);
+  });
+
+  it("names each changed file once, by the tree or, where the tree hides it, by its bytes", () => {
+    const before = new Map([
+      ["crlf.ts", "lf digest"],
+      ["new.ts", ""],
+    ]);
+    const after = new Map([
+      ["crlf.ts", "crlf digest"],
+      ["new.ts", "new digest"],
+    ]);
+    const paths = changedPaths([{ status: "A", path: "new.ts" }], before, after);
+    assert.deepStrictEqual(paths, [
+      "A\tnew.ts",
+      "M\tcrlf.ts (bytes on disk only, such as line endings)",
+    ]);
+    const many = Array.from({ length: 22 }, (_, index) => `A\tfile-${index}.ts`);
+    const message = changedWhileCheckingMessage(many);
+    assert.include(message, "A\tfile-19.ts");
+    assert.notInclude(message, "A\tfile-20.ts");
+    assert.include(message, "and 2 more");
   });
 
   it("runs the .github/scripts node:test files with node --test, not vitest", () => {
@@ -1498,6 +1539,7 @@ it("fails a run whose files changed while its checks ran", () => {
   expect(result.status, result.stdout + result.stderr).toBe(1);
   expect(result.stdout).toContain("pass  lint");
   expect(result.stdout).toContain("files changed while the checks ran");
+  expect(result.stdout).toContain(`M\t${project.source}`);
 });
 
 it("records no push pass for a tree that changed before a cached result", () => {
@@ -1509,6 +1551,7 @@ it("records no push pass for a tree that changed before a cached result", () => 
   const result = project.run("", "install");
   expect(result.status, result.stdout + result.stderr).toBe(1);
   expect(result.stdout).toContain("files changed while the checks ran");
+  expect(result.stdout).toContain(`M\t${project.source}`);
   // The second run matched the cached pass, so it ran no lint of its own.
   expect(project.calls().filter(({ args }) => args[0] === "lint")).toHaveLength(1);
 });
@@ -1531,6 +1574,7 @@ it("caches no pass for a file that appeared after the files were listed", () => 
   project.write(project.source, "export const value = 2;\n");
   const result = project.run("", "install", "packages/example/added.ts");
   expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("A\tpackages/example/added.ts");
   expect(
     NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
   ).toBe(false);
@@ -1686,10 +1730,7 @@ const stateChangesWithMode = (
 ) =>
   Effect.gen(function* () {
     isolateGit();
-    const project = yield* Effect.acquireRelease(
-      Effect.sync(() => fixture({})),
-      (project) => Effect.sync(() => project[Symbol.dispose]()),
-    );
+    const project = yield* Effect.acquireDisposable(Effect.sync(() => fixture({})));
     const { git, root, write } = project;
     const tool = NodePath.join(root, name);
     const commit = (file = name) => {

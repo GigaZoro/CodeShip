@@ -1,4 +1,10 @@
-import type { ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  NonNegativeInt,
+  type ProjectId,
+  type ProviderInstanceId,
+  type RunId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -51,11 +57,12 @@ const WorkflowAgentsJson = Schema.fromJsonString(
       state: Schema.String,
       startedAt: Schema.NullOr(Schema.Number),
       completedAt: Schema.NullOr(Schema.Number),
-      totalTokens: Schema.NullOr(Schema.Number),
+      totalTokens: Schema.NullOr(NonNegativeInt),
     }),
   ),
 );
 const decodeWorkflowAgents = Schema.decodeUnknownEffect(WorkflowAgentsJson);
+const decodeWorkflowTokens = Schema.decodeUnknownEffect(Schema.NullOr(NonNegativeInt));
 const decodeTaskIds = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
@@ -369,7 +376,9 @@ export const readThreadAnalysis = Effect.fn("ThreadAnalysisReader.readThreadAnal
         completedAt: subagent.completed_at,
         updatedAt: subagent.updated_at,
         workflow:
-          subagent.has_workflow === 1 ? { totalTokens: subagent.workflow_tokens, agents } : null,
+          subagent.has_workflow === 1
+            ? { totalTokens: yield* decodeWorkflowTokens(subagent.workflow_tokens), agents }
+            : null,
       };
     }),
   );

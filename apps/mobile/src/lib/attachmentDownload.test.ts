@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   deleted: vi.fn(),
   download: vi.fn(),
   copy: vi.fn(),
+  write: vi.fn(),
   share: vi.fn(),
   shareFromSource: vi.fn(),
   available: vi.fn(),
@@ -53,6 +54,10 @@ vi.mock("expo-file-system", () => {
       this.uri = typeof source === "string" ? source : `${source.uri}/${encodeURIComponent(name!)}`;
     }
 
+    write(bytes: Uint8Array): Promise<void> {
+      return mocks.write(bytes);
+    }
+
     async copy(destination: File): Promise<void> {
       await mocks.copy(this.uri, destination.uri);
     }
@@ -74,6 +79,7 @@ vi.mock("./shareFileFromSource", () => ({ shareFileFromSource: mocks.shareFromSo
 import {
   downloadAndShareAttachment,
   downloadAttachmentForPreview,
+  shareGeneratedAttachment,
   shareLocalAttachment,
 } from "./attachmentDownload";
 import { isForegroundHandoffActive } from "./foreground-handoff";
@@ -92,6 +98,7 @@ beforeEach(() => {
   mocks.deleted.mockReset();
   mocks.download.mockReset();
   mocks.copy.mockReset();
+  mocks.write.mockReset();
   mocks.share.mockReset();
   mocks.shareFromSource.mockReset();
   mocks.available.mockReset();
@@ -343,4 +350,44 @@ describe("attachment preview files", () => {
     expect(mocks.share).not.toHaveBeenCalled();
     expect(mocks.deleted).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("shareGeneratedAttachment", () => {
+  it.each(["success", "abort", "failure"])(
+    "waits for the file write to settle (%s)",
+    async (outcome) => {
+      const started = Promise.withResolvers<void>();
+      const write = Promise.withResolvers<void>();
+      const error = new Error("Disk full");
+      // Observe the native rejection even if the caller drops the write promise.
+      void write.promise.catch(() => undefined);
+      mocks.write.mockImplementation(() => {
+        started.resolve();
+        return write.promise;
+      });
+      const controller = new AbortController();
+      const task = shareGeneratedAttachment({
+        bytes: new TextEncoder().encode("# Export"),
+        attachment: { name: "thread.md", mimeType: "text/markdown" },
+        signal: controller.signal,
+      });
+      await started.promise;
+      if (outcome === "success") {
+        write.resolve();
+        await expect(task).resolves.toBe(true);
+        expect(mocks.share).toHaveBeenCalledTimes(1);
+      } else if (outcome === "abort") {
+        controller.abort();
+        write.resolve();
+        await expect(task).resolves.toBe(false);
+        expect(mocks.share).not.toHaveBeenCalled();
+        expect(mocks.deleted).toHaveBeenCalledTimes(1);
+      } else {
+        write.reject(error);
+        await expect(task).rejects.toBe(error);
+        expect(mocks.share).not.toHaveBeenCalled();
+        expect(mocks.deleted).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
 });

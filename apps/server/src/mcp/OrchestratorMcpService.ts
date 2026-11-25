@@ -68,7 +68,6 @@ import {
   type OrchestratorMcpThreadWaitResult,
   type ProviderInteractionMode,
   type ProviderOptionDescriptor,
-  type ProviderOptionSelection,
   ProviderRequestKind,
   type RuntimeMode,
   MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH,
@@ -91,10 +90,10 @@ import {
   isOrchestrationV2TerminalRunStatus,
 } from "@t3tools/contracts";
 import {
+  acceptedOptionSelections,
   getProviderOptionCurrentValue,
   resolveSelectableModel,
   withAutoAccount,
-  withLegacyUltracodeEffort,
 } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -125,6 +124,7 @@ import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
+  SUBAGENT_RESULT_TURN_ITEM_TYPES,
   subagentResultForRun,
   delegatedTaskProgress,
 } from "@t3tools/provider-core/server/subagentProjection";
@@ -172,7 +172,6 @@ import {
   resolveRuntimeMode,
   runtimeModeRank,
   taskPrompt,
-  withoutUnrunnableInherited,
 } from "./delegatedTaskModes.ts";
 import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
@@ -607,7 +606,7 @@ export const requireAutoModePick = (
   return pick === null
     ? Effect.fail(
         failure(
-          "invalid_request",
+          "auto_mode_unavailable",
           "Auto mode is off, or its provider has no enabled account. The user sets it in Settings > Providers. Name a model instead.",
         ),
       )
@@ -676,21 +675,6 @@ export const requireMemoryForDelegation = Effect.fn(
     `Memory is short on the machine that would run the task: ${MemoryAdmission.describeMemoryShortage(shortage)}. The task was not started. ${advice}`,
   );
 });
-
-/**
- * Inherited options as the model runs them, keeping the first of each id it offers by id and value:
- * a parent's selection, here or on a linked machine, can hold options this model or account lacks.
- */
-function knownOptions(
-  options: ReadonlyArray<ProviderOptionSelection> | undefined,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-): ReadonlyArray<ProviderOptionSelection> | undefined {
-  if (options === undefined) return undefined;
-  return withoutUnrunnableInherited(
-    withLegacyUltracodeEffort(descriptors ?? [], options) ?? options,
-    descriptors,
-  );
-}
 
 /** The selection as its model runs it, with its options checked as requireOfferedOptions does. */
 const requireModelSelection = Effect.fn("OrchestratorMcpService.requireModelSelection")(function* (
@@ -957,7 +941,7 @@ function taskResultTransfer(
   );
 }
 
-function pageIncludesTerminalTaskResult(input: {
+export function pageIncludesTerminalTaskResult(input: {
   readonly parentThreadId: ThreadId;
   readonly items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>;
   readonly task: OrchestrationV2Subagent;
@@ -974,7 +958,12 @@ function pageIncludesTerminalTaskResult(input: {
       : input.target.runs.find((run) => run.id === transfer.sourcePoint.runId);
   if (run === undefined || !isTerminalTaskStatus(taskStatusForRun(run))) return false;
 
-  const result = subagentResultForRun(input.target, run);
+  // The transfer names the item it delivered; a result worked out again now can name another.
+  const delivered = transfer.sourcePoint.turnItemId;
+  const result =
+    delivered === undefined
+      ? subagentResultForRun(input.target, run)
+      : { turnItemId: delivered, messageId: null };
   if (result.messageId === null && result.turnItemId === null) return false;
 
   return input.items.some((item) => {
@@ -1885,21 +1874,6 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const isConfiguredAutoAccount = (instanceId: ModelSelection["instanceId"], model: string) =>
-    readSettings.pipe(
-      Effect.map((settings) =>
-        [
-          ...settings.finalReviewModelSelections,
-          ...Object.values(settings.delegatedTaskModelSelections),
-        ].some(
-          (selection) =>
-            selection.autoAccount === true &&
-            selection.instanceId === instanceId &&
-            selection.model === model,
-        ),
-      ),
-    );
-
   const resolveTarget = Effect.fn("OrchestratorMcpService.resolveTarget")(function* (input: {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
@@ -2036,6 +2010,8 @@ const make = Effect.gen(function* () {
         `Provider ${instanceId} has no model available for inheritance.`,
       );
     }
+    // t3_thread_launch keeps a selection as given, so an inherited model can be an alias, and its
+    // options values its model no longer offers.
     const slug =
       (requestedModel === undefined
         ? findAdvertisedModel(provider, model)
@@ -2057,22 +2033,25 @@ const make = Effect.gen(function* () {
       instanceId === inheritedSelection.instanceId &&
       slug === advertisedSlug(provider, inheritedSelection.model);
     const options = overrideOptions(
-      inheritsOptions ? knownOptions(inheritedSelection.options, descriptors) : undefined,
+      inheritsOptions
+        ? acceptedOptionSelections(descriptors, inheritedSelection.options)
+        : undefined,
       requestedOptions,
     );
+    // A child whose target names nothing runs as its parent, or its role's model, does: Auto
+    // stays Auto. Auto picks its own provider, account, model and options when a child starts,
+    // so a target that names any of them runs exactly as named instead.
+    const namesNothing =
+      requestedInstanceId === undefined &&
+      requestedDriver === undefined &&
+      requestedModel === undefined &&
+      input.target?.options === undefined;
     return {
       modelSelection: {
         instanceId,
         model,
         ...(options === undefined ? {} : { options }),
-        // A child on its parent's Auto model is Auto too; a model the agent names instead is
-        // not. A model the user set to Auto, as a reviewer or a role's model, keeps that choice.
-        // Auto runs the options saved for Auto, so a target that gives options runs as named.
-        ...(requestedOptions === undefined &&
-        ((inheritsOptions && inheritedSelection.autoAccount === true) ||
-          (yield* isConfiguredAutoAccount(instanceId, slug)))
-          ? { autoAccount: true }
-          : {}),
+        ...(namesNothing && inheritedSelection.autoAccount === true ? { autoAccount: true } : {}),
       },
       supportedRuntimeModes: provider.supportedRuntimeModes,
     };
@@ -2159,7 +2138,7 @@ const make = Effect.gen(function* () {
         messageRoles: ["assistant"],
         messageRunIds: resultRunIds,
         turnItemRunIds: resultRunIds,
-        turnItemTypes: ["assistant_message", "error"],
+        turnItemTypes: SUBAGENT_RESULT_TURN_ITEM_TYPES,
       })
       .pipe(Effect.mapError(threadManagementFailure));
     const childProjection = {
@@ -3553,19 +3532,17 @@ const make = Effect.gen(function* () {
       const inheritedProvider = providers.find(
         (provider) => provider.instanceId === inherited?.instanceId,
       );
+      const inheritedDescriptors =
+        inheritedProvider === undefined || inherited === undefined
+          ? undefined
+          : findAdvertisedModel(inheritedProvider, inherited.model)?.capabilities
+              ?.optionDescriptors;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
         inheritedModel: inherited?.model ?? null,
-        inheritedOptions:
-          knownOptions(
-            inherited?.options,
-            inherited === undefined || inheritedProvider === undefined
-              ? undefined
-              : findAdvertisedModel(inheritedProvider, inherited.model)?.capabilities
-                  ?.optionDescriptors,
-          ) ?? [],
+        inheritedOptions: acceptedOptionSelections(inheritedDescriptors, inherited?.options) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         providers: providers.map((provider) => {
@@ -3656,6 +3633,9 @@ const make = Effect.gen(function* () {
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
       yield* requireCapability(callerScope);
       const scope = yield* requireThreadScope(callerScope, "delegate_task");
+      if (input.auto === true && input.target !== undefined) {
+        return yield* failure("invalid_request", "Pass auto:true or target, not both.");
+      }
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({ scope, requestKey: key, operation: "delegate-task" });
       // The local command ID is shared by both routes. Also find remote tasks accepted before it was shared.
@@ -3751,16 +3731,51 @@ const make = Effect.gen(function* () {
             .getThreadShell(derive.delegatedTaskThread({ commandId }))
             .pipe(Effect.mapError(threadManagementFailure))
         : null;
-      const resolveDelegateTarget = (base: Pick<OrchestrationV2ThreadProjection, "thread">) =>
+      // The child runs in its own project, so that project's accounts and Auto settings apply.
+      const projectId = foreignProjectId ?? parent.thread.projectId;
+      // Auto's pick, or the role's model, stands in for the parent's, so the child inherits it the
+      // same way.
+      const resolveDelegateTarget = (modelSelection: ModelSelection) =>
         resolveTargetRechecking({
-          parent: base,
+          parent: { thread: { ...parent.thread, projectId, modelSelection } },
           target: input.target,
           providers,
         });
+      // A stand-in model replaces an inherited one, which resolution does not check against the
+      // account's models, so one the account no longer offers is caught here, in the snapshot
+      // after any recheck of the account.
+      const resolveStandIn = (standIn: ModelSelection) =>
+        resolveDelegateTarget(standIn).pipe(
+          Effect.tap(() =>
+            loadProviders.pipe(
+              Effect.flatMap((current) => {
+                const standInProvider = current.find(
+                  (provider) => provider.instanceId === standIn.instanceId,
+                );
+                return standInProvider === undefined
+                  ? Effect.void
+                  : requireAdvertisedModel(standInProvider, standIn.model);
+              }),
+            ),
+          ),
+        );
       const roleSelection =
-        committedThread === null ? yield* delegatedTaskRoleSelection(input) : undefined;
-      // The role's model stands in for the parent's, so the child inherits it the same way.
-      const primaryTarget =
+        committedThread === null && input.auto !== true
+          ? yield* delegatedTaskRoleSelection(input)
+          : undefined;
+      // A role's model set to Auto runs where Auto mode starts a new chat, and on its saved model
+      // while Auto mode cannot run, as the Settings picker shows it.
+      const autoPick =
+        committedThread !== null
+          ? undefined
+          : input.auto === true
+            ? yield* requireAutoModePick(yield* readSettings, providers, projectId)
+            : input.auto === undefined && roleSelection?.autoAccount === true
+              ? (autoModePick({ settings: yield* readSettings, accounts: providers, projectId }) ??
+                undefined)
+              : undefined;
+      const standIn = autoPick ?? roleSelection;
+      const resolved =
         committedThread !== null
           ? {
               modelSelection: committedThread.modelSelection,
@@ -3768,39 +3783,27 @@ const make = Effect.gen(function* () {
                 (provider) => provider.instanceId === committedThread.modelSelection.instanceId,
               )?.supportedRuntimeModes,
             }
-          : roleSelection === undefined
-            ? yield* resolveDelegateTarget(parent)
-            : yield* resolveDelegateTarget({
-                thread: { ...parent.thread, modelSelection: roleSelection },
-              }).pipe(
-                // The role's model stands in for an inherited one, which resolution does not
-                // check against the account's models, so one the account no longer offers is
-                // caught here, in the snapshot after any recheck of the account.
-                Effect.tap(() =>
-                  loadProviders.pipe(
-                    Effect.flatMap((current) => {
-                      const roleProvider = current.find(
-                        (provider) => provider.instanceId === roleSelection.instanceId,
-                      );
-                      return roleProvider === undefined
-                        ? Effect.void
-                        : requireAdvertisedModel(roleProvider, roleSelection.model);
-                    }),
+          : standIn === undefined
+            ? yield* resolveDelegateTarget(parent.thread.modelSelection)
+            : input.auto === true
+              ? yield* resolveStandIn(standIn)
+              : yield* resolveStandIn(standIn).pipe(
+                  // Only a role model that is gone falls back; options it rejects fail as named.
+                  Effect.catchIf(
+                    (cause) =>
+                      cause.code === "provider_unavailable" || cause.code === "model_unavailable",
+                    (cause) =>
+                      Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
+                        role: input.role ?? "general",
+                        instanceId: standIn.instanceId,
+                        cause,
+                      }).pipe(Effect.andThen(resolveDelegateTarget(parent.thread.modelSelection))),
                   ),
-                ),
-                // Only a role model that is gone falls back; options it rejects fail as named.
-                Effect.catchIf(
-                  (cause) =>
-                    cause.code === "provider_unavailable" || cause.code === "model_unavailable",
-                  (cause) =>
-                    Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
-                      role: input.role ?? "general",
-                      instanceId: roleSelection.instanceId,
-                      cause,
-                    }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
-                ),
-              );
-      const projectId = foreignProjectId ?? parent.thread.projectId;
+                );
+      const primaryTarget =
+        input.auto === false && committedThread === null
+          ? { ...resolved, modelSelection: withAutoAccount(resolved.modelSelection, false) }
+          : resolved;
       const route =
         !isRetryOfAcceptedDelegation && input.target === undefined && Option.isSome(accountRouting)
           ? yield* accountRouting.value.failoverLaunch({
@@ -4616,7 +4619,7 @@ const make = Effect.gen(function* () {
               messageRoles: ["assistant"],
               messageRunIds: resultRunIds,
               turnItemRunIds: resultRunIds,
-              turnItemTypes: ["assistant_message", "error"],
+              turnItemTypes: SUBAGENT_RESULT_TURN_ITEM_TYPES,
             })
             .pipe(Effect.mapError(threadManagementFailure));
           if (

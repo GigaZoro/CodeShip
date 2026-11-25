@@ -1,5 +1,9 @@
+import {
+  usageLimitAccountWorkspacesAtom,
+  usageLimitClockAtom,
+} from "@t3tools/client-runtime/state/usage-progress";
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
 import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import {
@@ -10,9 +14,11 @@ import {
   CHATGPT_USAGE_URL,
   collectAccountFailover,
   collectLimitAccounts,
+  showsRelativeLimitTimes,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  findLimitAccountWindow,
   cursorUsageWindowDetails,
   describeAccountFailover,
   displayLimitWindows,
@@ -27,7 +33,14 @@ import {
   type LimitPool,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
-import { Fragment, type ReactNode, useId, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useId,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Linking, Pressable, View } from "react-native";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
@@ -38,6 +51,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
+import { subscribeAppActive, useAppForeground } from "../../lib/appState";
 import { relativeTime } from "../../lib/time";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ProviderHolds } from "./ProviderHolds";
@@ -392,7 +406,6 @@ function PoolWindowCard({
       windowId: pool.id,
       windowKind: pool.kind,
       environmentIds,
-      now,
     });
   const summary = (
     <>
@@ -605,13 +618,38 @@ function PoolWindowCard({
   );
 }
 
+const limitClockAtom = usageLimitClockAtom(environmentPresentations.presentationsWithProvidersAtom);
+const accountWorkspacesAtom = usageLimitAccountWorkspacesAtom(
+  environmentPresentations.presentationsWithProvidersAtom,
+);
+
+function useUsageLimitNow(hasCountdown: (at: number) => boolean) {
+  const clocks = useAtomValue(limitClockAtom);
+  const focused = useIsFocused();
+  const foreground = useAppForeground();
+  const clock =
+    focused && foreground && hasCountdown(clocks.resets.getSnapshot())
+      ? clocks.countdown
+      : clocks.resets;
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const unsubscribe = clock.subscribe(listener);
+      const unsubscribeResume = subscribeAppActive(clock.refresh);
+      return () => {
+        unsubscribeResume();
+        unsubscribe();
+      };
+    },
+    [clock],
+  );
+  return useSyncExternalStore(subscribe, clock.getSnapshot, clock.getSnapshot);
+}
+
 export function UsageLimitsSection({
-  now,
   failedLabels,
   selectedEnvironmentIds,
   wide = false,
 }: {
-  readonly now: number;
   readonly failedLabels: readonly string[];
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly wide?: boolean;
@@ -621,7 +659,10 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const workspaces = useAtomValue(accountWorkspacesAtom);
+  const accounts = collectLimitAccounts(selected, workspaces);
+  const now = useUsageLimitNow(() => showsRelativeLimitTimes(accounts));
+  const pools = collectLimitPools(accounts, now);
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
@@ -746,27 +787,44 @@ type AccountScreenProps = StaticScreenProps<{
   windowId: string;
   windowKind: LimitPoolWindow["kind"];
   environmentIds: readonly string[] | null;
-  now: number;
 }>;
 
 export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const insets = useSafeAreaInsets();
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  const { accountKey, windowId, windowKind, environmentIds, now } = route.params;
+  const { accountKey, windowId, windowKind, environmentIds } = route.params;
   const selectedIds =
     environmentIds === null ? null : new Set(environmentIds.map((id) => EnvironmentId.make(id)));
   const selected =
     selectedIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
-  const accounts = collectLimitAccounts(selected);
-  const account = accounts.find((candidate) => candidate.key === accountKey);
-  const pool = collectLimitPools(accounts, now)
-    .find((candidate) => candidate.driver === account?.driver)
-    ?.windows.find((candidate) => candidate.id === windowId && candidate.kind === windowKind);
-  const window = pool?.members.find((member) => member.account.key === accountKey)?.window;
+  const workspaces = useAtomValue(accountWorkspacesAtom);
+  const accounts = collectLimitAccounts(selected, workspaces);
+  const now = useUsageLimitNow((at) => {
+    const reading = findLimitAccountWindow(
+      collectLimitPools(accounts, at),
+      accountKey,
+      windowId,
+      windowKind,
+    );
+    const expires = reading?.account.redeem
+      ? reading.account.limits.resetCredits?.nextExpiresAt
+      : undefined;
+    return (
+      (reading?.reset?.at ?? -Infinity) > at || (expires !== undefined && Date.parse(expires) > at)
+    );
+  });
+  const detail = findLimitAccountWindow(
+    collectLimitPools(accounts, now),
+    accountKey,
+    windowId,
+    windowKind,
+  );
+  const account = detail?.account;
+  const window = detail?.window;
   const evenPace = window ? paceRemainingPercent(window, now) : null;
-  const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);
+  const reset = detail?.reset;
   const [revealed, setRevealed] = useState(false);
   return (
     <SettingsScreen title={t("Account")}>

@@ -2,6 +2,7 @@ import {
   CommandId,
   GitCommandError,
   type GitManagerServiceError,
+  type ModelSelection,
   ProjectId,
   type ThreadId,
   VcsProcessSpawnError,
@@ -121,7 +122,10 @@ export class ManagedProjectFolders extends Context.Service<
     }) => Effect.Effect<Option.Option<string>, ScratchFolderError>;
     readonly namedProjectsRoot: string;
     /** Removes failed/cancelled creations' folders only while no project owns them. */
-    readonly createNamedProject: (input: { readonly name: string }) => Effect.Effect<
+    readonly createNamedProject: (input: {
+      readonly name: string;
+      readonly defaultModelSelection?: ModelSelection | null;
+    }) => Effect.Effect<
       {
         readonly projectId: ProjectId;
         readonly workspaceRoot: string;
@@ -488,6 +492,9 @@ const make = Effect.gen(function* () {
         projectId: ProjectId.make(id),
         title: input.name,
         workspaceRoot,
+        ...(input.defaultModelSelection === undefined
+          ? {}
+          : { defaultModelSelection: input.defaultModelSelection }),
       })
       .pipe(
         // Re-check ownership before deleting rejected creations; interruption after commit or conflicts can leave an owner.

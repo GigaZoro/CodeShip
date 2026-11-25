@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import type * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -1061,7 +1062,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const ran: string[] = [];
         const seeds: string[] = [];
         const credentials: string[] = [];
-        const storeDirs: Array<string | undefined> = [];
+        const storeDirs: Array<string | Redacted.Redacted<string> | undefined> = [];
         const spawner = ChildProcessSpawner.make((command) => {
           const { args, options } = command as unknown as ChildProcess.StandardCommand;
           ran.push(args.join(" "));

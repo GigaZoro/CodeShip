@@ -1,11 +1,11 @@
 import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
-import type {
-  ModelSelection,
-  ProviderOptionSelection,
+import {
+  type ModelSelection,
   ProviderDriverKind,
-  ProviderInstanceId,
-  ProjectId,
+  type ProviderInstanceId,
+  type ProjectId,
 } from "@t3tools/contracts";
+import { offeredOptionSelections } from "@t3tools/shared/model";
 import {
   autoModeModelFor,
   orderProviderInstancesForFailover,
@@ -14,87 +14,84 @@ import { exhaustedModelUsageWindow } from "@t3tools/shared/usageLimits";
 import { providerConstraints } from "../provider/providerConstraints.ts";
 import { modelScopeHolds, modelWithRoom, type AccountRoutingContext } from "./AccountRouting.ts";
 
-export function autoCoordinatorAccounts(
-  input: AccountRoutingContext & {
-    readonly driver: ProviderDriverKind;
-    readonly projectId: ProjectId;
-    readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
-  },
-) {
-  const other =
-    input.driver === "claudeAgent" ? "codex" : input.driver === "codex" ? "claudeAgent" : undefined;
+type AutoCoordinatorContext = AccountRoutingContext & {
+  readonly driver: ProviderDriverKind;
+  readonly projectId: ProjectId;
+  readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
+};
+
+function otherDriverOf(driver: ProviderDriverKind) {
+  return driver === "claudeAgent"
+    ? ProviderDriverKind.make("codex")
+    : driver === "codex"
+      ? ProviderDriverKind.make("claudeAgent")
+      : undefined;
+}
+
+/** `driver`'s accounts that can run a delegated task, in failover order. */
+function delegateAccounts(input: AutoCoordinatorContext, driver: ProviderDriverKind) {
   return orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     input.providers,
-  )
-    .filter(
-      (provider) =>
-        provider.driver === other &&
-        providerConstraints(
-          provider,
-          input.orchestrationCapableInstanceIds.has(provider.instanceId),
-        ).length === 0,
-    )
-    .flatMap((provider) => {
-      const models = provider.models.filter(
-        (model) =>
-          !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
-      );
-      return models.length === 0 ? [] : [{ ...provider, models }];
-    });
+  ).filter(
+    (provider) =>
+      provider.driver === driver &&
+      providerConstraints(provider, input.orchestrationCapableInstanceIds.has(provider.instanceId))
+        .length === 0,
+  );
 }
 
-// delegate_task rejects an option the model no longer offers (a sign-in can remove one, e.g. Codex serviceTier).
-function offeredOptions(
-  provider: {
-    readonly models: ReadonlyArray<{
-      readonly slug: string;
-      readonly capabilities?:
-        | { readonly optionDescriptors?: ReadonlyArray<{ readonly id: string }> | undefined }
-        | null
-        | undefined;
-    }>;
-  },
-  primary: {
-    readonly model: string;
-    readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
-  },
-) {
-  const offered = provider.models
-    .find((model) => model.slug === primary.model)
-    ?.capabilities?.optionDescriptors?.map((option) => option.id);
-  return (primary.options ?? []).filter((option) => offered?.includes(option.id) === true);
+/** The other provider's accounts a delegate can run on now, each with its current models that have room. */
+export function autoCoordinatorAccounts(input: AutoCoordinatorContext) {
+  const other = otherDriverOf(input.driver);
+  return (other === undefined ? [] : delegateAccounts(input, other)).flatMap((provider) => {
+    const models = provider.models.filter(
+      (model) =>
+        !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
+    );
+    return models.length === 0 ? [] : [{ ...provider, models }];
+  });
+}
+
+/**
+ * `driver`'s Settings primary on its first account with room for it, as a review target. The
+ * primary is the user's choice, so a model its catalog marks legacy still counts.
+ */
+function reviewerOn(input: AutoCoordinatorContext, driver: ProviderDriverKind | undefined) {
+  const primary = driver === undefined ? null : autoModeModelFor(input.settings, driver);
+  if (driver === undefined || primary === null) return undefined;
+  for (const account of delegateAccounts(input, driver)) {
+    // The account's own id for the model: delegate_task rejects a display name it does not list.
+    const model = modelWithRoom(account, { ...input, model: primary.model });
+    if (model === null) continue;
+    return {
+      model,
+      providerInstanceId: account.instanceId,
+      options: offeredOptionSelections(
+        account.models.find((candidate) => candidate.slug === model)?.capabilities
+          ?.optionDescriptors,
+        primary.options,
+      ),
+    };
+  }
+  return undefined;
 }
 
 export function autoCoordinatorBriefInput(
-  input: Parameters<typeof autoCoordinatorAccounts>[0] & { readonly selection: ModelSelection },
+  input: AutoCoordinatorContext & { readonly selection: ModelSelection },
 ): Parameters<typeof autoCoordinatorInstructions>[0] {
   const others = autoCoordinatorAccounts(input);
   const own = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
-  const otherDriver = others[0]?.driver;
-  const otherPrimary =
-    otherDriver === undefined ? undefined : autoModeModelFor(input.settings, otherDriver);
-  const reviewer =
-    otherPrimary == null
-      ? undefined
-      : others.find(
-          (provider) => modelWithRoom(provider, { ...input, model: otherPrimary.model }) !== null,
-        );
+  const otherReviewer = reviewerOn(input, otherDriverOf(input.driver));
+  const ownReviewer = reviewerOn(input, input.driver);
   return {
     driver: input.driver,
     model: input.selection.model,
     primary: autoModeModelFor(input.settings, input.driver),
-    ...(reviewer === undefined || otherPrimary == null
-      ? {}
-      : {
-          otherPrimary: {
-            ...otherPrimary,
-            providerInstanceId: reviewer.instanceId,
-            options: offeredOptions(reviewer, otherPrimary),
-          },
-        }),
+    ...(otherReviewer === undefined ? {} : { otherReviewer }),
+    ...(ownReviewer === undefined ? {} : { ownReviewer }),
     models:
       own?.models.filter(
         // An account-wide limit leaves these: the coordinator is running on this account now.

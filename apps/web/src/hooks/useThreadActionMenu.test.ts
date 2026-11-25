@@ -118,6 +118,9 @@ vi.mock("../components/Sidebar.snooze", () => ({
 vi.mock("./useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: () => recordEffect("copy") }),
 }));
+vi.mock("./useExportThreadMarkdown", () => ({
+  useExportThreadMarkdown: () => async () => recordEffect("export-markdown"),
+}));
 vi.mock("./useHandleNewThread", () => ({
   useNewThreadHandler: () => async () => recordEffect("draft"),
 }));
@@ -190,6 +193,13 @@ describe("thread menu permissions", () => {
       expect(state.effects).toEqual([]);
     },
   );
+
+  it("exports a thread without task permission", async () => {
+    state.show.mockResolvedValue("export-markdown");
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    expect(state.effects).toEqual(["export-markdown"]);
+  });
 
   it("offers find only to a header that can open it, without task permission", async () => {
     createMenu().openMenu(position);

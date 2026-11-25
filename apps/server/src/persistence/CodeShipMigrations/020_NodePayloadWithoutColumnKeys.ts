@@ -25,6 +25,7 @@ const REMOVE_PATHS = COLUMN_KEYS.map((key) => `'$.${key}'`).join(", ");
 const Cursor = Schema.Struct({ rowid: Schema.Number });
 
 // Removing a key twice changes nothing, so a step run again after a restart is harmless.
+// json_remove fails on a malformed payload, which stays as it is (upstream migration 92).
 export default ResumableMigration.make({
   cursor: Cursor,
   start: { rowid: 0 },
@@ -42,7 +43,7 @@ export default ResumableMigration.make({
     yield* sql.unsafe(
       `UPDATE orchestration_v2_projection_nodes
        SET payload_json = json_remove(payload_json, ${REMOVE_PATHS})
-       WHERE rowid > ? AND rowid <= ?`,
+       WHERE rowid > ? AND rowid <= ? AND json_valid(payload_json)`,
       [rowid, stop.last],
     );
     const done = stop.last >= (stop.max ?? 0);

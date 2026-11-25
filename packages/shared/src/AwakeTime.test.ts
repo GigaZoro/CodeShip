@@ -5,7 +5,13 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
-import { EventLoopActiveMs, sleepAwake, timeoutAwakeOrElse, watchWait } from "./AwakeTime.ts";
+import {
+  EventLoopActiveMs,
+  sleepAwake,
+  timeoutAwakeOrElse,
+  watchWait,
+  watchWakes,
+} from "./AwakeTime.ts";
 
 type Pause = "sleep" | "stall";
 
@@ -44,6 +50,32 @@ const onPausingMac =
       ),
     );
   };
+
+// The TestClock fires timers; the wall clock also jumps ahead over a pause.
+const testClockMac = Effect.gen(function* () {
+  const testClock = yield* Clock.Clock;
+  let pausedMs = 0;
+  let activeMs = 0;
+  const millis = () => testClock.currentTimeMillisUnsafe() + pausedMs;
+  return {
+    provide: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(Clock.Clock, {
+          ...testClock,
+          currentTimeMillisUnsafe: millis,
+          currentTimeMillis: Effect.sync(millis),
+        }),
+        Effect.provideService(
+          EventLoopActiveMs,
+          Effect.sync(() => activeMs),
+        ),
+      ),
+    pause: (pause: Pause, ms: number) => {
+      pausedMs += ms;
+      if (pause === "stall") activeMs += ms;
+    },
+  };
+});
 
 const sleepAt = 16_000;
 const sleepMs = 15 * 60_000;
@@ -112,29 +144,12 @@ describe("AwakeTime", () => {
     { pause: "stall", wait: { slept: false, stalled: true } },
   ])("a wait watch reports a $pause only once there was one", ({ pause, wait }) =>
     Effect.gen(function* () {
-      // The TestClock fires timers; the wall clock also jumps ahead over a pause.
-      const testClock = yield* Clock.Clock;
-      let pausedMs = 0;
-      let activeMs = 0;
-      const millis = () => testClock.currentTimeMillisUnsafe() + pausedMs;
-      const mac = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-        effect.pipe(
-          Effect.provideService(Clock.Clock, {
-            ...testClock,
-            currentTimeMillisUnsafe: millis,
-            currentTimeMillis: Effect.sync(millis),
-          }),
-          Effect.provideService(
-            EventLoopActiveMs,
-            Effect.sync(() => activeMs),
-          ),
-        );
-      const check = mac(yield* mac(watchWait));
+      const mac = yield* testClockMac;
+      const check = mac.provide(yield* mac.provide(watchWait));
 
       yield* TestClock.adjust("10 minutes");
       const awake = yield* check;
-      pausedMs = 8 * 60 * 60_000;
-      if (pause === "stall") activeMs = pausedMs;
+      mac.pause(pause, 8 * 60 * 60_000);
       const justEnded = yield* check;
       yield* TestClock.adjust("1 minute");
 
@@ -143,6 +158,27 @@ describe("AwakeTime", () => {
         wait,
         wait,
       ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each<{ pause: Pause; sinceWake: ReadonlyArray<number | undefined> }>([
+    { pause: "sleep", sinceWake: [undefined, 0, 0, 60_000] },
+    { pause: "stall", sinceWake: [undefined, undefined, undefined, undefined] },
+  ])("a wake watch counts awake time since a sleep, not since a $pause", ({ pause, sinceWake }) =>
+    Effect.gen(function* () {
+      const mac = yield* testClockMac;
+      const check = mac.provide(yield* mac.provide(watchWakes));
+
+      yield* TestClock.adjust("10 minutes");
+      const neverSlept = yield* check;
+      mac.pause(pause, 8 * 60 * 60_000);
+      const beforeItsTick = yield* check;
+      // The watch's tick due during the pause fires on wake.
+      yield* TestClock.adjust("5 seconds");
+      const onWake = yield* check;
+      yield* TestClock.adjust("1 minute");
+
+      expect([neverSlept, beforeItsTick, onWake, yield* check]).toEqual(sinceWake);
     }).pipe(Effect.scoped),
   );
 });

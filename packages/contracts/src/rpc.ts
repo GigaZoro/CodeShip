@@ -409,6 +409,8 @@ import {
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   MonitoringChange,
+  MonitoringChatsInput,
+  MonitoringChatsResult,
   MonitoringError,
   MonitoringOverviewInput,
   MonitoringOverviewResult,
@@ -679,6 +681,7 @@ export const WS_METHODS = {
   scheduledTasksSetGroupPaused: "scheduledTasks.setGroupPaused",
   scheduledTasksStats: "scheduledTasks.stats",
   monitoringOverview: "monitoring.overview",
+  monitoringChats: "monitoring.chats",
   monitoringThread: "monitoring.thread",
   monitoringSubscribeChanges: "monitoring.subscribeChanges",
   scheduledTasksReorderPinned: "scheduledTasks.reorderPinned",
@@ -2429,6 +2432,12 @@ const WsMonitoringOverviewRpc = Rpc.make(WS_METHODS.monitoringOverview, {
   error: Schema.Union([MonitoringError, EnvironmentAuthorizationError]),
 });
 
+const WsMonitoringChatsRpc = Rpc.make(WS_METHODS.monitoringChats, {
+  payload: MonitoringChatsInput,
+  success: MonitoringChatsResult,
+  error: Schema.Union([MonitoringError, EnvironmentAuthorizationError]),
+});
+
 const WsMonitoringThreadRpc = Rpc.make(WS_METHODS.monitoringThread, {
   payload: MonitoringThreadInput,
   success: MonitoringThreadResult,
@@ -2648,6 +2657,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksSetGroupPausedRpc,
   WsScheduledTasksStatsRpc,
   WsMonitoringOverviewRpc,
+  WsMonitoringChatsRpc,
   WsMonitoringThreadRpc,
   WsMonitoringSubscribeChangesRpc,
   WsScheduledTasksReorderPinnedRpc,

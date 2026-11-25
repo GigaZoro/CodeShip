@@ -14,6 +14,9 @@ const CHECK_INTERVAL_MS = 60_000;
 const MIN_RENEW_INTERVAL_MS = 60_000;
 const RETRY_AFTER_EXPIRY_MS = 15 * 60_000;
 const PROCESS_START_WAIT = Duration.seconds(30);
+// Chats wait for at most this many renewals of an expired sign-in, a minute apart, then start
+// anyway, so a server that stays down does not hold every chat on the account.
+const START_RENEW_TRIES = 3;
 
 /** A remote MCP server Claude is signed in to and can renew: no token values. */
 export interface ClaudeMcpSignIn {
@@ -63,16 +66,26 @@ export interface ClaudeMcpRenewalAttempt {
   /** The expiry the sign-in had when the renewal started; unchanged afterwards means it failed. */
   readonly expiresAt: number;
   readonly at: number;
+  /** Renewals started since that expiry passed, this one included. */
+  readonly expiredTries: number;
 }
 
-/** The servers to renew now, and when to look again. */
+/** The servers to renew now, those a chat start renews and waits for, and when to look again. */
 export const planClaudeMcpRenewals = (input: {
   readonly signIns: ReadonlyArray<ClaudeMcpSignIn>;
   /** Sign-ins kept for a server since removed or moved to another URL are left alone. */
   readonly configured: ReadonlyMap<string, string>;
   readonly attempts: ReadonlyMap<string, ClaudeMcpRenewalAttempt>;
+  readonly renewing: ReadonlyMap<string, unknown>;
   readonly nowMs: number;
-}): { readonly due: ReadonlyArray<ClaudeMcpSignIn>; readonly nextCheckAt: number } => {
+}): {
+  readonly due: ReadonlyArray<ClaudeMcpSignIn>;
+  /** What a chat start renews first: the due ones, and expired ones it may still retry. */
+  readonly dueForStart: ReadonlyArray<ClaudeMcpSignIn>;
+  /** Expired sign-ins a chat must not start on: being renewed, or to be tried again. */
+  readonly blockingStart: ReadonlyArray<ClaudeMcpSignIn>;
+  readonly nextCheckAt: number;
+} => {
   // Claude keeps one record per server name, URL and headers; after a header change the older
   // record stays behind, and the newest is the one Claude renews.
   const current = new Map<string, ClaudeMcpSignIn>();
@@ -84,29 +97,54 @@ export const planClaudeMcpRenewals = (input: {
     }
   }
   const due: Array<ClaudeMcpSignIn> = [];
+  const dueForStart: Array<ClaudeMcpSignIn> = [];
+  const blockingStart: Array<ClaudeMcpSignIn> = [];
   let nextCheckAt = input.nowMs + CHECK_INTERVAL_MS;
   for (const signIn of current.values()) {
     const attempt = input.attempts.get(signIn.serverName);
-    const failedAfterExpiry =
-      attempt?.expiresAt === signIn.expiresAt && input.nowMs >= signIn.expiresAt;
+    const expired = input.nowMs >= signIn.expiresAt;
+    const failedAfterExpiry = attempt?.expiresAt === signIn.expiresAt && expired;
     const dueAt = Math.max(
       signIn.expiresAt - RENEW_LEAD_MS,
       attempt === undefined
         ? 0
         : attempt.at + (failedAfterExpiry ? RETRY_AFTER_EXPIRY_MS : MIN_RENEW_INTERVAL_MS),
     );
-    if (dueAt <= input.nowMs) due.push(signIn);
-    else nextCheckAt = Math.min(nextCheckAt, dueAt);
+    const startRetries =
+      expired && (failedAfterExpiry ? attempt.expiredTries : 0) < START_RENEW_TRIES;
+    if (dueAt <= input.nowMs) {
+      due.push(signIn);
+      dueForStart.push(signIn);
+    } else {
+      nextCheckAt = Math.min(nextCheckAt, dueAt);
+      if (startRetries && input.nowMs >= (attempt?.at ?? 0) + MIN_RENEW_INTERVAL_MS) {
+        dueForStart.push(signIn);
+      }
+    }
+    if (expired && (startRetries || input.renewing.has(signIn.serverName))) {
+      blockingStart.push(signIn);
+    }
   }
-  return { due, nextCheckAt };
+  return { due, dueForStart, blockingStart, nextCheckAt };
 };
+
+/** A sign-in was still expired after its renewal, or when the wait ran out; the start can be retried. */
+export class ClaudeMcpSignInRenewalPendingError extends Schema.TaggedError<ClaudeMcpSignInRenewalPendingError>()(
+  "ClaudeMcpSignInRenewalPendingError",
+  {},
+) {
+  override get message(): string {
+    return "Claude has not renewed an expired MCP sign-in yet. Retry the turn if it does not start again by itself.";
+  }
+}
 
 export interface ClaudeMcpSignInRenewal {
   /**
-   * Renews any sign-in that has expired or is about to, and waits for it (30 s at most), so a new
-   * Claude process does not start holding an expired token alongside the account's other chats.
+   * Renews sign-ins that expired or are about to and waits for them (30 s at most). Fails while a
+   * configured one is expired and being renewed or under START_RENEW_TRIES renewals since: Claude
+   * would renew it on a 401 without its lock, retiring the refresh token another chat uses.
    */
-  readonly ensureFresh: Effect.Effect<void>;
+  readonly ensureFresh: Effect.Effect<void, ClaudeMcpSignInRenewalPendingError>;
 }
 
 // Renewals outlive a provider instance, and a rebuilt one must join a renewal still running instead
@@ -163,7 +201,15 @@ export const makeClaudeMcpSignInRenewal = Effect.fn("makeClaudeMcpSignInRenewal"
         if (renewing.has(signIn.serverName)) return;
         const done = Deferred.makeUnsafe<void, never>();
         renewing.set(signIn.serverName, done);
-        attempts.set(signIn.serverName, { expiresAt: signIn.expiresAt, at: nowMs });
+        const previous = attempts.get(signIn.serverName);
+        attempts.set(signIn.serverName, {
+          expiresAt: signIn.expiresAt,
+          at: nowMs,
+          expiredTries:
+            nowMs < signIn.expiresAt
+              ? 0
+              : (previous?.expiresAt === signIn.expiresAt ? previous.expiredTries : 0) + 1,
+        });
         yield* options
           .renew(signIn.serverName)
           .pipe(
@@ -180,9 +226,13 @@ export const makeClaudeMcpSignInRenewal = Effect.fn("makeClaudeMcpSignInRenewal"
       }),
     );
 
+  const planNow = Effect.map(Clock.currentTimeMillis, (nowMs) => ({
+    nowMs,
+    plan: planClaudeMcpRenewals({ ...store, nowMs }),
+  }));
+
   const startDue = Effect.gen(function* () {
-    const nowMs = yield* Clock.currentTimeMillis;
-    const plan = planClaudeMcpRenewals({ ...store, nowMs });
+    const { nowMs, plan } = yield* planNow;
     yield* Effect.forEach(plan.due, (signIn) => start(signIn, nowMs), { discard: true });
     return plan.nextCheckAt - nowMs;
   });
@@ -198,13 +248,24 @@ export const makeClaudeMcpSignInRenewal = Effect.fn("makeClaudeMcpSignInRenewal"
     }
   }).pipe(Effect.forkScoped);
 
+  const failIfExpired = Effect.gen(function* () {
+    if ((yield* planNow).plan.blockingStart.length > 0) {
+      return yield* new ClaudeMcpSignInRenewalPendingError();
+    }
+  });
+
   const ensureFresh = Effect.gen(function* () {
-    yield* startDue;
+    const { nowMs, plan } = yield* planNow;
+    yield* Effect.forEach(plan.dueForStart, (signIn) => start(signIn, nowMs), { discard: true });
     yield* Effect.forEach([...renewing.values()], (done) => Deferred.await(done), {
       concurrency: "unbounded",
       discard: true,
     });
-  }).pipe(Effect.timeout(PROCESS_START_WAIT), Effect.ignore, Effect.catchDefect(logDefect));
+  }).pipe(
+    Effect.timeoutOrElse({ duration: PROCESS_START_WAIT, orElse: () => Effect.void }),
+    Effect.andThen(failIfExpired),
+    Effect.catchDefect(logDefect),
+  );
 
   return { ensureFresh } satisfies ClaudeMcpSignInRenewal;
 });

@@ -364,6 +364,8 @@ export class ProviderAdapterTurnStartError extends Schema.TaggedError<ProviderAd
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,
     runId: RunId,
+    /** The adapter knows the prompt never reached the provider, so resending it is safe. */
+    beforePrompt: Schema.optional(Schema.Literal(true)),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

@@ -14,6 +14,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import { pathEntryTempRoot } from "../serverTemp.testkit.ts";
 import { makeCodexAppServerSpawnCommand } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderProcesses from "./providerProcesses.ts";
@@ -25,8 +26,8 @@ vi.mock("node:os", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:os")>()),
   totalmem: () => memory.total,
 }));
-// A relative directory keeps PATH free of the drive colon its POSIX delimiter would split.
-const makeBinDirectory = () => NodeFS.mkdtempSync(".t3-agent-scope-");
+const makeBinDirectory = () =>
+  NodeFS.mkdtempSync(NodePath.join(pathEntryTempRoot(), "agent-scope-"));
 
 const running: ScopeState = {
   loadState: "loaded",

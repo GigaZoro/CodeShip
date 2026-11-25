@@ -1,5 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
+import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_DETAIL_LABELED,
   FINDING_TEXT,
@@ -9,13 +11,7 @@ import {
   findingExplanation,
 } from "@t3tools/client-runtime/monitoring-text";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import {
-  formatCount,
-  formatDateTimeShort,
-  formatPercent,
-  formatTokens,
-  formatUsd,
-} from "@t3tools/shared/usageFormat";
+import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { RefreshControl, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -25,13 +21,14 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { msg, t, tn } from "../../lib/i18n";
-import { useEnvironmentQuery } from "../../state/query";
+import { refreshMonitoringThread, useMonitoringRefresh } from "../../state/monitoring";
+import { formatEnvironmentQueryError } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
-import { usePullToRefresh } from "../../state/use-pull-to-refresh";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
 import { MonitoringKpi } from "./MonitoringKpi";
+import { MonitoringNote } from "./MonitoringNote";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import { MonitoringTimeline } from "./MonitoringTimeline";
 
@@ -51,10 +48,12 @@ export function MonitoringThreadRouteScreen({
   const { environmentId, threadId } = route.params;
   const insets = useSafeAreaInsets();
   const openThread = useOpenScheduledTaskThread();
-  const threadAtom = serverEnvironment.monitoringThread({ environmentId, input: { threadId } });
-  const query = useEnvironmentQuery(threadAtom);
-  const pullRefresh = usePullToRefresh(threadAtom);
-  const detail = query.data;
+  const { result, detail, retained } = useAtomValue(
+    serverEnvironment.monitoringThreadView(environmentId, threadId),
+  );
+  const error = result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null;
+  const { refreshing, timedOut, run } = useMonitoringRefresh();
+  const refreshAll = () => run(() => refreshMonitoringThread(environmentId, threadId));
 
   return (
     <SettingsScreen title={t("Chat analysis")}>
@@ -64,25 +63,41 @@ export function MonitoringThreadRouteScreen({
         className="flex-1"
         contentContainerClassName="px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        refreshControl={
-          <RefreshControl
-            refreshing={pullRefresh.refreshing}
-            onRefresh={() => pullRefresh.onRefresh()}
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshAll} />}
       >
         <View className="w-full gap-5 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
+          {timedOut ? (
+            <Text accessibilityLiveRegion="polite" textRole="footnote">
+              {t("The request timed out.")}
+            </Text>
+          ) : null}
+          {detail && error !== null ? (
+            <MonitoringNote
+              text={t("Could not refresh this chat's analysis, so it may be out of date: {error}", {
+                error,
+              })}
+              action={<Button label={t("Retry")} onPress={refreshAll} loading={refreshing} />}
+            />
+          ) : retained && detail ? (
+            <Text textRole="footnote">{t("Showing previous monitoring results.")}</Text>
+          ) : null}
           {detail ? (
             <DeepDiveBody detail={detail} onOpenChat={() => openThread(environmentId, threadId)} />
-          ) : query.error !== null ? (
+          ) : error !== null ? (
             <EmptyState
               variant="plain"
               title={t("Could not load this chat's analysis")}
-              detail={query.error}
-              actionLabel={t("Retry")}
-              onAction={query.refresh}
+              detail={error}
+              action={
+                <Button
+                  tone="primary"
+                  label={t("Retry")}
+                  onPress={refreshAll}
+                  loading={refreshing}
+                />
+              }
             />
-          ) : query.isPending ? (
+          ) : result.waiting ? (
             <View className="items-center py-16" accessibilityState={{ busy: true }}>
               <AppActivityIndicator />
             </View>
@@ -124,8 +139,8 @@ function DeepDiveBody(props: {
             t(KIND_LABEL[summary.kind]),
             summary.models.join(", ") || t("No model recorded"),
             t("{from} to {to}", {
-              from: formatDateTimeShort(summary.createdAt),
-              to: formatDateTimeShort(summary.settledAt),
+              from: formatMonitoringTime(summary.createdAt),
+              to: formatMonitoringTime(summary.settledAt),
             }),
             summary.reopens > 0
               ? tn(summary.reopens, "Reopened once", "Reopened {count} times")

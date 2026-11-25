@@ -10,6 +10,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { EMPTY_TOTALS, type UsageRecord } from "@t3tools/provider-core/server/usage";
+import { USAGE_HOUR_MS, usageHourStart } from "@t3tools/shared/usageFormat";
 import { cacheSavingsUsd, lookupRate, priceUsage, type RateTable } from "./usagePricing.ts";
 
 // en-CA gives ISO-ordered parts in the requested zone; Date getters are host-local.
@@ -46,7 +47,6 @@ function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
 }
 
 const QUARTER_HOUR_MS = 15 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 
 interface MutableBucket {
   totals: { -readonly [K in keyof UsageTokenTotals]: number };
@@ -295,7 +295,7 @@ export class UsageAggregator {
     const hourIndex =
       this.#hourlyWindow === null
         ? -1
-        : Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / HOUR_MS);
+        : Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / USAGE_HOUR_MS);
     return this.#bucketFor(day, hourIndex, record.provider, record.model, source);
   }
 
@@ -374,8 +374,7 @@ export class UsageAggregator {
       return last.bucket;
     }
     const window = this.#hourlyWindow;
-    const hourStart =
-      window === null ? "" : new Date(window.sinceTimeMs + hourIndex * HOUR_MS).toISOString();
+    const hourStart = window === null ? "" : usageHourStart(window.sinceTimeMs, hourIndex);
     const key = `${day}\u0000${hourStart}\u0000${provider}\u0000${model}\u0000${source}`;
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {

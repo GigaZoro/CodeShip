@@ -62,8 +62,10 @@ function workingTree(cwd, objects) {
         git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]),
       ),
     };
-    git(cwd, ["add", "--all", "--", ":/"], env);
-    return git(cwd, ["write-tree"], env);
+    // Shared indexes live in the repository, and the real index may still name one a scratch write would expire.
+    const scratch = ["-c", "core.splitIndex=false", "-c", "splitIndex.sharedIndexExpire=never"];
+    git(cwd, [...scratch, "add", "--all", "--", ":/"], env);
+    return git(cwd, [...scratch, "write-tree"], env);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

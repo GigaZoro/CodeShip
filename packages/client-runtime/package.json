@@ -119,6 +119,10 @@
       "types": "./src/monitoring/aggregate.ts",
       "default": "./src/monitoring/aggregate.ts"
     },
+    "./monitoring/atoms": {
+      "types": "./src/monitoring/atoms.ts",
+      "default": "./src/monitoring/atoms.ts"
+    },
     "./monitoring-text": {
       "types": "./src/monitoring/text.ts",
       "default": "./src/monitoring/text.ts"
@@ -383,6 +387,10 @@
       "types": "./src/state/usageProgress.ts",
       "default": "./src/state/usageProgress.ts"
     },
+    "./state/usage-view": {
+      "types": "./src/state/usageView.ts",
+      "default": "./src/state/usageView.ts"
+    },
     "./state/provider-mcp-problems": {
       "types": "./src/state/providerMcpProblems.ts",
       "default": "./src/state/providerMcpProblems.ts"
@@ -566,6 +574,10 @@
     "./thread-pull-requests": {
       "types": "./src/threadPullRequests.ts",
       "default": "./src/threadPullRequests.ts"
+    },
+    "./thread-markdown": {
+      "types": "./src/threadMarkdown.ts",
+      "default": "./src/threadMarkdown.ts"
     },
     "./thread-reference": {
       "types": "./src/threadReference.ts",

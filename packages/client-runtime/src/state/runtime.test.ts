@@ -64,6 +64,7 @@ import {
   createEnvironmentSubscriptionAtomFamily,
   createRuntimeCommand,
   environmentSessionGenerationAtom,
+  runAtomCommand,
   scheduleAtomCommandEffect,
   executeAtomQuery,
   type QueryAnswerHandler,
@@ -112,6 +113,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
   execute: Effect.Effect<A, E>,
   {
     refreshTrigger,
+    requestTimeoutMs,
     idleTtlMs,
     persistence,
     initialState,
@@ -120,6 +122,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     onAnswer,
   }: {
     readonly refreshTrigger?: Atom.Atom<unknown>;
+    readonly requestTimeoutMs?: number;
     readonly onAnswer?: QueryAnswerHandler<undefined, A>;
     readonly isFinal?: (value: A) => boolean;
     readonly idleTtlMs?: number;
@@ -159,7 +162,10 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     stateChanges: () => SubscriptionRef.changes(supervisorState),
   } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
   const runtime = Atom.runtime(
-    Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+    Layer.merge(
+      Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+      Layer.succeed(Clock.Clock, yield* Clock.Clock),
+    ),
   );
   const family = createEnvironmentQueryAtomFamily(runtime, {
     label: "test.environment-query",
@@ -167,6 +173,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     ...(persistence === undefined ? {} : { persistence }),
     execute: () => execute,
     ...(refreshTrigger === undefined ? {} : { refreshTrigger: () => refreshTrigger }),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(isFinal === undefined ? {} : { isFinal }),
     ...(onAnswer === undefined ? {} : { onAnswer }),
@@ -559,6 +566,37 @@ describe("finite environment subscription lifecycle", () => {
 });
 
 describe("environment query lifecycle", () => {
+  it.effect("settles a timed out request and retains its previous answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        let responding = true;
+        const { atom } = yield* makeEnvironmentQueryHarness(
+          Effect.suspend(() =>
+            responding
+              ? Effect.succeed("previous answer")
+              : Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          ),
+          { requestTimeoutMs: 15_000 },
+        );
+        const registry = yield* mountEnvironmentQuery(atom);
+        expect(yield* readEnvironmentQuery(registry, atom)).toBe("previous answer");
+        responding = false;
+        registry.refresh(atom);
+        yield* Deferred.await(started);
+
+        yield* TestClock.adjust(15_000);
+
+        const timedOut = registry.get(atom);
+        expect(timedOut).toMatchObject({ _tag: "Failure", waiting: false });
+        expect(AsyncResult.getOrElse(timedOut, () => null)).toBe("previous answer");
+        expect(AsyncResult.isFailure(timedOut) && Cause.squash(timedOut.cause)).toBeInstanceOf(
+          EnvironmentRpcUnavailableError,
+        );
+      }),
+    ),
+  );
+
   it.effect(
     "terminal metadata waits for snapshots and retains known sessions across restarts",
     () =>
@@ -1522,6 +1560,37 @@ describe("runtime command runner", () => {
       expect(Cause.squash(result.cause)).toBe(defect);
     }
     registry.dispose();
+  });
+
+  it.effect("interrupts the executing effect when the command caller aborts", () => {
+    const controller = new AbortController();
+    return Effect.gen(function* () {
+      const runtime = Atom.runtime(Layer.empty);
+      const registry = AtomRegistry.make();
+      const started = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const command = createRuntimeCommand(runtime, {
+        label: "test.abort",
+        execute: () =>
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+          ),
+      });
+
+      try {
+        const pending = runAtomCommand(registry, command, undefined, { signal: controller.signal });
+        yield* Deferred.await(started);
+        controller.abort();
+
+        const result = yield* Effect.promise(() => pending);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(Cause.hasInterruptsOnly(result.cause)).toBe(true);
+        yield* Deferred.await(interrupted);
+      } finally {
+        registry.dispose();
+      }
+    });
   });
 
   it("serializes commands that share a scheduler and lane", async () => {

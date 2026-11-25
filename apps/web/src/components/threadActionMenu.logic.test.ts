@@ -69,6 +69,13 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
 
+  it("keeps exporting available to a read-only connection", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, canOperate: false });
+    const exportItem = items.find((item) => item.id === "export-markdown");
+    expect(exportItem).toBeDefined();
+    expect(exportItem?.disabled).not.toBe(true);
+  });
+
   it("disables archive and turning into a project while the thread is running", () => {
     const items = buildThreadActionMenuItems({
       ...baseState,

@@ -11,6 +11,10 @@ export interface ClockStore<A> {
   readonly getSnapshot: () => A;
 }
 
+interface UsageClockStore extends ClockStore<number> {
+  readonly refresh: () => void;
+}
+
 // setTimeout fires immediately for delays beyond a signed 32-bit int.
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
@@ -192,4 +196,69 @@ export function deadlineStore(deadlineMs: number | null): DeadlineStore {
     },
   };
   return store;
+}
+
+/** Usage reads at reset boundaries and, for visible countdowns, each minute. */
+export function usageClock(
+  resetTimes: readonly number[] = [],
+  includeMinutes = true,
+): UsageClockStore {
+  const resets = [...new Set(resetTimes.filter(Number.isFinite))].sort((a, b) => a - b);
+  const read = () => {
+    const now = Date.now();
+    const minute = Math.floor(now / 60_000) * 60_000;
+    return resets.findLast((reset) => reset <= now && reset > minute) ?? minute;
+  };
+  let value = read();
+  const listeners = new Set<() => void>();
+  let releaseMinute: (() => void) | undefined;
+  let releaseReset: (() => void) | undefined;
+  const publish = () => {
+    const next = read();
+    if (next === value) return;
+    value = next;
+    for (const listener of listeners) listener();
+  };
+  const subscribeToNextReset = () => {
+    releaseReset?.();
+    releaseReset = undefined;
+    const now = Date.now();
+    const next = resets.find((reset) => reset > now);
+    if (next === undefined) return;
+    const deadline = deadlineStore(next);
+    releaseReset = deadline.subscribe(() => {
+      subscribeToNextReset();
+      publish();
+    });
+    if (deadline.getSnapshot()) subscribeToNextReset();
+  };
+  return {
+    getSnapshot: () => (listeners.size === 0 ? read() : value),
+    refresh: () => {
+      if (listeners.size === 0) return;
+      const now = Date.now();
+      for (const reset of resets) {
+        if (reset > now) break;
+        deadlines.get(reset)?.store.refresh();
+      }
+      if (includeMinutes) publish();
+    },
+    subscribe: (listener) => {
+      if (listeners.size === 0) {
+        if (includeMinutes) releaseMinute = minuteTick.subscribe(publish);
+        subscribeToNextReset();
+        value = read();
+      }
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          releaseMinute?.();
+          releaseReset?.();
+          releaseMinute = undefined;
+          releaseReset = undefined;
+        }
+      };
+    },
+  };
 }

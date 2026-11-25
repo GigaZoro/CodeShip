@@ -17,11 +17,18 @@ import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/cli";
 import { vi } from "vite-plus/test";
 
+import { deriveServerPaths, WORKTREE_RELEASE_DIRECTORY } from "../config.ts";
 import * as McpBridge from "../mcp/AcpMcpStdioBridge.ts";
 import {
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
 } from "../serverRuntimeState.ts";
+import { initRepoWithCommit, layerTest, makeTmpDir } from "../vcs/GitVcsDriverCore.testkit.ts";
+import {
+  decodeReleaseRequest,
+  releasePath,
+  worktreeReleaseName,
+} from "../workspace/worktreeRelease.ts";
 import {
   readLatestMessages,
   resolveProject,
@@ -175,6 +182,40 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
       ),
     ),
   ),
+);
+
+it.live("release-worktree queues an ordinary request when --save-ignored is omitted", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* makeTmpDir("thread-release-cli-");
+    const repo = path.join(root, "primary");
+    const worktree = path.join(root, "finished checkout");
+    const { initialBranch } = yield* initRepoWithCommit(repo);
+    yield* git(repo, ["worktree", "add", "-b", "finished", worktree]);
+    const durableRef = `refs/heads/${initialBranch}`;
+    const baseDir = path.join(root, "server");
+    yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+      "release-worktree",
+      threadId,
+      "--run",
+      runId,
+      "--worktree",
+      worktree,
+      "--durable-ref",
+      durableRef,
+      "--base-dir",
+      baseDir,
+    ]);
+    const { stateDir } = yield* deriveServerPaths(baseDir, undefined);
+    const file = worktreeReleaseName(yield* releasePath(worktree));
+    const request = yield* decodeReleaseRequest(
+      yield* fs.readFileString(path.join(stateDir, WORKTREE_RELEASE_DIRECTORY, file)),
+    );
+    assert.strictEqual(request.runId, runId);
+    assert.strictEqual(request.durableRef, durableRef);
+    assert.isUndefined(request.savedFiles);
+  }).pipe(Effect.provide(Layer.merge(layerTest, NetService.layer)), Effect.scoped),
 );
 
 /** Answers each tool call with the next scripted response for that tool. */

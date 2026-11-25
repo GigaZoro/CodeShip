@@ -2099,9 +2099,18 @@ importers:
       mdast-util-directive:
         specifier: 'catalog:'
         version: 3.1.0(supports-color@8.1.1)
+      mdast-util-gfm:
+        specifier: ^3.1.0
+        version: 3.1.0(supports-color@8.1.1)
+      mdast-util-math:
+        specifier: 3.0.0
+        version: 3.0.0(patch_hash=afe6b2c89e1eaddfd3c90cf2723f12c9a17d513e65beff51653781486013251c)(supports-color@8.1.1)
       mdast-util-to-hast:
         specifier: 13.2.1
         version: 13.2.1(patch_hash=57ea46c73aea3c876ab8d351fe0482ddd081dcb4a0610576e399dbe5eb59d2b1)
+      mdast-util-to-markdown:
+        specifier: ^2.1.2
+        version: 2.1.2
       micromark-extension-directive:
         specifier: 'catalog:'
         version: 4.0.0

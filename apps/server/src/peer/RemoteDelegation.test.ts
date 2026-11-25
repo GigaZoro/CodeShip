@@ -10,6 +10,7 @@ import {
   NodeId,
   type OrchestrationV2Run,
   type OrchestratorMcpThreadReadInput,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -101,7 +102,7 @@ interface TimelineEntry {
   readonly id: TurnItemId;
   readonly runId: RunId;
   readonly text: string;
-  readonly type: "assistant_message" | "error";
+  readonly type: "assistant_message" | "proposed_plan" | "error";
 }
 
 interface BoxThread {
@@ -301,6 +302,13 @@ const laptopProviders = [
   },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
+/** What the box offers: its providers, its project tools and its settings. */
+interface BoxSetup {
+  readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly projectRegistration?: typeof McpHttpServer.layerProjectRegistration;
+  readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+}
+
 interface BoxLaunch {
   input: ThreadLaunch.ThreadLaunchInput;
   state: BoxThread;
@@ -308,17 +316,11 @@ interface BoxLaunch {
   laterRunId: RunId;
 }
 
-const serveBox = (
-  thread: BoxThread,
-  projects = boxProjects,
-  providers?: ReadonlyArray<ServerProvider>,
-  projectRegistration?: typeof McpHttpServer.layerProjectRegistration,
-) => {
+const serveBox = (thread: BoxThread, projects = boxProjects, setup: BoxSetup = {}) => {
   const launches = new Map<ThreadId, BoxLaunch>();
-  return servePeer(
-    box,
-    boxToolkitLayer(thread, projects, launches, providers, projectRegistration),
-  ).pipe(Effect.map((peer) => ({ ...peer, launches })));
+  return servePeer(box, boxToolkitLayer(thread, projects, launches, setup)).pipe(
+    Effect.map((peer) => ({ ...peer, launches })),
+  );
 };
 
 /** The model a delegated task was launched with on the box. */
@@ -354,8 +356,11 @@ const boxToolkitLayer = (
   thread: BoxThread,
   projects: ReadonlyArray<Project>,
   launches: Map<ThreadId, BoxLaunch>,
-  providers: ReadonlyArray<ServerProvider> = boxProviders,
-  projectRegistration: typeof McpHttpServer.layerProjectRegistration = McpHttpServer.layerProjectRegistration,
+  {
+    providers = boxProviders,
+    projectRegistration = McpHttpServer.layerProjectRegistration,
+    settings = {},
+  }: BoxSetup = {},
 ) => {
   const interrupts = new Set<string>();
   const shellOf = (threadId: ThreadId) => {
@@ -664,9 +669,7 @@ const boxToolkitLayer = (
         ).map((entry, position) => ({ ...entry, position }));
         const visible =
           options.itemId === undefined
-            ? replies.filter(
-                (entry) => options.view === "activity" || entry.type === "assistant_message",
-              )
+            ? replies.filter((entry) => options.view === "activity" || entry.type !== "error")
             : replies.filter((entry) => entry.id === options.itemId);
         const matching = visible
           .filter((entry) => entry.position > (options.afterPosition ?? -1))
@@ -694,12 +697,14 @@ const boxToolkitLayer = (
               updatedAt: DateTime.makeUnsafe(0),
               ...(type === "error"
                 ? { type, failure: { message: text } }
-                : {
-                    type: "assistant_message" as const,
-                    messageId: MessageId.make(`message:${id}`),
-                    text,
-                    streaming: false,
-                  }),
+                : type === "proposed_plan"
+                  ? { type, planId: PlanId.make(`plan:${id}`), markdown: text, streaming: false }
+                  : {
+                      type: "assistant_message" as const,
+                      messageId: MessageId.make(`message:${id}`),
+                      text,
+                      streaming: false,
+                    }),
             } as never,
           })),
           totalItems: replies.length,
@@ -845,7 +850,7 @@ const boxToolkitLayer = (
     ),
     Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-    Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
+    Layer.provide(Layer.merge(ServerSettings.layerTest(settings), MemoryAdmission.layerTest())),
     Layer.provide(NodeServices.layer),
   );
 };
@@ -1622,43 +1627,45 @@ it.effect(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
         // The box's account offers reasoning effort for the parent's model but no service tier.
-        const b = yield* serveBox(thread, boxProjects, [
-          {
-            ...readyProvider,
-            instanceId,
-            driver,
-            models: [
-              {
-                slug: "gpt-5.4",
-                name: "gpt-5.4",
-                isCustom: false,
-                capabilities: {
-                  optionDescriptors: [
-                    {
-                      id: "reasoningEffort",
-                      label: "Reasoning",
-                      type: "select",
-                      options: [
-                        { id: "low", label: "Low" },
-                        { id: "high", label: "High", isDefault: true },
-                      ],
-                    },
-                    {
-                      id: "effort",
-                      label: "Effort",
-                      type: "select",
-                      options: [
-                        { id: "high", label: "High" },
-                        { id: "xhigh", label: "Extra high" },
-                      ],
-                    },
-                    { id: "ultracode", label: "Ultracode", type: "boolean" },
-                  ],
+        const b = yield* serveBox(thread, boxProjects, {
+          providers: [
+            {
+              ...readyProvider,
+              instanceId,
+              driver,
+              models: [
+                {
+                  slug: "gpt-5.4",
+                  name: "gpt-5.4",
+                  isCustom: false,
+                  capabilities: {
+                    optionDescriptors: [
+                      {
+                        id: "reasoningEffort",
+                        label: "Reasoning",
+                        type: "select",
+                        options: [
+                          { id: "low", label: "Low" },
+                          { id: "high", label: "High", isDefault: true },
+                        ],
+                      },
+                      {
+                        id: "effort",
+                        label: "Effort",
+                        type: "select",
+                        options: [
+                          { id: "high", label: "High" },
+                          { id: "xhigh", label: "Extra high" },
+                        ],
+                      },
+                      { id: "ultracode", label: "Ultracode", type: "boolean" },
+                    ],
+                  },
                 },
-              },
-            ],
-          } as unknown as ServerProvider,
-        ]);
+              ],
+            } as unknown as ServerProvider,
+          ],
+        });
         const offers = yield* SubscriptionRef.make<
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
@@ -1740,7 +1747,9 @@ it.effect(
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread, boxProjects, boxProviders, layerOlderProjectRegistration);
+        const b = yield* serveBox(thread, boxProjects, {
+          projectRegistration: layerOlderProjectRegistration,
+        });
         const offers = yield* SubscriptionRef.make<
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
@@ -1767,6 +1776,65 @@ it.effect(
         });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+const autoParent = { ...modelSelection, autoAccount: true };
+// The box's codex account is not a default instance, so it is enabled once Settings lists it.
+const boxAutoOn = {
+  autoModeProvider: driver,
+  autoModeModels: { [driver]: { model: "gpt-6" } },
+  providerInstances: { [boxCodex]: { driver, enabled: true } },
+};
+
+it.effect.each([
+  {
+    name: "an Auto parent's task named only by environment starts on the box's Auto pick",
+    settings: boxAutoOn,
+    input: {},
+    started: { instanceId: boxCodex, model: "gpt-6", autoAccount: true },
+  },
+  {
+    name: "an Auto parent's task starts on the parent's model while Auto mode is off on the box",
+    settings: { autoModeProvider: null },
+    input: {},
+    started: modelSelection,
+  },
+  {
+    name: "an Auto parent's task with auto:false starts on the parent's model",
+    settings: boxAutoOn,
+    input: { auto: false },
+    started: modelSelection,
+  },
+  {
+    name: "an Auto parent's task that names a model there runs it as named",
+    settings: boxAutoOn,
+    input: { target: { providerInstanceId: boxCodex, model: "gpt-5.4" } },
+    started: { instanceId: boxCodex, model: "gpt-5.4" },
+  },
+])("$name", ({ settings, input, started }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread, boxProjects, { settings });
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a, ProjectId.make("project:laptop"), autoParent);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        ...input,
+        target: { environmentId: box.environmentId, ...input.target },
+      });
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      expect((yield* Ref.get(thread.launched))?.modelSelection).toEqual(started);
+      // A launch Auto mode refused there left no thread, so the one task follows the one launched.
+      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task from a No-project chat runs in the box's No project", () =>
@@ -2856,6 +2924,7 @@ it.effect.each([
   "no-run",
   "cancelled",
   "interrupted",
+  "plan",
 ] as const)("reads a successful task with an aligned tail probe (%s)", (scenario) =>
   Effect.gen(function* () {
     const reads: Array<OrchestratorMcpThreadReadInput> = [];
@@ -2906,7 +2975,7 @@ it.effect.each([
             id: TurnItemId.make("selected"),
             runId: scenario === "no-run" ? boxLaterRunId : boxRunId,
             text: result,
-            type: "assistant_message",
+            type: scenario === "plan" ? "proposed_plan" : "assistant_message",
           },
           ...(middle ? history(200, boxLaterRunId, "later") : []),
         ];

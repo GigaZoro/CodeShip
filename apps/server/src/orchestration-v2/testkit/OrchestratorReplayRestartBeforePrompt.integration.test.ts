@@ -185,7 +185,7 @@ describe("restart before provider prompt delivery", () => {
     Effect.gen(function* () {
       const { child, parent } = yield* restartUnstartedDelegatedChild({
         openChildSession: () => Effect.die(new Error("codex app-server exited")),
-        afterRestart: drainWithBackoff,
+        afterRestart: drainUntil,
       });
       const run = child.runs[0]!;
       assert.deepEqual(
@@ -214,9 +214,9 @@ describe("restart before provider prompt delivery", () => {
       const { child, parent } = yield* restartUnstartedDelegatedChild({
         openChildSession: () =>
           Deferred.succeed(childOpened, undefined).pipe(Effect.andThen(Effect.never)),
-        afterRestart: (worker) =>
+        afterRestart: (worker, childEnded) =>
           Effect.gen(function* () {
-            const draining = yield* Effect.forkScoped(drainWithBackoff(worker));
+            const draining = yield* Effect.forkScoped(drainUntil(worker, childEnded));
             yield* Deferred.await(childOpened);
             yield* TestClock.adjust("5 minutes");
             yield* Fiber.join(draining);
@@ -245,12 +245,19 @@ describe("restart before provider prompt delivery", () => {
   );
 });
 
-const drainWithBackoff = (worker: EffectWorker.OrchestrationEffectWorkerV2["Service"]) =>
+/**
+ * Drains, moving the clock past each retry's backoff, until `ended`. Restarted runs start one at a
+ * time in an order a background sweep picks, so the child's attempts may wait behind the parent's.
+ */
+const drainUntil = <E>(
+  worker: EffectWorker.OrchestrationEffectWorkerV2["Service"],
+  ended: Effect.Effect<boolean, E>,
+) =>
   Effect.gen(function* () {
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    do {
       yield* worker.drain();
       yield* TestClock.adjust("30 seconds");
-    }
+    } while (!(yield* ended));
   });
 
 /** Restarts the server while a delegated Codex child run has not reached its provider. */
@@ -258,6 +265,7 @@ const restartUnstartedDelegatedChild = <E>(options: {
   readonly openChildSession: ProviderAdapter.ProviderAdapterV2["Service"]["openSession"];
   readonly afterRestart: (
     worker: EffectWorker.OrchestrationEffectWorkerV2["Service"],
+    childEnded: Effect.Effect<boolean, Orchestrator.OrchestratorV2Error>,
   ) => Effect.Effect<void, E, Scope.Scope>;
 }) =>
   Effect.scoped(
@@ -354,19 +362,19 @@ const restartUnstartedDelegatedChild = <E>(options: {
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
-          yield* options.afterRestart(yield* EffectWorker.OrchestrationEffectWorkerV2);
           // The parent hears of the child's end from a run-update subscriber, not the worker.
-          yield* orchestrator
-            .streamStoredEventsFrom({ threadId: parentThreadId, eventType: "subagent.updated" })
+          const childEnded = orchestrator
+            .getThreadProjection(parentThreadId)
             .pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "subagent.updated" &&
-                  stored.event.payload.childThreadId === childThreadId &&
-                  !isOrchestrationV2WorkActive(stored.event.payload.status),
+              Effect.map(({ subagents }) =>
+                subagents.some(
+                  (subagent) =>
+                    subagent.childThreadId === childThreadId &&
+                    !isOrchestrationV2WorkActive(subagent.status),
+                ),
               ),
-              Stream.runHead,
             );
+          yield* options.afterRestart(yield* EffectWorker.OrchestrationEffectWorkerV2, childEnded);
           return {
             child: yield* orchestrator.getThreadProjection(childThreadId),
             parent: yield* orchestrator.getThreadProjection(parentThreadId),

@@ -66,6 +66,29 @@ const execFileThrows = (error: Error) =>
       }),
   );
 
+// Within the scope, the main thread's execFile records its arguments and never runs PowerShell.
+const execFileCalls = Effect.acquireRelease(
+  Effect.sync(() => {
+    const childProcess = NodeModule.createRequire(import.meta.url)(
+      "node:child_process",
+    ) as typeof NodeChildProcess;
+    const calls: Array<ReadonlyArray<string>> = [];
+    const spy = vi.spyOn(childProcess, "execFile").mockImplementation(((
+      _file: string,
+      args: ReadonlyArray<string>,
+    ) => {
+      calls.push(args);
+    }) as never);
+    NodeModule.syncBuiltinESMExports();
+    return { spy, calls };
+  }),
+  ({ spy }) =>
+    Effect.sync(() => {
+      spy.mockRestore();
+      NodeModule.syncBuiltinESMExports();
+    }),
+);
+
 describe("WorkerProcessSpawner", () => {
   it.live("relays stdin, output and the exit code", () =>
     Effect.gen(function* () {
@@ -238,6 +261,34 @@ describe("WorkerProcessSpawner", () => {
       }).pipe(Effect.scoped, Effect.provide(windowsLayer));
     },
   );
+
+  it.live(
+    "a stopped worker's walk of a leader whose exit it relayed bounds the root by that exit",
+    () =>
+      Effect.gen(function* () {
+        const leader = yield* node("", quiet);
+        yield* leader.exitCode;
+        const { calls } = yield* execFileCalls;
+        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        assert.match(calls.at(-1)?.at(-1) ?? "", / -ended \d+$/);
+      }).pipe(Effect.scoped, Effect.provide(windowsLayer)),
+  );
+
+  it.live("a stopped worker's walk of a leader that may still run names no end", () => {
+    const errors = errorLogs();
+    return Effect.gen(function* () {
+      yield* leaderOfWorkerToStop(errors);
+      const { calls } = yield* execFileCalls;
+      yield* WorkerProcessSpawner.__testing.failWorkerStarts;
+
+      yield* WorkerProcessSpawner.__testing.stopWorker;
+
+      assert.notInclude(calls.at(-1)?.at(-1) ?? "", "-ended");
+    }).pipe(Effect.scoped, Effect.provide(windowsLayer));
+  });
 
   it.live(
     "a stopped worker whose tree walk cannot start PowerShell logs it and fails its children",

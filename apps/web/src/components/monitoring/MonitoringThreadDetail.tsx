@@ -1,16 +1,14 @@
 import { Link } from "@tanstack/react-router";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import {
-  formatCount,
-  formatDateTimeShort,
-  formatPercent,
-  formatTokens,
-  formatUsd,
-} from "@t3tools/shared/usageFormat";
+import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
+import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { ArrowLeftIcon, CircleAlertIcon, ExternalLinkIcon } from "lucide-react";
 
-import { refreshMonitoringThread, useMonitoringThread } from "../../state/monitoring";
+import { usePrimarySettings } from "../../hooks/useSettings";
+import { useMonitoringThread } from "../../state/monitoring";
+import { RetryButton } from "./MonitoringChatList";
+import { resolveHour12 } from "../../timestampFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -43,11 +41,15 @@ const SOURCE_LABEL = {
 export function MonitoringThreadDeepDive({
   environmentId,
   threadId,
+  refreshing,
+  onRetry,
 }: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly refreshing: boolean;
+  readonly onRetry: () => void;
 }) {
-  const { detail, isPending, error } = useMonitoringThread(environmentId, threadId);
+  const { detail, isPending, error, retained } = useMonitoringThread(environmentId, threadId);
 
   return (
     <div className="flex flex-col gap-6">
@@ -60,25 +62,26 @@ export function MonitoringThreadDeepDive({
         <ArrowLeftIcon aria-hidden />
         {t("All chats")}
       </Button>
-      {detail ? (
-        <DeepDiveBody detail={detail} environmentId={environmentId} />
-      ) : error !== null ? (
+      {error !== null ? (
         <Alert variant="error">
           <CircleAlertIcon />
           <AlertDescription>
-            {t("Could not load this chat's analysis: {error}", { error })}
+            {detail
+              ? t("Could not refresh this chat's analysis, so it may be out of date: {error}", {
+                  error,
+                })
+              : t("Could not load this chat's analysis: {error}", { error })}
           </AlertDescription>
           <AlertAction>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => refreshMonitoringThread(environmentId, threadId)}
-            >
-              {t("Retry")}
-            </Button>
+            <RetryButton retry={refreshing ? "busy" : "available"} onRetry={onRetry} />
           </AlertAction>
         </Alert>
-      ) : isPending ? (
+      ) : retained && detail ? (
+        <p className="text-sm text-muted-foreground">{t("Showing previous monitoring results.")}</p>
+      ) : null}
+      {detail ? (
+        <DeepDiveBody detail={detail} environmentId={environmentId} />
+      ) : error !== null ? null : isPending ? (
         <div className="flex flex-col gap-4" aria-busy>
           <Skeleton className="h-8 w-1/2" />
           <Skeleton className="h-24 w-full" />
@@ -100,6 +103,7 @@ function DeepDiveBody({
   readonly detail: MonitoringThreadDetail;
   readonly environmentId: EnvironmentId;
 }) {
+  const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const { summary } = detail;
   const input = summary.tokens.inputTokens;
   const workingMs = summary.time.agentMs + summary.time.commandMs + summary.time.toolMs;
@@ -123,8 +127,8 @@ function DeepDiveBody({
             <span>{summary.models.join(", ") || t("No model recorded")}</span>
             <span>
               {t("{from} to {to}", {
-                from: formatDateTimeShort(summary.createdAt),
-                to: formatDateTimeShort(summary.settledAt),
+                from: formatMonitoringTime(summary.createdAt, hour12),
+                to: formatMonitoringTime(summary.settledAt, hour12),
               })}
             </span>
             {summary.reopens > 0 ? (

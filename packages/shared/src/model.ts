@@ -266,6 +266,72 @@ export function withLegacyUltracodeEffort<
   ];
 }
 
+/** Why a model with `descriptors` rejects `selection`, or undefined when it accepts it. */
+export function optionSelectionProblem(
+  selection: ProviderOptionSelection,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): string | undefined {
+  const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
+  if (descriptor === undefined) {
+    const known = descriptors.map((candidate) => candidate.id).join(", ");
+    return `Unknown option ${selection.id}; supported options: ${known || "none"}.`;
+  }
+  if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
+    return `Option ${selection.id} expects a boolean value.`;
+  }
+  if (
+    descriptor.type === "select" &&
+    !descriptor.options.some((choice) => choice.id === selection.value)
+  ) {
+    const choices = descriptor.options.map((choice) => choice.id).join(", ");
+    return `Option ${selection.id} must be one of: ${choices}.`;
+  }
+  return undefined;
+}
+
+// delegate_task refuses an id given twice, since consumers disagree on which one wins.
+function firstOfEachId(
+  selections: ReadonlyArray<ProviderOptionSelection>,
+): ReadonlyArray<ProviderOptionSelection> {
+  const seen = new Set<string>();
+  return selections.filter((selection) => {
+    if (seen.has(selection.id)) return false;
+    seen.add(selection.id);
+    return true;
+  });
+}
+
+/**
+ * The saved `selections` a model with `descriptors` still accepts, the first of each id, so a
+ * target built from them passes `delegate_task`; none while the model's options are unknown.
+ */
+export function offeredOptionSelections(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ReadonlyArray<ProviderOptionSelection> {
+  if (descriptors === undefined) return [];
+  return firstOfEachId(
+    (withLegacyUltracodeEffort(descriptors, selections) ?? []).filter(
+      (selection) => optionSelectionProblem(selection, descriptors) === undefined,
+    ),
+  );
+}
+
+/**
+ * The saved `selections` a model with `descriptors` still accepts, for a run that starts on them.
+ * While the model's options are unknown (a catalog still loading), the first of each id, so its
+ * provider reports what it lacks.
+ */
+export function acceptedOptionSelections(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
+  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  if (selections === undefined) return undefined;
+  return descriptors === undefined
+    ? firstOfEachId(selections)
+    : offeredOptionSelections(descriptors, selections);
+}
+
 export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;

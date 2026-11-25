@@ -25,7 +25,7 @@ type Refusal = readonly [argv: ReadonlyArray<string>, status: number, diagnostic
 
 const unknownOption = (name: string) => "Unknown option '" + name + "'";
 const landingUsage =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | holder | verify <remote>";
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   "./lib/run-cached-test-group.ts": [
     [[], 1, "A cached test group requires at least one test file"],
@@ -57,8 +57,16 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
     [["land", UNREAD], 2, landingUsage],
     [["land-rebased", "--base", "0".repeat(40), "--head", UNREAD], 2, landingUsage],
     [["push"], 2, landingUsage],
+    [["push", "0".repeat(40), UNREAD], 2, landingUsage],
     [["holder", UNREAD], 2, landingUsage],
     [["verify", "origin", UNREAD], 2, landingUsage],
+  ],
+  "../.github/scripts/release-macos-run.cjs": [
+    [
+      ["GigaZoro/CodeShip", "1", UNREAD],
+      2,
+      "usage: node .github/scripts/release-macos-run.cjs <owner/repo> <Release (fork) run id>",
+    ],
   ],
   "../.github/scripts/release-notes.cjs": [
     [["configure", UNREAD], 1, "Usage: node .github/scripts/release-notes.cjs check|render"],

@@ -15,6 +15,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -4274,7 +4275,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       released: false,
     },
   ])(
-    "queues a child result without creating a provider history handoff and $name its process",
+    "queues a child's proposed plan as its result without a provider history handoff and $name its process",
     ({ key, pendingBackgroundTasks, released }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -4356,6 +4357,33 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
               occurredAt: now,
               payload: { ...childProjection.runs[0]!, providerThreadId },
             },
+            {
+              id: EventId.make(`event:result-message${key}-child-plan`),
+              type: "turn-item.updated",
+              threadId: child.childThreadId,
+              nodeId: NodeId.make(`node:result-message${key}-child-plan`),
+              occurredAt: now,
+              payload: {
+                id: TurnItemId.make(`turn-item:result-message${key}-child-plan`),
+                type: "proposed_plan",
+                threadId: child.childThreadId,
+                runId: child.childRunId,
+                nodeId: NodeId.make(`node:result-message${key}-child-plan`),
+                providerThreadId,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 0,
+                status: "completed",
+                title: null,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                planId: PlanId.make(`plan:result-message${key}-child`),
+                markdown: "1. Read the brief.",
+                streaming: false,
+              },
+            },
           ],
         });
 
@@ -4363,7 +4391,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const task = recovered.subagents.find((candidate) => candidate.id === child.taskId)!;
         assert.equal(task.status, "completed");
-        assert.isNotNull(task.result);
+        assert.equal(task.result, "1. Read the brief.");
         assert.isEmpty(recovered.contextHandoffs);
         assert.equal(recovered.contextTransfers.length, 1);
         // A one-process-per-thread child releases its process once its result is recorded,

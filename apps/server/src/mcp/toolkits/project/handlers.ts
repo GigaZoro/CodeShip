@@ -491,28 +491,29 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     ({ workspaceRoot, ...input }) =>
       Effect.gen(function* () {
         const projects = yield* Project.ProjectService;
+        const defaultModelSelection = yield* checkedDefaultModel(input.defaultModelSelection);
         if (workspaceRoot === undefined) {
-          // Only updates record model defaults; reject defaults that creation would silently drop.
-          if (
-            input.scripts !== undefined ||
-            input.createWorkspaceRootIfMissing !== undefined ||
-            input.defaultModelSelection !== undefined
-          )
+          if (input.scripts !== undefined || input.createWorkspaceRootIfMissing !== undefined)
             return yield* new OrchestratorMcpFailure({
               code: "invalid_request",
               message:
-                "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
+                "A project started from its title takes only a title and a default model; set scripts afterwards with t3_project_update.",
             });
           const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
-          const created = yield* folders.createNamedProject({ name: input.title }).pipe(
-            Effect.mapError(
-              (error) =>
-                new OrchestratorMcpFailure({
-                  code: "orchestration_error",
-                  message: error.message,
-                }),
-            ),
-          );
+          const created = yield* folders
+            .createNamedProject({
+              name: input.title,
+              ...(defaultModelSelection === undefined ? {} : { defaultModelSelection }),
+            })
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: error.message,
+                  }),
+              ),
+            );
           const project = yield* projects
             .getById(created.projectId)
             .pipe(
@@ -526,7 +527,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
           };
         }
-        const defaultModelSelection = yield* checkedDefaultModel(input.defaultModelSelection);
         const commandId = yield* newCommandId();
         return yield* projects
           .create({

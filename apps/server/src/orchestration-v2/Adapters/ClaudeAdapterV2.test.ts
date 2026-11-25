@@ -157,6 +157,8 @@ import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
 
+import { ClaudeMcpSignInRenewalPendingError } from "../../provider/Drivers/ClaudeMcpSignInRenewal.ts";
+
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
@@ -3807,6 +3809,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly onAuthenticationFailed?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticationFailed"];
     readonly onAuthenticated?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticated"];
     readonly scopedLimitNames?: ClaudeAdapterV2.ClaudeAdapterV2Options["scopedLimitNames"];
+    readonly prepareHome?: ClaudeAdapterV2.ClaudeAdapterV2Options["prepareHome"];
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly setPermissionMode?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["setPermissionMode"];
@@ -3905,6 +3908,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           : {}),
         ...(options?.onAuthenticated ? { onAuthenticated: options.onAuthenticated } : {}),
         ...(options?.scopedLimitNames ? { scopedLimitNames: options.scopedLimitNames } : {}),
+        ...(options?.prepareHome ? { prepareHome: options.prepareHome } : {}),
         environment: options?.environment ?? {},
         attachmentsDir,
         fileSystem,
@@ -26625,21 +26629,22 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             stalled: row.stalled,
           }),
         });
-        const failure = makeProviderFailure({
-          cause: yield* Effect.flip(
-            harness.runtime.startTurn(
-              makeClaudeTestTurnInput({
-                threadId: harness.threadId,
-                providerThread: harness.providerThread,
-                now: yield* DateTime.now,
-                attemptId: RunAttemptId.make("attempt-mcp-timeout"),
-                text: "Implement.",
-                attachments: [],
-              }),
-            ),
+        const error = yield* Effect.flip(
+          harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-mcp-timeout"),
+              text: "Implement.",
+              attachments: [],
+            }),
           ),
-        });
+        );
+        const failure = makeProviderFailure({ cause: error });
         assert.deepEqual([failure.class, failure.code], [row.class, row.code]);
+        // Registration precedes queuing the prompt, so a retry cannot send it twice.
+        assert.deepInclude(error, { _tag: "ProviderAdapterTurnStartError", beforePrompt: true });
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -26650,6 +26655,50 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
+  );
+
+  it.effect("has a start go again once an expired MCP sign-in Claude is renewing is fresh", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        prepareHome: Effect.fail(new ClaudeMcpSignInRenewalPendingError()),
+      });
+      // A continuation this session never asked for goes as a prompt, so it can go again too.
+      for (const [createdBy, creationSource] of [
+        ["user", "web"],
+        ["agent", "provider"],
+      ] as const) {
+        const error = yield* Effect.flip(
+          harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`attempt-mcp-sign-in-renewing-${creationSource}`),
+              text: "Implement.",
+              attachments: [],
+              messageCreatedBy: createdBy,
+              messageCreationSource: creationSource,
+            }),
+          ),
+        );
+        const failure = makeProviderFailure({ cause: error });
+        assert.deepEqual(
+          [failure.class, failure.code],
+          ["transport_error", ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE],
+        );
+        assert.deepInclude(error, { _tag: "ProviderAdapterTurnStartError", beforePrompt: true });
+      }
+      assert.isUndefined(harness.getOpenedOptions());
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect.each([

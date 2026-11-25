@@ -481,6 +481,78 @@ of requests to the hosted origin. The browser exchanges the secret with the
 environment and strips it from its history. Moving the token into a query
 parameter would disclose it to the wrong origin.
 
+## Sums across environments name what they miss
+
+Environments answer at their own pace: a local one in milliseconds, a remote one
+over a tunnel seconds later, and one still connecting not at all yet. A view
+that adds up several environments, such as Usage or Monitoring, therefore shows
+a partial sum for a while. It names each environment it has not counted yet
+(waiting or unreadable) next to the numbers, and never shows the partial sum as
+the total. Otherwise a longer period can show less than a shorter one, because
+its slower answers have not arrived. Every environment the user asked to
+connect counts: one that is offline or whose connection failed is named as
+unreadable, and Retry reconnects it as well as asking again. Monitoring's
+merged views carry the environments they left out
+([aggregate.ts](../../packages/client-runtime/src/monitoring/aggregate.ts)) and
+drop a failed refresh's old answer. Usage keeps its per-environment statuses
+beside the merged totals ([usage.ts](../../apps/web/src/state/usage.ts)) and
+counts a failed rescan's last values while saying so, so its screen checks
+them itself.
+
+A list merged from several environments keeps each environment's own order and
+only chooses whose next item comes first, by the sort key each server sends
+with its items. Keys computed on the client could disagree with a server of
+another version, and a longer list would then reorder the rows a shorter one
+showed. Each environment sends its list a page at a time, and the merge reads
+an environment's next page only once the rows shown need it. Pages are read by
+offset, so every page of a list asks about a period with a fixed end: a server's
+own now would move between pages and let a chat in without the change notice
+that reloads the list. The merge stops where a
+page still loads, since that environment's next row could come before any
+other's, and where a page is read again after a change or a failure: its old
+answer next to pages already answered again would skip or repeat the rows that
+moved between them, and its old failure would leave out an environment that may
+be answering now. Only such a page keeps the rows already shown on screen, with
+their own notes, and only while the list asks about the same period, filters and
+environments, so they are still true of it, and either has fewer rows or reads
+again a list that awaited no page, whose pages answer one by one. Rows from an
+environment that list could not ask yet are news and replace it at once. One it
+asked waits for the list, even with a first answer, since showing that answer
+while another environment is read again would drop the other's rows, and one
+asked again keeps its old rows or failure until the list answers: its first page
+can answer before the later page that failed. A failure those rows did not have
+replaces them at once too: rows from one answer under notes from another would
+contradict each other, and so do a failure whose reason changed, such as an
+offline server that turns out too old to page, and one that cleared with nothing
+asking it again, such as an offline server now connecting. A failure the same
+list asks again keeps its note, and the Retry button that asked, until it
+answers or more rows show, so the button keeps keyboard focus. Retry shows as busy only while every failure it can reach
+is asked again, which a note held from an earlier answer cannot show by itself.
+An environment counts as asked again only while its own read is in flight, a
+page the merge stopped at included, never because a newer answer stopped naming
+it: a merge that stops at another environment's page has not reached the failed
+one yet. So a failure nothing asks again can always be retried, and Retry is not
+offered for one it cannot reach, such as a server too old to page. The merge
+leaves out an environment whose later page fails, like one whose first page
+fails: its loaded rows would otherwise rank as if they were all it had. Retry
+asks again for every page that list has read from each environment it can ask,
+not only the pages the latest merge read, because that merge may have stopped
+before the failed page, and the pages after a failed one stay cached unread, so
+the recovered list would read their old answers. A repeated chat can make the
+list read a page past its limit, so the record is the list's own, not its limit.
+A refresh runs a cached page even when nothing reads it, so Retry leaves out a
+page only a longer list read. Such a page's answer stays true until a chat
+changes, and the change notice marks it stale, so Show more reads it again when
+it gets there. A failure does not stay true, and a query stays cached a while
+after its last reader leaves, so Refresh and Retry, also in an open chat, ask
+again every page or overview whose failure a view read, until it answers; a view
+that reads it loading again and leaves does not clear it. With no view reading
+it, they watch the query until it answers: Show more, or a period chosen again,
+would otherwise bring back a failure from before them.
+Monitoring asks only servers that report the `monitoringPages`
+capability and names an older one as unreadable, because an older server
+ignores the page offset and would repeat its first page.
+
 ## Access and process ownership are different
 
 Tailscale supplies an endpoint for ordinary pairing, so it needs no separate

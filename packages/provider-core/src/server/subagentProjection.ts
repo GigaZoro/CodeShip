@@ -188,6 +188,17 @@ export function withExecutedModelNote(
     ? result
     : `Requested model ${requestedModel}; the provider reported running ${executedModel}.\n\n${result}`;
 }
+/** The turn item types a run replies with; its latest non-blank one is its result. */
+export const SUBAGENT_REPLY_TURN_ITEM_TYPES = [
+  "assistant_message",
+  "proposed_plan",
+] as const satisfies ReadonlyArray<OrchestrationV2TurnItem["type"]>;
+
+/** The turn item types `subagentResultForRun` reads; load at least these for a run's result. */
+export const SUBAGENT_RESULT_TURN_ITEM_TYPES = [
+  ...SUBAGENT_REPLY_TURN_ITEM_TYPES,
+  "error",
+] as const satisfies ReadonlyArray<OrchestrationV2TurnItem["type"]>;
 
 export function subagentResultForRun(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns">,
@@ -197,17 +208,23 @@ export function subagentResultForRun(
   readonly messageId: OrchestrationV2ConversationMessage["id"] | null;
   readonly turnItemId: OrchestrationV2TurnItem["id"] | null;
 } {
-  const turnItem =
+  // A plan-mode turn can end with a proposed plan and no assistant message; the plan is its result.
+  const latest =
     projection.turnItems
       .filter(
         (
           candidate,
-        ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "assistant_message" }> =>
+        ): candidate is Extract<
+          OrchestrationV2TurnItem,
+          { readonly type: "assistant_message" | "proposed_plan" }
+        > =>
           candidate.runId === run.id &&
-          candidate.type === "assistant_message" &&
-          candidate.text.trim().length > 0,
+          ((candidate.type === "assistant_message" && candidate.text.trim().length > 0) ||
+            (candidate.type === "proposed_plan" && candidate.markdown.trim().length > 0)),
       )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null;
+  const turnItem = latest?.type === "assistant_message" ? latest : null;
+  const plan = latest?.type === "proposed_plan" ? latest : null;
   const messages = projection.messages.filter(
     (candidate) =>
       candidate.runId === run.id &&
@@ -239,6 +256,7 @@ export function subagentResultForRun(
         ? failure.failure.message
         : `${failure.failure.message}\n\nLast assistant message before the run failed:\n\n${reportBeforeFailure}`
       : undefined) ??
+    plan?.markdown ??
     message?.text ??
     turnItem?.text ??
     (run.status === "completed"
@@ -253,8 +271,9 @@ export function subagentResultForRun(
       executedModel === undefined
         ? text
         : withExecutedModelNote(text, run.modelSelection.model, executedModel),
-    messageId: failure === undefined ? (message?.id ?? turnItem?.messageId ?? null) : null,
-    turnItemId: failure?.id ?? turnItem?.id ?? null,
+    messageId:
+      failure === undefined && plan === null ? (message?.id ?? turnItem?.messageId ?? null) : null,
+    turnItemId: failure?.id ?? plan?.id ?? turnItem?.id ?? null,
   };
 }
 

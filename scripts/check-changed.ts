@@ -789,6 +789,29 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+export const uncachedTests = [
+  "apps/server/integration/transferBudgetV2.integration.test.ts",
+  // No input covers the programs these run: one a variable names (CC, ComSpec,
+  // T3CODE_TEST_HEADLESS_SHELL, T3_TEST_NU_PATH), or the shell tools of the
+  // machine or its WSL distribution, without which they skip cases.
+  "apps/desktop/scripts/browser-secret-native.test.mjs",
+  "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
+  "apps/server/src/cli/uninstall.test.ts",
+  "apps/server/src/htmlRender/HtmlRender.test.ts",
+  "packages/shared/src/shell.test.ts",
+  "scripts/install.test.ts",
+  // On macOS the file tracker runs every bash and sh as Vite+'s bundled Oils osh,
+  // which refuses bash's own flags such as --noprofile.
+  "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "scripts/release-desktop-workflow.test.ts",
+  // These skip cases without a cgroup this process may join or delegate.
+  "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+  "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+  // These fixtures start their own Vite+ task cache and file tracker.
+  "scripts/check-changed.test.ts",
+  "scripts/lib/cached-tests.test.ts",
+];
+
 // Output is piped, so keep the colors a terminal would get.
 const spawnVp = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
@@ -1020,6 +1043,36 @@ export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (
   return hash.digest("hex");
 });
 
+// Enough to find what wrote inside the checkout without burying the summary under a mass edit.
+const CHANGED_PATHS_SHOWN = 20;
+
+// The tree's changes, then the change's own files whose bytes on disk changed where the tree did not.
+export const changedPaths = (
+  tree: ReadonlyArray<{ readonly status: string; readonly path: string }>,
+  before: ReadonlyMap<string, string>,
+  after: ReadonlyMap<string, string>,
+) => {
+  const named = new Set(tree.map((change) => change.path));
+  const bytesOnly = [...new Set([...before.keys(), ...after.keys()])]
+    .filter((file) => !named.has(file) && before.get(file) !== after.get(file))
+    .sort();
+  return [
+    ...tree.map((change) => `${change.status}\t${change.path}`),
+    ...bytesOnly.map((file) => `M\t${file} (bytes on disk only, such as line endings)`),
+  ];
+};
+
+export const changedWhileCheckingMessage = (paths: ReadonlyArray<string>) =>
+  [
+    "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
+    "        A path nobody edited is one a check or tool wrote inside the checkout: make it write",
+    "        under os.tmpdir() or a gitignored folder. Changed since the run started:",
+    ...paths.slice(0, CHANGED_PATHS_SHOWN).map((line) => `        ${line}`),
+    ...(paths.length > CHANGED_PATHS_SHOWN
+      ? [`        and ${paths.length - CHANGED_PATHS_SHOWN} more`]
+      : []),
+  ].join("\n");
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -1114,11 +1167,19 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     catch: (cause) => `check:changed cannot read the working tree: ${String(cause)}`,
   });
   const tree = yield* checkedTree;
-  const treeUnchanged = Effect.gen(function* () {
-    if ((yield* checkedTree) === tree) return true;
-    yield* Console.log(
-      "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
+  const changesBetween = (earlier: string, current: string) =>
+    paths("diff-tree", "-r", "--no-renames", "--name-status", earlier, current).pipe(
+      Effect.map((fields) =>
+        fields.flatMap((status, index) =>
+          index % 2 === 0 ? [{ status, path: fields[index + 1] ?? "" }] : [],
+        ),
+      ),
     );
+  const treeUnchanged = Effect.gen(function* () {
+    const current = yield* checkedTree;
+    if (current === tree) return true;
+    const changes = yield* changesBetween(tree, current);
+    yield* Console.log(changedWhileCheckingMessage(changedPaths(changes, new Map(), new Map())));
     return false;
   });
   const recordCheckedPass = Effect.gen(function* () {
@@ -1202,20 +1263,22 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       yield* Config.option(Config.String("T3CODE_TEST_KEEP_PROVIDER_ENV")),
       () => "",
     ) === "1";
+  // Hashes each file's digest and returns the digests, which name a file whose bytes changed.
   const addFiles = (hash: NodeCrypto.Hash, paths: ReadonlyArray<string>) =>
-    Effect.forEach(
-      paths,
-      (file) =>
-        Effect.gen(function* () {
-          hash.update(`\0${file}\0`);
-          // Untracked nested repositories are listed as directories.
-          const info = yield* Effect.option(fs.stat(inRoot(file)));
-          if (Option.isSome(info) && info.value.type === "File") {
-            hash.update(yield* fs.readFile(inRoot(file)));
-          }
-        }),
-      { discard: true },
-    );
+    Effect.forEach(paths, (file) =>
+      Effect.gen(function* () {
+        // Untracked nested repositories are listed as directories.
+        const info = yield* Effect.option(fs.stat(inRoot(file)));
+        const digest =
+          Option.isSome(info) && info.value.type === "File"
+            ? NodeCrypto.createHash("sha256")
+                .update(yield* fs.readFile(inRoot(file)))
+                .digest("hex")
+            : "";
+        hash.update(`\0${file}\0${digest}`);
+        return [file, digest] as const;
+      }),
+    ).pipe(Effect.map((digests) => new Map(digests)));
   const sourceFingerprint = Effect.fn("checkChanged.sourceFingerprint")(function* (
     against: string,
   ) {
@@ -1236,23 +1299,23 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       ]),
     );
     // The diff normalizes line endings, but the formatter reads the bytes on disk.
-    yield* addFiles(hash, yield* changedIn(current, against));
-    return hash;
+    const bytes = yield* addFiles(hash, yield* changedIn(current, against));
+    return { hash, tree: current, bytes };
   });
   const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
   const testFingerprint = Effect.fn("checkChanged.testFingerprint")(function* (
     head: string,
     install: string,
   ) {
-    const hash = yield* sourceFingerprint(head);
+    const { hash } = yield* sourceFingerprint(head);
     yield* addFiles(hash, yield* ignoredCheckInputs(root, testInput));
     return hash.update(install).digest("hex");
   });
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
-    const hash = yield* sourceFingerprint(against);
+    const { hash, tree: checked, bytes } = yield* sourceFingerprint(against);
     const source = hash.copy().digest("hex");
     yield* addFiles(hash, yield* ignoredCheckInputs(root));
-    return { source, inputs: hash.update(yield* installed()).digest("hex") };
+    return { source, tree: checked, bytes, inputs: hash.update(yield* installed()).digest("hex") };
   });
   const before = yield* fingerprints(base);
   const key = before.inputs;
@@ -1538,26 +1601,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             {
               files: vitestTests,
               groupSize: 16,
-              uncached: keepProviderEnv
-                ? vitestTests
-                : [
-                    "apps/server/integration/transferBudgetV2.integration.test.ts",
-                    // No input covers the programs these run: one a variable names (CC, ComSpec,
-                    // T3CODE_TEST_HEADLESS_SHELL, T3_TEST_NU_PATH), or the shell tools of the
-                    // machine or its WSL distribution, without which they skip cases.
-                    "apps/desktop/scripts/browser-secret-native.test.mjs",
-                    "apps/desktop/src/wsl/DesktopWslEnvironment.test.ts",
-                    "apps/server/src/cli/uninstall.test.ts",
-                    "apps/server/src/htmlRender/HtmlRender.test.ts",
-                    "packages/shared/src/shell.test.ts",
-                    "scripts/install.test.ts",
-                    // These skip cases without a cgroup this process may join or delegate.
-                    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
-                    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
-                    // These fixtures start their own Vite+ task cache and file tracker.
-                    "scripts/check-changed.test.ts",
-                    "scripts/lib/cached-tests.test.ts",
-                  ],
+              uncached: keepProviderEnv ? vitestTests : uncachedTests,
             },
             groups,
             platform,
@@ -1693,8 +1737,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
   yield* Console.log(`\n${summary.join("\n")}`);
   if (after.source !== before.source) {
+    const changes = yield* changesBetween(before.tree, after.tree);
     yield* Console.log(
-      "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
+      changedWhileCheckingMessage(changedPaths(changes, before.bytes, after.bytes)),
     );
     return false;
   }

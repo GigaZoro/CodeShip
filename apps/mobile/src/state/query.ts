@@ -1,11 +1,14 @@
+import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { t } from "../lib/i18n";
 
 const EMPTY_ASYNC_RESULT_ATOM = Atom.make(AsyncResult.initial<never, never>(false)).pipe(
   Atom.withLabel("mobile-environment-query:empty"),
 );
+const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
 export interface EnvironmentQueryView<A> {
   readonly data: A | null;
@@ -17,8 +20,10 @@ export interface EnvironmentQueryView<A> {
   readonly refresh: () => void;
 }
 
-function formatError(cause: Cause.Cause<unknown>): string {
+export function formatEnvironmentQueryError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
+  if (isEnvironmentRpcUnavailable(error) && error.reason === "timeout")
+    return t("The request timed out.");
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
     : t("The environment request failed.");
@@ -35,7 +40,7 @@ export function useEnvironmentQuery<A, E>(
     // Data may be structurally shared; only a settled success proves a new response.
     successResult: result._tag === "Success" && !result.waiting ? result : null,
     failure: result._tag === "Failure" ? Cause.squash(result.cause) : null,
-    error: result._tag === "Failure" ? formatError(result.cause) : null,
+    error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
     isPending: atom !== null && result.waiting,
     isSuccess: result._tag === "Success",
     refresh,

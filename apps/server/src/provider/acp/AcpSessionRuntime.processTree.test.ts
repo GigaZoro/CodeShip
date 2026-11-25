@@ -11,6 +11,8 @@ import * as Exit from "effect/Exit";
 
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 
+import { serverTempRoot } from "../../serverTemp.testkit.ts";
+
 const identity = (
   pid: number,
   ppid: number,
@@ -84,8 +86,7 @@ describe("terminatePosixOwnedProcessTree", () => {
 
   it.live("sweeps empty t3-acp sibling leases owned by dead pids only", () =>
     Effect.sync(() => {
-      const scratchRoot = NodePath.join(process.cwd(), "tmp");
-      NodeFS.mkdirSync(scratchRoot, { recursive: true });
+      const scratchRoot = serverTempRoot();
       const parent = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-stale-siblings-"));
       // Unlike cgroupfs, temp directories cannot rmdir with control files; inject populated/remove.
       const populatedByPath = new Map<string, "0" | "1">();
@@ -140,8 +141,7 @@ describe("terminatePosixOwnedProcessTree", () => {
       Effect.gen(function* () {
         const lease = AcpSessionRuntime.makeLinuxCgroupController().create();
         if (lease === undefined) return;
-        const scratchRoot = NodePath.join(process.cwd(), "tmp");
-        NodeFS.mkdirSync(scratchRoot, { recursive: true });
+        const scratchRoot = serverTempRoot();
         const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-"));
         const linkedNode = NodePath.join(scratch, "T3.CodeShip AppImage 'quoted'");
         const bareGrok = NodePath.join(scratch, "grok");
@@ -218,8 +218,7 @@ describe("terminatePosixOwnedProcessTree", () => {
   it.skipIf(!isLinuxHost)(
     "contains a packaged-runtime command without requiring cgroup delegation",
     () => {
-      const scratchRoot = NodePath.join(process.cwd(), "tmp");
-      NodeFS.mkdirSync(scratchRoot, { recursive: true });
+      const scratchRoot = serverTempRoot();
       const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-fake-"));
       const leasePath = NodePath.join(scratch, "lease with spaces");
       const outputPath = NodePath.join(scratch, "argv output");

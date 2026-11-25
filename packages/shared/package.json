@@ -595,6 +595,10 @@
       "types": "./src/markdownPipeline.ts",
       "import": "./src/markdownPipeline.ts"
     },
+    "./markdownStandalone": {
+      "types": "./src/markdownStandalone.ts",
+      "import": "./src/markdownStandalone.ts"
+    },
     "./threadFindText": {
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"
@@ -668,7 +672,10 @@
     "ffi-rs": "1.3.2",
     "get-east-asian-width": "^1.6.0",
     "mdast-util-directive": "catalog:",
+    "mdast-util-gfm": "^3.1.0",
+    "mdast-util-math": "3.0.0",
     "mdast-util-to-hast": "^13.2.1",
+    "mdast-util-to-markdown": "^2.1.2",
     "micromark-extension-directive": "catalog:",
     "micromark-util-character": "catalog:",
     "micromark-util-decode-string": "catalog:",

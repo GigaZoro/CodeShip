@@ -90,6 +90,14 @@ capture workspace state without adding commits to the user's branch. A revert mu
 workspace state with the provider conversation. A provider that cannot roll back its conversation
 must reject that operation before changing the filesystem.
 
+Checkpoints, review previews, commit-message staging and `check:changed` copy the user's index to a
+temporary one, so Git keeps its stat cache. Git rereads a file whose cached stat still matches only
+when the file is no older than the index, and a copy is new, so each copy sets its time back to the
+index's, floored to whole seconds. Without that, a same-size edit made in the second Git last wrote
+the index reads as unchanged. A temporary index that holds entries is written with
+`-c core.splitIndex=false -c splitIndex.sharedIndexExpire=never`: shared indexes live in the
+repository, and a split write could remove the one the user's index still names.
+
 Thread settlement is server-owned. The
 [settlement service](../../apps/server/src/orchestration-v2/ThreadSettlementService.ts) evaluates PR
 and inactivity settings without a connected client. A subagent never runs those rules: it settles

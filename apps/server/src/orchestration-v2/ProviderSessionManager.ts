@@ -2872,6 +2872,7 @@ export const layerWithOptions = (
                               threadId: input.threadId,
                               providerThreadId: input.providerThread.id,
                               runId: input.runId,
+                              beforePrompt: true,
                               cause: changingCredentials.has(runtime.instanceId)
                                 ? "Provider sign-in is changing. Try again after it finishes."
                                 : "The provider session was released while the turn started.",

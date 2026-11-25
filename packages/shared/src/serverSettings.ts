@@ -14,6 +14,7 @@ import {
   resolveTextGenerationSelectionEnabled,
   textGeneratorForSelection,
   isProviderTextGenerationCapable,
+  type ModelCapabilities,
   type ModelSelection,
   type ProjectId,
   type ProjectScopedServerSettingKey,
@@ -31,6 +32,7 @@ import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import {
+  acceptedOptionSelections,
   createModelSelection,
   readCustomModelEntries,
   resolveSelectableModel,
@@ -167,7 +169,9 @@ type RunnableAccount = Pick<
 
 type AutoModeAccount = RunnableAccount & {
   readonly driver: ProviderDriverKind;
-  readonly models: ReadonlyArray<SelectableModelOption>;
+  readonly models: ReadonlyArray<
+    SelectableModelOption & { readonly capabilities?: ModelCapabilities | null | undefined }
+  >;
 };
 
 function isAccountEnabledIn(
@@ -254,10 +258,22 @@ function autoModeRun(input: AutoModeInput, lockedDriver: ProviderDriverKind | nu
   return { auto, accounts: runnable.length > 0 ? runnable : enabled };
 }
 
-/** `auto` on `account`, by the id its catalog gives the model when it lists it. */
+/**
+ * `auto` on `account`, by the id its catalog gives the model when it lists it, with the saved
+ * options that model still offers.
+ */
 function autoModeSelection(account: AutoModeAccount, auto: AutoModeModel): ModelSelection {
   const model = resolveSelectableModel(account.driver, auto.model, account.models) ?? auto.model;
-  return { ...createModelSelection(account.instanceId, model, auto.options), autoAccount: true };
+  const descriptors = account.models.find((candidate) => candidate.slug === model)?.capabilities
+    ?.optionDescriptors;
+  return {
+    ...createModelSelection(
+      account.instanceId,
+      model,
+      acceptedOptionSelections(descriptors, auto.options),
+    ),
+    autoAccount: true,
+  };
 }
 
 /**

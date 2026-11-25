@@ -26,6 +26,7 @@ export class EnvironmentRpcUnavailableError extends Schema.TaggedError<Environme
   {
     environmentId: Schema.String,
     message: Schema.String,
+    reason: Schema.optionalKey(Schema.Literal("timeout")),
   },
 ) {}
 
@@ -232,6 +233,15 @@ export const requestGuarded = Effect.fnUntraced(function* <TTag extends Environm
   input: EnvironmentRpcInput<TTag>,
 ) {
   return yield* requestInSession(yield* currentSession(), tag, input);
+});
+
+/** Also names the session that answered, so a caller can tell a reconnect's answer apart. */
+export const requestWithSession = Effect.fnUntraced(function* <
+  TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>,
+>(tag: TTag, input: EnvironmentRpcInput<TTag>) {
+  const session = yield* currentSession();
+  const value = yield* requestInSession(session, tag, input);
+  return { value, session };
 });
 
 export function runStreamGuarded<TTag extends EnvironmentStreamCommandRpcTag>(

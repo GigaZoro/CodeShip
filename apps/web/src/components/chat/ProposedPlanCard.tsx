@@ -14,7 +14,7 @@ import {
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildProposedPlanMarkdownFilename,
-  downloadPlanAsTextFile,
+  downloadMarkdownFile,
   normalizePlanMarkdownForExport,
 } from "../../proposedPlan";
 import ChatMarkdown from "../ChatMarkdown";
@@ -90,7 +90,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   const saveContents = normalizePlanMarkdownForExport(planMarkdown);
 
   const handleDownload = () => {
-    downloadPlanAsTextFile(downloadFilename, saveContents);
+    downloadMarkdownFile(downloadFilename, saveContents);
   };
 
   const handleCopyPlan = () => {

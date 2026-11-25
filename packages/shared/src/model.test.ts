@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
 
 import {
+  acceptedOptionSelections,
   applyClaudePromptEffortPrefix,
   buildExplicitProviderOptionSelectionsFromDescriptors,
   buildProviderOptionSelectionsFromDescriptors,
@@ -15,6 +16,7 @@ import {
   modelSelectionsEqual,
   pickModelSelection,
   withImplicitFastModeDefault,
+  offeredOptionSelections,
 } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
@@ -154,6 +156,103 @@ describe("descriptor helpers", () => {
       instanceId: "codex",
       model: "gpt-5.4",
     });
+  });
+});
+
+describe("offeredOptionSelections", () => {
+  it.each([
+    {
+      name: "keeps the values the model offers",
+      saved: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "fastMode", value: true },
+      ],
+      kept: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "fastMode", value: true },
+      ],
+    },
+    {
+      name: "drops a level the model no longer offers",
+      saved: [{ id: "reasoningEffort", value: "ultra" }],
+      kept: [],
+    },
+    {
+      name: "drops a value of the wrong type",
+      saved: [{ id: "fastMode", value: "true" }],
+      kept: [],
+    },
+    {
+      name: "drops an option the model lacks",
+      saved: [{ id: "serviceTier", value: "fast" }],
+      kept: [],
+    },
+    {
+      name: "keeps the first value the model offers of an option saved twice",
+      saved: [
+        { id: "reasoningEffort", value: "ultra" },
+        { id: "reasoningEffort", value: "high" },
+        { id: "reasoningEffort", value: "xhigh" },
+      ],
+      kept: [{ id: "reasoningEffort", value: "high" }],
+    },
+  ])("$name", ({ saved, kept }) => {
+    expect(offeredOptionSelections(codexCaps.optionDescriptors, saved)).toEqual(kept);
+  });
+
+  it("keeps none while the model's options are unknown", () => {
+    expect(offeredOptionSelections(undefined, [{ id: "reasoningEffort", value: "xhigh" }])).toEqual(
+      [],
+    );
+  });
+
+  it("turns the legacy ultracode effort into its toggle", () => {
+    expect(
+      offeredOptionSelections(
+        [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select",
+            options: [{ id: "xhigh", label: "Extra High" }],
+          },
+          { id: "ultracode", label: "Ultracode", type: "boolean" },
+        ],
+        [{ id: "effort", value: "ultracode" }],
+      ),
+    ).toEqual([
+      { id: "effort", value: "xhigh" },
+      { id: "ultracode", value: true },
+    ]);
+  });
+});
+
+describe("acceptedOptionSelections", () => {
+  it("keeps the first of each option while the model's options are unknown", () => {
+    expect(
+      acceptedOptionSelections(undefined, [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "fast" },
+        { id: "reasoningEffort", value: "high" },
+      ]),
+    ).toEqual([
+      { id: "reasoningEffort", value: "xhigh" },
+      { id: "serviceTier", value: "fast" },
+    ]);
+  });
+
+  it("checks them against the model's options once known", () => {
+    expect(
+      acceptedOptionSelections(codexCaps.optionDescriptors, [
+        { id: "serviceTier", value: "fast" },
+        { id: "fastMode", value: true },
+        { id: "fastMode", value: false },
+      ]),
+    ).toEqual([{ id: "fastMode", value: true }]);
+  });
+
+  it("is undefined without saved options", () => {
+    expect(acceptedOptionSelections(codexCaps.optionDescriptors, undefined)).toBeUndefined();
   });
 });
 

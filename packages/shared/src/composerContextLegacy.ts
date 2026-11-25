@@ -430,8 +430,8 @@ export function upgradeLegacyContextMessage(text: string): UpgradedLegacyContext
         : appended.join(" ");
 
   const records = [...terminals, ...elements, ...previews, ...reviews];
-  // Conversion is atomic: keep the source if any record would be dropped on the wire.
-  if (!isLegacyContextRecords(records)) return { text, records: [] };
+  // Conversion is atomic: keep the source when no record was found or one would be dropped.
+  if (records.length === 0 || !isLegacyContextRecords(records)) return { text, records: [] };
   return {
     text: upgradedText,
     records,

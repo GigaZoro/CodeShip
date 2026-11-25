@@ -258,6 +258,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-accent-foreground: var(--contrast-accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--contrast-muted-foreground);
+  --color-usage-retained-foreground: color-mix(
+    in srgb,
+    var(--contrast-foreground) 75%,
+    var(--contrast-muted-foreground)
+  );
   --color-muted: var(--muted);
   --color-placeholder: var(--contrast-placeholder);
   --color-secondary-label: var(--contrast-secondary-label);

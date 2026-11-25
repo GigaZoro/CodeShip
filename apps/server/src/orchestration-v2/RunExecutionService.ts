@@ -54,6 +54,7 @@ import {
   knownProviderFailureMessage,
   makeProviderFailure,
   makeProviderFailureTurnItem,
+  providerFailureDiagnostic,
 } from "@t3tools/provider-core/server/failure";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -586,6 +587,16 @@ export const RunExecutionServiceV2Error = Schema.Union([
 ]);
 export type RunExecutionServiceV2Error = typeof RunExecutionServiceV2Error.Type;
 
+/** A provider turn its starter prepared: what to send, and what to record about the prompt. */
+export interface RunExecutionServiceV2PreparedTurn {
+  readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
+  readonly accepted: Effect.Effect<void>;
+  /** The provider was not called (`undefined`), or failed with this error. */
+  readonly notAccepted: (
+    error: ProviderAdapter.ProviderAdapterV2Error | undefined,
+  ) => Effect.Effect<void>;
+}
+
 export interface RunExecutionServiceV2StartRootRunInput {
   readonly commandId: CommandId;
   readonly appThread: OrchestrationV2AppThread;
@@ -616,6 +627,13 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly message: ProviderAdapter.ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  /** How a provider turn that failed to start is recorded: the starter knows what it waited through. */
+  readonly startFailure: (error: unknown) => Effect.Effect<OrchestrationV2ProviderFailure>;
+  /** Builds the turn the provider gets, such as context handoffs; a Stop meanwhile ends the start. */
+  readonly prepareTurn?: (
+    turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+    compact: boolean,
+  ) => Effect.Effect<RunExecutionServiceV2PreparedTurn, ProviderAdapter.ProviderAdapterV2Error>;
 }
 
 type RunBaselineInput = Pick<
@@ -1959,7 +1977,9 @@ export const layer: Layer.Layer<
             Effect.ensuring(endPreviewActivity),
             Effect.ensuring(eventSubscription.close),
             Effect.ensuring(settleRootTerminal),
-            Effect.forkDetach,
+            // A fiber interrupted before its first step skips these finalizers, and a start can
+            // fail before the scheduler runs it.
+            Effect.forkDetach({ startImmediately: true }),
           );
 
         // A provider turn is a sign that the session is still alive. Keep
@@ -1971,77 +1991,75 @@ export const layer: Layer.Layer<
             message: "Failed to refresh MCP credential liveness.",
           }),
         );
-        yield* touchMcpCredential;
-        const appContext = (yield* mcpAppModelContext
-          .forThread(input.run.threadId)
-          .pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Failed to read MCP app model context.", { cause }).pipe(
-                Effect.as([]),
-              ),
-            ),
-          )).map((entry) => ({
-          // The item id alone is unique and needs no escaping; server and
-          // tool names are free text that would break the tag Codex wraps
-          // the context in.
-          key: `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
-          text: entry.text,
-        }));
-        const turnInput = {
-          appThread: input.appThread,
-          threadId: input.run.threadId,
-          runId: input.run.id,
-          runOrdinal: input.run.ordinal,
-          providerTurnOrdinal: input.providerTurnOrdinal,
-          ...(input.nativeThreadHasTurns === undefined
-            ? {}
-            : { nativeThreadHasTurns: input.nativeThreadHasTurns }),
-          ...(input.run.restartContinuationOfRunId === undefined
-            ? {}
-            : {
-                restartContinuationOfRunId: input.run.restartContinuationOfRunId,
-              }),
-          attemptId: input.attemptId,
-          rootNodeId: input.rootNode.id,
-          providerThread: input.providerThread,
-          message: input.message,
-          modelSelection: input.modelSelection,
-          runtimePolicy: input.runtimePolicy,
-          ...(appContext.length === 0 ? {} : { appContext }),
-        };
-        // Check after the context read: ingestion can settle the run while
-        // it awaits. A failed ownership read fails the start below.
-        const shouldStart =
-          input.shouldStartProviderTurn === undefined
-            ? Exit.succeed(true)
-            : yield* Effect.exit(input.shouldStartProviderTurn());
-        if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
-          yield* Fiber.interrupt(providerEventFiber);
-          return;
-        }
-
+        // A resume sends no prompt, so its message is never a command.
         const compact =
+          input.resume !== true &&
           input.message.attachments.length === 0 &&
           input.message.text.trim().toLowerCase() === "/compact";
-        const { message: _message, ...resumeInput } = turnInput;
-        const startTurn =
-          input.resume === true
-            ? (input.session.resumeTurn?.({ ...resumeInput, messageId: input.message.messageId }) ??
-              Effect.fail(
-                new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: input.session.driver,
-                  threadId: input.run.threadId,
-                  providerThreadId: input.providerThread.id,
-                  runId: input.run.id,
-                  cause: new ProviderAdapter.ProviderResumeUnsupportedError({
-                    driver: input.session.driver,
-                    providerThreadId: input.providerThread.id,
-                  }),
+        const callProvider = compact ? input.session.compactThread : input.session.startTurn;
+        // Ingestion can settle the run while the context read or the preparation awaits, so ownership
+        // is checked after each. A failed ownership read fails the start below like a failed preparation.
+        const stillOwned = Effect.exit(
+          Effect.suspend(() => input.shouldStartProviderTurn?.() ?? Effect.succeed(true)),
+        );
+        type PreparedCall = RunExecutionServiceV2PreparedTurn & {
+          readonly callProvider: NonNullable<typeof callProvider>;
+        };
+        // The failure is only logged and classified below, so its error type is not kept.
+        const starting = (turn: Exit.Exit<PreparedCall, unknown>, ownershipFailed: boolean) => ({
+          turn,
+          ownershipFailed,
+        });
+        // A Stop before the provider turn starts leaves the consumer nothing to wait for. One during
+        // the start does not: the provider may already hold the prompt, and its events settle the run.
+        const start = yield* Effect.gen(function* () {
+          yield* touchMcpCredential;
+          const appContext = (yield* mcpAppModelContext
+            .forThread(input.run.threadId)
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Failed to read MCP app model context.", { cause }).pipe(
+                  Effect.as([]),
+                ),
+              ),
+            )).map((entry) => ({
+            // The item id alone is unique and needs no escaping; server and
+            // tool names are free text that would break the tag Codex wraps
+            // the context in.
+            key: `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
+            text: entry.text,
+          }));
+          const turnInput = {
+            appThread: input.appThread,
+            threadId: input.run.threadId,
+            runId: input.run.id,
+            runOrdinal: input.run.ordinal,
+            providerTurnOrdinal: input.providerTurnOrdinal,
+            ...(input.nativeThreadHasTurns === undefined
+              ? {}
+              : { nativeThreadHasTurns: input.nativeThreadHasTurns }),
+            ...(input.run.restartContinuationOfRunId === undefined
+              ? {}
+              : {
+                  restartContinuationOfRunId: input.run.restartContinuationOfRunId,
                 }),
-              ))
-            : compact
-              ? (input.session.compactThread?.(turnInput) ??
-                Effect.fail(
+            ...(input.resume === true ? { resume: true as const } : {}),
+            attemptId: input.attemptId,
+            rootNodeId: input.rootNode.id,
+            providerThread: input.providerThread,
+            message: input.message,
+            modelSelection: input.modelSelection,
+            runtimePolicy: input.runtimePolicy,
+            ...(appContext.length === 0 ? {} : { appContext }),
+          };
+          const ownedBeforePrepare = yield* stillOwned;
+          if (Exit.isFailure(ownedBeforePrepare)) {
+            return starting(Exit.failCause(ownedBeforePrepare.cause), true);
+          }
+          if (!ownedBeforePrepare.value) return undefined;
+          const prepared = yield* Effect.exit(
+            callProvider === undefined
+              ? Effect.fail(
                   new ProviderAdapter.ProviderAdapterTurnStartError({
                     driver: input.session.driver,
                     threadId: input.run.threadId,
@@ -2052,9 +2070,50 @@ export const layer: Layer.Layer<
                       providerThreadId: input.providerThread.id,
                     }),
                   }),
-                ))
-              : input.session.startTurn(turnInput);
-        yield* Effect.andThen(shouldStart, startTurn).pipe(
+                )
+              : (
+                  input.prepareTurn?.(turnInput, compact) ??
+                  Effect.succeed<RunExecutionServiceV2PreparedTurn>({
+                    turnInput,
+                    accepted: Effect.void,
+                    notAccepted: () => Effect.void,
+                  })
+                ).pipe(Effect.map((turn) => ({ ...turn, callProvider }))),
+          );
+          if (Exit.isFailure(prepared)) return starting(prepared, false);
+          const owned = yield* stillOwned;
+          if (Exit.isSuccess(owned) && owned.value) return starting(prepared, false);
+          yield* prepared.value.notAccepted(undefined);
+          return Exit.isFailure(owned) ? starting(Exit.failCause(owned.cause), true) : undefined;
+        }).pipe(Effect.onInterrupt(() => Fiber.interrupt(providerEventFiber)));
+        if (start === undefined) {
+          yield* Fiber.interrupt(providerEventFiber);
+          return;
+        }
+
+        // Preparation drops the resume when it adds context, which needs a prompt to carry it.
+        const callTurn = (turn: PreparedCall) => {
+          if (turn.turnInput.resume !== true) return turn.callProvider(turn.turnInput);
+          const { message, resume: _resume, ...resumeInput } = turn.turnInput;
+          return (
+            input.session.resumeTurn?.({ ...resumeInput, messageId: message.messageId }) ??
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: input.session.driver,
+                threadId: input.run.threadId,
+                providerThreadId: input.providerThread.id,
+                runId: input.run.id,
+                cause: new ProviderAdapter.ProviderResumeUnsupportedError({
+                  driver: input.session.driver,
+                  providerThreadId: input.providerThread.id,
+                }),
+              }),
+            )
+          );
+        };
+        yield* Effect.flatMap(start.turn, (turn) =>
+          callTurn(turn).pipe(Effect.tapError(turn.notAccepted), Effect.andThen(turn.accepted)),
+        ).pipe(
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>
@@ -2066,38 +2125,39 @@ export const layer: Layer.Layer<
           Effect.catchCause((cause) =>
             Effect.logError("orchestration V2 provider turn start failed", {
               runId: input.run.id,
-              cause,
+              providerInstanceId: input.run.providerInstanceId,
+              cause: providerFailureDiagnostic(cause),
             }).pipe(
               Effect.andThen(Fiber.interrupt(providerEventFiber)),
-              Effect.andThen(Ref.get(latestProviderThread)),
-              Effect.flatMap((providerThread) =>
-                Ref.get(latestTurnItemOrdinal).pipe(
-                  Effect.flatMap((latestItemOrdinal) =>
-                    Ref.get(openRunOwnedSubagents).pipe(
-                      Effect.flatMap((openSubagents) =>
-                        writeFinalRunEvents({
-                          run: input.run,
-                          rootNode: input.rootNode,
-                          checkpointScope: input.checkpointScope,
-                          providerThread,
-                          attempt: input.attempt,
-                          writeIfRunCurrent: {
-                            activeAttemptId: input.attempt.id,
-                            expectedStatus: "running",
-                          },
-                          openRunOwnedSubagents: openSubagents,
-                          terminal: makeFailedTerminalEvent(
-                            makeProviderFailure({
-                              cause: Cause.squash(cause),
-                              class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
-                            }),
-                            latestItemOrdinal + 1,
-                          ),
-                          failureItemPersisted: false,
-                          refreshAfterTurn,
-                        }),
-                      ),
-                    ),
+              Effect.andThen(
+                start.ownershipFailed
+                  ? Effect.succeed(
+                      makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
+                    )
+                  : input.startFailure(Cause.squash(cause)),
+              ),
+              Effect.flatMap((failure) =>
+                Effect.all([
+                  Ref.get(latestProviderThread),
+                  Ref.get(latestTurnItemOrdinal),
+                  Ref.get(openRunOwnedSubagents),
+                ]).pipe(
+                  Effect.flatMap(([providerThread, latestItemOrdinal, openSubagents]) =>
+                    writeFinalRunEvents({
+                      run: input.run,
+                      rootNode: input.rootNode,
+                      checkpointScope: input.checkpointScope,
+                      providerThread,
+                      attempt: input.attempt,
+                      writeIfRunCurrent: {
+                        activeAttemptId: input.attempt.id,
+                        expectedStatus: "running",
+                      },
+                      openRunOwnedSubagents: openSubagents,
+                      terminal: makeFailedTerminalEvent(failure, latestItemOrdinal + 1),
+                      failureItemPersisted: false,
+                      refreshAfterTurn,
+                    }),
                   ),
                 ),
               ),

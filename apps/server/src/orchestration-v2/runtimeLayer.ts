@@ -6,6 +6,7 @@ import * as NetworkRecoveryWorker from "./NetworkRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { layerAwakeSinceWake } from "@t3tools/shared/AwakeTime";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
@@ -193,6 +194,7 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerRunExecutionServiceProvided,
       layerRuntimePolicyProvided,
       TurnItemPositionStore.layer,
+      layerAwakeSinceWake,
     ),
   ),
 );

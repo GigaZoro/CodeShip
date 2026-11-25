@@ -729,7 +729,7 @@ function DiagnosticsSettingsBody() {
     environmentId === null ? null : environmentSession.sessionStateAtom(environmentId),
   );
   const diagnosticsAccess = resolveUsageAccess({
-    connectionPhase: environment?.connection.phase ?? "available",
+    connection: environment?.connection ?? { phase: "available", error: null },
     session: session.data,
     hasSessionError: session.error !== null,
   });

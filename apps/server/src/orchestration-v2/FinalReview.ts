@@ -10,6 +10,7 @@ import {
   type ServerSettings as ServerSettingsValue,
   type ThreadId,
 } from "@t3tools/contracts";
+import { autoModePick } from "@t3tools/shared/serverSettings";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -25,9 +26,10 @@ const MAX_LISTED_FILES = 30;
 type FinalReviewSettings = Pick<
   ServerSettingsValue,
   "finalReviewByDefault" | "finalReviewModelSelections" | "finalReviewInstructions"
->;
+> &
+  Parameters<typeof autoModePick>[0]["settings"];
 
-/** How the coordinator names a reviewer for `delegate_task`; Auto rides on the settings match. */
+/** The `delegate_task` target that runs a reviewer on the account and model it names. */
 function reviewerTarget(selection: ModelSelection) {
   return {
     providerInstanceId: selection.instanceId,
@@ -90,11 +92,20 @@ export function finalReviewCommand(input: {
 
   const providerOf = (selection: ModelSelection) =>
     input.providers.find((provider) => provider.instanceId === selection.instanceId);
-  const reviewers = input.settings.finalReviewModelSelections.map(
-    (selection) =>
-      `- ${reviewerLabel(selection, providerOf(selection))}: ${JSON.stringify(
-        reviewerTarget(selection),
-      )}`,
+  // A reviewer set to Auto runs where Auto mode starts a new chat, and on its saved model while
+  // Auto mode cannot run, as the Settings picker shows it.
+  const autoRuns =
+    autoModePick({
+      settings: input.settings,
+      accounts: input.providers,
+      projectId: thread.projectId,
+    }) !== null;
+  const reviewers = input.settings.finalReviewModelSelections.map((selection) =>
+    selection.autoAccount === true && autoRuns
+      ? `- Auto mode: ${JSON.stringify({ auto: true })}`
+      : `- ${reviewerLabel(selection, providerOf(selection))}: ${JSON.stringify({
+          target: reviewerTarget(selection),
+        })}`,
   );
   const files = checkpoint.files.map((file) => file.path);
   const listedFiles =
@@ -110,7 +121,7 @@ export function finalReviewCommand(input: {
   const text = [
     "Final review is on for this thread. Before you finish, have each reviewer below check the changes from your last turn.",
     "",
-    `1. In this turn, call \`delegate_task\` once per reviewer with \`role: "review"\`, \`mode: "async"\`, the reviewer's \`target\`, and the brief below as \`task\`. Then end your turn.`,
+    `1. In this turn, call \`delegate_task\` once per reviewer with \`role: "review"\`, \`mode: "async"\`, the reviewer's arguments below, and the brief below as \`task\`. Then end your turn.`,
     "2. Reports arrive as task results. When every reviewer has reported, check each finding against the code, fix the real ones, run the checks your fixes affect, and say which findings you dismissed and why. Do not start another final review.",
     "",
     "Reviewers:",

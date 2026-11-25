@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type ThreadId,
   type EnvironmentStartup,
   type OrchestrationV2RestartHold,
   OrchestrationV2RestartHoldError,
@@ -35,7 +36,14 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
+import { threadDetailOf } from "../monitoring/aggregate.ts";
 import {
+  followMonitoringChanges,
+  MONITORING_REQUEST_TIMEOUT_MS,
+  monitoringThreadPresentation,
+} from "../monitoring/atoms.ts";
+import {
+  connectedEnvironmentSessionAtom,
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentQueryAtomFamily,
@@ -58,6 +66,7 @@ import {
   request,
   requestGuarded,
   requestInSession,
+  requestWithSession,
   runStream,
   runStreamInSession,
   subscribe,
@@ -1559,23 +1568,88 @@ export function createServerEnvironmentAtoms<R, E>(
         : AsyncResult.success(result.value, result);
     }).pipe(Atom.withLabel(`environment-data:server:welcome:${environmentId}`)),
   );
-  // A settled chat changes the analyses, so both queries follow this stream instead of polling.
+  // A settled chat changes the analyses, so the queries follow this stream instead of polling.
   const monitoringChanges = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:monitoring:changes",
     tag: WS_METHODS.monitoringSubscribeChanges,
   });
-  const monitoringOverview = createEnvironmentRpcQueryAtomFamily(runtime, {
-    label: "environment-data:server:monitoring:overview",
-    tag: WS_METHODS.monitoringOverview,
+  const watchMonitoringQuery = <I, A extends object | null, E>(
+    query: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: I;
+    }) => Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+    threadIdOf?: (input: I) => ThreadId,
+  ) => {
+    const watched = Atom.family((key: string) => {
+      const [environmentId, input] = JSON.parse(key) as [EnvironmentId, I];
+      return followMonitoringChanges(
+        query({ environmentId, input }),
+        monitoringChanges({ environmentId, input: {} }),
+        threadIdOf?.(input),
+      );
+    });
+    return ({
+      environmentId,
+      input,
+    }: {
+      readonly environmentId: EnvironmentId;
+      readonly input: I;
+    }) => watched(JSON.stringify([environmentId, input]));
+  };
+  const monitoringQueryOptions = {
     staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
-  });
-  const monitoringThread = createEnvironmentRpcQueryAtomFamily(runtime, {
+    requestTimeoutMs: MONITORING_REQUEST_TIMEOUT_MS,
+  };
+  const monitoringOverview = watchMonitoringQuery(
+    createEnvironmentRpcQueryAtomFamily(runtime, {
+      ...monitoringQueryOptions,
+      label: "environment-data:server:monitoring:overview",
+      tag: WS_METHODS.monitoringOverview,
+    }),
+  );
+  const monitoringChats = watchMonitoringQuery(
+    createEnvironmentRpcQueryAtomFamily(runtime, {
+      ...monitoringQueryOptions,
+      label: "environment-data:server:monitoring:chats",
+      tag: WS_METHODS.monitoringChats,
+    }),
+  );
+  const sessionTokens = new WeakMap<RpcSession, symbol>();
+  const sessionToken = (session: RpcSession) => {
+    const existing = sessionTokens.get(session);
+    if (existing !== undefined) return existing;
+    const token = Symbol();
+    sessionTokens.set(session, token);
+    return token;
+  };
+  const threadQuery = createEnvironmentQueryAtomFamily(runtime, {
+    ...monitoringQueryOptions,
     label: "environment-data:server:monitoring:thread",
-    tag: WS_METHODS.monitoringThread,
-    staleTimeMs: 60_000,
-    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
+    execute: (input: EnvironmentRpcInput<typeof WS_METHODS.monitoringThread>) =>
+      requestWithSession(WS_METHODS.monitoringThread, { ...input, withRevision: true }).pipe(
+        Effect.map(({ value, session }) => ({
+          revision: value !== null && "revision" in value ? value.revision : undefined,
+          serverEpoch: value !== null && "serverEpoch" in value ? value.serverEpoch : undefined,
+          detail: threadDetailOf(value),
+          sessionToken: sessionToken(session),
+        })),
+      ),
   });
+  const monitoringThread = watchMonitoringQuery(threadQuery, ({ threadId }) => threadId);
+  const monitoringSessionToken = Atom.family((environmentId: EnvironmentId) =>
+    Atom.map(connectedEnvironmentSessionAtom(runtime, environmentId), (session) =>
+      session === null ? null : sessionToken(session),
+    ),
+  );
+  const monitoringThreadPresentationFor = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+    return monitoringThreadPresentation(
+      monitoringThread({ environmentId, input: { threadId } }),
+      monitoringSessionToken(environmentId),
+    );
+  });
+  const monitoringThreadView = (environmentId: EnvironmentId, threadId: ThreadId) =>
+    monitoringThreadPresentationFor(JSON.stringify([environmentId, threadId]));
   // The server lifts a hold when a sign-in changes, so a switch shows here within the minute.
   const usageHolds = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:provider:usage-holds",
@@ -1638,7 +1712,9 @@ export function createServerEnvironmentAtoms<R, E>(
   return {
     monitoringChanges,
     monitoringOverview,
+    monitoringChats,
     monitoringThread,
+    monitoringThreadView,
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
@@ -1961,7 +2037,26 @@ export function createServerEnvironmentAtoms<R, E>(
               Effect.catch((error) =>
                 Effect.logWarning("Could not refresh slow usage sources.").pipe(
                   Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
-                  Effect.as(summary),
+                  Effect.as({
+                    ...summary,
+                    sources: summary.sources.map(({ refreshing, ...source }) =>
+                      refreshing !== true
+                        ? source
+                        : {
+                            ...source,
+                            status:
+                              source.status === "failed"
+                                ? ("failed" as const)
+                                : ("partial" as const),
+                            message: [
+                              t("Could not refresh this usage source. Showing its last values."),
+                              source.message,
+                            ]
+                              .filter(Boolean)
+                              .join(" "),
+                          },
+                    ),
+                  }),
                 ),
               ),
             ),

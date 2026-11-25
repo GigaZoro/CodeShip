@@ -80,6 +80,13 @@ export function autoModePromptBlock(brief: string): string {
   return `<${AUTO_MODE_CONTEXT_KEY}>\n${brief}\n</${AUTO_MODE_CONTEXT_KEY}>`;
 }
 
+/** A provider's Settings primary on an account with room to run it as a `delegate_task` reviewer. */
+interface AutoReviewer {
+  readonly providerInstanceId: string;
+  readonly model: string;
+  readonly options?: ReadonlyArray<ProviderOptionSelection>;
+}
+
 /** The brief's body, without its `t3_auto_mode` tag. */
 export function autoCoordinatorInstructions(input: {
   readonly driver: ProviderDriverKind;
@@ -88,11 +95,10 @@ export function autoCoordinatorInstructions(input: {
     readonly model: string;
     readonly options?: ReadonlyArray<ProviderOptionSelection>;
   } | null;
-  readonly otherPrimary?: {
-    readonly providerInstanceId: string;
-    readonly model: string;
-    readonly options?: ReadonlyArray<ProviderOptionSelection>;
-  };
+  /** The other provider's reviewer, absent while none of its accounts can run its primary. */
+  readonly otherReviewer?: AutoReviewer;
+  /** This provider's reviewer, which takes the independent review while the other provider cannot. */
+  readonly ownReviewer?: AutoReviewer;
   readonly otherProviders?: ReadonlyArray<{
     readonly providerInstanceId: string;
     readonly displayName: string;
@@ -178,10 +184,20 @@ export function autoCoordinatorInstructions(input: {
   }
   const ownPrimary = input.models.find((model) => model.slug === input.primary!.model);
   const primary = `${ownPrimary?.name ?? input.primary.model}${(input.primary.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
+  // Both providers review while both can run; with one, the independent review stays on that one.
+  const target = (reviewer: AutoReviewer) =>
+    `\`${JSON.stringify({ model: reviewer.model, options: Object.fromEntries((reviewer.options ?? []).map(({ id, value }) => [id, value])), providerInstanceId: reviewer.providerInstanceId })}\``;
+  const alone = "your own review is the only one: say so in your report.";
+  const otherFallback =
+    input.ownReviewer === undefined
+      ? alone
+      : `take the review from your own provider's Settings primary instead, target ${target(input.ownReviewer)}; if neither can run, ${alone}`;
   const review =
-    input.otherPrimary === undefined
-      ? " The other provider's Settings primary is unavailable. Report the independent review as incomplete; do not substitute an implementation model."
-      : ` Also obtain an independent review from the other provider's Settings primary: \`delegate_task\` role "review", target \`${JSON.stringify({ ...input.otherPrimary, options: Object.fromEntries((input.otherPrimary.options ?? []).map(({ id, value }) => [id, value])) })}\`. Preserve its model and options; if it cannot run, report the independent review as incomplete.`;
+    input.otherReviewer !== undefined
+      ? ` Also obtain an independent review from the other provider's Settings primary: \`delegate_task\` role "review", target ${target(input.otherReviewer)}. Preserve its model and options. If it cannot run, ${otherFallback}`
+      : input.ownReviewer !== undefined
+        ? ` The other provider's Settings primary cannot run now, so take the independent review from your own provider's Settings primary: \`delegate_task\` role "review", target ${target(input.ownReviewer)}. Preserve its model and options. If it cannot run, ${alone}`
+        : ` No account can run an independent reviewer now, so ${alone}`;
   return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from either Claude or Codex. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
 ${sections.join("\n")}
 - After implementation, review the diff yourself on your Settings primary, ${primary}.${review}

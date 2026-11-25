@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Tracer from "effect/Tracer";
 
+import { nodePayloadSql } from "../../orchestration-v2/NodePayloadColumns.ts";
 import { MigrationProgress } from "../MigrationProgress.ts";
 import { seedLegacyCodeShipDatabase } from "../codeShipMigration.testkit.ts";
 import { runMigrations } from "../Migrations.ts";
@@ -118,7 +119,11 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
       [22, "ScheduledTaskDescriptions"],
       [23, "TurnItemPayloadWithoutColumnKeys"],
       [24, "CommandRunShell"],
-      [25, "PayloadIndexesJsonValid"],
+      [25, "MonitoringSettledThreadIndex"],
+      [26, "MonitoringAnalysesWithoutProject"],
+      [27, "MonitoringAnalysesSettleStamp"],
+      [28, "MonitoringStoredDetailsAndRetries"],
+      [29, "PayloadIndexesJsonValid"],
     ]);
     assert.deepStrictEqual(yield* eventPayloadIds, {
       "event:first": ROOT,
@@ -215,9 +220,10 @@ layer("014_CompactOrchestrationIds", (it) => {
       `;
       yield* sql`
         INSERT INTO orchestration_v2_projection_nodes (
-          node_id, thread_id, run_id, root_node_id, kind, status, payload_json
+          node_id, thread_id, run_id, root_node_id, kind, status, provider_thread_id, payload_json
         ) VALUES (
           ${LEGACY_ROOT}, ${THREAD}, ${LEGACY_RUN}, ${LEGACY_ROOT}, 'root', 'running',
+          'provider-thread:a%3Ab',
           ${JSON.stringify({ id: LEGACY_ROOT, runId: LEGACY_RUN, providerThreadId: "provider-thread:a%3Ab" })}
         )
       `;
@@ -252,15 +258,22 @@ layer("014_CompactOrchestrationIds", (it) => {
         readonly run_id: string;
         readonly root_node_id: string;
         readonly payload_json: string;
-      }>`SELECT node_id, run_id, root_node_id, payload_json FROM orchestration_v2_projection_nodes`;
+      }>`
+        SELECT node_id, run_id, root_node_id, ${sql.literal(nodePayloadSql())} AS payload_json
+        FROM orchestration_v2_projection_nodes
+      `;
       assert.strictEqual(nodes[0]?.node_id, ROOT);
       assert.strictEqual(nodes[0]?.run_id, RUN);
       assert.strictEqual(nodes[0]?.root_node_id, ROOT);
-      assert.deepStrictEqual(JSON.parse(nodes[0]!.payload_json), {
-        id: ROOT,
-        runId: RUN,
-        providerThreadId: "provider-thread:a%3Ab",
-      });
+      const { id, runId, providerThreadId } = JSON.parse(nodes[0]!.payload_json);
+      assert.deepStrictEqual(
+        { id, runId, providerThreadId },
+        {
+          id: ROOT,
+          runId: RUN,
+          providerThreadId: "provider-thread:a%3Ab",
+        },
+      );
     }),
   );
 });

@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { t, tn } from "~/i18n";
+import { Button } from "../ui/button";
+import { RefreshIcon } from "../ui/refresh-icon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function MonitoringSection({
@@ -68,5 +71,72 @@ export function MonitoringTruncated({
         <span className="block max-w-96 break-words">{text}</span>
       </TooltipPopup>
     </Tooltip>
+  );
+}
+
+export function MonitoringOverviewNotices({
+  stale,
+  pending,
+  failed,
+  children,
+}: {
+  readonly stale: boolean;
+  readonly pending: number;
+  readonly failed: number;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <div className="flex h-24 flex-col gap-2 overflow-y-auto text-sm text-muted-foreground">
+      {stale ? <p>{t("Showing previous monitoring results.")}</p> : null}
+      <div role="status" className="flex flex-col gap-2">
+        {children}
+      </div>
+      {pending > 0 ? (
+        <p>
+          {tn(
+            pending,
+            "{count} settled chat is still being analyzed.",
+            "{count} settled chats are still being analyzed.",
+          )}
+        </p>
+      ) : null}
+      {failed > 0 ? (
+        <p>
+          {tn(
+            failed,
+            "{count} chat could not be analyzed.",
+            "{count} chats could not be analyzed.",
+          )}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export function MonitoringRefreshButton({
+  refreshing,
+  timedOut = false,
+  onRefresh,
+}: {
+  readonly refreshing: boolean;
+  readonly timedOut?: boolean;
+  readonly onRefresh: () => void;
+}) {
+  return (
+    <>
+      <Button
+        onClick={refreshing ? undefined : onRefresh}
+        aria-label={t("Refresh monitoring")}
+        aria-busy={refreshing}
+        aria-disabled={refreshing}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <RefreshIcon size="sm" refreshing={refreshing} />
+      </Button>
+      <span role="status" className={timedOut ? "text-xs text-muted-foreground" : "sr-only"}>
+        {timedOut ? t("The request timed out.") : refreshing ? t("Refreshing…") : ""}
+      </span>
+    </>
   );
 }

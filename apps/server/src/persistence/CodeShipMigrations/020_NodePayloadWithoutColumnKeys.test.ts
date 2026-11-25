@@ -47,9 +47,17 @@ it.effect("020 removes the keys the node columns hold, in steps, and reads put t
         )
       `;
     }
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_nodes (
+        node_id, thread_id, root_node_id, kind, status, payload_json
+      ) VALUES ('node:malformed', 'thread:1', 'node:1', 'tool_call', 'running', '{not json')
+    `;
     yield* runMigrations();
     const stored = yield* sql<{ readonly payload_json: string }>`
       SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id = 'node:777'
+    `;
+    const malformed = yield* sql<{ readonly payload_json: string }>`
+      SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id = 'node:malformed'
     `;
     const rebuilt = yield* sql<{ readonly payload_json: string }>`
       SELECT ${sql.literal(nodePayloadSql())} AS payload_json
@@ -57,7 +65,7 @@ it.effect("020 removes the keys the node columns hold, in steps, and reads put t
     `;
     const left = yield* sql<{ readonly n: number }>`
       SELECT count(*) AS n FROM orchestration_v2_projection_nodes
-      WHERE json_type(payload_json, '$.threadId') IS NOT NULL
+      WHERE json_valid(payload_json) AND json_type(payload_json, '$.threadId') IS NOT NULL
     `;
 
     assert.deepStrictEqual(JSON.parse(stored[0]!.payload_json), {
@@ -68,5 +76,6 @@ it.effect("020 removes the keys the node columns hold, in steps, and reads put t
     });
     assert.deepStrictEqual(JSON.parse(rebuilt[0]!.payload_json), node(777));
     assert.strictEqual(left[0]!.n, 0);
+    assert.strictEqual(malformed[0]!.payload_json, "{not json");
   }).pipe(Effect.provide(freshDatabase)),
 );

@@ -135,7 +135,11 @@ import CodeShipMigration0021 from "./CodeShipMigrations/021_CommandRunProcessIde
 import CodeShipMigration0022 from "./CodeShipMigrations/022_ScheduledTaskDescriptions.ts";
 import CodeShipMigration0023 from "./CodeShipMigrations/023_TurnItemPayloadWithoutColumnKeys.ts";
 import CodeShipMigration0024 from "./CodeShipMigrations/024_CommandRunShell.ts";
-import CodeShipMigration0025 from "./CodeShipMigrations/025_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0025 from "./CodeShipMigrations/025_MonitoringSettledThreadIndex.ts";
+import CodeShipMigration0026 from "./CodeShipMigrations/026_MonitoringAnalysesWithoutProject.ts";
+import CodeShipMigration0027 from "./CodeShipMigrations/027_MonitoringAnalysesSettleStamp.ts";
+import CodeShipMigration0028 from "./CodeShipMigrations/028_MonitoringStoredDetailsAndRetries.ts";
+import CodeShipMigration0029 from "./CodeShipMigrations/029_PayloadIndexesJsonValid.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -260,7 +264,11 @@ const codeShipMigrationEntries = [
   [22, "ScheduledTaskDescriptions", CodeShipMigration0022],
   [23, "TurnItemPayloadWithoutColumnKeys", CodeShipMigration0023],
   [24, "CommandRunShell", CodeShipMigration0024],
-  [25, "PayloadIndexesJsonValid", CodeShipMigration0025],
+  [25, "MonitoringSettledThreadIndex", CodeShipMigration0025],
+  [26, "MonitoringAnalysesWithoutProject", CodeShipMigration0026],
+  [27, "MonitoringAnalysesSettleStamp", CodeShipMigration0027],
+  [28, "MonitoringStoredDetailsAndRetries", CodeShipMigration0028],
+  [29, "PayloadIndexesJsonValid", CodeShipMigration0029],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

@@ -1,3 +1,81 @@
+## 2026-11-24 — Finished worktrees are released again
+
+- Storage cleanup kept every finished worktree whose Git metadata had a `refs` folder, which Git 2.56 creates for each worktree, with "Worktree metadata requires its owner". Those worktrees are released again unless they hold refs of their own, and the reason now names the metadata it found.
+
+## 2026-11-24 — A delegated task in plan mode returns its plan
+
+- A delegated task that ran in plan mode and ended with a proposed plan reported "Child task completed without an assistant result" to the chat that started it. Its result is now the proposed plan, also when the task runs on a linked machine.
+
+## 2026-11-24 — Usage stays visible while it updates
+
+- Usage keeps the last complete totals while a new period or filter loads. Background refreshes leave current figures at full opacity.
+- Usage periods advance automatically. Limit countdowns and pace marks update on the Usage screen and sidebar, and account bars keep their order across resets.
+- When an environment's scan fails, Usage keeps the figures every selected environment last shared and names their exact time range, on web and mobile. An environment that loses access never brings its old figures back, and a failed scan's notice names the period it was for.
+- A Mac with a saved Cursor login but no Cursor app no longer counts as reading the Cursor account, so other machines keep their **Enable Cursor usage** prompt. On mobile, an account's details count a reset credit's expiry down each minute.
+
+## 2026-11-24 — Commands wait for a saturated CPU
+
+- `t3_command_run` now also holds a new command while the machine's CPUs are saturated (busy at or over 0.95 per core), as it already does when memory is short. Before, 18 commands, mostly test suites and pushes, could start together on a 12-core machine, run many times slower and fail their guarded timeouts. A held command waits in the same queue, `task_status` says it is waiting for CPU, its time limit counts from when it starts, and it is never refused. When none of this server's commands is running, the first queued command starts whatever the reading, so a machine loaded by other programs still runs commands.
+
+## 2026-11-24 — Shell tests run the Mac's real bash in check:changed
+
+- On macOS, `vp run check:changed` now runs the setup-script and desktop-release signing tests outside Vite+'s file tracker, which swaps every `bash` and `sh` for its bundled Oils shell. They no longer fail with `osh usage error: got invalid flag '--noprofile'`, and a new test that starts bash with bash's own flags must be listed the same way. No change to the app.
+
+## 2026-11-24 — Release a finished worktree
+
+- `t3 thread release-worktree` now accepts the documented command with `--save-ignored` omitted. Ignored files keep the checkout in place by default.
+
+## 2026-11-24 — Auto reviews on one provider when the other cannot run
+
+- Auto mode asks for an independent review from the other provider only while one of its accounts can run that provider's Auto model. When none can (out of usage, signed out or turned off), or that reviewer fails to start, the independent review runs on the coordinator's own provider's Auto model in a fresh chat instead of being reported as incomplete. When no account can run a reviewer at all, the coordinator's own review is the only one, and its report says so.
+- A delegated task whose target names an account, provider, model or options now runs exactly as named. Before, a child of an Auto chat could be moved to another account or to Auto's other provider, with Auto's saved options in place of the named ones, so a reviewer named on Claude while Codex was out of usage went to Codex and failed. A child that names nothing still follows its Auto parent, and `delegate_task` takes `auto: true` to start a child on Auto mode's pick; Final review asks for a reviewer set to Auto that way while Auto mode can run. Options a child inherits, also from a model saved by an alias, and Auto mode's saved options drop values the model no longer offers.
+- A delegated task whose role model in Settings is set to Auto starts where Auto mode starts a new chat, and on its saved model while Auto mode cannot run. Before, it started on the saved account, or on the parent's model when that account was signed out.
+- A delegated task in another project's worktree uses that project's accounts and Auto settings, so an account turned off there no longer takes it.
+- A task an Auto chat hands to a linked machine without naming a model stays Auto there, on that machine's Auto settings, and runs on the chat's model while Auto mode is off there. A request for Auto mode while it is off is now refused with the code `auto_mode_unavailable`.
+- A review target uses the model id the account lists and keeps only the saved options that model still offers, so a stale effort level or a primary saved by its display name no longer stops the reviewer from starting. A primary the catalog now marks legacy still counts as a reviewer.
+
+## 2026-11-24 — check:changed leaves a split index intact
+
+- With `core.splitIndex` on, the copy of git's index that `vp run check:changed` hashes the working tree through could write a new shared index into the repository and remove the one the repository's own index still used, leaving that index unreadable. The copy no longer writes or removes shared indexes. No change to the app.
+
+## 2026-11-24 — A landing waits through a Mac's sleep
+
+- A landing waiting in main's landing queue ends its wait when origin stays unreachable for 10 minutes, and a landing giving its turn back tries for as long. On macOS that limit counted the time the Mac slept, so a landing left on a closed laptop gave up during a brief wake without a network, or left main's turn held until its lease expired. It now counts only the time the machine is awake. No change to the app.
+
+## 2026-11-24 — Library upgrade instructions corrected
+
+- The weekly library upgrade's instructions now say that its landing step takes only a full commit id. No change to the app.
+
+## 2026-11-24 — Restart tests of delegated runs no longer hang
+
+- Maintainers: the restart tests of delegated runs drive the server until the delegated run ends, so they pass whichever restarted run starts first instead of hanging about one run in five.
+
+## 2026-11-24 — New projects keep the default model they are given
+
+- A project created with a default model, by an agent's `t3_project_create` or through the server's project API, now starts with that model instead of with none.
+- `t3_project_create` with only a title, which makes a new repository, now takes a default model too.
+
+## 2026-11-24 — Chats queued during a sleep start after the computer wakes
+
+- A queued chat that fails to start in the first two minutes after the computer wakes, while the network and sign-ins come back, now starts again on its own, as it does after a network error (**Retry threads after network errors**, on by default), instead of failing with "The provider could not start this turn". The same applies when the computer sleeps or the server stalls while a provider starts the turn, when that start loses its connection, and when Claude's MCP tools do not finish registering right after a wake. This covers every provider while its session opens; once the message is on its way, only a start that CodeShip knows failed before the message was sent starts again, because otherwise it cannot tell whether the message arrived and will not risk sending it twice. Failures the provider explains, such as a needed sign-in, an account the provider turns away, a usage limit or a setup error, still stop the chat, even right after a wake.
+- Several Claude chats on one account that start together after a wake no longer race to renew an expired MCP sign-in, which could sign that MCP server out. Each waits for the renewal in progress, and a start that outlasts the wait starts again on its own. A renewal that fails is tried again before the chat starts, up to three times a minute apart; after that the chat starts anyway, so an MCP server that stays down does not hold every chat.
+- A start failure whose message is generic keeps the types of its underlying errors with the run, without their text, so it can be diagnosed after the logs rotate. The server log records the redacted cause of every start failure.
+- A chat whose provider turn fails as soon as it starts, or that is stopped before its provider turn starts, including while CodeShip prepares context from other chats, no longer leaves its browser tab marked as in use by the agent, or keeps collecting that provider session's events, until the server restarts.
+
+## 2026-11-24 — Name the files that changed during check:changed
+
+- When files change while `vp run check:changed` runs, its failure now lists the changed paths, up to 20, so the writer can be found without another full run.
+- Tests that build fake binaries or a throwaway Knip project now do it in gitignored folders, where check:changed does not count them as changed files, and the `t3code/no-checkout-temp-dir-in-tests` lint rule stops tests from making temp folders elsewhere in the checkout.
+
+## 2026-11-24 — Weekly library upgrades are ready
+
+- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old (a younger one only when it fixes a known vulnerability), reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+- Like the sync from T3 Code, the library upgrade lands the exact commit its checks and reviewers passed, so a commit made in its folder while it waits for its turn can no longer land unchecked.
+
+## 2026-11-24 — Export a thread as Markdown
+
+- Choose **Export as Markdown** in a thread's menu or the command palette to save it as a `.md` file; on mobile, the same action on a thread row shares the file. Each message renders in the file as it does in the chat, formulas and chat-only formatting included: it is kept as written where it reads the same there, rewritten where it would not, and shown as a Markdown code block in the rare case neither works. References and footnotes stay within their message, and raw HTML shows as text, an HTML block as a code block. Failed commands and tools are marked, the window stays responsive while a long thread exports, and on mobile a new export cancels the one in progress.
+
 ## 2026-11-24 — Require Git 2.47 on development machines
 
 - `machine-config.json` now requires Git 2.47.0 or later. `node ~/.agents/tools/machine-config.mjs check <checkout>` reports an older Git, which takes minutes on the UTF-16 rows of the Git driver tests. No change to the app.
@@ -170,6 +248,22 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — Monitoring stays visible while it updates
+
+- Monitoring keeps the last overview and chat rows visible while a connection recovers or a period or filter loads, and labels results that are out of date. Refresh spins only when you request it, and a slow environment times out.
+- Settled chats update Monitoring in batches. An open chat reads its saved analysis and refreshes when that chat changes. Background analysis uses its own database connections, and failed analyses back off before retrying.
+
+## 2026-11-21 — Monitoring counts every chat in the period
+
+- Monitoring totals, trends and breakdowns now count every analyzed chat that settled in the chosen period, not only the newest 2,000 per environment, and chats still being analyzed are counted separately. Each environment sends compact daily totals instead of every chat, on the days of your device's clock.
+- Monitoring says there are no chats only once every environment has answered. Once one has answered or failed, a note names each environment that is still connecting or answering, and each one that is offline or cannot be read, with the reason. Retry reconnects an environment whose connection failed and reloads every page the list needs from one whose answer failed, so one Retry is enough. Refresh and Retry, also in an open chat's analysis, ask again any page or period whose failure was shown before, until it answers, so Show more, or choosing that period again, never brings back an old failure. It shows as busy while the failed answers are asked again, and is not offered when only an update of the environment's server can help. An environment that is only connecting does not keep Refresh busy, and when every environment fails, each one is listed with its error. Before, the sums appeared as soon as one environment answered and left the slower ones out without a word, so 90 days could show less than the 30 days inside it.
+- The chat list sorts and filters on each environment and reaches every chat of the period: Show more loads each environment's next page as it is needed, so there is no 500-chat limit and sorting by cost, lifetime or failures finds the top chats of the whole period. A new sort keeps as many rows as were shown, and keeps the old ones on screen, dimmed, until the new order has loaded as many, has loaded all it has, or an environment fails. The list also stays put while a later answer to the same view still loads, so Refresh or a newly settled chat never shows rows mixed from old and new pages, and it changes at once when the period, a filter or the set of environments changes, when an offline environment starts connecting again, or when an environment that was offline or still connecting answers. An environment that is still connecting no longer holds the list or blocks Show more. Each page is sorted on compact keys, so a long period does not load every chat's analysis to show one page. On web and desktop, a new sort that fails keeps the column headers, also while another environment still connects, so you can sort another way again.
+- The notes on chats still being analyzed, or that could not be analyzed, count only the chosen project when you narrow by one. A chat renamed or moved to another project after its analysis shows its new name and project at once, in the list and the breakdowns. A project whose chats are all still being analyzed, or could not be analyzed, can be chosen in the project filter too, also on mobile when no chat of the period is analyzed yet. A chat still being analyzed that moves to another project is counted there at once. While a backlog of chats is analyzed, open Monitoring views update after up to 200 chats and when the backlog is done, instead of after every 25.
+- An environment whose T3.CodeShip server is older than this version is named in Monitoring with a request to update it, instead of being counted with a cut-off list.
+- A stored analysis that cannot be read, or a chat whose stored settle time is damaged, counts as a failed analysis and is analyzed again later, instead of silently dropping out of the sums. Analyses stored by an earlier version that dated a chat differently from its settle time are analyzed again once, right after the update. Every sort of the list and the sums now agree on which analyses are damaged.
+- A period starts at the start of its first day in every time zone, also where a daylight saving change skips midnight or the hour before it. Before, such a period could start an hour late or leave out its whole first day. Your device's clock draws the days, and every environment counts each chat on one of them, so the chart never shows a day outside the period, also when a server's time zone data differs from your device's or the browser reports another time zone than the clock.
+- A period ends at the end of today, the last day it shows, so every page of the chat list asks about the same chats and the sums match the days on the chart. Every time on the Monitoring screen is on the clock that draws the days and shows its minute, so a chat's settle date in the list is the day it counts on in the chart. On web and desktop those times follow the Timestamp format setting, and a 12-hour setting now holds also in a language whose clock is 24-hour, on the Usage screen too. Refresh moves a period left open past midnight to the new day. On web and desktop, Refresh in an open chat's analysis loads that analysis again. When reloading an open chat's analysis fails, a notice with Retry says the analysis shown may be out of date, instead of leaving the old one on screen without a word.
+
 ## 2026-11-21 — Repository commands refuse arguments they do not take
 
 - The landing, upstream sync, CI, release, translation, task cache, relay push and replay recording scripts check their whole command line before they act. Before, most of them ignored an argument they did not read, so `landing-turn.cjs land --quick-precheck` started a real landing and a mistyped `--uninstall` made the task cache installer install. Replay recorders reject invalid selections and blank output paths before starting a provider. The Claude and Codex package commands preserve Bun’s environment-file settings and run the recorder in Node. Use `--dry-run` to see the output path before recording. Mobile behavior checks that each selected case has a compatible device before preparing one. Changing a package command mapping or adding or deleting a repository command selects the argument checks.
@@ -307,6 +401,10 @@
 ## 2026-11-21 — Use 1Password tokens for MCP servers
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
+
+## 2026-11-20 — Stopping a Windows command's process tree always says when its first process started and ended
+
+- When T3.CodeShip stops a command on Windows together with what it started, a process that took the first process's id after that process ended was in some cases still taken for it, and its children ended. This happened when the command's process had been seen to exit but the stop did not pass that moment on, and when the stop could not read when the first process had started. The command runner and the process worker now pass the moment they saw the first process exit, and every stop must state both when the first process started (or that this is unknown) and whether it ended, so a new caller can no longer leave either out.
 
 ## 2026-11-20 — The server test suite runs on Windows in CI
 
@@ -523,6 +621,7 @@
 - Agents can restyle T3.CodeShip with theme colors and CSS, and other apps can use T3.CodeShip through MCP: run **Use T3.CodeShip in another app (MCP)** from the command palette.
 - The computer stays awake while agents work (**Keep awake while agents work**, on by default), and you can send a message while its attachments still upload.
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
+- Cursor usage and limits come from the Cursor account the Cursor agent signs in with, a `CURSOR_API_KEY`, or a token you give for limits. The **Enable Cursor usage** prompt and its macOS Keychain access are gone, and a machine with only the Cursor CLI's login shows no Cursor usage.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
 - In Ukrainian, the mobile app also translates the message of its alerts for an archived project, a draft or pending task being discarded, triage that could not start, and a server that could not be deregistered.
 - A subagent's thread settles when its parent thread settles, is archived or is deleted, even with automatic settlement turned off, and never opens a pull request for its work.

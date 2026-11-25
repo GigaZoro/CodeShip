@@ -10,7 +10,7 @@ import {
   type RuntimeMode,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { withLegacyUltracodeEffort } from "@t3tools/shared/model";
+import { optionSelectionProblem, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 
 /** How much a runtime mode allows, narrowest first. */
@@ -116,39 +116,24 @@ function invalidOptionSelections(
     }
     seen.add(selection.id);
     if (descriptors === undefined) continue;
-    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
-    if (descriptor === undefined) {
-      const known = descriptors.map((candidate) => candidate.id).join(", ");
-      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
-      continue;
-    }
-    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
-      problems.push(`Option ${selection.id} expects a boolean value.`);
-      continue;
-    }
-    if (
-      descriptor.type === "select" &&
-      !descriptor.options.some((choice) => choice.id === selection.value)
-    ) {
-      const choices = descriptor.options.map((choice) => choice.id).join(", ");
-      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
-    }
+    const problem = optionSelectionProblem(selection, descriptors);
+    if (problem !== undefined) problems.push(problem);
   }
   return problems;
 }
 
 /**
  * The options without each inherited one the model cannot run: one it does not offer, or a repeat
- * of an id already kept. `inheritedIds` names the inherited ids; without it, every option is.
+ * of an id already kept. `inheritedIds` names the inherited ids.
  */
-export function withoutUnrunnableInherited(
+function withoutUnrunnableInherited(
   options: ReadonlyArray<ProviderOptionSelection>,
   descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-  inheritedIds?: ReadonlySet<string>,
+  inheritedIds: ReadonlySet<string>,
 ): ReadonlyArray<ProviderOptionSelection> {
   const kept = new Set<string>();
   return options.filter((option) => {
-    if (inheritedIds !== undefined && !inheritedIds.has(option.id)) return true;
+    if (!inheritedIds.has(option.id)) return true;
     if (kept.has(option.id) || invalidOptionSelections([option], descriptors).length > 0)
       return false;
     kept.add(option.id);
