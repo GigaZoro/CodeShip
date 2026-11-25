@@ -704,6 +704,15 @@ describe("orchestrator MCP toolkit", () => {
               ?.completionDelivery?.state,
           ).toBe("claimed");
 
+          yield* orchestrator.dispatch({
+            type: "delegated_task.completion-delivery.acknowledge",
+            commandId: CommandId.make("command:mcp-replay:unattributed-acknowledge"),
+            parentThreadId,
+            taskId: queuedFollowup.taskId!,
+            observedByRunId: null,
+          });
+          const observingRun = afterParentlessRead.runs.find((run) => run.status === "running");
+          expect(observingRun).toBeDefined();
           const read = yield* invoke("t3_thread_read", {
             threadId: delegated.childThreadId,
             limit: 100,
@@ -715,8 +724,8 @@ describe("orchestrator MCP toolkit", () => {
           const afterRead = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
             afterRead.subagents.find((task) => task.id === queuedFollowup.taskId)
-              ?.completionDelivery?.state,
-          ).toBe("acknowledged");
+              ?.completionDelivery,
+          ).toEqual({ state: "acknowledged", observedByRunId: observingRun?.id });
 
           const messageReadsBeforeCapabilities = messageReads.length;
           const capabilities = yield* invoke("orchestrator_capabilities", {}).pipe(

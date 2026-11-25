@@ -1118,6 +1118,82 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
       }),
   );
 
+  it.effect.each([null, "failed", "completed"] as const)(
+    "records a later explicit observation with a prior observer of status %s",
+    (priorStatus) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:delegated-observer-${priorStatus}`);
+        const originalRunId = RunId.make(`run:${threadId}:original`);
+        const observingRunId = RunId.make(`run:${threadId}:observing`);
+        const taskId = NodeId.make(`node:${threadId}:task`);
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId: ProjectId.make(`project:${threadId}`),
+          runId: originalRunId,
+          rootNodeId: NodeId.make(`node:${threadId}:root`),
+          taskId,
+          deliveryState: "delivered",
+          now,
+        });
+        const acknowledge = (suffix: string, observedByRunId: RunId | null) =>
+          orchestrator.dispatch({
+            type: "delegated_task.completion-delivery.acknowledge",
+            commandId: CommandId.make(`command:${threadId}:${suffix}`),
+            parentThreadId: threadId,
+            taskId,
+            observedByRunId,
+          });
+        yield* acknowledge("first", priorStatus === null ? null : originalRunId);
+        const original = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const observing = {
+          ...original,
+          id: observingRunId,
+          ordinal: 2,
+          userMessageId: MessageId.make(`message:${threadId}:observing`),
+        };
+        yield* sink.write({
+          commandId: CommandId.make(`command:${threadId}:later-run`),
+          events: [
+            {
+              id: EventId.make(`event:${threadId}:original-settled`),
+              type: "run.updated",
+              threadId,
+              runId: originalRunId,
+              occurredAt: now,
+              payload: { ...original, status: priorStatus ?? "completed", completedAt: now },
+            },
+            {
+              id: EventId.make(`event:${threadId}:observing`),
+              type: "run.created",
+              threadId,
+              runId: observingRunId,
+              occurredAt: now,
+              payload: observing,
+            },
+          ],
+        });
+
+        const readDelivery = () =>
+          orchestrator
+            .getThreadProjection(threadId)
+            .pipe(Effect.map((projection) => projection.subagents[0]?.completionDelivery));
+        yield* acknowledge("foreign", RunId.make("run:other-thread"));
+        assert.equal(
+          (yield* readDelivery())?.observedByRunId,
+          priorStatus === null ? null : originalRunId,
+        );
+        yield* acknowledge("later", observingRunId);
+        yield* acknowledge("same-observer", observingRunId);
+        assert.deepEqual(yield* readDelivery(), {
+          state: "acknowledged",
+          observedByRunId: priorStatus === "completed" ? originalRunId : observingRunId,
+        });
+      }),
+  );
+
   it.effect.each([
     { command: "acknowledge", before: "running", after: "failed", capture: false },
     { command: "acknowledge", before: "waiting", after: "completed", capture: true },
