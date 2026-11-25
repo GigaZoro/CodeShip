@@ -36,6 +36,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import { encodeRequest, releaseFile } from "../workspace/worktreeReleaseReceipt.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import { resolveCodexRollbackTurnCount } from "./Adapters/CodexAdapterV2.ts";
@@ -181,11 +182,57 @@ it.effect.each(["initial", "waiting"])(
 );
 
 it.effect.each([
-  { order: "cleanup-first", restoreFiles: true },
-  { order: "rollback-first", restoreFiles: true },
-  { order: "cleanup-first", restoreFiles: false, unmanaged: true },
-])("locks rollback with %s", ({ order, restoreFiles, unmanaged = false }) =>
+  { name: "cleanup first", order: "cleanup-first", restoreFiles: true },
+  { name: "rollback first", order: "rollback-first", restoreFiles: true },
+  { name: "an unmanaged checkout", order: "cleanup-first", restoreFiles: false, unmanaged: true },
+  {
+    name: "a released family before file restore",
+    order: "cleanup-first",
+    restoreFiles: true,
+    stage: ".released",
+  },
+  {
+    name: "a released family before conversation rewind",
+    order: "cleanup-first",
+    restoreFiles: false,
+    stage: ".released",
+  },
+  {
+    name: "an interrupted family removal",
+    order: "cleanup-first",
+    restoreFiles: false,
+    stage: ".releasing",
+    survives: true,
+  },
+  {
+    name: "family restoration in progress",
+    order: "cleanup-first",
+    restoreFiles: true,
+    stage: ".restoring",
+  },
+  {
+    name: "family setup in progress",
+    order: "cleanup-first",
+    restoreFiles: true,
+    stage: ".setup",
+    survives: true,
+  },
+  {
+    name: "two owners of a removed checkout",
+    order: "cleanup-first",
+    restoreFiles: true,
+    sharedMissing: true,
+  },
+])("locks rollback with $name", (scenario) =>
   Effect.gen(function* () {
+    const {
+      order,
+      restoreFiles,
+      unmanaged = false,
+      stage,
+      survives = false,
+      sharedMissing = false,
+    } = scenario;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const workspaceRoot = yield* fileSystem.realPath(
@@ -204,6 +251,23 @@ it.effect.each([
     const checkpointId = CheckpointId.make("rollback-worktree-checkpoint");
     const scopeId = CheckpointScopeId.make("rollback-worktree-scope");
     const branch = "feature/rollback";
+    const stateDir = path.join(workspaceRoot, "state");
+    const directory = path.join(stateDir, ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+    const receipt = releaseFile(directory, worktreePath) + (stage ?? "");
+    const sentinel = path.join(worktreePath, "owner.txt");
+    const lineage = { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId };
+    const otherId = ThreadId.make("other-owner");
+    const request = yield* encodeRequest({
+      worktreePath,
+      branch,
+      threadId,
+      runId: RunId.make("finished"),
+      head: "1".repeat(40),
+      durableRef: "refs/heads/main",
+      identity: "original",
+      family: [{ threadId, projectId, runId: RunId.make("finished"), lineage }],
+    });
+    if (survives) yield* fileSystem.writeFileString(sentinel, "owned");
     const release = Deferred.makeUnsafe<void>();
     const openEntered = Deferred.makeUnsafe<void>();
     const calls: string[] = [];
@@ -215,6 +279,7 @@ it.effect.each([
         id: threadId,
         projectId,
         worktreePath,
+        lineage,
         branch,
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId: providerInstanceId, model: "test-model" },
@@ -235,7 +300,7 @@ it.effect.each([
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
           NodeServices.layer,
-          Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as never),
+          Layer.mock(ServerConfig.ServerConfig)({ worktreesDir, stateDir } as never),
           ServerSettings.layerTest(),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             get: (id) => {
@@ -278,13 +343,24 @@ it.effect.each([
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
+            getThreadShell: () => Effect.succeed(null),
+            getCheckpointContext: () =>
+              Effect.succeed({ checkpointScopes: [], runs: [], checkpoints: [] }),
+            getThreadProviderContext: () =>
+              Effect.succeed({
+                thread: projection.thread,
+                providerThreads: [],
+                providerSessions: [],
+              }),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
             getRunsWithLostBackgroundWork: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,
                 snapshotSequence: 0,
-                threads: [],
+                threads: sharedMissing
+                  ? [{ ...projection.thread, id: otherId, deletedAt: null } as never]
+                  : [],
                 archivedThreads: [],
               }),
           }),
@@ -293,7 +369,10 @@ it.effect.each([
               Effect.gen(function* () {
                 assert.equal(input.runtimePolicy.cwd, worktreePath);
                 if (!(yield* fileSystem.exists(worktreePath).pipe(Effect.orDie))) {
-                  return yield* new ProviderWorkspaceMissingError({ threadId, cwd: worktreePath });
+                  return yield* new ProviderWorkspaceMissingError({
+                    threadId,
+                    cwd: worktreePath,
+                  });
                 }
                 calls.push("session");
                 yield* Deferred.succeed(openEntered, undefined);
@@ -318,7 +397,11 @@ it.effect.each([
           cleanupEntered = true;
           yield* Deferred.succeed(cleanupHeld, undefined);
           if (order === "cleanup-first") yield* Deferred.await(release);
-          yield* fileSystem.remove(worktreePath, { recursive: true, force: true });
+          if (!survives) yield* fileSystem.remove(worktreePath, { recursive: true, force: true });
+          if (stage) {
+            yield* fileSystem.makeDirectory(directory, { recursive: true });
+            yield* fileSystem.writeFileString(receipt, request);
+          }
           calls.push("cleanup");
         }),
       );
@@ -339,6 +422,26 @@ it.effect.each([
       if (order === "rollback-first") assert.isFalse(cleanupEntered);
       yield* Deferred.succeed(release, undefined);
       if (cleanup !== undefined) yield* Fiber.join(cleanup);
+      if (stage || sharedMissing) {
+        const outcome = yield* Fiber.join(rollback).pipe(Effect.result);
+        assert.deepEqual(calls, ["cleanup"]);
+        assert.isTrue(outcome._tag === "Failure");
+        if (outcome._tag === "Failure") {
+          assert.equal(
+            outcome.failure.reason,
+            stage ? "worktree-recovery-required" : "shared-workspace",
+          );
+          if (stage)
+            assert.match(
+              CheckpointRollbackService.rollbackFailureClientMessage(outcome.failure),
+              /owning chat/,
+            );
+        }
+        assert.equal(yield* fileSystem.exists(worktreePath), survives);
+        if (survives) assert.equal(yield* fileSystem.readFileString(sentinel), "owned");
+        if (stage) assert.equal(yield* fileSystem.readFileString(receipt), request);
+        return;
+      }
       if (unmanaged) {
         const error = yield* Fiber.join(rollback).pipe(Effect.flip);
         assert.equal(error._tag, "CheckpointRollbackExecutionError");

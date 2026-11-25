@@ -1258,6 +1258,8 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
             const blocked = yield* runSetup();
             expect(blocked.success).toBe(false);
             expect(blocked.output).toContain("Another worktree setup");
+            const claim = NodePath.join(worktree, ".t3", `setup-owner-${child.pid}`);
+            expect(blocked.output).toContain(claim);
             yield* Effect.promise(
               () =>
                 new Promise<void>((resolve) => {
@@ -1265,6 +1267,16 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
                   child.kill("SIGKILL");
                 }),
             );
+            const proof = NodePath.join(claim, "proof");
+            const unknown = NodePath.join(claim, "unknown");
+            yield* fs.writeFileString(proof, "pending publication");
+            yield* fs.writeFileString(unknown, "keep");
+            const refused = yield* runSetup();
+            expect(refused.success).toBe(false);
+            expect(refused.output).toContain(unknown);
+            expect(yield* fs.readFileString(proof)).toBe("pending publication");
+            expect(yield* fs.readFileString(unknown)).toBe("keep");
+            yield* fs.remove(unknown);
           }
           const done = NodePath.join(worktree, ".t3/setup-done");
           const failed = NodePath.join(worktree, ".t3/setup-failed");
@@ -1301,6 +1313,10 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
           }
           const setup = yield* runSetup(configureFailure);
           expect(setup.success, setup.output).toBe(!race);
+          if (existingStage || interruptedInstall)
+            expect(setup.output).toContain(
+              NodePath.join(".t3", "setup-stage") + ". Attempting an in-place install.",
+            );
           if (race) expect(setup.output).toContain("setup destinations changed");
           if (stageStream) {
             expect(setup.output).toContain("Windows worktree inspection failed (private-stream)");

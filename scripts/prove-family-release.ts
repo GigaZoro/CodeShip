@@ -423,6 +423,30 @@ const fixturePath = await Effect.runPromise(
         const receipt = readRequest(NodeFS.readFileSync(f.file + ".released", "utf8"));
         NodeAssert.deepEqual(receipt, f.request);
         NodeAssert.equal(git(workspace, "rev-parse", "refs/heads/" + f.branch), f.request.head);
+        if (f.scenario === "parent") {
+          const before = NodeFS.readFileSync(f.file + ".released");
+          const projection = yield* env.projection(f.root);
+          const target = projection.checkpoints.find((checkpoint) => checkpoint.status === "ready");
+          NodeAssert.ok(target, "Expected a ready checkpoint for the released family");
+          const requestId = commandId();
+          yield* dispatch({
+            type: "checkpoint.rollback",
+            commandId: requestId,
+            threadId: f.root,
+            scopeId: target.scopeId,
+            checkpointId: target.id,
+            restoreFiles: false,
+          });
+          const failure = yield* env.until("rollback held for family recovery", f.root, (row) =>
+            row.thread.rollbackFailure?.requestId === requestId
+              ? row.thread.rollbackFailure
+              : undefined,
+          );
+          NodeAssert.match(failure.message, /owning chat/);
+          NodeAssert.deepEqual(NodeFS.readFileSync(f.file + ".released"), before);
+          NodeAssert.equal(NodeFS.existsSync(f.checkout), false);
+          NodeAssert.equal(isRegistered(workspace, f.request.worktreePath), false);
+        }
         if (f.scenario === "interrupted") {
           const elsewhere = NodePath.join(baseDir, "elsewhere");
           git(workspace, "worktree", "add", elsewhere, f.branch);

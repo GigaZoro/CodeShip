@@ -677,7 +677,8 @@ process teardown. To withdraw a pending request, remove the printed request file
 Once it has moved to `.releasing`, wait for the result before reusing the checkout.
 **Storage & cleanup** shows the reason a checkout was kept. After an interrupted family
 removal, a follow-up can resume the original checkout once CodeShip verifies its identity,
-branch, commit and tracked files. A partially removed original stays available for inspection.
+branch, commit, tracked files and any saved ignored files. A partially removed original stays available for inspection.
+If rollback finds a checkout awaiting recovery, send a follow-up in the owning chat before retrying rollback.
 If a file replaces the checkout's parent directory, or Git still lists a missing checkout,
 the release stays pending. Storage & cleanup shows which check needs attention.
 
