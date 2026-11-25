@@ -1,3 +1,7 @@
+## 2026-11-25 — CodeShip's own scheduled tasks share one group
+
+- For people who work on T3.CodeShip: the project's three scheduled tasks (the weekly sync from T3 Code, the weekly dependency upgrade and the translation check) are now declared in the group "CodeShip maintenance" in `machine-config.json`. Their chats share one sidebar folder, and the group pauses and resumes them together. The machine check reports a copy that sits in another group.
+
 ## 2026-11-25 — Guest links can last longer and run read-only
 
 - When you create a guest link, choose how long it works: 1 hour, 1 day, 7 days, or 30 days. New links last 1 day, and the guest's sign-in lasts as long as the link.
