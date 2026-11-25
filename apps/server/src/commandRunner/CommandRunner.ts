@@ -63,12 +63,11 @@ import { readProcessStartedAt } from "../serverRuntimeState.ts";
 import {
   compareIdentity,
   ENDED_IDENTITY,
-  identityTime,
-  identityWindow,
   launchIdentity,
   linuxIdentity,
   recordedIdentity,
   timeIdentity,
+  windowsStopRoot,
 } from "./processIdentity.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
@@ -93,11 +92,6 @@ const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
 const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
-/**
- * A start no process has, which a gone wrapper's stop passes as its root's, so a holder of the pid
- * is another process and bounds the wrapper's children by its start, not by a clock reading.
- */
-const NO_ROOT = { from: 0, to: 0 };
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
 /**
@@ -641,28 +635,19 @@ const make = Effect.gen(function* () {
       if (!windows) {
         if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
       } else {
-        const identity = row.process_identity;
-        const pinned = identityTime(identity);
-        const created = identity === ENDED_IDENTITY ? NO_ROOT : identityWindow(identity);
-        // With a window or an ended record, take nothing made before the record or before the
-        // wrapper named itself, just before it started the command, since the window may hold what
-        // an earlier holder of its pid made; a clock set back spares the command's own processes.
-        // Without a window, `since` also places the root, which was made before it named itself.
-        const recorded = Date.parse(row.started_at);
-        const named =
-          pinned === undefined && created !== undefined
-            ? yield* readWrapperFile(path.join(row.directory, PID_FILE))
-            : undefined;
-        const since = pinned ?? Math.max(recorded, named?.writtenAt?.getTime() ?? recorded);
+        const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
         yield* processRunner
           .run({
             command: "powershell.exe",
-            args: windowsStopTreeArgs({
-              pid,
-              since,
-              created: created ?? "unknown",
-              ended: row.ended_at === null ? "running" : Date.parse(row.ended_at),
-            }),
+            args: windowsStopTreeArgs(
+              windowsStopRoot({
+                pid,
+                identity: row.process_identity,
+                recordedAt: Date.parse(row.started_at),
+                namedAt: named?.writtenAt?.getTime(),
+                ended: row.ended_at === null ? "running" : Date.parse(row.ended_at),
+              }),
+            ),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           })

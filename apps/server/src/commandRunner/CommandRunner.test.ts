@@ -59,7 +59,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as CpuAdmission from "../resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as CommandRunner from "./CommandRunner.ts";
-import { ENDED_IDENTITY, identityWindow } from "./processIdentity.ts";
+import { ENDED_IDENTITY, identityWindow, windowsStopRoot } from "./processIdentity.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -519,26 +519,32 @@ const liveChat = (name: string) =>
         readonly directory: string;
         readonly started_at: string;
         readonly ended_at: string | null;
+        readonly process_identity: string | null;
       }>`
-        SELECT pid, directory, started_at, ended_at FROM command_runs
+        SELECT pid, directory, started_at, ended_at, process_identity FROM command_runs
         WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
             Effect.try(() => {
+              const pidFile = NodePath.join(row.directory, "pid");
               // A failed test can leave a row without its pid; the wrapper's pid file still names it.
-              const pid =
-                row.pid ??
-                Number.parseInt(
-                  NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
-                  10,
-                );
-              // Windows has no process groups, so what descends from a wrapper still running stops.
+              const pid = row.pid ?? Number.parseInt(NodeFS.readFileSync(pidFile, "utf8"), 10);
+              // Windows has no process groups, so what descends from a wrapper still running stops,
+              // from the root the server's own stop takes: a later holder of its pid is spared.
               if (!isWindowsHost) signalProcessGroup(pid, "SIGKILL");
               else if (row.ended_at === null)
                 NodeChildProcess.execFileSync(
                   "powershell.exe",
-                  windowsStopTreeArgs({ pid, since: Date.parse(row.started_at) }),
+                  windowsStopTreeArgs(
+                    windowsStopRoot({
+                      pid,
+                      identity: row.process_identity,
+                      recordedAt: Date.parse(row.started_at),
+                      namedAt: NodeFS.statSync(pidFile, { throwIfNoEntry: false })?.mtimeMs,
+                      ended: "running",
+                    }),
+                  ),
                   { timeout: 30_000, stdio: "ignore" },
                 );
             }).pipe(Effect.ignore),
