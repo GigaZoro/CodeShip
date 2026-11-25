@@ -42,6 +42,8 @@ import { gitFailureFacts } from "../vcs/GitVcsDriverCore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import {
   type CheckoutRecoveryOptions,
+  type ReleaseRequest,
+  readReleasedBranchBase,
   recoverInterruptedWorktree,
 } from "../workspace/worktreeRelease.ts";
 import { withWorkspaceLease, WorkspaceLeasePathError } from "../workspace/workspaceLease.ts";
@@ -108,6 +110,9 @@ export class GitWorkflowService extends Context.Service<
       options?: GitVcsDriver.CreateWorktreeOptions & {
         readonly releasedBranch?: {
           readonly previousHead: string;
+          readonly recordedBase?: NonNullable<ReleaseRequest["branchBase"]> & {
+            readonly receiptHash: string;
+          };
           readonly baseRef: string;
           readonly durableRefs: ReadonlyArray<string>;
         };
@@ -655,9 +660,58 @@ export const make = Effect.gen(function* () {
       if (!released) return yield* gitManager.createWorktree(input, options);
       const { cwd } = input;
       const operation = "GitWorkflowService.advanceReleasedBranch";
-      const branchRef = "refs/heads/" + (input.newRefName ?? input.refName);
+      const branch = input.newRefName ?? input.refName;
+      const branchRef = "refs/heads/" + branch;
+      const saved = released.recordedBase;
+      const restoreLog = saved
+        ? `CodeShip restored released branch ${saved.receiptHash}`
+        : undefined;
+      // Create the ref and its receipt-specific reflog entry atomically. On retry, only that
+      // creation is allowed to finish configuring the branch. A user's recreation has a different log.
+      const finishBranchConfig = Effect.fn("GitWorkflowService.finishRestoredBranchConfig")(
+        function* () {
+          if (!saved || !restoreLog) return;
+          const last = yield* git.execute({
+            cwd,
+            operation,
+            args: ["reflog", "show", "-1", "--format=%gs", branchRef, "--"],
+          });
+          if (last.stdout.trimEnd() !== restoreLog) return;
+          const current = yield* readReleasedBranchBase(cwd, branch).pipe(
+            Effect.provide(worktreeContext),
+          );
+          if (
+            (current.name !== null && current.name !== saved.name) ||
+            (current.ref !== null && current.ref !== saved.ref) ||
+            (current.legacyName !== undefined && current.legacyName !== saved.legacyName)
+          )
+            return;
+          for (const [property, expected, actual] of [
+            ["t3-merge-base", saved.name, current.name],
+            ["t3-merge-base-ref", saved.ref, current.ref],
+            ["gh-merge-base", saved.legacyName ?? null, current.legacyName ?? null],
+          ] as const) {
+            if (expected !== null && actual === null) {
+              yield* git.execute({
+                cwd,
+                operation,
+                args: [
+                  "check-ref-format",
+                  property === "t3-merge-base-ref" ? expected : "refs/heads/" + expected,
+                ],
+              });
+              yield* git.writeConfigValue({
+                cwd,
+                key: `branch.${branch}.${property}`,
+                value: expected,
+              });
+            }
+          }
+        },
+      );
       if (!input.newRefName) {
         const { commitSha } = yield* git.resolveCommit({ cwd, revision: branchRef });
+        yield* finishBranchConfig();
         if (commitSha !== released.previousHead)
           return yield* gitManager.createWorktree(input, options);
       }
@@ -718,6 +772,27 @@ export const make = Effect.gen(function* () {
       }
       if (input.newRefName) {
         const create = { ...input, refName: start };
+        if (restoreLog) {
+          yield* git.execute({
+            cwd,
+            operation,
+            args: [
+              "update-ref",
+              "--no-deref",
+              "--create-reflog",
+              "-m",
+              restoreLog,
+              branchRef,
+              start,
+              "",
+            ],
+          });
+          yield* finishBranchConfig();
+          delete create.newRefName;
+          delete create.baseRefName;
+          create.refName = branch;
+          return yield* gitManager.createWorktree(create, options);
+        }
         // A task restored from an archive did not branch from the project's current base.
         if (start !== base) delete create.baseRefName;
         return yield* gitManager.createWorktree(create, options);

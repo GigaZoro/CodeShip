@@ -679,12 +679,16 @@ Once it has moved to `.releasing`, wait for the result before reusing the checko
 removal, a follow-up can resume the original checkout once CodeShip verifies its identity,
 branch, commit, tracked files and any saved ignored files. A partially removed original stays available for inspection.
 If rollback finds a checkout awaiting recovery, send a follow-up in the owning chat before retrying rollback.
-If a file replaces the checkout's parent directory, or Git still lists a missing checkout,
-the release stays pending. Storage & cleanup shows which check needs attention.
+If a file replaces the checkout's parent directory or Git still lists the missing checkout,
+the release stays pending. Run `git worktree list --porcelain` in the project to inspect the
+registration. If Git lists the branch under another path, check for a moved worktree or an
+alternate spelling such as a Windows short path before repairing the registration.
 
 A follow-up starts from the project's current base when that base contains the delivered
 commit. If the histories diverged, CodeShip can restore the delivered commit from a
-recorded durable ref. If the owner moved the task branch in the meantime, the follow-up
+recorded durable ref. When Git has deleted the task branch, CodeShip restores the pull request
+base and remote ref recorded in the release receipt. Existing branches keep their current
+settings. If the owner moved the task branch in the meantime, the follow-up
 uses the new branch tip. Follow-up setup reports progress in the thread. A later follow-up can retry an
 unfinished setup in the same checkout.
 

@@ -54,6 +54,7 @@ import {
 import {
   readReleaseFile,
   WorktreeReleaseReceiptError,
+  releaseDigest,
 } from "../workspace/worktreeReleaseReceipt.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
@@ -882,6 +883,14 @@ export const layer: Layer.Layer<
           const restoreOptions = {
             releasedBranch: {
               previousHead: released.request.head,
+              ...(released.request.branchBase
+                ? {
+                    recordedBase: {
+                      ...released.request.branchBase,
+                      receiptHash: releaseDigest(released.contents),
+                    },
+                  }
+                : {}),
               baseRef: base.refName,
               durableRefs: [released.request.durableRef, ...(released.request.alsoDurable ?? [])],
             },
