@@ -4,6 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeUtil from "node:util";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -18,6 +19,7 @@ import * as FileSystem from "effect/FileSystem";
 import { parseCommandLine } from "./lib/command-line.ts";
 import { EVAL_INSTANCE, EVAL_MODEL, startEnvironment } from "./mobile-behavior/environment.ts";
 
+const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const git = (cwd: string, ...args: string[]) =>
   NodeChildProcess.execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 const isRegistered = (repo: string, checkout: string) =>
@@ -81,6 +83,7 @@ const windowsShortDirectory = (directory: string) => {
   return NodePath.relative(short, long) === "" ? undefined : short;
 };
 
+let phase = "starting the disposable server";
 const fixturePath = await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
@@ -135,8 +138,9 @@ const fixturePath = await Effect.runPromise(
           commandId: commandId(),
         });
       });
-      const issue = (projection: OrchestrationV2ThreadProjection) =>
-        NodeChildProcess.execFileSync(
+      // The RPC client must keep processing heartbeats while the owner CLI inspects the checkout.
+      const issue = (projection: OrchestrationV2ThreadProjection, signal: AbortSignal) => {
+        const command = execFile(
           process.execPath,
           [
             NodePath.resolve(import.meta.dirname, "../apps/server/src/bin.ts"),
@@ -152,8 +156,11 @@ const fixturePath = await Effect.runPromise(
             "--durable-ref",
             "refs/heads/" + base,
           ],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+          { encoding: "utf8", signal },
         );
+        command.child.stdin?.end();
+        return command;
+      };
 
       const fixtures: {
         scenario: Scenario;
@@ -166,6 +173,7 @@ const fixturePath = await Effect.runPromise(
       }[] = [];
       const selected = shortPathsOnly ? (["parent"] as const) : scenarios;
       for (const scenario of selected) {
+        phase = `preparing the ${scenario} checkout`;
         const root = threadId();
         let child = threadId();
         const branch = "proof-" + scenario;
@@ -294,6 +302,7 @@ const fixturePath = await Effect.runPromise(
           yield* fork(root, child);
           yield* env.send(child, scenario === "failed" ? "[[eval:fail]]" : "child");
         }
+        phase = `settling the ${scenario} family and checking release eligibility`;
         if (scenario !== "singleton") {
           const member = yield* env.settled(child);
           NodeAssert.equal(member.thread.worktreePath, checkout);
@@ -303,7 +312,9 @@ const fixturePath = await Effect.runPromise(
             scenario === "failed" ? "failed" : "completed",
           );
           if (scenario === "parent")
-            NodeAssert.throws(() => issue(member), { stdout: /Only the root/ });
+            yield* Effect.promise((signal) =>
+              NodeAssert.rejects(issue(member, signal), { stdout: /Only the root/ }),
+            );
           if (scenario === "undelivered") {
             const task = (yield* env.projection(root)).subagents.find(
               (item) => item.childThreadId === child,
@@ -318,7 +329,9 @@ const fixturePath = await Effect.runPromise(
         if (scenario === "deleted-empty-side-chat") {
           const unused = threadId();
           yield* fork(root, unused);
-          NodeAssert.throws(() => issue(parent), { stdout: /no run to release/ });
+          yield* Effect.promise((signal) =>
+            NodeAssert.rejects(issue(parent, signal), { stdout: /no run to release/ }),
+          );
           yield* dispatch({
             type: "thread.delete",
             threadId: unused,
@@ -327,9 +340,9 @@ const fixturePath = await Effect.runPromise(
           });
         }
         if (scenario !== "undelivered") yield* settle(parent);
-        const file = issue(parent)
-          .match(/Queued worktree release in (.+)/)?.[1]
-          ?.trim();
+        phase = `queueing and checking the ${scenario} owner request`;
+        const { stdout } = yield* Effect.promise((signal) => issue(parent, signal));
+        const file = stdout.match(/Queued worktree release in (.+)/)?.[1]?.trim();
         NodeAssert.ok(file);
         const request = readRequest(NodeFS.readFileSync(file, "utf8"));
         NodeAssert.equal(request.threadId, root);
@@ -375,6 +388,7 @@ const fixturePath = await Effect.runPromise(
         fixtures.push({ scenario, root, child, checkout, branch, file, request });
       }
 
+      phase = "waiting for storage cleanup of the queued checkouts";
       // The production worker gives settlement scripts a minute to start a terminal.
       yield* Effect.sleep("65 seconds");
       const report = yield* client["server.runStorageCleanup"]({});
@@ -393,6 +407,7 @@ const fixturePath = await Effect.runPromise(
       );
       const tip = git(workspace, "rev-parse", "HEAD");
       for (const f of fixtures) {
+        phase = `checking the ${f.scenario} release outcome`;
         const removed = [
           "parent",
           "child",
@@ -423,6 +438,7 @@ const fixturePath = await Effect.runPromise(
         const receipt = readRequest(NodeFS.readFileSync(f.file + ".released", "utf8"));
         NodeAssert.deepEqual(receipt, f.request);
         NodeAssert.equal(git(workspace, "rev-parse", "refs/heads/" + f.branch), f.request.head);
+        phase = `resuming the ${f.scenario} checkout`;
         if (f.scenario === "parent") {
           const before = NodeFS.readFileSync(f.file + ".released");
           const projection = yield* env.projection(f.root);
@@ -512,6 +528,9 @@ const fixturePath = await Effect.runPromise(
       }
       return fixtureRoot;
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(
+    Effect.tapCause(() => Effect.logError(`Family release proof failed while ${phase}`)),
+    Effect.provide(NodeServices.layer),
+  ),
 );
 NodeAssert.ok(!NodeFS.existsSync(fixturePath), `Fixture directory still exists: ${fixturePath}`);

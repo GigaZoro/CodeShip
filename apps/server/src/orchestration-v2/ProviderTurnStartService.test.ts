@@ -1691,6 +1691,7 @@ effectIt.live.each([
 
       const harness = makeLocalCommandHarness({
         text: "Continue",
+        nativeTurn: true,
         workspaceRoot,
         worktreePath,
         worktreesDir,
@@ -1773,6 +1774,7 @@ effectIt.live.each([
       }
       yield* harness.start;
       expect(harness.open).toHaveBeenCalledOnce();
+      expect(harness.startTurn).toHaveBeenCalledOnce();
       expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(tip);
       expect(yield* git(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(branch);
       expect(yield* readBase()).toEqual(legacy ? [null, null] : expectedBase);
@@ -2140,6 +2142,7 @@ effectIt.effect(
       const makeHarness = (workspaceRoot: string) =>
         makeLocalCommandHarness({
           text: "Continue",
+          nativeTurn: true,
           worktreesDir,
           worktreePath,
           workspaceRoot,
@@ -2196,11 +2199,13 @@ effectIt.effect(
           },
         });
         yield* harness.start;
-        return harness.open.mock.calls.length;
+        expect(harness.startTurn.mock.calls).toHaveLength(harness.open.mock.calls.length);
+        return harness.startTurn.mock.calls.length;
       });
       yield* git(worktreePath, ["switch", "-c", "renamed-original"]);
       const pointer = path.join(worktreePath, ".git");
-      yield* fs.writeFileString(pointer, yield* fs.readFileString(pointer));
+      // Git hides this file on Windows. Open the existing pointer without creating or truncating it.
+      yield* fs.writeFile(pointer, yield* fs.readFile(pointer), { flag: "r+" });
       expect(yield* start(project, "renamed-original")).toBe(0);
       yield* git(project, ["worktree", "remove", worktreePath]);
       yield* git(project, ["worktree", "add", worktreePath, "feature/restore"]);
