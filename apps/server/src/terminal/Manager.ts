@@ -3116,6 +3116,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         input.cwd,
         input.worktreePath ?? input.cwd,
       ]),
+    ).pipe(
+      Effect.catchTags({
+        WorkspaceLeasePathError: (cause) =>
+          Effect.fail(new TerminalCwdStatError({ cwd: cause.cwd, cause })),
+      }),
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>

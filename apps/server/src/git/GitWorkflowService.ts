@@ -40,7 +40,11 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { gitFailureFacts } from "../vcs/GitVcsDriverCore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import {
+  type CheckoutRecoveryOptions,
+  recoverInterruptedWorktree,
+} from "../workspace/worktreeRelease.ts";
+import { withWorkspaceLease, WorkspaceLeasePathError } from "../workspace/workspaceLease.ts";
 
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
@@ -93,10 +97,20 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+    readonly recoverInterruptedWorktree: (
+      worktreePath: string,
+      projectRoot: string,
+      branch: string,
+      options?: CheckoutRecoveryOptions,
+    ) => Effect.Effect<void, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
       options?: GitVcsDriver.CreateWorktreeOptions & {
-        readonly releasedBranch?: { readonly previousHead: string; readonly baseRef: string };
+        readonly releasedBranch?: {
+          readonly previousHead: string;
+          readonly baseRef: string;
+          readonly durableRefs: ReadonlyArray<string>;
+        };
       },
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
@@ -204,6 +218,9 @@ export const make = Effect.gen(function* () {
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
 
+  const worktreeContext = yield* Effect.context<
+    GitVcsDriver.GitVcsDriver | FileSystem.FileSystem | Path.Path
+  >();
   const realPath = (target: string) =>
     fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
   const contains = (parent: string, child: string) => {
@@ -216,7 +233,21 @@ export const make = Effect.gen(function* () {
 
   // Nested projects and path aliases must share the checkout's branch-mutation lease.
   const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
-    realPath(rootPath).pipe(Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)));
+    withWorkspaceLease(rootPath, effect).pipe(
+      Effect.catchIf(
+        (error): error is WorkspaceLeasePathError => error instanceof WorkspaceLeasePathError,
+        (cause) =>
+          Effect.fail(
+            new GitCommandError({
+              operation: "GitWorkflowService.workspaceLease",
+              command: "workspace-lease",
+              cwd: rootPath,
+              detail: cause.message,
+              cause,
+            }),
+          ),
+      ),
+    );
 
   const findActiveTurnIn = Effect.fn("GitWorkflowService.findActiveTurnIn")(function* (
     checkoutRoot: string,
@@ -271,7 +302,7 @@ export const make = Effect.gen(function* () {
   ) =>
     realPath(rootPath).pipe(
       Effect.flatMap((checkoutRoot) =>
-        withWorkspaceLease(
+        withCheckoutLease(
           checkoutRoot,
           ensureCheckoutIdle(operation, cwd, checkoutRoot).pipe(Effect.andThen(effect)),
         ),
@@ -601,32 +632,112 @@ export const make = Effect.gen(function* () {
         ),
       );
     }),
+    recoverInterruptedWorktree: Effect.fn("GitWorkflowService.recoverInterruptedWorktree")(
+      (worktreePath, projectRoot, branch, options) =>
+        recoverInterruptedWorktree(worktreePath, projectRoot, branch, options).pipe(
+          Effect.provide(worktreeContext),
+          Effect.mapError((cause) =>
+            cause._tag === "GitCommandError"
+              ? cause
+              : new GitCommandError({
+                  operation: "GitWorkflowService.recoverInterruptedWorktree",
+                  command: "restore",
+                  cwd: worktreePath,
+                  detail: "Could not verify the interrupted checkout.",
+                  cause,
+                }),
+          ),
+        ),
+    ),
     createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function* (input, options) {
       yield* ensureGitCommand("GitWorkflowService.createWorktree", input.cwd);
-      if (options?.releasedBranch) {
-        const ref = "refs/heads/" + input.refName;
-        const { commitSha } = yield* git.resolveCommit({ cwd: input.cwd, revision: ref });
-        if (commitSha === options.releasedBranch.previousHead) {
-          // Local fetch fast-forwards only and refuses to update a branch checked out elsewhere.
-          yield* git.executeRemote({
-            cwd: input.cwd,
-            operation: "GitWorkflowService.advanceReleasedBranch",
-            timeoutMs: 30_000,
-            fallbackErrorDetail:
-              "Git could not fast-forward the released branch to the project's current base.",
-            args: [
-              "fetch",
-              "--quiet",
-              "--no-tags",
-              "--no-recurse-submodules",
-              "--no-write-fetch-head",
-              "--no-auto-maintenance",
-              "--",
-              ".",
-              options.releasedBranch.baseRef + ":" + ref,
-            ],
+      const released = options?.releasedBranch;
+      if (!released) return yield* gitManager.createWorktree(input, options);
+      const { cwd } = input;
+      const operation = "GitWorkflowService.advanceReleasedBranch";
+      const branchRef = "refs/heads/" + (input.newRefName ?? input.refName);
+      if (!input.newRefName) {
+        const { commitSha } = yield* git.resolveCommit({ cwd, revision: branchRef });
+        if (commitSha !== released.previousHead)
+          return yield* gitManager.createWorktree(input, options);
+      }
+
+      const { commitSha: base } = yield* git.resolveCommit({ cwd, revision: released.baseRef });
+      const grafts = yield* git.execute({
+        cwd,
+        operation,
+        args: ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"],
+      });
+      if (yield* fileSystem.exists(grafts.stdout.trim()).pipe(Effect.orElseSucceed(() => true)))
+        return yield* new GitCommandError({
+          cwd,
+          operation,
+          command: "git rev-list",
+          detail: "Cannot verify that released task history is free of grafts.",
+        });
+      const ancestry = yield* git.execute({
+        cwd,
+        operation,
+        args: [
+          "--no-replace-objects",
+          "rev-list",
+          "--max-count=1",
+          released.previousHead,
+          "--not",
+          base,
+          "--",
+        ],
+      });
+      let start = base;
+      if (ancestry.stdout.trim()) {
+        // A ref pattern also matches descendants, and a symbolic ref could point at the task itself.
+        const anchors = new Set(released.durableRefs.filter((ref) => ref !== branchRef));
+        const { stdout, stdoutTruncated } = yield* git.execute({
+          cwd,
+          operation,
+          args: [
+            "--no-replace-objects",
+            "for-each-ref",
+            "--contains=" + released.previousHead,
+            "--format=%(refname)%00%(symref)",
+            "--",
+            ...anchors,
+          ],
+        });
+        const directRefs = new Set(stdout.split(/\r?\n/));
+        const preserved =
+          !stdoutTruncated && Array.from(anchors).some((ref) => directRefs.has(ref + "\0"));
+        if (!preserved)
+          return yield* new GitCommandError({
+            cwd,
+            operation,
+            command: "git for-each-ref --contains",
+            detail: "The released task commit is no longer preserved by a recorded durable ref.",
           });
-        }
+        start = released.previousHead;
+      }
+      if (input.newRefName)
+        return yield* gitManager.createWorktree({ ...input, refName: start }, options);
+      if (start !== released.previousHead) {
+        // Local fetch fast-forwards only and refuses to update a branch checked out elsewhere.
+        yield* git.executeRemote({
+          cwd,
+          operation,
+          timeoutMs: 30_000,
+          fallbackErrorDetail:
+            "Git could not fast-forward the released branch to the project's current base.",
+          args: [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-write-fetch-head",
+            "--no-auto-maintenance",
+            "--",
+            ".",
+            start + ":" + branchRef,
+          ],
+        });
       }
       return yield* gitManager.createWorktree(input, options);
     }),

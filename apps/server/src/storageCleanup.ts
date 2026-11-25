@@ -18,7 +18,9 @@ import type {
   StorageCleanupReportEntry,
 } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
+import { compactLegacyId } from "@t3tools/provider-core/server/compactId";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import type { UnknownError } from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
@@ -57,15 +59,25 @@ import { gitErrorLines, isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.
 import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import {
   decodeReleaseRequest,
+  hasNonDirectoryParent,
+  observedCheckoutPath,
   worktreeReleaseName,
+  worktreeOwner,
   releasePath,
+  releaseReceiptPath,
   releaseHold,
   type ReleaseRequest,
 } from "./workspace/worktreeRelease.ts";
-import { observeWorkspaceStarts, withWorkspaceLease } from "./workspace/workspaceLease.ts";
+import {
+  existingWorkspacePath,
+  observeWorkspaceStarts,
+  withWorkspaceLease,
+  WorkspaceLeasePathError,
+} from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
+import { setupStageName } from "../../../scripts/lib/worktree-setup-proof.ts";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -199,33 +211,29 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
   );
 }
 
-/** Only a complete subagent or side chat chain within this worktree shares ownership. */
-function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
-  threads: ReadonlyArray<T>,
+function familyMemberSettled(
+  member: OrchestrationV2ThreadShell,
+  owner: Pick<OrchestrationV2ThreadShell, "id" | "settledAt" | "settledOverride">,
 ) {
-  if (threads.length === 1) return threads[0];
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const tops = threads.filter((thread) => !byId.has(thread.lineage.parentThreadId!));
-  if (tops.length !== 1) return undefined;
-  const owner = tops[0]!;
-  for (const thread of threads) {
-    let current = thread;
-    const seen = new Set<string>();
-    while (current.id !== owner.id) {
-      if (
-        seen.has(current.id) ||
-        (current.lineage.relationshipToParent !== "subagent" &&
-          current.lineage.sideChat !== true) ||
-        current.lineage.rootThreadId !== owner.lineage.rootThreadId
-      )
-        return undefined;
-      seen.add(current.id);
-      const parent = byId.get(current.lineage.parentThreadId!);
-      if (parent === undefined) return undefined;
-      current = parent;
-    }
-  }
-  return owner;
+  if (member.latestRunCompletedAt == null) return false;
+  if (member.settledOverride === "settled")
+    return (
+      member.settledAt !== null &&
+      !DateTime.isLessThan(member.settledAt, member.latestRunCompletedAt)
+    );
+  // The owner can finish a passive child's completed work. An explicit keep-active choice survives.
+  return (
+    member.id !== owner.id &&
+    owner.settledOverride === "settled" &&
+    owner.settledAt !== null &&
+    member.settledOverride === null &&
+    member.autoSettleDisabledAt == null &&
+    member.snoozedUntil == null &&
+    member.laterAt == null &&
+    member.archivedAt === null &&
+    storageCleanupActivityAt(member) <= DateTime.toEpochMillis(owner.settledAt) &&
+    !DateTime.isGreaterThan(member.updatedAt, owner.settledAt)
+  );
 }
 
 /** Squash/rebase merges require the merged PR to name this exact head commit. */
@@ -260,6 +268,120 @@ export class StorageCleanup extends Context.Service<
   }
 >()("t3/storageCleanup") {}
 
+export const familyDelegateResultConsumed = Effect.fn(
+  "StorageCleanup.familyDelegateResultConsumed",
+)(function* (
+  sql: SqlClient.SqlClient,
+  child: OrchestrationV2ThreadShell,
+  childRunId: ReleaseRequest["runId"],
+) {
+  const parentId = child.lineage.parentThreadId;
+  const originalTaskId = child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : null;
+  const [task] = yield* sql<{
+    id: string;
+    spawningRun: string;
+    delivery: string;
+    acknowledged: number;
+  }>`
+      SELECT task.subagent_id AS id, task.run_id AS spawningRun, task.completion_delivery_state AS delivery,
+        EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_runs observer
+          WHERE task.completion_delivery_state = 'acknowledged'
+            AND observer.run_id = json_extract(task.payload_json, '$.completionDelivery.observedByRunId')
+            AND observer.thread_id = task.thread_id AND observer.status = 'completed'
+        ) AS acknowledged
+      FROM orchestration_v2_projection_runs child_run
+      JOIN orchestration_v2_projection_subagents task
+        ON task.subagent_id = coalesce(json_extract(child_run.payload_json, '$.delegatedTaskId'), ${originalTaskId})
+      WHERE child_run.run_id = ${childRunId} AND child_run.thread_id = ${child.id} AND child_run.status = 'completed'
+        AND task.thread_id = ${parentId} AND task.child_thread_id = child_run.thread_id
+        AND task.origin = 'app_owned' AND task.status = 'completed'
+        AND task.completion_delivery_state IN ('acknowledged', 'delivered')
+        AND json_type(task.payload_json, '$.result') = 'text'
+        AND EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_context_transfers result
+          WHERE result.source_thread_id = child_run.thread_id AND result.target_thread_id = task.thread_id
+            AND result.type = 'subagent_result' AND result.status = 'consumed'
+            AND result.target_run_id = task.run_id
+            AND json_extract(result.payload_json, '$.sourcePoint.runId') = child_run.run_id
+        )
+    `.pipe(NodeSqliteClient.readOnly);
+  if (task === undefined) return false;
+  if (task.acknowledged) return true;
+  const wakes = yield* sql<{
+    text: string;
+    taskIds: string;
+    taskCount: number;
+    status: string;
+    primaryInput: number;
+  }>`
+      SELECT json_extract(m.payload_json, '$.text') AS text,
+        json_extract(m.payload_json, '$.delegatedCompletion.taskIds') AS taskIds,
+        json_array_length(m.payload_json, '$.delegatedCompletion.taskIds') AS taskCount,
+        consumer.status, (json_extract(consumer.payload_json, '$.userMessageId') = m.message_id) AS primaryInput
+      FROM orchestration_v2_projection_messages m
+      JOIN orchestration_v2_projection_runs consumer ON consumer.run_id = m.run_id
+      WHERE m.thread_id = ${parentId} AND m.role = 'user'
+        AND consumer.thread_id = m.thread_id AND consumer.status != 'cancelled'
+        AND json_extract(m.payload_json, '$.createdBy') = 'agent'
+        AND json_extract(m.payload_json, '$.creationSource') = 'server'
+        AND json_extract(m.payload_json, '$.delegatedCompletion.parentRunId') = ${task.spawningRun}
+        AND EXISTS (SELECT 1 FROM json_each(m.payload_json, '$.delegatedCompletion.taskIds') WHERE value = ${task.id})
+    `.pipe(NodeSqliteClient.readOnly);
+  for (const wake of wakes) {
+    // A live steer is not the run's primary input. Only an accepted steer or a non-cancelled
+    // wake run marks the task delivered, so a sole such message identifies its consumer.
+    if (
+      wake.status !== "completed" ||
+      (!wake.primaryInput && (task.delivery !== "delivered" || wakes.length !== 1))
+    )
+      continue;
+    // A batched wake can contain the whole result for one task and only a read instruction for another.
+    const members = yield* sql<{
+      id: string;
+      status: string;
+      title: string | null;
+      result: string | null;
+      command: string | null;
+    }>`
+        SELECT t.subagent_id AS id, t.status, json_extract(t.payload_json, '$.title') AS title,
+          json_extract(t.payload_json, '$.result') AS result, json_extract(t.payload_json, '$.command') AS command
+        FROM json_each(${wake.taskIds}) member
+        JOIN orchestration_v2_projection_subagents t ON t.subagent_id = member.value
+        WHERE t.thread_id = ${parentId} AND t.run_id = ${task.spawningRun}
+        ORDER BY member.key
+      `.pipe(NodeSqliteClient.readOnly);
+    if (members.length !== wake.taskCount) continue;
+    const inline = new Set<string>();
+    const text = Orchestrator.delegatedCompletionWakeDetail(
+      members.map((member) => member.id),
+      members,
+      inline,
+    );
+    if (text === wake.text && inline.has(task.id)) return true;
+    // Migration 091 compacted structured IDs but left the original notification text intact.
+    const member = members[0];
+    if (
+      !wake.primaryInput ||
+      task.delivery !== "delivered" ||
+      wakes.length !== 1 ||
+      members.length !== 1 ||
+      member?.id !== task.id
+    )
+      continue;
+    const displayedId = /^Delegated task (node:\S+) /.exec(wake.text)?.[1];
+    if (!displayedId || displayedId === task.id || compactLegacyId(displayedId) !== task.id)
+      continue;
+    const originalText = Orchestrator.delegatedCompletionWakeDetail(
+      [displayedId],
+      [{ ...member, id: displayedId }],
+      inline,
+    );
+    if (originalText === wake.text && inline.has(displayedId)) return true;
+  }
+  return false;
+});
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const settingsService = yield* Settings.ServerSettingsService;
@@ -285,6 +407,8 @@ const make = Effect.gen(function* () {
   };
 
   const isWindows = yield* HostProcess.isWindows;
+  const realWorkspacePath: (target: string) => Effect.Effect<string, PlatformError | UnknownError> =
+    isWindows ? existingWorkspacePath : fs.realPath;
   const pathKey = (target: string) => {
     const resolved = path.resolve(target);
     return isWindows ? resolved.toLowerCase() : resolved;
@@ -304,9 +428,20 @@ const make = Effect.gen(function* () {
   ) {
     const cwd = path.resolve(candidate);
     if (pathKey(cwd) === pathKey(root) || inside(root, cwd)) return true;
-    const real = yield* releasePath(cwd);
-    return pathKey(real) === pathKey(root) || inside(root, real);
+    const real = yield* observedCheckoutPath(cwd);
+    return real !== null && (pathKey(real) === pathKey(root) || inside(root, real));
   });
+  // Git may store a symlinked ancestor. A symlink at the checkout itself is never an owner binding.
+  const sameReleaseCheckout = (stored: string, canonical: string) => {
+    if (!path.isAbsolute(stored) || path.resolve(stored) !== stored) return Effect.succeed(false);
+    if (stored === canonical) return Effect.succeed(true);
+    const leaf = path.basename(stored);
+    if (leaf !== path.basename(canonical)) return Effect.succeed(false);
+    return releaseReceiptPath(stored).pipe(
+      Effect.map((checkout) => checkout === canonical),
+      Effect.orElseSucceed(() => false),
+    );
+  };
   const hasTerminal = (worktreePath: string) =>
     [...liveTerminals.values()]
       .flatMap((entries) => [...entries.values()])
@@ -392,6 +527,14 @@ const make = Effect.gen(function* () {
           (yield* fs.readDirectory(target).pipe(Effect.timeout("30 seconds")));
         const markers = inspectRepositories ? names.map((name) => name.toLowerCase()) : [];
         if (
+          isWindows &&
+          inspectRepositories &&
+          !measureBytes &&
+          pathKey(target) === pathKey(path.join(root, ".t3")) &&
+          markers.includes(setupStageName)
+        )
+          return { bytes: null, reason: "worktree has a preserved setup stage" };
+        if (
           inspectRepositories &&
           !repositories.has(pathKey(target)) &&
           !moduleStores.some((store) => pathKey(target) === store || inside(store, target)) &&
@@ -443,9 +586,9 @@ const make = Effect.gen(function* () {
       const projectPath = path.resolve(project.workspaceRoot);
       if (pathKey(projectPath) === pathKey(worktreePath) || inside(worktreePath, projectPath))
         return true;
-      const realPath = yield* fs
-        .realPath(projectPath)
-        .pipe(Effect.orElseSucceed(() => projectPath));
+      const realPath = yield* realWorkspacePath(projectPath).pipe(
+        Effect.orElseSucceed(() => projectPath),
+      );
       if (pathKey(realPath) === pathKey(worktreePath) || inside(worktreePath, realPath))
         return true;
     }
@@ -467,7 +610,7 @@ const make = Effect.gen(function* () {
       const resolved = path.resolve(row.worktreePath);
       referenced.add(pathKey(resolved));
       referenced.add(
-        pathKey(yield* fs.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved))),
+        pathKey(yield* realWorkspacePath(resolved).pipe(Effect.orElseSucceed(() => resolved))),
       );
     }
     const referencedAncestors = new Set<string>();
@@ -483,7 +626,7 @@ const make = Effect.gen(function* () {
       ),
       (project) => {
         const resolved = path.resolve(project.workspaceRoot);
-        return fs.realPath(resolved).pipe(
+        return realWorkspacePath(resolved).pipe(
           Effect.orElseSucceed(() => resolved),
           Effect.map((realPath) => [resolved, realPath]),
         );
@@ -501,7 +644,7 @@ const make = Effect.gen(function* () {
         const target = path.join(parent, name);
         if (!inside(parent, target) || inProject(target, managedRoot)) continue;
         const directory = yield* Effect.gen(function* () {
-          if (pathKey(yield* fs.realPath(target)) !== pathKey(target)) return false;
+          if (pathKey(yield* realWorkspacePath(target)) !== pathKey(target)) return false;
           return (yield* fs.stat(target)).type === "Directory";
         }).pipe(Effect.orElseSucceed(() => false));
         if (directory) result.push(target);
@@ -829,6 +972,16 @@ const make = Effect.gen(function* () {
         DateTime.isGreaterThan(shell.latestUserMessageAt, shell.latestRunCompletedAt))
     )
       return "requested run has unfinished work or was superseded";
+    if (request.family) {
+      const changed = yield* sql`
+        SELECT 1 WHERE NOT EXISTS (
+          SELECT 1 FROM (SELECT run_id, status FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${shell.id} ORDER BY ordinal DESC LIMIT 1)
+          WHERE run_id = ${request.runId} AND status = 'completed'
+        )
+      `.pipe(NodeSqliteClient.readOnly);
+      if (changed.length) return "latest family run changed or did not complete";
+    }
     if (shell.delegatedFrom) return "remote delegate ownership requires its peer";
     if (yield* engine.delegatedTaskResultPending(shell.id))
       return "run result or restart continuation is pending";
@@ -847,7 +1000,10 @@ const make = Effect.gen(function* () {
       )
     `.pipe(NodeSqliteClient.readOnly);
     if (pending.length) return "run, task delivery or durable effect is pending";
-    if (shell.lineage.relationshipToParent === "subagent") {
+    if (request.family && shell.lineage.relationshipToParent === "subagent") {
+      if (!(yield* familyDelegateResultConsumed(sql, shell, request.runId)))
+        return "parent has not received this delegate's result";
+    } else if (shell.lineage.relationshipToParent === "subagent") {
       const delivered = yield* sql`
         SELECT 1 FROM orchestration_v2_projection_subagents
         WHERE child_thread_id = ${shell.id} AND thread_id = ${shell.lineage.parentThreadId}
@@ -857,23 +1013,32 @@ const make = Effect.gen(function* () {
       `.pipe(NodeSqliteClient.readOnly);
       if (!delivered.length) return "parent has not received this delegate's result";
     }
+    return null;
+  });
+
+  const workspaceActivityHold = Effect.fn("StorageCleanup.workspaceActivityHold")(function* (
+    checkout: string,
+    memberIds: ReadonlySet<string>,
+  ) {
     const commands = yield* sql<{ cwd: string; thread_id: string }>`
       SELECT cwd, thread_id FROM command_runs WHERE status IN ('queued','running') OR delivered_at IS NULL
     `.pipe(NodeSqliteClient.readOnly);
     for (const row of commands) {
-      if (row.thread_id === shell.id || (yield* usesReleasePath(request.worktreePath, row.cwd)))
+      if (memberIds.has(row.thread_id) || (yield* usesReleasePath(checkout, row.cwd)))
         return "command or command delivery is pending";
     }
     for (const cwd of yield* providerSessions.occupiedWorkspaces) {
-      if (yield* usesReleasePath(request.worktreePath, cwd))
+      if (yield* usesReleasePath(checkout, cwd))
         return "provider workspace is still open or closing";
     }
     for (const entries of liveTerminals.values()) {
       for (const terminal of entries.values()) {
         if (
           (terminal.status === "starting" || terminal.status === "running") &&
-          (terminal.threadId === shell.id ||
-            (yield* usesReleasePath(request.worktreePath, terminal.cwd)))
+          (memberIds.has(terminal.threadId) ||
+            (yield* usesReleasePath(checkout, terminal.cwd)) ||
+            (terminal.worktreePath !== null &&
+              (yield* usesReleasePath(checkout, terminal.worktreePath))))
         )
           return "open terminal";
       }
@@ -924,7 +1089,7 @@ const make = Effect.gen(function* () {
       yield* HostProcess.HomeDirectory,
     )) {
       const root = yield* fs.exists(directory).pipe(
-        Effect.flatMap((exists) => (exists ? fs.realPath(directory) : Effect.succeed(null))),
+        Effect.flatMap((exists) => (exists ? realWorkspacePath(directory) : Effect.succeed(null))),
         Effect.orElseSucceed(() => null),
       );
       if (root !== null && !isFilesystemRoot(root, path)) roots.push(root);
@@ -943,12 +1108,32 @@ const make = Effect.gen(function* () {
     const snapshot = yield* readThreads();
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const defaultBranches = new Map<string, string | null>();
+    const requestedByOwner = new Map<string, string>();
+    for (const { request } of releases.values()) {
+      requestedByOwner.set(request.threadId, request.worktreePath);
+      for (const member of request.family ?? [])
+        requestedByOwner.set(member.threadId, request.worktreePath);
+    }
+    const releaseAliases = new Map<string, string>();
+    for (const thread of snapshot.threads) {
+      const requested = requestedByOwner.get(thread.id);
+      const stored = thread.worktreePath;
+      if (
+        requested !== undefined &&
+        stored !== null &&
+        stored !== requested &&
+        !releaseAliases.has(stored) &&
+        (yield* sameReleaseCheckout(stored, requested))
+      )
+        releaseAliases.set(stored, requested);
+    }
+    const groupPath = (stored: string) => releaseAliases.get(stored) ?? path.resolve(stored);
     const groups = Map.groupBy(
       snapshot.threads.filter((thread) => thread.worktreePath !== null),
-      (thread) => path.resolve(thread.worktreePath!),
+      (thread) => groupPath(thread.worktreePath!),
     );
     const deletedByPath = Map.groupBy(deletedThreads, (thread) =>
-      path.resolve(thread.worktreePath!),
+      pathKey(groupPath(thread.worktreePath!)),
     );
     const candidates = [
       ...[...groups].map(
@@ -956,7 +1141,7 @@ const make = Effect.gen(function* () {
           // A deleted thread still owns the worktree its remaining subagents share,
           // but only deletion cleanup acts on it; otherwise the live rules apply.
           deletedByPath
-            .get(worktreePath)
+            .get(pathKey(worktreePath))
             ?.find(
               (deleted) =>
                 resolveWorktreeCleanup(serverSettings, deleted.projectId).worktreeOnDelete &&
@@ -965,23 +1150,34 @@ const make = Effect.gen(function* () {
           worktreeOwner(group) ??
           group[0]!,
       ),
-      ...deletedThreads.filter((thread) => !groups.has(path.resolve(thread.worktreePath!))),
+      ...deletedThreads.filter((thread) => !groups.has(groupPath(thread.worktreePath!))),
     ];
     for (const thread of candidates) {
       const settings = resolveWorktreeCleanup(serverSettings, thread.projectId);
-      const worktreePath = path.resolve(thread.worktreePath!);
+      const storedPath = path.resolve(thread.worktreePath!);
+      const worktreePath = groupPath(thread.worktreePath!);
       if (!hasRequests && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
       const canonical = hasRequests
-        ? yield* releasePath(worktreePath).pipe(Effect.orElseSucceed(() => null))
+        ? yield* (
+            requestedByOwner.has(thread.id)
+              ? releasePath(worktreePath)
+              : observedCheckoutPath(worktreePath).pipe(Effect.map((real) => real ?? worktreePath))
+          ).pipe(Effect.orElseSucceed(() => null))
         : worktreePath;
       const key = hasRequests && canonical !== null ? worktreeReleaseName(canonical) : "";
       const namedKey =
-        hasRequests && canonical !== worktreePath ? worktreeReleaseName(worktreePath) : key;
+        hasRequests && canonical !== storedPath ? worktreeReleaseName(storedPath) : key;
+      const group = groups.get(worktreePath) ?? [];
       const invalid =
-        canonical === null || invalidRequests.has(key) || invalidRequests.has(namedKey);
+        canonical === null ||
+        invalidRequests.has(key) ||
+        invalidRequests.has(namedKey) ||
+        (invalidRequests.size > 0 &&
+          group.some((member) =>
+            invalidRequests.has(worktreeReleaseName(path.resolve(member.worktreePath!))),
+          ));
       const release = releases.get(key) ?? releases.get(namedKey);
       if (!invalid && !release && (requestsOnly || !worktreeCleanupEnabled(settings))) continue;
-      const group = groups.get(worktreePath) ?? [];
       const activityAt = Math.max(...group.map(storageCleanupActivityAt));
       const deleted = "workspaceRoot" in thread;
       const members = deleted ? [thread, ...group] : group;
@@ -992,7 +1188,7 @@ const make = Effect.gen(function* () {
         kind: "worktree",
         outcome: "kept",
         reason: "",
-        path: worktreePath,
+        path: storedPath,
         projectPath: project?.workspaceRoot ?? null,
         threadId: thread.id,
         threadTitle: thread.title,
@@ -1018,12 +1214,8 @@ const make = Effect.gen(function* () {
       };
       yield* Effect.gen(function* () {
         const exists = yield* fs.exists(worktreePath).pipe(
-          // A stored path under a regular file cannot exist, but access() fails with ENOTDIR.
           Effect.catchIf(
-            (error) =>
-              error.cause instanceof Error &&
-              "code" in error.cause &&
-              error.cause.code === "ENOTDIR",
+            (error) => !release && hasNonDirectoryParent(error),
             () => Effect.succeed(false),
           ),
         );
@@ -1036,12 +1228,19 @@ const make = Effect.gen(function* () {
         if (
           release &&
           (deleted ||
-            group.length !== 1 ||
-            deletedByPath.has(worktreePath) ||
+            (release.request.family
+              ? group.length < 2 ||
+                thread.lineage.parentThreadId !== null ||
+                thread.lineage.rootThreadId !== thread.id
+              : group.length !== 1) ||
             release.request.threadId !== thread.id ||
             release.request.branch !== thread.branch)
         )
-          return keep("checkout does not have the requested sole owner");
+          return keep(
+            release.request.family
+              ? "checkout does not have the requested family owner"
+              : "checkout does not have the requested sole owner",
+          );
         if (deleted && !settings.worktreeOnDelete) return keep("no rules apply");
         if (members.length > 1 && worktreeOwner(members) === undefined)
           return keep(`shared by ${members.length} threads`);
@@ -1055,15 +1254,15 @@ const make = Effect.gen(function* () {
           return keep("a subagent thread's branch differs from this worktree's branch");
         if (hasTerminal(worktreePath)) return keep(waitForStop("open terminal"));
         // Compare canonical roots while allowing symlinked parents, never symlinked worktree directories.
-        const realPath = yield* fs.realPath(worktreePath);
-        const realParent = yield* fs.realPath(path.dirname(worktreePath));
+        const realPath = yield* realWorkspacePath(worktreePath);
+        const realParent = yield* realWorkspacePath(path.dirname(worktreePath));
         if (realPath !== path.join(realParent, path.basename(worktreePath)))
           return keep("worktree is a symbolic link");
         if (release && !(yield* isManagedWorktreePath(worktreePath)))
           return keep("checkout is outside the managed layout for resuming this thread");
         if (!roots.some((root) => inside(root, realPath)))
           return keep("outside the managed worktree folder");
-        if (yield* containsProjectRoot(worktreePath, [project, ...snapshot.projects]))
+        if (yield* containsProjectRoot(realPath, [project, ...snapshot.projects]))
           return keep("contains a project checkout");
         if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File")
           return keep("not a linked worktree");
@@ -1094,7 +1293,10 @@ const make = Effect.gen(function* () {
           settledFor !== null &&
           settings.worktreeSettledAfterDays !== null &&
           settledFor >= settings.worktreeSettledAfterDays * DAY_MS;
-        if (release && (head.commitSha !== release.request.head || realPath !== worktreePath))
+        if (
+          release &&
+          (head.commitSha !== release.request.head || realPath !== release.request.worktreePath)
+        )
           return keep("requested checkout or commit changed");
         let eligible = release !== undefined || deleted || old || settled;
         let removalReason = release
@@ -1223,20 +1425,38 @@ const make = Effect.gen(function* () {
           if (yield* containsProjectRoot(worktreePath, [project, ...latestProjects]))
             return "contains a project checkout";
           const paths = yield* projections.getThreadWorktreePaths({ includeArchived: true });
-          if (release) {
-            for (const other of paths) {
-              if (other.threadId === thread.id) continue;
-              const resolved = path.resolve(other.worktreePath);
-              const canonical = yield* releasePath(resolved);
-              if (
-                pathKey(canonical) === pathKey(realPath) ||
-                inside(realPath, canonical) ||
-                inside(canonical, realPath)
-              )
-                return "checkout is shared by another thread";
+          const latest = [];
+          const bindingChecks = new Map<string, boolean>();
+          const boundToCheckout = Effect.fnUntraced(function* (stored: string) {
+            const known = bindingChecks.get(stored);
+            if (known !== undefined) return known;
+            const bound = yield* sameReleaseCheckout(stored, realPath);
+            bindingChecks.set(stored, bound);
+            return bound;
+          });
+          for (const other of paths) {
+            if (!release) {
+              if (path.resolve(other.worktreePath) === worktreePath) latest.push(other);
+              continue;
             }
+            const approved =
+              other.threadId === thread.id ||
+              release.request.family?.some((member) => member.threadId === other.threadId);
+            if (approved) {
+              if (!(yield* boundToCheckout(other.worktreePath)))
+                return "approved checkout binding changed";
+              latest.push(other);
+              continue;
+            }
+            const canonical = yield* observedCheckoutPath(path.resolve(other.worktreePath));
+            if (canonical === null) continue;
+            if (
+              pathKey(canonical) === pathKey(realPath) ||
+              inside(realPath, canonical) ||
+              inside(canonical, realPath)
+            )
+              return "checkout is shared by another thread";
           }
-          const latest = paths.filter((entry) => path.resolve(entry.worktreePath) === worktreePath);
           if (hasTerminal(worktreePath)) return waitForStop("open terminal");
           if (deleted) {
             if (
@@ -1258,6 +1478,11 @@ const make = Effect.gen(function* () {
             projections.getThreadShell(entry.threadId),
           );
           const latestGroup = latestShells.filter((shell) => shell !== null);
+          if (release) {
+            for (const shell of latestGroup)
+              if (shell.worktreePath === null || !(yield* boundToCheckout(shell.worktreePath)))
+                return "approved checkout binding changed";
+          }
           const latestOwner = worktreeOwner(deleted ? [thread, ...latestGroup] : latestGroup);
           if (
             latestGroup.length !== group.length ||
@@ -1271,16 +1496,81 @@ const make = Effect.gen(function* () {
                 !Equal.equals(shell.settledAt, previous.settledAt) ||
                 (shell.settledAt !== null && !Equal.equals(shell.updatedAt, previous.updatedAt)) ||
                 !storageCleanupThreadIdle(shell, now, serverSettings) ||
-                path.resolve(shell.worktreePath!) !== worktreePath ||
+                (!release && path.resolve(shell.worktreePath!) !== worktreePath) ||
                 storageCleanupActivityAt(shell) !== storageCleanupActivityAt(previous)
               );
             })
           )
             return waitForStop("thread activity or shared worktree changed since check");
           if (release) {
-            const current = latestGroup[0]!;
-            const hold = yield* deliveryHold(current, release.request);
-            if (hold !== null) return hold;
+            // A closed, unused side chat keeps its worktree binding. Recheck its provenance and
+            // deletion effects on the same lease as the live owners, including the final recheck.
+            const leafSuffix = path.sep + path.basename(worktreePath);
+            const tombstones = yield* sql<{ deletedWorktree: string; unused: string | null }>`
+              SELECT json_extract(t.payload_json, '$.worktreePath') AS "deletedWorktree",
+                CASE WHEN NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r WHERE r.thread_id = t.thread_id)
+                  AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_messages m WHERE m.thread_id = t.thread_id)
+                  AND NOT EXISTS (SELECT 1 FROM command_runs c WHERE c.thread_id = t.thread_id)
+                  AND NOT EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox e
+                    WHERE e.thread_id = t.thread_id AND e.status != 'succeeded')
+                  AND EXISTS (SELECT 1 FROM orchestration_v2_effect_outbox e WHERE e.thread_id = t.thread_id
+                    AND e.status = 'succeeded' AND e.effect_type IN ('scheduled-tasks.cleanup','terminal.cleanup','preview.cleanup')
+                    GROUP BY e.command_id HAVING count(DISTINCT e.effect_type) = 3)
+                  THEN t.payload_json END AS unused
+              FROM orchestration_v2_projection_threads t WHERE t.deleted_at IS NOT NULL
+                AND substr(json_extract(t.payload_json, '$.worktreePath'), -length(${leafSuffix})) = ${leafSuffix} COLLATE NOCASE
+            `.pipe(NodeSqliteClient.readOnly);
+            const closedSideChats = [];
+            for (const row of tombstones) {
+              if (!(yield* boundToCheckout(row.deletedWorktree))) {
+                if (yield* usesReleasePath(realPath, row.deletedWorktree))
+                  return "a deleted thread has an overlapping checkout";
+                continue;
+              }
+              const side = row.unused === null ? null : yield* decodeCleanupThread(row.unused);
+              if (
+                !side ||
+                side.deletedAt === null ||
+                side.projectId !== thread.projectId ||
+                side.branch !== thread.branch ||
+                side.lineage.sideChat !== true ||
+                side.lineage.relationshipToParent !== "fork" ||
+                side.lineage.rootThreadId !== thread.id
+              )
+                return "checkout still has a deleted owner";
+              closedSideChats.push(side);
+            }
+            if (
+              closedSideChats.length &&
+              worktreeOwner([...latestGroup, ...closedSideChats])?.id !== thread.id
+            )
+              return "deleted side chat does not belong to the checkout family";
+            const { family } = release.request;
+            if (family && family.length !== latestGroup.length)
+              return "approved worktree family changed";
+            for (const current of latestGroup) {
+              const approved = family?.find((member) => member.threadId === current.id);
+              if (
+                family &&
+                (!approved ||
+                  approved.projectId !== thread.projectId ||
+                  current.projectId !== thread.projectId ||
+                  !familyMemberSettled(current, thread) ||
+                  !Equal.equals(current.lineage, approved.lineage) ||
+                  (current.id === thread.id && approved.runId !== release.request.runId))
+              )
+                return "approved worktree family changed or is unsettled";
+              const hold = yield* deliveryHold(current, {
+                ...release.request,
+                runId: approved?.runId ?? release.request.runId,
+              });
+              if (hold !== null) return hold;
+            }
+            const activity = yield* workspaceActivityHold(
+              release.request.worktreePath,
+              new Set(latestGroup.map((member) => member.id)),
+            );
+            if (activity !== null) return activity;
             if (
               !(yield* fs.exists(release.file)) ||
               (yield* fs.readFileString(release.file)) !== release.contents
@@ -1361,30 +1651,39 @@ const make = Effect.gen(function* () {
           run: (args) => cleanupGit(project.workspaceRoot, [...args], "git worktree remove"),
         });
         if (release) {
-          const removed = yield* threadCommands.withLock(
-            thread.id,
-            Effect.gen(function* () {
-              const admissionHold = yield* beginRemoval;
-              if (admissionHold !== null) return admissionHold;
-              const lastHold = yield* blockedSinceCheck();
-              if (lastHold !== null) return lastHold;
-              const base = release.file.replace(/\.releasing$/, "");
-              const claimed = base + ".releasing";
-              const won =
-                release.file === claimed ||
-                (yield* fs.rename(release.file, claimed).pipe(
-                  Effect.as(true),
-                  Effect.catchIf(
-                    (error) => error.reason._tag === "NotFound",
-                    () => Effect.succeed(false),
-                  ),
-                ));
-              if (!won || (yield* fs.readFileString(claimed)) !== release.contents)
-                return "owner withdrew or replaced the release request";
-              yield* remove;
-              yield* fs.rename(claimed, base + ".released");
-              return null;
-            }),
+          const removeApproved = Effect.gen(function* () {
+            const admissionHold = yield* beginRemoval;
+            if (admissionHold !== null) return admissionHold;
+            const lastHold = yield* blockedSinceCheck();
+            if (lastHold !== null) return lastHold;
+            const base = release.file.replace(/\.releasing$/, "");
+            const claimed = base + ".releasing";
+            const won =
+              release.file === claimed ||
+              (yield* fs.rename(release.file, claimed).pipe(
+                Effect.as(true),
+                Effect.catchIf(
+                  (error) => error.reason._tag === "NotFound",
+                  () => Effect.succeed(false),
+                ),
+              ));
+            if (!won || (yield* fs.readFileString(claimed)) !== release.contents)
+              return "owner withdrew or replaced the release request";
+            yield* remove;
+            yield* fs.rename(claimed, base + ".released");
+            return null;
+          });
+          // Parent-before-child matches the dispatch lock order for forks, deletes and follow-ups.
+          const byParent = Map.groupBy(group, (member) => member.lineage.parentThreadId);
+          const ordered = [thread.id];
+          if (release.request.family) {
+            for (const id of ordered) {
+              for (const child of byParent.get(id) ?? []) ordered.push(child.id);
+            }
+          }
+          const removed = yield* ordered.reduceRight(
+            (locked, id) => threadCommands.withLock(id, locked),
+            removeApproved,
           );
           if (removed !== null) return keep(removed);
         } else yield* remove;
@@ -1394,6 +1693,11 @@ const make = Effect.gen(function* () {
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
       }).pipe(
         (effect) => withWorkspaceLease(worktreePath, Effect.scoped(effect)),
+        Effect.catchIf(
+          (error) =>
+            !release && error instanceof WorkspaceLeasePathError && hasNonDirectoryParent(error),
+          () => Effect.void,
+        ),
         Effect.catch((error) =>
           Effect.gen(function* () {
             entries.push({

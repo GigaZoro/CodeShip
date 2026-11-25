@@ -1,13 +1,15 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off - the eval owns a server subprocess and a scratch workspace.
+// @effect-diagnostics nodeBuiltinImport:off - the eval owns a server subprocess and a scratch workspace.
 /**
  * An isolated T3 server for one device run. Its only provider is `evalbot`, an Fx instance
  * backed by `fake-fx.ts`, so every reply is scripted. State lives under the run's `--out`.
  */
 import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CommandId,
   EnvironmentId,
@@ -27,10 +29,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
-import { RpcClient, RpcSerialization } from "effect/rpc";
+import { RpcClient, type RpcClientError, type RpcGroup, RpcSerialization } from "effect/rpc";
 import { Socket } from "effect/socket";
 
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "../..");
+type EnvironmentRpcClient = RpcClient.RpcClient<
+  RpcGroup.Rpcs<typeof WsRpcGroup>,
+  RpcClientError.RpcClientError
+>;
 export const EVAL_INSTANCE = ProviderInstanceId.make("evalbot");
 export const EVAL_MODEL = "eval/scripted";
 
@@ -79,7 +85,7 @@ const runCli = (args: ReadonlyArray<string>) =>
       new EnvironmentError({ message: `bin.ts ${args.join(" ")} failed: ${cause}` }),
   });
 
-function writeScratch(baseDir: string) {
+function writeScratch(baseDir: string, windows: boolean) {
   const workspace = NodePath.join(baseDir, "workspace/acme-app");
   const control = NodePath.join(baseDir, "control");
   NodeFS.mkdirSync(NodePath.join(baseDir, "userdata"), { recursive: true });
@@ -98,12 +104,16 @@ function writeScratch(baseDir: string) {
   git("init", "-q");
   git("add", "-A");
   git("-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "-qm", "init");
-  const launcher = NodePath.join(baseDir, "fx");
-  NodeFS.writeFileSync(
-    launcher,
-    `#!/bin/sh\nexec node ${JSON.stringify(NodePath.join(import.meta.dirname, "fake-fx.ts"))} "$@"\n`,
-    { mode: 0o755 },
-  );
+  const launcher = NodePath.join(baseDir, windows ? "fx.cmd" : "fx");
+  const agent = NodePath.join(import.meta.dirname, "fake-fx.ts");
+  if (windows) {
+    NodeFS.copyFileSync(agent, NodePath.join(baseDir, "fake-fx.ts"));
+    NodeFS.writeFileSync(launcher, '@echo off\r\nnode "%~dp0fake-fx.ts" %*\r\n');
+  } else {
+    NodeFS.writeFileSync(launcher, `#!/bin/sh\nexec node ${JSON.stringify(agent)} "$@"\n`, {
+      mode: 0o755,
+    });
+  }
   NodeFS.writeFileSync(
     NodePath.join(baseDir, "userdata/settings.json"),
     JSON.stringify({
@@ -127,34 +137,73 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
   readonly deviceHost: string;
 }) {
   NodeFS.rmSync(input.baseDir, { recursive: true, force: true });
-  const { workspace, control } = writeScratch(input.baseDir);
+  const windows = yield* HostProcess.isWindows;
+  const { workspace, control } = writeScratch(input.baseDir, windows);
   const home = NodePath.join(input.baseDir, "home");
   NodeFS.mkdirSync(home, { recursive: true });
   const port = yield* freePort();
-  const log = NodeFS.openSync(NodePath.join(input.baseDir, "server.log"), "w");
   yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      NodeChildProcess.spawn(
-        "node",
-        [
-          "apps/server/src/bin.ts",
-          "serve",
-          "--host",
-          "0.0.0.0",
-          "--port",
-          String(port),
-          "--base-dir",
-          input.baseDir,
-          "--no-browser",
-          "--log-level",
-          "warn",
-          workspace,
-        ],
-        // A scratch HOME keeps the user's own skills and config out of the app under test.
-        { cwd: REPO_ROOT, stdio: ["ignore", log, log], env: { ...process.env, HOME: home } },
-      ),
-    ),
-    (child) => Effect.sync(() => child.kill("SIGTERM")),
+    Effect.tryPromise({
+      try: async () => {
+        const log = NodeFS.openSync(NodePath.join(input.baseDir, "server.log"), "w");
+        try {
+          const child = NodeChildProcess.spawn(
+            "node",
+            [
+              "apps/server/src/bin.ts",
+              "serve",
+              "--host",
+              input.deviceHost === "127.0.0.1" ? "127.0.0.1" : "0.0.0.0",
+              "--port",
+              String(port),
+              "--base-dir",
+              input.baseDir,
+              "--no-browser",
+              "--log-level",
+              "warn",
+              workspace,
+            ],
+            // A scratch HOME keeps the user's own skills and config out of the app under test.
+            {
+              cwd: REPO_ROOT,
+              stdio: ["ignore", log, log],
+              env: {
+                ...process.env,
+                HOME: home,
+                ...(windows ? { USERPROFILE: home } : {}),
+              },
+            },
+          );
+          await NodeEvents.EventEmitter.once(child, "spawn");
+          return child;
+        } finally {
+          NodeFS.closeSync(log);
+        }
+      },
+      catch: (cause) =>
+        new EnvironmentError({ message: `Could not start the fixture server: ${cause}` }),
+    }),
+    (child) =>
+      Effect.gen(function* () {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        // The server can still write SQLite and logs while shutting down. The fixture directory
+        // belongs to the surrounding scope and can be removed as soon as this finalizer returns.
+        const exited = NodeEvents.EventEmitter.once(child, "exit", {
+          signal: AbortSignal.timeout(15_000),
+        });
+        child.kill("SIGTERM");
+        const waitForExit = Effect.promise(() => exited);
+        yield* waitForExit.pipe(
+          Effect.interruptible,
+          Effect.timeoutOrElse({
+            duration: "10 seconds",
+            orElse: () => {
+              child.kill("SIGKILL");
+              return waitForExit;
+            },
+          }),
+        );
+      }),
   );
   yield* waitForPort(port);
   const origin = `http://127.0.0.1:${port}`;
@@ -229,7 +278,9 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
       Layer.provide(NodeSocket.layerWebSocketConstructorWS),
     ),
   );
-  const client = yield* RpcClient.make(WsRpcGroup).pipe(Effect.provideContext(protocol));
+  const client: EnvironmentRpcClient = yield* RpcClient.make(WsRpcGroup).pipe(
+    Effect.provideContext(protocol),
+  );
   const environmentId = EnvironmentId.make(descriptor.environmentId);
 
   const command = Effect.map(uuid, CommandId.make);
@@ -371,6 +422,13 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
       ),
     origin,
     environmentId,
+    releaseClient: (): Pick<
+      EnvironmentRpcClient,
+      "orchestration.launchThread" | "orchestration.dispatchCommand" | "server.runStorageCleanup"
+    > => client,
+    projectId,
+    workspace,
+    until,
     archive: (threadId: ThreadId) =>
       command.pipe(
         Effect.flatMap((commandId) =>

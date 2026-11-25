@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
+import { existingWorkspacePath } from "../workspace/workspaceLease.ts";
 import type * as GitVcsDriver from "./GitVcsDriver.ts";
 
 const INDEX_LIST_MAX_BYTES = 64 * 1024 * 1024;
@@ -70,8 +71,8 @@ export const removeLinkedWorktree = Effect.fn("WorktreeRemoval.removeLinkedWorkt
       })
       .pipe(Effect.map((result) => result.stdout));
   const samePath = (left: string, right: string) =>
-    Effect.all([fileSystem.realPath(left), fileSystem.realPath(right)]).pipe(
-      Effect.map(([a, b]) => a.toLowerCase() === b.toLowerCase()),
+    Effect.all([existingWorkspacePath(left), existingWorkspacePath(right)]).pipe(
+      Effect.map(([a, b]) => a === b),
       Effect.orElseSucceed(() => false),
     );
 

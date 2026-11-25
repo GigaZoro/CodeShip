@@ -40,6 +40,7 @@ export interface ProjectSetupScriptRunnerResultStarted {
   readonly async: boolean;
   /** Null exit code means the terminal exited or closed before the sentinel. */
   readonly completion?: Effect.Effect<ProjectSetupScriptCompletion>;
+  readonly cancel?: Effect.Effect<void>;
 }
 
 export interface ProjectSetupScriptCompletion {
@@ -621,7 +622,14 @@ export const make = Effect.gen(function* () {
       terminalId,
       cwd,
       async: script.async !== false,
-      ...(completion ? { completion } : {}),
+      ...(completion
+        ? {
+            completion,
+            cancel: terminalManager
+              .close({ threadId: input.threadId, terminalId })
+              .pipe(Effect.ignore({ log: true })),
+          }
+        : {}),
     } as const;
   });
 

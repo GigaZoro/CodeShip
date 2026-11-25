@@ -1,6 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeSqlite from "node:sqlite";
 import { assert, it } from "@effect/vitest";
-import { RunId, ThreadId } from "@t3tools/contracts";
+import { GitCommandError, RunId, ThreadId } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -19,38 +23,132 @@ import { readLatestMessages, threadCommand, type ThreadTools, waitForRun } from 
 const threadId = ThreadId.make("thread-1");
 const runId = RunId.make("run-1");
 
-it.live("release-worktree queues an ordinary request when --save-ignored is omitted", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const root = yield* makeTmpDir("thread-release-cli-");
-    const repo = path.join(root, "primary");
-    const worktree = path.join(root, "finished checkout");
-    const { initialBranch } = yield* initRepoWithCommit(repo);
-    yield* git(repo, ["worktree", "add", "-b", "finished", worktree]);
-    const durableRef = `refs/heads/${initialBranch}`;
-    const baseDir = path.join(root, "server");
-    yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+const releaseCliLayer = Layer.mergeAll(
+  layerTest,
+  NetService.layer,
+  ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+);
+
+const releaseCliFixture = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const temp = yield* releasePath(yield* makeTmpDir("thread-release-cli-"));
+  const repo = path.join(temp, "primary");
+  const { initialBranch } = yield* initRepoWithCommit(repo);
+  const durableRef = "refs/heads/" + initialBranch;
+  const parent = path.join(temp, "checkouts");
+  const checkout = path.join(parent, "finished checkout");
+  yield* fs.makeDirectory(parent);
+  yield* git(repo, ["worktree", "add", "-b", "finished", checkout]);
+
+  const baseDir = path.join(temp, "server");
+  const { stateDir, dbPath } = yield* deriveServerPaths(baseDir, undefined);
+  yield* fs.makeDirectory(stateDir, { recursive: true });
+  const db = yield* Effect.acquireRelease(
+    Effect.sync(() => new NodeSqlite.DatabaseSync(dbPath)),
+    (database) => Effect.sync(() => database.close()),
+  );
+  db.exec(`
+    CREATE TABLE orchestration_v2_projection_threads (
+      thread_id TEXT PRIMARY KEY, project_id TEXT, payload_json TEXT, deleted_at TEXT);
+    CREATE TABLE orchestration_v2_projection_runs (
+      thread_id TEXT, run_id TEXT, ordinal INTEGER);
+  `);
+  const bind = (id: string, spelling: string, parentId: string | null = null, archived = false) => {
+    const lineage = {
+      rootThreadId: parentId ?? id,
+      parentThreadId: parentId,
+      relationshipToParent: parentId === null ? null : "subagent",
+    };
+    db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES(?, 'project', ?, NULL)").run(
+      id,
+      JSON.stringify({
+        branch: "finished",
+        lineage,
+        archivedAt: archived ? "2026-01-01T00:00:00Z" : null,
+        worktreePath: spelling,
+      }),
+    );
+    db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES(?, ?, 1)").run(id, id + "-run");
+  };
+  const release = (id: string, spelling: string, ...flags: string[]) =>
+    Command.runWith(threadCommand, { version: "0.0.0" })([
       "release-worktree",
-      threadId,
+      id,
       "--run",
-      runId,
+      id + "-run",
       "--worktree",
-      worktree,
+      spelling,
       "--durable-ref",
       durableRef,
       "--base-dir",
       baseDir,
+      ...flags,
     ]);
-    const { stateDir } = yield* deriveServerPaths(baseDir, undefined);
-    const file = worktreeReleaseName(yield* releasePath(worktree));
-    const request = yield* decodeReleaseRequest(
-      yield* fs.readFileString(path.join(stateDir, WORKTREE_RELEASE_DIRECTORY, file)),
+  const requestFile = path.join(
+    stateDir,
+    WORKTREE_RELEASE_DIRECTORY,
+    worktreeReleaseName(checkout),
+  );
+  const request = fs.readFileString(requestFile).pipe(Effect.flatMap(decodeReleaseRequest));
+  return { temp, checkout, db, bind, release, durableRef, requestFile, request };
+});
+
+it.live("release-worktree queues an ordinary request when --save-ignored is omitted", () =>
+  Effect.gen(function* () {
+    const { checkout, bind, release, durableRef, request } = yield* releaseCliFixture;
+    bind("owner", checkout);
+    yield* release("owner", checkout);
+    const queued = yield* request;
+    assert.strictEqual(queued.threadId, "owner");
+    assert.strictEqual(queued.runId, "owner-run");
+    assert.strictEqual(queued.durableRef, durableRef);
+    assert.isUndefined(queued.family);
+    assert.isUndefined(queued.savedFiles);
+  }).pipe(Effect.provide(releaseCliLayer), Effect.scoped),
+);
+
+it.live("release-worktree binds every owner across aliased checkout parents", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { temp, checkout, db, bind, release, requestFile, request } = yield* releaseCliFixture;
+    const alias = path.join(temp, "parent-alias");
+    const otherAlias = path.join(temp, "other-parent-alias");
+    for (const name of [alias, otherAlias])
+      yield* Effect.promise(() => NodeFSP.symlink(path.dirname(checkout), name, "junction"));
+    const ownerCheckout = path.join(alias, path.basename(checkout));
+    const childCheckout = path.join(otherAlias, path.basename(checkout));
+    const issue = (id: string, spelling = checkout) => release(id, spelling, "--no-save-ignored");
+
+    assert.instanceOf(yield* Effect.flip(issue("root")), GitCommandError);
+    assert.isFalse(yield* fs.exists(requestFile));
+    bind("root", ownerCheckout, null);
+    bind("child", childCheckout, "root", true);
+    assert.instanceOf(yield* Effect.flip(issue("child", childCheckout)), GitCommandError);
+    assert.isFalse(yield* fs.exists(requestFile));
+    const staleParent = path.join(temp, "former-worktree-parent");
+    yield* fs.writeFileString(staleParent, "replacement");
+    bind("historical", path.join(staleParent, path.basename(checkout)), null, true);
+    yield* issue("root");
+    const approved = yield* request;
+    assert.deepStrictEqual(
+      approved.family?.map((member) => member.threadId),
+      ["child", "root"],
     );
-    assert.strictEqual(request.runId, runId);
-    assert.strictEqual(request.durableRef, durableRef);
-    assert.isUndefined(request.savedFiles);
-  }).pipe(Effect.provide(Layer.merge(layerTest, NetService.layer)), Effect.scoped),
+    assert.strictEqual(approved.worktreePath, checkout);
+
+    bind("unrelated", checkout, null);
+    assert.instanceOf(yield* Effect.flip(issue("root")), GitCommandError);
+    assert.deepStrictEqual(yield* request, approved);
+    db.exec(
+      "UPDATE orchestration_v2_projection_threads SET deleted_at='closed' WHERE thread_id IN ('child','unrelated')",
+    );
+    assert.instanceOf(yield* Effect.flip(issue("unrelated")), GitCommandError);
+    assert.deepStrictEqual(yield* request, approved);
+    yield* issue("root", ownerCheckout);
+    assert.isUndefined((yield* request).family);
+  }).pipe(Effect.provide(releaseCliLayer), Effect.scoped),
 );
 
 /** Answers each tool call with the next scripted response for that tool. */

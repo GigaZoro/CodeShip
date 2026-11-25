@@ -1,116 +1,426 @@
 // @effect-diagnostics nodeBuiltinImport:off - runs before `vp i`, so only Node built-ins exist.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { isProcessAlive } from "../packages/shared/src/processProbe.ts";
+import {
+  configureWorktreePrepare,
+  hasSetupEntry,
+  installWorktreeDependencies,
+  inspectWindowsInPlaceModules,
+  setupCheckout,
+  setupStatus,
+  windowsInstallInputsUnchanged,
+  windowsInstallTargetsSafe,
+} from "./lib/install-worktree-dependencies.ts";
+import {
+  checkWindowsWorktreeFiles,
+  WindowsWorktreeInspectionError,
+  windowsSetupHost as isWindows,
+} from "./lib/windows-worktree-files.ts";
+import {
+  hasSetupDone,
+  hasSetupOnlyStatus,
+  matchesSetupFiles,
+  readSetupProof,
+  sealSetupMarkers,
+  setupEnvFiles,
+  setupEnvTarget,
+  setupFileStamp,
+  setupProofName,
+  setupStageName,
+  writeSetupProof,
+} from "./lib/worktree-setup-proof.ts";
 
-const ENV_FILES = [".env", NodePath.join("infra", "relay", ".env")];
-
-const worktree = NodePath.dirname(import.meta.dirname);
-
-// T3 runs setup in the background, so agents can start before it ends.
-// `setup-running` holds this PID until setup ends with `setup-done` or
-// `setup-failed`, so agents wait instead of racing it with their own `vp i`.
+const worktree = (isWindows ? NodeFS.realpathSync.native : NodeFS.realpathSync)(
+  NodePath.dirname(import.meta.dirname),
+);
 const markerDir = NodePath.join(worktree, ".t3");
 const runningMarker = NodePath.join(markerDir, "setup-running");
 const doneMarker = NodePath.join(markerDir, "setup-done");
 const failedMarker = NodePath.join(markerDir, "setup-failed");
-NodeFS.rmSync(doneMarker, { force: true });
-NodeFS.rmSync(failedMarker, { force: true });
-NodeFS.mkdirSync(markerDir, { recursive: true });
-NodeFS.writeFileSync(runningMarker, `${process.pid}\n`);
-let failureDetail = "";
-process.on("uncaughtExceptionMonitor", (error) => {
-  failureDetail = error.stack ?? String(error);
-});
-process.on("exit", (code) => {
-  if (code === 0) NodeFS.writeFileSync(doneMarker, "");
-  else NodeFS.writeFileSync(failedMarker, `Setup exited with code ${code}.\n${failureDetail}\n`);
-  NodeFS.rmSync(runningMarker, { force: true });
-});
-// A cancelled setup must still leave a marker, or agents would wait forever.
-// During install, the signal goes on to the installer and setup exits when the
-// install output closes. Any child the shell leaves behind holds that output
-// open, so no marker appears while `vp i` can still write node_modules.
+const inPlaceMarker = NodePath.join(markerDir, "setup-install-in-place");
+const claimName = `setup-owner-${process.pid}`;
+const claim = NodePath.join(markerDir, claimName);
+const staging = NodePath.join(markerDir, setupStageName);
+
+const alive = (pid: number) => {
+  if ((pid | 0) !== pid || pid <= 0) throw new Error("Unrecognized setup process");
+  return isProcessAlive(pid);
+};
+
+const readMarker = (file: string, limit: number, allowHardlink = false) => {
+  const stat = NodeFS.lstatSync(file, { throwIfNoEntry: false });
+  if (!stat) return undefined;
+  if (!stat.isFile() || (!allowHardlink && stat.nlink !== 1) || stat.size > limit)
+    throw new Error(`Unrecognized setup marker: ${file}`);
+  return NodeFS.readFileSync(file, "utf8");
+};
+
+const clearClaim = (directory: string) => {
+  const stat = NodeFS.lstatSync(directory, { throwIfNoEntry: false });
+  if (!stat) return;
+  if (
+    !stat.isDirectory() ||
+    stat.uid !== NodeFS.lstatSync(markerDir).uid ||
+    (stat.mode & 0o077) !== 0
+  )
+    throw new Error(`Unrecognized setup owner: ${directory}`);
+  for (const name of NodeFS.readdirSync(directory)) {
+    const file = NodePath.join(directory, name);
+    const entry = NodeFS.lstatSync(file);
+    if (
+      (name !== "proof" && name !== "done") ||
+      !entry.isFile() ||
+      entry.uid !== stat.uid ||
+      entry.size > 128 * 1024
+    )
+      throw new Error(`Unrecognized setup owner file: ${file}`);
+    NodeFS.unlinkSync(file);
+  }
+  NodeFS.rmdirSync(directory);
+};
+
+const clearEmptyWindowsClaim = async (directory: string) => {
+  const before = NodeFS.lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  if (!before?.isDirectory() || before.ino === 0n || NodeFS.readdirSync(directory).length) return;
+  try {
+    await checkWindowsWorktreeFiles(directory, { targets: [] });
+  } catch (error) {
+    if (!(error instanceof WindowsWorktreeInspectionError)) throw error;
+    process.stderr.write(`${error.message} for the abandoned setup claim. Preserving it.\n`);
+    return;
+  }
+  const current = NodeFS.lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  if (current && setupFileStamp(current) === setupFileStamp(before)) {
+    try {
+      NodeFS.rmdirSync(directory);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
+    }
+  }
+};
+
 let cancelSignal: NodeJS.Signals | undefined;
 let activeInstall: NodeChildProcess.ChildProcess | undefined;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(signal, () => {
     cancelSignal = signal;
-    if (activeInstall) activeInstall.kill(signal);
-    else process.exit(1);
+    activeInstall?.kill(signal);
   });
 }
+const requireActive = () => {
+  if (cancelSignal) throw new Error(`Cancelled by ${cancelSignal}.`);
+};
 
-const projectRoot = process.env.T3CODE_PROJECT_ROOT;
-if (!projectRoot) {
-  throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
-}
-
-// Use the shell for Windows vp shims. Unattended installs need pnpm's confirmation
-// flag and closed stdin so other prompts fail. A stale lockfile must fail, not be rewritten.
-// Pipe output so the failure marker can keep its tail.
-const install = NodeChildProcess.spawn("vp i --frozen-lockfile -- --yes", {
-  cwd: worktree,
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-});
-activeInstall = install;
-let installOutput = "";
-for (const [source, target] of [
-  [install.stdout, process.stdout],
-  [install.stderr, process.stderr],
-] as const) {
-  source.setEncoding("utf8");
-  source.on("data", (chunk: string) => {
-    target.write(chunk);
-    installOutput = (installOutput + chunk).slice(-8_000);
+const install = async (cwd: string) => {
+  requireActive();
+  // Closed stdin and --yes keep pnpm unattended. The shell also handles Windows vp shims.
+  const child = NodeChildProcess.spawn("vp i --frozen-lockfile -- --yes", {
+    cwd,
+    shell: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, T3CODE_WORKTREE_PATH: cwd },
   });
-}
-const installStatus = await new Promise<number | null>((resolve) => install.on("close", resolve));
-activeInstall = undefined;
-if (installStatus !== 0 || cancelSignal) {
-  failureDetail = cancelSignal
-    ? `Cancelled by ${cancelSignal}.`
-    : installOutput.trimEnd().split("\n").slice(-30).join("\n");
-  process.exit(installStatus || 1);
-}
-
-// pnpm cannot clone or hardlink across filesystems, so a store on another
-// device silently turns every worktree install into a full copy.
-const storeDir: unknown = JSON.parse(
-  NodeFS.readFileSync(NodePath.join(worktree, "node_modules", ".modules.yaml"), "utf8"),
-).storeDir;
-if (
-  typeof storeDir === "string" &&
-  NodeFS.statSync(storeDir).dev !== NodeFS.statSync(NodePath.join(worktree, "node_modules")).dev
-) {
-  process.stderr.write(
-    [
-      "",
-      "WARNING: the pnpm store is on a different filesystem than this worktree.",
-      `  store:    ${storeDir}`,
-      `  worktree: ${worktree}`,
-      "pnpm cannot hardlink or clone across filesystems, so it copied every package into node_modules.",
-      "Fix: put the store on the worktree's filesystem, for example:",
-      `  pnpm config set store-dir ${JSON.stringify(NodePath.join(NodePath.dirname(worktree), ".pnpm-store"))} --global`,
-      "",
-      "",
-    ].join("\n"),
-  );
-}
-
-// Worktrees link main-checkout env files; replace only symlinks so real files always survive.
-for (const file of ENV_FILES) {
-  const source = NodePath.join(projectRoot, file);
-  const sourceStat = NodeFS.lstatSync(source, { throwIfNoEntry: false });
-  if (!sourceStat) continue;
-  if (!sourceStat.isFile()) {
-    process.stderr.write(`Skipping ${file}: ${source} is not a regular file.\n`);
-    continue;
+  activeInstall = child;
+  let output = "";
+  for (const [source, target] of [
+    [child.stdout, process.stdout],
+    [child.stderr, process.stderr],
+  ] as const) {
+    source.setEncoding("utf8");
+    source.on("data", (chunk: string) => {
+      target.write(chunk);
+      output = (output + chunk).slice(-8_000);
+    });
   }
-  const target = NodePath.join(worktree, file);
-  const existing = NodeFS.lstatSync(target, { throwIfNoEntry: false });
-  if (existing && !existing.isSymbolicLink()) continue;
-  if (existing) NodeFS.rmSync(target);
-  NodeFS.symlinkSync(source, target);
-}
+  try {
+    const status = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    requireActive();
+    if (status !== 0) throw new Error(output.trimEnd().split("\n").slice(-30).join("\n"));
+  } finally {
+    activeInstall = undefined;
+  }
+};
+
+const installInPlace = async (verified: ReadonlySet<string>) => {
+  if (isWindows && !(await windowsInstallTargetsSafe(worktree, verified)))
+    throw new Error("Existing dependency files could not be verified. Keeping them in place.");
+  await NodeFSP.writeFile(inPlaceMarker, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+  try {
+    await install(worktree);
+  } finally {
+    if (readMarker(inPlaceMarker, 32) === `${process.pid}\n`) await NodeFSP.unlink(inPlaceMarker);
+  }
+};
+
+const linkEnvFiles = async (project: string) => {
+  const links: Array<{ name: string; stamp: string }> = [];
+  for (const name of setupEnvFiles) {
+    const source = await setupEnvTarget(project, name);
+    if (!source) continue;
+    const target = NodePath.join(worktree, name);
+    const parent = NodePath.dirname(target);
+    if ((await NodeFSP.realpath(parent).catch(() => null)) !== parent) continue;
+    try {
+      await NodeFSP.symlink(source, target, "file");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") continue;
+      throw error;
+    }
+    links.push({ name, stamp: setupFileStamp(await NodeFSP.lstat(target, { bigint: true })) });
+  }
+  return links;
+};
+
+const warnAboutStore = () => {
+  const modules = NodePath.join(worktree, "node_modules");
+  const storeDir: unknown = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(modules, ".modules.yaml"), "utf8"),
+  ).storeDir;
+  if (
+    typeof storeDir === "string" &&
+    NodeFS.statSync(storeDir).dev !== NodeFS.statSync(modules).dev
+  ) {
+    process.stderr.write(
+      [
+        "",
+        "WARNING: the pnpm store is on a different filesystem than this worktree.",
+        `  store:    ${storeDir}`,
+        `  worktree: ${worktree}`,
+        "pnpm cannot hardlink or clone across filesystems, so it copied every package into node_modules.",
+        "Fix: put the store on the worktree's filesystem, for example:",
+        `  pnpm config set store-dir ${JSON.stringify(NodePath.join(NodePath.dirname(worktree), ".pnpm-store"))} --global`,
+        "",
+        "",
+      ].join("\n"),
+    );
+  }
+};
+
+const publishDone = (marker: string) => {
+  if (marker === "") {
+    NodeFS.writeFileSync(doneMarker, marker, { flag: "wx" });
+    return;
+  }
+  const pending = NodePath.join(claim, "done");
+  NodeFS.writeFileSync(pending, marker, { flag: "wx" });
+  NodeFS.linkSync(pending, doneMarker);
+  NodeFS.unlinkSync(pending);
+};
+
+const setup = async () => {
+  const project = process.env.T3CODE_PROJECT_ROOT;
+  if (!project)
+    throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
+  const projectRoot = await NodeFSP.realpath(project);
+
+  NodeFS.mkdirSync(markerDir, { recursive: true });
+  const markerDirectory = NodeFS.lstatSync(markerDir, { bigint: true });
+  if (
+    !markerDirectory.isDirectory() ||
+    (isWindows && NodePath.relative(markerDir, await NodeFSP.realpath(markerDir)) !== "")
+  )
+    throw new Error("Setup marker directory is redirected");
+  let canRecordProof = true;
+  if (isWindows) {
+    try {
+      await checkWindowsWorktreeFiles(markerDir, {
+        targets: [runningMarker, doneMarker, failedMarker, inPlaceMarker].map((file) =>
+          NodePath.basename(file),
+        ),
+      });
+    } catch (error) {
+      if (
+        !(error instanceof WindowsWorktreeInspectionError) ||
+        error.check === "reparse-root" ||
+        error.check === "reparse-parent" ||
+        setupFileStamp(await NodeFSP.lstat(markerDir, { bigint: true })) !==
+          setupFileStamp(markerDirectory)
+      )
+        throw error;
+      process.stderr.write(`${error.message} for setup markers. Setup proof is unavailable.\n`);
+      canRecordProof = false;
+    }
+  }
+  // Register before checking peers. A simultaneous contender either sees us or makes both back off.
+  NodeFS.mkdirSync(claim, { mode: 0o700 });
+  const ownClaim = isWindows ? NodeFS.lstatSync(claim, { bigint: true }) : undefined;
+  let running = false;
+  try {
+    for (const name of NodeFS.readdirSync(markerDir)) {
+      if (name === claimName) continue;
+      const owner = /^setup-owner-([1-9]\d*)$/.exec(name);
+      if (!owner) continue;
+      if (alive(Number(owner[1]))) throw new Error("Another worktree setup is running");
+      if (isWindows) await clearEmptyWindowsClaim(NodePath.join(markerDir, name));
+      else clearClaim(NodePath.join(markerDir, name));
+    }
+    const previous = readMarker(runningMarker, 32);
+    if (previous !== undefined && (!/^[1-9]\d*\n$/.test(previous) || alive(Number(previous))))
+      throw new Error("Another worktree setup may still be running");
+    if (await hasSetupEntry(inPlaceMarker))
+      throw new Error(
+        "An interrupted in-place install may still be writing. Verify it has stopped before clearing its marker.",
+      );
+
+    let context = await setupCheckout(worktree, projectRoot);
+    if (isWindows && context) {
+      try {
+        await checkWindowsWorktreeFiles(context.admin);
+      } catch (error) {
+        if (
+          (await hasSetupEntry(NodePath.join(context.admin, setupProofName))) ||
+          !(error instanceof WindowsWorktreeInspectionError)
+        )
+          throw error;
+        process.stderr.write(`${error.message} for Git setup metadata. Installing in place.\n`);
+        context = null;
+      }
+    }
+    const checkout = setupFileStamp(
+      await NodeFSP.lstat(NodePath.join(worktree, ".git"), { bigint: true }),
+    );
+    const priorProof = context && (await readSetupProof(context.admin, projectRoot, checkout));
+    const previousDone = readMarker(doneMarker, 128, isWindows);
+    if (previousDone !== undefined && previousDone !== "" && previousDone !== priorProof?.marker)
+      throw new Error("Unrecognized setup success marker");
+    const previousFailure = readMarker(failedMarker, 64 * 1024);
+    if (previousFailure !== undefined && !/^Setup exited with code \d+\./.test(previousFailure))
+      throw new Error("Unrecognized setup failure marker");
+
+    if (!canRecordProof && (previous !== undefined || previousFailure !== undefined))
+      throw new Error("Existing setup markers could not be verified. Keeping them in place.");
+    if (previous !== undefined) NodeFS.unlinkSync(runningMarker);
+    if (previousFailure !== undefined) NodeFS.unlinkSync(failedMarker);
+    NodeFS.writeFileSync(runningMarker, `${process.pid}\n`, { flag: "wx" });
+    running = true;
+    const verifiedModules = new Set<string>();
+    if (context && priorProof) {
+      const signal = AbortSignal.timeout(600_000);
+      const sameFiles = await (async () => {
+        if (isWindows)
+          await checkWindowsWorktreeFiles(worktree, {
+            modules: Object.keys(priorProof.modules),
+            targets: Object.keys(priorProof.modules),
+            signal,
+          });
+        return matchesSetupFiles(priorProof, worktree, signal);
+      })().catch(() => false);
+      const canReuse = isWindows
+        ? !priorProof.inPlace &&
+          (previousDone === priorProof.marker || (previousDone === undefined && canRecordProof)) &&
+          (await windowsInstallInputsUnchanged(worktree, priorProof.head))
+        : context.head === priorProof.head &&
+          hasSetupOnlyStatus(priorProof, setupStatus(worktree)) &&
+          !(await hasSetupEntry(staging));
+      if (sameFiles && canReuse) {
+        requireActive();
+        if (previousDone === priorProof.marker) return;
+        // A run that failed in configure left the proof but no success marker.
+        await configureWorktreePrepare(worktree);
+        if (!(await hasSetupDone(doneMarker, priorProof.marker))) {
+          if (previousDone !== undefined) NodeFS.unlinkSync(doneMarker);
+          publishDone(priorProof.marker);
+        }
+        return;
+      }
+      for (const name of Object.keys(priorProof.modules)) {
+        if (sameFiles && isWindows) verifiedModules.add(name);
+        else if (!sameFiles && (await hasSetupEntry(NodePath.join(worktree, name))))
+          throw new Error(
+            "Installed files changed since setup. Resolve local changes before reinstalling.",
+          );
+      }
+    }
+    if (isWindows && !(await windowsInstallTargetsSafe(worktree, verifiedModules)))
+      throw new Error("Existing dependency files could not be verified. Keeping them in place.");
+    if (
+      previousDone !== undefined &&
+      (!isWindows || (canRecordProof && NodeFS.lstatSync(doneMarker).nlink === 1))
+    )
+      NodeFS.unlinkSync(doneMarker);
+    if (isWindows && (await hasSetupEntry(doneMarker))) canRecordProof = false;
+    if (isWindows && !canRecordProof && priorProof)
+      throw new Error("Existing setup proof could not be verified. Keeping it in place.");
+    if (context && priorProof) await NodeFSP.unlink(NodePath.join(context.admin, setupProofName));
+    const sealed =
+      context &&
+      canRecordProof &&
+      verifiedModules.size === 0 &&
+      (await installWorktreeDependencies(worktree, context.head, staging, claimName, install));
+    if (!sealed) await installInPlace(verifiedModules);
+    // Once the dependencies are published, only the proof makes them releasable, so nothing that can
+    // fail or be cancelled runs between them and the proof.
+    const links = await linkEnvFiles(projectRoot);
+    const recorded =
+      sealed ||
+      (isWindows && canRecordProof && context
+        ? await inspectWindowsInPlaceModules(worktree).catch((error) => {
+            const reason =
+              error instanceof WindowsWorktreeInspectionError
+                ? error.message
+                : "In-place dependencies could not be verified";
+            process.stderr.write(`${reason}. Keeping the checkout.\n`);
+            return null;
+          })
+        : null);
+    const marker = context && recorded ? NodeCrypto.randomUUID() + "\n" : "";
+    if (context && recorded) {
+      await writeSetupProof(context.admin, NodePath.join(claim, "proof"), {
+        root: projectRoot,
+        checkout,
+        head: context.head,
+        marker,
+        ...recorded,
+        ...(!isWindows && recorded.posixMetadataV1
+          ? {
+              markerMetadataV1: await sealSetupMarkers(
+                worktree,
+                "setup-running",
+                AbortSignal.timeout(30_000),
+              ).catch(() => undefined),
+            }
+          : {}),
+        ...(!sealed ? { inPlace: true as const } : {}),
+        links,
+      });
+    }
+    requireActive();
+    warnAboutStore();
+    // The proof is already recorded, so a failure here is retried from it, not from a reinstall.
+    if (sealed) await configureWorktreePrepare(worktree);
+    requireActive();
+    if (!(isWindows && (await hasSetupEntry(doneMarker)))) publishDone(marker);
+  } catch (error) {
+    if (running && !NodeFS.lstatSync(doneMarker, { throwIfNoEntry: false })) {
+      const detail = error instanceof Error ? error.message : String(error);
+      NodeFS.writeFileSync(failedMarker, `Setup exited with code 1.\n${detail.slice(-8_000)}\n`, {
+        flag: "wx",
+      });
+    }
+    throw error;
+  } finally {
+    if (running && readMarker(runningMarker, 32) === `${process.pid}\n`)
+      NodeFS.unlinkSync(runningMarker);
+    if (isWindows) {
+      const current = NodeFS.lstatSync(claim, { bigint: true, throwIfNoEntry: false });
+      if (
+        current?.isDirectory() &&
+        ownClaim &&
+        current.ino === ownClaim.ino &&
+        current.dev === ownClaim.dev &&
+        current.birthtimeNs === ownClaim.birthtimeNs &&
+        NodeFS.readdirSync(claim).length === 0
+      )
+        NodeFS.rmdirSync(claim);
+    } else clearClaim(claim);
+  }
+};
+
+await setup();
