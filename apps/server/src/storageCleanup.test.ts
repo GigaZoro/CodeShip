@@ -1621,7 +1621,9 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
                             ? "Windows worktree contains data or filesystem entries that could not be verified (private-stream)"
                             : scenario === "a custom dependency ACL"
                               ? "Windows worktree contains data or filesystem entries that could not be verified (explicit-ace)"
-                              : "Standard setup output changed or could not be verified",
+                              : scenario === "an external junction"
+                                ? "Standard setup output changed or could not be verified (Dependency links outside the worktree)"
+                                : "Standard setup output changed or could not be verified",
                 },
           );
           expect(yield* fs.exists(worktree)).toBe(!released);
