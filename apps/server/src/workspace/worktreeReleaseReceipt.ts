@@ -190,18 +190,18 @@ const volumeFoldsCase = async (missing: string) => {
       // The iterator closes the folder when the loop ends or returns.
       for await (const entry of await NodeFSP.opendir(folder)) {
         const flipped = flipCase(entry.name);
-        if (flipped === entry.name) continue;
-        const one = await NodeFSP.lstat(NodePath.join(folder, entry.name), { bigint: true }).catch(
-          missingSetupPath,
-        );
+        // A spelling that does not change back, such as "ı" to "I", names another entry even on a
+        // volume that folds case.
+        if (flipped === entry.name || flipCase(flipped) !== entry.name) continue;
+        const name = NodePath.join(folder, entry.name);
+        const one = await NodeFSP.lstat(name, { bigint: true }).catch(missingSetupPath);
         if (!one) continue;
         const other = await NodeFSP.lstat(NodePath.join(folder, flipped), { bigint: true }).catch(
           missingSetupPath,
         );
-        return (
-          other !== undefined &&
-          (one.ino === 0n || (one.dev === other.dev && one.ino === other.ino))
-        );
+        if (other) return one.ino === 0n || (one.dev === other.dev && one.ino === other.ino);
+        // An entry removed between the two lookups shows nothing about the volume.
+        if (await NodeFSP.lstat(name, { bigint: true }).catch(missingSetupPath)) return false;
       }
     }
     if (NodePath.dirname(folder) === folder) return true;

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Native stamps are part of the worktree setup proof.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import { expect, it } from "@effect/vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
@@ -24,6 +25,7 @@ import { layerRealGit } from "../orchestration-v2/ProviderTurnStartService.testk
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
   decodeReleaseRequest,
+  failureText,
   listWorktreeBackups,
   queueWorktreeRelease,
   recoverInterruptedWorktree,
@@ -39,6 +41,43 @@ const ignoredHold = /^ignored files have changed or lack a preserved copy \(\S.*
 const metadataHold =
   /^ignored files have changed or lack a preserved copy \(Ignored directory metadata cannot be preserved: \S.*\)$/;
 
+// A released checkout is gone, so only a volume that folds case makes two spellings one path.
+const volumeFolds = (root: string) =>
+  Effect.tryPromise(async () => {
+    const [actual, flipped] = await Promise.all([
+      NodeFSP.stat(root, { bigint: true }),
+      NodeFSP.stat(NodePath.join(NodePath.dirname(root), NodePath.basename(root).toUpperCase()), {
+        bigint: true,
+      }).catch(() => null),
+    ]);
+    return flipped !== null && flipped.dev === actual.dev && flipped.ino === actual.ino;
+  });
+
+const receiptOwner = ThreadId.make("owner");
+const receiptProject = ProjectId.make("project");
+const receiptLineage = {
+  parentThreadId: null,
+  relationshipToParent: null,
+  rootThreadId: receiptOwner,
+};
+const releaseReceipt = (worktreePath: string) => ({
+  threadId: receiptOwner,
+  runId: "finished",
+  branch: "feature",
+  worktreePath,
+  identity: "original",
+  head: "1".repeat(40),
+  durableRef: "refs/heads/main",
+  family: [
+    {
+      threadId: receiptOwner,
+      projectId: receiptProject,
+      lineage: receiptLineage,
+      runId: "finished",
+    },
+  ],
+});
+
 it.effect("holds a valid case-variant receipt without spreading damage to other paths", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -48,36 +87,15 @@ it.effect("holds a valid case-variant receipt without spreading damage to other 
     );
     const original = path.join(root, "Checkout");
     const variant = path.join(root, "checkout");
-    // A released checkout is gone, so only a volume that folds case makes two spellings one path.
-    const folds = yield* Effect.tryPromise(async () => {
-      const [actual, flipped] = await Promise.all([
-        NodeFSP.stat(root, { bigint: true }),
-        NodeFSP.stat(path.join(path.dirname(root), path.basename(root).toUpperCase()), {
-          bigint: true,
-        }).catch(() => null),
-      ]);
-      return flipped !== null && flipped.dev === actual.dev && flipped.ino === actual.ino;
-    });
-    const owner = ThreadId.make("owner");
-    const projectId = ProjectId.make("project");
-    const lineage = { parentThreadId: null, relationshipToParent: null, rootThreadId: owner };
+    const folds = yield* volumeFolds(root);
     const thread = {
       id: ThreadId.make("stranger"),
-      projectId,
-      lineage,
+      projectId: receiptProject,
+      lineage: receiptLineage,
       branch: "feature",
       worktreePath: variant,
     };
-    const request = {
-      threadId: owner,
-      runId: "finished",
-      branch: thread.branch,
-      worktreePath: original,
-      identity: "original",
-      head: "1".repeat(40),
-      durableRef: "refs/heads/main",
-      family: [{ threadId: owner, projectId, lineage, runId: "finished" }],
-    };
+    const request = releaseReceipt(original);
     const marker = (name: string) => path.join(root, worktreeReleaseName(name) + ".released");
     yield* fs.writeFileString(marker(path.join(root, "other")), "unreadable historical receipt");
     yield* fs.writeFileString(marker(path.join(root, "wrong-digest")), JSON.stringify(request));
@@ -177,6 +195,28 @@ it.effect("holds a valid case-variant receipt without spreading damage to other 
   }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
+it.effect("tests case folding only with names whose case change converts back", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.realPath(
+      yield* fs.makeTempDirectoryScoped({ prefix: "t3-receipt-fold-" }),
+    );
+    const checkouts = path.join(root, "checkouts");
+    yield* fs.makeDirectory(checkouts);
+    // "ı" upper-cases to "I", which even a folding volume keeps apart from it.
+    yield* fs.writeFileString(path.join(checkouts, "ı"), "");
+    const original = path.join(checkouts, "Checkout");
+    yield* fs.writeFileString(
+      path.join(root, worktreeReleaseName(original) + ".released"),
+      JSON.stringify(releaseReceipt(original)),
+    );
+    expect(yield* releaseReservesWorktree(fs, root, path.join(checkouts, "checkout"))).toBe(
+      yield* volumeFolds(root),
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
 it.live(
   "holds the highest-priority damaged release marker and accepts a valid one-MiB receipt",
   () =>
@@ -248,14 +288,34 @@ it.live(
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
-const sealedCheckout = (options: { inPlace?: true } = {}) =>
+it("keeps the error code and the named file when a failure line is cut", () => {
+  const file = `/${"deep/".repeat(300)}file.json`;
+  const text = failureText(
+    new Error("read failed", {
+      cause: Object.assign(new Error(`ENOENT: no such file or directory, open '${file}'`), {
+        stderr: Buffer.from(`\nfatal: ${"x".repeat(2000)}\nsecond line`),
+      }),
+    }),
+  );
+  expect(text).toMatch(
+    /^read failed: ENOENT: no such file or directory, open '\/deep\/[^…]*…[^…]*\/deep\/file\.json': fatal: x+…x+$/,
+  );
+  expect(text).toHaveLength("read failed".length + 2 * (": ".length + 1024));
+});
+
+const sealedCheckout = (options: { inPlace?: true; longRoot?: true } = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const gitDriver = yield* GitVcsDriver.GitVcsDriver;
-    const root = yield* fs.realPath(
+    const temporary = yield* fs.realPath(
       yield* fs.makeTempDirectoryScoped({ prefix: "t3-worktree-release-" }),
     );
+    // Keeps every path a hold reports long on any machine. Windows stays short: Git there needs
+    // core.longpaths beyond 260 characters.
+    const longRoot = options.longRoot && !isWindowsHost;
+    const root = longRoot ? path.join(temporary, "r".repeat(200)) : temporary;
+    if (longRoot) yield* fs.makeDirectory(root);
     const project = path.join(root, "project");
     const checkout = path.join(root, "worktree");
     const git = (cwd: string, ...args: string[]) =>
@@ -441,7 +501,7 @@ it.live.each(["saved cache", "installed dependency", "setup proof"] as const)(
 it.live("retains unknown ignored build files without relinking installed dependencies", () =>
   Effect.gen(function* () {
     const platform = yield* HostProcess.Platform;
-    const fixture = yield* sealedCheckout();
+    const fixture = yield* sealedCheckout({ longRoot: true });
     const { fs, path, root, project, checkout, modules, admin, head } = fixture;
     const generated = path.join(checkout, "dist");
     yield* fs.makeDirectory(generated, { mode: 0o750 });

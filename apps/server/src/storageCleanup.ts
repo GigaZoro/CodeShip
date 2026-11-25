@@ -294,11 +294,10 @@ const taskHasCompletedObserver = (sql: SqlClient.SqlClient) => sql`
   ELSE 0 END
 `;
 
-// Every disposal but one was decided by someone: a cancel, a Stop, an archive, a deleted thread, a
-// removed wake or a launch failure answered in the tool reply. A Stop or archive also closes the
-// spawning run's delivery, which ends a wake already delivered. Nothing will deliver those
-// results again, so they need no reader. Only a result whose spawning run is gone was dropped
-// without such a decision, so it stays held until a completed parent run reads it.
+// A cancel, Stop, archive, deleted thread, removed wake or answered launch failure disposes a
+// delivery by decision, and a Stop or archive also ends a wake already delivered, so those results
+// need no reader. Only a result whose spawning run is gone was dropped undecided; it stays held
+// until a completed parent run reads it.
 const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
   NOT (${taskHasCompletedObserver(sql)})
   AND NOT (
@@ -1143,7 +1142,8 @@ const make = Effect.gen(function* () {
 
     // CommandRunner prunes command_runs while task results remain in the durable projection. A task
     // that finished before this checkout existed worked in an earlier one at the same path, so only
-    // tasks changed since then are read; an unreadable timestamp is read too.
+    // tasks changed since then are read; an unreadable timestamp is read too. SQLite tests these
+    // terms in written order, so the column tests come first and skip the older payloads unparsed.
     const memberIdsJson = encodeMemberIds([...memberIds]);
     after = "";
     for (;;) {
@@ -1151,11 +1151,11 @@ const make = Effect.gen(function* () {
         SELECT ${taskResultCandidate(sql)}, json_extract(t.payload_json, '$.command.cwd') AS cwd
         FROM orchestration_v2_projection_subagents t
         WHERE t.subagent_id > ${after} AND t.origin = 'app_owned'
+          AND (t.status NOT IN ('completed','failed','cancelled','interrupted')
+            OR coalesce(julianday(t.updated_at) >= julianday(${activityFloor}), 1))
           AND t.thread_id NOT IN (SELECT value FROM json_each(${memberIdsJson}))
           AND json_type(t.payload_json, '$.command') = 'object'
           AND json_type(t.payload_json, '$.command.cwd') = 'text'
-          AND (t.status NOT IN ('completed','failed','cancelled','interrupted')
-            OR coalesce(julianday(t.updated_at) >= julianday(${activityFloor}), 1))
           AND ${taskRequiresResultCheck(sql)}
         ORDER BY t.subagent_id LIMIT ${RESULT_CHECK_PAGE_SIZE}
       `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
