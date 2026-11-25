@@ -449,6 +449,16 @@ describe("scan cache merge", () => {
       row({ tailRecords: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
     ],
     [
+      "the read with fewer unresolved speed tiers over a lower list",
+      row({ records: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
+      row({
+        records: [
+          record({ unresolvedServiceTierTurnId: "turn-a" }),
+          record({ unresolvedServiceTierTurnId: "turn-b" }),
+        ],
+      }),
+    ],
+    [
       "one of two reads that each resolved a different speed tier",
       row({ records: [record({ unresolvedServiceTierTurnId: "turn-a" })] }),
       row({ records: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
