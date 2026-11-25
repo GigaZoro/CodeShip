@@ -1,3 +1,7 @@
+## 2026-11-28 — Test checks on Windows no longer fail every local git push
+
+- On Windows, `vp run check:changed` and `vp run test:cached` failed every test that pushes to a local repository, for example 92 of the 119 tests in `GitManager.test.ts`, with `Could not read from remote repository`. Vite+'s file tracker, which a cached test group runs under, crashes Git for Windows' `sh`, and git runs a local push through `sh`. Test groups now run uncached on Windows, so a rerun there repeats every group. Other systems keep their cache. A check whose output goes to a log or pipe now passes `NO_COLOR` and drops an inherited `FORCE_COLOR`, so Windows logs no longer fill with color codes. A test there may take 180 s instead of 60 s, because a fixture test that runs whole checks now runs each of their test groups too. No change to the app.
+
 ## 2026-11-28 — Duration-weighted server test scheduling and faster server test runs
 
 - Maintainers: `scripts/lib/cached-tests.ts` now assigns `apps/server` test files to parallel chains using duration-weighted Longest Processing Time (LPT) scheduling from `apps/server/src/testUtils/shardWeights.json`, keeping the slowest server test files off the same chain while preserving commands and cache keys.

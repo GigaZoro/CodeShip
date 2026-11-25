@@ -106,6 +106,9 @@ const RESTRICTED_CLAUDE_SETTINGS_RESOLVER = {
     "Read Claude's settings through apps/server/src/provider/Drivers/ClaudeSettingsCascade.ts: by itself, resolveSettings reads this process's account and organization cache.",
 };
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Vite+ loads this config without an Effect runtime or the workspace packages.
+const hostPlatform = process.platform;
+
 // Vite+ supports remote configuration before its published types include it.
 const cacheUrl = remoteCacheUrl(import.meta.dirname);
 const taskCacheConfig = {
@@ -130,7 +133,9 @@ export default defineConfig({
     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
     exclude: TEST_EXCLUDE,
     hookTimeout: 60_000,
-    testTimeout: 60_000,
+    // Windows starts processes several times slower, and runs no test group cached, so a
+    // check-changed.test.ts fixture that runs whole checks took up to 85 s there on an idle machine.
+    testTimeout: hostPlatform === "win32" ? 180_000 : 60_000,
     allowOnly: !process.env.CI,
     // Flaky tests are fixed, not retried.
     retry: 0,

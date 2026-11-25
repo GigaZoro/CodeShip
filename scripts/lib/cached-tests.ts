@@ -605,12 +605,18 @@ function loadServerTestWeightsMs(root: string): ReadonlyMap<string, number> {
   return weights;
 }
 
+/** On Windows the file tracker Vite+ injects into a cached task's processes crashes the MSYS
+ * runtime ("MapViewOfFileEx 'shared.5' ... Win32 error 487"), so Git for Windows' sh and bash
+ * die, and with them a push to a local repository. A group runs uncached there instead. */
+export const cachesTestGroups = (platform: string) => platform !== "win32";
+
 export function cachedTestTasks(
   raw: string | undefined,
   root = workspaceRoot,
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Vite loads this before dependency installation; tests supply the platform directly.
   platform: NodeJS.Platform = process.platform,
 ): Record<string, CachedTestTask> {
+  const tracked = cachesTestGroups(platform);
   const normalizedRoot = NodePath.resolve(root);
   const file = process.env[requestFile];
   const changed = !raw && !!file;
@@ -743,7 +749,7 @@ export function cachedTestTasks(
     }
     for (const { group, task } of activeGroups) {
       const dependsOn = serverDependsOn.get(task);
-      const uncachedGroup = uncachedFiles.has(group[0]!);
+      const uncachedGroup = !tracked || uncachedFiles.has(group[0]!);
       // Vite+ reports VITE_CACHE_PATH to Vite's loadEnv and keys the group by it, so it is set
       // empty here and removed again in each test by packages/shared/src/testing/providerEnv.ts.
       const prefix = changed ? `${uncachedGroup ? `${requestFile}= ` : ""}VITE_CACHE_PATH= ` : "";

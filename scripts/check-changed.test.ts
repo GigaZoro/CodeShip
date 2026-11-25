@@ -64,7 +64,7 @@ import {
   uncachedTests,
 } from "./check-changed.ts";
 import { localVitePlusCommand } from "./check-changed-command.ts";
-import { cachedTestTasks, changedTestRequestEnv } from "./lib/cached-tests.ts";
+import { cachedTestTasks, cachesTestGroups, changedTestRequestEnv } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
@@ -72,6 +72,7 @@ import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
 vi.mock("node:fs/promises", { spy: true });
 
 const GiB = 1024 ** 3;
+const cachesOnHost = cachesTestGroups(HostProcess.Platform.defaultValue());
 
 const cacheDb = (cache: string) => NodePath.join(cache, "v18", "cache.db");
 function storePass(cache: string, key: string, value = "pass") {
@@ -235,7 +236,7 @@ describe("check:changed", () => {
   // Unix reports a group Vite+ killed as 137; Windows can report it as an ordinary failure.
   it.effect.each([
     {
-      platform: "linux",
+      platform: "linux" as const,
       attempts: ([first, middle, last, independent]: Keys) => [
         {
           limit: 2,
@@ -247,14 +248,14 @@ describe("check:changed", () => {
       ],
     },
     {
-      platform: "linux",
+      platform: "linux" as const,
       landing: true,
       attempts: ([first, middle, , independent]: Keys) => [
         { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
       ],
     },
     {
-      platform: "win32",
+      platform: "win32" as const,
       attempts: ([first, middle, last, independent]: Keys) => [
         { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
         { limit: 1, completed: [first], tasks: [failed(middle, 1)] },
@@ -285,7 +286,8 @@ describe("check:changed", () => {
           uncached: [],
         };
         const attempts = plan(
-          cachedTestTasks(JSON.stringify(request))["test-cache"]!.dependsOn! as Keys,
+          cachedTestTasks(JSON.stringify(request), undefined, "linux")["test-cache"]!
+            .dependsOn! as Keys,
         );
         const expected =
           attempts.map(report).join("") +
@@ -1827,6 +1829,42 @@ describe("check:changed", () => {
         assert.include(NodePath.basename(seenEnv.TMPDIR!), "t3-ccs-");
         assert.isFalse(NodeFS.existsSync(seenEnv.TMPDIR!));
       }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "asks the tools for plain output, dropping an inherited FORCE_COLOR, when output is piped",
+    () =>
+      Effect.gen(function* () {
+        const envs: Array<ChildProcess.CommandOptions["env"]> = [];
+        const fake = fakeGit(() => ({ exitCode: exited(0) }));
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (ChildProcess.isStandardCommand(command)) envs.push(command.options.env);
+          return fake.spawn(command);
+        });
+        // A terminal's stdout takes isTTY from its prototype; a pipe has none.
+        const own = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (own) Object.defineProperty(process.stdout, "isTTY", own);
+            else Reflect.deleteProperty(process.stdout, "isTTY");
+          }),
+        );
+        for (const isTTY of [true, false]) {
+          Object.defineProperty(process.stdout, "isTTY", { value: isTTY, configurable: true });
+          yield* spawnVp(spawner, "linux", ["lint"], "/repo", { STEP: "lint" }, () => {});
+        }
+        const withoutMetrics = envs.map((env) =>
+          Object.fromEntries(
+            Object.entries(env ?? {}).filter(
+              ([key]) => key.toUpperCase() !== "CHECK_CHANGED_METRICS_FILE",
+            ),
+          ),
+        );
+        assert.deepStrictEqual(withoutMetrics, [
+          { FORCE_COLOR: "1", STEP: "lint" },
+          { NO_COLOR: "1", FORCE_COLOR: undefined, STEP: "lint" },
+        ]);
+      }),
   );
 
   // A git that exits while a process it started holds its output never reaches the end of that
@@ -3690,7 +3728,7 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   });
   expect(second.status, second.stdout + second.stderr).toBe(1);
   expect(second.stdout).toContain("pass  test (1 files)");
-  expect(second.stdout).toContain("cache hit, replaying");
+  if (cachesOnHost) expect(second.stdout).toContain("cache hit, replaying");
   expect(NodeFS.readdirSync(outerTmp2)).toEqual([]);
 
   project.write(
@@ -3970,11 +4008,16 @@ it("runs apps/server groups in parallel chains with distinct group TMPDIRs and r
   for (const dir of groupTmps) expect(NodeFS.existsSync(dir)).toBe(false);
   expect(NodeFS.existsSync(stepTmp!)).toBe(false);
 
-  // Lowering concurrency changes serverChains (3 -> 1) and task dependsOn, yet every group replays from cache.
+  // Lowering concurrency changes serverChains (3 -> 1) and task dependsOn; where groups are cached,
+  // every group replays from cache.
   const serial = project.run("lint", "", project.source, ["--concurrency", "1"]);
   expect(serial.status, serial.stdout + serial.stderr).toBe(1);
   expect(serial.stdout).toContain("pass  test (3 files)");
-  expect(serial.stdout.match(/cache hit, replaying/g)).toHaveLength(3);
+  if (cachesOnHost) {
+    expect(serial.stdout.match(/cache hit, replaying/g)).toHaveLength(3);
+  } else {
+    expect(serial.stdout.match(/SERVER_GROUP_TMP=/g)).toHaveLength(3);
+  }
 });
 
 it("sizes serverGroups slots and concurrency-limit by actual apps/server group count rather than file count", () => {
@@ -4012,11 +4055,13 @@ it("sizes serverGroups slots and concurrency-limit by actual apps/server group c
   expect(Number(testCacheCalls[0]!.args[limitIndex + 1])).toBe(1);
 });
 
-it("reuses passes in another worktree with the same inputs and tracked environment, at another worker count", () => {
-  using project = launcherFixture();
-  project.write(
-    "fixture.test.ts",
-    `import { execSync } from "node:child_process";
+it.runIf(cachesOnHost)(
+  "reuses passes in another worktree with the same inputs and tracked environment, at another worker count",
+  () => {
+    using project = launcherFixture();
+    project.write(
+      "fixture.test.ts",
+      `import { execSync } from "node:child_process";
      import { readFileSync } from "node:fs";
      import { isAbsolute } from "node:path";
      import { it, expect } from "vite-plus/test";
@@ -4029,55 +4074,56 @@ it("reuses passes in another worktree with the same inputs and tracked environme
        expect(process.env.HOME || process.env.USERPROFILE).toBeTruthy();
      });
     `,
-  );
-  project.write("input.txt", "pass");
-  project.write("second.test.ts", `import { it } from "vite-plus/test"; it("passes", () => {});`);
-  project.write("node_modules/.bin/fixture-tool", "#!/bin/sh\necho tool\n");
-  NodeFS.chmodSync(NodePath.join(project.root, "node_modules/.bin/fixture-tool"), 0o755);
-  project.write("node_modules/.bin/fixture-tool.cmd", "@echo tool\r\n");
+    );
+    project.write("input.txt", "pass");
+    project.write("second.test.ts", `import { it } from "vite-plus/test"; it("passes", () => {});`);
+    project.write("node_modules/.bin/fixture-tool", "#!/bin/sh\necho tool\n");
+    NodeFS.chmodSync(NodePath.join(project.root, "node_modules/.bin/fixture-tool"), 0o755);
+    project.write("node_modules/.bin/fixture-tool.cmd", "@echo tool\r\n");
 
-  const passthrough = { INVOCATION_ID: "first", PLAYWRIGHT_CACHE_FIXTURE: "present", TZ: "UTC" };
-  const files = ["fixture.test.ts", "second.test.ts", "input.txt"];
-  project.write(
-    "node_modules/.modules.yaml",
-    JSON.stringify({ layoutVersion: 5, prunedAt: "first" }),
-  );
-  const firstCheckout = project.checkout(files);
-  // Two workers here (6 preceding steps + 2 test slots under --concurrency 8) and one in the retry;
-  // pass each checkout as PWD, which PowerShell leaves unset.
-  const first = project.run(
-    "lint",
-    "",
-    project.source,
-    ["--concurrency", "8"],
-    { ...passthrough, PWD: firstCheckout },
-    firstCheckout,
-  );
-  expect(first.status, first.stdout + first.stderr).toBe(1);
-  expect(first.stdout).toContain("pass  test (2 files)");
-  expect(project.testWorkers(firstCheckout)).toEqual(["2"]);
+    const passthrough = { INVOCATION_ID: "first", PLAYWRIGHT_CACHE_FIXTURE: "present", TZ: "UTC" };
+    const files = ["fixture.test.ts", "second.test.ts", "input.txt"];
+    project.write(
+      "node_modules/.modules.yaml",
+      JSON.stringify({ layoutVersion: 5, prunedAt: "first" }),
+    );
+    const firstCheckout = project.checkout(files);
+    // Two workers here (6 preceding steps + 2 test slots under --concurrency 8) and one in the retry;
+    // pass each checkout as PWD, which PowerShell leaves unset.
+    const first = project.run(
+      "lint",
+      "",
+      project.source,
+      ["--concurrency", "8"],
+      { ...passthrough, PWD: firstCheckout },
+      firstCheckout,
+    );
+    expect(first.status, first.stdout + first.stderr).toBe(1);
+    expect(first.stdout).toContain("pass  test (2 files)");
+    expect(project.testWorkers(firstCheckout)).toEqual(["2"]);
 
-  project.write(
-    "node_modules/.modules.yaml",
-    JSON.stringify({ layoutVersion: 5, prunedAt: "second" }),
-  );
-  const retryCheckout = project.checkout(files);
-  const repeat = project.run(
-    "lint",
-    "",
-    project.source,
-    ["--concurrency", "1"],
-    { ...passthrough, INVOCATION_ID: "retry", PWD: retryCheckout },
-    retryCheckout,
-  );
-  expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
-  expect(repeat.stdout).toContain("pass  test (2 files)");
-  expect(repeat.stdout).toContain("cache hit, replaying");
-  expect(project.testWorkers(retryCheckout)).toEqual(["1"]);
-  expect(NodeFS.readdirSync(NodePath.join(project.root, ".git/t3-check-changed/tests"))).toEqual([
-    expect.stringMatching(/^[0-9a-f]{64}\.0$/),
-  ]);
-});
+    project.write(
+      "node_modules/.modules.yaml",
+      JSON.stringify({ layoutVersion: 5, prunedAt: "second" }),
+    );
+    const retryCheckout = project.checkout(files);
+    const repeat = project.run(
+      "lint",
+      "",
+      project.source,
+      ["--concurrency", "1"],
+      { ...passthrough, INVOCATION_ID: "retry", PWD: retryCheckout },
+      retryCheckout,
+    );
+    expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
+    expect(repeat.stdout).toContain("pass  test (2 files)");
+    expect(repeat.stdout).toContain("cache hit, replaying");
+    expect(project.testWorkers(retryCheckout)).toEqual(["1"]);
+    expect(NodeFS.readdirSync(NodePath.join(project.root, ".git/t3-check-changed/tests"))).toEqual([
+      expect.stringMatching(/^[0-9a-f]{64}\.0$/),
+    ]);
+  },
+);
 
 it("skips a test by the host capabilities the run probes, which key its cached result", () => {
   using project = launcherFixture();
@@ -4308,11 +4354,13 @@ it.skipIf(isWindowsHost)("replays a test after an executable it does not read ch
   expect(next.stdout).toContain("cache hit, replaying");
 });
 
-it("fingerprints environment reads reported by the cooperative Vite+ client, without its cache path", () => {
-  using project = launcherFixture();
-  project.write(
-    "fixture.test.ts",
-    `import { createRequire } from "node:module";
+it.runIf(cachesOnHost)(
+  "fingerprints environment reads reported by the cooperative Vite+ client, without its cache path",
+  () => {
+    using project = launcherFixture();
+    project.write(
+      "fixture.test.ts",
+      `import { createRequire } from "node:module";
     import { it, expect } from "vite-plus/test";
     it("reads a tool input", () => {
       expect(process.env.COOPERATIVE_FIXTURE).toBeUndefined();
@@ -4320,15 +4368,16 @@ it("fingerprints environment reads reported by the cooperative Vite+ client, wit
       const runner = createRequire(import.meta.url)(process.env.VP_RUN_NODE_CLIENT_PATH).load();
       expect(runner.getEnv("COOPERATIVE_FIXTURE")).toBe("first");
     });`,
-  );
-  const run = (value: string) =>
-    project.run("", "", project.source, [], { COOPERATIVE_FIXTURE: value });
-  const first = run("first");
-  expect(first.status, first.stdout + first.stderr).toBe(0);
-  const changed = run("changed");
-  expect(changed.status, changed.stdout + changed.stderr).toBe(1);
-  expect(changed.stdout).toContain("FAIL  test");
-});
+    );
+    const run = (value: string) =>
+      project.run("", "", project.source, [], { COOPERATIVE_FIXTURE: value });
+    const first = run("first");
+    expect(first.status, first.stdout + first.stderr).toBe(0);
+    const changed = run("changed");
+    expect(changed.status, changed.stdout + changed.stderr).toBe(1);
+    expect(changed.stdout).toContain("FAIL  test");
+  },
+);
 
 it("runs tests without the user's global Git config, as CI does", () => {
   using project = launcherFixture();
@@ -4390,7 +4439,10 @@ it("resumes completed test tasks after another group fails", () => {
   project.write(failing, `${testImport} it("passes", () => {});`);
   const repeat = project.run("", "", project.source, args);
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
-  expect(repeat.stdout).toMatch(/a-quick\.test\.ts.*cache hit, replaying/);
+  // Where groups run uncached, the passed group runs again.
+  expect(repeat.stdout).toMatch(
+    cachesOnHost ? /a-quick\.test\.ts.*cache hit, replaying/ : /a-quick\.test\.ts \(1 test\)/,
+  );
   expect(repeat.stdout).toContain("z-failing.test.ts (1 test)");
 });
 
@@ -4409,7 +4461,8 @@ it("keeps test results when a concurrent check writes generated inputs", () => {
 
   const repeat = project.run("lint");
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
-  expect(repeat.stdout).toContain("cache hit, replaying");
+  // Where groups run uncached, the group runs again.
+  expect(repeat.stdout).toContain(cachesOnHost ? "cache hit, replaying" : "pass  test (1 files)");
 });
 
 it("discards test results when an ignored runtime input changes", () => {
@@ -4517,7 +4570,8 @@ it("discards test results recorded while HEAD moved, and replays them at a commi
   project.git("commit", "-m", "unread change");
   const rebased = project.run();
   expect(rebased.status, rebased.stdout + rebased.stderr).toBe(0);
-  expect(rebased.stdout).toContain("cache hit, replaying");
+  // Where groups run uncached, the group runs again.
+  expect(rebased.stdout).toContain(cachesOnHost ? "cache hit, replaying" : "pass  test (1 files)");
 });
 
 // Each case reads the checkout's Git from a test, with `root` the checkout and `other` a folder
@@ -4586,6 +4640,8 @@ it("reports failures from every selected test group", () => {
   expect(result.stdout).toContain("FAIL  test (2 files)");
   expect(result.stdout).toContain("Error: root failure");
   expect(result.stdout).toContain("Error: package failure");
+  // Piped output, as a log gets it, carries no color codes, from cached and uncached groups alike.
+  expect(result.stdout).not.toContain("\u001b[");
 });
 
 it("rejects a package support range without a development pin", () => {

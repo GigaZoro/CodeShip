@@ -7,11 +7,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 
 import {
   ARGUMENT_CHARACTERS,
   cachedTestTasks,
+  cachesTestGroups,
   CHANGED_TEST_GROUP_SIZE,
   changedTestRequestEnv,
   changedTestRuntime,
@@ -62,13 +64,14 @@ describe("cachedTestTasks", () => {
       const runs = tasks["test-cache"]!.dependsOn!.map((key) => tasks[key]!);
 
       expect(runs.filter(({ cache }) => cache === false)).toHaveLength(
-        platform === "darwin" ? 10 : platform === "linux" ? 1 : 0,
+        platform === "darwin" ? 10 : platform === "linux" ? 1 : runs.length,
       );
       for (const file of files) {
         const run = runs.find(({ command }) => command.includes(NodePath.basename(file)));
         expect(run, file).toBeDefined();
         expect(run?.cache === false).toBe(
-          (platform === "darwin" && !file.endsWith("update.test.ts")) ||
+          platform === "win32" ||
+            (platform === "darwin" && !file.endsWith("update.test.ts")) ||
             (platform === "linux" && file.endsWith("processGroup.test.ts")),
         );
       }
@@ -92,6 +95,7 @@ describe("cachedTestTasks", () => {
         uncached: [relativeTestPath(root, file)],
       }),
       root,
+      "linux",
     );
     const fileTasks = Object.entries(tasks).filter(([name]) => name !== "test-cache");
     expect(fileTasks).toHaveLength(1);
@@ -132,7 +136,7 @@ describe("cachedTestTasks", () => {
       (_, index) => `src/${String(index * 2).padStart(3, "0")}.test.ts`,
     );
     for (const groupSize of [1, CHANGED_TEST_GROUP_SIZE, 8]) {
-      const first = cachedTestTasks(JSON.stringify({ files, groupSize }));
+      const first = cachedTestTasks(JSON.stringify({ files, groupSize }), undefined, "linux");
       const largest = Math.max(
         ...Object.entries(first)
           .filter(([key]) => key !== "test-cache")
@@ -141,6 +145,8 @@ describe("cachedTestTasks", () => {
       expect(largest).toBeLessThanOrEqual(2 * groupSize);
       const second = cachedTestTasks(
         JSON.stringify({ files: [...files, "src/001.test.ts"], groupSize }),
+        undefined,
+        "linux",
       );
       const removed = Object.keys(first).filter((key) => !(key in second));
       const added = Object.keys(second).filter((key) => !(key in first));
@@ -156,6 +162,8 @@ describe("cachedTestTasks", () => {
   it("keeps shell metacharacters in filenames out of the command", () => {
     const tasks = cachedTestTasks(
       JSON.stringify({ files: ["src/a'$(touch injected).test.ts"], groupSize: 1 }),
+      undefined,
+      "linux",
     );
     const task = Object.entries(tasks).find(([key]) => key !== "test-cache")![1];
     expect(task.command).toContain(
@@ -170,15 +178,23 @@ describe("cachedTestTasks", () => {
       { files: ["src/a.test.ts"], groupSize: 0 },
       { files: ["fixture\\..\\example.test.ts"], groupSize: 1 },
     ]) {
-      expect(() => cachedTestTasks(JSON.stringify(request))).toThrow();
+      expect(() => cachedTestTasks(JSON.stringify(request), undefined, "linux")).toThrow();
     }
     expect(() =>
-      cachedTestTasks(JSON.stringify({ files: ["a\\b.test.ts"], groupSize: 1 })),
+      cachedTestTasks(
+        JSON.stringify({ files: ["a\\b.test.ts"], groupSize: 1 }),
+        undefined,
+        "linux",
+      ),
     ).toThrow("so rename it: a\\b.test.ts");
   });
 
   it("accepts spec files discovered by Vitest", () => {
-    const tasks = cachedTestTasks(JSON.stringify({ files: ["src/example.spec.ts"], groupSize: 1 }));
+    const tasks = cachedTestTasks(
+      JSON.stringify({ files: ["src/example.spec.ts"], groupSize: 1 }),
+      undefined,
+      "linux",
+    );
     expect(
       Object.values(tasks).some((task) =>
         task.command.endsWith(
@@ -194,7 +210,9 @@ describe("cachedTestTasks", () => {
       { length: 40 },
       (_, index) => `src/${directory}/${directory}/${directory}/${directory}/${index}.test.ts`,
     );
-    const tasks = Object.entries(cachedTestTasks(JSON.stringify({ files, groupSize: 1000 })));
+    const tasks = Object.entries(
+      cachedTestTasks(JSON.stringify({ files, groupSize: 1000 }), undefined, "linux"),
+    );
     const commands = tasks.filter(([key]) => key !== "test-cache").map(([, task]) => task.command);
     expect(commands.length).toBeGreaterThan(1);
     const listed = commands.map((command) => command.match(/'\.\/[^']*'/g) ?? []);
@@ -217,6 +235,7 @@ describe("cachedTestTasks", () => {
       const tasks = cachedTestTasks(
         JSON.stringify({ files: ["apps/mobile/modules/x/src/a.test.ts"], groupSize: 1 }),
         root,
+        "linux",
       );
       expect(Object.values(tasks).find((task) => task.cwd)).toMatchObject({
         cwd: "apps/mobile",
@@ -246,12 +265,12 @@ describe("cachedTestTasks", () => {
         );
         const files = ["pkg/a.test.ts"];
         expect(
-          Object.keys(cachedTestTasks(JSON.stringify({ files, groupSize: 1 }), root)),
+          Object.keys(cachedTestTasks(JSON.stringify({ files, groupSize: 1 }), root, "linux")),
         ).toHaveLength(2);
         const request = NodePath.join(root, "request.json");
         await NodeFSP.writeFile(request, JSON.stringify({ files, groupSize: 1 }));
         vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
-        expect(() => cachedTestTasks(undefined, root)).toThrow(
+        expect(() => cachedTestTasks(undefined, root, "linux")).toThrow(
           `Unsupported test command in ${NodePath.join(root, "pkg")}: ${test}`,
         );
       } finally {
@@ -399,7 +418,8 @@ describe("cachedTestTasks", () => {
         "apps/web/b.test.ts",
       ];
       const raw = { files, groupSize: 1 };
-      const keys = cachedTestTasks(JSON.stringify(raw))["test-cache"]!.dependsOn!;
+      const keys = cachedTestTasks(JSON.stringify(raw), undefined, "linux")["test-cache"]!
+        .dependsOn!;
       const [first, completed, third, fourth, ...nonServer] = keys as [
         string,
         string,
@@ -418,7 +438,7 @@ describe("cachedTestTasks", () => {
       );
       vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", env.T3_CHECK_CHANGED_TEST_REQUEST);
 
-      const tasks = cachedTestTasks(undefined);
+      const tasks = cachedTestTasks(undefined, undefined, "linux");
       expect(env.T3CODE_TEST_MAX_WORKERS).toBe("3");
       expect(tasks["test-cache"]!.dependsOn).toEqual([first, third, fourth, ...nonServer]);
       expect(tasks[completed]).toBeUndefined();
@@ -442,7 +462,7 @@ describe("cachedTestTasks", () => {
           expect(task.cache && task.cache.env).not.toContain(name);
         }
       }
-      const ci = cachedTestTasks(JSON.stringify(raw));
+      const ci = cachedTestTasks(JSON.stringify(raw), undefined, "linux");
       for (const key of keys) {
         expect(ci[key]!.dependsOn).toBeUndefined();
         expect(ci[key]!.command).not.toContain("--allow-excluded");
@@ -454,7 +474,7 @@ describe("cachedTestTasks", () => {
   });
 
   it("does not add tasks without an explicit request", () => {
-    expect(cachedTestTasks(undefined)).toEqual({});
+    expect(cachedTestTasks(undefined, undefined, "linux")).toEqual({});
   });
 
   it("caps server test chains between 1 and MAX_SERVER_CHAINS by slot budget", () => {
@@ -480,7 +500,7 @@ describe("cachedTestTasks", () => {
           }),
         );
         vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
-        return cachedTestTasks(undefined);
+        return cachedTestTasks(undefined, undefined, "linux");
       };
 
       const single = await loadFor(1);
@@ -759,6 +779,22 @@ describe("cachedTestTasks", () => {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("runs every group uncached on Windows, where the file tracker breaks MSYS programs", () => {
+    const raw = JSON.stringify({ files: ["a.test.ts", "b.test.ts"], groupSize: 1 });
+    const groups = (platform: NodeJS.Platform) =>
+      Object.entries(cachedTestTasks(raw, undefined, platform)).filter(
+        ([name]) => name !== "test-cache",
+      );
+    expect(groups("win32").length).toBeGreaterThan(0);
+    for (const [, task] of groups("win32")) expect(task.cache).toBe(false);
+    for (const [, task] of groups("linux")) {
+      expect(task.cache && task.cache.input).toContainEqual({ auto: true });
+    }
+    expect(groups("win32").map(([name]) => name)).toEqual(groups("linux").map(([name]) => name));
+  });
+
+  const cachesOnHost = cachesTestGroups(HostProcess.Platform.defaultValue());
 
   // Each `vp run` boots Vitest per task, so every behaviour is its own test with its own time budget.
   const withFixture = async (
@@ -1171,31 +1207,34 @@ describe("cachedTestTasks", () => {
       }),
   );
 
-  it("caches completed projects with colliding task IDs when each completion can be identified", () =>
-    withTestPackage(
-      "vp test run --no-file-parallelism",
-      async ({ directory, write, cli, hits }) => {
-        await write(
-          "pkg/vite.config.ts",
-          `export default {test:{projects:[
+  it.runIf(cachesOnHost)(
+    "caches completed projects with colliding task IDs when each completion can be identified",
+    () =>
+      withTestPackage(
+        "vp test run --no-file-parallelism",
+        async ({ directory, write, cli, hits }) => {
+          await write(
+            "pkg/vite.config.ts",
+            `export default {test:{projects:[
         {test:{name:"Aa",sequence:{groupOrder:1}}},
         {test:{name:"BB",sequence:{groupOrder:2}}}
       ]}};`,
-        );
-        await write(
-          "pkg/Shared.test.ts",
-          'import {test} from "vite-plus/test"; import {writeFileSync} from "node:fs"; test("project", ({task}) => writeFileSync(task.file.projectName + ".ran", "ran"));',
-        );
-        const cold = await cli("pkg/Shared.test.ts");
-        expect(cold.status, cold.stdout + cold.stderr).toBe(0);
-        for (const name of ["Aa", "BB"])
-          expect(await executionReceipt(directory, name)).toBe("ran");
-        expect(await hits()).toBe(0);
-        const repeat = await cli("pkg/Shared.test.ts");
-        expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
-        expect(await hits()).toBe(1);
-      },
-    ));
+          );
+          await write(
+            "pkg/Shared.test.ts",
+            'import {test} from "vite-plus/test"; import {writeFileSync} from "node:fs"; test("project", ({task}) => writeFileSync(task.file.projectName + ".ran", "ran"));',
+          );
+          const cold = await cli("pkg/Shared.test.ts");
+          expect(cold.status, cold.stdout + cold.stderr).toBe(0);
+          for (const name of ["Aa", "BB"])
+            expect(await executionReceipt(directory, name)).toBe("ran");
+          expect(await hits()).toBe(0);
+          const repeat = await cli("pkg/Shared.test.ts");
+          expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
+          expect(await hits()).toBe(1);
+        },
+      ),
+  );
 
   it("applies both configured and command-line excludes before caching a requested file", () =>
     withTestPackage(
@@ -1379,23 +1418,25 @@ describe("cachedTestTasks", () => {
       ).toMatchObject([{ result: { Spawned: { cache_status: "Disabled" } } }]);
     }));
 
-  it("reuses individual results and invalidates filesystem inputs", () =>
+  it.runIf(cachesOnHost)("reuses individual results and invalidates filesystem inputs", () =>
     withFixture(async ({ write, run, hits }) => {
       expect(await run()).toBe(0);
       expect(await hits()).toBe(0);
       await write("fixture.txt", "hello changed");
       expect(await run()).toBe(0);
       expect(await hits()).toBe(1);
-    }));
+    }),
+  );
 
-  it("never caches failures", () =>
+  it.runIf(cachesOnHost)("never caches failures", () =>
     withFixture(async ({ write, run, hits }) => {
       expect(await run()).toBe(0);
       await write("fixture.txt", "broken");
       expect(await run()).toBe(1);
       expect(await run()).toBe(1);
       expect(await hits()).toBe(1);
-    }));
+    }),
+  );
 
   it("runs uncached files every time", () =>
     withFixture(async ({ directory, write, run }) => {
@@ -1407,6 +1448,37 @@ describe("cachedTestTasks", () => {
       await NodeFSP.unlink(NodePath.join(directory, "report.json"));
       expect(await run(undefined, ["b.test.ts"])).toBe(0);
       expect(await NodeFSP.readFile(NodePath.join(directory, "report.json"), "utf8")).toBe("{}");
+    }));
+
+  // Git runs `git-receive-pack` for a local remote through sh, which is an MSYS program on Windows.
+  it("pushes to a local repository from a test group", () =>
+    withFixture(async ({ directory, write, run }) => {
+      await write(
+        "push.test.ts",
+        `import {test,expect} from "vite-plus/test"; import {execFileSync} from "node:child_process"; import {mkdtempSync,rmSync} from "node:fs"; import {tmpdir} from "node:os"; import {join} from "node:path";
+test("push", () => {
+  const remote = mkdtempSync(join(tmpdir(), "cached-tests-remote-"));
+  const repo = mkdtempSync(join(tmpdir(), "cached-tests-repo-"));
+  try {
+    const git = (cwd, ...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args], {cwd, encoding: "utf8", stdio: "pipe"});
+    git(remote, "init", "--bare", "--quiet");
+    git(repo, "init", "--quiet", "--initial-branch=main");
+    git(repo, "commit", "--allow-empty", "--quiet", "-m", "initial");
+    git(repo, "push", "--quiet", remote, "main");
+    expect(git(remote, "rev-parse", "main")).toBe(git(repo, "rev-parse", "main"));
+  } finally {
+    rmSync(remote, {recursive: true, force: true});
+    rmSync(repo, {recursive: true, force: true});
+  }
+});`,
+      );
+      expect(await run(["push.test.ts"])).toBe(0);
+      const summary: { tasks: Array<{ task_name: string; result: unknown }> } = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(directory, "cache/v18/last-summary.json"), "utf8"),
+      );
+      expect(summary.tasks.filter((task) => task.task_name.includes("test-cache:"))).toHaveLength(
+        1,
+      );
     }));
 });
 

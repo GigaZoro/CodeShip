@@ -1202,7 +1202,9 @@ export const uncachedTests = [
   "scripts/lib/cached-tests.test.ts",
 ];
 
-// Output is piped, so keep the colors a terminal would get.
+// Output is piped, so keep the colors a terminal would get, and only those: on Windows the color
+// libraries color piped output too, and a test group that runs uncached logs those codes raw. Node
+// ignores NO_COLOR, warning in every tool, while a FORCE_COLOR the check inherited is set.
 export const spawnVp = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   platform: NodeJS.Platform,
@@ -1220,7 +1222,9 @@ export const spawnVp = (
         ChildProcess.make(command, commandArgs, {
           cwd,
           env: {
-            ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}),
+            ...(process.stdout.isTTY
+              ? { FORCE_COLOR: "1" }
+              : { NO_COLOR: "1", FORCE_COLOR: undefined }),
             ...extraEnv,
             ...clearMetricsEnv(),
           },
@@ -1468,7 +1472,7 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   requestFile: string,
   request: typeof TestRequest.Type,
   concurrency: number,
-  platform: string,
+  platform: NodeJS.Platform,
   run: (concurrency: number) => Effect.Effect<{
     readonly ok: boolean;
     readonly output: string;
@@ -1481,7 +1485,8 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const remaining = new Set(
-    cachedTestTasks(yield* encodeTestRequest(request))["test-cache"]?.dependsOn,
+    cachedTestTasks(yield* encodeTestRequest(request), undefined, platform)["test-cache"]
+      ?.dependsOn,
   );
   const completed: Array<string> = [];
   let output = "";
