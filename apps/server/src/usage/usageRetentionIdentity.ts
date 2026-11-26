@@ -31,6 +31,10 @@ function piIdentity(record: UsageRecord) {
   return id === undefined ? undefined : JSON.stringify([id, record.timestampMs]);
 }
 
+export function supportsUsageRetention(provider: UsageProviderKind): boolean {
+  return provider === "claude" || provider === "pi" || provider === "muse";
+}
+
 export function canRetainUsageRecord(
   record: UsageRecord,
 ): record is UsageRecord & { readonly dedupeKey: string } {

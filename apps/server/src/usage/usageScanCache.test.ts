@@ -1,10 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  carrySuperseded,
   decodeScanCache,
   isFullSaveDue,
   markMissing,
   markPresent,
+  pruneSuperseded,
+  retainedSuperseded,
   mergeCachedSource,
   mergeScanEntry,
   SCAN_CACHE_PIECE_CHARS,
@@ -423,6 +426,11 @@ describe("scan cache merge", () => {
   it.each([
     ["the later observation over a larger file", row({ observedAtMs: 2_001 }), row({ size: 900 })],
     [
+      "the same simultaneous rewrite when the sizes and read times tie",
+      row({ records: [record({ dedupeKey: "a:" })] }),
+      row({ records: [record({ dedupeKey: "b:" })] }),
+    ],
+    [
       "a current row over a legacy row seen at the same time",
       row(),
       row({ legacy: true, size: 900 }),
@@ -464,9 +472,73 @@ describe("scan cache merge", () => {
       row({ records: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
     ],
   ])("keeps %s in either order", (_name, winner, loser) => {
-    expect(mergeScanEntry(winner, loser)).toBe(winner);
-    expect(mergeScanEntry(loser, winner)).toBe(winner);
+    const merged = mergeScanEntry(winner, loser);
+    expect(merged).toMatchObject(winner);
+    expect(mergeScanEntry(loser, winner)).toEqual(merged);
     expect(mergeScanEntry(winner, winner)).toBe(winner);
+  });
+
+  it("dates each displaced key from the first read after its last sighting across peers", () => {
+    const snapshots = ["a:", "b:", "a:", "c:", "d:"].map((dedupeKey, index) =>
+      row({ observedAtMs: (index + 1) * 10, records: [record({ dedupeKey })] }),
+    );
+    const reload = (entry: CachedFile) =>
+      decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
+    const merged = snapshots.reduce(mergeScanEntry);
+    for (const order of [
+      [4, 3, 2, 1, 0],
+      [0, 3, 4, 1, 2],
+      [3, 1, 2, 4, 0],
+    ]) {
+      expect(
+        order.map((index) => snapshots[index]!).reduce((a, b) => reload(mergeScanEntry(a, b))),
+      ).toEqual(merged);
+    }
+    expect(
+      merged.superseded?.map(({ record, seenMs, sinceMs }) => [record.dedupeKey, seenMs, sinceMs]),
+    ).toEqual([
+      ["a:", 30, 40],
+      ["b:", 20, 30],
+      ["c:", 40, 50],
+    ]);
+    const pruned = reload(pruneSuperseded(merged, 100, 40));
+    expect(mergeScanEntry(pruned, snapshots[1]!)).toEqual(pruned);
+    expect(
+      retainedSuperseded(pruned, 40, "claude")
+        .map((entry) => entry.dedupeKey)
+        .sort(),
+    ).toEqual(["a:", "c:"]);
+  });
+
+  it("discards older identities when a different provider read the same path", () => {
+    const before = row({ observedAtMs: 10 });
+    const switched = row({ observedAtMs: 20, provider: "codex", records: [] });
+    const after = row({ observedAtMs: 30, records: [] });
+    const merged = mergeScanEntry(mergeScanEntry(before, switched), after);
+    expect(merged.superseded).toBeUndefined();
+    expect(mergeScanEntry(mergeScanEntry(after, before), switched)).toEqual(merged);
+    expect(mergeScanEntry(mergeScanEntry(after, switched), before)).toEqual(merged);
+  });
+
+  it("promotes a parsed EOF record only after a full read confirms its replacement", () => {
+    const previous = row({ records: [], tailRecords: [record()] });
+    const complete = row({ observedAtMs: 3000, records: [record({ dedupeKey: "other:" })] });
+    const liveKeys = new Set(["other:"]);
+    expect(
+      carrySuperseded(complete, previous, { retainedPrefix: previous, liveKeys }).superseded,
+    ).toBeUndefined();
+    expect(mergeScanEntry(complete, previous).superseded).toBeUndefined();
+    const replaced = carrySuperseded(complete, previous, { liveKeys });
+    expect(retainedSuperseded(replaced, 3000, "claude")).toEqual(previous.tailRecords);
+    const tentative = row({ observedAtMs: 4000, records: [], tailRecords: previous.tailRecords });
+    const overlapped = carrySuperseded(tentative, replaced, { liveKeys: new Set(["msg_1:"]) });
+    expect(retainedSuperseded(overlapped, 0, "claude")).toEqual(complete.records);
+    const appended = { ...complete, observedAtMs: 5000 };
+    const corrected = carrySuperseded(appended, overlapped, {
+      retainedPrefix: overlapped,
+      liveKeys,
+    });
+    expect(retainedSuperseded(corrected, 3000, "claude")).toEqual(previous.tailRecords);
   });
 
   it("keeps the held row when nothing tells two rows apart", () => {
