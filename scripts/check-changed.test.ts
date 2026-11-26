@@ -60,7 +60,8 @@ import {
   testsReaching,
   uncachedTests,
 } from "./check-changed.ts";
-import { cachedTestTasks } from "./lib/cached-tests.ts";
+import { localVitePlusCommand } from "./check-changed-command.ts";
+import { cachedTestTasks, changedTestRequestEnv } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
@@ -2414,6 +2415,20 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     capabilities,
     git,
     write,
+    runCachedGroup(file: string, variables: Record<string, string>) {
+      const request = NodePath.join(host, "request.json");
+      const cache = NodePath.join(host, "cache");
+      NodeFS.writeFileSync(request, JSON.stringify({ files: [file], groupSize: 1 }));
+      const [command, args] = localVitePlusCommand(["run", "--remote-cache", "off", "test-cache"]);
+      return NodeChildProcess.spawnSync(command, args, {
+        cwd: root,
+        encoding: "utf8",
+        env: checkEnv(root, {
+          ...changedTestRequestEnv(request, "fixture", 1, cache, "fixture", "fixture"),
+          ...variables,
+        }),
+      });
+    },
     commit(message: string) {
       git("add", ".");
       git("commit", "-m", message);
@@ -2759,16 +2774,17 @@ it("reruns a stable group after an empty commit", () => {
   using project = launcherFixture();
   project.write(
     "fixture.test.ts",
-    `import { it, expect } from "vite-plus/test";
+    `import { it } from "vite-plus/test";
     import {execFileSync} from "node:child_process";
-    it("reads the commit subject", () => expect(execFileSync("git", ["log", "-1", "--format=%s"], {encoding:"utf8"}).trim()).toBe("fixture"));`,
+    it("reads the commit subject", () => console.log("subject=" + execFileSync("git", ["log", "-1", "--format=%s"], {encoding:"utf8"}).trim()));`,
   );
   const first = project.run();
   expect(first.status, first.stdout + first.stderr).toBe(0);
+  expect(first.stdout).toContain("subject=fixture");
   project.git("commit", "--allow-empty", "-m", "different");
   const next = project.run();
-  expect(next.status, next.stdout + next.stderr).toBe(1);
-  expect(next.stdout).toContain("FAIL  test");
+  expect(next.status, next.stdout + next.stderr).toBe(0);
+  expect(next.stdout).toContain("subject=different");
 });
 
 it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ"])(
@@ -2778,15 +2794,14 @@ it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ"])(
     const [first, changed] = [NodePath.dirname(project.capabilities), NodeOS.tmpdir()];
     project.write(
       "fixture.test.ts",
-      `import { it, expect } from "vite-plus/test";
-    it("reads the test environment", () => expect(process.env[${JSON.stringify(name)}]).toBe(${JSON.stringify(first)}));`,
+      `import { it } from "vite-plus/test";
+    it("reads the test environment", () => console.log("observed=" + JSON.stringify(process.env[${JSON.stringify(name)}])));`,
     );
-    const run = (value: string) => project.run("", "", project.source, [], { [name]: value });
-    const firstRun = run(first);
-    expect(firstRun.status, firstRun.stdout + firstRun.stderr).toBe(0);
-    const next = run(changed);
-    expect(next.status, next.stdout + next.stderr).toBe(1);
-    expect(next.stdout).toContain("FAIL  test");
+    for (const value of [first, changed]) {
+      const result = project.runCachedGroup("fixture.test.ts", { [name]: value });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain(`observed=${JSON.stringify(value)}`);
+    }
   },
 );
 

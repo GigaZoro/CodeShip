@@ -189,6 +189,10 @@
 
 - When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
 
+## 2026-11-26 — Faster checks for test-cache regressions
+
+- The environment-variable tests now run the cached test group directly. They still verify the value each test receives after an environment change, without running unrelated checks for each variable.
+
 ## 2026-11-26 — Windows commands recover from launcher timeouts
 
 - Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. A launch whose command host ends early fails at once. POSIX and Windows cancellation close the start gate before an unstarted command can execute, including during restart recovery, and then stop any wrapper or job host the launch left running.
