@@ -201,6 +201,32 @@ describe("makeManagedServerProvider", () => {
         const refreshed = yield* provider.refresh;
         yield* unverified(update);
         assert.strictEqual(yield* provider.getSnapshot, refreshed);
+
+        const sameLogin = (next: ServerProvider): ServerProvider => ({
+          ...next,
+          auth: { status: "authenticated", email: "shared@example.test" },
+        });
+        const unsupported = sameLogin({
+          ...a,
+          usageLimits: {
+            checkedAt: a.checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" },
+          },
+        });
+        yield* Ref.set(snapshot, sameLogin(a));
+        yield* provider.refresh;
+        const originalSession = yield* provider.bindUsageLimits;
+        for (const next of [account("B", "pro"), a]) {
+          yield* Ref.set(snapshot, unsupported);
+          yield* provider.refresh;
+          const unknownSession = yield* provider.bindUsageLimits;
+          yield* Ref.set(snapshot, sameLogin(next));
+          const switched = yield* provider.refresh;
+          yield* originalSession(update);
+          yield* unknownSession(update);
+          assert.strictEqual(yield* provider.getSnapshot, switched);
+        }
       }).pipe(Effect.provide(layerAlwaysRunTest)),
   );
   it.effect("retries usage reported by a status check after its first missing reading", () =>

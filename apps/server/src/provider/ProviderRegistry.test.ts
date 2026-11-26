@@ -625,8 +625,12 @@ it.layer(
           email: string,
           rateLimits: CodexAppServerProviderSnapshot["rateLimits"] = {
             accountId: "workspace-1",
-            rateLimits: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
+            rateLimits: {
+              planType: "plus",
+              primary: { usedPercent: 78, windowDurationMins: 10080 },
+            },
           },
+          workspaceId: string | null = "workspace-1",
         ) =>
           checkCodexProviderStatus(
             defaultCodexSettings,
@@ -639,7 +643,13 @@ it.layer(
                 }),
               ),
             undefined,
-            { status: "authenticated", subscriptionSharing: true, label: "ChatGPT", email },
+            {
+              status: "authenticated",
+              subscriptionSharing: true,
+              label: "ChatGPT",
+              email,
+              ...(workspaceId ? { workspaceId } : {}),
+            },
           );
 
         const same = yield* statusFor("Test@Example.com");
@@ -649,6 +659,11 @@ it.layer(
           [["weekly", 78]],
         );
         assert.strictEqual((yield* statusFor("other@example.com")).usageLimits, undefined);
+        for (const workspaceId of ["workspace-2", null]) {
+          const otherPayer = yield* statusFor("test@example.com", undefined, workspaceId);
+          assert.strictEqual(otherPayer.auth.status, "authenticated");
+          assert.strictEqual(otherPayer.usageLimits, undefined);
+        }
         const unconfirmed = yield* statusFor("test@example.com", {
           accountId: "workspace-2",
           rateLimits: { primary: { usedPercent: 10 } },
@@ -2188,38 +2203,42 @@ it.layer(
           const first = yield* read(1_000).pipe(Effect.forkChild);
           yield* Deferred.await(started);
           const second = yield* read(2_000).pipe(Effect.forkChild({ startImmediately: true }));
+          const readMeter = (id: string, since = old.checkedAt) =>
+            registry.refreshUsageIfStale({
+              instanceIds: [instanceId],
+              staleObservations: ({ usageLimits }) => {
+                const fresh = usageLimits?.windows.some(
+                  (window) =>
+                    window.id === id && (window.observedAt ?? usageLimits.checkedAt) >= since,
+                );
+                return fresh ? [] : [id];
+              },
+              waitMs: 2_000,
+            });
+          const weekly = yield* readMeter("weekly").pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const quota = yield* readMeter("quota").pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
           yield* TestClock.adjust("1 second");
           expect(yield* Fiber.join(first)).toContainEqual(expect.objectContaining(old));
 
           yield* Deferred.succeed(release, undefined);
           expect(yield* Fiber.join(second)).toContainEqual(expect.objectContaining(fresh));
+          yield* Fiber.join(weekly);
+          yield* Fiber.join(quota);
           expect(yield* read(1_000)).toContainEqual(expect.objectContaining(fresh));
+          yield* readMeter("weekly");
           expect(yield* Ref.get(reads)).toBe(1);
-          const missingWeek = registry.refreshUsageIfStale({
-            instanceIds: [instanceId],
-            staleObservations: (provider) =>
-              provider.usageLimits?.windows.some((window) => window.kind === "weekly")
-                ? []
-                : ["weekly"],
-            waitMs: 1_000,
-          });
-          yield* missingWeek;
-          yield* missingWeek;
+          yield* readMeter("quota", "2026-06-10T01:00:00.000Z");
           expect(yield* Ref.get(reads)).toBe(2);
-          const missingSession = registry.refreshUsageIfStale({
-            instanceIds: [instanceId],
-            staleObservations: (provider) =>
-              provider.usageLimits?.windows.some((window) => window.kind === "session")
-                ? []
-                : ["session"],
-            waitMs: 1_000,
-          });
-          yield* missingSession;
-          yield* missingWeek;
-          yield* missingSession;
+          yield* readMeter("session");
+          yield* readMeter("weekly");
+          yield* readMeter("session");
           expect(yield* Ref.get(reads)).toBe(3);
           yield* TestClock.adjust("10 minutes");
-          yield* missingWeek;
+          yield* readMeter("weekly");
           expect(yield* Ref.get(reads)).toBe(4);
         }).pipe(
           Effect.provide(

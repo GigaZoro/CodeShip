@@ -137,7 +137,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
       });
       yield* Effect.gen(function* () {
         const store = yield* ProviderCredentialStore.make("codex-chatgpt", instanceId);
-        const json = yield* encodeCredentials({
+        const connection = {
           clientId: "oaiapp_test",
           accessToken: "dummy-owned-access",
           refreshToken: "dummy-refresh",
@@ -146,7 +146,8 @@ it.layer(layerTest)("CodexDriver", (it) => {
           scopes: ["chatgpt.tokens.use.direct"],
           subject: "test-user",
           email: "account@example.test",
-        });
+        };
+        const json = yield* encodeCredentials(connection);
         yield* store.set(new TextEncoder().encode(json));
         const replacement = yield* encodeCredentials({
           clientId: "oaiapp_replacement",
@@ -168,6 +169,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const installation = yield* CodexInstallation.CodexInstallation;
         const serverConfig = yield* ServerConfig.ServerConfig;
         const sharedHome = NodePath.join(serverConfig.stateDir, "shared-codex-home");
+        const limitsHome = codexAccountLimitsHomePath(
+          yield* Path.Path,
+          serverConfig.stateDir,
+          instanceId,
+        );
         const launches: Array<
           Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
         > = [];
@@ -228,10 +234,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
             ChildProcessSpawner.ChildProcessSpawner,
             ChildProcessSpawner.make((command) =>
               Effect.gen(function* () {
-                if (togglingSkills) {
-                  if (!ChildProcess.isStandardCommand(command))
-                    return yield* Effect.die("Expected a standard command");
-                  skillHomes.push(command.options.env?.CODEX_HOME);
+                if (
+                  ChildProcess.isStandardCommand(command) &&
+                  (togglingSkills || command.options.env?.CODEX_HOME === limitsHome)
+                ) {
+                  if (togglingSkills) skillHomes.push(command.options.env?.CODEX_HOME);
                   const responses = yield* Queue.unbounded<Uint8Array>();
                   return ChildProcessSpawner.makeHandle({
                     pid: ChildProcessSpawner.ProcessId(1),
@@ -247,23 +254,33 @@ it.layer(layerTest)("CodexDriver", (it) => {
                           params?: { enabled?: boolean };
                         };
                         if (request.method === "initialized") return;
-                        expect(["initialize", "skills/config/write"]).toContain(request.method);
                         if (request.method === "skills/config/write")
                           skillWrites.push(request.params);
+                        const replies: Record<string, unknown> = {
+                          initialize: {
+                            userAgent: "codex/test",
+                            codexHome: command.options.env?.CODEX_HOME,
+                            platformFamily: "unix",
+                            platformOs: "macos",
+                          },
+                          "account/read": {
+                            account: { type: "chatgpt", email: connection.email, planType: "plus" },
+                            requiresOpenaiAuth: true,
+                          },
+                          "account/rateLimits/read": {
+                            accountId: "workspace-A",
+                            rateLimits: { planType: "plus", primary: { usedPercent: 78 } },
+                          },
+                          "skills/config/write": { effectiveEnabled: request.params?.enabled },
+                          "account/logout": {},
+                        };
+                        expect(Object.hasOwn(replies, request.method)).toBe(true);
                         yield* Queue.offer(
                           responses,
                           new TextEncoder().encode(
                             JSON.stringify({
                               id: request.id,
-                              result:
-                                request.method === "initialize"
-                                  ? {
-                                      userAgent: "codex/test",
-                                      codexHome: command.options.env?.CODEX_HOME,
-                                      platformFamily: "unix",
-                                      platformOs: "macos",
-                                    }
-                                  : { effectiveEnabled: request.params?.enabled },
+                              result: replies[request.method],
                             }) + "\n",
                           ),
                         );
@@ -321,6 +338,49 @@ it.layer(layerTest)("CodexDriver", (it) => {
           "listing:Bearer dummy-owned-access",
         ]);
         expect(restored.auth.email).toBe("account@example.test");
+        const workspaceToken = (id: string) =>
+          `e30.${Buffer.from(JSON.stringify({ email: connection.email, "https://api.openai.com/auth": { chatgpt_account_id: id } })).toString("base64url")}.sig`;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(limitsHome, { recursive: true });
+        yield* fs.writeFileString(
+          NodePath.join(limitsHome, "auth.json"),
+          JSON.stringify({ tokens: { id_token: workspaceToken("workspace-A") } }),
+        );
+        let included = restored;
+        for (const id of ["workspace-A", "workspace-B", undefined]) {
+          const tokens = yield* encodeCredentials({
+            ...connection,
+            accessToken: id ? workspaceToken(id) : connection.accessToken,
+          });
+          yield* store.set(new TextEncoder().encode(tokens));
+          const managed = yield* instance.snapshot.refresh;
+          const matches = id === "workspace-A";
+          expect(managed.auth.status).toBe("authenticated");
+          expect(managed.auth.funding).toBe(matches ? "included" : "unknown");
+          expect(managed.usageLimits?.windows.map((w) => w.usedPercent)).toEqual(
+            matches ? [78] : [],
+          );
+          expect(
+            yield* instance.fundingForWorkspace!({
+              provider: managed,
+              cwd: sharedHome,
+              model: "gpt-5.4",
+            }),
+          ).toBe(matches ? "included" : "unknown");
+          if (matches) included = managed;
+          else {
+            expect(
+              yield* instance.fundingForWorkspace!({
+                provider: included,
+                cwd: sharedHome,
+                model: "gpt-5.4",
+              }),
+            ).toBe("unknown");
+            expect((yield* instance.consumeResetCredit!().pipe(Effect.flip)).detail).toContain(
+              "could not confirm this workspace",
+            );
+          }
+        }
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
           NodePath.join("providers", "codex", instanceId, "shadow"),

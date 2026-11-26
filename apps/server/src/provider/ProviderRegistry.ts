@@ -976,7 +976,15 @@ export const layer = Layer.effect(
       return yield* Ref.get(providersRef);
     });
 
-    type UsageRead = { account: ReadonlyArray<string | undefined>; done: Deferred.Deferred<void> };
+    type UsageInquiry = {
+      keys: ReadonlyArray<string>;
+      staleObservations: (provider: ServerProvider) => ReadonlyArray<string>;
+    };
+    type UsageRead = {
+      account: ReadonlyArray<string | undefined>;
+      done: Deferred.Deferred<void>;
+      inquiries: UsageInquiry[];
+    };
     const usageReads = new Map<ProviderInstance, UsageRead>();
     const unresolvedUsageReads = new WeakMap<
       ProviderInstance,
@@ -1004,7 +1012,11 @@ export const layer = Layer.effect(
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       const account = usageAccountIdentity(provider);
       const running = usageReads.get(instance);
-      if (running && Equal.equals(running.account, account)) return Option.some(running.done);
+      const inquiry = { keys: stale, staleObservations };
+      if (running && Equal.equals(running.account, account)) {
+        running.inquiries.push(inquiry);
+        return Option.some(running.done);
+      }
       const last = unresolvedUsageReads.get(instance);
       const attempts =
         last && Equal.equals(last.account, account) ? last.attempts : new Map<string, number>();
@@ -1013,9 +1025,10 @@ export const layer = Layer.effect(
       }
       if (stale.every((key) => attempts.has(key))) return Option.none();
       const done = Deferred.makeUnsafe<void>();
-      usageReads.set(instance, { account, done });
-      for (const key of stale) attempts.set(key, now);
+      const inquiries = [inquiry];
+      usageReads.set(instance, { account, done, inquiries });
       unresolvedUsageReads.set(instance, { account, attempts });
+      let updated: ServerProvider | undefined;
       const read = dedicatedRead
         ? dedicatedRead.pipe(Effect.andThen(source.getSnapshot))
         : source.refresh;
@@ -1036,18 +1049,23 @@ export const layer = Layer.effect(
         const snapshots = yield* syncProvider(
           yield* correlateSnapshotWithSource(source, next.value),
         );
-        const updated = snapshots.find((row) => row.instanceId === instance.instanceId);
-        if (!updated) return;
-        const unresolved = new Set(staleObservations(updated));
-        for (const key of stale) {
-          if (!unresolved.has(key)) attempts.delete(key);
-        }
+        updated = snapshots.find((row) => row.instanceId === instance.instanceId);
       }).pipe(
         Effect.catchCause(recoverRefreshFailure),
         Effect.ensuring(
           Effect.sync(() => {
-            if (usageReads.get(instance)?.done === done) usageReads.delete(instance);
-          }).pipe(Effect.andThen(Deferred.succeed(done, undefined))),
+            if (usageReads.get(instance)?.done !== done) return;
+            usageReads.delete(instance);
+            const unresolved = new Set<string>();
+            for (const { keys, staleObservations } of inquiries) {
+              const after = updated && new Set(staleObservations(updated));
+              for (const key of keys) {
+                attempts.delete(key);
+                if (!after || after.has(key)) unresolved.add(key);
+              }
+            }
+            for (const key of unresolved) attempts.set(key, now);
+          }).pipe(Effect.ensuring(Deferred.succeed(done, undefined))),
         ),
         Effect.interruptible,
         Effect.forkIn(serviceScope),

@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - OAuth loopback listener and PKCE use Node APIs.
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
 import {
   ProviderSetupError,
   type ChatGptReconnectProfile,
@@ -70,6 +70,20 @@ const Record = Schema.Struct({
   refused: Schema.optionalKey(Schema.Literal(true)),
 });
 export type CodexChatGptCredentials = typeof Record.Type;
+const decodeWorkspace = Schema.decodeUnknownOption(
+  Schema.Struct({
+    "https://api.openai.com/auth": Schema.Struct({ chatgpt_account_id: Schema.String }),
+  }),
+);
+const readBearerClaims = Option.liftThrowable(decodeJwt);
+// Use only the token presented to the model backend. A sign-in ID token can name a different workspace.
+export const codexSharingWorkspaceId = (credentials: CodexChatGptCredentials) =>
+  readBearerClaims(credentials.accessToken).pipe(
+    Option.flatMap(decodeWorkspace),
+    Option.map((claims) => claims["https://api.openai.com/auth"].chatgpt_account_id.trim()),
+    Option.filter((id) => id.length > 0),
+    Option.getOrUndefined,
+  );
 const Sessions = Schema.Struct({
   activeClientId: Schema.NullOr(Schema.String),
   sessions: Schema.Array(Record),
@@ -777,15 +791,22 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
   });
   // ID tokens survive renewal but change on sign-in. Bind active children to the
   // launch profile without putting an identity token or subject in their argv.
-  const profileKey = (record: CodexChatGptCredentials) =>
-    crypto
+  const profileKey = (record: CodexChatGptCredentials) => {
+    const workspaceId = codexSharingWorkspaceId(record);
+    return crypto
       .digest(
         "SHA-256",
         new TextEncoder().encode(
-          JSON.stringify([record.clientId, record.subject, record.idToken ?? null]),
+          JSON.stringify([
+            record.clientId,
+            record.subject,
+            record.idToken ?? null,
+            ...(workspaceId ? [workspaceId] : []),
+          ]),
         ),
       )
       .pipe(Effect.map(Hex.encode), Effect.orDie);
+  };
   // ChatGPT's verdict on a token applies only while that token is the one saved: a late answer
   // for a token renewal or a new sign-in replaced says nothing about the saved sign-in.
   const savedWithOtherVerdict = (record: CodexChatGptCredentials, refused: boolean) =>
@@ -884,6 +905,8 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
         scopes: tokens.scope.split(/\s+/).filter(Boolean),
       };
       yield* save(record);
+      if (expectedProfileKey !== undefined && (yield* profileKey(record)) !== expectedProfileKey)
+        return yield* failure("access", "The ChatGPT connection changed. Start a new session.");
       if (!record.scopes.includes(CHATGPT_SHARING_SCOPE))
         return yield* failure(
           "sharing",

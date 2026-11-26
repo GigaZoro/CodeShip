@@ -1098,7 +1098,9 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   // attributes nothing, so the saved login's identity hint is enough to report why it failed.
   const reportsUsageLimits =
     managedAuth === undefined ||
-    sameCodexAccountEmail(login.auth.email, managedAuth.email) ||
+    (Boolean(managedAuth.workspaceId) &&
+      login.auth.workspaceId === managedAuth.workspaceId &&
+      sameCodexAccountEmail(login.auth.email, managedAuth.email)) ||
     ((snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits) &&
       sameCodexAccountEmail(snapshot.storedLogin?.email, managedAuth.email));
 

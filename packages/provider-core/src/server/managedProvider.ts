@@ -39,16 +39,15 @@ function sameUsageOwner(before: ServerProvider, after: ServerProvider): boolean 
     [before.usageLimits?.accountKey, after.usageLimits?.accountKey],
     [before.usageLimits?.credentialFingerprint, after.usageLimits?.credentialFingerprint],
   ];
-  if (before.auth.workspaceId !== after.auth.workspaceId) return false;
   const fields = [
     ...identities,
+    [before.auth.workspaceId, after.auth.workspaceId],
     [before.auth.type, after.auth.type],
     [before.auth.profileId, after.auth.profileId],
     [before.usageLimits?.plan, after.usageLimits?.plan],
   ];
   return (
-    identities.some(([a, b]) => a !== undefined && a === b) &&
-    fields.every(([a, b]) => a === undefined || b === undefined || a === b)
+    identities.some(([a, b]) => a !== undefined && a === b) && fields.every(([a, b]) => a === b)
   );
 }
 
@@ -129,7 +128,16 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       if (Equal.equals(state.snapshot, merged)) {
         return [null, state] as const;
       }
-      return [merged, { ...state, snapshot: merged }] as const;
+      const changedOwner =
+        !Equal.equals(state.snapshot.auth, merged.auth) && !sameUsageOwner(state.snapshot, merged);
+      return [
+        merged,
+        {
+          ...state,
+          snapshot: merged,
+          usageGeneration: state.usageGeneration + Number(changedOwner),
+        },
+      ] as const;
     });
     if (snapshotToPublish === null) {
       return;
