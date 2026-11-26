@@ -1,30 +1,41 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
+  type ExecutionEnvironmentDescriptor,
   type ManualStepStartChatInput,
+  MessageId,
   type ModelSelection,
+  type OrchestrationV2ConversationMessage,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ManualStepChats from "./ManualStepChats.ts";
 
 const scratchProjectId = ProjectId.make("project:scratch");
 const signedOut = ProviderInstanceId.make("codex");
 const signedIn = ProviderInstanceId.make("claude_second");
+const environmentId = EnvironmentId.make("environment:manual-steps");
 
 const claude = ProviderDriverKind.make("claudeAgent");
 
@@ -67,16 +78,33 @@ type SettingsOverrides = Parameters<typeof ServerSettings.layerTest>[0];
 
 interface Scenario {
   readonly settings?: SettingsOverrides;
+  readonly quotaAwareAuto?: boolean | undefined;
   /** The model of the chat an earlier attempt with this command id already started. */
   readonly startedModel?: ModelSelection;
+  readonly firstRunId?: RunId;
 }
 
 const layerFor = (
   providers: ReadonlyArray<ServerProvider>,
   launches: Ref.Ref<ReadonlyArray<ThreadLaunch.ThreadLaunchInput>>,
-  { settings, startedModel }: Scenario,
+  { settings, startedModel, quotaAwareAuto, firstRunId }: Scenario,
 ) =>
   ManualStepChats.layer.pipe(
+    Layer.provide(
+      Layer.succeed(ServerEnvironment.ServerEnvironment, {
+        getEnvironmentId: Effect.succeed(environmentId),
+        getDescriptor: Effect.succeed<ExecutionEnvironmentDescriptor>({
+          environmentId,
+          label: "Manual steps",
+          platform: { os: "linux", arch: "x64" },
+          serverVersion: "1.0.0",
+          capabilities: {
+            repositoryIdentity: false,
+            ...(quotaAwareAuto === undefined ? {} : { quotaAwareAuto }),
+          },
+        }),
+      }),
+    ),
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
@@ -84,23 +112,58 @@ const layerFor = (
       }),
     ),
     Layer.provide(Layer.mock(Project.ProjectService)({ getById: () => Effect.succeedNone })),
+    // Manual-step chats always run in the checkout, so they never ask git for a worktree base.
+    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({ load: () => Effect.succeedNone }),
+    ),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
     ),
     Layer.provide(
       Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: () =>
+        getThreadShell: (threadId) =>
           Effect.succeed(
             startedModel === undefined
               ? null
-              : ({ deletedAt: null, modelSelection: startedModel } as Effect.Success<
-                  ReturnType<ThreadManagement.ThreadManagementService["Service"]["getThreadShell"]>
-                >),
+              : {
+                  ...liveThreadShell(threadId),
+                  projectId: scratchProjectId,
+                  modelSelection: startedModel,
+                  latestUserMessageAt:
+                    firstRunId === undefined ? null : DateTime.makeUnsafe("2026-11-11T12:00:00Z"),
+                },
           ),
+        getThreadRecords: (threadId, _kinds, filter) => {
+          const id = MessageId.make(input.commandId);
+          const records = idleThreadProjection({
+            ...liveThreadShell(threadId),
+            projectId: scratchProjectId,
+          });
+          const messages: OrchestrationV2ConversationMessage[] = [];
+          if (firstRunId !== undefined && filter?.messageIds?.includes(id)) {
+            messages.push({
+              id,
+              threadId,
+              runId: firstRunId,
+              nodeId: null,
+              role: "user",
+              createdBy: "user",
+              creationSource: "mobile",
+              text: input.step.step,
+              attachments: [],
+              streaming: false,
+              createdAt: records.updatedAt,
+              updatedAt: records.updatedAt,
+            });
+          }
+          return Effect.succeed({ ...records, messages });
+        },
       }),
     ),
     Layer.provide(
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        prepareRun: () => Effect.void,
         launch: (request) =>
           Ref.update(launches, (seen) => [...seen, request]).pipe(
             Effect.as({
@@ -176,19 +239,78 @@ describe("ManualStepChats", () => {
     }),
   );
 
-  it.effect("moves an auto-account default off a turned-off account, keeping its model", () =>
+  it.effect.each([
+    [
+      "moves an auto-account default off a turned-off account",
+      { autoAccount: true },
+      { instanceId: signedIn, model: "small", autoAccount: true },
+    ],
+    [
+      "preserves quota-aware Auto for the turn router when its placeholder account is off",
+      { quotaAwareAuto: true },
+      { instanceId: signedOut, model: "small", quotaAwareAuto: true },
+    ],
+  ] as const)("%s", ([, mode, expected]) =>
     Effect.gen(function* () {
       const { launches } = yield* start([provider(signedOut), provider(signedIn)], {
+        quotaAwareAuto: true,
         settings: {
-          defaultModelSelection: { instanceId: signedOut, model: "small", autoAccount: true },
+          defaultModelSelection: { instanceId: signedOut, model: "small", ...mode },
           providerInstances: { [signedOut]: { driver: claude, enabled: false } },
         },
       });
-      expect(launches[0]?.modelSelection).toEqual({
-        instanceId: signedIn,
-        model: "small",
-        autoAccount: true,
+      expect(launches[0]?.modelSelection).toEqual(expected);
+    }),
+  );
+
+  it.effect.each([
+    ["omits support", undefined, true],
+    ["disables support", false, false],
+  ] as const)("refuses a quota-aware default when the destination %s", ([, supported, enabled]) =>
+    Effect.gen(function* () {
+      const { result, launches } = yield* start([provider(signedOut), provider(signedIn)], {
+        quotaAwareAuto: supported,
+        settings: {
+          defaultModelSelection: { instanceId: signedOut, model: "small", quotaAwareAuto: true },
+          providerInstances: { [signedOut]: { driver: claude, enabled } },
+        },
       });
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "no-model", quotaAwareAutoUnsupported: true },
+      });
+      expect(launches).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses a quota-aware fallback when the default is out of quota", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const limited = provider(signedOut, {
+        usageLimits: {
+          checkedAt: DateTime.formatIso(now),
+          windows: [
+            {
+              id: "5h",
+              kind: "session",
+              label: "Session",
+              usedPercent: 100,
+              resetsAt: DateTime.formatIso(DateTime.add(now, { hours: 1 })),
+            },
+          ],
+        },
+      });
+      const { result, launches } = yield* start([limited, provider(signedIn)], {
+        settings: {
+          defaultModelSelection: { instanceId: signedOut, model: "small" },
+          fallbackModelSelection: { instanceId: signedIn, model: "large", quotaAwareAuto: true },
+        },
+      });
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "no-model", quotaAwareAutoUnsupported: true },
+      });
+      expect(launches).toEqual([]);
     }),
   );
 
@@ -203,6 +325,20 @@ describe("ManualStepChats", () => {
         threadId: input.commandId,
         modelSelection: startedModel,
       });
+    }),
+  );
+
+  it.effect("reopens an accepted Auto chat after the destination loses support", () =>
+    Effect.gen(function* () {
+      const { result, launches } = yield* start([], {
+        startedModel: { instanceId: signedOut, model: "small", quotaAwareAuto: true },
+        firstRunId: RunId.make("run:decision"),
+      });
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: { threadId: input.commandId, resumed: true },
+      });
+      expect(launches).toEqual([]);
     }),
   );
 

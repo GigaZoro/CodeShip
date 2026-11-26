@@ -134,22 +134,24 @@ const OUTLIER_COUNT = 3;
 
 /** The chat lists the overview shows: the paged list and the three outlier lists. */
 function chatRequests(period: MonitoringWindow, filters: Filters, listOrder: MonitoringChatOrder) {
-  const scope: ChatFilters = {
-    projectKey: filters.project,
-    kind: filters.kind,
-    model: filters.model,
+  const scope = {
+    window: { since: period.since, until: period.until },
+    filters: {
+      projectKey: filters.project,
+      kind: filters.kind,
+      model: filters.model,
+    } satisfies ChatFilters,
   };
-  const bounds = { since: period.since, until: period.until };
   return {
+    scope,
     list: {
-      window: bounds,
-      filters: { ...scope, findingCode: filters.finding },
+      ...scope,
+      filters: { ...scope.filters, findingCode: filters.finding },
       order: listOrder,
       pageSize: MONITORING_PAGE_SIZE,
     } satisfies MonitoringChatsRequest,
     outliers: OUTLIERS.map((outlier): MonitoringChatsRequest => ({
-      window: bounds,
-      filters: scope,
+      ...scope,
       order: { sort: outlier.sort, direction: "desc", limit: OUTLIER_COUNT },
       pageSize: OUTLIER_COUNT,
     })),
@@ -164,7 +166,7 @@ export function MonitoringPage() {
   const [listOrder, setListOrder] = useState(FIRST_PAGE);
   const period = monitoringWindow(windowChoice.days, windowChoice.now);
   const overviewInput = { days: period.days, until: period.until };
-  const { view: overview, days: overviewDays } = useMonitoringOverview(overviewInput);
+  const { view: overview, days: overviewDays, retained } = useMonitoringOverview(overviewInput);
   const requests = chatRequests(period, filters, listOrder);
   const projects = useProjects();
 
@@ -271,6 +273,7 @@ export function MonitoringPage() {
             <MonitoringOverview
               overview={overview}
               days={overviewDays}
+              retained={retained}
               filters={filters}
               onFiltersChange={changeFilters}
               requests={requests}
@@ -291,6 +294,7 @@ export function MonitoringPage() {
 function MonitoringOverview({
   overview,
   days,
+  retained,
   filters,
   onFiltersChange,
   requests,
@@ -303,6 +307,7 @@ function MonitoringOverview({
 }: {
   readonly overview: MonitoringOverviewView;
   readonly days: ReadonlyArray<MonitoringDay>;
+  readonly retained: boolean;
   readonly filters: Filters;
   readonly onFiltersChange: (filters: Filters) => void;
   readonly requests: ReturnType<typeof chatRequests>;
@@ -369,11 +374,7 @@ function MonitoringOverview({
     );
   }
 
-  const scoped = filterGroups(overview.groups, {
-    projectKey: filters.project,
-    kind: filters.kind,
-    model: filters.model,
-  });
+  const scoped = filterGroups(overview.groups, requests.scope.filters);
   const totals = totalsOf(scoped);
   const buckets = sumTimeBuckets(scoped);
   const ranks = rankFindings(scoped);
@@ -459,6 +460,8 @@ function MonitoringOverview({
           >
             <MonitoringFindingRanking
               ranks={ranks}
+              groups={scoped}
+              scope={retained ? null : requests.scope}
               activeCode={filters.finding}
               onSelect={(finding) => onFiltersChange({ ...filters, finding })}
             />

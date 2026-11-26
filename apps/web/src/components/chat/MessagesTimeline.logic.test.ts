@@ -3563,9 +3563,12 @@ describe("v2 run and attempt history", () => {
       toolCallVisibility: "showAll" | "zen" = "showAll",
       phase?: "commentary" | "partial_answer" | "final_answer",
       nativeSteer = false,
+      replacementOutput: TimelineEntry = assistantEntry("new-reply-entry", nextAttempt, 14),
+      expandedRunIds?: ReadonlySet<RunId>,
     ) =>
       deriveMessagesTimelineRows({
         toolCallVisibility,
+        ...(expandedRunIds ? { expandedRunIds } : {}),
         timelineEntries: (
           [
             {
@@ -3609,7 +3612,7 @@ describe("v2 run and attempt history", () => {
                 streaming: false,
               },
             },
-            assistantEntry("new-reply-entry", nextAttempt, 14),
+            replacementOutput,
           ] satisfies ReadonlyArray<TimelineEntry>
         ).map((entry) => (nativeSteer ? { ...entry, attempt: nextAttempt } : entry)),
         latestRun: {
@@ -3650,6 +3653,43 @@ describe("v2 run and attempt history", () => {
         }
       },
     );
+
+    it("folds a reply the steer cut off as partial output", () => {
+      const rows = rowsFor(11, "running");
+      expect(rows.find((row) => row.kind === "attempt-fold")).toMatchObject({
+        attemptId: supersededAttempt.id,
+        label: "Superseded attempt",
+      });
+      expect(rows.map((row) => row.id)).not.toContain("old-reply-entry");
+
+      const replacementTool: TimelineEntry = {
+        id: "replacement-tool",
+        kind: "work",
+        createdAt: at(13),
+        attempt: nextAttempt,
+        entry: { id: "replacement-tool", createdAt: at(13), runId, label: "Read", tone: "tool" },
+      };
+      for (const [expanded, expectedOwner] of [
+        [new Set<RunId>(), `turn-fold:${runId}`],
+        [new Set([runId]), `attempt-fold:${supersededAttempt.id}`],
+      ] as const) {
+        const rows = rowsFor(
+          11,
+          "completed",
+          "showAll",
+          undefined,
+          false,
+          replacementTool,
+          expanded,
+        );
+        const owners = rows.filter(
+          (row) =>
+            (row.kind === "turn-fold" || row.kind === "attempt-fold") &&
+            row.hiddenMessages?.some((message) => message.id === "old-reply-entry"),
+        );
+        expect(owners.map((row) => row.id)).toEqual([expectedOwner]);
+      }
+    });
   });
 
   it("hides the interruption request while keeping intervening work and the result", () => {

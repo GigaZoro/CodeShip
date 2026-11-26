@@ -26,7 +26,12 @@ offline. An environment that runs an older T3.CodeShip server is named too until
   waited on: the model, commands, tools, approvals, the queue, usage limits, helpers, you, and
   the time before settling.
 - **Weak points** ranks findings such as repeated or slow commands, failed runs and low cache
-  reuse. Select one to list only the chats it hit.
+  reuse. Select one to list only the chats it hit. **Fix root cause** starts a chat that reads
+  the chats it hit, up to 20 that lost the most time, traces the weak point to its cause and fixes
+  it. The chat runs on the machine and in the project that lost the most time to it, and starts
+  the way a new chat there would, in a worktree when the project uses them. The button shows
+  only when that machine runs a version that can start these chats and your connection may start
+  chats there.
 - **Steps** groups shell commands by what they were for.
 - **Daily trend**, the **breakdowns** and the **chat list** compare days, projects, kinds and
   models. On the web, select a column heading to sort the list; mobile lists the newest settled
@@ -36,5 +41,5 @@ offline. An environment that runs an older T3.CodeShip server is named too until
 
 The deep dive shows a timeline of the chat's runs and helpers, colored by model, with markers for
 events such as restarts and usage limits. Below it are the steps, the slowest and most repeated
-commands, and the findings with advice on what to change. **Open chat** returns to the
-conversation.
+commands, and the findings with advice on what to change. **Fix root cause** on a finding starts
+a chat that fixes its cause in this chat's project. **Open chat** returns to the conversation.

@@ -30,6 +30,7 @@ import {
 import {
   codexCreditStanding,
   exhaustedUsageWindow,
+  isCodexCloudAccount,
   isSubscriptionAccount,
   nextWeeklyResetMs,
   usageHoldMs,
@@ -173,10 +174,7 @@ const grantState = (provider: ServerProvider, input: LimitInput) =>
   );
 
 const canSpendCodexPlanCredits = (provider: ServerProvider) =>
-  provider.driver === CODEX_DRIVER &&
-  isSubscriptionAccount(provider) &&
-  provider.auth.funding !== "metered" &&
-  provider.auth.type !== "amazonBedrock";
+  provider.driver === CODEX_DRIVER && isSubscriptionAccount(provider);
 
 /** How an account's prepaid credits stand for new work; null without credits T3 could spend. */
 export function creditUse(provider: ServerProvider, input: LimitInput): ProviderCreditUse | null {
@@ -358,6 +356,7 @@ export function automaticAccountEligibility(
     (provider.auth.loginExpiresAt && Date.parse(provider.auth.loginExpiresAt) <= input.nowMs)
   )
     return { kind: "account_unavailable" } as const;
+  if (isCodexCloudAccount(provider)) return { kind: "metered" } as const;
   const modelFunding = provider.models.find((entry) => entry.slug === model)?.funding;
   const funding =
     provider.auth.fundingScope === "workspace"

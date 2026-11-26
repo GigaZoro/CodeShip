@@ -32,6 +32,7 @@ import { discoverFxSkills } from "./skills.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makeCachedProviderMaintenanceResolution,
+  makeManualOnlyProviderMaintenanceCapabilities,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 import { fetchLatestFxVersion, makeFxMaintenance } from "./maintenance.ts";
@@ -118,20 +119,27 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
     } satisfies FxSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-      resolveProviderMaintenanceCapabilitiesEffect(
-        makeFxMaintenance(
-          fetchLatestFxVersion().pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
-        ),
-        {
-          binaryPath: effectiveConfig.binaryPath,
-          env: processEnv,
-          npmCacheDir: path.join(host.paths.providerStatusCacheDir, "npm"),
-        },
-      ).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-      ),
+      enabled
+        ? resolveProviderMaintenanceCapabilitiesEffect(
+            makeFxMaintenance(
+              fetchLatestFxVersion().pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
+            ),
+            {
+              binaryPath: effectiveConfig.binaryPath,
+              env: processEnv,
+              npmCacheDir: path.join(host.paths.providerStatusCacheDir, "npm"),
+            },
+          ).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          )
+        : Effect.succeed(
+            makeManualOnlyProviderMaintenanceCapabilities({
+              provider: FX_DRIVER_KIND,
+              packageName: null,
+            }),
+          ),
     );
     const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: FX_DRIVER_KIND });
     const checkStatus = versionMemory.check((lastKnownVersion) =>

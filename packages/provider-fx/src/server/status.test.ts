@@ -13,9 +13,12 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as TestClock from "effect/testing/TestClock";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { FxSettings } from "../settings.ts";
 import { checkFxProviderStatus, readFxDefaultChoice } from "./status.ts";
+import { fetchLatestFxVersion, makeFxMaintenance } from "./maintenance.ts";
 
 const encoder = new TextEncoder();
 const settings = Schema.decodeSync(FxSettings)({ enabled: true });
@@ -112,9 +115,67 @@ const check = (
       settings,
       profileInFxHome ? { HOME: home, FX_HOME: profile } : { HOME: home },
       lastKnownVersion,
-    ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+    ).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(HostProcess.KernelRelease, "24.0.0"),
+    );
     return { draft, invoked };
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+
+it.effect.each([
+  { name: "native stable", owner: "native", updateChannel: "stable", canUpdate: true },
+  { name: "native dev", owner: "native", updateChannel: "dev", canUpdate: false },
+  {
+    name: "development build on the stable update channel",
+    owner: "native",
+    updateChannel: "stable",
+    buildChannel: "dev",
+    canUpdate: false,
+  },
+  { name: "package-managed", owner: "package", updateChannel: "stable", canUpdate: false },
+  {
+    name: "symlink to package-managed fx",
+    owner: "symlink",
+    updateChannel: "stable",
+    canUpdate: false,
+  },
+])("reports canUpdate=$canUpdate for $name installations", (row) =>
+  Effect.gen(function* () {
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(
+        processHandle(
+          JSON.stringify({ update_channel: row.updateChannel, build_channel: row.buildChannel }),
+          0,
+        ),
+      ),
+    );
+    const client = HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, new Response("v0.0.17\n"))),
+    );
+    const path = yield* Path.Path;
+    const home = path.resolve("test-fx-home");
+    const native = path.join(home, ".local", "bin", "fx");
+    const packaged = path.join(home, ".local", "share", "mise", "installs", "fx", "0.0.16", "fx");
+    const capabilities = yield* makeFxMaintenance(
+      fetchLatestFxVersion().pipe(Effect.provideService(HttpClient.HttpClient, client)),
+    )
+      .resolve({
+        binaryPath: "fx",
+        resolvedCommandPath: row.owner === "package" ? packaged : native,
+        realCommandPath: row.owner === "native" ? native : packaged,
+        env: { HOME: home },
+        platform: "darwin",
+      })
+      .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+    if (row.canUpdate) {
+      assert.deepEqual(capabilities.update?.args, ["upgrade"]);
+      assert.equal(capabilities.update?.executable, native);
+      assert.equal(yield* capabilities.lookupLatestVersion!, "0.0.17");
+    } else {
+      assert.isNull(capabilities.update);
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 describe("checkFxProviderStatus", () => {
   it.effect.each([

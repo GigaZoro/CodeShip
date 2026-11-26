@@ -107,6 +107,7 @@ interface HarnessOptions {
   readonly native?: boolean;
   readonly nativeVersion?: string;
   readonly nativeManifest?: (manifest: { version: string; url: string; sha512: string }) => unknown;
+  readonly manifestStatus?: number;
   readonly beforeManifest?: Effect.Effect<void>;
   readonly updateChecksEnabled?: Effect.Effect<boolean>;
 }
@@ -200,6 +201,12 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
           if (request.url.includes("/manifests/")) {
             return Effect.gen(function* () {
               yield* options.beforeManifest ?? Effect.void;
+              if (options.manifestStatus !== undefined) {
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(null, { status: options.manifestStatus }),
+                );
+              }
               const version = options.nativeVersion ?? "1.5.7";
               const folder = platform === "win32" ? "windows-x64" : "linux-x64";
               const manifest = {
@@ -264,6 +271,77 @@ const expectPreviousRelease = Effect.fn("test.expectPreviousAntigravityRelease")
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Antigravity installation", (it) => {
+  it.effect("advances the existing managed runtime to the manifest version", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({
+        native: true,
+        previous: true,
+        nativeVersion: "1.5.7",
+      });
+      expect(yield* installation.latestVersion).toBe("1.5.7");
+      yield* installation.upgrade("1.5.7");
+      expect(yield* installation.resolve()).toMatchObject({
+        source: "managed",
+        version: "1.5.7",
+      });
+      expect(requests.filter((url) => !url.includes("/manifests/"))).toHaveLength(1);
+    }),
+  );
+
+  it.effect.each([
+    { name: "prerelease", nativeVersion: "1.5.7-rc.1" },
+    {
+      name: "unexpected archive URL",
+      nativeVersion: "1.5.7",
+      nativeManifest: (manifest: { version: string; url: string; sha512: string }) => ({
+        ...manifest,
+        url: "https://example.com/runtime.tar.gz",
+      }),
+    },
+  ])("does not offer a $name from the release manifest", ({ name: _name, ...options }) =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({
+        native: true,
+        previous: true,
+        ...options,
+      });
+      expect(yield* installation.latestVersion).toBeNull();
+      expect(Exit.isFailure(yield* Effect.exit(installation.upgrade(options.nativeVersion)))).toBe(
+        true,
+      );
+      expect(requests).toHaveLength(2);
+      expect(requests.every((url) => url.includes("/manifests/"))).toBe(true);
+      yield* expectPreviousRelease(installation);
+    }),
+  );
+
+  it.effect("does not install Antigravity as part of an update on a new environment", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({
+        native: true,
+        nativeVersion: "1.5.7",
+      });
+      expect(Exit.isFailure(yield* Effect.exit(installation.upgrade("1.5.7")))).toBe(true);
+      expect(requests).toEqual([]);
+      expect((yield* installation.state).installedVersion).toBeNull();
+    }),
+  );
+
+  it.effect("keeps using the active runtime when the release manifest is unavailable", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({
+        native: true,
+        previous: true,
+        manifestStatus: 503,
+      });
+      expect(yield* installation.latestVersion).toBeNull();
+      expect(Exit.isFailure(yield* Effect.exit(installation.upgrade("1.5.7")))).toBe(true);
+      expect(requests).toHaveLength(2);
+      expect(requests.every((url) => url.includes("/manifests/"))).toBe(true);
+      yield* expectPreviousRelease(installation);
+    }),
+  );
+
   it.effect.each([...new Set(["win32", hostPlatform])] as NodeJS.Platform[])(
     "replaces a managed runtime from before the Antigravity CLI on %s",
     (platform) =>

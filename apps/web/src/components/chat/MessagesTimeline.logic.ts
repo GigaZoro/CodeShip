@@ -376,13 +376,13 @@ export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boo
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
-  const naturalHeight = Math.max(1, (itemCount - 1) * TIMELINE_MINIMAP_ITEM_SPACING);
-  return `min(${naturalHeight}px, ${TIMELINE_MINIMAP_MAX_HEIGHT_CSS})`;
+  const naturalHeight = (itemCount - 1) * TIMELINE_MINIMAP_ITEM_SPACING;
+  return `clamp(24px, ${naturalHeight}px, ${TIMELINE_MINIMAP_MAX_HEIGHT_CSS})`;
 }
 
 export function resolveTimelineMinimapTopPercent(index: number, itemCount: number): number {
   if (itemCount <= 1) {
-    return 0;
+    return 50;
   }
   return (Math.max(0, Math.min(index, itemCount - 1)) / (itemCount - 1)) * 100;
 }
@@ -458,15 +458,19 @@ export function resolveTimelineMinimapCurrentIndex(input: {
   if (input.visibleStart == null || input.visibleEnd == null) {
     return null;
   }
-  let precedingIndex: number | null = null;
-  for (const [index, rowIndex] of input.rowIndices.entries()) {
-    if (rowIndex >= input.visibleStart) {
-      // Prefer the first visible user message, otherwise the turn being read.
-      return rowIndex <= input.visibleEnd ? index : precedingIndex;
+  let first = 0;
+  let last = input.rowIndices.length;
+  while (first < last) {
+    const middle = Math.floor((first + last) / 2);
+    if (input.rowIndices[middle]! < input.visibleStart) {
+      first = middle + 1;
+    } else {
+      last = middle;
     }
-    precedingIndex = index;
   }
-  return precedingIndex;
+  // Prefer the first visible user message, otherwise the turn being read.
+  if ((input.rowIndices[first] ?? Infinity) <= input.visibleEnd) return first;
+  return first > 0 ? first - 1 : null;
 }
 
 export function resolveTimelineMinimapHasPersistentGutter(sideGutter: number): boolean {
@@ -593,6 +597,7 @@ type MessagesTimelineRowContent =
   | {
       kind: "turn-fold";
       deferredWorkItemIds?: ReadonlyArray<string>;
+      hiddenMessages?: ReadonlyArray<ChatMessage>;
       id: string;
       createdAt: string;
       runId: RunId;
@@ -602,6 +607,7 @@ type MessagesTimelineRowContent =
   | {
       kind: "attempt-fold";
       deferredWorkItemIds?: ReadonlyArray<string>;
+      hiddenMessages?: ReadonlyArray<ChatMessage>;
       id: string;
       createdAt: string;
       runId: RunId;
@@ -1706,34 +1712,48 @@ export function deriveMessagesTimelineRows(
           retainedAssistantReplyEntryIds: retainedAssistantReplyIds,
           resolve,
         });
-  const timelineEntryById = new Map(timelineEntries.map((entry) => [entry.id, entry]));
-  const collapsedEntryIds = new Set<string>();
+  const collapsedTurnByEntry = new Map<string, TurnFold>();
   const collapsedFoldMemberIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
     if (!input.expandedRunIds?.has(fold.runId)) {
       for (const entryId of fold.hiddenEntryIds) {
-        collapsedEntryIds.add(entryId);
+        collapsedTurnByEntry.set(entryId, fold);
       }
       for (const entryId of fold.entryIds) {
         collapsedFoldMemberIds.add(entryId);
       }
     }
   }
-  const collapsedSupersededEntryIds = new Set<string>();
+  const collapsedAttemptByEntry = new Map<string, SupersededAttemptFold>();
   for (const fold of supersededFoldsByAnchorEntryId.values()) {
     if (!input.expandedAttemptIds?.has(fold.attemptId)) {
       for (const entryId of fold.hiddenEntryIds) {
-        collapsedSupersededEntryIds.add(entryId);
+        collapsedAttemptByEntry.set(entryId, fold);
       }
     }
   }
   if (input.pendingApprovalRequestIds?.size) {
     for (const entry of timelineEntries) {
       if (entry.kind === "work" && isPendingApproval(entry.entry)) {
-        collapsedEntryIds.delete(entry.id);
-        collapsedSupersededEntryIds.delete(entry.id);
+        collapsedTurnByEntry.delete(entry.id);
+        collapsedAttemptByEntry.delete(entry.id);
       }
     }
+  }
+  const timelineEntryById = new Map<string, TimelineEntry>();
+  const hiddenMessagesByFold = new Map<TurnFold | SupersededAttemptFold, ChatMessage[]>();
+  for (const entry of timelineEntries) {
+    timelineEntryById.set(entry.id, entry);
+    if (entry.kind !== "message") continue;
+    const attempt = collapsedAttemptByEntry.get(entry.id);
+    // An attempt's own row disappears when its anchor is inside a collapsed turn.
+    const owner =
+      collapsedTurnByEntry.get(entry.id) ??
+      (attempt && (collapsedTurnByEntry.get(attempt.anchorEntryId) ?? attempt));
+    if (!owner) continue;
+    const messages = hiddenMessagesByFold.get(owner);
+    if (messages) messages.push(entry.message);
+    else hiddenMessagesByFold.set(owner, [entry.message]);
   }
   const runIdIsActiveResponse = (runId: RunId | null | undefined) =>
     runId == null ? runlessWorkActive : activeVisualResponseRunIds.has(runId);
@@ -1762,8 +1782,8 @@ export function deriveMessagesTimelineRows(
         isPendingApproval(entry.entry) ||
         !runIdIsActiveResponse(entry.entry.runId) ||
         entry.entry.sourceActivityKind === "context-compaction" ||
-        collapsedEntryIds.has(entry.id) ||
-        collapsedSupersededEntryIds.has(entry.id) ||
+        collapsedTurnByEntry.has(entry.id) ||
+        collapsedAttemptByEntry.has(entry.id) ||
         foldsByAnchorEntryId.has(entry.id) ||
         supersededFoldsByAnchorEntryId.has(entry.id)
       ) {
@@ -1967,6 +1987,7 @@ export function deriveMessagesTimelineRows(
 
     const turnFold = foldsByAnchorEntryId.get(timelineEntry.id);
     if (turnFold) {
+      const expanded = input.expandedRunIds?.has(turnFold.runId) ?? false;
       const deferredWorkItemIds = [...turnFold.entryIds].flatMap((entryId) => {
         const entry = timelineEntryById.get(entryId);
         return entry?.kind === "work" &&
@@ -1979,32 +2000,35 @@ export function deriveMessagesTimelineRows(
         kind: "turn-fold",
         id: `turn-fold:${turnFold.runId}`,
         ...(deferredWorkItemIds.length > 0 ? { deferredWorkItemIds } : {}),
+        ...(!expanded ? { hiddenMessages: hiddenMessagesByFold.get(turnFold) ?? [] } : {}),
         createdAt: turnFold.createdAt,
         runId: turnFold.runId,
         label: turnFold.label,
-        expanded: input.expandedRunIds?.has(turnFold.runId) ?? false,
+        expanded,
       });
     }
 
-    if (collapsedEntryIds.has(timelineEntry.id)) {
+    if (collapsedTurnByEntry.has(timelineEntry.id)) {
       continue;
     }
 
     const supersededFold = supersededFoldsByAnchorEntryId.get(timelineEntry.id);
     if (supersededFold) {
+      const expanded = input.expandedAttemptIds?.has(supersededFold.attemptId) ?? false;
       nextRows.push({
         kind: "attempt-fold",
         deferredWorkItemIds: supersededFold.deferredWorkItemIds,
+        ...(!expanded ? { hiddenMessages: hiddenMessagesByFold.get(supersededFold) ?? [] } : {}),
         id: `attempt-fold:${supersededFold.attemptId}`,
         createdAt: supersededFold.createdAt,
         runId: supersededFold.runId,
         attemptId: supersededFold.attemptId,
         label: resolve(msg("Superseded attempt")),
-        expanded: input.expandedAttemptIds?.has(supersededFold.attemptId) ?? false,
+        expanded,
       });
     }
 
-    if (collapsedSupersededEntryIds.has(timelineEntry.id)) {
+    if (collapsedAttemptByEntry.has(timelineEntry.id)) {
       continue;
     }
 
@@ -2103,8 +2127,8 @@ export function deriveMessagesTimelineRows(
           nextEntry.entry.questionAnswer !== undefined ||
           isPendingApproval(nextEntry.entry) ||
           activeWorkEntryIds.has(nextEntry.id) ||
-          collapsedEntryIds.has(nextEntry.id) ||
-          collapsedSupersededEntryIds.has(nextEntry.id) ||
+          collapsedTurnByEntry.has(nextEntry.id) ||
+          collapsedAttemptByEntry.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id) ||
           supersededFoldsByAnchorEntryId.has(nextEntry.id) ||
           (nextEntry.entry.runId ?? null) !== (timelineEntry.entry.runId ?? null) ||
@@ -2701,6 +2725,12 @@ function replaceStreamingMessageRows(
       const groupedEntries = patchGroup(row.groupedEntries);
       return groupedEntries === row.groupedEntries ? row : { ...row, groupedEntries };
     }
+    if ((row.kind === "turn-fold" || row.kind === "attempt-fold") && row.hiddenMessages?.length) {
+      const hiddenMessages = row.hiddenMessages.map(
+        (message) => replacements.get(message)?.message ?? message,
+      );
+      return shallow(row.hiddenMessages, hiddenMessages) ? row : { ...row, hiddenMessages };
+    }
     if (row.kind !== "message" && row.kind !== "assistant-meta") return row;
     const entry = replacements.get(row.message);
     return entry
@@ -2819,6 +2849,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.createdAt === bf.createdAt &&
         a.label === bf.label &&
         a.expanded === bf.expanded &&
+        shallow(a.hiddenMessages, bf.hiddenMessages) &&
         anchors.length === nextAnchors.length &&
         anchors.every((id, index) => id === nextAnchors[index])
       );

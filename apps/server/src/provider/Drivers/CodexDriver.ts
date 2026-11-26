@@ -35,8 +35,9 @@ import {
   checkCodexProviderStatus,
   codexWorkspaceFunding,
   CODEX_NOT_FOUND_MESSAGE,
-  makeMissingCodexProvider,
+  makeUnavailableCodexProvider,
   makePendingCodexProvider,
+  resolveOwnedCodexMaintenance,
   runCodexCli,
   withCodexAppServerClient,
   makeCodexSkillsProbe,
@@ -79,7 +80,6 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { resolveCommandPath } from "@t3tools/shared/shell";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const DEFAULT_BINARY_PATH = decodeCodexSettings({}).binaryPath;
 
@@ -276,7 +276,10 @@ export const CodexDriver: ProviderDriver<
       homePath: homeLayout.effectiveHomePath ?? "",
       launchArgs: codexHomeLaunchArgs(pathService, homeLayout, config.launchArgs),
     } satisfies CodexSettings;
-    const codexOnPath = resolveCommandPath(DEFAULT_BINARY_PATH, { env: processEnv }).pipe(
+    const codexOnPath = CodexInstallation.resolveExternalCodexPath(
+      installation.managedDirectory,
+      processEnv,
+    ).pipe(
       Effect.provideService(HostProcess.Platform, platform),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, pathService),
@@ -319,14 +322,16 @@ export const CodexDriver: ProviderDriver<
         },
       );
     const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
-      resolveBinaryPath.pipe(
-        Effect.orElseSucceed(() => DEFAULT_BINARY_PATH),
-        Effect.flatMap((binaryPath) =>
-          usesDefaultBinary && binaryPath !== DEFAULT_BINARY_PATH
-            ? // T3.CodeShip installs and updates its own copy; npm and `codex update` do not own it.
-              Effect.succeed({ provider: DRIVER_KIND, packageName: null, update: null })
-            : maintenanceFor(binaryPath),
-        ),
+      (usesDefaultBinary
+        ? codexOnPath.pipe(
+            Effect.flatMap((found) =>
+              found === null
+                ? resolveOwnedCodexMaintenance(installation)
+                : maintenanceFor(DEFAULT_BINARY_PATH),
+            ),
+          )
+        : maintenanceFor(effectiveConfig.binaryPath)
+      ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
@@ -382,7 +387,12 @@ export const CodexDriver: ProviderDriver<
           effectiveConfig.enabled
             ? resolveBinaryPath.pipe(
                 Effect.matchEffect({
-                  onFailure: () => makeMissingCodexProvider(effectiveConfig),
+                  onFailure: () =>
+                    installation.installedManagedVersion.pipe(
+                      Effect.flatMap((version) =>
+                        makeUnavailableCodexProvider(effectiveConfig, version),
+                      ),
+                    ),
                   onSuccess: (binaryPath) =>
                     checkCodexProviderStatus(
                       { ...effectiveConfig, binaryPath },

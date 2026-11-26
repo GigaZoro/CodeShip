@@ -1833,8 +1833,14 @@ export function collectProviderUsageLimits(
 // Pay-per-token accounts bill every turn instead of drawing on a subscription, so failover skips them.
 const METERED_AUTH_TYPES: ReadonlySet<string> = new Set(["apiKey", "api-key", "bedrock"]);
 
+export const isCodexCloudAccount = (provider: Pick<ServerProvider, "driver" | "auth">): boolean =>
+  provider.driver === "codex" &&
+  (provider.auth.type === "amazonBedrock" || provider.auth.type === "gcp");
+
 export const isSubscriptionAccount = (provider: ServerProvider): boolean =>
-  provider.auth.type === undefined || !METERED_AUTH_TYPES.has(provider.auth.type);
+  provider.auth.funding !== "metered" &&
+  !isCodexCloudAccount(provider) &&
+  (provider.auth.type === undefined || !METERED_AUTH_TYPES.has(provider.auth.type));
 
 export type AccountFailoverStatus =
   | { readonly kind: "off" }

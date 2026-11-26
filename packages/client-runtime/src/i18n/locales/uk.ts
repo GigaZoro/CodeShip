@@ -2228,6 +2228,7 @@ const catalog: MessageCatalog = {
   "A bearer token variable requires an HTTPS endpoint.":
     "Для змінної токена доступу потрібна адреса HTTPS.",
   "A chat is carrying out your decision.": "Чат виконує ваше рішення.",
+  "A chat is fixing this weak point.": "Чат усуває це слабке місце.",
   "A comment is anchored to the whole change, so switch to All commits to write one.":
     "Коментар прив’язується до всіх змін, тому перемкніться на «Усі коміти», щоб його написати.",
   "A community color theme for your editor.": "Колірна тема від спільноти для вашого редактора.",
@@ -3894,8 +3895,8 @@ const catalog: MessageCatalog = {
   "Check out this change request": "Перейти на гілку цього запиту на зміни",
   "Check out this merge request": "Перейти на гілку цього запиту на злиття",
   "Check out this pull request": "Перейти на гілку цього пул-реквесту",
-  "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.":
-    "Перевіряти оновлення CLI провайдерів і каталогів моделей. Автоматичне встановлення також вмикає перевірки й оновлює CLI провайдерів під час запуску сервера.",
+  "Check provider CLIs and model catalogs for updates. Install automatically checks at startup and hourly, and installs supported CLI updates.":
+    "Перевіряти наявність оновлень CLI провайдерів і каталогів моделей. У режимі «Встановлювати автоматично» перевірка відбувається під час запуску й щогодини, а підтримувані оновлення CLI встановлюються автоматично.",
   "Check simulator support": "Перевірити підтримку симуляторів",
   "Check T3 Connect": "Перевірити T3 Connect",
   "Check T3.CodeShip SnapShots in GNOME Extensions, then try again.":
@@ -7997,6 +7998,8 @@ const catalog: MessageCatalog = {
   "Fix in this thread": "Виправити в цьому чаті",
   "Fix punctuation, numbers, lists, and spoken corrections.":
     "Виправляти пунктуацію, числа, списки та усні виправлення.",
+  "Fix root cause": "Усунути першопричину",
+  "Fix root cause: {weakPoint}": "Усунути першопричину: {weakPoint}",
   "Fix the cause before running it again; run focused checks first.":
     "Усуньте причину, перш ніж запускати знову; спершу запускайте точкові перевірки.",
   "Fix the expression above to continue editing visually.":
@@ -9013,6 +9016,7 @@ const catalog: MessageCatalog = {
   "Jump to next prompt": "Перейти до наступного запиту",
   "Jump to next starred message": "До наступного позначеного повідомлення",
   "Jump to previous prompt": "Перейти до попереднього запиту",
+  "Jump to starred message: {text}": "Перейти до позначеного зірочкою повідомлення: {text}",
   "just now": "щойно",
   Kagi: "Kagi",
   "KDE capture access is ready. Next, choose your shortcut.":
@@ -10668,6 +10672,8 @@ const catalog: MessageCatalog = {
   "No projects.": "Немає проєктів.",
   "No provider account on that machine is signed in. Sign in to one, then choose again.":
     "На цьому комп’ютері немає жодного облікового запису провайдера з виконаним входом. Увійдіть в один із них і виберіть ще раз.",
+  "No provider account on that machine is signed in. Sign in to one, then try again.":
+    "На цьому комп’ютері немає жодного облікового запису провайдера з виконаним входом. Увійдіть в один із них і спробуйте ще раз.",
   "No provider available": "Немає доступного провайдера",
   "No provider installs plugins here": "Жоден провайдер тут не встановлює плагіни",
   "No provider manages MCP servers here": "Жоден провайдер тут не керує серверами MCP",
@@ -12145,8 +12151,6 @@ const catalog: MessageCatalog = {
   "Provider-managed agent": "Агент під керуванням провайдера",
   "Provider-managed agent. Its work appears in the transcript.":
     "Агент під керуванням провайдера. Його робота відображається в транскрипті.",
-  "Provider, network or other errors ended runs.":
-    "Помилки провайдера, мережі чи інші завершили запуски.",
   Providers: "Провайдери",
   "Providers & models": "Провайдери й моделі",
   "Providers or models": "Провайдери або моделі",
@@ -13766,6 +13770,8 @@ const catalog: MessageCatalog = {
   "Runs commands and edits files without asking": "Виконує команди та редагує файли без запиту",
   "Runs continue one conversation.": "Запуски продовжують одну розмову.",
   "Runs failed": "Запуски завершились збоєм",
+  "Runs failed, or hit provider, network or other errors.":
+    "Запуски завершилися збоєм або виникли помилки провайдера, мережі чи інші помилки.",
   "Runs go to": "Запуски надходять до",
   "Runs in this thread": "Запускається в цьому чаті",
   "Runs on": "Виконується на",
@@ -15964,6 +15970,8 @@ const catalog: MessageCatalog = {
   "That host reaches {label}, a different machine. Add it as its own environment instead.":
     "Цей хост веде на {label}, інший комп’ютер. Додайте його як окреме середовище.",
   "that machine": "інший комп’ютер",
+  "That machine does not support quota-aware Auto. Choose a provider model in its settings, then try again.":
+    "Цей комп’ютер не підтримує Auto з урахуванням квот. Виберіть у його налаштуваннях модель провайдера й спробуйте ще раз.",
   "That message already started, so the edit was discarded.":
     "Це повідомлення вже почало виконуватися, тому правку скасовано.",
   "That message already started. Your edit is back in the composer.":
@@ -17038,6 +17046,8 @@ const catalog: MessageCatalog = {
     "Це з’єднання не має дозволу змінювати ці налаштування.",
   "This connection lacks permission to read scheduled task runs on {environment}.":
     "Це з’єднання не має дозволу на перегляд запусків запланованих завдань у середовищі {environment}.",
+  "This connection may not start chats on that machine.":
+    "Це підключення не має дозволу запускати чати на цьому комп’ютері.",
   "This connection needs permission to view and manage T3 Connect settings.":
     "Цьому з’єднанню потрібен дозвіл на перегляд і керування налаштуваннями T3 Connect.",
   "This connection needs permission to write source control and add projects.":
@@ -17667,6 +17677,8 @@ const catalog: MessageCatalog = {
   "This ZIP directory is damaged.": "Цей каталог ZIP пошкоджено.",
   "This ZIP is empty": "Цей ZIP порожній",
   "This ZIP64 directory is too large or damaged.": "Цей каталог ZIP64 завеликий або пошкоджений.",
+  "Those chats no longer show this weak point. Refresh and try again.":
+    "У цих чатах більше немає цього слабкого місця. Оновіть дані та спробуйте ще раз.",
   "Those references are marked unavailable.": "Ці посилання позначено як недоступні.",
   "Those titles already fit their threads.": "Ці назви вже підходять їхнім чатам.",
   Thought: "Міркування",

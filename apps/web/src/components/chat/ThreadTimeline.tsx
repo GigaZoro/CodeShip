@@ -1,4 +1,3 @@
-import type { ScopedThreadRef } from "@t3tools/contracts";
 import { type ComponentProps, useLayoutEffect } from "react";
 import { useIncrementalTimelineEntries } from "../../hooks/useIncrementalTimelineEntries";
 import type { TimelineEntriesInput, TimelineEntry } from "../../session-logic";
@@ -18,7 +17,6 @@ import { MessagesTimeline } from "./MessagesTimeline";
  * assistant text reaches only its own row, through useAssistantMessageText.
  */
 export function ThreadTimeline({
-  threadDetailRef,
   entriesInput,
   draftEntries,
   activeThreadKey,
@@ -26,8 +24,6 @@ export function ThreadTimeline({
   detailLoading,
   ...timelineProps
 }: Omit<ComponentProps<typeof MessagesTimeline>, "timelineEntries"> & {
-  /** Null until the thread's detail may load; see resolveThreadDetailRef. */
-  threadDetailRef: ScopedThreadRef | null;
   entriesInput: Omit<TimelineEntriesInput, "visibleTurnItems">;
   /** A local draft's optimistic rows; null for a server thread. */
   draftEntries: ReadonlyArray<TimelineEntry> | null;
@@ -35,7 +31,7 @@ export function ThreadTimeline({
   syncing: boolean;
   detailLoading: boolean;
 }) {
-  const visibleTurnItems = useTimelineVisibleTurnItems(threadDetailRef);
+  const visibleTurnItems = useTimelineVisibleTurnItems(timelineProps.threadDetailRef);
   const serverEntries = useIncrementalTimelineEntries(activeThreadKey, {
     ...entriesInput,
     visibleTurnItems,

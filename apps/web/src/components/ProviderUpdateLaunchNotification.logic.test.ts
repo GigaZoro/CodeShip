@@ -33,6 +33,7 @@ function provider(input: {
   readonly latestVersion?: string | null;
   readonly canUpdate?: boolean;
   readonly updateCommand?: string | null;
+  readonly updateKey?: string;
   readonly updateState?: ServerProvider["updateState"];
   readonly advisoryStatus?: NonNullable<ServerProvider["versionAdvisory"]>["status"];
 }): ServerProvider {
@@ -53,6 +54,7 @@ function provider(input: {
       currentVersion: input.version ?? "1.0.0",
       latestVersion: "latestVersion" in input ? input.latestVersion : "1.1.0",
       updateCommand: "updateCommand" in input ? input.updateCommand : "npm install -g provider",
+      ...(input.updateKey === undefined ? {} : { updateKey: input.updateKey }),
       canUpdate: input.canUpdate ?? true,
       checkedAt,
       message: "Update available.",
@@ -71,6 +73,19 @@ function updateCandidate(input: Parameters<typeof provider>[0]): ProviderUpdateC
 }
 
 describe("provider update launch notification logic", () => {
+  it("offers the built-in update on two instances sharing one installation", () => {
+    const update = {
+      driver: driver("codex"),
+      updateCommand: null,
+      updateKey: "managed-codex",
+    };
+    const candidate = updateCandidate(update);
+    const sibling = provider({ ...update, instanceId: instanceId("codex_work") });
+
+    expect(isProviderSettingsUpdateCandidate(candidate)).toBe(true);
+    expect(hasOneClickUpdateProviderCandidate(candidate, [candidate, sibling])).toBe(true);
+  });
+
   it("disables one-click updates when provider instances disagree on the update command", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),

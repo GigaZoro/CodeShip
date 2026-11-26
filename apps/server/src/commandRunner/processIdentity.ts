@@ -1,4 +1,4 @@
-import type { WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTree";
+import type { WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTreeScript";
 
 /**
  * Tells a command's wrapper from a later process under its pid. Linux: boot id and start ticks.

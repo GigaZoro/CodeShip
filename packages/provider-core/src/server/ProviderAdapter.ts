@@ -19,6 +19,7 @@ import {
   OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
+  OrchestrationV2SystemNotice,
   OrchestrationV2TurnItem,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -119,6 +120,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     /** Persist idle background snapshots before a run subscriber exists. */
     sessionScoped: Schema.optional(Schema.Boolean),
     retainedNativeTurnIds: Schema.optional(Schema.Array(Schema.String)),
+    /** Persist the terminal receipt in the same transaction that removes its awaited task. */
+    awaitedTaskNotice: Schema.optionalKey(OrchestrationV2SystemNotice),
     /** Tasks this update drops because the provider process running them ended before they finished. */
     lostBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)),
     /** A Stop ended that process, so the chat is told with its next prompt and is not woken. */

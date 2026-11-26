@@ -210,7 +210,7 @@ export const ManualStepStartChatResult = Schema.Struct({ threadId: ThreadId });
 export type ManualStepStartChatResult = typeof ManualStepStartChatResult.Type;
 
 export const ManualStepStartChatFailure = Schema.Literals([
-  /** No provider account on this machine is signed in and enabled. */
+  /** There is no runnable provider selection on this machine. */
   "no-model",
   /** The chat could not be created or its first message was not accepted. */
   "launch-failed",
@@ -219,7 +219,11 @@ export type ManualStepStartChatFailure = typeof ManualStepStartChatFailure.Type;
 
 export class ManualStepStartChatError extends Schema.TaggedError<ManualStepStartChatError>()(
   "ManualStepStartChatError",
-  { reason: ManualStepStartChatFailure, detail: Schema.String },
+  {
+    reason: ManualStepStartChatFailure,
+    detail: Schema.String,
+    quotaAwareAutoUnsupported: Schema.optionalKey(Schema.Literal(true)),
+  },
 ) {
   override get message(): string {
     return this.detail;

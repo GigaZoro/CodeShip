@@ -1,6 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous routing needs deterministic opaque identifiers.
 import * as NodeCrypto from "node:crypto";
 import type {
+  MessageId,
+  ProviderTurnId,
   OrchestrationV2ServerCommand,
   OrchestrationV2StoredEvent,
   RunAttemptId,
@@ -55,6 +57,17 @@ const logFailure =
       ),
     );
 
+export const recordMissedSteer = Effect.fn("StopDecisionEvidence.missedSteer")(function* (
+  sql: SqlClient.SqlClient,
+  providerTurnId: ProviderTurnId,
+  messageId: MessageId,
+) {
+  yield* sql`INSERT INTO usage_stop_missed_steers (provider_turn_id, message_id)
+    VALUES (${providerTurnId}, ${messageId}) ON CONFLICT DO NOTHING`.pipe(
+    logFailure("missed-steer"),
+  );
+});
+
 const RECENT_DECISIONS = 4096;
 
 /**
@@ -75,15 +88,18 @@ export const recordStopDecision = Effect.fn("StopDecisionEvidence.record")(funct
       : input.evidence,
   );
   const source = evidenceKey(input.source);
+  const occurrence =
+    input.heldAttempt === undefined ? source : evidenceKey(encodeJson([source, input.heldAttempt]));
   const request = input.command === null ? null : recoveryRequestKey(input.command);
   const key = evidenceKey(encodeJson([source, input.heldAttempt, request, snapshot]));
   if (recent?.has(key)) return key;
   return yield* Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO usage_stop_decisions
-      (decision_key, source_key, request_key, selected_key, snapshot, observed_ms)
-      VALUES (${key}, ${source}, ${request}, ${dispatch?.selected ?? input.evidence.selected}, ${snapshot}, ${input.nowMs})
-      ON CONFLICT(decision_key) DO NOTHING`;
+      (decision_key, source_key, occurrence_key, request_key, selected_key, snapshot, observed_ms)
+      VALUES (${key}, ${source}, ${occurrence}, ${request}, ${dispatch?.selected ?? input.evidence.selected}, ${snapshot}, ${input.nowMs})
+      ON CONFLICT(decision_key) DO UPDATE SET occurrence_key = excluded.occurrence_key
+      WHERE usage_stop_decisions.occurrence_key IS NULL`;
     if (recent) {
       recent.add(key);
       if (recent.size > RECENT_DECISIONS) recent.delete(recent.values().next().value!);
@@ -113,7 +129,7 @@ const recordCommittedContinuation = Effect.fn("StopDecisionEvidence.commit")(fun
   for (const { event } of events) {
     if (
       (event.type !== "run.created" && event.type !== "run.updated") ||
-      String(event.payload.userMessageId) !== String(command.commandId)
+      event.payload.userMessageId !== command.messageId
     )
       continue;
     const run = event.payload;

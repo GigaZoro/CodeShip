@@ -572,6 +572,25 @@ layer("ProviderEventIngestorV2", (it) => {
           type: "provider_thread.updated",
           driver: CODEX_DRIVER,
           providerThread,
+          awaitedTaskNotice: {
+            id: TurnItemId.make("item:awaited-landing"),
+            type: "system_notice",
+            threadId: threadEvent.threadId,
+            runId: null,
+            nodeId: null,
+            providerTurnId: null,
+            providerThreadId: providerThread.id,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "completed",
+            title: "Awaited task ended",
+            awaitedTaskId: "landing",
+            message: "Landing completed with exit code 0",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
         },
       });
 
@@ -584,25 +603,29 @@ layer("ProviderEventIngestorV2", (it) => {
         threadId: threadEvent.threadId,
       });
 
-      assert.equal(storedEvents.length, 1);
+      assert.equal(storedEvents.length, 2);
       assert.equal(storedEvents[0]?.event.type, "provider-thread.updated");
+      assert.deepEqual(
+        projection.turnItems.map((item) => item.type === "system_notice" && item.awaitedTaskId),
+        ["landing"],
+      );
       assert.deepEqual(
         projection.providerThreads.map((thread) => thread.id),
         [providerThread.id],
       );
       assert.deepEqual(
         Array.from(storedDomainEvents).map((stored) => stored.event.type),
-        ["thread.created", "provider-thread.updated"],
+        ["thread.created", "provider-thread.updated", "turn-item.updated"],
       );
       assert.deepEqual(
         Array.from(storedDomainEvents).map((stored) => stored.sequence),
-        [1, 2],
+        [1, 2, 3],
       );
       assert.deepEqual(
         Array.from(afterFirstEvent).map((stored) => stored.event.type),
-        ["provider-thread.updated"],
+        ["provider-thread.updated", "turn-item.updated"],
       );
-      assert.equal(latestThreadSequence, 2);
+      assert.equal(latestThreadSequence, 3);
     }),
   );
 

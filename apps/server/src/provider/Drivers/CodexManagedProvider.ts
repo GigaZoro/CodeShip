@@ -13,24 +13,26 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
-import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import {
   CHATGPT_SHARING_SCOPE,
   codexSharingWorkspaceId,
   type CodexChatGptCredentials,
 } from "../CodexChatGptAuth.ts";
-import { chatGptModels, withChatGptToken } from "../CodexChatGptModels.ts";
+import { chatGptModelsFromCatalog } from "../CodexChatGptModels.ts";
 import { CHATGPT_TOKEN_REVOKED_DETAIL, isChatGptTokenRevoked } from "../CodexLoginRejected.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import {
   makeCodexSetSkillEnabled,
+  CODEX_MANAGED_UPDATE_REQUIRED_MESSAGE,
   checkCodexProviderStatus,
   codexPlanFunding,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
   readCodexStoredChatGptLogin,
+  resolveOwnedCodexMaintenance,
   runCodexCli,
   sameCodexAccountEmail,
   withCodexAppServerClient,
@@ -45,6 +47,11 @@ import { makeCodexMcpManagement } from "../CodexMcp.ts";
 import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
+import { enrichProviderSnapshotWithVersionAdvisory } from "@t3tools/provider-core/server/maintenanceResolver";
+import {
+  haveProviderSnapshotSettingsChanged,
+  makeProviderSnapshotSettingsSource,
+} from "@t3tools/provider-core/server/snapshotSettings";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
   type ProviderDriverCreateInput,
@@ -93,7 +100,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const host = yield* ProviderHost.ProviderHost;
+  const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
   const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const environment = yield* mergeProviderInstanceEnvironment(input.environment);
@@ -156,14 +163,19 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     const base = yield* pending;
     if (!enabled) return base;
     const executable = yield* runtime.installation.resolve().pipe(Effect.option);
-    if (Option.isNone(executable))
+    if (Option.isNone(executable)) {
+      const version = yield* runtime.installation.installedManagedVersion;
       return {
         ...base,
-        installed: false,
+        installed: version !== null,
+        version,
+        status: version === null ? base.status : ("error" as const),
         models: [],
-        message: "Set up Codex to get started.",
+        message:
+          version === null ? "Set up Codex to get started." : CODEX_MANAGED_UPDATE_REQUIRED_MESSAGE,
         auth: { status: "unauthenticated" as const },
       };
+    }
     const saved = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
     if (Option.isSome(saved) && !saved.value.scopes.includes(CHATGPT_SHARING_SCOPE))
       return {
@@ -220,40 +232,26 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
             effective.environment,
             managedAuth,
           );
-          const isLaunchProfile = (record: CodexChatGptCredentials) =>
-            runtime.auth.profileKey(record).pipe(Effect.map((key) => key === effective.revision));
           const connectionChanged = () =>
             new ProviderSetupError({
               instanceId,
               operation: "models",
               detail: "The ChatGPT connection changed while checking Codex. Retry.",
             });
-          const credentials = yield* runtime.auth.access;
-          // Another server can replace the saved profile while the native probe runs.
-          // Never send that account's token with the launch profile's catalog labels.
-          if (!(yield* isLaunchProfile(credentials)) || !(yield* isLaunchProfile(saved.value)))
-            return yield* connectionChanged();
-          const { credentials: catalogLogin, value: models } = yield* withChatGptToken(
-            runtime.auth,
-            instanceId,
-            credentials,
-            (accessToken) =>
-              chatGptModels(accessToken, draft.models).pipe(
-                Effect.provideService(HttpClient.HttpClient, http),
-              ),
-          );
+          const models = yield* chatGptModelsFromCatalog(effective.catalog, draft.models);
           const ownLimits = yield* limits.read;
-          // The sign-in saved after the slow limits probe decides: meanwhile ChatGPT may have
-          // refused it or another server replaced it, and the models answer may be for a token
-          // renewed away.
+          // The sign-in can change during discovery, including while the limits read is in flight.
           const current = Option.filter(yield* runtime.auth.read, canRun);
           if (
             Option.isNone(current) ||
-            !(yield* isLaunchProfile(current.value)) ||
-            !(yield* isLaunchProfile(catalogLogin))
+            (yield* runtime.auth.profileKey(current.value)) !== effective.revision ||
+            (yield* runtime.auth.profileKey(saved.value)) !== effective.revision
           )
             return yield* connectionChanged();
-          return [{ ...draft, models }, ownLimits] as const;
+          return [
+            { ...draft, models, version: draft.version ?? effective.version },
+            ownLimits,
+          ] as const;
         }),
       ),
       Effect.map(([draft, ownLimits]) => {
@@ -269,7 +267,6 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
             ...managedAuth,
             funding: codexPlanFunding(usageLimits.plan),
           },
-          version: draft.version ?? executable.value.version,
           usageLimits,
           models: draft.models.map((model) => ({
             ...model,
@@ -339,14 +336,27 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.provideService(FileSystem.FileSystem, fileSystem),
     Effect.provideService(Path.Path, path),
   );
+  const snapshotSettings = yield* makeProviderSnapshotSettingsSource(config);
+  const resolveMaintenance = () => resolveOwnedCodexMaintenance(runtime.installation);
   const snapshot = yield* makeManagedServerProvider({
     readsUsageOnRefresh: true,
-    resolveMaintenance: () => Effect.succeed({ provider: DRIVER, packageName: null, update: null }),
-    getSettings: host.settings.get,
-    streamSettings: host.settings.changes,
-    haveSettingsChanged: () => false,
+    resolveMaintenance,
+    getSettings: snapshotSettings.getSettings,
+    streamSettings: snapshotSettings.streamSettings,
+    haveSettingsChanged: haveProviderSnapshotSettingsChanged,
     initialSnapshot: () => pending,
     checkProvider: check,
+    enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+      resolveMaintenance().pipe(
+        Effect.flatMap((maintenance) =>
+          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenance, {
+            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+          }),
+        ),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
+        Effect.flatMap(publishSnapshot),
+      ),
   }).pipe(
     Effect.mapError(
       (cause) =>

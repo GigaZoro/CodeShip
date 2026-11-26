@@ -11,7 +11,11 @@ const {
   requirePass,
   workingTree,
 } = require("./check-changed-receipt.cjs");
-const { TURN_ENV, tryAcquire } = require("./landing-turn.cjs");
+const {
+  LEASE_REF,
+  TURN_ENV,
+  testing: { tryAcquire },
+} = require("./landing-turn.cjs");
 
 const repoRoot = path.resolve(__dirname, "../..");
 const FIRST_NOTE = "## 2026-11-14 — First\n\n- First.\n";
@@ -30,7 +34,7 @@ Object.assign(process.env, {
 });
 
 // A checkout with this repository's pre-push hook and the scripts it runs, whose main is on a bare remote.
-// `push` pushes main holding the landing turn, so only the check:changed pass decides.
+// `pushGivingBack` pushes main holding the landing turn, as `land` does, so only the check:changed pass decides.
 const fixture = (root) => {
   const work = path.join(root, "work");
   const git = (...args) =>
@@ -54,6 +58,8 @@ const fixture = (root) => {
     ".github/scripts/landing-turn.cjs",
     ".github/scripts/lease-queue.cjs",
     ".github/scripts/bounded-git.cjs",
+    ".github/scripts/process-tree.cjs",
+    "packages/shared/src/windowsProcessTreeScript.ts",
   ]) {
     write(file, fs.readFileSync(path.join(repoRoot, file), "utf8"));
   }
@@ -66,8 +72,8 @@ const fixture = (root) => {
   git("push", "origin", "main");
   git("config", "core.hooksPath", ".vite-hooks");
   const turn = tryAcquire({ cwd: work, remote: "origin", runId: "fixture" });
-  const push = (refspec = "main", env = { [TURN_ENV]: turn }) =>
-    spawnSync("git", ["push", "origin", refspec], {
+  const pushWith = (args, env = { [TURN_ENV]: turn }) =>
+    spawnSync("git", ["push", ...args], {
       cwd: work,
       encoding: "utf8",
       stdio: "pipe",
@@ -83,7 +89,14 @@ const fixture = (root) => {
       stdio: "pipe",
       env: { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectory(objects) },
     }).trim();
-  return { work, git, write, commit, push, base, objects, show };
+  const push = (refspec = "main", env) => pushWith(["origin", refspec], env);
+  // As `land` pushes: main moves in the push that gives the lease back.
+  const pushGivingBack = (refspec = "main", env) =>
+    pushWith(
+      ["--atomic", `--force-with-lease=${LEASE_REF}:${turn}`, "origin", refspec, `:${LEASE_REF}`],
+      env,
+    );
+  return { work, git, write, commit, push, pushGivingBack, base, objects, show };
 };
 
 const withRoot = (run) => {
@@ -107,31 +120,38 @@ test("reads the working tree where the checkout and scratch objects hold the pat
 
 test("main refuses a push until check:changed passed for the exact tree it pushes", () =>
   withRoot((root) => {
-    const { work, write, commit, push, base, objects } = fixture(root);
+    const { work, git, write, commit, push, pushGivingBack, base, objects } = fixture(root);
     write("docs/release-notes.md", `${SECOND_NOTE}\n${FIRST_NOTE}`);
     write("app.txt", "two\n");
     write("helper.txt", "read by app.txt\n");
     commit("docs/release-notes.md", "app.txt");
 
-    const unchecked = push();
+    const unchecked = pushGivingBack();
     assert.notEqual(unchecked.status, 0);
     assert.match(unchecked.stderr, /check:changed` has not passed/);
     // Git gives the hook a source revision as it was typed, spaces included.
-    const spelled = push("HEAD^{/fixtur[e ]}:refs/heads/main");
+    const spelled = pushGivingBack("HEAD^{/fixtur[e ]}:refs/heads/main");
     assert.notEqual(spelled.status, 0);
     assert.match(spelled.stderr, /check:changed` has not passed/);
 
     // The pass covered helper.txt while it was untracked, so it does not describe a commit without it.
     recordPass(work, workingTree(work, objects), base);
-    assert.notEqual(push().status, 0);
+    assert.notEqual(pushGivingBack().status, 0);
 
     commit("helper.txt");
+    // A push of main that keeps the lease is no landing, however well checked.
+    const keepingLease = push();
+    assert.notEqual(keepingLease.status, 0);
+    assert.match(keepingLease.stderr, /gives back its lease/);
     // With the pass recorded, only the landing turn refuses the spelled source.
-    const unturned = push("HEAD^{/fixtur[e ]}:refs/heads/main", { [TURN_ENV]: undefined });
+    const unturned = pushGivingBack("HEAD^{/fixtur[e ]}:refs/heads/main", {
+      [TURN_ENV]: undefined,
+    });
     assert.notEqual(unturned.status, 0);
     assert.match(unturned.stderr, /needs the landing turn/);
-    const checked = push();
+    const checked = pushGivingBack();
     assert.equal(checked.status, 0, checked.stderr);
+    assert.equal(git("ls-remote", "origin", LEASE_REF), "");
   }));
 
 test("computing the working tree writes no objects to the repository", () =>

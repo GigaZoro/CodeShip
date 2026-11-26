@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - A synchronous maintainer script over git.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - A maintainer script over git.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 
@@ -378,7 +378,11 @@ function holdsCandidate(worktree: string, candidate: string): boolean {
  * fast-forward to and check again, holding instead when the merge conflicts or the run is out of
  * merges or time. It moves no branch and leaves the checkout as it is.
  */
-export function land(worktree: string, now: Date, push = pushChecked): SyncResult {
+export async function land(
+  worktree: string,
+  now: Date,
+  push: (options: Parameters<typeof pushChecked>[0]) => void | Promise<void> = pushChecked,
+): Promise<SyncResult> {
   const state = readState(worktree);
   const hold = (reason: "conflicts" | "merge-limit" | "time-limit", from = state): SyncResult => ({
     status: "hold",
@@ -401,7 +405,7 @@ export function land(worktree: string, now: Date, push = pushChecked): SyncResul
   if (main === state.base) {
     try {
       // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
-      push({ cwd: worktree, remote: "origin", head: checked });
+      await push({ cwd: worktree, remote: "origin", head: checked });
       return landed;
     } catch (error) {
       // Origin decides: a push whose reply was lost may have landed, and one git refused may mean main moved.

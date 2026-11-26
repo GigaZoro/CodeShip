@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { VcsRef, VcsListRefsResult } from "@t3tools/contracts";
+import { defaultWorktreeStrategy } from "./defaultWorktreeStrategy.ts";
 import { makeGitVcsDriverCore } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import {
@@ -955,7 +956,13 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
         yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
         { fetchedFrom: null, remoteNames: ["origin", "upstream"] },
       );
-      yield* git(cwd, ["remote", "remove", "origin"]);
+      yield* git(cwd, ["remote", "rename", "origin", "fork"]);
+      yield* git(source, ["push", fork, `${sha}:refs/tags/shared-base`]);
+      assert.deepEqual(
+        yield* driver.fetchCommit({ cwd, commitSha: sha, preferredRemote: "upstream" }),
+        { fetchedFrom: "upstream", remoteNames: ["upstream", "fork"] },
+      );
+      yield* git(cwd, ["remote", "remove", "fork"]);
       yield* git(cwd, ["remote", "remove", "upstream"]);
       assert.deepEqual(
         yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
@@ -1262,6 +1269,66 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
         yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "unrelated" }),
       );
     }),
+  );
+
+  it.effect(
+    "fetches the remote default for an omitted base and keeps an explicit HEAD in a single-branch clone",
+    () =>
+      Effect.gen(function* () {
+        const source = yield* makeTmpDir("git-source-");
+        const remote = yield* makeTmpDir("git-remote-");
+        const cwd = yield* makeTmpDir("git-topic-");
+        yield* initRepoWithCommit(source);
+        yield* git(source, ["branch", "-M", "trunk"]);
+        const trunk = yield* git(source, ["rev-parse", "HEAD"]);
+        yield* git(remote, ["init", "--bare", "--initial-branch=trunk"]);
+        yield* git(source, ["push", remote, "trunk"]);
+        yield* git(source, ["checkout", "-b", "main"]);
+        yield* git(source, ["commit", "--allow-empty", "-m", "secondary branch"]);
+        yield* git(source, ["push", remote, "main"]);
+        yield* git(cwd, [
+          "clone",
+          "--single-branch",
+          "--branch",
+          "main",
+          "--origin",
+          "upstream",
+          remote,
+          ".",
+        ]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        assert.isNull(yield* driver.resolveDefaultBranchName(cwd, "upstream"));
+        const strategy = yield* defaultWorktreeStrategy(driver, cwd);
+        assert.isTrue(strategy.startFromOrigin);
+        const secondary = yield* git(cwd, ["rev-parse", "HEAD"]);
+        assert.notEqual(secondary, trunk);
+        const automatic = yield* driver.fetchWorktreeBaseCommit({ cwd, refName: strategy.baseRef });
+        const explicit = yield* driver.fetchWorktreeBaseCommit({ cwd, refName: "HEAD" });
+        assert.deepEqual(
+          { automatic, explicit },
+          {
+            automatic: { commitSha: trunk, remoteRefName: "upstream/trunk" },
+            explicit: null,
+          },
+        );
+        // Some remotes still point HEAD at an unborn branch after pushing the first real branch.
+        yield* git(remote, ["--git-dir=.", "symbolic-ref", "HEAD", "refs/heads/unborn"]);
+        yield* git(remote, ["--git-dir=.", "update-ref", "-d", "refs/heads/trunk"]);
+        const fetchDefault = driver.fetchWorktreeBaseCommit({ cwd, refName: strategy.baseRef });
+        assert.deepEqual(yield* fetchDefault, {
+          commitSha: secondary,
+          remoteRefName: "upstream/main",
+        });
+        yield* git(remote, ["--git-dir=.", "update-ref", "refs/heads/master", trunk]);
+        yield* git(remote, ["--git-dir=.", "update-ref", "-d", "refs/heads/main"]);
+        assert.deepEqual(yield* fetchDefault, {
+          commitSha: trunk,
+          remoteRefName: "upstream/master",
+        });
+        yield* git(remote, ["--git-dir=.", "update-ref", "-d", "refs/heads/master"]);
+        assert.equal((yield* Effect.flip(fetchDefault))._tag, "GitCommandError");
+      }),
   );
 
   it.effect("fetches the selected worktree base for Changes", () =>

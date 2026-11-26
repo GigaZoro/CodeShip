@@ -93,6 +93,7 @@ export const withChatGptToken = Effect.fn("withChatGptToken")(function* <A, E, R
 const CodexCatalog = Schema.Struct({
   models: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
 });
+const decodeCodexCatalog = Schema.decodeUnknownEffect(CodexCatalog);
 
 /** Requests the catalog exactly as Codex does, so the backend tailors it the same way. */
 export const chatGptCodexCatalog = Effect.fn("chatGptCodexCatalog")(function* (
@@ -108,10 +109,10 @@ export const chatGptCodexCatalog = Effect.fn("chatGptCodexCatalog")(function* (
     ),
   );
   if (response.status !== 200) return yield* catalogFailure(response);
-  return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(CodexCatalog)));
+  return yield* response.json.pipe(Effect.flatMap(decodeCodexCatalog));
 }, Effect.timeout("15 seconds"));
 
-const Catalog = Schema.Struct({
+const ModelPickerCatalog = Schema.Struct({
   models: Schema.Array(
     Schema.Struct({
       slug: Schema.NonEmptyString,
@@ -131,24 +132,17 @@ const Catalog = Schema.Struct({
     }),
   ),
 });
+const decodeModelPickerCatalog = Schema.decodeUnknownEffect(ModelPickerCatalog);
 
-export const chatGptModels = Effect.fn("chatGptModels")(function* (
-  accessToken: string,
+export const chatGptModelsFromCatalog = Effect.fn("chatGptModelsFromCatalog")(function* (
+  rawCatalog: typeof CodexCatalog.Type,
   nativeModels: ReadonlyArray<ServerProviderModel>,
 ) {
-  const http = yield* HttpClient.HttpClient;
-  const response = yield* http.execute(
-    HttpClientRequest.get("https://api.openai.com/v1/models").pipe(
-      HttpClientRequest.bearerToken(accessToken),
-    ),
-  );
-  if (response.status !== 200) return yield* catalogFailure(response);
-  const catalog = yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Catalog)));
+  const catalog = yield* decodeModelPickerCatalog(rawCatalog);
   return catalog.models
     .filter((model) => model.visibility === "list")
     .map((model): ServerProviderModel => {
       const native = nativeModels.find((candidate) => candidate.slug === model.slug);
-      // A pinned Codex CLI can predate a model the account already has; the catalog still lists its efforts.
       const catalogCapabilities =
         model.default_reasoning_level && model.supported_reasoning_levels
           ? mapCodexModelCapabilities({
@@ -173,4 +167,4 @@ export const chatGptModels = Effect.fn("chatGptModels")(function* (
         isCustom: false,
       };
     });
-}, Effect.timeout("15 seconds"));
+});

@@ -238,9 +238,15 @@ export const manualStepReviewFailureMessage = (reason: ManualStepReviewProblem) 
  */
 const machineKey = (machine: string) => machine.toLocaleLowerCase().replace(/[\s._-]+/g, "");
 
-export type ManualStepStartChatProblem = ManualStepStartChatFailure | "offline";
+export type ManualStepStartChatProblem =
+  | ManualStepStartChatFailure
+  | "auto-unsupported"
+  | "offline";
 
 const START_CHAT_FAILURE_MESSAGES: Record<ManualStepStartChatProblem, Message> = {
+  "auto-unsupported": msg(
+    "That machine does not support quota-aware Auto. Choose a provider model in its settings, then try again.",
+  ),
   "no-model": msg(
     "No provider account on that machine is signed in. Sign in to one, then choose again.",
   ),
@@ -252,14 +258,10 @@ const isManualStepStartChatError = Schema.is(ManualStepStartChatError);
 
 /** Why a step's chat did not start, from the failed command's cause. */
 export function manualStepStartChatFailureMessage(cause: Cause.Cause<unknown>): string {
-  const error = Cause.findErrorOption(cause);
-  return t(
-    START_CHAT_FAILURE_MESSAGES[
-      Option.isSome(error) && isManualStepStartChatError(error.value)
-        ? error.value.reason
-        : "offline"
-    ],
-  );
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+  if (!isManualStepStartChatError(error)) return t(START_CHAT_FAILURE_MESSAGES.offline);
+  const reason = error.quotaAwareAutoUnsupported === true ? "auto-unsupported" : error.reason;
+  return t(START_CHAT_FAILURE_MESSAGES[reason]);
 }
 
 /**

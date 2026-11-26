@@ -11,7 +11,7 @@ import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
-import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
 import {
@@ -20,6 +20,7 @@ import {
   type MessageId,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
+  type ScopedThreadRef,
   type ServerProviderSkill,
   type RunId,
   ThreadId,
@@ -295,6 +296,8 @@ interface MessagesTimelineProps {
   detailBehindShell?: boolean;
   runningRunId?: RunId | null;
   turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
+  /** Null while a local draft is waiting for its server thread or in a guest view. */
+  threadDetailRef: ScopedThreadRef | null;
   routeThreadKey: string;
   displayThreadKey?: string;
   /** Off where another region already speaks the thread's status, like a subagent's bar. */
@@ -425,6 +428,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   detailBehindShell = false,
   runningRunId = null,
   turnDiffSummaries,
+  threadDetailRef,
   routeThreadKey,
   displayThreadKey,
   announceTurnStatus = true,
@@ -528,6 +532,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setExpandedAttemptIds(paintedExpandedAttemptIds);
   }
   const citationThreadRef = parseScopedThreadKey(routeThreadKey);
+  const starredIds = useAtomValue(environmentThreadDetails.starredMessageIdsAtom(threadDetailRef));
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
   const normalizedFindQuery = findQuery.trim();
@@ -828,8 +833,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   // Run status/timestamps change per stream event; keep them out of shared row context.
   const runs = useStableHandoffRuns(runsProp);
-  const minimapItems = deriveTimelineMinimapItems(rows);
-  const minimapRowIndices = minimapItems.map((item) => item.rowIndex);
+  const minimapItems = deriveTimelineMinimapItems(rows, starredIds);
+  const minimapPrompts = minimapItems.filter((item) => item.role === "user");
+  const minimapPromptRowIndices = minimapPrompts.map((item) => item.rowIndex);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
       ? rows.findIndex((row) => row.id === rememberedPosition.rowId)
@@ -1021,7 +1027,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const nextCurrentIndex = resolveTimelineMinimapCurrentIndex({
       visibleStart: currentRange.start,
       visibleEnd: currentRange.end,
-      rowIndices: minimapRowIndices,
+      rowIndices: minimapPromptRowIndices,
     });
     setMinimapCurrentIndex((current) =>
       current === nextCurrentIndex ? current : nextCurrentIndex,
@@ -1048,6 +1054,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   useLayoutEffect(() => {
     if (!restoringThreadPosition) scheduleMinimapRefresh();
   }, [restoringThreadPosition, scheduleMinimapRefresh]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- highlights newly starred markers even when the list has not scrolled or resized
+  useEffect(scheduleMinimapRefresh, [scheduleMinimapRefresh, starredIds]);
 
   // The measurement the last remember wrote, so a follow release can rewrite
   // it without reading render state from a listener.
@@ -1197,7 +1205,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     listRef,
     timestampFormat,
     routeThreadKey,
-    threadRef: citationThreadRef,
+    threadRef: threadDetailRef,
     markdownCwd,
     resolvedTheme,
     workspaceRoot,
@@ -1414,14 +1422,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
       viewOffset: TIMELINE_MINIMAP_TARGET_OFFSET,
     });
   };
-  const registry = useContext(RegistryContext);
   const [starJump, setStarJump] = useState<{ threadKey: string; target: StarJumpTarget } | null>(
     null,
-  );
-  const starredIds = useAtomValue(
-    environmentThreadDetails.starredMessageIdsAtom(
-      starJump?.threadKey === listIdentityKey ? citationThreadRef : null,
-    ),
   );
   const lastStarJumpRef = useRef<{
     threadKey: string;
@@ -1438,35 +1440,26 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const nextStarred = useStableCallback(() => {
     const state = listRef.current?.getState();
     if (restoringThreadPosition || !state || state.data !== rows) return;
-    const ids = registry.get(environmentThreadDetails.starredMessageIdsAtom(citationThreadRef));
-    const starred = new Set(ids);
+    const starred = new Set(starredIds);
     const entries = timelineEntries.filter(
       (entry): entry is Extract<TimelineEntry, { kind: "message" }> =>
         entry.kind === "message" && starred.has(entry.message.id),
     );
-    const rowIndices = new Map(rows.map((row, index) => [row.id, index]));
-    const foldIds = entries.some((entry) => !rowIndices.has(entry.id))
-      ? timelineTurnFoldRunIdsByEntryId({
-          timelineEntries,
-          latestRun,
-          runningRunId,
-          isWorking,
-          runlessWorkActive,
-        })
-      : null;
+    const rowIndices = new Map(
+      minimapItems.flatMap((item) =>
+        item.starredMessageId === null ? [] : [[item.starredMessageId, item.rowIndex] as const],
+      ),
+    );
     const last = lastStarJumpRef.current;
     const target = nextStarredMessage({
       entries: entries.map((entry) => {
-        const index =
-          rowIndices.get(entry.id) ??
-          rowIndices.get(`attempt-fold:${entry.attempt?.id}`) ??
-          rowIndices.get(`turn-fold:${foldIds?.get(entry.id)}`);
+        const index = rowIndices.get(entry.message.id);
         return {
           messageId: entry.message.id,
           top: index === undefined ? undefined : state.positionAtIndex(index),
         };
       }),
-      starredIds: ids,
+      starredIds,
       hasMoreHistory: historyControls?.hasMoreHistory === true,
       scrollOffset: listRef.current?.getScrollableNode()?.scrollTop ?? state.scroll,
       landingLine: readRowSpaceScroll(state) + TIMELINE_MINIMAP_TARGET_OFFSET,
@@ -1486,7 +1479,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const loadedMessages = timelineEntries.filter((candidate) => candidate.kind === "message");
     const resolution = resolveStarJump(
       starJump.target,
-      registry.get(environmentThreadDetails.starredMessageIdsAtom(citationThreadRef)),
+      starredIds,
       loadedMessages.map((candidate) => candidate.message.id),
       historyControls?.hasMoreHistory === true,
     );
@@ -1498,11 +1491,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
       setStarJump(null);
       return;
     }
-    const entry = loadedMessages.find((candidate) => candidate.message.id === resolution.messageId);
-    if (entry === undefined) return;
-
-    const rowIndex = rows.findIndex((row) => row.kind === "message" && row.id === entry.id);
-    if (rowIndex >= 0) {
+    const marker = minimapItems.find((item) => item.starredMessageId === resolution.messageId);
+    if (!marker) {
+      setStarJump(null);
+      return;
+    }
+    const row = rows[marker.rowIndex];
+    if (row?.kind === "message") {
       const list = listRef.current;
       const landing = {
         threadKey: starJump.threadKey,
@@ -1510,7 +1505,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
         scrollOffset: null,
       };
       lastStarJumpRef.current = landing;
-      void scrollToTimelineRow(rowIndex)?.then(() => {
+      void scrollToTimelineRow(marker.rowIndex)?.then(() => {
         if (!list || list !== listRef.current || lastStarJumpRef.current !== landing) return;
         lastStarJumpRef.current = {
           ...landing,
@@ -1520,18 +1515,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
       setStarJump(null);
       return;
     }
-    const runId = timelineTurnFoldRunIdsByEntryId({
-      timelineEntries,
-      latestRun,
-      runningRunId,
-      isWorking,
-      runlessWorkActive,
-    }).get(entry.id);
-    const attemptId = entry.attempt?.status === "superseded" ? entry.attempt.id : undefined;
-    if (runId !== undefined && !expandedRunIds.has(runId)) {
-      setExpandedRunIds((current) => new Set(current).add(runId));
-    } else if (attemptId !== undefined && !expandedAttemptIds.has(attemptId)) {
-      setExpandedAttemptIds((current) => new Set(current).add(attemptId));
+    if (row?.kind === "turn-fold" && !row.expanded) {
+      setExpandedRunIds((current) => new Set(current).add(row.runId));
+    } else if (row?.kind === "attempt-fold" && !row.expanded) {
+      setExpandedAttemptIds((current) => new Set(current).add(row.attemptId));
     } else {
       setStarJump(null);
     }
@@ -1549,7 +1536,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     rows,
   ]);
   const revealOutlinePrompt = useStableCallback((promptId: string) => {
-    const item = minimapItems.find((candidate) => candidate.id === promptId);
+    const item = minimapPrompts.find((candidate) => candidate.id === promptId);
     if (item) scrollToTimelineRow(item.rowIndex);
   });
   // Measured from where a jump lands a prompt, so repeated presses walk prompt by prompt.
@@ -1557,11 +1544,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const state = listRef.current?.getState();
     if (restoringThreadPosition || !state || state.data !== rows) return false;
     const landing = readRowSpaceScroll(state) + TIMELINE_MINIMAP_TARGET_OFFSET;
-    const top = (item: (typeof minimapItems)[number]) => state.positionAtIndex(item.rowIndex);
+    const top = (item: (typeof minimapPrompts)[number]) => state.positionAtIndex(item.rowIndex);
     const target =
       direction === "previous"
-        ? minimapItems.findLast((item) => top(item) < landing - 2)
-        : minimapItems.find((item) => top(item) > landing + 2);
+        ? minimapPrompts.findLast((item) => top(item) < landing - 2)
+        : minimapPrompts.find((item) => top(item) > landing + 2);
     if (!target) return false;
     scrollToTimelineRow(target.rowIndex);
     return true;
@@ -1579,11 +1566,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const outlineCurrentId =
     restoringThreadPosition || minimapCurrentIndex === null
       ? null
-      : (minimapItems[minimapCurrentIndex]?.id ?? null);
+      : (minimapPrompts[minimapCurrentIndex]?.id ?? null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors the prompts and the one on screen into the outline store; it skips unchanged writes
   useEffect(() => {
-    publishTimelineOutline(listIdentityKey, minimapItems, outlineCurrentId);
-  }, [listIdentityKey, minimapItems, outlineCurrentId]);
+    publishTimelineOutline(listIdentityKey, minimapPrompts, outlineCurrentId);
+  }, [listIdentityKey, minimapPrompts, outlineCurrentId]);
 
   useThreadFindPositionReader({
     threadKey: listIdentityKey,
@@ -1786,14 +1773,19 @@ const ConversationTimeline = memo(function ConversationTimeline({
               ListFooterComponent={timelineListFooter}
             />
             <TimelineMinimap
+              threadDetailRef={threadDetailRef}
               items={minimapItems}
+              promptItems={minimapPrompts}
               hasPersistentGutter={minimapHasPersistentGutter}
               hitStrip={minimapHitStrip}
-              currentIndex={minimapCurrentIndex}
+              currentPromptIndex={minimapCurrentIndex}
               atEnd={minimapAtEnd}
               stripMap={minimapStripMap}
               onWheel={forwardMinimapWheel}
-              onSelect={(item) => scrollToTimelineRow(item.rowIndex)}
+              onSelect={(item) => {
+                if (item.starredMessageId === null) scrollToTimelineRow(item.rowIndex);
+                else revealStarred(item.starredMessageId);
+              }}
             />
           </TooltipScrollDismissArea>
         </TimelineRowActivityCtx>

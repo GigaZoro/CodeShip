@@ -38,7 +38,7 @@ const managedCodexLaunchArgs = (
     // Codex persists this provider ID in rollouts and needs it unchanged to resume.
     `model_providers.openai_token_sharing={name="OpenAI Token Sharing",base_url="https://api.openai.com/v1",wire_api="responses",requires_openai_auth=false,supports_websockets=false,auth={command=${JSON.stringify(command)},args=${JSON.stringify(args)},timeout_ms=${COMMAND_TIMEOUT_MS},refresh_interval_ms=0}}`,
     `model_catalog_json=${JSON.stringify(catalogPath)}`,
-    "features.multi_agent=false",
+    "agents.enabled=false",
     "features.multi_agent_v2=false",
   ]
     .map((value) => `-c ${JSON.stringify(value)}`)
@@ -195,7 +195,9 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
       environment,
       revision: profileKey,
       privateMcpSignIns,
-    } satisfies CodexEffectiveRuntime;
+      catalog,
+      version: executable.version,
+    };
   });
   return { auth, resolve, installation, homePath, homeLayout };
 });

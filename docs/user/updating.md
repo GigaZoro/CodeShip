@@ -289,9 +289,11 @@ After a successful provider CLI update, T3.CodeShip refreshes model discovery fo
 every enabled instance of that provider using its own configuration. Connected
 clients receive the refreshed catalogs automatically. In **Settings → Maintenance &
 about → Provider updates**, choose **Off**, **Notify me**, or **Install automatically**.
-Automatic installation also enables checks and updates provider CLIs when the server
-starts. **Notify me** and **Install automatically** both download the latest model
-catalog; **Off** leaves manual updates available.
+Automatic installation checks as soon as you enable it, at server startup, and
+hourly while the server runs. It installs available updates for providers that
+support one-click updates and skips releases known to be incompatible. **Notify me**
+and **Install automatically** both download the latest model catalog. **Off** leaves
+manual updates available.
 
 Provider updates do not restart running chats. An existing session can keep
 using the previous CLI until it ends. If discovery fails, check the provider

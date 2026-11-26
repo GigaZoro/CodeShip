@@ -183,8 +183,9 @@ again to remove the bookmark. Stars sync across devices connected to the same
 environment, and a thread can hold up to 200. A message loses its star when it
 is rolled back or sent back to the queue.
 
-On web and desktop, open **Outline → Starred** and select a message to jump to
-it. The command palette also has **Jump to next starred message**. On mobile,
+On web and desktop, select a star marker in the minimap to jump to a bookmark in
+loaded history. To find any bookmark in the thread, open **Outline → Starred**.
+The command palette also has **Jump to next starred message**. On mobile,
 tap the star in the thread header to open the list. Use **Unstar message** next
 to a list entry to remove its bookmark directly.
 

@@ -1382,15 +1382,21 @@ function codexErrorInfoCode(value: unknown): string | null {
 
 type CodexErrorInfo = CodexSchema.ServerNotification__CodexErrorInfo;
 
+const isCodexRetryExhaustion = Schema.is(
+  Schema.Struct({
+    responseTooManyFailedAttempts: Schema.Struct({
+      httpStatusCode: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    }),
+  }),
+);
+
 /**
  * Retry exhaustion only says why it failed through the last attempt's HTTP
  * status. Exhaustion on 429 is a usage or rate limit, so it keeps the Limited
  * state and resume controls; other statuses stay provider or transport errors.
  */
 function codexExhaustionHttpStatus(errorInfo: CodexErrorInfo | null | undefined): number | null {
-  return typeof errorInfo === "object" &&
-    errorInfo !== null &&
-    "responseTooManyFailedAttempts" in errorInfo
+  return isCodexRetryExhaustion(errorInfo)
     ? (errorInfo.responseTooManyFailedAttempts.httpStatusCode ?? null)
     : null;
 }
@@ -1431,7 +1437,13 @@ function codexTerminalFailureClass(
           : "httpConnectionFailed" in errorInfo
             ? errorInfo.httpConnectionFailed
             : undefined;
-    if (transport !== undefined && transport.httpStatusCode == null) return "transport_error";
+    if (
+      typeof transport === "object" &&
+      transport !== null &&
+      "httpStatusCode" in transport &&
+      transport.httpStatusCode == null
+    )
+      return "transport_error";
   }
   return "provider_error";
 }
@@ -9841,7 +9853,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
                   driver: CODEX_PROVIDER,
                   providerThreadId: threadInput.providerThread.id,
-                  cause: `Cannot roll back Codex thread ${threadId}: the thread uses legacy history, which Codex 0.156 cannot revert.`,
+                  cause: `Cannot roll back Codex thread ${threadId}: Codex requires paginated history to revert a thread.`,
                 });
               }
               // thread/revert requires the thread loaded in this app-server; resume after restart or idle release.
@@ -9940,7 +9952,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   return yield* new ProviderAdapter.ProviderAdapterForkThreadError({
                     driver: CODEX_PROVIDER,
                     providerThreadId: threadInput.sourceProviderThread.id,
-                    cause: `Cannot fork Codex thread ${threadId} at provider turn ${threadInput.providerTurnId}: the source turn has no native Codex turn reference, and the forked thread uses legacy history which Codex 0.156 cannot revert.`,
+                    cause: `Cannot fork Codex thread ${threadId} at provider turn ${threadInput.providerTurnId}: the source turn has no native Codex turn reference, and reverting the forked thread requires paginated history.`,
                   });
                 }
                 forkedThread = (yield* ensureInitialized.pipe(

@@ -174,7 +174,9 @@ import CodeShipMigration0033 from "./CodeShipMigrations/033_ScheduledTaskLastRun
 import CodeShipMigration0034 from "./CodeShipMigrations/034_UsageStopDecisions.ts";
 import CodeShipMigration0035 from "./CodeShipMigrations/035_TurnItemMessageIndex.ts";
 import CodeShipMigration0036 from "./CodeShipMigrations/036_IncrementalEventStoreCompaction.ts";
-import CodeShipMigration0037 from "./CodeShipMigrations/037_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0037 from "./CodeShipMigrations/037_UsageStopReplay.ts";
+import CodeShipMigration0038 from "./CodeShipMigrations/038_UsageStopSteerTargets.ts";
+import CodeShipMigration0039 from "./CodeShipMigrations/039_PayloadIndexesJsonValid.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -336,7 +338,9 @@ const codeShipMigrationEntries = [
   [34, "UsageStopDecisions", CodeShipMigration0034],
   [35, "TurnItemMessageIndex", CodeShipMigration0035],
   [36, "IncrementalEventStoreCompaction", CodeShipMigration0036],
-  [37, "PayloadIndexesJsonValid", CodeShipMigration0037],
+  [37, "UsageStopReplay", CodeShipMigration0037],
+  [38, "UsageStopSteerTargets", CodeShipMigration0038],
+  [39, "PayloadIndexesJsonValid", CodeShipMigration0039],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(
@@ -480,10 +484,12 @@ const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
+  readonly toCodeShipMigrationInclusive?: number | undefined;
 }
 
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
+  toCodeShipMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   const pendingAtStart = yield* hasPendingMigrations();
   // The desktop waits past its readiness budget until the finished line follows this one.
@@ -532,6 +538,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
         codeShipMigrationEntries,
         "codeship_migrations",
         "codeship_migration_progress",
+        toCodeShipMigrationInclusive,
       ),
     );
   }

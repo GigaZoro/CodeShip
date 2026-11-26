@@ -259,7 +259,7 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
     // The scheduled pass runs other paced maintenance before the event store; count only its pages.
     const inEventStoreCompaction = (span: Tracer.AnySpan): boolean =>
       span._tag === "Span" &&
-      (span.name === "ProjectionMaintenance.compactEventStore" ||
+      (span.name === "ProjectionMaintenance.pruneEventStore" ||
         (Option.isSome(span.parent) && inEventStoreCompaction(span.parent.value)));
     const tracer = Tracer.make({
       span(options) {

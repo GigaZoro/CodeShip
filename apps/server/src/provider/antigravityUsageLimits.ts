@@ -8,10 +8,13 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-
 import { isQualifiedAntigravityRelease } from "./acp/AntigravityAcpSupport.ts";
 
 const MAX_REPORT_LENGTH = 64_000;
+
+function supportsAntigravityAcpQuota(version: string | null | undefined): boolean {
+  return isQualifiedAntigravityRelease(version);
+}
 
 export function unavailableAntigravityLimits(
   checkedAt: string,
@@ -95,7 +98,7 @@ type QuotaRuntime = Pick<
 export const readAntigravityAcpQuota = Effect.fn("readAntigravityAcpQuota")(function* (
   runtime: QuotaRuntime,
 ) {
-  let advertised = false;
+  const advertisedUsage = yield* Deferred.make<boolean>();
   let report: string | undefined = "";
   yield* runtime.getEvents().pipe(
     Stream.runForEach((event) =>
@@ -103,7 +106,10 @@ export const readAntigravityAcpQuota = Effect.fn("readAntigravityAcpQuota")(func
         if (event._tag === "EventStreamBarrier") {
           yield* Deferred.succeed(event.acknowledge, undefined);
         } else if (event._tag === "AvailableCommandsUpdated") {
-          advertised = event.availableCommands.some((command) => command.name === "usage");
+          yield* Deferred.succeed(
+            advertisedUsage,
+            event.availableCommands.some((command) => command.name === "usage"),
+          );
         } else if (event._tag === "ContentDelta" && report !== undefined) {
           report =
             report.length + event.text.length <= MAX_REPORT_LENGTH
@@ -115,9 +121,13 @@ export const readAntigravityAcpQuota = Effect.fn("readAntigravityAcpQuota")(func
     Effect.forkScoped,
   );
   const started = yield* runtime.start();
-  yield* runtime.drainEvents;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  if (!isQualifiedAntigravityRelease(started.initializeResult.agentInfo?.version) || !advertised) {
+  if (!supportsAntigravityAcpQuota(started.initializeResult.agentInfo?.version)) {
+    return unavailableAntigravityLimits(checkedAt, "unsupported");
+  }
+  // Antigravity announces commands after session/new. The driver owns the probe timeout.
+  const advertised = yield* Deferred.await(advertisedUsage);
+  if (!advertised) {
     return unavailableAntigravityLimits(checkedAt, "unsupported");
   }
   const result = yield* runtime.prompt({ prompt: [{ type: "text", text: "/usage" }] });

@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
-import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
+import { formatMonitoringTime, threadFixChatTarget } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_DETAIL_LABELED,
   FINDING_TEXT,
@@ -28,6 +28,7 @@ import { serverEnvironment } from "../../state/server";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
+import { MonitoringFixChatAction } from "./MonitoringFixChat";
 import { MonitoringKpi } from "./MonitoringKpi";
 import { MonitoringNote } from "./MonitoringNote";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
@@ -83,7 +84,11 @@ export function MonitoringThreadRouteScreen({
             <Text textRole="footnote">{t("Showing previous monitoring results.")}</Text>
           ) : null}
           {detail ? (
-            <DeepDiveBody detail={detail} onOpenChat={() => openThread(environmentId, threadId)} />
+            <DeepDiveBody
+              detail={detail}
+              environmentId={environmentId}
+              onOpenChat={() => openThread(environmentId, threadId)}
+            />
           ) : error !== null ? (
             <EmptyState
               variant="plain"
@@ -117,10 +122,12 @@ export function MonitoringThreadRouteScreen({
 
 function DeepDiveBody(props: {
   readonly detail: MonitoringThreadDetail;
+  readonly environmentId: EnvironmentId;
   readonly onOpenChat: () => void;
 }) {
-  const { detail } = props;
+  const { detail, environmentId } = props;
   const { summary } = detail;
+  const fixTarget = threadFixChatTarget(environmentId, summary);
   const input = summary.tokens.inputTokens;
   const workingMs = summary.time.agentMs + summary.time.commandMs + summary.time.toolMs;
   const helpers =
@@ -264,6 +271,7 @@ function DeepDiveBody(props: {
                     {t(text.advice)}
                   </Text>
                 ) : null}
+                <MonitoringFixChatAction target={fixTarget} code={finding.code} />
               </View>
             );
           })

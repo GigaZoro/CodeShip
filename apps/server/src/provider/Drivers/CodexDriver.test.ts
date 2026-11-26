@@ -30,7 +30,7 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -72,6 +72,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(
     Layer.mock(CodexInstallation.CodexInstallation)({
       managedDirectory: "unused-managed-installation",
+      installedManagedVersion: Effect.succeed(null),
     }),
   ),
   Layer.provideMerge(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
@@ -120,7 +121,84 @@ const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unkno
 const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
 
 it.layer(layerTest)("CodexDriver", (it) => {
-  const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
+  it.effect.each([
+    { setupMode: "managed", compatibility: "supported" },
+    { setupMode: "managed", compatibility: "incompatible" },
+    { setupMode: "existing", compatibility: "incompatible" },
+  ] as const)(
+    "advertises an update for a CodeShip installation: $setupMode, $compatibility",
+    ({ setupMode, compatibility }) =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const executable = {
+          executablePath: NodePath.join(config.stateDir, "managed-codex", "bin", "codex"),
+          managedVersionDirectory: NodePath.join(config.stateDir, "managed-codex"),
+          source: "managed" as const,
+          version: compatibility === "supported" ? "0.156.1" : "0.149.0",
+        };
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("signed-out-managed-codex"),
+          displayName: "Signed-out Codex",
+          enabled: true,
+          environment: [
+            { name: "PATH", value: NodePath.join(config.stateDir, "empty-bin"), sensitive: false },
+          ],
+          config: { ...CodexDriver.defaultConfig(), setupMode },
+        }).pipe(
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            resolve: () =>
+              compatibility === "supported"
+                ? Effect.succeed(executable)
+                : Effect.fail(
+                    new CodexInstallation.CodexInstallationError({
+                      operation: "resolve",
+                      detail: "Incompatible fixture release",
+                    }),
+                  ),
+            installedManagedVersion: Effect.succeed(executable.version),
+            checkManagedUpdate: Effect.succeed({
+              installedVersion: executable.version,
+              latestVersion: "0.172.0",
+            }),
+          }),
+          Effect.provide(
+            Layer.mock(ServerSecretStore.ServerSecretStore)({
+              get: () => Effect.succeedNone,
+            }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+        );
+
+        const checked = Option.getOrThrow(
+          yield* Stream.merge(
+            Stream.fromEffect(instance.snapshot.getSnapshot),
+            instance.snapshot.streamChanges,
+          ).pipe(
+            Stream.filter((snapshot) => snapshot.versionAdvisory !== undefined),
+            Stream.runHead,
+          ),
+        );
+
+        expect(checked).toMatchObject({
+          installed: true,
+          auth: { status: setupMode === "managed" ? "unauthenticated" : "unknown" },
+          versionAdvisory: {
+            status: "behind_latest",
+            currentVersion: executable.version,
+            latestVersion: "0.172.0",
+            canUpdate: true,
+            updateCommand: null,
+            updateKey: "managed-codex",
+          },
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  const checkManagedAccount = (
+    replacementTiming: "unchanged" | "different-account" | "different-workspace",
+  ) =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
       const credentials = new Map<string, Uint8Array>();
@@ -142,34 +220,40 @@ it.layer(layerTest)("CodexDriver", (it) => {
       });
       yield* Effect.gen(function* () {
         const store = yield* ProviderCredentialStore.make("codex-chatgpt", instanceId);
+        const email = "account@example.test";
+        const workspaceToken = (id: string) =>
+          `e30.${Buffer.from(JSON.stringify({ email, "https://api.openai.com/auth": { chatgpt_account_id: id } })).toString("base64url")}.sig`;
+        const workspaceChange = replacementTiming === "different-workspace";
         const connection = {
           clientId: "oaiapp_test",
-          accessToken: "dummy-owned-access",
+          accessToken: workspaceChange ? workspaceToken("workspace-A") : "dummy-owned-access",
           refreshToken: "dummy-refresh",
           expiresAt: Number.MAX_SAFE_INTEGER,
           earliestRefreshAt: null,
           scopes: ["chatgpt.tokens.use.direct"],
           subject: "test-user",
-          email: "account@example.test",
+          email,
         };
         const json = yield* encodeCredentials(connection);
         yield* store.set(new TextEncoder().encode(json));
-        const replacement = yield* encodeCredentials({
-          clientId: "oaiapp_replacement",
-          subject: "replacement-user",
-          email: "replacement@example.test",
-          accessToken: "replacement-access",
-          refreshToken: "replacement-refresh",
-          expiresAt: Number.MAX_SAFE_INTEGER,
-          earliestRefreshAt: null,
-          scopes: ["chatgpt.tokens.use.direct"],
-        });
+        const replacement = yield* encodeCredentials(
+          workspaceChange
+            ? { ...connection, accessToken: workspaceToken("workspace-B") }
+            : {
+                ...connection,
+                clientId: "oaiapp_replacement",
+                subject: "replacement-user",
+                email: "replacement@example.test",
+                accessToken: "replacement-access",
+                refreshToken: "replacement-refresh",
+              },
+        );
         const replaceAccount = store.set(new TextEncoder().encode(replacement)).pipe(Effect.orDie);
         const executable = {
           executablePath: "/user/bin/codex",
           managedVersionDirectory: null,
           source: "local" as const,
-          version: "0.156.1",
+          version: "0.172.0",
         };
         const installation = yield* CodexInstallation.CodexInstallation;
         const serverConfig = yield* ServerConfig.ServerConfig;
@@ -179,11 +263,21 @@ it.layer(layerTest)("CodexDriver", (it) => {
           serverConfig.stateDir,
           instanceId,
         );
+        const fs = yield* FileSystem.FileSystem;
+        const connectLimitsForWorkspaceA = Effect.gen(function* () {
+          yield* fs.makeDirectory(limitsHome, { recursive: true });
+          yield* fs.writeFileString(
+            NodePath.join(limitsHome, "auth.json"),
+            JSON.stringify({ tokens: { id_token: workspaceToken("workspace-A") } }),
+          );
+        });
+        if (workspaceChange) yield* connectLimitsForWorkspaceA;
         const launches: Array<
           Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
         > = [];
 
         let togglingSkills = false;
+        let holdWorkspaceUsage = false;
         const skillWrites: Array<unknown> = [];
         const skillHomes: Array<unknown> = [];
         let interruptedChecks = 0;
@@ -261,6 +355,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
                         if (request.method === "initialized") return;
                         if (request.method === "skills/config/write")
                           skillWrites.push(request.params);
+                        if (holdWorkspaceUsage && request.method === "account/rateLimits/read") {
+                          holdWorkspaceUsage = false;
+                          yield* Deferred.succeed(probeEntered, undefined);
+                          yield* Deferred.await(resumeProbe);
+                        }
                         const replies: Record<string, unknown> = {
                           initialize: {
                             userAgent: "codex/test",
@@ -298,7 +397,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
                     getOutputFd: () => Stream.empty,
                   });
                 }
-                if (replacementTiming === "during-probe") {
+                if (replacementTiming === "different-account") {
                   yield* Deferred.succeed(probeEntered, undefined);
                   yield* Deferred.await(resumeProbe);
                 }
@@ -323,34 +422,51 @@ it.layer(layerTest)("CodexDriver", (it) => {
           Effect.forkScoped,
         );
         yield* Deferred.await(startupChecksInterrupted);
+        if (workspaceChange) {
+          const before = yield* instance.snapshot.refresh;
+          expect(before.auth.workspaceId).toBe("workspace-A");
+          expect(before.auth.funding).toBe("included");
+          expect(before.usageLimits?.windows.map((window) => window.usedPercent)).toEqual([78]);
+          catalogTokens.length = 0;
+          holdWorkspaceUsage = true;
+        }
         const refresh = yield* instance.snapshot.refresh.pipe(Effect.forkChild);
-        if (replacementTiming === "during-probe") {
+        if (replacementTiming !== "unchanged") {
           yield* Deferred.await(probeEntered);
           yield* replaceAccount;
           yield* Deferred.succeed(resumeProbe, undefined);
         }
         const restored = yield* Fiber.join(refresh);
-        if (replacementTiming === "during-probe") {
-          // Launch settings fetched Codex's catalog before the account changed; the listing never ran.
-          expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
+        if (replacementTiming !== "unchanged") {
+          // The catalog fetched before the account changed must never appear under the new sign-in.
+          expect(catalogTokens).toEqual([`launch:Bearer ${connection.accessToken}`]);
           expect(restored.models).toEqual([]);
-          expect(restored.auth.email).toBe("replacement@example.test");
-          expect(restored.auth.profileId).toBe("oaiapp_replacement");
+          expect(restored.auth.email).toBe(workspaceChange ? email : "replacement@example.test");
+          expect(restored.auth.profileId).toBe(
+            workspaceChange ? connection.clientId : "oaiapp_replacement",
+          );
+          expect(restored.auth.workspaceId).toBe(workspaceChange ? "workspace-B" : undefined);
+          if (workspaceChange) {
+            expect(restored.auth.funding ?? "unknown").toBe("unknown");
+            expect(restored.usageLimits?.plan).toBeUndefined();
+            expect(restored.usageLimits?.windows).toEqual([]);
+          }
           return;
         }
-        expect(catalogTokens).toEqual([
-          "launch:Bearer dummy-owned-access",
-          "listing:Bearer dummy-owned-access",
+        expect(
+          restored.models.map(({ slug, capabilities }) => [
+            slug,
+            capabilities?.optionDescriptors?.map((option) =>
+              option.type === "select" ? option.options.map(({ id }) => id) : [],
+            ),
+          ]),
+        ).toEqual([
+          ["gpt-6.2-sol", [["low", "medium", "high", "xhigh", "max", "ultra"]]],
+          ["gpt-6.2-astra", [["low", "medium", "high", "xhigh", "max", "ultra"]]],
         ]);
+        expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
         expect(restored.auth.email).toBe("account@example.test");
-        const workspaceToken = (id: string) =>
-          `e30.${Buffer.from(JSON.stringify({ email: connection.email, "https://api.openai.com/auth": { chatgpt_account_id: id } })).toString("base64url")}.sig`;
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.makeDirectory(limitsHome, { recursive: true });
-        yield* fs.writeFileString(
-          NodePath.join(limitsHome, "auth.json"),
-          JSON.stringify({ tokens: { id_token: workspaceToken("workspace-A") } }),
-        );
+        yield* connectLimitsForWorkspaceA;
         let included = restored;
         for (const id of ["workspace-A", "workspace-B", undefined]) {
           const tokens = yield* encodeCredentials({
@@ -458,10 +574,37 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://api.openai.com/v1/models",
               ]).toContain(request.url);
               if (request.url.endsWith("/models")) {
-                // Only the launch catalog asks as Codex, with Codex's originator header.
-                const kind = request.headers.originator === undefined ? "listing" : "launch";
+                const kind =
+                  request.headers.originator === "T3 Code" &&
+                  UrlParams.toString(request.urlParams) === "client_version=0.172.0"
+                    ? "launch"
+                    : "listing";
                 catalogTokens.push(`${kind}:${request.headers.authorization}`);
-                return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    models:
+                      kind === "listing"
+                        ? []
+                        : ["Sol", "Astra"].map((name) => ({
+                            slug: `gpt-6.2-${name.toLowerCase()}`,
+                            display_name: `GPT-6.2-${name}`,
+                            visibility: "list",
+                            default_reasoning_level: "low",
+                            supported_reasoning_levels: [
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max",
+                              "ultra",
+                            ].map((effort) => ({ effort })),
+                            service_tiers: [{ id: "ultrafast", name: "Ultrafast" }],
+                            tool_mode: "code_mode_only",
+                            multi_agent_version: "v2",
+                          })),
+                  }),
+                );
               }
               return HttpClientResponse.fromWeb(
                 request,
@@ -482,7 +625,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.scoped);
   // regression: a sign-in that replaces the account mid-probe must not label the old
   // account's catalog with the new identity.
-  it.effect.each(["unchanged", "during-probe"] as const)(
+  it.effect.each(["unchanged", "different-account", "different-workspace"] as const)(
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
   );
@@ -786,6 +929,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect.each([
     { name: "own copy", onPath: false, ownCopy: true, explicit: false },
     { name: "codex on PATH", onPath: true, ownCopy: true, explicit: false },
+    {
+      name: "old managed symlink on PATH",
+      onPath: true,
+      ownCopy: true,
+      explicit: false,
+      stale: true,
+    },
     { name: "nothing installed", onPath: false, ownCopy: false, explicit: false },
     { name: "explicit path", onPath: true, ownCopy: true, explicit: true },
   ])(
@@ -798,15 +948,22 @@ it.layer(layerTest)("CodexDriver", (it) => {
           .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
         const pathDir = NodePath.join(tempDir, "bin");
         yield* fs.makeDirectory(pathDir, { recursive: true });
+        const managedDirectory = NodePath.join(tempDir, "tools", "codex");
+        const pathBinary = NodePath.join(pathDir, "codex");
         if (fixture.onPath) {
-          yield* fs.writeFileString(NodePath.join(pathDir, "codex"), "#!/bin/sh\n");
-          yield* fs.chmod(NodePath.join(pathDir, "codex"), 0o755);
+          const binary = fixture.stale
+            ? NodePath.join(managedDirectory, "0.155.0", "bin", "codex")
+            : pathBinary;
+          yield* fs.makeDirectory(NodePath.dirname(binary), { recursive: true });
+          yield* fs.writeFileString(binary, "#!/bin/sh\n", { mode: 0o755 });
+          if (fixture.stale) yield* fs.symlink(binary, pathBinary);
         }
-        const ownCopyPath = NodePath.join(tempDir, "tools", "codex", "0.156.1", "bin", "codex");
+        const ownCopyPath = NodePath.join(managedDirectory, "0.156.1", "bin", "codex");
         const explicitPath = NodePath.join(tempDir, "missing", "codex");
-        const expected = fixture.explicit ? explicitPath : fixture.onPath ? "codex" : ownCopyPath;
+        const externalOnPath = fixture.onPath && !fixture.stale;
+        const expected = fixture.explicit ? explicitPath : externalOnPath ? "codex" : ownCopyPath;
         const ownCopy = () =>
-          fixture.explicit || fixture.onPath
+          fixture.explicit || externalOnPath
             ? Effect.die("A Codex on PATH or an explicit path must not use T3.CodeShip's copy")
             : fixture.ownCopy
               ? Effect.succeed({
@@ -854,8 +1011,14 @@ it.layer(layerTest)("CodexDriver", (it) => {
             CodexInstallation.CodexInstallation,
             CodexInstallation.CodexInstallation.of({
               ...(yield* CodexInstallation.CodexInstallation),
+              managedDirectory,
               resolve: ownCopy,
               acquire: ownCopy,
+              installedManagedVersion: Effect.succeed(fixture.ownCopy ? "0.156.1" : null),
+              checkManagedUpdate: Effect.succeed({
+                installedVersion: "0.156.1",
+                latestVersion: "0.172.0",
+              }),
             }),
           ),
           Effect.provideService(
@@ -876,6 +1039,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const status = yield* instance.snapshot.refresh;
         expect(status.installed).toBe(false);
         expect(status.setup?.canInstall).toBe(!fixture.explicit);
+        const maintenance = yield* instance.snapshot.resolveMaintenance();
+        expect(maintenance.builtInUpdate?.lockKey).toBe(
+          fixture.ownCopy && !fixture.explicit && !externalOnPath ? "managed-codex" : undefined,
+        );
+        if (maintenance.builtInUpdate) {
+          expect(yield* resolveLatestProviderVersion(maintenance)).toBe("0.172.0");
+        }
         yield* instance.orchestrationAdapter
           .openSession({
             threadId: ThreadId.make("default-binary-thread"),

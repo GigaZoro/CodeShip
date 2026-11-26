@@ -1,3 +1,55 @@
+## 2026-11-26 — Start a fix chat from a Monitoring weak point
+
+- Select **Fix root cause** in the Monitoring overview or a chat’s findings on web, desktop, or mobile. The new chat opens in the affected project with the finding and examples. From the overview it uses the current filters, chooses the machine and project with the most time lost, and includes up to 20 affected chats. Retrying after a lost response reopens the same chat.
+
+## 2026-11-26 — Worktrees use the remote’s default branch
+
+- New worktrees can use the remote’s default branch even in a single-branch clone. With fetching turned off, local repositories with an unconventional default branch can start from their checked-out branch or detached commit. When a remote omits its default, CodeShip uses an advertised main or master branch.
+
+## 2026-11-26 — GPT-6.2 in managed Codex and automatic provider updates
+
+- CodeShip upgrades its managed Codex CLI to 0.172.0 on macOS, Windows and Linux. Accounts with access to GPT-6.2 Astra or Sol can select them for chats and delegated tasks. The model picker shows the required update on older Codex installations.
+- Automatic provider updates now check hourly while CodeShip runs. Managed Codex and Antigravity can install compatible stable releases between app updates.
+- The managed Antigravity 1.5.2 update keeps quota reporting and MP4 input for Gemini on macOS and Linux.
+- CodeShip can now update native stable-channel fx installations on macOS and Linux.
+
+## 2026-11-26 — Assignment-restricted reviews
+
+- Delegation accepts an assignment isolation request and explicitly refuses it before starting a child. The current Claude and Codex adapters cannot verify all inputs and tools before inference.
+
+## 2026-11-26 — Jump to starred messages from the chat minimap
+
+- On web and desktop, the minimap marks starred prompts and replies in loaded history. Select a marker to revisit its message.
+
+## 2026-11-26 — Usage-limit stops replay from their recorded decisions
+
+- Each usage-limit stop with recorded decisions now replays as recovered, failed attempt, pinned, exhausted or unknown, from the evidence saved when it was decided. The server database keeps this for usage reports to read; nothing in the app shows it yet. A retry counts as a recovery only when it ran the stop's own request and completed, and as a failed attempt only when that attempt ran and failed. A stop with no recorded evidence, or with evidence that cannot decide it, stays unknown. Lost tokens are never estimated from measured usage.
+
+## 2026-11-26 — Delegated worktrees fetch from the matched repository first
+
+- A linked machine now tries the Git remote that matched the parent repository first when fetching a worktree commit. It can still fetch the exact commit through a tag or another configured remote.
+
+## 2026-11-26 — Claude delegates can wait for native background work
+
+- When a Claude delegate needs the result of a background shell or Monitor, it can keep its run open until it has a final reply for its parent. A restart tells the chat which awaited work stopped. Dev servers and watchers can still be left running.
+- Claude reports a startup error if it cannot connect to the configured CodeShip tools before the first prompt.
+
+## 2026-11-26 — The ACP idle-error test waits for the late subagent event
+
+- Maintainers: after observing the failed turn, the test tells the mock agent to complete its subagent and waits for that completion event. This keeps the test reliable on busy machines.
+
+## 2026-11-26 — More accurate CPU waits for background commands
+
+- On Linux, commands can start while lower-priority threads use the CPUs. Work at a command’s own priority still counts when a process mixes thread priorities or its workers exit between readings.
+- A command queued during substantial niced CPU activity now reports the total niced share and how much was excluded from its busy reading.
+
+## 2026-11-26 — A landing that stops frees main within minutes
+
+- A landing that crashes or whose machine sleeps now frees main within about 10 minutes instead of 3 hours: the lander renews its turn every few minutes while it rebases, checks and pushes, and a lander that lost its turn stops its checks, with every process they started, and pushes nothing. Main moves only in the push that gives back the lander's own lease, so a lander that never learned it lost its turn cannot move main. A waiting landing waits as long as the queue keeps moving.
+- A push to main whose answer was lost counts as landed when main holds it, also once other landings moved main on. A waiting lander whose clock runs ahead no longer takes the lease of a holder that still renews it, also near the end of a turn.
+- A sleep is no time a waiting lander watched a lease, so a landing waiting on the same Mac as the landing that holds the turn leaves that turn alone when the Mac wakes.
+- The checks of a lost turn end with every process they started, also one whose parent already exited, and they end when the lander itself dies.
+
 ## 2026-11-26 — Claude settings failures in server logs
 
 - When Claude settings resolution fails, the server log records which step failed and the failure category without exposing settings contents or raw SDK errors.

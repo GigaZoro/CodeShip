@@ -25,6 +25,7 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { HttpClient } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
@@ -36,6 +37,7 @@ import {
   resolveAntigravityInstanceDirectories,
 } from "../antigravityAuthSupport.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ModelManifest from "../ModelManifest.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -73,6 +75,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     readonly enabled?: boolean;
     /** Extra instance variables, such as ones a parent T3 turn already exported. */
     readonly environment?: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    readonly source?: AntigravityInstallation.AntigravityExecutable["source"];
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -150,6 +153,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     failResolution: boolean;
     beforeAcquire: Effect.Effect<void>;
   } = { selected: first, failResolution: false, beforeAcquire: Effect.void };
+  const installedUpdates: string[] = [];
   const acquisitions: Array<{ binaryPath: string | undefined; path: string | undefined }> = [];
   const releases: Array<string | null> = [];
   const launches: Array<{
@@ -176,6 +180,8 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
           version,
         ),
       ),
+    latestVersion: Effect.succeed("1.5.3"),
+    upgrade: (version) => Effect.sync(() => void installedUpdates.push(version)),
     resolve: () =>
       Effect.gen(function* () {
         if (controls.failResolution) {
@@ -184,7 +190,10 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
             detail: "Fixture resolution failed.",
           });
         }
-        return controls.selected;
+        return {
+          ...controls.selected,
+          source: options.source ?? controls.selected.source,
+        };
       }),
     acquire: (binaryPath, environment) =>
       Effect.gen(function* () {
@@ -292,6 +301,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     launches,
     readRequests,
     assertClosed,
+    installedUpdates,
   };
 });
 
@@ -299,6 +309,12 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-antigravity-driver-config-",
 }).pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  Layer.provideMerge(
+    Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("Unexpected provider update request")),
+    ),
+  ),
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
@@ -312,6 +328,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
     ),
   ),
   Layer.provideMerge(ModelManifest.layerTest),
+  Layer.provideMerge(ProviderLatestVersions.layer),
   Layer.provideMerge(IdAllocator.layer),
   Layer.provideMerge(McpProviderSessions.layer),
 );
@@ -321,6 +338,27 @@ const layerTest = ProviderHostLive.layer.pipe(
 );
 
 it.layer(layerTest)("AntigravityDriver", (it) => {
+  it.effect.each(["managed", "path", "override"] as const)(
+    "only updates an existing managed runtime when the executable source is %s",
+    (source) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({
+          source,
+          ...(source === "override" ? { config: { binaryPath: "custom-antigravity" } } : {}),
+        });
+        const maintenance = yield* h.instance.snapshot.resolveMaintenance();
+        if (source === "managed") {
+          expect(maintenance.lookupLatestVersion).toBeDefined();
+          expect(maintenance.builtInUpdate).toBeDefined();
+          yield* maintenance.builtInUpdate!.run("1.5.3");
+          expect(h.installedUpdates).toEqual(["1.5.3"]);
+        } else {
+          expect(maintenance.builtInUpdate).toBeUndefined();
+          expect(h.installedUpdates).toEqual([]);
+        }
+      }),
+  );
+
   it.effect.skipIf(windowsHost)(
     "refreshes the selected executable and limits form capabilities to chat",
     () =>

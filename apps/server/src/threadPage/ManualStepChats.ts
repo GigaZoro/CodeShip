@@ -1,32 +1,19 @@
 import {
-  DEFAULT_PROVIDER_INTERACTION_MODE,
   type ManualStepDecision,
   ManualStepStartChatError,
   type ManualStepStartChatFailure,
   type ManualStepStartChatInput,
-  type ManualStepStartChatResult,
   MessageId,
-  type ModelSelection,
-  type ProjectId,
-  type ServerProvider,
-  type ServerSettings as ServerSettingsValue,
-  ThreadId,
 } from "@t3tools/contracts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { canAccountRun } from "@t3tools/shared/serverSettings";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
-import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
-import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import {
+  makeStartChatAsUser,
+  type StartChatAsUserResult,
+} from "../orchestration-v2/startChatAsUser.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
-import * as Project from "../project/ProjectService.ts";
-import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import * as ServerSettings from "../serverSettings.ts";
 
 const MAX_TITLE_LENGTH = 120;
 
@@ -34,11 +21,9 @@ export class ManualStepChats extends Context.Service<
   ManualStepChats,
   {
     /** Starts a chat in No project whose first message is the step and the user's decision. */
-    readonly start: (input: ManualStepStartChatInput) => Effect.Effect<
-      /** `resumed` when this request repeats one that already started the chat. */
-      ManualStepStartChatResult & { readonly resumed: boolean },
-      ManualStepStartChatError
-    >;
+    readonly start: (
+      input: ManualStepStartChatInput,
+    ) => Effect.Effect<StartChatAsUserResult, ManualStepStartChatError>;
   }
 >()("t3/threadPage/ManualStepChats") {}
 
@@ -91,55 +76,9 @@ function manualStepChatTitle(step: Step): string {
     : `${title.slice(0, MAX_TITLE_LENGTH - 1).trimEnd()}…`;
 }
 
-type Providers = ReadonlyArray<ServerProvider>;
-
-/**
- * The selection on an account that can run a turn, or null. The card has no model picker, so a
- * default that cannot run would leave the decision undone. An auto-account selection moves to
- * another account of its provider, since the launch refuses a turned-off account before routing.
- */
-function runnableSelection(
-  selection: ModelSelection,
-  providers: Providers,
-  settings: ServerSettingsValue,
-  projectId: ProjectId,
-): ModelSelection | null {
-  const own = providers.find((provider) => provider.instanceId === selection.instanceId);
-  if (own === undefined) return null;
-  if (canAccountRun(own, settings, projectId)) return selection;
-  const sibling =
-    selection.autoAccount === true
-      ? providers.find(
-          (provider) =>
-            provider.driver === own.driver && canAccountRun(provider, settings, projectId),
-        )
-      : undefined;
-  return sibling === undefined ? null : { ...selection, instanceId: sibling.instanceId };
-}
-
-/** The first account that can run a turn, on its default model. */
-function firstRunnableSelection(
-  providers: Providers,
-  settings: ServerSettingsValue,
-  projectId: ProjectId,
-): ModelSelection | null {
-  for (const provider of providers) {
-    const model =
-      provider.models.find((candidate) => candidate.isDefault)?.slug ?? provider.models[0]?.slug;
-    if (model !== undefined && canAccountRun(provider, settings, projectId)) {
-      return { instanceId: provider.instanceId, model };
-    }
-  }
-  return null;
-}
-
 const make = Effect.gen(function* () {
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
-  const projects = yield* Project.ProjectService;
-  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-  const settingsService = yield* ServerSettings.ServerSettingsService;
-  const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
-  const threads = yield* ThreadManagement.ThreadManagementService;
+  const startChatAsUser = yield* makeStartChatAsUser;
 
   const start: ManualStepChats["Service"]["start"] = Effect.fn("ManualStepChats.start")(
     function* (input) {
@@ -147,80 +86,26 @@ const make = Effect.gen(function* () {
       const { projectId } = yield* managedFolders.ensureScratchProject.pipe(
         Effect.mapError((error) => failure("launch-failed", error.message)),
       );
-      const settings = yield* settingsService.getSettings.pipe(
-        Effect.mapError(() => failure("launch-failed", "Could not read the model settings.")),
+      return yield* startChatAsUser({
+        commandId: input.commandId,
+        firstMessageId: MessageId.make(input.commandId),
+        projectId,
+        title: manualStepChatTitle(input.step),
+        text: manualStepDecisionMessage(input.step, input.decision),
+        creationSource: input.creationSource ?? "web",
+        workspace: "root",
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ManualStepStartChatError({
+              reason: error.reason,
+              detail: error.detail,
+              ...(error.quotaAwareAutoUnsupported === true && {
+                quotaAwareAutoUnsupported: error.quotaAwareAutoUnsupported,
+              }),
+            }),
+        ),
       );
-      const project = Option.getOrUndefined(
-        yield* projects
-          .getById(projectId)
-          .pipe(
-            Effect.mapError(() =>
-              failure("launch-failed", "Could not read the No project folder."),
-            ),
-          ),
-      );
-      const defaults = resolveProjectSettings(settings, projectId, project).settings;
-      // The thread takes the command's id, so a repeated request finds the chat it already
-      // started and replays it on that chat's model, whatever the accounts look like by now.
-      const threadId = ThreadId.make(input.commandId);
-      const started = yield* threads
-        .getThreadShell(threadId)
-        .pipe(Effect.mapError(() => failure("launch-failed", "Could not read the chat.")));
-      const startedModel =
-        started === null || started.deletedAt !== null ? null : started.modelSelection;
-      const pickModel = Effect.gen(function* () {
-        const providers = yield* providerRegistry.getProviders;
-        const preferred = resolveNewThreadModelSelection({
-          defaultSelection: defaults.defaultModelSelection,
-          fallbackSelection: defaults.fallbackModelSelection,
-          providers,
-          settings: defaults,
-          projectId,
-          now: DateTime.toEpochMillis(yield* DateTime.now),
-        }).selection;
-        return (
-          (preferred === null
-            ? null
-            : runnableSelection(preferred, providers, defaults, projectId)) ??
-          firstRunnableSelection(providers, defaults, projectId)
-        );
-      });
-      const modelSelection = startedModel ?? (yield* pickModel);
-      if (modelSelection === null) {
-        return yield* failure(
-          "no-model",
-          "No provider account on this machine is signed in and enabled.",
-        );
-      }
-      const launched = yield* threadLaunch
-        .launch({
-          commandId: input.commandId,
-          threadId,
-          projectId,
-          title: manualStepChatTitle(input.step),
-          modelSelection,
-          runtimeMode: defaults.defaultRuntimeMode,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          workspaceStrategy: { type: "root" },
-          initialMessage: {
-            messageId: MessageId.make(input.commandId),
-            text: manualStepDecisionMessage(input.step, input.decision),
-            attachments: [],
-          },
-          createdBy: "user",
-          creationSource: input.creationSource ?? "web",
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            failure(
-              error._tag === "ThreadManagementProviderInstanceDisabledError"
-                ? "no-model"
-                : "launch-failed",
-              error.message,
-            ),
-          ),
-        );
-      return { threadId: launched.threadId, resumed: launched.resumed };
     },
     (effect, input) =>
       effect.pipe(

@@ -4066,6 +4066,13 @@ const make = Effect.gen(function* () {
       const review = yield* reviewRequest(input);
       yield* requireCapability(callerScope);
       const scope = yield* requireThreadScope(callerScope, "delegate_task");
+      // Refuse before receipt reuse or peer forwarding can turn a restricted request into ordinary work.
+      if (typeof input.isolation === "object") {
+        return yield* failure(
+          "restricted_review_unsupported",
+          "Assignment isolation is unavailable. The native adapters cannot verify all model inputs and tools before inference.",
+        );
+      }
       if (input.auto === true && input.target !== undefined) {
         return yield* failure("invalid_request", "Pass auto:true or target, not both.");
       }

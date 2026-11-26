@@ -926,6 +926,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
           description: "Tracked Git folders to give a worktree. Default: all, or none above 8.",
         }),
     ),
+    preferredRemote: Schema.optional(TrimmedNonEmptyString),
   }),
 ]);
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
@@ -1455,8 +1456,8 @@ const PendingBackgroundTaskFields = {
   /** The run that was executing when the work first appeared, stamped by the projection. */
   runId: Schema.optional(RunId),
   /**
-   * The thread waits on this work, so it holds like a subagent: a pull request watch or a
-   * `t3_command_run` command.
+   * The thread waits on this work, so it holds like a subagent: a pull request watch, a
+   * `t3_command_run` command, or an awaited native command/monitor.
    */
   awaited: Schema.optional(Schema.Literal(true)),
   /** Shown as elapsed time; only a `t3_command_run` command's record knows it. */
@@ -2179,6 +2180,19 @@ const OrchestrationV2FeedbackRequestFields = {
   feedbackStatus: AgentFeedbackRequestStatus,
 } as const;
 
+const OrchestrationV2SystemNoticeFields = {
+  type: Schema.Literal("system_notice"),
+  message: Schema.String,
+  level: Schema.optional(OrchestrationV2SystemNoticeLevel),
+  mcpSignIn: Schema.optional(OrchestrationV2McpSignIn),
+  awaitedTaskId: Schema.optionalKey(TrimmedNonEmptyString),
+} as const;
+export const OrchestrationV2SystemNotice = Schema.Struct({
+  ...OrchestrationV2TurnItemBaseFields,
+  ...OrchestrationV2SystemNoticeFields,
+});
+export type OrchestrationV2SystemNotice = typeof OrchestrationV2SystemNotice.Type;
+
 export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2314,13 +2328,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("run_interrupt_result"),
     message: Schema.String,
   }),
-  Schema.Struct({
-    ...OrchestrationV2TurnItemBaseFields,
-    type: Schema.Literal("system_notice"),
-    message: Schema.String,
-    level: Schema.optional(OrchestrationV2SystemNoticeLevel),
-    mcpSignIn: Schema.optional(OrchestrationV2McpSignIn),
-  }),
+  OrchestrationV2SystemNotice,
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("error"),
@@ -3297,10 +3305,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
-    type: Schema.Literal("system_notice"),
-    message: Schema.String,
-    level: Schema.optional(OrchestrationV2SystemNoticeLevel),
-    mcpSignIn: Schema.optional(OrchestrationV2McpSignIn),
+    ...OrchestrationV2SystemNoticeFields,
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

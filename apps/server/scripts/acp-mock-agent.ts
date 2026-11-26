@@ -1112,22 +1112,6 @@ const program = Effect.gen(function* () {
                 : {}),
           },
         });
-        // The agent outlives the failed prompt, so its subagent finishes afterwards.
-        yield* Effect.sleep("50 millis").pipe(
-          Effect.andThen(
-            Effect.sync(() =>
-              writeJsonRpcNotification("session/update", {
-                sessionId: requestedSessionId,
-                update: {
-                  sessionUpdate: "tool_call_update",
-                  toolCallId: "tool-call-idle-error-subagent",
-                  status: "completed",
-                },
-              }),
-            ),
-          ),
-          Effect.forkDetach,
-        );
         return {};
       }
       if (clientFsProbePath !== undefined && clientFsProbeLogPath !== undefined) {
@@ -2221,6 +2205,18 @@ const program = Effect.gen(function* () {
     if (method === "_test/emit-update") {
       return agent.client
         .sessionUpdate(params as AcpSchema.SessionNotification)
+        .pipe(Effect.as({}));
+    }
+    if (method === "_test/complete-idle-error-subagent") {
+      return agent.client
+        .sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool-call-idle-error-subagent",
+            status: "completed",
+          },
+        })
         .pipe(Effect.as({}));
     }
     if (method === "_test/startup-metadata") {

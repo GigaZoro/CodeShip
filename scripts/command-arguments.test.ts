@@ -123,6 +123,11 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
       "usage: node .github/scripts/release-macos-run.cjs <owner/repo> <Release (fork) run id>",
     ],
   ],
+  "../.github/scripts/process-tree.cjs": [
+    [["anchor", "{}", UNREAD], 2, "usage: process-tree.cjs anchor <spec> | stop <group>"],
+    [["stop", "4194304", UNREAD], 2, "usage: process-tree.cjs anchor <spec> | stop <group>"],
+    [["stop", "group"], 2, "usage: process-tree.cjs anchor <spec> | stop <group>"],
+  ],
   "../.github/scripts/release-notes.cjs": [
     [["configure", UNREAD], 1, "Usage: node .github/scripts/release-notes.cjs check|render"],
     [

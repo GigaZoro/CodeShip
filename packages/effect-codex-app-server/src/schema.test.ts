@@ -11,6 +11,10 @@ const isTurnCompletedNotification = Schema.is(CodexSchema.V2TurnCompletedNotific
 const isHookStartedNotification = Schema.is(CodexSchema.V2HookStartedNotification);
 const isHookCompletedNotification = Schema.is(CodexSchema.V2HookCompletedNotification);
 const decodeThreadResumeResponse = Schema.decodeUnknownSync(CodexSchema.V2ThreadResumeResponse);
+const decodeCompletedThreadItem = Schema.decodeSync(
+  CodexSchema.V2ItemCompletedNotification__ThreadItem,
+);
+const decodeGetAccountResponse = Schema.decodeSync(CodexSchema.V2GetAccountResponse);
 
 it("keeps async questions in live notifications and thread history", () => {
   const item = {
@@ -55,6 +59,19 @@ it("accepts generated images identified by fileId without inline result", () => 
   ]) {
     assert.deepEqual(Schema.decodeSync(schema)(item), item);
   }
+});
+
+it("keeps generated image file references and lifecycle times in completed items", () => {
+  const item = {
+    type: "imageGeneration",
+    id: "image-1",
+    status: "completed",
+    fileId: "file-1",
+    startedAtMs: 1000,
+    completedAtMs: 2000,
+  } as const;
+
+  assert.deepEqual(decodeCompletedThreadItem(item), item);
 });
 
 it("keeps partial answers in notifications and persisted thread histories", () => {
@@ -284,5 +301,20 @@ it("accepts Codex model-request hook runs", () => {
     };
     assert.equal(isHookStartedNotification(notification), true);
     assert.equal(isHookCompletedNotification(notification), true);
+  }
+});
+
+it("decodes Codex cloud accounts before model discovery", () => {
+  for (const account of [
+    { type: "gcp" },
+    { type: "amazonBedrock", usesCodexManagedCredentials: false },
+  ] as const) {
+    assert.deepEqual(
+      decodeGetAccountResponse({
+        account,
+        requiresOpenaiAuth: false,
+      }).account,
+      account,
+    );
   }
 });

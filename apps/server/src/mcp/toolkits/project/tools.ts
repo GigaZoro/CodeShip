@@ -141,7 +141,10 @@ const LaunchWorkspaceStrategy = OrchestrationV2ThreadLaunchWorkspaceStrategy.map
   ([root, existingWorktree, worktree]) => [
     root,
     existingWorktree,
-    worktree.mapFields((fields) => ({ ...fields, baseRef: Schema.optional(fields.baseRef) })),
+    worktree.mapFields(({ preferredRemote: _peerRemote, ...fields }) => ({
+      ...fields,
+      baseRef: Schema.optional(fields.baseRef),
+    })),
   ],
 );
 export type LaunchWorkspaceStrategy = typeof LaunchWorkspaceStrategy.Type;
@@ -203,6 +206,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     inheritedOptionIds: Schema.optional(Schema.Array(Schema.String)),
     /** Set by a linked environment whose workflow run this thread is a step of; ignored otherwise. */
     workflowRun: Schema.optional(OrchestrationV2WorkflowOrigin),
+    matchedRemote: Schema.optional(TrimmedNonEmptyString),
   }),
   success: Schema.Struct({
     threadId: ThreadId,

@@ -1,26 +1,35 @@
-import type {
+import {
+  CommandId,
+  EnvironmentAuthorizationError,
   EnvironmentId,
-  MonitoringChatSort,
-  MonitoringChatsInput,
-  MonitoringChatsResult,
-  MonitoringCommandPhase,
-  MonitoringFindingCode,
-  MonitoringFindingSeverity,
-  MonitoringDay,
-  MonitoringGroup,
-  MonitoringOverviewInput,
-  MonitoringOverviewResult,
-  MonitoringThreadDetail,
-  MonitoringThreadResult,
-  MonitoringThreadKind,
-  MonitoringThreadSummary,
-  MonitoringTimeBuckets,
-  MonitoringUnanalyzed,
+  type MonitoringChatSort,
+  type MonitoringChatsInput,
+  type MonitoringChatsResult,
+  type MonitoringCommandPhase,
+  type MonitoringFindingCode,
+  type MonitoringFindingSeverity,
+  MonitoringFixChatError,
+  type MonitoringFixChatFailure,
+  type MonitoringFixChatInput,
+  type MonitoringFixChatView,
+  type MonitoringDay,
+  type MonitoringGroup,
+  type MonitoringOverviewInput,
+  type MonitoringOverviewResult,
+  type MonitoringThreadDetail,
+  type MonitoringThreadResult,
+  type MonitoringThreadKind,
+  type MonitoringThreadSummary,
+  type MonitoringTimeBuckets,
+  type MonitoringUnanalyzed,
+  ProjectId,
+  type ThreadId,
 } from "@t3tools/contracts";
-import { ProjectId } from "@t3tools/contracts";
 import { getFormattingLocale, t } from "@t3tools/shared/i18n";
-import type * as Cause from "effect/Cause";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import * as Schema from "effect/Schema";
 
 import {
   connectionCanRetry,
@@ -778,6 +787,212 @@ export function rankFindings(
       b.chats - a.chats ||
       SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
   );
+}
+
+export interface MonitoringFixChatTarget {
+  /** Where the user pressed the button: the chat or the overview's window and filters. */
+  readonly origin: string;
+  readonly environmentId: EnvironmentId;
+  /** Where the fix chat starts: the project that lost the most time, where the cause most likely lives. */
+  readonly projectId: ProjectId;
+  readonly source:
+    | { readonly view: MonitoringFixChatView }
+    | { readonly threadIds: ReadonlyArray<ThreadId> };
+}
+
+interface FindingLoss {
+  wastedMs: number;
+  chats: number;
+}
+
+function mostLost<Key extends string, Loss extends FindingLoss>(losses: ReadonlyMap<Key, Loss>) {
+  return [...losses].sort(
+    ([leftId, left], [rightId, right]) =>
+      right.wastedMs - left.wastedMs ||
+      right.chats - left.chats ||
+      (leftId < rightId ? -1 : leftId > rightId ? 1 : 0),
+  )[0];
+}
+
+function addLoss(loss: FindingLoss, finding: FindingLoss) {
+  loss.wastedMs += finding.wastedMs;
+  loss.chats += finding.chats;
+}
+
+export interface MonitoringFixChatScope {
+  readonly window: Pick<MonitoringWindow, "since" | "until">;
+  readonly filters: Pick<MonitoringFilters, "projectKey" | "kind" | "model">;
+}
+
+/**
+ * Chooses the destination from all the filtered groups. The environment reads examples on
+ * demand, so their selection is independent of the pages the client loaded.
+ */
+export function fixChatTarget(
+  entries: ReadonlyArray<MonitoringGroupEntry>,
+  code: MonitoringFindingCode,
+  { window, filters }: MonitoringFixChatScope,
+): MonitoringFixChatTarget | null {
+  const environments = new Map<
+    string,
+    FindingLoss & { readonly projects: Map<ProjectId, FindingLoss> }
+  >();
+  for (const { environmentId, group } of entries) {
+    const finding = group.findings.find((candidate) => candidate.code === code);
+    if (finding === undefined) continue;
+    const environment = environments.get(environmentId) ?? {
+      wastedMs: 0,
+      chats: 0,
+      projects: new Map<ProjectId, FindingLoss>(),
+    };
+    const project = environment.projects.get(group.projectId) ?? { wastedMs: 0, chats: 0 };
+    addLoss(environment, finding);
+    addLoss(project, finding);
+    environment.projects.set(group.projectId, project);
+    environments.set(environmentId, environment);
+  }
+  const destination = mostLost(environments);
+  if (destination === undefined) return null;
+  const [environmentId, { projects }] = destination;
+  const project = mostLost(projects);
+  if (project === undefined) return null;
+  const [projectId] = project;
+  const view = {
+    since: window.since,
+    until: window.until,
+    ...(filters.projectKey ? { projectId } : {}),
+    ...(filters.kind == null ? {} : { kind: filters.kind }),
+    ...(filters.model == null ? {} : { model: filters.model }),
+  } satisfies MonitoringFixChatView;
+  return {
+    origin: JSON.stringify([
+      "overview",
+      window.since,
+      window.until,
+      filters.projectKey ?? null,
+      filters.kind ?? null,
+      filters.model ?? null,
+    ]),
+    environmentId: EnvironmentId.make(environmentId),
+    projectId,
+    source: { view },
+  };
+}
+
+/** The fix-chat target for one chat's own weak points. */
+export function threadFixChatTarget(
+  environmentId: EnvironmentId,
+  summary: Pick<MonitoringThreadSummary, "threadId" | "projectId">,
+): MonitoringFixChatTarget {
+  return {
+    origin: `thread:${summary.threadId}`,
+    environmentId,
+    projectId: summary.projectId,
+    source: { threadIds: [summary.threadId] },
+  };
+}
+
+export interface MonitoringFixChatRequest {
+  readonly environmentId: EnvironmentId;
+  readonly input: MonitoringFixChatInput;
+}
+
+/**
+ * Retries from the same view to the same environment and project recover the chat after a lost
+ * reply. If refreshed results pick a different destination, a new press starts its own chat.
+ */
+const unansweredFixChats = new Map<string, MonitoringFixChatRequest>();
+
+export function fixChatViewKey(
+  target: MonitoringFixChatTarget | null,
+  code: MonitoringFindingCode,
+) {
+  return JSON.stringify([target?.origin, target?.environmentId, target?.projectId, code]);
+}
+
+/** Owns presentation of replies while the server commands finish independently. */
+export function createFixChatView(key: string) {
+  let active: AbortController | null = null;
+  return {
+    key,
+    cancelReply: () => active?.abort(),
+    watchReply(subscribeToLeave: (leave: () => void) => () => void, onLeave: () => void) {
+      if (active?.signal.aborted === false) return null;
+      const reply = new AbortController();
+      active = reply;
+      const unsubscribe = subscribeToLeave(() => {
+        reply.abort();
+        onLeave();
+      });
+      reply.signal.addEventListener("abort", unsubscribe, { once: true });
+      return reply;
+    },
+  };
+}
+
+/** The request that starts a fix chat: the one from this place that got no answer, or a new one. */
+export function fixChatRequest(
+  target: MonitoringFixChatTarget,
+  code: MonitoringFindingCode,
+  creationSource: "web" | "mobile",
+  newId: () => string,
+): MonitoringFixChatRequest {
+  const key = fixChatViewKey(target, code);
+  const unanswered = unansweredFixChats.get(key);
+  if (unanswered !== undefined) return unanswered;
+  const request: MonitoringFixChatRequest = {
+    environmentId: target.environmentId,
+    input: {
+      commandId: CommandId.make(newId()),
+      creationSource,
+      code,
+      projectId: target.projectId,
+      ...target.source,
+    },
+  };
+  unansweredFixChats.set(key, request);
+  return request;
+}
+
+const isMonitoringFixChatError = Schema.is(MonitoringFixChatError);
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
+
+/** Why a fix chat did not start, from the failed command's cause. */
+export function fixChatFailureReason(
+  cause: Cause.Cause<unknown>,
+): MonitoringFixChatFailure | "auto-unsupported" | "unauthorized" | "offline" {
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+  if (isMonitoringFixChatError(error)) {
+    return error.quotaAwareAutoUnsupported === true ? "auto-unsupported" : error.reason;
+  }
+  return isAuthorizationError(error) ? "unauthorized" : "offline";
+}
+
+/**
+ * The server's refusals, which start no chat, so a resend could only be refused again. A refused
+ * grant is not one: this client also reports it when it cannot read its session, as while
+ * reconnecting, and a chat a lost answer started must stay reachable then.
+ */
+const REFUSED: ReadonlySet<ReturnType<typeof fixChatFailureReason>> = new Set([
+  "no-chats",
+  "no-model",
+  "auto-unsupported",
+]);
+
+/**
+ * Forgets the request once its answer says what happened, so the next press sends a new one: a
+ * started chat (`failure` null) or a refusal. After any other failure the chat may have started,
+ * so a retry resends the same request.
+ */
+export function settleFixChat(
+  target: MonitoringFixChatTarget,
+  code: MonitoringFindingCode,
+  request: MonitoringFixChatRequest,
+  failure: Cause.Cause<unknown> | null,
+) {
+  if (failure !== null && !REFUSED.has(fixChatFailureReason(failure))) return;
+  const key = fixChatViewKey(target, code);
+  if (unansweredFixChats.get(key) === request) unansweredFixChats.delete(key);
 }
 
 export type ChatSortKey = MonitoringChatSort;

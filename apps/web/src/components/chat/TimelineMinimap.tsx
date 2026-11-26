@@ -1,7 +1,8 @@
 import { t } from "~/i18n";
 import { resolveTimelineMinimapPreview, type TimelineMinimapItem } from "./timelineMinimapItems";
 import { useRef, useState, type MouseEvent } from "react";
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { ChevronDownIcon, ChevronUpIcon, StarIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   resolveTimelineMinimapHeightStyle,
@@ -12,6 +13,7 @@ import {
 } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { useAssistantMessageText } from "../../state/entities";
 
 // A release outside the window can skip `mouseup`, so the next button-free
 // `mousemove` also counts.
@@ -31,20 +33,24 @@ function onMouseButtonsReleased(onRelease: () => void): () => void {
 }
 
 export function TimelineMinimap({
+  threadDetailRef,
   hasPersistentGutter,
   hitStrip: { left: hitStripLeft, width: hitStripWidth },
-  currentIndex,
+  currentPromptIndex,
   atEnd,
   items,
+  promptItems,
   stripMap,
   onWheel,
   onSelect,
 }: {
+  threadDetailRef: ScopedThreadRef | null;
   hasPersistentGutter: boolean;
   hitStrip: { left: number; width: number };
-  currentIndex: number | null;
+  currentPromptIndex: number | null;
   atEnd: boolean;
   items: ReadonlyArray<TimelineMinimapItem>;
+  promptItems: ReadonlyArray<TimelineMinimapItem>;
   stripMap: Map<string, HTMLSpanElement>;
   onWheel: (event: WheelEvent) => void;
   onSelect: (item: TimelineMinimapItem) => void;
@@ -61,21 +67,30 @@ export function TimelineMinimap({
 
   const resolvedActiveIndex =
     activeIndex !== null && activeIndex < items.length ? activeIndex : null;
-  const activeItem = resolveTimelineMinimapPreview(
-    resolvedActiveIndex === null ? null : (items[resolvedActiveIndex] ?? null),
-  );
+  const selected = resolvedActiveIndex === null ? null : (items[resolvedActiveIndex] ?? null);
+  const liveText = useAssistantMessageText(threadDetailRef, selected?.streamingItemId);
+  const activeItem = resolveTimelineMinimapPreview(selected, liveText);
+  const activeMessageLabel =
+    activeItem?.role === "assistant"
+      ? t("Assistant message")
+      : (activeItem?.userText ?? t("User message"));
   const navigationInteractive =
     resolveTimelineMinimapNavigationInteractive(hitStripWidth) && !passThrough;
   const activeTopPercent =
     resolvedActiveIndex === null
       ? 0
       : resolveTimelineMinimapTopPercent(resolvedActiveIndex, items.length);
-  const resolvedCurrentIndex =
-    currentIndex !== null && currentIndex >= 0 && currentIndex < items.length ? currentIndex : null;
+  const resolvedPromptIndex =
+    currentPromptIndex !== null &&
+    currentPromptIndex >= 0 &&
+    currentPromptIndex < promptItems.length
+      ? currentPromptIndex
+      : null;
+  const currentPrompt = resolvedPromptIndex === null ? undefined : promptItems[resolvedPromptIndex];
   const previousItem =
-    resolvedCurrentIndex === null ? null : (items[resolvedCurrentIndex - 1] ?? null);
+    resolvedPromptIndex === null ? undefined : promptItems[resolvedPromptIndex - 1];
   const nextItem =
-    resolvedCurrentIndex === null || atEnd ? null : (items[resolvedCurrentIndex + 1] ?? null);
+    resolvedPromptIndex === null || atEnd ? undefined : promptItems[resolvedPromptIndex + 1];
 
   const resolveActiveIndexFromPointer = (event: MouseEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -99,7 +114,7 @@ export function TimelineMinimap({
     });
   };
 
-  if (items.length < TIMELINE_MINIMAP_MIN_ITEMS) {
+  if (items.length < TIMELINE_MINIMAP_MIN_ITEMS && !items[0]?.starredMessageId) {
     return null;
   }
 
@@ -141,27 +156,42 @@ export function TimelineMinimap({
         >
           <TimelineMinimapNavigationButton
             direction="previous"
-            disabled={previousItem === null}
+            disabled={previousItem === undefined}
             interactive={navigationInteractive}
             onClick={() => {
               if (previousItem) onSelect(previousItem);
             }}
           />
           <button
-            aria-label={t("Jump to message: {text}", {
-              text: activeItem?.userText ?? t("User message"),
-            })}
+            aria-label={
+              activeItem?.starredMessageId
+                ? t("Jump to starred message: {text}", {
+                    text:
+                      activeItem.role === "assistant"
+                        ? (activeItem.assistantText ?? activeMessageLabel)
+                        : activeMessageLabel,
+                  })
+                : t("Jump to message: {text}", { text: activeMessageLabel })
+            }
             className="absolute inset-y-0 left-0 w-full cursor-pointer bg-transparent before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
             onBlur={() => setActiveIndex(null)}
             onClick={(event) => {
-              const nextIndex = resolveActiveIndexFromPointer(event);
+              const nextIndex =
+                event.detail === 0
+                  ? (resolvedActiveIndex ?? 0)
+                  : resolveActiveIndexFromPointer(event);
               const selectedItem = nextIndex === null ? null : (items[nextIndex] ?? null);
               if (selectedItem) {
                 onSelect(selectedItem);
               }
               event.currentTarget.blur();
             }}
-            onFocus={() => setActiveIndex((current) => current ?? resolvedCurrentIndex ?? 0)}
+            onFocus={() =>
+              setActiveIndex(
+                (current) =>
+                  current ?? (currentPrompt ? Math.max(0, items.indexOf(currentPrompt)) : 0),
+              )
+            }
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -194,6 +224,7 @@ export function TimelineMinimap({
               const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
               const activeDistance =
                 resolvedActiveIndex === null ? null : Math.abs(index - resolvedActiveIndex);
+              const starred = item.starredMessageId !== null;
               return (
                 // Compositor-friendly on purpose: in-view state and the hover
                 // fisheye animate constantly (every scroll tick and streaming
@@ -202,15 +233,24 @@ export function TimelineMinimap({
                 <span
                   aria-hidden="true"
                   className={cn(
-                    "pointer-events-none absolute left-0 h-0.5 w-6 origin-left -translate-y-1/2 rounded-full transition-transform duration-150 after:absolute after:inset-0 after:rounded-full after:bg-foreground/55 after:opacity-0 after:transition-opacity after:duration-150 data-[in-view=true]:after:opacity-100",
-                    activeDistance === 0 ? "bg-muted-foreground/60" : "bg-muted-foreground/25",
-                    activeDistance === 0
-                      ? "scale-x-100"
-                      : activeDistance === 1
-                        ? "scale-x-[0.667]"
-                        : activeDistance === 2
-                          ? "scale-x-[0.417]"
-                          : "scale-x-[0.333]",
+                    "pointer-events-none absolute left-0 origin-left -translate-y-1/2 transition-transform duration-150",
+                    starred
+                      ? "size-2 text-primary opacity-80 transition-[transform,opacity] data-[in-view=true]:opacity-100"
+                      : "h-0.5 w-6 rounded-full after:absolute after:inset-0 after:rounded-full after:bg-foreground/55 after:opacity-0 after:transition-opacity after:duration-150 data-[in-view=true]:after:opacity-100",
+                    starred
+                      ? activeDistance === 0 && "scale-150"
+                      : [
+                          activeDistance === 0
+                            ? "bg-muted-foreground/60"
+                            : "bg-muted-foreground/25",
+                          activeDistance === 0
+                            ? "scale-x-100"
+                            : activeDistance === 1
+                              ? "scale-x-[0.667]"
+                              : activeDistance === 2
+                                ? "scale-x-[0.417]"
+                                : "scale-x-[0.333]",
+                        ],
                   )}
                   data-in-view="false"
                   data-minimap-strip
@@ -223,7 +263,9 @@ export function TimelineMinimap({
                     }
                   }}
                   style={{ top }}
-                />
+                >
+                  {starred ? <StarIcon className="size-full fill-current" /> : null}
+                </span>
               );
             })}
             {activeItem ? (
@@ -234,7 +276,7 @@ export function TimelineMinimap({
               >
                 <span className="dropdown-glass block rounded-xl p-3 text-left text-popover-foreground shadow-xl shadow-black/25">
                   <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
-                    {activeItem.userText ?? t("User message")}
+                    {activeMessageLabel}
                   </span>
                   {activeItem.assistantText ? (
                     <span
@@ -254,7 +296,7 @@ export function TimelineMinimap({
           </button>
           <TimelineMinimapNavigationButton
             direction="next"
-            disabled={nextItem === null}
+            disabled={nextItem === undefined}
             interactive={navigationInteractive}
             onClick={() => {
               if (nextItem) onSelect(nextItem);

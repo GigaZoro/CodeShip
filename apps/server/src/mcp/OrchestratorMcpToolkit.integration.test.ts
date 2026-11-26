@@ -387,6 +387,23 @@ describe("orchestrator MCP toolkit", () => {
             );
 
         const delegationStartSequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+        for (const providerInstanceId of ["codex", "claudeAgent"]) {
+          const refused = yield* invoke("delegate_task", {
+            task: delegatedPrompt,
+            target: { providerInstanceId },
+            isolation: { type: "assignment", handle: "synthetic-assignment" },
+            clientRequestId: "delegate-codex-replay-1",
+          });
+          expect(refused.isError).toBe(true);
+          expect(refused.content).toEqual([
+            expect.objectContaining({
+              text: expect.stringContaining("restricted_review_unsupported"),
+            }),
+          ]);
+        }
+        expect(yield* orchestrator.getThreadEventSequence(parentThreadId)).toBe(
+          delegationStartSequence,
+        );
         const delegatedCall = yield* invoke("delegate_task", {
           task: delegatedPrompt,
           target: {

@@ -59,6 +59,15 @@ Passes per case, the description without `shell` → with it, 3 samples each:
 
 Without `shell`, every failure was a broken command: two quoted a `grep` inside `bash -c` and one sent `status=$?` to PowerShell. With it, no sample sent a broken command and every sample that ran the suite passed `shell: "bash"`; the three failures never ran the suite, because the simulated shell reported an empty checkout. Claude models are not measured yet.
 
+## Claude Stop hook cases
+
+`claude-stop-awaits-native-landing` and `claude-stop-leaves-dev-server-running` replay Claude’s first reply with native Bash tasks still running. The eval loads the Stop hook’s guidance and the await tool’s schema from the production adapter. It checks that Claude marks the landing task by its exact ID and lets a development server stay running without keeping the turn open.
+
+```sh
+cd evals
+pnpm mcp-tool-use --provider anthropic --case claude-stop-awaits-native-landing,claude-stop-leaves-dev-server-running --dry-run
+```
+
 ## Device manager cases
 
 `cases/device-manager.ndjson` ports nine mechanisms from the [device-routing investigation described in #25661](https://github.com/pingdotgg/t3code/pull/25661) and adds seven cases from t3dotgg’s 2026-10-26 fleet device investigation, and two from [#36192](https://github.com/pingdotgg/t3code/issues/36192). All prompts, files, hosts and prior turns are authored Acme data; the fleet cases cite finding ids without carrying source transcripts or identifiers.

@@ -229,11 +229,12 @@ const withWorktreeBase = Effect.fn("mcp.withWorktreeBase")(function* <R>(
   const fallback = yield* defaultBranchWorktreeStrategy(
     yield* GitVcsDriver.GitVcsDriver,
     project.workspaceRoot,
+    { fromOrigin: requested.startFromOrigin ?? true },
   );
   return {
     ...requested,
     baseRef: fallback.baseRef,
-    startFromOrigin: requested.startFromOrigin ?? fallback.startFromOrigin,
+    startFromOrigin: fallback.startFromOrigin,
   };
 });
 
@@ -516,7 +517,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 startFromOrigin: projectSettings.newWorktreesStartFromOrigin,
               }
             : requestedStrategy;
-        const strategy = yield* withWorktreeBase(
+        const base = yield* withWorktreeBase(
           basedStrategy,
           project === undefined
             ? Project.ProjectService.pipe(
@@ -526,6 +527,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               )
             : Effect.succeed(project),
         );
+        const strategy =
+          delegatedFrom && base?.type === "worktree" && input.matchedRemote !== undefined
+            ? { ...base, preferredRemote: input.matchedRemote }
+            : base;
         // Reject unresolved base refs and blocked branch names before accepting a launch; worktree provisioning happens later.
         if (!replaying && strategy?.type === "worktree")
           yield* ThreadLaunch.ThreadLaunchService.pipe(

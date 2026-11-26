@@ -88,6 +88,8 @@ import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { runMigrations } from "../persistence/Migrations.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
@@ -110,6 +112,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import { LATER_RUN_ACTIVE_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -157,7 +160,7 @@ import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { userFacingDispatchErrorMessage } from "./UserFacingErrors.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerPlatformTest = Layer.mergeAll(
   ProviderSkillsTestkit.layer,
@@ -406,25 +409,33 @@ const layerProjectionReplayTest = ProjectionReplay.layer.pipe(
   ),
 );
 
-const layerTest = Layer.mergeAll(
-  RuntimeLayer.layer,
-  layerProjectionReplayTest,
-  RuntimeLayer.layerEventSink,
-  ProjectStore.layer,
-  ProjectionStore.layer,
-  EffectOutbox.layer,
-  ThreadCommandExecutor.layer,
-).pipe(
-  Layer.provide(McpSessionRegistryTestkit.layer),
-  Layer.provide(McpProviderSessions.layer),
-  Layer.provideMerge(SqlitePersistence.layerMemory),
-  Layer.provide(layerCheckpointStoreTest),
-  Layer.provide(layerServerConfig),
-  Layer.provideMerge(ServerSettings.layerTest()),
-  Layer.provide(layerTestProviderInstanceRegistry),
-  Layer.provide(layerGitWorkflowTest),
-  Layer.provide(layerProjectServiceTest),
-  Layer.provide(layerPlatformTest),
+const makeRuntimeTestLayer = (database = SqlitePersistence.layerMemory) =>
+  Layer.mergeAll(
+    RuntimeLayer.layer,
+    layerProjectionReplayTest,
+    RuntimeLayer.layerEventSink,
+    ProjectStore.layer,
+    ProjectionStore.layer,
+    EffectOutbox.layer,
+    ThreadCommandExecutor.layer,
+  ).pipe(
+    Layer.provide(McpSessionRegistryTestkit.layer),
+    Layer.provide(McpProviderSessions.layer),
+    Layer.provideMerge(database),
+    Layer.provide(layerCheckpointStoreTest),
+    Layer.provide(layerServerConfig),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provide(layerTestProviderInstanceRegistry),
+    Layer.provide(layerGitWorkflowTest),
+    Layer.provide(layerProjectServiceTest),
+    Layer.provide(layerPlatformTest),
+  );
+
+const layerTest = makeRuntimeTestLayer();
+const layerBeforeSteerTargetMigration = makeRuntimeTestLayer(
+  Layer.effectDiscard(runMigrations({ toCodeShipMigrationInclusive: 37 })).pipe(
+    Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+  ),
 );
 
 /** Lets a held automatic start go, as the memory admission queue does once there is room. */
@@ -1654,6 +1665,84 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   Layer.provide(layerPlatformTest),
 );
 
+const attachRunningTurn = (threadId: ThreadId, run: OrchestrationV2Run) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projection = yield* orchestrator.getThreadProjection(threadId);
+    const eventSink = yield* EventSink.EventSinkV2;
+    const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const providerThread = projection.providerThreads.find(
+      (row) => row.id === run.providerThreadId,
+    )!;
+    const now = yield* DateTime.now;
+    const providerSession = {
+      id: providerThread.providerSessionId!,
+      driver,
+      providerInstanceId: run.providerInstanceId,
+      status: "running" as const,
+      cwd: process.cwd(),
+      model: modelSelection.model,
+      capabilities: CodexProviderCapabilitiesV2,
+      createdAt: now,
+      updatedAt: now,
+      lastError: null,
+    };
+    const providerTurn = {
+      id: ProviderTurnId.make(`${run.id}:${run.activeAttemptId}:turn`),
+      providerThreadId: providerThread.id,
+      nodeId: run.rootNodeId!,
+      runAttemptId: run.activeAttemptId,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status: "running" as const,
+      startedAt: now,
+      completedAt: null,
+    };
+    yield* eventSink.write({
+      commandId: CommandId.make(`${run.id}:${run.activeAttemptId}:running`),
+      events: [
+        {
+          id: EventId.make(`${run.id}:${run.activeAttemptId}:run-event`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: { ...run, status: "running", startedAt: now },
+        },
+        {
+          id: EventId.make(`${run.id}:${run.activeAttemptId}:session-event`),
+          type: "provider-session.attached",
+          threadId,
+          occurredAt: now,
+          payload: providerSession,
+        },
+        {
+          id: EventId.make(`${run.id}:${run.activeAttemptId}:turn-event`),
+          type: "provider-turn.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: providerTurn,
+        },
+      ],
+    });
+    const steerTurn = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["steerTurn"]>(
+      () => Effect.void,
+    );
+    const session: Partial<ProviderAdapter.ProviderAdapterV2SessionRuntime> = {
+      providerSession,
+      steerTurn,
+    };
+    const sessionSpy = vi
+      .spyOn(sessions, "get")
+      .mockReturnValue(
+        Effect.succeedSome(session as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+      );
+    yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+
+    return { now, providerSession, providerThread, providerTurn, steerTurn };
+  });
+
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
   const seedFailingRollbackThread = (name: string) =>
     Effect.gen(function* () {
@@ -2195,7 +2284,6 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const threadId = ThreadId.make("runtime-delivery-intent");
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -2227,66 +2315,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const initial = yield* orchestrator.getThreadProjection(threadId);
       assert.isTrue(initial.thread.modelSelection.autoAccount);
       const run = initial.runs[0]!;
-      const providerThread = initial.providerThreads[0]!;
-      const now = yield* DateTime.now;
-      const providerSession = {
-        id: providerThread.providerSessionId!,
-        driver,
-        providerInstanceId: modelSelection.instanceId,
-        status: "running" as const,
-        cwd: process.cwd(),
-        model: modelSelection.model,
-        capabilities: CodexProviderCapabilitiesV2,
-        createdAt: now,
-        updatedAt: now,
-        lastError: null,
-      };
-      const providerTurn = {
-        id: ProviderTurnId.make("runtime-delivery-intent-turn"),
-        providerThreadId: providerThread.id,
-        nodeId: run.rootNodeId!,
-        runAttemptId: run.activeAttemptId,
-        nativeTurnRef: null,
-        ordinal: 1,
-        status: "running" as const,
-        startedAt: now,
-        completedAt: null,
-      };
-      yield* eventSink.write({
-        commandId: CommandId.make("runtime-delivery-intent-running"),
-        events: [
-          {
-            id: EventId.make("runtime-delivery-intent-run-event"),
-            type: "run.updated",
-            threadId,
-            runId: run.id,
-            occurredAt: now,
-            payload: { ...run, status: "running", startedAt: now },
-          },
-          {
-            id: EventId.make("runtime-delivery-intent-session-event"),
-            type: "provider-session.attached",
-            threadId,
-            occurredAt: now,
-            payload: providerSession,
-          },
-          {
-            id: EventId.make("runtime-delivery-intent-turn-event"),
-            type: "provider-turn.updated",
-            threadId,
-            runId: run.id,
-            occurredAt: now,
-            payload: providerTurn,
-          },
-        ],
-      });
-      const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
-        Effect.succeedSome({
-          providerSession,
-        } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+      const { now, providerSession, providerThread, providerTurn } = yield* attachRunningTurn(
+        threadId,
+        run,
       );
-      yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
-
       const steerCommandId = CommandId.make("runtime-delivery-intent-auto");
       const steerMessageId = MessageId.make("runtime-delivery-intent-auto");
       yield* orchestrator.dispatch({
@@ -16516,6 +16548,14 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "restart-expired",
     "overlapped",
     "held-expired",
+    "replay-held",
+    "replay-agent",
+    "replay-user",
+    "replay-missed",
+    "replay-missed-disabled",
+    "replay-unrelated",
+    "replay-lost-ack",
+    "replay-missed-failed",
     "setup-expired",
   ] as const)("recovers only the current scheduled occurrence: %s", (scenario) =>
     Effect.gen(function* () {
@@ -16534,7 +16574,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       });
       const sql = yield* SqlClient.SqlClient;
       const taskId = ScheduledTaskId.make(`recovery-task:${scenario}`);
-      const scheduled = scenario !== "ordinary" && scenario !== "legacy-ordinary";
+      const replay = scenario.startsWith("replay-");
+      const scheduled = !replay && scenario !== "ordinary" && scenario !== "legacy-ordinary";
       const intervalMs = 60_000;
       const schedule = scenario.startsWith("fixed-")
         ? { type: "fixed_time", timeOfDay: "00:01" }
@@ -16582,7 +16623,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         ...(scheduled ? { scheduledTaskId: taskId } : {}),
         text: "Start work.",
         attachments: [],
-        dispatchMode: { type: "defer_start" },
+        dispatchMode: { type: replay ? "start_immediately" : "defer_start" },
         createdBy: "user",
         creationSource: "web",
       });
@@ -16598,7 +16639,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       }
       const stoppedAt = yield* DateTime.now;
       // The provider holds the turn until the reset instead of failing it.
-      const held = scenario === "held-expired";
+      const held = scenario === "held-expired" || scenario === "replay-held";
+      if (scenario === "replay-held") yield* attachRunningTurn(threadId, source);
       yield* events.write({
         events: [
           {
@@ -16610,7 +16652,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               ? {
                   ...source,
                   status: "running",
-                  activeAttemptId: RunAttemptId.make(`limit-failover:attempt:${scenario}`),
+                  activeAttemptId:
+                    source.activeAttemptId ??
+                    RunAttemptId.make(`limit-failover:attempt:${scenario}`),
                 }
               : { ...source, status: "failed", completedAt: stoppedAt },
           },
@@ -16682,6 +16726,247 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         nowMs: DateTime.toEpochMillis(stoppedAt),
       });
       assert.isNotNull(failover);
+      if (replay) {
+        const command = { ...failover!, commandId: CommandId.make(`${threadId}:dispatch`) };
+        const recorder = makeDispatchRecorder(
+          {
+            source: source.id,
+            heldAttempt: candidate.heldAttemptId,
+            command,
+            evidence: {
+              reason: "selected",
+              selected: evidenceKey(alternateInstanceId),
+              candidates: [],
+              omitted: 0,
+            },
+            nowMs: DateTime.toEpochMillis(now),
+          },
+          sql,
+        );
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagementService.ThreadManagementService;
+          yield* threads.dispatch(command, recorder);
+          yield* threads.dispatch(command, recorder);
+        }).pipe(
+          Effect.provide(
+            ThreadManagementService.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  CommandReceiptStore.layer,
+                  Layer.mock(AccountRouting)({}),
+                  ServerSettings.layerTest({
+                    providerInstances: { [alternateInstanceId]: { driver, enabled: true } },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const run = projection.runs.find((row) => row.userMessageId === command.messageId)!;
+        const attempt = projection.attempts.find((row) => row.id === run.activeAttemptId)!;
+        const missed = scenario.startsWith("replay-missed");
+        const lostAck = scenario === "replay-lost-ack";
+        const failedTurn = scenario === "replay-missed-failed";
+        if (!held) {
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          // The fixture supplies the running provider turn normally created by these start effects.
+          yield* outbox.cancelUnsettled({
+            threadId,
+            effectTypes: ["provider-turn.start", "thread-title.generate"],
+            reason: "Test provider already attached",
+          });
+          const { steerTurn, providerTurn } = yield* attachRunningTurn(threadId, run);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`${threadId}:change`),
+            threadId,
+            messageId: MessageId.make(`${threadId}:change`),
+            createdBy: scenario === "replay-agent" ? "agent" : "user",
+            creationSource: scenario === "replay-agent" ? "mcp" : "web",
+            demandSourceRunId: run.id,
+            dispatchMode: { type: "steer_active", targetRunId: run.id },
+            text: "Do something else instead.",
+            attachments: [],
+          });
+          const [delivery] = yield* outbox.listByCommandId(CommandId.make(`${threadId}:change`));
+          assert(delivery?.request.type === "provider-turn.steer");
+          const request = delivery.request;
+          const endTurn = events.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}:turn-ended`),
+                type: "provider-turn.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  ...providerTurn,
+                  status: failedTurn ? "failed" : "completed",
+                  completedAt: now,
+                },
+              },
+              {
+                id: EventId.make(`${threadId}:run-ended`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, status: failedTurn ? "failed" : "completed", completedAt: now },
+              },
+            ],
+          });
+          if (missed) yield* endTurn;
+          if (lostAck)
+            steerTurn.mockReturnValueOnce(
+              endTurn.pipe(
+                Effect.orDie,
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver,
+                      providerThreadId: providerTurn.providerThreadId,
+                      providerTurnId: providerTurn.id,
+                      cause: "acknowledgement lost",
+                    }),
+                  ),
+                ),
+              ),
+            );
+          if (missed || lostAck) {
+            const settings = yield* ServerSettings.ServerSettingsService;
+            yield* settings.updateSettings({
+              providerInstances: {
+                [alternateInstanceId]: { driver, enabled: scenario !== "replay-missed-disabled" },
+              },
+            });
+          }
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          assert.isTrue(yield* worker.runOnce());
+          if (failedTurn) {
+            yield* TestClock.adjust("1 second");
+            assert.isTrue(yield* worker.runOnce());
+          }
+          const settled = (yield* outbox.listByCommandId(delivery.commandId))[0]!;
+          assert.equal(settled.status, failedTurn ? "pending" : "succeeded");
+          assert.equal(settled.attemptCount, failedTurn ? 2 : 1);
+          if (missed) assert.isEmpty(steerTurn.mock.calls);
+          else assert.equal(steerTurn.mock.calls[0]?.[0].message.messageId, request.messageId);
+          if (missed || lostAck) {
+            const afterFallback = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              afterFallback.runs.some((candidate) => candidate.userMessageId === request.messageId),
+              !failedTurn && scenario !== "replay-missed-disabled",
+            );
+          }
+          if (scenario === "replay-unrelated") {
+            const otherTurn = ProviderTurnId.make(`${threadId}:older-turn`);
+            yield* events.write({
+              events: [
+                {
+                  id: EventId.make(`${threadId}:older-completed`),
+                  type: "provider-turn.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...providerTurn,
+                    id: otherTurn,
+                    ordinal: providerTurn.ordinal + 1,
+                    runAttemptId: source.activeAttemptId,
+                    status: "completed",
+                    completedAt: now,
+                  },
+                },
+              ],
+            });
+            yield* outbox.enqueue([
+              {
+                ...delivery,
+                id: `${delivery.id}:older-turn`,
+                request: { ...request, providerTurnId: otherTurn },
+                availableAt: now,
+              },
+            ]);
+            assert.isTrue(yield* worker.runOnce());
+            assert.deepEqual(
+              yield* sql`SELECT provider_turn_id FROM usage_stop_missed_steers WHERE message_id = ${request.messageId}`,
+              [{ provider_turn_id: otherTurn }],
+            );
+          }
+        }
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:completed`),
+              type: "run-attempt.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                ...attempt,
+                status: failedTurn ? "failed" : "completed",
+                completedAt: now,
+              },
+            },
+          ],
+        });
+        if (lostAck) {
+          const [oldReplay] =
+            yield* sql`SELECT classification FROM usage_stop_replay WHERE source_key = ${evidenceKey(source.id)}`;
+          assert.equal(oldReplay?.classification, "recovered");
+          assert.deepEqual(yield* sql`SELECT * FROM usage_stop_missed_steers`, []);
+          const followUp = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.userMessageId === MessageId.make(`${threadId}:change`),
+          )!;
+          yield* events.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}:follow-up-completed`),
+                type: "run.updated",
+                threadId,
+                runId: followUp.id,
+                occurredAt: now,
+                payload: { ...followUp, status: "completed", completedAt: now },
+              },
+            ],
+          });
+
+          yield* orchestrator.dispatch({
+            type: "thread.archive",
+            threadId,
+            commandId: CommandId.make(`${threadId}:archive`),
+          });
+          const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+          yield* maintenance.pruneEventStore();
+          const compacted = yield* maintenance.compactColdThreadHistory({
+            idleBefore: DateTime.add(now, { days: 1 }),
+          });
+          assert.equal(compacted.threadCount, 1);
+          yield* runMigrations({ toCodeShipMigrationInclusive: 38 });
+          const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+            SELECT classification, COUNT(*) FROM usage_stop_replay GROUP BY classification`;
+          assert.match(
+            plan.map((row) => row.detail).join("\n"),
+            /SEARCH steer USING (?:COVERING )?INDEX usage_stop_commanded_steer_idx \(<expr>=\? AND <expr>=\?\)/,
+          );
+        }
+        assert.deepEqual(
+          yield* sql`SELECT classification, decisions, attributable_lost_tokens
+          FROM usage_stop_replay WHERE source_key = ${evidenceKey(source.id)}`,
+          [
+            {
+              classification: failedTurn
+                ? "failed_attempt"
+                : held || missed
+                  ? "recovered"
+                  : "unknown",
+              decisions: 1,
+              attributable_lost_tokens: null,
+            },
+          ],
+        );
+        return;
+      }
       if (scenario === "superseded" || scenario === "bound-superseded") {
         yield* TestClock.adjust("1 second");
         const newer = yield* DateTime.now;
@@ -16873,7 +17158,15 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       assert.isUndefined(
         (yield* projections.getLimitRecoveryCandidates(sweep)).find((row) => row.id === threadId),
       );
-    }),
+    }).pipe(
+      Effect.provide(
+        scenario.startsWith("replay-")
+          ? Layer.fresh(
+              scenario === "replay-lost-ack" ? layerBeforeSteerTargetMigration : layerTest,
+            )
+          : Layer.empty,
+      ),
+    ),
   );
 
   it.effect.each(["still-current", "moved-on", "moved-on-then-lost-more"] as const)(
@@ -18081,6 +18374,107 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         );
         assert.equal(resumed.runs[2]?.status, "starting");
         assert.isFalse(resumed.runs[2]?.queueHeld);
+      }
+      if (scenario === "resume") {
+        // The stop replays from its persisted decisions: a refused route and the accepted retry.
+        const sql = yield* SqlClient.SqlClient;
+        const replay = (classification: string) =>
+          Effect.gen(function* () {
+            assert.deepEqual(
+              yield* sql`SELECT classification, decisions, attributable_lost_tokens
+                FROM usage_stop_replay WHERE source_key = ${evidenceKey(run.id)}`,
+              [{ classification, decisions: 2, attributable_lost_tokens: null }],
+            );
+          });
+        const settle = (
+          target: (typeof after.runs)[number],
+          status: "completed" | "failed" | "cancelled" | "superseded" | "interrupted",
+        ) =>
+          Effect.gen(function* () {
+            const current = yield* orchestrator.getThreadProjection(threadId);
+            const attempt = current.attempts.find((row) => row.id === target.activeAttemptId)!;
+            const settledAt = yield* DateTime.now;
+            yield* events.write({
+              events: [
+                {
+                  id: EventId.make(`recovery:replay:${target.id}:${status}`),
+                  type: "run-attempt.updated",
+                  threadId,
+                  runId: target.id,
+                  occurredAt: settledAt,
+                  payload: { ...attempt, status, completedAt: settledAt },
+                },
+                {
+                  id: EventId.make(`recovery:replay-run:${target.id}:${status}`),
+                  type: "run.updated",
+                  threadId,
+                  runId: target.id,
+                  occurredAt: settledAt,
+                  payload: {
+                    ...target,
+                    status: status === "completed" ? "completed" : "failed",
+                    completedAt: settledAt,
+                  },
+                },
+              ],
+            });
+          });
+        const continuation = after.runs.find((row) => row.automaticContinuationOfRunId === run.id)!;
+        yield* replay("unknown");
+        // Ended attempts prove nothing about the account they ran on.
+        for (const status of ["cancelled", "superseded", "interrupted"] as const) {
+          yield* settle(continuation, status);
+          yield* replay("unknown");
+        }
+        yield* settle(continuation, "failed");
+        yield* replay("failed_attempt");
+        // Later work on the thread is a changed request, so its completion recovers nothing.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("recovery:changed-request"),
+          threadId,
+          messageId: MessageId.make("recovery:changed-request"),
+          text: "Do something else.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const changed = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (row) => String(row.userMessageId) === "recovery:changed-request",
+        )!;
+        yield* settle(changed, "completed");
+        yield* replay("failed_attempt");
+        yield* settle(continuation, "completed");
+        yield* replay("recovered");
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const steer = projection.turnItems.find((item) => item.type === "user_message")!;
+        assert(continuation.rootNodeId !== null);
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make("recovery:delivered-user-steer"),
+              type: "turn-item.updated",
+              threadId,
+              runId: continuation.id,
+              nodeId: continuation.rootNodeId,
+              occurredAt: yield* DateTime.now,
+              payload: {
+                ...steer,
+                id: TurnItemId.make("recovery:delivered-user-steer"),
+                runId: continuation.id,
+                nodeId: continuation.rootNodeId,
+                messageId: MessageId.make("recovery:delivered-user-steer"),
+                inputIntent: "steer",
+                createdBy: "user",
+                text: "Do something else instead.",
+                status: "completed",
+                ordinal: Math.max(...projection.turnItems.map((item) => item.ordinal)) + 1,
+              },
+            },
+          ],
+        });
+        yield* replay("unknown");
       }
     }),
   );

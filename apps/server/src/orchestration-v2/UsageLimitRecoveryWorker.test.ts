@@ -547,12 +547,17 @@ describe("limitRecoveryTarget", () => {
     >;
     readonly dispatched: Queue.Queue<OrchestrationV2ServerCommand>;
     readonly sweeps?: Queue.Queue<number>;
+    /** Offered when a sweep that did not act looks for its next wake time. */
+    readonly idle?: Queue.Queue<void>;
     readonly signedOut?: ReadonlyArray<ProjectionStore.ProjectionSignedOutCandidate>;
     readonly settings?: Partial<typeof DEFAULT_SERVER_SETTINGS>;
     readonly providers?: ReadonlyArray<ServerProvider>;
     readonly creditAccess?: AccountRouting.AccountRouting["Service"]["creditAccess"];
-    /** Thread management refuses the routed account as disabled after recording its route. */
-    readonly refuse?: boolean;
+    /**
+     * After recording its route, thread management refuses the routed account as disabled, or
+     * fails as the orchestrator does when a Stop reached the run first.
+     */
+    readonly reject?: "refused" | "failed";
   }) =>
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
@@ -569,7 +574,10 @@ describe("limitRecoveryTarget", () => {
                 Effect.as([input.candidate]),
               ),
             getUsageLimitedProviderInstances: () => Effect.sync(input.limits),
-            getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
+            getLimitRecoveryWakeAt: () =>
+              (input.idle === undefined ? Effect.void : Queue.offer(input.idle, undefined)).pipe(
+                Effect.as(Date.parse(resetAt)),
+              ),
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
             // Auto routing moves every continuation that names no account to `autoRouted`.
@@ -578,26 +586,29 @@ describe("limitRecoveryTarget", () => {
                 command.type === "message.dispatch"
                   ? (command.modelSelection?.instanceId ?? autoRouted)
                   : autoRouted;
-              return (
-                recorder === undefined
-                  ? Effect.void
-                  : recorder.route(evidenceKey(routed), {
-                      candidates: [{ id: evidenceKey(routed), reason: "eligible" }],
-                      omitted: 0,
-                    })
-              ).pipe(
-                Effect.andThen(Queue.offer(input.dispatched, command)),
-                Effect.andThen(
-                  input.refuse === true
-                    ? Effect.fail(
-                        new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
-                          projectId: stopped.projectId,
-                          instanceId: routed,
-                        }),
-                      )
-                    : Effect.succeed({} as never),
-                ),
-              );
+              return Effect.gen(function* () {
+                if (recorder) {
+                  yield* recorder.route(evidenceKey(routed), {
+                    candidates: [{ id: evidenceKey(routed), reason: "eligible" }],
+                    omitted: 0,
+                  });
+                }
+                yield* Queue.offer(input.dispatched, command);
+                if (input.reject === "refused") {
+                  return yield* new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
+                    projectId: stopped.projectId,
+                    instanceId: routed,
+                  });
+                }
+                if (input.reject === "failed") {
+                  return yield* new Orchestrator.OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "The thread was stopped, or its automatic continuation was turned off.",
+                  });
+                }
+                return {} as never;
+              });
             },
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
@@ -698,30 +709,155 @@ describe("limitRecoveryTarget", () => {
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
 
-  it.effect("records a routed elapsed reset that thread management refuses as refused", () =>
+  it.effect.each(["refused", "failed"] as const)(
+    "records a routed elapsed reset that thread management rejects as %s",
+    (reject) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(resetAt));
+        const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const sweeps = yield* Queue.unbounded<number>();
+        const layer = sweepLayer({
+          candidate: stopped,
+          dispatched,
+          sweeps,
+          limits: () => new Map(),
+          reject,
+        });
+        yield* Effect.gen(function* () {
+          yield* Queue.take(sweeps);
+          yield* Queue.take(dispatched);
+          // The next sweep starts only after this one has recorded its outcome.
+          yield* TestClock.adjust("1 minute");
+          yield* Queue.take(sweeps);
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(
+            yield* sql`SELECT selected_key, outcome FROM usage_stop_decisions
+            WHERE snapshot ->> 'reason' = 'reset_elapsed'`,
+            [{ selected_key: evidenceKey(autoRouted), outcome: reject }],
+          );
+          // No attempt ran, so the stop proves nothing about the account it was routed to.
+          assert.deepEqual(
+            yield* sql`SELECT classification FROM usage_stop_replay WHERE source_key = ${evidenceKey(runId)}`,
+            [{ classification: "unknown" }],
+          );
+        }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
+      }),
+  );
+
+  it.effect("separates a held attempt and a later terminal stop on the same run", () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(Date.parse(resetAt));
+      const sql = yield* SqlClient.SqlClient;
+      const input = {
+        source: runId,
+        command: null,
+        nowMs: now,
+        evidence: {
+          reason: "switching_disabled" as const,
+          candidates: [],
+          omitted: 0,
+          selected: null,
+        },
+      };
+      yield* sql`INSERT INTO usage_stop_decisions
+        (decision_key, source_key, snapshot, observed_ms)
+        VALUES ('historical', ${evidenceKey(runId)}, '{"reason":"switching_disabled"}', ${now - 1})`;
+      yield* recordStopDecision({ ...input, heldAttempt: heldAttemptId });
+      yield* recordStopDecision({
+        ...input,
+        heldAttempt: undefined,
+        nowMs: now + 1,
+        evidence: { ...input.evidence, reason: "no_actionable_reset" },
+      });
+      assert.deepEqual(
+        yield* sql`SELECT classification, decisions FROM usage_stop_replay
+          WHERE source_key = ${evidenceKey(runId)} ORDER BY first_observed_ms`,
+        [
+          { classification: "unknown", decisions: 1 },
+          { classification: "pinned", decisions: 1 },
+          { classification: "unknown", decisions: 1 },
+        ],
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  const fableAccount = (instanceId: string, driver = claude) =>
+    provider(instanceId, { driver, models: [model("claude-fable-5-2", "Claude Fable 5.2")] });
+  // Stops that dispatch nothing replay from the decision the sweep recorded about them.
+  it.effect.each([
+    {
+      name: "every other account of its driver is limited",
+      classification: "exhausted",
+      candidate: named,
+      providers: [fableAccount("claudeAgent"), fableAccount("claude_b")],
+      limited: [claudeAgent, autoRouted],
+      failover: true,
+    },
+    {
+      name: "account switching is off",
+      classification: "pinned",
+      candidate: named,
+      providers: [fableAccount("claudeAgent"), fableAccount("claude_b")],
+      limited: [claudeAgent],
+      failover: false,
+    },
+    {
+      name: "only accounts of another driver remain",
+      classification: "pinned",
+      candidate: named,
+      providers: [
+        fableAccount("claudeAgent"),
+        fableAccount("codex", ProviderDriverKind.make("codex")),
+      ],
+      limited: [claudeAgent],
+      failover: true,
+    },
+    {
+      name: "another account could not run its model",
+      classification: "unknown",
+      candidate: named,
+      providers: [fableAccount("claudeAgent"), provider("claude_b", { models: [] })],
+      limited: [claudeAgent],
+      failover: true,
+    },
+    {
+      name: "the sweep only observed it",
+      classification: "unknown",
+      candidate: { ...named, observationOnly: true as const },
+      providers: [fableAccount("claudeAgent"), fableAccount("claude_b")],
+      limited: [claudeAgent],
+      failover: true,
+    },
+  ])("replays a stop where $name as $classification", (scenario) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
       const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
-      const sweeps = yield* Queue.unbounded<number>();
+      const idle = yield* Queue.unbounded<void>();
       const layer = sweepLayer({
-        candidate: stopped,
+        candidate: scenario.candidate,
         dispatched,
-        sweeps,
-        limits: () => new Map(),
-        refuse: true,
+        idle,
+        providers: scenario.providers,
+        limits: () => new Map(scenario.limited.map((id) => [id, [fableHold]])),
+        settings: {
+          failoverLimitedThreads: scenario.failover,
+          providerInstances: { [autoRouted]: { driver: claude } },
+        },
       });
       yield* Effect.gen(function* () {
-        yield* Queue.take(sweeps);
-        yield* Queue.take(dispatched);
-        // The next sweep starts only after this one has recorded its outcome.
-        yield* TestClock.adjust("1 minute");
-        yield* Queue.take(sweeps);
+        yield* Queue.take(idle);
         const sql = yield* SqlClient.SqlClient;
         assert.deepEqual(
-          yield* sql`SELECT selected_key, outcome FROM usage_stop_decisions
-            WHERE snapshot ->> 'reason' = 'reset_elapsed'`,
-          [{ selected_key: evidenceKey(autoRouted), outcome: "refused" }],
+          yield* sql`SELECT classification, decisions, attributable_lost_tokens
+            FROM usage_stop_replay WHERE source_key = ${evidenceKey(runId)}`,
+          [
+            {
+              classification: scenario.classification,
+              decisions: 1,
+              attributable_lost_tokens: null,
+            },
+          ],
         );
+        assert.equal(yield* Queue.size(dispatched), 0);
       }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
     }),
   );

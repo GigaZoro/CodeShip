@@ -540,13 +540,14 @@ export class GitVcsDriver extends Context.Service<
       input: GitFetchRefInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
     /**
-     * Fetches the commit from each remote in turn, the primary first, until one gives it: the
+     * Fetches the commit from each remote in turn, the matched remote or primary first, until one gives it: the
      * branches a checkout fetches, as in a single-branch clone, need not reach it. A remote that
      * fails is passed over; its error is the result only when no remote gives the commit.
      */
     readonly fetchCommit: (input: {
       readonly cwd: string;
       readonly commitSha: string;
+      readonly preferredRemote?: string | undefined;
     }) => Effect.Effect<GitFetchCommitResult, GitCommandError>;
     readonly resolveCommit: (
       input: GitResolveCommitInput,
@@ -582,7 +583,8 @@ export class GitVcsDriver extends Context.Service<
       input: GitFetchWorktreeBaseCommitInput,
     ) => Effect.Effect<GitWorktreeBaseRemote | null, GitCommandError>;
     /**
-     * Fetches the configured upstream, explicit remote ref, or origin; null uses the local base.
+     * Fetches the configured upstream, explicit remote ref, or primary remote; null uses the local base.
+     * A remote-qualified HEAD is resolved to its advertised branch during the fetch.
      * A caller that already ran `resolveWorktreeBaseRemote` passes its result as `remote`.
      */
     readonly fetchWorktreeBaseCommit: (

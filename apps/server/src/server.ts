@@ -122,6 +122,7 @@ import * as SharedSettings from "./sharedSettings/SharedSettings.ts";
 import * as SharedSettingsPull from "./sharedSettings/SharedSettingsPull.ts";
 import * as LaunchJournal from "./scheduledTasks/LaunchJournal.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
+import * as MonitoringFixChats from "./monitoring/MonitoringFixChats.ts";
 import * as MonitoringService from "./monitoring/MonitoringService.ts";
 import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
@@ -817,7 +818,13 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
       ),
       codex.changes.pipe(
         Stream.changesWith((a, b) => a.installedVersion === b.installedVersion),
-        Stream.drop(1),
+        Stream.zipWithIndex,
+        // An already-downloaded upgrade can activate before the listener subscribes.
+        Stream.filter(
+          ([state, index]) =>
+            index > 0 || (state.phase === "succeeded" && state.operationId !== null),
+        ),
+        Stream.map(([state]) => state),
       ),
     ).pipe(
       Stream.runForEach((state) =>
@@ -917,7 +924,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
-  ManualStepChats.layer,
+  ManualStepChats.layer.pipe(Layer.provide(T3ProjectFileLoader.layer)),
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 )
   .pipe(
@@ -1128,6 +1135,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
     // Run counts, failures and cost per scheduled task, read from the run history and the threads' usage.
     Layer.provide(ScheduledTaskStats.layer),
+    // Chats that fix a weak point; they read the analyses below.
+    Layer.provide(MonitoringFixChats.layer.pipe(Layer.provide(T3ProjectFileLoader.layer))),
     // Per-chat time and weak-point analyses, refreshed in the background as chats settle.
     Layer.provide(MonitoringService.layerStarted),
     // pipe takes at most 20 steps.

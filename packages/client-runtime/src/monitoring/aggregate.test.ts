@@ -1,7 +1,12 @@
 import {
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
   EnvironmentId,
+  MonitoringFixChatError,
   ProjectId,
+  ThreadId,
   type MonitoringChatsResult,
+  type MonitoringFindingTotal,
   type MonitoringGroup,
   type MonitoringOverviewResult,
   type MonitoringThreadSummary,
@@ -26,6 +31,8 @@ import {
   filterGroups,
   formatMonitoringTime,
   keepsShownChats,
+  fixChatRequest,
+  fixChatTarget,
   median,
   mergeMonitoringChats,
   mergeMonitoringOverviews,
@@ -42,7 +49,9 @@ import {
   presentMonitoringOverview,
   queryRead,
   rankFindings,
+  settleFixChat,
   sumTimeBuckets,
+  threadFixChatTarget,
   totalsOf,
   TIME_BUCKET_KEYS,
   unanalyzedCounts,
@@ -53,6 +62,7 @@ import {
   type MonitoringChatsView,
   type MonitoringEnvironment,
   type MonitoringEnvironmentReport,
+  type MonitoringFixChatScope,
   type MonitoringGroupEntry,
 } from "./aggregate.ts";
 
@@ -283,6 +293,159 @@ describe("rankFindings", () => {
       wastedMs: 300,
       severity: "high",
     });
+  });
+});
+
+describe("fixChatTarget", () => {
+  const slow = (wastedMs: number, chats = 1): MonitoringFindingTotal => ({
+    code: "slow_command",
+    severity: "high",
+    wastedMs,
+    chats,
+    occurrences: chats,
+  });
+  const window = { since: "2026-10-12T00:00:00.000Z", until: "2026-11-11T00:00:00.000Z" };
+  const view = { window, filters: {} };
+
+  it("picks the environment and project that lost the most time across all groups", () => {
+    const target = fixChatTarget(
+      [
+        group({ findings: [slow(700)] }, "env-a"),
+        group({ projectId: ProjectId.make("p2"), findings: [slow(300, 25)] }, "env-b"),
+        group(
+          { day: "2026-11-09", projectId: ProjectId.make("p2"), findings: [slow(150, 25)] },
+          "env-b",
+        ),
+        group({ findings: [slow(400)] }, "env-b"),
+        group({ projectId: ProjectId.make("p3") }, "env-b"),
+      ],
+      "slow_command",
+      view,
+    );
+    expect(target).toMatchObject({
+      environmentId: "env-b",
+      projectId: ProjectId.make("p2"),
+      source: { view: window },
+    });
+    expect(target?.source).toEqual({ view: window });
+  });
+
+  it("breaks ties by affected chat counts and then by stable environment and project ids", () => {
+    const entries = [
+      group({ findings: [slow(120, 4)] }, "env-a"),
+      group({ findings: [slow(120, 5)] }, "env-c"),
+      group({ projectId: ProjectId.make("p3"), findings: [slow(40, 2)] }, "env-b"),
+      group({ findings: [slow(40, 1)] }, "env-b"),
+      group({ projectId: ProjectId.make("p2"), findings: [slow(40, 2)] }, "env-b"),
+    ];
+    for (const order of [entries, entries.toReversed()]) {
+      expect(fixChatTarget(order, "slow_command", view)).toMatchObject({
+        environmentId: "env-b",
+        projectId: ProjectId.make("p2"),
+      });
+    }
+  });
+
+  it("sends the active project, kind and model filters with the window", () => {
+    const projectId = ProjectId.make("p2");
+    const filters = { projectKey: "env-b:p2", kind: "scheduled", model: "" } as const;
+    const entries = [
+      group({ findings: [slow(800)] }),
+      group(
+        { projectId, kind: filters.kind, model: filters.model, findings: [slow(500)] },
+        "env-b",
+      ),
+    ];
+    expect(
+      fixChatTarget(filterGroups(entries, filters), "slow_command", { window, filters }),
+    ).toMatchObject({
+      environmentId: "env-b",
+      projectId,
+      source: { view: { ...window, projectId, kind: "scheduled", model: "" } },
+    });
+  });
+
+  it("keys retries to the exact window and filters across refreshed totals", () => {
+    const place = (entries: ReadonlyArray<MonitoringGroupEntry>, shown: MonitoringFixChatScope) =>
+      fixChatTarget(entries, "slow_command", shown)?.origin;
+    const shown = [group({ findings: [slow(1)] })];
+    expect(place([group({ findings: [slow(2)] })], view)).toBe(place(shown, view));
+    for (const other of [
+      { ...view, window: { ...window, since: "2026-10-13T00:00:00.000Z" } },
+      { ...view, window: { ...window, until: "2026-11-12T00:00:00.000Z" } },
+      { ...view, filters: { projectKey: "env-a:p1" } },
+      { ...view, filters: { kind: "interactive" as const } },
+      { ...view, filters: { model: "opus" } },
+    ]) {
+      expect(place(shown, other)).not.toBe(place(shown, view));
+    }
+  });
+
+  it("is null when no chat has the weak point", () => {
+    expect(fixChatTarget([group({ findings: [slow(1)] })], "retries", view)).toBeNull();
+  });
+});
+
+describe("fixChatRequest", () => {
+  const environmentId = EnvironmentId.make("env-retry");
+  const target = (threadId: string) =>
+    threadFixChatTarget(environmentId, {
+      threadId: ThreadId.make(threadId),
+      projectId: ProjectId.make("p1"),
+    });
+  let ids = 0;
+  const newId = () => `id-${(ids += 1)}`;
+
+  it("reuses a request while its view, environment, project and finding match", () => {
+    const first = fixChatRequest(target("a"), "slow_command", "web", newId);
+    expect(first.input).toMatchObject({ projectId: "p1", threadIds: ["a"] });
+    expect(fixChatRequest(target("a"), "slow_command", "web", newId)).toBe(first);
+    const moved = { ...target("a"), projectId: ProjectId.make("p2") };
+    const destination = fixChatRequest(moved, "slow_command", "web", newId);
+    expect(destination.input.projectId).toBe(moved.projectId);
+    expect(destination.input.commandId).not.toBe(first.input.commandId);
+    expect(fixChatRequest(target("a"), "retries", "web", newId)).not.toBe(first);
+    expect(fixChatRequest(target("b"), "slow_command", "web", newId)).not.toBe(first);
+    const elsewhere = { ...target("a"), environmentId: EnvironmentId.make("env-other") };
+    expect(fixChatRequest(elsewhere, "slow_command", "web", newId)).not.toBe(first);
+  });
+
+  it.each([
+    ["a started chat", null, true],
+    ["a refusal", Cause.fail(new MonitoringFixChatError({ reason: "no-chats", detail: "" })), true],
+    [
+      "a refused grant",
+      Cause.fail(
+        new EnvironmentAuthorizationError({
+          message: "",
+          requiredScope: AuthOrchestrationOperateScope,
+        }),
+      ),
+      false,
+    ],
+    [
+      "a failed launch",
+      Cause.fail(new MonitoringFixChatError({ reason: "launch-failed", detail: "" })),
+      false,
+    ],
+    ["a lost answer", Cause.fail(new Error("socket closed")), false],
+  ])(
+    "after %s, sends a new request next only when nothing could have started",
+    (name, failure, fresh) => {
+      const place = target(`settle ${name}`);
+      const first = fixChatRequest(place, "slow_command", "web", newId);
+      settleFixChat(place, "slow_command", first, failure);
+      expect(fixChatRequest(place, "slow_command", "web", newId) !== first).toBe(fresh);
+    },
+  );
+
+  it("keeps a newer request when an earlier response arrives late", () => {
+    const place = target("late response");
+    const first = fixChatRequest(place, "slow_command", "web", newId);
+    settleFixChat(place, "slow_command", first, null);
+    const second = fixChatRequest(place, "slow_command", "web", newId);
+    settleFixChat(place, "slow_command", first, null);
+    expect(fixChatRequest(place, "slow_command", "web", newId)).toBe(second);
   });
 });
 

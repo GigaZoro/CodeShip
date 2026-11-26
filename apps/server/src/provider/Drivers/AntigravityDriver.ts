@@ -4,6 +4,7 @@ import {
   ProviderDriverKind,
   ProviderSetupError,
   RuntimeMode,
+  ServerProviderUpdateError,
   settingsSecretLiteral,
 } from "@t3tools/contracts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -26,6 +27,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { HttpClient } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as AcpErrors from "effect-acp/errors";
@@ -80,6 +82,12 @@ import {
 } from "../antigravityUsageLimits.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import {
+  enrichProviderSnapshotWithVersionAdvisory,
+  makeManualOnlyProviderMaintenanceCapabilities,
+  type ProviderMaintenanceCapabilities,
+} from "@t3tools/provider-core/server/maintenanceResolver";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -121,10 +129,12 @@ export type AntigravityDriverEnv =
   | Digest.Digest
   | SecureRandom.SecureRandom
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | ModelCatalog.ModelCatalog
   | Path.Path
+  | ProviderLatestVersions.ProviderLatestVersions
   | ProviderEventLoggers.ProviderEventLoggers;
 
 export const AntigravityDriver: ProviderDriver<
@@ -153,11 +163,13 @@ export const AntigravityDriver: ProviderDriver<
     const digest = yield* Digest.Digest;
     const random = yield* SecureRandom.SecureRandom;
     const fileSystem = yield* FileSystem.FileSystem;
+    const httpClient = yield* HttpClient.HttpClient;
     const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const host = yield* ProviderHost.ProviderHost;
     const selfInvocation = yield* resolveSelfInvocation();
     const installation = yield* AntigravityInstallation.AntigravityInstallation;
+    const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const loggers = yield* ProviderEventLoggers.ProviderEventLoggers;
     const modelCatalog = yield* ModelCatalog.ModelCatalog;
     const currentCatalog = modelCatalog.current(DRIVER);
@@ -173,6 +185,35 @@ export const AntigravityDriver: ProviderDriver<
     };
     const authConfigIssue = antigravityAuthConfigIssue(auth);
     const processEnvironment = yield* mergeProviderInstanceEnvironment(environment);
+    const manualMaintenance = makeManualOnlyProviderMaintenanceCapabilities({
+      provider: DRIVER,
+      packageName: null,
+    });
+    const resolveMaintenance = Effect.fn("AntigravityDriver.resolveMaintenance")(function* () {
+      if (!enabled || settings.binaryPath.trim()) return manualMaintenance;
+      const executable = yield* installation
+        .resolve(undefined, processEnvironment)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (executable?.source !== "managed") return manualMaintenance;
+      return {
+        ...manualMaintenance,
+        lookupLatestVersion: installation.latestVersion,
+        builtInUpdate: {
+          lockKey: "managed-antigravity",
+          run: (version) =>
+            installation.upgrade(version).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ServerProviderUpdateError({
+                    provider: DRIVER,
+                    reason: cause.detail,
+                    cause,
+                  }),
+              ),
+            ),
+        },
+      } satisfies ProviderMaintenanceCapabilities;
+    });
     const userHome = resolveAntigravityUserHome(
       yield* HostProcess.Platform,
       processEnvironment,
@@ -677,6 +718,17 @@ export const AntigravityDriver: ProviderDriver<
       probe,
       probeUsage: authFlow.awaitProfilePublication.pipe(Effect.andThen(probeUsage)),
       clearUsage,
+      resolveMaintenance,
+      enrichVersionAdvisory: (snapshot, enableProviderUpdateChecks) =>
+        resolveMaintenance().pipe(
+          Effect.flatMap((capabilities) =>
+            enrichProviderSnapshotWithVersionAdvisory(snapshot, capabilities, {
+              enableProviderUpdateChecks,
+            }),
+          ),
+          Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+        ),
       auth: { type: auth.authMethod, label: antigravityAuthLabel(auth.authMethod) },
       ...(rememberedRuntimeModes ? { rememberedRuntimeModes } : {}),
       rememberRuntimeModes: (modes) =>

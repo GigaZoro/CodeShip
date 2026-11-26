@@ -112,10 +112,7 @@ import { TerminalToolkit } from "../../apps/server/src/mcp/toolkits/terminal/too
 import { ThemeToolkit } from "../../apps/server/src/mcp/toolkits/theme/tools.ts";
 import { ThreadToolkit } from "../../apps/server/src/mcp/toolkits/thread/tools.ts";
 import { WorktreeToolkit } from "../../apps/server/src/mcp/toolkits/worktree/tools.ts";
-import {
-  CLAUDE_PROVIDER,
-  makeClaudeQueryOptions,
-} from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as ClaudeAdapter from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
   openAiConnection,
   publicResponsesRequest,
@@ -144,6 +141,11 @@ import {
   SecretExpect,
   secretDiagnostics,
 } from "./secret-grading.ts";
+
+const { CLAUDE_PROVIDER, makeClaudeQueryOptions } = ClaudeAdapter;
+// Older checkouts can replay the same cases without the Stop hook or its tool.
+const { CLAUDE_NATIVE_TASK_WAIT_TOOL: nativeWaitTool }: Partial<typeof ClaudeAdapter> =
+  ClaudeAdapter;
 /** Agent models by id, with the display name a harness gives them. */
 const MODELS = {
   "claude-sonnet-5-5": "Sonnet 5.5",
@@ -415,6 +417,20 @@ export const McpToolUseCase = Schema.Struct({
         }),
       ),
     ),
+    /** Background Bash launches in this turn and the reply that triggered the Claude Stop hook. */
+    claudeStop: Schema.optional(
+      Schema.Struct({
+        tasks: Schema.NonEmptyArray(
+          Schema.Struct({
+            id: Schema.String,
+            command: Schema.String,
+            description: Schema.String,
+            output: Schema.String,
+          }),
+        ),
+        draft: Schema.String,
+      }),
+    ),
     world: Schema.optional(McpToolUseWorld),
     /**
      * Canned tool results by bare name, T3 or native. `"default"` uses the runner's result. For a
@@ -557,6 +573,7 @@ const CODEX_NAMES: Readonly<Record<string, string>> = {
 };
 export const normalizeToolName = (name: string) => {
   const bare = name.slice(name.lastIndexOf(".") + 1);
+  if (bare === nativeWaitTool?.name) return "await_task";
   return isT3Name(bare)
     ? bare.slice(T3_PREFIX.length)
     : (CODEX_NAMES[bare] ?? bare.slice(bare.lastIndexOf("_") + 1));
@@ -1435,6 +1452,31 @@ export const buildMessages = (sample: Sample) => {
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
+  }
+  const stop = testCase.setup.claudeStop;
+  if (stop !== undefined && !base.codex) {
+    const bash = findTool(base, "Bash");
+    if (bash === undefined) throw new Error(`${testCase.id}: the Claude capture needs Bash.`);
+    for (const { command, description, output } of stop.tasks) {
+      const id = `toolu_prior_${nextId++}`;
+      const input = { command, description, run_in_background: true };
+      push("assistant", { type: "tool_use", id, name: bash.name, input });
+      push("user", toolResult(id, output));
+    }
+    if (nativeWaitTool?.stopFeedback) {
+      if (!hasTool(tools, nativeWaitTool.name)) {
+        tools.push({
+          name: nativeWaitTool.name,
+          description: nativeWaitTool.description,
+          input_schema: nativeWaitTool.inputSchema,
+        });
+      }
+      const { additionalContext } = nativeWaitTool.stopFeedback(
+        stop.tasks.map((task) => task.id),
+      ).hookSpecificOutput;
+      push("assistant", text(stop.draft));
+      push("user", reminder(`Stop hook additional context: ${additionalContext}`));
+    }
   }
   return messages;
 };
@@ -2669,6 +2711,11 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (!base.codex && !hasTool(tools, call.name)) {
     const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
+  }
+  if (nativeWaitTool && call.name === nativeWaitTool.name && testCase.setup.claudeStop) {
+    return testCase.setup.claudeStop.tasks.some((task) => task.id === input.task_id)
+      ? toolResult(call.id, nativeWaitTool.successText)
+      : failed("The task ID does not match a running task in this turn.");
   }
   if (name === "ToolSearch") {
     const max = typeof input.max_results === "number" ? input.max_results : 5;

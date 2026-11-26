@@ -155,8 +155,8 @@ export const buildInitialFxProviderSnapshot = (
     }),
   );
 
-const runFxCli = Effect.fn("runFxCli")(function* (
-  settings: FxSettings,
+export const runFxCli = Effect.fn("runFxCli")(function* (
+  settings: Pick<FxSettings, "binaryPath">,
   args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv,
   cwd?: string,

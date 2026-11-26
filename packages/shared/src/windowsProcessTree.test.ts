@@ -18,14 +18,16 @@ import { isProcessAlive } from "./processProbe.ts";
 import { leaderLeavingChild } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import {
-  WINDOWS_PROCESS_TREE_FUNCTIONS,
   endingWindowsTrees,
-  type WindowsProcessTreeRoot,
   type WindowsTreeEnding,
-  windowsStopTreeArgs,
-  windowsTreeRootFromNow,
   withoutWindowsTreeEnding,
 } from "./windowsProcessTree.ts";
+import {
+  WINDOWS_PROCESS_TREE_FUNCTIONS,
+  type WindowsProcessTreeRoot,
+  windowsStopTreeArgs,
+  windowsTreeRootFromNow,
+} from "./windowsProcessTreeScript.ts";
 
 it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it cannot reach", () =>
   Effect.gen(function* () {

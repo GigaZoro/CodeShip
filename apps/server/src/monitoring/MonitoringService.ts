@@ -1,4 +1,5 @@
 import {
+  MONITORING_FIX_CHAT_MAX_CHATS,
   MonitoringError,
   MonitoringThreadSummary,
   MonitoringThreadDetail,
@@ -6,6 +7,8 @@ import {
   type MonitoringChatSort,
   type MonitoringChatsInput,
   type MonitoringChatsResult,
+  type MonitoringFindingCode,
+  type MonitoringFixChatView,
   type MonitoringListedChat,
   type MonitoringOverviewInput,
   type MonitoringOverviewResult,
@@ -48,12 +51,11 @@ const ANALYSIS_BATCH = 25;
 const CHANGE_WINDOW = Duration.seconds(3);
 const RETRY_SWEEP_INTERVAL = Duration.minutes(30);
 const MAX_ANALYSIS_ATTEMPTS = 6;
-/** Analyses the overview reads per query, so a long window never loads every row at once. */
-const OVERVIEW_BATCH = 500;
+const SUMMARY_SCAN_BATCH = 500;
 const ANALYSIS_ERROR_LENGTH = 300;
 const UNREADABLE_ANALYSIS = "The stored analysis could not be read.";
 
-interface OverviewCursor {
+interface AnalysisCursor {
   readonly settledAt: string;
   readonly threadId: string;
 }
@@ -99,9 +101,8 @@ const isoInstant = (text: string) =>
   Option.filter(DateTime.make(text), (instant) => DateTime.formatIso(instant) === text);
 
 /**
- * A stored analysis, with the chat's current title and project, and its settle instant; none when
- * it no longer reads or its summary shows another settle time than its row, by which the window,
- * the days and the list order date it.
+ * A stored analysis with the chat's current title and project. It must still identify that chat
+ * and its settle instant, which place it in the window and grouped day.
  */
 const readStored = (row: StoredAnalysis) =>
   Option.match(isoInstant(row.settled_at), {
@@ -110,7 +111,11 @@ const readStored = (row: StoredAnalysis) =>
       decodeSummary(row.summary_json).pipe(
         Effect.map((decoded) =>
           Option.map(
-            Option.filter(decoded, (summary) => summary.settledAt === row.settled_at),
+            Option.filter(
+              decoded,
+              (summary) =>
+                summary.threadId === row.thread_id && summary.settledAt === row.settled_at,
+            ),
             (summary) => ({
               summary: { ...summary, title: row.title, projectId: row.project_id },
               settledAt,
@@ -169,6 +174,14 @@ export class MonitoringService extends Context.Service<
     readonly thread: (input: {
       readonly threadId: ThreadId;
     }) => Effect.Effect<MonitoringThreadAnswer, MonitoringError>;
+    /** The current stored summaries of the given chats that are still settled. */
+    readonly summaries: (
+      threadIds: ReadonlyArray<ThreadId>,
+    ) => Effect.Effect<ReadonlyArray<MonitoringThreadSummary>, MonitoringError>;
+    /** The chats that lost the most time to the selected finding in the filtered period. */
+    readonly findingExamples: (
+      input: MonitoringFixChatView & { readonly findingCode: MonitoringFindingCode },
+    ) => Effect.Effect<ReadonlyArray<MonitoringThreadSummary>, MonitoringError>;
     readonly subscribeChanges: Stream.Stream<MonitoringChange>;
     /** Analyzes every settled chat that has no current analysis, then each chat as it settles. */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -388,7 +401,7 @@ const make = Effect.gen(function* () {
    */
   const analyzedInWindow = (
     window: { readonly since: string; readonly until: string },
-    before: OverviewCursor | null = null,
+    before: AnalysisCursor | null = null,
   ) => sql`
     ${settledListedThread(sql)}
     AND json_extract(t.payload_json, '$.settledAt') = m.settled_at
@@ -399,6 +412,24 @@ const make = Effect.gen(function* () {
       before === null
         ? sql`m.settled_at < ${window.until}`
         : sql`(m.settled_at, m.thread_id) < (${before.settledAt}, ${before.threadId})`
+    }
+  `;
+
+  const matchingChats = (
+    window: { readonly since: string; readonly until: string },
+    input: Pick<MonitoringChatsInput, "projectId" | "kind" | "model">,
+  ) => sql`
+    ${analyzedInWindow(window)}
+    ${input.projectId === undefined ? sql`` : sql`AND t.project_id = ${input.projectId}`}
+    ${
+      input.kind === undefined
+        ? sql``
+        : sql`AND json_extract(m.summary_json, '$.kind') = ${input.kind}`
+    }
+    ${
+      input.model === undefined
+        ? sql``
+        : sql`AND coalesce(json_extract(m.summary_json, '$.models[0]'), '') = ${input.model}`
     }
   `;
 
@@ -444,6 +475,71 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const readSummaries = Effect.fn("MonitoringService.readSummaries")(function* (
+    query: Effect.Effect<ReadonlyArray<StoredAnalysis>, SqlError>,
+  ) {
+    return yield* readDecoded(
+      Effect.gen(function* () {
+        const result: Array<MonitoringThreadSummary> = [];
+        const unreadable: Array<StoredAnalysis> = [];
+        for (const row of yield* query) {
+          const stored = yield* readStored(row);
+          if (Option.isNone(stored)) unreadable.push(row);
+          else result.push(stored.value.summary);
+        }
+        return { result, unreadable };
+      }).pipe(
+        NodeSqliteClient.readOnly,
+        NodeSqliteClient.inBackground,
+        Effect.mapError(toError("Could not read the chat analyses.")),
+      ),
+    );
+  });
+
+  const summaries: MonitoringService["Service"]["summaries"] = Effect.fn(
+    "MonitoringService.summaries",
+  )(function* (threadIds) {
+    if (threadIds.length === 0) return [];
+    return yield* readSummaries(sql<StoredAnalysis>`
+      SELECT m.thread_id, m.settled_at, m.summary_json, t.title, t.project_id
+      FROM monitoring_thread_analyses m
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
+      WHERE m.thread_id IN ${sql.in(threadIds)}
+        AND ${settledListedThread(sql)}
+        AND json_extract(t.payload_json, '$.settledAt') = m.settled_at
+        AND m.analyzer_version = ${ANALYZER_VERSION}
+        AND m.summary_json IS NOT NULL
+    `);
+  });
+
+  const readWindowSummaries = Effect.fn("MonitoringService.readWindowSummaries")(function* (
+    window: { readonly since: string; readonly until: string },
+    onSummary: (summary: MonitoringThreadSummary, settledAt: DateTime.Utc) => void,
+    projectId?: ProjectId,
+  ) {
+    const unreadable: Array<StoredAnalysis> = [];
+    let before: AnalysisCursor | null = null;
+    while (true) {
+      const rows: ReadonlyArray<StoredAnalysis> = yield* sql<StoredAnalysis>`
+        SELECT m.thread_id, m.settled_at, m.summary_json, t.title, t.project_id
+        FROM monitoring_thread_analyses m
+        JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
+        WHERE ${analyzedInWindow(window, before)}
+          ${projectId === undefined ? sql`` : sql`AND t.project_id = ${projectId}`}
+        ORDER BY m.settled_at DESC, m.thread_id DESC
+        LIMIT ${SUMMARY_SCAN_BATCH}
+      `;
+      for (const row of rows) {
+        const stored = yield* readStored(row);
+        if (Option.isNone(stored)) unreadable.push(row);
+        else onSummary(stored.value.summary, stored.value.settledAt);
+      }
+      const last = rows.at(-1);
+      if (rows.length < SUMMARY_SCAN_BATCH || last === undefined) return unreadable;
+      before = { settledAt: last.settled_at, threadId: last.thread_id };
+    }
+  });
+
   const overview: MonitoringService["Service"]["overview"] = Effect.fn(
     "MonitoringService.overview",
   )(function* (input) {
@@ -473,26 +569,7 @@ const make = Effect.gen(function* () {
       window: { readonly since: string; readonly until: string },
       groups: ReturnType<typeof makeMonitoringGroups>,
     ) {
-      const unreadable: Array<StoredAnalysis> = [];
-      let before: OverviewCursor | null = null;
-      while (true) {
-        const rows: ReadonlyArray<StoredAnalysis> = yield* sql<StoredAnalysis>`
-          SELECT m.thread_id, m.settled_at, m.summary_json, t.title, t.project_id
-          FROM monitoring_thread_analyses m
-          JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
-          WHERE ${analyzedInWindow(window, before)}
-          ORDER BY m.settled_at DESC, m.thread_id DESC
-          LIMIT ${OVERVIEW_BATCH}
-        `;
-        for (const row of rows) {
-          const stored = yield* readStored(row);
-          if (Option.isNone(stored)) unreadable.push(row);
-          else groups.add(stored.value.summary, stored.value.settledAt);
-        }
-        const last = rows.at(-1);
-        if (rows.length < OVERVIEW_BATCH || last === undefined) break;
-        before = { settledAt: last.settled_at, threadId: last.thread_id };
-      }
+      const unreadable = yield* readWindowSummaries(window, groups.add);
       // By project, so the project filter applies to them; kind and model are not known yet.
       const counts = yield* sql<{
         readonly project_id: ProjectId;
@@ -532,18 +609,7 @@ const make = Effect.gen(function* () {
       const window = yield* resolveWindow(input);
       const direction = sql.literal(input.direction === "asc" ? "ASC" : "DESC");
       const matching = () => sql`
-        ${analyzedInWindow(window)}
-          ${input.projectId === undefined ? sql`` : sql`AND t.project_id = ${input.projectId}`}
-          ${
-            input.kind === undefined
-              ? sql``
-              : sql`AND json_extract(m.summary_json, '$.kind') = ${input.kind}`
-          }
-          ${
-            input.model === undefined
-              ? sql``
-              : sql`AND coalesce(json_extract(m.summary_json, '$.models[0]'), '') = ${input.model}`
-          }
+        ${matchingChats(window, input)}
           ${
             input.findingCode === undefined
               ? sql``
@@ -606,6 +672,41 @@ const make = Effect.gen(function* () {
       return yield* readDecoded(readPage);
     },
   );
+
+  const findingExamples: MonitoringService["Service"]["findingExamples"] = Effect.fn(
+    "MonitoringService.findingExamples",
+  )(function* (input) {
+    const window = yield* resolveWindow(input);
+    const read = Effect.gen(function* () {
+      const examples: Array<{ summary: MonitoringThreadSummary; wastedMs: number }> = [];
+      const consider = (summary: MonitoringThreadSummary) => {
+        if (input.kind !== undefined && summary.kind !== input.kind) return;
+        if (input.model !== undefined && (summary.models[0] ?? "") !== input.model) return;
+        const wastedMs = summary.findings.reduce<number | null>(
+          (total, finding) =>
+            finding.code === input.findingCode ? (total ?? 0) + finding.wastedMs : total,
+          null,
+        );
+        if (wastedMs === null) return;
+        const index = examples.findIndex(
+          (example) =>
+            wastedMs > example.wastedMs ||
+            (wastedMs === example.wastedMs && summary.threadId < example.summary.threadId),
+        );
+        if (index < 0 && examples.length === MONITORING_FIX_CHAT_MAX_CHATS) return;
+        examples.splice(index < 0 ? examples.length : index, 0, { summary, wastedMs });
+        if (examples.length > MONITORING_FIX_CHAT_MAX_CHATS) examples.pop();
+      };
+      const unreadable = yield* readWindowSummaries(window, consider, input.projectId);
+      return { result: examples.map(({ summary }) => summary), unreadable };
+    }).pipe(
+      sql.withTransaction,
+      NodeSqliteClient.readOnly,
+      NodeSqliteClient.inBackground,
+      Effect.mapError(toError("Could not read the chat analyses.")),
+    );
+    return yield* readDecoded(read);
+  });
 
   const thread: MonitoringService["Service"]["thread"] = Effect.fn("MonitoringService.thread")(
     function* ({ threadId }) {
@@ -859,6 +960,8 @@ const make = Effect.gen(function* () {
     overview,
     chats,
     thread,
+    summaries,
+    findingExamples,
     subscribeChanges: Stream.unwrap(
       PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
     ),

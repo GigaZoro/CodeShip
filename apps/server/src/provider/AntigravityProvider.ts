@@ -32,10 +32,12 @@ import {
   DeferringFailedCheck,
   makeManagedServerProvider,
 } from "@t3tools/provider-core/server/managedProvider";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
+import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  type ProviderMaintenanceCapabilities,
-} from "@t3tools/provider-core/server/maintenanceResolver";
+  haveProviderSnapshotSettingsChanged,
+  makeProviderSnapshotSettingsSource,
+} from "@t3tools/provider-core/server/snapshotSettings";
 import {
   buildServerProvider,
   isCommandMissingCause,
@@ -209,7 +211,11 @@ interface AntigravityProviderOptions {
   readonly supportsTextGeneration: Effect.Effect<boolean>;
   readonly probeUsage?: Effect.Effect<ServerProviderUsageLimits>;
   readonly clearUsage?: Effect.Effect<void>;
-  readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities;
+  readonly resolveMaintenance?: ManagedServerProvider["resolveMaintenance"];
+  readonly enrichVersionAdvisory?: (
+    snapshot: ServerProvider,
+    enableUpdateChecks: boolean,
+  ) => Effect.Effect<ServerProvider>;
   readonly auth?: { readonly type: string; readonly label: string };
   /** Modes the last session advertised, saved because initialize alone does not report them. */
   readonly rememberedRuntimeModes?: ReadonlyArray<RuntimeMode>;
@@ -438,23 +444,34 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     return yield* options.stampIdentity(next.draft);
   });
 
-  const maintenanceCapabilities =
-    options.maintenanceCapabilities ??
-    makeManualOnlyProviderMaintenanceCapabilities({
-      provider: ProviderDriverKind.make("antigravity"),
-      packageName: null,
-    });
+  const snapshotSettings = yield* makeProviderSnapshotSettingsSource(settings);
   const managed = yield* makeManagedServerProvider({
-    resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
-    getSettings: Effect.succeed(settings),
-    streamSettings: Stream.empty,
-    haveSettingsChanged: () => false,
+    resolveMaintenance:
+      options.resolveMaintenance ??
+      (() =>
+        Effect.succeed(
+          makeManualOnlyProviderMaintenanceCapabilities({
+            provider: ProviderDriverKind.make("antigravity"),
+            packageName: null,
+          }),
+        )),
+    getSettings: snapshotSettings.getSettings,
+    streamSettings: snapshotSettings.streamSettings,
+    haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+    checkProviderOnSettingsChange: () => false,
     initialSnapshot: () => getSnapshot,
     checkProvider: checkProvider(),
-    enrichSnapshot: ({ publishSnapshot }) =>
+    enrichSnapshot: ({ settings, publishSnapshot }) =>
       SubscriptionRef.changes(metadata).pipe(
         Stream.runForEach((state) =>
-          options.stampIdentity(state.draft).pipe(Effect.flatMap(publishSnapshot)),
+          options.stampIdentity(state.draft).pipe(
+            Effect.flatMap(
+              (snapshot) =>
+                options.enrichVersionAdvisory?.(snapshot, settings.enableProviderUpdateChecks) ??
+                Effect.succeed(snapshot),
+            ),
+            Effect.flatMap(publishSnapshot),
+          ),
         ),
       ),
   });

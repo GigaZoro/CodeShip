@@ -1,23 +1,148 @@
 import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import { activateLanguage } from "@t3tools/shared/i18n";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import { formatEnvironmentQueryError } from "../../state/query";
-import { EnvironmentId, ThreadId, type MonitoringThreadSummary } from "@t3tools/contracts";
 import {
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  type MonitoringThreadSummary,
+} from "@t3tools/contracts";
+import {
+  fixChatRequest,
   mergeMonitoringChats,
   presentMonitoringChats,
+  settleFixChat,
   type MonitoringChatsRequest,
+  type MonitoringFixChatTarget,
   type MonitoringQueryRead,
 } from "@t3tools/client-runtime/monitoring";
 import type { MonitoringChatsResult } from "@t3tools/contracts";
-import { expect, it } from "vite-plus/test";
+import { Atom } from "effect/reactivity";
+import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
 import "../../index.css";
-import { useMonitoringRefresh } from "../../state/monitoring";
+import { useMonitoringFixChat, useMonitoringRefresh } from "../../state/monitoring";
+import { serverEnvironment } from "../../state/server";
 import { MissingEnvironmentNotes, MonitoringChatList, RetryButton } from "./MonitoringChatList";
 import { MonitoringOverviewNotices, MonitoringRefreshButton } from "./MonitoringSection";
+
+function pendingFixChatReply() {
+  type Reply = { readonly threadId: ThreadId };
+  let resolve!: (reply: Reply) => void;
+  const promise = new Promise<Reply>((done) => {
+    resolve = done;
+  });
+  return { effect: Effect.promise(() => promise), resolve };
+}
+
+function FixChatView({ target }: { readonly target: MonitoringFixChatTarget }) {
+  const fixChat = useMonitoringFixChat(target, "reopened");
+  return (
+    <>
+      <button onClick={fixChat.start} disabled={!fixChat.available || fixChat.pending}>
+        Start fix
+      </button>
+      {fixChat.started && <output>{fixChat.started.threadId}</output>}
+    </>
+  );
+}
+
+it.each(["scope", "project", "route", "mount"] as const)(
+  "ignores a delayed fix-chat reply after leaving the initiating %s",
+  async (change) => {
+    const target = {
+      origin: `fix-chat-view-${change}`,
+      environmentId: EnvironmentId.make("env-fix-chat"),
+      projectId: ProjectId.make("project-fix-chat"),
+      source: { threadIds: [ThreadId.make("example")] },
+    } satisfies MonitoringFixChatTarget;
+    using _available = vi
+      .spyOn(serverEnvironment, "monitoringFixChatsAvailable")
+      .mockReturnValue(Atom.make(true));
+    await using screen = await render(<FixChatView target={target} />);
+    using navigate = vi.spyOn(screen.router!, "navigate").mockResolvedValue();
+    const reply = pendingFixChatReply();
+    using run = vi
+      .spyOn(serverEnvironment.startMonitoringFixChat, "run")
+      .mockReturnValue(reply.effect);
+    const start = screen.getByRole("button", { name: "Start fix" });
+    await start.click();
+    await expect.element(start).toBeDisabled();
+    const original = run.mock.calls[0]![1];
+
+    if (change === "route") {
+      await act(() => screen.router!.history.push("/#away"));
+      await act(() => screen.router!.history.back());
+    } else {
+      await screen.rerender(
+        <FixChatView
+          key={change === "mount" ? "replacement" : undefined}
+          target={{
+            ...target,
+            origin: change === "scope" ? "another-scope" : target.origin,
+            projectId: change === "project" ? ProjectId.make("other-project") : target.projectId,
+          }}
+        />,
+      );
+      await screen.rerender(<FixChatView target={target} />);
+    }
+
+    await act(() => reply.resolve({ threadId: ThreadId.make("late-chat") }));
+    await expect.element(start).toBeEnabled();
+    expect(navigate).not.toHaveBeenCalled();
+    await expect.element(screen.getByText("late-chat")).not.toBeInTheDocument();
+    const next = fixChatRequest(target, "reopened", "web", () => "new-command");
+    settleFixChat(target, "reopened", next, null);
+    expect(next.input.commandId).not.toBe(original.input.commandId);
+  },
+);
+
+it("starts a separate fix chat for a new destination while the original reply is pending", async () => {
+  const firstTarget = {
+    origin: "same-overview-window-and-filters",
+    environmentId: EnvironmentId.make("env-fix-chat"),
+    projectId: ProjectId.make("project-a"),
+    source: { view: { since: "2026-11-01T00:00:00.000Z", until: "2026-11-29T00:00:00.000Z" } },
+  } satisfies MonitoringFixChatTarget;
+  const newTarget = { ...firstTarget, projectId: ProjectId.make("project-b") };
+  const firstReply = pendingFixChatReply();
+  const newReply = pendingFixChatReply();
+  using _available = vi
+    .spyOn(serverEnvironment, "monitoringFixChatsAvailable")
+    .mockReturnValue(Atom.make(true));
+  await using screen = await render(<FixChatView target={firstTarget} />);
+  using navigate = vi.spyOn(screen.router!, "navigate").mockResolvedValue();
+  using run = vi
+    .spyOn(serverEnvironment.startMonitoringFixChat, "run")
+    .mockImplementation((_registry, { input }) =>
+      input.projectId === firstTarget.projectId ? firstReply.effect : newReply.effect,
+    );
+  const start = screen.getByRole("button", { name: "Start fix" });
+  await start.click();
+  await expect.element(start).toBeDisabled();
+  await screen.rerender(<FixChatView target={newTarget} />);
+  await start.click();
+  await expect.element(start).toBeDisabled();
+
+  await act(() => firstReply.resolve({ threadId: ThreadId.make("chat-a") }));
+  expect(navigate).not.toHaveBeenCalled();
+  await expect.element(screen.getByText("chat-a")).not.toBeInTheDocument();
+  await expect.element(start).toBeDisabled();
+
+  const threadId = ThreadId.make("chat-b");
+  await act(() => newReply.resolve({ threadId }));
+  await expect.element(screen.getByText(threadId)).toBeVisible();
+  expect(navigate).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ params: { environmentId: newTarget.environmentId, threadId } }),
+  );
+  const [firstRequest, newRequest] = run.mock.calls.map(([, request]) => request.input);
+  expect(newRequest?.projectId).toBe(newTarget.projectId);
+  expect(newRequest?.commandId).not.toBe(firstRequest?.commandId);
+});
 
 it("announces overview environment notices politely while leaving analysis counts outside live regions", async () => {
   const screenWith = (pending: number, failed: number, unreadable = "") => (

@@ -196,6 +196,28 @@ const MAX_NOTE_ENTRIES = 10;
 /** Why background work stopped: a T3 server restart, or the provider process exiting under a live server. */
 export type BackgroundWorkLossCause = "server_restart" | "provider_exit";
 
+export function restartAwaitedTaskResultsNote(
+  items: ReadonlyArray<OrchestrationV2TurnItem>,
+  runIds: ReadonlyArray<RunId>,
+): string | undefined {
+  const receipts = items.flatMap((item) =>
+    item.type === "system_notice" &&
+    item.awaitedTaskId !== undefined &&
+    item.runId !== null &&
+    runIds.includes(item.runId)
+      ? [item.message]
+      : [],
+  );
+  if (receipts.length === 0) return undefined;
+  return [
+    "These awaited tasks already reported before the restart:",
+    ...receipts.slice(0, MAX_NOTE_ENTRIES),
+    ...(receipts.length > MAX_NOTE_ENTRIES
+      ? [`See the thread for ${receipts.length - MAX_NOTE_ENTRIES} more results.`]
+      : []),
+  ].join("\n");
+}
+
 /** Names one entry of a run's lost work, in that run's record and in a prompt's record of it. */
 const workKey = (entry: Work) =>
   entry.id === undefined ? `label:${entry.kind}:${entry.label}` : `id:${entry.id}`;

@@ -8,12 +8,7 @@ import * as Semaphore from "effect/Semaphore";
 import { AGENT_NICE_INCREMENT } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import {
-  heldNiceDelta,
-  readHeldNiceTimeFromProc,
-  type HeldNiceTime,
-  type HeldNiceTimeUnreadable,
-} from "./HeldNiceTime.ts";
+import { startYieldingNiceSample } from "./YieldingNiceTime.ts";
 
 /**
  * The busy share per core at and above which a new `t3_command_run` command waits. It is the
@@ -38,8 +33,9 @@ export interface CpuTimes {
 export interface CpuSaturation {
   /** The share of the CPUs' time that a new command would have to compete with. */
   readonly busyShare: number;
-  /** The share spent on low-priority work that gives way to a new command; not in `busyShare`. */
   readonly nicedShare: number;
+  /** The part of total CPU time attributed to threads below the new command's priority. */
+  readonly excludedShare: number;
   readonly limit: number;
   readonly cores: number;
 }
@@ -55,16 +51,12 @@ export const cpuTimesOf = (cpus: ReadonlyArray<NodeOS.CpuInfo>): ReadonlyArray<C
     total: times.user + times.nice + times.sys + times.idle + times.irq,
   }));
 
-/**
- * The busy and niced shares of the CPUs' time between two samples, over every core; null when
- * they cannot be compared. Niced time is room except `heldNiceMs` of it, the CPU time of niced
- * processes a command does not displace; without that reading all niced time stays busy.
- */
+/** Shares of total CPU time in the sample window. Unattributed niced time stays busy. */
 export function cpuShares(
   before: ReadonlyArray<CpuTimes>,
   after: ReadonlyArray<CpuTimes>,
-  heldNiceMs = Number.POSITIVE_INFINITY,
-): { readonly busy: number; readonly niced: number } | null {
+  yieldingNiceMs = 0,
+) {
   if (before.length === 0 || before.length !== after.length) return null;
   let idle = 0;
   let nice = 0;
@@ -75,9 +67,13 @@ export function cpuShares(
     total += after[index]!.total - start.total;
   }
   if (!(total > 0) || idle < 0 || nice < 0) return null;
-  const held = Math.min(nice, Math.max(0, heldNiceMs));
+  const excluded = Math.min(nice, Math.max(0, yieldingNiceMs));
   const clamp = (share: number) => Math.min(1, Math.max(0, share));
-  return { busy: clamp((total - idle - nice + held) / total), niced: clamp((nice - held) / total) };
+  return {
+    busyShare: clamp((total - idle - excluded) / total),
+    nicedShare: clamp(nice / total),
+    excludedShare: clamp(excluded / total),
+  };
 }
 
 /**
@@ -100,11 +96,7 @@ export const make = Effect.fn("CpuAdmission.make")(function* (
     readonly limit?: number;
     readonly window?: Duration.Duration;
     readonly ttl?: Duration.Duration;
-    /**
-     * Reads the niced processes that a new command does not displace. Without it, or when it
-     * fails, all niced time counts as busy, as it did before niced time was told apart.
-     */
-    readonly heldNice?: Effect.Effect<HeldNiceTime, HeldNiceTimeUnreadable>;
+    readonly startYieldingNiceSample?: ReturnType<typeof startYieldingNiceSample>;
   } = {},
 ) {
   const limit = options.limit ?? CPU_BUSY_SHARE_LIMIT;
@@ -112,37 +104,41 @@ export const make = Effect.fn("CpuAdmission.make")(function* (
   const ttlMs = Duration.toMillis(options.ttl ?? CPU_READING_TTL);
   const reading = yield* Semaphore.make(1);
   let last: { readonly atMs: number; readonly saturation: CpuSaturation | null } | null = null;
-  let heldNiceFailing = false;
-  const readHeldNice: Effect.Effect<HeldNiceTime | null> =
-    options.heldNice === undefined
-      ? Effect.succeed(null)
-      : options.heldNice.pipe(
-          Effect.tap(() => Effect.sync(() => void (heldNiceFailing = false))),
-          Effect.catch((cause) => {
-            // One warning per outage: the reading repeats every few seconds while commands wait.
-            const log = heldNiceFailing ? Effect.logDebug : Effect.logWarning;
-            heldNiceFailing = true;
-            return log("CPU admission cannot read niced processes, so niced time counts as busy", {
-              cause,
-            }).pipe(Effect.as(null));
-          }),
-        );
+  let procReadFailing = false;
+  const yieldingNiceMs = options.startYieldingNiceSample?.pipe(
+    Effect.flatMap(({ elapsed }) => Effect.sleep(window).pipe(Effect.andThen(elapsed))),
+    Effect.tap(() => Effect.sync(() => void (procReadFailing = false))),
+    Effect.catch((cause) => {
+      // One warning per outage while queued commands repeat the reading.
+      const log = procReadFailing ? Effect.logDebug : Effect.logWarning;
+      procReadFailing = true;
+      return log("CPU admission cannot read niced threads, so niced time counts as busy", {
+        cause,
+      }).pipe(Effect.as(null));
+    }),
+  );
   const read = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     if (last !== null && now - last.atMs < ttlMs) return last.saturation;
-    const heldBefore = yield* readHeldNice;
     const before = yield* sample;
     yield* Effect.sleep(window);
     const after = yield* sample;
-    const heldAfter = yield* readHeldNice;
-    const shares = cpuShares(
-      before,
-      after,
-      heldBefore !== null && heldAfter !== null ? heldNiceDelta(heldBefore, heldAfter) : undefined,
-    );
+    let shares = cpuShares(before, after);
+    // Idle hosts and fully normal-priority loads need only the cheap per-core samples.
+    if (
+      yieldingNiceMs !== undefined &&
+      shares !== null &&
+      shares.busyShare >= limit &&
+      shares.nicedShare > 0
+    ) {
+      const elapsed = yield* yieldingNiceMs;
+      if (elapsed !== null) {
+        shares = cpuShares(after, yield* sample, elapsed) ?? shares;
+      }
+    }
     const saturation: CpuSaturation | null =
-      shares !== null && shares.busy >= limit
-        ? { busyShare: shares.busy, nicedShare: shares.niced, limit, cores: after.length }
+      shares !== null && shares.busyShare >= limit
+        ? { ...shares, limit, cores: after.length }
         : null;
     last = { atMs: yield* Clock.currentTimeMillis, saturation };
     return saturation;
@@ -154,9 +150,8 @@ export const make = Effect.fn("CpuAdmission.make")(function* (
 });
 
 /**
- * A command starts at the server's nice level plus AgentScope's increment, so niced processes at
- * or below it, such as CodeShip's own commands, compete with it. Only Linux can read them;
- * elsewhere all niced time counts as busy.
+ * AgentScope launches commands at the server's nice level plus its increment. Only threads
+ * with a higher nice value can provide room. Other platforms keep the aggregate busy reading.
  */
 export const layer = Layer.effect(
   CpuAdmission,
@@ -165,7 +160,9 @@ export const layer = Layer.effect(
     const sample = Effect.sync(() => cpuTimesOf(NodeOS.cpus()));
     return yield* linux
       ? make(sample, {
-          heldNice: readHeldNiceTimeFromProc(NodeOS.getPriority() + AGENT_NICE_INCREMENT),
+          startYieldingNiceSample: Effect.suspend(() =>
+            startYieldingNiceSample(NodeOS.getPriority() + AGENT_NICE_INCREMENT),
+          ),
         })
       : make(sample);
   }),
@@ -176,8 +173,14 @@ export const layerTest = (saturation: CpuSaturation | null = null) =>
   Layer.succeed(CpuAdmission, CpuAdmission.of({ saturation: Effect.succeed(saturation) }));
 
 /** The reading in a sentence, for agents and logs. */
-export const describeCpuSaturation = ({ busyShare, nicedShare, limit, cores }: CpuSaturation) =>
+export const describeCpuSaturation = ({
+  busyShare,
+  nicedShare,
+  excludedShare,
+  limit,
+  cores,
+}: CpuSaturation) =>
   `the CPUs are ${busyShare.toFixed(2)} busy across ${cores} ${cores === 1 ? "core" : "cores"}, at or over the ${limit} limit` +
   (nicedShare >= NICED_SHARE_WORTH_NAMING
-    ? `; another ${nicedShare.toFixed(2)} of the CPUs run low-priority work, which gives way to a command and is not counted`
+    ? ` (${nicedShare.toFixed(2)} niced, ${excludedShare.toFixed(2)} excluded from the busy share as lower-priority work)`
     : "");

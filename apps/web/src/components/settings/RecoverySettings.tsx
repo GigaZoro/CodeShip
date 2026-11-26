@@ -112,7 +112,7 @@ export function ProviderUpdatesSettings() {
       serverScoped
       settingKeys={keys}
       description={t(
-        "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.",
+        "Check provider CLIs and model catalogs for updates. Install automatically checks at startup and hourly, and installs supported CLI updates.",
       )}
       control={
         <div className="w-full sm:w-72">

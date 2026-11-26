@@ -36,6 +36,7 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import { sleepingTestClock } from "../testkit/DeterministicRuntime.ts";
 import {
   ClaudeAgentSdkQueryRunner,
+  ClaudeAgentSdkQueryRunnerError,
   type ClaudeAgentSdkQueryOpenInput,
   ClaudePromptQueueClosedError,
   layerQueryRunner,
@@ -296,6 +297,129 @@ it.effect("resumes a session whose history exceeds the status-probe output limit
   }).pipe(Effect.provide(Layer.merge(realQueryRunner, NodeServices.layer))),
 );
 
+const connectedT3McpStatus = [
+  { name: "t3-code", status: "connected" },
+] satisfies ClaudeSdk.McpServerStatus[];
+
+const firstPromptRegistrationCases: ReadonlyArray<{
+  scenario: string;
+  configureT3: boolean;
+  errors: ClaudeSdk.McpSetServersResult["errors"];
+  statuses: ClaudeSdk.McpServerStatus[] | undefined;
+  opens: boolean;
+}> = [
+  {
+    scenario: "explicit T3 registration error",
+    configureT3: true,
+    errors: { "t3-code": "Could not connect" },
+    statuses: [],
+    opens: false,
+  },
+  {
+    scenario: "T3 needs authentication despite an empty registration error map",
+    configureT3: true,
+    errors: {},
+    statuses: [
+      { name: "t3-code", status: "needs-auth" },
+      { name: "optional", status: "connected" },
+    ],
+    opens: false,
+  },
+  {
+    scenario: "the CLI omits the MCP status list",
+    configureT3: true,
+    errors: {},
+    statuses: undefined,
+    opens: false,
+  },
+  {
+    scenario: "T3 connects and an optional server fails",
+    configureT3: true,
+    errors: { optional: "Could not connect" },
+    statuses: connectedT3McpStatus,
+    opens: true,
+  },
+  {
+    scenario: "the only configured server is optional and fails",
+    configureT3: false,
+    errors: { optional: "Could not connect" },
+    statuses: [],
+    opens: true,
+  },
+];
+
+it.effect.each(firstPromptRegistrationCases)(
+  "gates the first prompt on T3 MCP availability: $scenario",
+  (row) =>
+    Effect.gen(function* () {
+      const registration = Promise.withResolvers<ClaudeSdk.McpSetServersResult>();
+      const registering = Promise.withResolvers<void>();
+      const disposed = vi.fn(async () => {});
+      const mcpServerStatus = vi.fn(async () => row.statuses);
+      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
+        () =>
+          ({
+            initializationResult: async () => ({}),
+            setMcpServers: () => {
+              registering.resolve();
+              return registration.promise;
+            },
+            mcpServerStatus,
+            close: vi.fn(),
+            [Symbol.asyncDispose]: disposed,
+          }) as unknown as ClaudeSdk.Query,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+      const runner = yield* ClaudeAgentSdkQueryRunner;
+      const { resume, ...options } = resumedMcpQueryInput.options;
+      const mcpServers = {
+        ...(row.configureT3 ? options.mcpServers : {}),
+        optional: { type: "http" as const, url: "http://localhost:3773/optional" },
+      };
+      const opening = yield* runner
+        .open({
+          ...resumedMcpQueryInput,
+          options: { ...options, sessionId: resume, mcpServers },
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.promise(() => registering.promise);
+      assert.isUndefined(opening.pollUnsafe());
+
+      registration.resolve({
+        added: Object.keys(mcpServers).filter((name) => !Object.hasOwn(row.errors, name)),
+        removed: [],
+        errors: row.errors,
+      });
+      const result = yield* Fiber.join(opening);
+      if (Exit.isSuccess(result)) {
+        yield* Effect.addFinalizer(() => result.value.close.pipe(Effect.orDie));
+      }
+      assert.equal(Exit.isSuccess(result), row.opens);
+      const prompt = querySpy.mock.calls[0]![0].prompt;
+      if (typeof prompt === "string") throw new Error("Expected streaming input");
+      if (Exit.isSuccess(result)) {
+        const message = {
+          type: "user",
+          message: { role: "user", content: "Start the scheduled task." },
+          parent_tool_use_id: null,
+          session_id: FORK_SESSION_ID,
+        } satisfies ClaudeSdk.SDKUserMessage;
+        yield* result.value.offer(message);
+        const delivered = yield* Effect.promise(() => prompt[Symbol.asyncIterator]().next());
+        assert.isFalse(delivered.done);
+        assert.deepEqual(delivered.value, message);
+      } else {
+        assert.instanceOf(Cause.squash(result.cause), ClaudeAgentSdkQueryRunnerError);
+        assert.equal(disposed.mock.calls.length, 1);
+        assert.isTrue((yield* Effect.promise(() => prompt[Symbol.asyncIterator]().next())).done);
+      }
+      assert.equal(
+        mcpServerStatus.mock.calls.length,
+        row.configureT3 && !("t3-code" in row.errors) ? 1 : 0,
+      );
+    }).pipe(Effect.provide(realQueryRunner)),
+);
+
 it.effect("reopens a stalled MCP registration before delivering the resumed prompt", () =>
   Effect.gen(function* () {
     const registrationStarted = Promise.withResolvers<void>();
@@ -320,6 +444,7 @@ it.effect("reopens a stalled MCP registration before delivering the resumed prom
       return {
         initializationResult: async () => ({}),
         setMcpServers: prompts.length === 1 ? firstRegistration : secondRegistration,
+        mcpServerStatus: async () => connectedT3McpStatus,
         close: prompts.length === 1 ? firstClose : secondClose,
         [Symbol.asyncDispose]: async () => {
           firstClose();
@@ -399,6 +524,7 @@ it.effect("refuses a prompt once the session has closed", () =>
           ({
             initializationResult: async () => ({}),
             setMcpServers: async () => ({ added: ["t3-code"], removed: [], errors: {} }),
+            mcpServerStatus: async () => connectedT3McpStatus,
             close: vi.fn(),
             [Symbol.asyncDispose]: async () => {},
           }) as unknown as ClaudeSdk.Query,
@@ -465,6 +591,7 @@ it.effect.each([true, false])("only retries after confirmed process exit: %s", (
             ? new Promise<ClaudeSdk.McpSetServersResult>(() => {})
             : Promise.resolve({ added: ["t3-code"], removed: [], errors: {} });
         },
+        mcpServerStatus: async () => connectedT3McpStatus,
         close: vi.fn(),
         [Symbol.asyncDispose]: disposed,
       } as unknown as ClaudeSdk.Query;
@@ -580,6 +707,7 @@ it.effect("reports MCP startup after the CLI boots, while it registers the serve
             steps.push("registered");
             return { added: ["t3-code"], removed: [], errors: {} };
           },
+          mcpServerStatus: async () => connectedT3McpStatus,
           close: vi.fn(),
           [Symbol.asyncDispose]: async () => {},
         }) as unknown as ClaudeSdk.Query,
@@ -611,6 +739,7 @@ it.effect("retries a fresh session once after MCP registration times out", () =>
             ? new Promise<ClaudeSdk.McpSetServersResult>(() => {})
             : Promise.resolve({ added: ["t3-code"], removed: [], errors: {} });
         },
+        mcpServerStatus: async () => connectedT3McpStatus,
         close: vi.fn(),
         [Symbol.asyncDispose]: disposed,
       } as unknown as ClaudeSdk.Query;
@@ -661,6 +790,7 @@ it.effect.each([
           await booted.promise;
           return { added: ["t3-code"], removed: [], errors: {} };
         },
+        mcpServerStatus: async () => connectedT3McpStatus,
         close: vi.fn(),
         [Symbol.asyncDispose]: async () => {},
       } as unknown as ClaudeSdk.Query;
@@ -727,6 +857,7 @@ it.effect.each([
               return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
             },
             close: vi.fn(),
+            mcpServerStatus: async () => connectedT3McpStatus,
             [Symbol.asyncDispose]: disposed,
           } as unknown as ClaudeSdk.Query;
         });

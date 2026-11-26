@@ -1991,6 +1991,8 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     ".github/scripts/check-changed-receipt.cjs",
     ".github/scripts/landing-turn.cjs",
     ".github/scripts/bounded-git.cjs",
+    ".github/scripts/process-tree.cjs",
+    "packages/shared/src/windowsProcessTreeScript.ts",
     ".github/scripts/lease-queue.cjs",
     ".github/scripts/release-notes.cjs",
     ".github/scripts/git-history.cjs",

@@ -33,10 +33,13 @@ import type {
   ServerProviderSkill,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import type { ProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenance";
 import {
   PREFERRED_DEFAULT_CODEX_MODELS,
+  ProviderDriverKind,
   ProviderSkillError,
   ServerSettingsError,
+  ServerProviderUpdateError,
 } from "@t3tools/contracts";
 
 import {
@@ -47,6 +50,7 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import { isCodexLoginRejected } from "./CodexLoginRejected.ts";
+import type { CodexInstallation } from "./CodexInstallation.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -134,7 +138,9 @@ export const codexRoutesSpendNativeQuota = (
   account: CodexSchema.V2GetAccountResponse,
   config: unknown,
 ): boolean =>
-  account.requiresOpenaiAuth && account.account?.type !== "apiKey" && routesToNativeOpenai(config);
+  account.requiresOpenaiAuth &&
+  !isMeteredCodexAccount(account.account) &&
+  routesToNativeOpenai(config);
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 const CODEX_CATALOG_REFRESH_TIMEOUT_MS = 3_000;
@@ -155,6 +161,33 @@ const CODEX_PRESENTATION = {
   showInteractionModeToggle: true,
   reportsContextWindow: true,
 } as const;
+
+export const resolveOwnedCodexMaintenance = Effect.fn("CodexProvider.resolveOwnedMaintenance")(
+  function* (
+    installation: CodexInstallation["Service"],
+  ): Effect.fn.Return<ProviderMaintenanceCapabilities> {
+    const provider = ProviderDriverKind.make("codex");
+    const capabilities = { provider, packageName: null, update: null };
+    if (!(yield* installation.installedManagedVersion)) return capabilities;
+    return {
+      ...capabilities,
+      lookupLatestVersion: installation.checkManagedUpdate.pipe(
+        Effect.map((release) => release?.latestVersion ?? null),
+      ),
+      builtInUpdate: {
+        lockKey: "managed-codex",
+        run: Effect.fn("CodexProvider.updateOwnedInstallation")((version) =>
+          installation.startUpdate(version).pipe(
+            Effect.asVoid,
+            Effect.mapError(
+              (cause) => new ServerProviderUpdateError({ provider, reason: cause.detail }),
+            ),
+          ),
+        ),
+      },
+    };
+  },
+);
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
@@ -243,6 +276,10 @@ function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
 }
 
+function isMeteredCodexAccount(account: CodexSchema.V2GetAccountResponse["account"]) {
+  return account != null && account.type !== "chatgpt";
+}
+
 function codexAccountAuthLabel(
   account: CodexSchema.V2GetAccountResponse["account"],
   usagePlanType: string | null | undefined,
@@ -250,7 +287,7 @@ function codexAccountAuthLabel(
   if (!account) return undefined;
   if (account.type === "apiKey") return "OpenAI API Key";
   if (account.type === "amazonBedrock") return "Amazon Bedrock";
-  if (account.type !== "chatgpt") return undefined;
+  if (account.type === "gcp") return "Google Cloud Vertex AI";
   // account/read takes the plan from the cached login token; the usage read asks the backend.
   const usageLabel = usagePlanType === "unknown" ? undefined : codexPlanLabel(usagePlanType);
   return usageLabel ?? codexPlanLabel(account.planType);
@@ -885,7 +922,8 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
           const nativeUsage =
             config !== undefined && codexRoutesSpendNativeQuota(accountResponse, config.config);
           const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> =
-            nativeUsage || input.homeLoginUsage === true
+            nativeUsage ||
+            (input.homeLoginUsage === true && !isMeteredCodexAccount(accountResponse.account))
               ? readCodexRateLimits(client, deadlineMs)
               : Effect.undefined;
           return readUsage.pipe(
@@ -1086,10 +1124,14 @@ const makePendingCodexProvider = Effect.fn("CodexProvider.makePendingCodexProvid
 
 export const CODEX_NOT_FOUND_MESSAGE =
   "Codex CLI (`codex`) is not on the server's PATH. Install Codex in Settings → Providers & models → Codex, or set its Binary path there. Installing ChatGPT or Codex desktop may not add codex to PATH.";
+export const CODEX_MANAGED_UPDATE_REQUIRED_MESSAGE =
+  "Update the managed Codex installation to continue.";
 
-/** The default binary path found no `codex` on PATH and no copy installed by T3.CodeShip. */
-export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCodexProvider")(
-  function* (codexSettings: CodexSettings): Effect.fn.Return<ServerProviderDraft> {
+export const makeUnavailableCodexProvider = Effect.fn("CodexProvider.makeUnavailableCodexProvider")(
+  function* (
+    codexSettings: CodexSettings,
+    installedVersion: string | null,
+  ): Effect.fn.Return<ServerProviderDraft> {
     return buildServerProvider({
       presentation: CODEX_PRESENTATION,
       enabled: codexSettings.enabled,
@@ -1097,11 +1139,14 @@ export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCode
       models: emptyCodexModelsFromSettings(codexSettings),
       skills: [],
       probe: {
-        installed: false,
-        version: null,
+        installed: installedVersion !== null,
+        version: installedVersion,
         status: "error",
         auth: { status: "unknown" },
-        message: CODEX_NOT_FOUND_MESSAGE,
+        message:
+          installedVersion === null
+            ? CODEX_NOT_FOUND_MESSAGE
+            : CODEX_MANAGED_UPDATE_REQUIRED_MESSAGE,
       },
     });
   },
@@ -1198,8 +1243,7 @@ function accountProbeStatus(
   const auth = {
     status: account.account ? ("authenticated" as const) : ("unknown" as const),
     funding:
-      account.account?.type === "apiKey" ||
-      account.account?.type === "amazonBedrock" ||
+      isMeteredCodexAccount(account.account) ||
       (account.account?.type === "chatgpt" &&
         codexPlanFunding(
           rateLimits && "rateLimits" in rateLimits
@@ -1372,7 +1416,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : login;
   const usageLimits =
-    !snapshot.nativeUsage && !sharesSubscription && !accountStatus.message
+    isMeteredCodexAccount(snapshot.account.account) ||
+    (!snapshot.nativeUsage && !sharesSubscription && !accountStatus.message)
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
       : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
         ? makeUnavailableUsageLimits({

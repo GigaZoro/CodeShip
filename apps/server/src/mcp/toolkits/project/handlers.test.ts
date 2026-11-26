@@ -1528,7 +1528,7 @@ it.effect(
       yield* git.execute({
         operation: "test.setupOrigin",
         cwd: root,
-        args: ["init", "--bare", origin],
+        args: ["init", "--bare", "--initial-branch=main", origin],
       });
       for (const args of [
         ["init", "-b", "main"],
@@ -1553,8 +1553,8 @@ it.effect(
       yield* launchInto({ type: "worktree" });
       yield* launchInto({ type: "worktree", startFromOrigin: false });
       expect(launched.map((launch) => launch.workspaceStrategy)).toEqual([
-        { type: "worktree", baseRef: "origin/main", startFromOrigin: true },
-        { type: "worktree", baseRef: "origin/main", startFromOrigin: false },
+        { type: "worktree", baseRef: "refs/remotes/origin/HEAD", startFromOrigin: true },
+        { type: "worktree", baseRef: "main", startFromOrigin: false },
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -159,6 +159,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.monitoringChats]: "monitoring",
   [WS_METHODS.monitoringThread]: "monitoring",
   [WS_METHODS.monitoringSubscribeChanges]: "monitoring",
+  [WS_METHODS.monitoringStartFixChat]: "monitoring",
   [WS_METHODS.scheduledTasksReorderPinned]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSetFollowsDefaultModel]: "scheduledTasks",
   [WS_METHODS.scheduledTasksDelete]: "scheduledTasks",

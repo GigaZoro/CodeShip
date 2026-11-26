@@ -664,7 +664,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       ["enableProviderUpdateChecks", "autoUpdateProviders"],
                       [
                         t(
-                          "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.",
+                          "Check provider CLIs and model catalogs for updates. Install automatically checks at startup and hourly, and installs supported CLI updates.",
                         ),
                         projectSelected
                           ? t("Environment-wide setting. Select All projects to change it.")

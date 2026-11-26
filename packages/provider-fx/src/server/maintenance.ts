@@ -1,5 +1,7 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
@@ -14,9 +16,20 @@ import {
   type ProviderMaintenanceCapabilitiesResolver,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 import { FX_DRIVER_KIND } from "./acpSupport.ts";
+import { runFxCli } from "./status.ts";
 
 /** The stable release `fx upgrade` and fx's setup script install. */
 const FX_LATEST_RELEASE_URL = "https://releases.fx.sh/latest.txt";
+const CHANNEL_PROBE_TIMEOUT_MS = 4_000;
+
+const decodeFxUpdateChannels = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      update_channel: Schema.Literals(["stable", "dev"]),
+      build_channel: Schema.optionalKey(Schema.Literals(["stable", "dev"])),
+    }),
+  ),
+);
 
 export const fetchLatestFxVersion = Effect.fn("fetchLatestFxVersion")(function* () {
   const client = yield* HttpClient.HttpClient;
@@ -69,6 +82,26 @@ export const makeFxMaintenance = (
     if (homebrew) {
       if (homebrew.kind !== "formula" || homebrew.name !== "fx-agent") return manualOnly;
       return (yield* resolveHomebrewProviderMaintenance(input, homebrew, context)) ?? manualOnly;
+    }
+    const channels = yield* runFxCli(
+      { binaryPath: context.resolvedCommandPath },
+      ["status", "--json"],
+      context.env,
+    ).pipe(
+      Effect.map((result) =>
+        result.code === 0 ? decodeFxUpdateChannels(result.stdout) : Option.none(),
+      ),
+      Effect.timeout(CHANNEL_PROBE_TIMEOUT_MS),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    if (
+      Option.isSome(channels) &&
+      (channels.value.update_channel !== "stable" || channels.value.build_channel === "dev")
+    ) {
+      return makeManualOnlyProviderMaintenanceCapabilities({
+        ...input,
+        installPath: context.realCommandPath,
+      });
     }
     return makeProviderMaintenanceCapabilities({
       ...input,

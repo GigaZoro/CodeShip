@@ -549,6 +549,48 @@ describe("failoverLimitedLaunch", () => {
     assert.equal(launchOn({ selection: auto, limited: [third] }), third);
     assert.equal(launchOn({ limited: [], needingSignIn: [third], switching: false }), third);
   });
+
+  it.each([
+    { type: "amazonBedrock" },
+    { type: "gcp" },
+    { type: "chatgpt", funding: "metered" },
+  ] as const)("keeps $type out of named subscription failover", (auth) => {
+    const codex = ProviderDriverKind.make("codex");
+    const model = { slug: "gpt-6.2-sol", name: "GPT-6.2 Sol", isCustom: false, capabilities: null };
+    const context = {
+      projectId,
+      mcpSignInsNeeded: signIns(),
+      providers: [
+        provider(third, { driver: codex, models: [model] }),
+        provider(primary, {
+          driver: codex,
+          models: [model],
+          auth: { status: "authenticated", ...auth },
+        }),
+        provider(second, { driver: codex, models: [model] }),
+      ],
+      settings: {
+        ...settings([primary, second, third]),
+        providerInstances: Object.fromEntries(
+          [primary, second, third].map((instanceId) => [instanceId, { driver: codex }]),
+        ),
+      },
+      recordedLimits: new Map([
+        [third, [{ resetAt: "2026-11-03T13:00:00Z", refusedAt: "2026-11-03T11:00:00Z" }]],
+      ]),
+      nowMs,
+    };
+
+    assert.deepEqual(
+      failoverLimitedLaunch({ ...context, selection: { instanceId: third, model: model.slug } }),
+      { selection: { instanceId: second, model: model.slug }, failover: { reason: "usageLimit" } },
+    );
+    const explicit = { instanceId: primary, model: model.slug };
+    assert.deepEqual(failoverLimitedLaunch({ ...context, selection: explicit }), {
+      selection: explicit,
+      failover: null,
+    });
+  });
 });
 
 it.effect.each([
@@ -1689,6 +1731,13 @@ describe("verified funding for automatic admission", () => {
   );
 
   it.each([
+    ...["amazonBedrock", "gcp"].map((authType) => ({
+      name: `${authType} with a retained included model`,
+      driver: ProviderDriverKind.make("codex"),
+      authType,
+      modelFunding: "included" as const,
+      admits: false,
+    })),
     {
       name: "Google OAuth without usage metrics",
       driver: antigravity,
@@ -1723,6 +1772,21 @@ describe("verified funding for automatic admission", () => {
       funding: "unknown",
       workspaceScoped: true,
       verified: "included",
+      admits: true,
+    },
+    {
+      name: "an included destination workspace on an otherwise metered account",
+      driver: custom,
+      funding: "metered",
+      workspaceScoped: true,
+      verified: "included",
+      admits: true,
+    },
+    {
+      name: "an included model on an otherwise metered account",
+      driver: custom,
+      funding: "metered",
+      modelFunding: "included",
       admits: true,
     },
     {

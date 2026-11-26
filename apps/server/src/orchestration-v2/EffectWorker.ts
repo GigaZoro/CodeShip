@@ -11,7 +11,9 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
+import { recordMissedSteer } from "./StopDecisionEvidence.ts";
 
 import {
   increment,
@@ -116,6 +118,7 @@ export const layerExecutor: Layer.Layer<
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+    const evidenceSql = yield* Effect.serviceOption(SqlClient.SqlClient);
     const providerTurnStart = yield* ProviderTurnStartService.ProviderTurnStartServiceV2;
     const runtimeRequests = yield* RuntimeRequestService.RuntimeRequestServiceV2;
     const threadTitleRegeneration =
@@ -381,11 +384,27 @@ export const layerExecutor: Layer.Layer<
                   Effect.gen(function* () {
                     if (
                       !isProviderTurnControlError(error) ||
-                      (!error.turnCompleted && !error.steerDeclined && !error.requiresNewTurn) ||
                       effect.request.type !== "provider-turn.steer"
                     ) {
                       return yield* error;
                     }
+                    // A post-send adapter failure can also observe a completed turn. Only an explicit
+                    // rejection or the first call stopping before the adapter proves non-delivery.
+                    if (
+                      effect.attemptCount === 1 &&
+                      Option.isSome(evidenceSql) &&
+                      (error.requiresNewTurn ||
+                        error.steerDeclined === true ||
+                        error.cause ===
+                          "The provider turn ended before the steering message was delivered.")
+                    )
+                      yield* recordMissedSteer(
+                        evidenceSql.value,
+                        effect.request.providerTurnId,
+                        effect.request.messageId,
+                      );
+                    if (!(error.turnCompleted || error.steerDeclined || error.requiresNewTurn))
+                      return yield* error;
                     const projection = yield* threads.getThreadRecords(
                       effect.threadId,
                       ["messages", "runs"],

@@ -36,7 +36,7 @@ export function useMonitoringOverview(input: MonitoringOverviewInput) {
   const [shown, setShown] = useState(next);
   const { keep, ...displayed } = presentMonitoringOverview(shown, next);
   if (!keep && (shown.key !== key || shown.view !== view)) setShown(next);
-  return displayed;
+  return { ...displayed, retained: keep };
 }
 
 export function useMonitoringChats(request: MonitoringChatsRequest) {

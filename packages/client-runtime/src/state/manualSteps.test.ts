@@ -2,11 +2,13 @@ import {
   CommandId,
   EnvironmentId,
   ManualStepReviewError,
+  ManualStepStartChatError,
   ThreadId,
   type DetectedManualStep,
   type ManualStep,
   type ManualStepReview,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
@@ -18,11 +20,23 @@ import {
   manualStepChatHost,
   manualStepReviewState,
   manualStepShownText,
+  manualStepStartChatFailureMessage,
   manualStepsEnvironmentIdsKey,
   settleManualStepStart,
   type ManualStepReviewState,
   type ManualStepStart,
 } from "./manualSteps.ts";
+
+it("explains how to start a manual step when its machine cannot run quota-aware Auto", () => {
+  const error = new ManualStepStartChatError({
+    reason: "no-model",
+    detail: "",
+    quotaAwareAutoUnsupported: true,
+  });
+  expect(manualStepStartChatFailureMessage(Cause.fail(error))).toBe(
+    "That machine does not support quota-aware Auto. Choose a provider model in its settings, then try again.",
+  );
+});
 
 const step = (
   threadId: string,

@@ -27,7 +27,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isDarwinHost, isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
-import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
+import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTreeScript";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -3155,7 +3155,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
 
 const SATURATION: CpuAdmission.CpuSaturation = {
   busyShare: 0.99,
-  nicedShare: 0,
+  nicedShare: 0.8,
+  excludedShare: 0.01,
   limit: 0.95,
   cores: 12,
 };
@@ -3181,7 +3182,7 @@ const busyCpu = Effect.gen(function* () {
 });
 
 const CPU_WAIT =
-  /^Queued, waiting for CPU: the CPUs are 0\.99 busy across 12 cores, at or over the 0\.95 limit\. Its time limit counts from when it starts\.$/;
+  /^Queued, waiting for CPU: the CPUs are 0\.99 busy across 12 cores, at or over the 0\.95 limit \(0\.80 niced, 0\.01 excluded from the busy share as lower-priority work\)\. Its time limit counts from when it starts\.$/;
 
 /** A command that runs until its chat's workspace has a `go` file. */
 const HOLD_COMMAND = "until [ -e go ]; do sleep 0.05; done; echo held";
