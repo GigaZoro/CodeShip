@@ -69,6 +69,7 @@ import {
 import { GIT_CALL_TIMEOUT_MS, REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
+import { macAwakeMs } from "../.github/scripts/landing-turn.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import {
   isRepositoryCommandManifest,
@@ -265,29 +266,23 @@ const awakeSeconds = Effect.fnUntraced(function* (seconds: number) {
 const awakeTimeoutOption = <A, E, R>(effect: Effect.Effect<A, E, R>, seconds: number) =>
   Effect.raceFirst(Effect.asSome(effect), Effect.as(awakeSeconds(seconds), Option.none<A>()));
 
-// Ticks are one second apart, so a gap this long between two is a sleep, not a busy machine.
-const SLEEP_GAP_MS = 10_000;
-
-/**
- * Runs `effect` and reports whether the machine slept meanwhile. A timer armed before a Mac's sleep
- * is already past on wake, so a Vitest test in flight then fails as timed out although it ran for
- * seconds (AB#7184).
- */
-export const noticingSleep = Effect.fn("checkChanged.noticingSleep")(function* <A, E, R>(
-  effect: Effect.Effect<A, E, R>,
-) {
-  let slept = false;
-  const ticks = Effect.gen(function* () {
-    let last = yield* Clock.currentTimeMillis;
-    for (;;) {
-      yield* Effect.sleep("1 second");
-      const now = yield* Clock.currentTimeMillis;
-      if (now - last > SLEEP_GAP_MS) slept = true;
-      last = now;
-    }
-  });
-  const value = yield* Effect.raceFirst(effect, ticks);
-  return { value, slept };
+export const noticingSleep = Effect.fn("checkChanged.noticingSleep")(function* <
+  A extends {
+    readonly ok: boolean;
+  },
+  E,
+  R,
+>(effect: Effect.Effect<A, E, R>, readAwakeMs: () => number) {
+  const awake = Effect.try({ try: readAwakeMs, catch: String }).pipe(Effect.option);
+  const startAwake = yield* awake;
+  const startWall = yield* Clock.currentTimeMillis;
+  const result = yield* effect;
+  if (result.ok || Option.isNone(startAwake)) return { ...result, slept: false };
+  const endAwake = yield* awake;
+  const wallElapsed = (yield* Clock.currentTimeMillis) - startWall;
+  // Allow for the cost and resolution of sampling two independent clocks.
+  const slept = Option.isSome(endAwake) && wallElapsed - (endAwake.value - startAwake.value) > 1000;
+  return { ...result, slept };
 });
 
 export interface Step<R> {
@@ -1078,7 +1073,6 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   run: (concurrency: number) => Effect.Effect<{
     readonly ok: boolean;
     readonly output: string;
-    // The machine slept during the attempt, so its timeouts are not evidence of a hang.
     readonly slept?: boolean;
   }>,
 ) {
@@ -1107,33 +1101,40 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
     const result = yield* run(limit);
     output += result.output;
     if (result.ok) break;
-    // A failure after a sleep may be a timer that counted it. Run the attempt's groups once more,
-    // awake: a test that hangs awake fails again.
-    if (result.slept === true && !sleepRetried) {
+    const retryAfterSleep = result.slept === true && !sleepRetried;
+    if (retryAfterSleep) {
       sleepRetried = true;
       output +=
-        "\ncheck:changed: the machine slept during the tests; running the failed groups again.\n";
-      continue;
+        "\ncheck:changed: the Mac slept during the tests; retrying unfinished or failed groups.\n";
+    } else {
+      ok = false;
     }
-    ok = false;
 
     // Vite+ 1.4 kills in-flight siblings after a failure. Leave those groups pending so they get a
     // complete run and report their own failures. Unix reports a killed task as exit 137; Windows
     // gives it a status a failed task can have, so there only a serial attempt settles one.
     const [summaryFile] = yield* summaries;
-    if (!summaryFile) break;
+    if (!summaryFile) {
+      if (retryAfterSleep) continue;
+      break;
+    }
     const summary = yield* decodeTestSummary(yield* fs.readFileString(summaryFile));
     const settled = summary.tasks
       .filter((task) => {
         const failure = task.result.Spawned?.outcome.Failed;
         return (
-          limit === 1 ||
           failure === undefined ||
-          (killedExit !== undefined && failure.exit_code !== killedExit)
+          (!retryAfterSleep &&
+            (limit === 1 || (killedExit !== undefined && failure.exit_code !== killedExit)))
         );
       })
       .map((task) => task.task_name)
       .filter((task) => remaining.delete(task));
+    if (retryAfterSleep) {
+      completed.push(...settled);
+      if (remaining.size === 0) ok = false;
+      continue;
+    }
     if (settled.length === 0) {
       if (limit === 1 || !summary.tasks.some((task) => remaining.has(task.task_name))) break;
       // A task can itself exit 137. A serial attempt makes that distinguishable from fail-fast.
@@ -1920,24 +1921,24 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             },
             groups,
             platform,
-            (limit) =>
-              noticingSleep(
-                spawnVp(
-                  spawner,
-                  platform,
-                  [
-                    "run",
-                    "--remote-cache",
-                    "off",
-                    "--concurrency-limit",
-                    String(limit),
-                    "test-cache",
-                  ],
-                  root,
-                  env,
-                  collect,
-                ),
-              ).pipe(Effect.map(({ value, slept }) => ({ ...value, slept }))),
+            (limit) => {
+              const run = spawnVp(
+                spawner,
+                platform,
+                [
+                  "run",
+                  "--remote-cache",
+                  "off",
+                  "--concurrency-limit",
+                  String(limit),
+                  "test-cache",
+                ],
+                root,
+                env,
+                collect,
+              );
+              return platform === "darwin" ? noticingSleep(run, macAwakeMs) : run;
+            },
           );
           const changed = yield* finish;
           return changed.length === 0

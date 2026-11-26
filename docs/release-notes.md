@@ -1,3 +1,7 @@
+## 2026-11-26 — Changed-file tests recover from Mac sleep
+
+- When a Mac sleeps during the test step of `vp run check:changed`, failed and unfinished test groups get one more attempt. Completed groups keep their results, and failures while the Mac stays awake still fail the check.
+
 ## 2026-11-26 — Fork macOS builds recover when GitHub gives them no runner
 
 - When GitHub gives a fork release no macOS runner, the build now requests another attempt as soon as GitHub reports the failure. Previously, Macs could stay on an older release for hours while the build waited for scheduled recovery.
@@ -11,11 +15,6 @@
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
-
-## 2026-11-25 — A Mac's sleep no longer fails check:changed's tests
-
-- For people who work on T3.CodeShip: when a Mac sleeps while `vp run check:changed` runs its tests, a test failure now runs the failed test groups once more instead of ending the check, because a test's own time limit counts the sleep. A test that fails while the Mac stays awake still fails at once.
-- The `check:changed` tests no longer hang inside a landing: their own `check:changed` runs now ignore the landing's turn and time-limit settings, as the launcher tests already did.
 
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
 

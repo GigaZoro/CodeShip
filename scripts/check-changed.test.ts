@@ -286,28 +286,39 @@ describe("check:changed", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("runs the test groups again once after a failure the machine slept under", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const directory = yield* slotDirectory;
-      const cache = NodePath.join(directory, "cache");
-      const requestFile = NodePath.join(directory, "request.json");
-      yield* fs.makeDirectory(NodePath.join(cache, "v18"), { recursive: true });
-      const request = { files: ["packages/shared/a.test.ts"], groupSize: 1, uncached: [] };
-      const attempt = (slept: boolean) => ({
-        ok: false,
-        output: `attempt slept=${slept}\n`,
-        slept,
-      });
-      const attempts = [attempt(true), attempt(true)];
-      let runs = 0;
-      const result = yield* runTestGroups(cache, requestFile, request, 1, "linux", () =>
-        Effect.sync(() => attempts[runs++]!),
-      );
-      // The second sleep-marked failure is final: one retry per run.
-      assert.strictEqual(runs, 2);
-      assert.isFalse(result.ok);
-    }).pipe(Effect.provide(NodeServices.layer)),
+  it.effect.each([true, false])(
+    "retries a sleep-affected group once and uses the retry's result (%s)",
+    (passes) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* slotDirectory;
+        const cache = NodePath.join(directory, "cache");
+        const version = NodePath.join(cache, "v18");
+        const requestFile = NodePath.join(directory, "request.json");
+        yield* fs.makeDirectory(version, { recursive: true });
+        const request = {
+          files: ["packages/shared/a.test.ts", "packages/shared/b.test.ts"],
+          groupSize: 1,
+          uncached: ["packages/shared/a.test.ts"],
+        };
+        const [first, second] = cachedTestTasks(JSON.stringify(request))["test-cache"]!.dependsOn!;
+        let runs = 0;
+        const result = yield* runTestGroups(cache, requestFile, request, 1, "darwin", () =>
+          Effect.gen(function* () {
+            const retry = runs++ > 0;
+            const requested = JSON.parse(yield* fs.readFileString(requestFile));
+            assert.deepStrictEqual(requested.completed, retry ? [first] : []);
+            const ok = retry && passes;
+            const tasks = retry ? [failed(second!, 1)] : [hit(first!), failed(second!, 1)];
+            yield* fs.writeFileString(
+              NodePath.join(version, "last-summary.json"),
+              JSON.stringify({ tasks }),
+            );
+            return { ok, output: "", slept: !ok };
+          }).pipe(Effect.orDie),
+        );
+        assert.deepStrictEqual([runs, result.ok], [2, passes]);
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("fails a test group that failed while the machine stayed awake at once", () =>
@@ -331,23 +342,27 @@ describe("check:changed", () => {
   );
 
   it.effect.each([
-    { name: "notices a sleep", jump: 900_000, slept: true },
-    { name: "ignores a busy second", jump: 2_000, slept: false },
-  ])("$name as a wall clock that jumps while ticks stay a second apart", ({ jump, slept }) =>
+    { name: "a sleep", wallElapsed: 900_000, awakeElapsed: 1000, slept: true },
+    { name: "an awake stall", wallElapsed: 900_000, awakeElapsed: 900_000, slept: false },
+  ])("distinguishes $name at test exit", ({ wallElapsed, awakeElapsed, slept }) =>
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
       let wall = 0;
-      const fiber = yield* noticingSleep(Effect.sleep("3 seconds").pipe(Effect.as("done"))).pipe(
+      let awake = 0;
+      const result = yield* noticingSleep(
+        Effect.sync(() => {
+          wall += wallElapsed;
+          awake += awakeElapsed;
+          return { ok: false };
+        }),
+        () => awake,
+      ).pipe(
         Effect.provideService(Clock.Clock, {
           ...clock,
           currentTimeMillis: Effect.sync(() => wall),
         }),
-        Effect.forkChild,
       );
-      yield* Effect.yieldNow;
-      wall += jump;
-      yield* TestClock.adjust("3 seconds");
-      assert.deepStrictEqual(yield* Fiber.join(fiber), { value: "done", slept });
+      assert.deepStrictEqual(result, { ok: false, slept });
     }),
   );
 
@@ -1904,6 +1919,10 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
+    ".github/scripts/landing-turn.cjs",
+    ".github/scripts/bounded-git.cjs",
+    ".github/scripts/lease-queue.cjs",
+    ".github/scripts/release-notes.cjs",
     ".github/scripts/git-history.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
