@@ -986,13 +986,14 @@ function taskResultReadDuringRun(
   task: OrchestrationV2Subagent,
   run: OrchestrationV2Run,
   at: DateTime.Utc,
+  earliestReadAt: DateTime.Utc,
 ) {
   return (
     task.completedAt !== null &&
     isTerminalDelegatedTaskStatus(task.status) &&
     typeof task.result === "string" &&
     DateTime.isGreaterThanOrEqualTo(at, task.completedAt) &&
-    DateTime.isGreaterThanOrEqualTo(at, run.startedAt ?? run.requestedAt) &&
+    DateTime.isGreaterThanOrEqualTo(at, earliestReadAt) &&
     (isActiveRun(run) ||
       (run.completedAt !== null && DateTime.isLessThanOrEqualTo(at, run.completedAt)))
   );
@@ -1016,7 +1017,8 @@ function previousTaskResultObservation(
   )
     return;
   const at = DateTime.makeUnsafe(delivery.observedAt);
-  if (!taskResultReadDuringRun(task, run, at)) return;
+  // A restart replaces startedAt on this run after the earlier read has been verified.
+  if (!taskResultReadDuringRun(task, run, at, run.requestedAt)) return;
   return { run, at };
 }
 
@@ -3305,7 +3307,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         !isActiveRun(observer) ||
         (!disposedOnly &&
           (observer.activeAttemptId !== command.observedByAttemptId ||
-            !taskResultReadDuringRun(task, observer, now)))
+            !taskResultReadDuringRun(
+              task,
+              observer,
+              now,
+              observer.startedAt ?? observer.requestedAt,
+            )))
       ) {
         return;
       }

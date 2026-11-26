@@ -1372,6 +1372,23 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   return yield* refuse("The restored checkout has incomplete or changed tracked files.");
 });
 
+const registeredReleaseCheckout = Effect.fn("WorktreeRelease.registeredCheckout")(function* (
+  request: ReleaseRequest,
+  projectRoot: string,
+) {
+  const path = yield* Path.Path;
+  const cwd = request.worktreePath;
+  if (
+    (yield* existingWorkspacePath(
+      (yield* readGit(cwd, ["rev-parse", "--show-toplevel"])).trim(),
+    )) !== cwd
+  )
+    return "working directory changed";
+  if ((yield* gitFileIdentity(path.join(cwd, ".git"))) !== request.identity)
+    return "checkout was replaced";
+  return (yield* worktreeRegistration(cwd, projectRoot)) ?? "checkout registration changed";
+});
+
 export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   request: ReleaseRequest,
   projectRoot: string,
@@ -1381,16 +1398,8 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const cwd = request.worktreePath;
   if (request.family && !(yield* supportsFamilyCheckoutHook((args) => readGit(cwd, args))))
     return familyHookUnavailable;
-  if (
-    (yield* existingWorkspacePath(
-      (yield* readGit(cwd, ["rev-parse", "--show-toplevel"])).trim(),
-    )) !== cwd
-  )
-    return "working directory changed";
-  if ((yield* gitFileIdentity(path.join(cwd, ".git"))) !== request.identity)
-    return "checkout was replaced";
-  const registration = yield* worktreeRegistration(cwd, projectRoot);
-  if (!registration) return "checkout registration changed";
+  const registration = yield* registeredReleaseCheckout(request, projectRoot);
+  if (typeof registration === "string") return registration;
   const { admin, common } = registration;
   if (yield* fs.exists(path.join(common, "info", "grafts"))) return "repository uses grafts";
   {
@@ -1591,5 +1600,26 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       }
     }
   }
-  return yield* trackedPosixMetadataHold(cwd, index);
+  const metadataHold = yield* trackedPosixMetadataHold(cwd, index);
+  if (metadataHold) return metadataHold;
+
+  // Filesystem and history inspection may take minutes. Bind the resulting clearance to the
+  // original linked checkout, branch and commit again immediately before returning it.
+  const finalRegistration = yield* registeredReleaseCheckout(request, projectRoot);
+  if (typeof finalRegistration === "string") return finalRegistration;
+  if (finalRegistration.admin !== admin || finalRegistration.common !== common)
+    return "checkout registration changed";
+  const branchRef = "refs/heads/" + request.branch;
+  const binding = (yield* readGit(cwd, ["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"]))
+    .trimEnd()
+    .split(/\r?\n/);
+  // A detached HEAD resolves to "HEAD". Also reject a new symbolic alias of the approved branch.
+  if (
+    binding.length !== 2 ||
+    binding[1] !== branchRef ||
+    (yield* readGit(cwd, ["symbolic-ref", "--no-recurse", "HEAD"])).trimEnd() !== branchRef
+  )
+    return "checkout branch changed since release was queued";
+  if (binding[0] !== request.head) return "checkout HEAD changed since release was queued";
+  return null;
 });

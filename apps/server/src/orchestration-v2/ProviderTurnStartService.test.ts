@@ -372,6 +372,7 @@ function makeLocalCommandHarness(input: {
   readonly stateDir?: string;
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
+  readonly gitWorkflowMock?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly fileSystem?: FileSystem.FileSystem;
   readonly previousNativeSession?: boolean;
@@ -1197,12 +1198,14 @@ function makeLocalCommandHarness(input: {
             })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
-          ? Layer.mock(GitWorkflow.GitWorkflowService)({
-              pruneWorktrees: () => Effect.void,
-              listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
-              currentBranch: () => Effect.succeed("feature/restore"),
-              createWorktree,
-            })
+          ? Layer.mock(GitWorkflow.GitWorkflowService)(
+              input.gitWorkflowMock ?? {
+                pruneWorktrees: () => Effect.void,
+                listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
+                currentBranch: () => Effect.succeed("feature/restore"),
+                createWorktree,
+              },
+            )
           : Layer.succeed(GitWorkflow.GitWorkflowService, input.gitWorkflow),
         Layer.mock(ProjectService.ProjectService)({ getById: getProject }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -2552,13 +2555,13 @@ effectIt.effect.each([
         worktreesDir,
         worktreePath,
         nativeTurn: true,
-        gitWorkflow: {
+        gitWorkflowMock: {
           pruneWorktrees,
           createWorktree,
           recoverInterruptedWorktree,
           listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
           currentBranch: () => Effect.succeed("feature/restore"),
-        } as GitWorkflow.GitWorkflowService["Service"],
+        },
         runSetup,
       });
       const projection = harness.projection();
@@ -2698,7 +2701,7 @@ effectIt.effect.each([
         worktreesDir,
         worktreePath,
         nativeTurn: true,
-        gitWorkflow: { recoverInterruptedWorktree } as GitWorkflow.GitWorkflowService["Service"],
+        gitWorkflowMock: { recoverInterruptedWorktree },
         runSetup,
       });
       const projection = harness.projection();

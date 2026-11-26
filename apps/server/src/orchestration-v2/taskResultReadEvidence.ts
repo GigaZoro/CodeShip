@@ -7,12 +7,16 @@ export function resultFingerprint(result: string): string {
 
 // t is the projected task. Older public acknowledgements recorded only a run ID. Their
 // event payload describes the server's task, not the bytes that its caller received.
+// A provider restart overwrites startedAt for the same run. Use its original request time
+// for historical reads whose content and active reader were checked when they were recorded.
 export const provenTaskResultReadsSql = `
   SELECT observer.run_id AS reader, evidence.at AS at, observer.status AS reader_status, evidence.read_sequence
   FROM (
     SELECT json_extract(e.payload_json,'$.completionDelivery.observedByRunId') AS reader, e.occurred_at AS at, e.sequence AS read_sequence
     FROM orchestration_command_receipts receipt
-    CROSS JOIN orchestration_events e ON e.command_id = receipt.command_id
+    -- The stream index can rescan the whole thread for each receipt.
+    CROSS JOIN orchestration_events e INDEXED BY idx_orch_events_command_id
+      ON e.command_id = receipt.command_id
     WHERE receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = t.thread_id AND receipt.status = 'accepted'
       AND receipt.command_type IN ('delegated_task.completion-delivery.observe-disposed',
         'delegated_task.completion-delivery.observe','delegated_task.completion-delivery.acknowledge')
@@ -32,7 +36,7 @@ export const provenTaskResultReadsSql = `
   JOIN orchestration_v2_projection_runs observer ON observer.run_id = evidence.reader AND observer.thread_id = t.thread_id
   WHERE t.status IN ('completed','failed','cancelled','interrupted') AND json_type(t.payload_json,'$.result') = 'text'
     AND t.completed_at <= evidence.at
-    AND coalesce(json_extract(observer.payload_json,'$.startedAt'), observer.requested_at) <= evidence.at
+    AND observer.requested_at <= evidence.at
     AND (observer.completed_at >= evidence.at OR observer.status IN ('preparing','starting','running','waiting'))
 `;
 
@@ -52,6 +56,6 @@ export const recordedTaskReadsSql = `
     AND (evidence.key=0 OR (t.completion_delivery_state IN ('acknowledged','disposed')
       AND json_extract(evidence.value,'$.state') = t.completion_delivery_state))
     AND t.status IN ('completed','failed','cancelled','interrupted') AND json_type(t.payload_json,'$.result')='text'
-    AND t.completed_at <= at AND coalesce(json_extract(observer.payload_json,'$.startedAt'),observer.requested_at) <= at
+    AND t.completed_at <= at AND observer.requested_at <= at
     AND (observer.completed_at >= at OR observer.status IN ('preparing','starting','running','waiting'))
 `;

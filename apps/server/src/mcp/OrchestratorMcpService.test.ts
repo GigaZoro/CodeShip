@@ -28,6 +28,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  RunAttemptId,
   RunId,
   ThreadId,
   TurnItemId,
@@ -135,7 +136,7 @@ describe("OrchestratorMcpService", () => {
         const previous = RunId.make("run:mcp-command-first-observer");
         const current = RunId.make("run:mcp-command-next-observer");
         const providerInstanceId = ProviderInstanceId.make("codex");
-        const at = yield* DateTime.now;
+        const at = DateTime.subtract(yield* DateTime.now, { minutes: 3 });
         const observations = yield* Ref.make<ReadonlyArray<RunId | null>>([]);
         const parent = {
           thread: { id: threadId },
@@ -148,8 +149,11 @@ describe("OrchestratorMcpService", () => {
                     status: prior,
                     ordinal: 1,
                     threadId,
-                    startedAt: at,
-                    completedAt: at,
+                    // The same run read this result before its provider restarted on a new attempt.
+                    requestedAt: DateTime.subtract(at, { minutes: 1 }),
+                    activeAttemptId: RunAttemptId.make("attempt:mcp-command-restart"),
+                    startedAt: DateTime.add(at, { minutes: 1 }),
+                    completedAt: DateTime.add(at, { minutes: 2 }),
                   },
                 ]),
             {

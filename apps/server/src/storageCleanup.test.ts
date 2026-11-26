@@ -1,5 +1,4 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercises the real setup script in a linked Git checkout.
-import { resultFingerprint } from "./orchestration-v2/taskResultReadEvidence.ts";
 import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Link identity requires native lstat, including dangling links.
 import * as NodeFSP from "node:fs/promises";
@@ -43,6 +42,7 @@ import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
+import { resultFingerprint } from "./orchestration-v2/taskResultReadEvidence.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -2593,10 +2593,11 @@ it.live("releases the bound family only after every member settles and delivers"
         Effect.gen(function* () {
           using _lock = vi
             .spyOn(fixture.threadCommands, "withLock")
-            .mockImplementation((id, effect) =>
-              (id === child.id ? Deferred.succeed(waiting, undefined) : Effect.void).pipe(
-                Effect.andThen(withLock(id, effect)),
-              ),
+            .mockImplementation(
+              <A, E, R>(id: ThreadId, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+                (id === child.id ? Deferred.succeed(waiting, undefined) : Effect.void).pipe(
+                  Effect.andThen(withLock(id, effect)),
+                ),
             );
           const checking = yield* fixture.service.runNow.pipe(Effect.forkChild);
           expect(
@@ -2721,6 +2722,42 @@ it.live("releases a settled family through ancestor aliases and rechecks new ali
         (yield* fixture.service.runNow).entries.find((entry) => entry.threadId === root.id)?.reason,
       ).toBe("Checkout still has a deleted owner");
       fixture.setDeletedThreads([]);
+      {
+        const receipt = yield* fixture.fs.readFileString(file);
+        const switchBranch = fixture
+          .command(fixture.worktree, ["switch", "-c", "replacement"])
+          .pipe(
+            Effect.asVoid,
+            Effect.orDie,
+            Effect.tap(() => Effect.sync(() => fixture.setOnLiveCheck(Effect.void))),
+          );
+        // Change only the branch, during the last session lookup with both family locks held.
+        const withLock = fixture.threadCommands.withLock;
+        using _lock = vi
+          .spyOn(fixture.threadCommands, "withLock")
+          .mockImplementation(
+            <A, E, R>(id: ThreadId, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+              withLock(
+                id,
+                id === side.id
+                  ? Effect.sync(() => fixture.setOnLiveCheck(switchBranch)).pipe(
+                      Effect.andThen(effect),
+                    )
+                  : effect,
+              ),
+          );
+        const held = (yield* fixture.service.runNow).entries[0];
+        expect(held?.outcome, held?.reason).toBe("kept");
+        expect(
+          (yield* fixture.command(fixture.worktree, ["branch", "--show-current"])).stdout.trim(),
+        ).toBe("replacement");
+        expect(
+          (yield* fixture.command(fixture.worktree, ["rev-parse", "HEAD"])).stdout.trim(),
+        ).toBe(request.head);
+        expect(yield* fixture.fs.readFileString(file)).toBe(receipt);
+        expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
+        yield* fixture.command(fixture.worktree, ["switch", "feature"]);
+      }
       const result = (yield* fixture.service.runNow).entries[0];
       expect(result?.outcome, result?.reason).toBe("removed");
       expect(yield* fixture.fs.exists(file + ".released")).toBe(true);

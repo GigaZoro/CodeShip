@@ -278,6 +278,7 @@ export class StorageCleanup extends Context.Service<
 >()("t3/storageCleanup") {}
 
 const RESULT_CHECK_PAGE_SIZE = 128;
+const decodeStoredTaskResult = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.String));
 
 interface TaskResultCandidate {
   readonly id: string;
@@ -354,8 +355,11 @@ const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* 
         AND t.completion_delivery_state = json_extract(t.payload_json,'$.completionDelivery.state')
         AND observer.status = 'completed'
     `.pipe(NodeSqliteClient.readOnly);
-    const digest = reads[0] && resultFingerprint(JSON.parse(reads[0].result_json));
-    if (reads.some((read) => read.fingerprint === digest)) return true;
+    const first = reads[0];
+    if (first) {
+      const digest = resultFingerprint(yield* decodeStoredTaskResult(first.result_json));
+      if (reads.some((read) => read.fingerprint === digest)) return true;
+    }
   }
   if (task.delivery === "acknowledged" || task.delivery === "disposed") {
     const rows = yield* sql`SELECT 1 FROM orchestration_v2_projection_subagents t
@@ -1824,12 +1828,11 @@ const make = Effect.gen(function* () {
         });
         if (release) {
           const removeApproved = Effect.gen(function* () {
-            // A family command may have changed tracked metadata, ignored files or the checkout
-            // itself while we waited for its lock. Verify the owner's receipt before claiming it.
-            const changed = yield* releaseHold(release.request, project.workspaceRoot);
-            if (changed !== null) return changed;
             const lastHold = yield* blockedSinceCheck();
             if (lastHold !== null) return lastHold;
+            // Verify the receipt's checkout and local data after the family locks and activity checks.
+            const changed = yield* releaseHold(release.request, project.workspaceRoot);
+            if (changed !== null) return changed;
             const admissionHold = yield* beginRemoval;
             if (admissionHold !== null) return admissionHold;
             const base = release.file.replace(/\.releasing$/, "");

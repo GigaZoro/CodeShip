@@ -5,6 +5,7 @@ import {
   EventId,
   MessageId,
   type ModelSelection,
+  NodeId,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2PendingBackgroundTask,
@@ -34,6 +35,7 @@ import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { resultFingerprint } from "./taskResultReadEvidence.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { runLiftsScope } from "./AccountRouting.ts";
 import {
@@ -411,10 +413,62 @@ it.live("retries a failed selection restart session open before completing", () 
         yield* worker.drain();
         const activeProjection = yield* orchestrator.getThreadProjection(threadId);
         assert.isTrue(activeProjection.providerTurns.some((turn) => turn.status === "running"));
-        const activeRunId = activeProjection.runs[0]?.id;
-        if (activeRunId === undefined) {
-          return yield* Effect.die("active restart test run is missing");
+        const activeRun = activeProjection.runs[0];
+        if (activeRun?.rootNodeId == null) {
+          return yield* Effect.die("The active reader run has no root node.");
         }
+        const activeRunId = activeRun.id;
+        const taskId = NodeId.make("node:selection-restart:finished-task");
+        const published = yield* DateTime.now;
+        const result = "Finished before the model change.";
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("event:selection-restart:finished-task"),
+              type: "subagent.updated",
+              threadId,
+              runId: activeRunId,
+              nodeId: taskId,
+              driver,
+              occurredAt: published,
+              payload: {
+                id: taskId,
+                threadId,
+                runId: activeRunId,
+                parentNodeId: activeRun.rootNodeId,
+                origin: "app_owned",
+                createdBy: "agent",
+                driver,
+                providerInstanceId,
+                providerThreadId: null,
+                childThreadId: null,
+                nativeTaskRef: null,
+                prompt: "Check the original model.",
+                title: null,
+                model: null,
+                completionDelivery: { state: "disposed", observedByRunId: null },
+                status: "completed",
+                result,
+                startedAt: published,
+                completedAt: published,
+                updatedAt: published,
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.observe",
+          commandId: CommandId.make("command:selection-restart:read"),
+          threadId,
+          taskId,
+          observedByRunId: activeRunId,
+          observedByAttemptId: activeRun.activeAttemptId,
+          providerInstanceId,
+          resultFingerprint: resultFingerprint(result),
+          source: "explicit",
+        });
+        const task = (yield* orchestrator.getThreadProjection(threadId)).subagents[0]!;
+        const firstRead = task.terminalResultObservation!;
 
         const completed = yield* eventSink
           .stream({
@@ -444,10 +498,18 @@ it.live("retries a failed selection restart session open before completing", () 
         });
         yield* Fiber.join(completed);
         yield* worker.drain();
-        return {
-          projection: yield* orchestrator.getThreadProjection(threadId),
-          captured: yield* Ref.get(state),
-        };
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const restarted = projection.runs[0]!;
+        assert.notEqual(restarted.activeAttemptId, activeRun.activeAttemptId);
+        assert.deepEqual(restarted.requestedAt, activeRun.requestedAt);
+        assert.isTrue(DateTime.isGreaterThan(restarted.startedAt!, firstRead.at));
+        assert.deepEqual(projection.subagents[0]?.terminalResultObservation, firstRead);
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        assert.deepEqual(yield* store.firstProvenTaskResultRead(task), {
+          runId: activeRunId,
+          at: firstRead.at,
+        });
+        return { projection, captured: yield* Ref.get(state) };
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(

@@ -1,23 +1,48 @@
-import { resultFingerprint } from "../apps/server/src/orchestration-v2/taskResultReadEvidence.ts";
+import {
+  provenTaskResultReadsSql,
+  resultFingerprint,
+} from "../apps/server/src/orchestration-v2/taskResultReadEvidence.ts";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "vitest";
 import { decision, wakeReport } from "./wake-usage.mjs";
 
 function createProjectionTables(db) {
   db.exec(`
-      CREATE TABLE orchestration_v2_projection_runs(run_id,thread_id,payload_json,
+      CREATE TABLE orchestration_v2_projection_runs(run_id TEXT PRIMARY KEY,thread_id TEXT,payload_json,
         status AS (json_extract(payload_json,'$.status')), requested_at AS (json_extract(payload_json,'$.requestedAt')),
         completed_at AS (json_extract(payload_json,'$.completedAt')));
       CREATE TABLE orchestration_v2_projection_messages(message_id,run_id,thread_id,role,created_at,payload_json);
       CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id);
       CREATE TABLE orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json);
-      CREATE TABLE orchestration_v2_projection_subagents(subagent_id,thread_id,updated_at,payload_json,
+      CREATE TABLE orchestration_v2_projection_subagents(subagent_id TEXT PRIMARY KEY,thread_id TEXT,updated_at,payload_json,
         status AS (json_extract(payload_json,'$.status')), completed_at AS (json_extract(payload_json,'$.completedAt')),
         completion_delivery_state AS (json_extract(payload_json,'$.completionDelivery.state')));
       CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY, command_id, aggregate_kind, stream_id, application_event_version, event_type, occurred_at, payload_json);
       CREATE TABLE orchestration_command_receipts(command_id PRIMARY KEY, aggregate_kind, aggregate_id, command_type, status);
+      CREATE INDEX idx_orch_events_stream_sequence ON orchestration_events(aggregate_kind, stream_id, sequence);
+      CREATE INDEX idx_orch_events_command_id ON orchestration_events(command_id);
+      CREATE INDEX idx_orchestration_events_agent_stream_sequence ON orchestration_events(stream_id, sequence)
+        WHERE application_event_version = 2 AND aggregate_kind = 'thread';
+      CREATE INDEX idx_orch_command_receipts_aggregate ON orchestration_command_receipts(aggregate_kind, aggregate_id);
     `);
 }
+
+it("probes historical events by receipt command ID when the stream index also exists", () => {
+  using db = new NodeSqlite.DatabaseSync(":memory:");
+  createProjectionTables(db);
+  const plan = db
+    .prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT 1 FROM orchestration_v2_projection_subagents t
+      WHERE t.subagent_id=? AND t.thread_id=?
+        AND EXISTS (SELECT 1 FROM (${provenTaskResultReadsSql}) WHERE reader_status='completed')
+      LIMIT 1
+    `)
+    .all("task", "thread");
+  expect(plan.map(({ detail }) => detail)).toContain(
+    "SEARCH e USING INDEX idx_orch_events_command_id (command_id=?)",
+  );
+});
 
 it("measures provider starts and uses only prior same-chat observations of every member", () => {
   const db = new NodeSqlite.DatabaseSync(":memory:");
@@ -36,7 +61,12 @@ it("measures provider starts and uses only prior same-chat observations of every
       "runs",
       "observer",
       "a",
-      JSON.stringify({ status: "failed", startedAt: before, completedAt: before }),
+      JSON.stringify({
+        status: "failed",
+        requestedAt: before,
+        startedAt: before,
+        completedAt: before,
+      }),
     );
     insert(
       "subagents",
@@ -159,13 +189,21 @@ it("measures provider starts and uses only prior same-chat observations of every
     );
     observer.run(
       JSON.stringify({
+        requestedAt: before,
         startedAt: before,
         completedAt: "2026-11-21T18:00:00.000Z",
         status: "completed",
       }),
     );
     expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(0);
-    observer.run(JSON.stringify({ startedAt: before, completedAt: before, status: "completed" }));
+    observer.run(
+      JSON.stringify({
+        requestedAt: before,
+        startedAt: before,
+        completedAt: before,
+        status: "completed",
+      }),
+    );
     expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(1);
     const legacy = {
       id: "seen",
@@ -258,6 +296,7 @@ it.each(["completionDelivery", "terminalResultObservation"])(
       db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES ('wake','chat',?)").run(
         JSON.stringify({
           userMessageId: "msg",
+          requestedAt: first,
           startedAt: first,
           completedAt: retry,
           status: "completed",
@@ -299,7 +338,12 @@ it.each(["completionDelivery", "terminalResultObservation"])(
       expect(wakeReport(db, day).all).toMatchObject({ wakes: 1, repeated: 0, unknown: 1 });
       if (source === "terminalResultObservation") {
         db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES ('later','chat',?)").run(
-          JSON.stringify({ status: "completed", startedAt: observedAt, completedAt: retry }),
+          JSON.stringify({
+            status: "completed",
+            requestedAt: observedAt,
+            startedAt: observedAt,
+            completedAt: retry,
+          }),
         );
         db.prepare("UPDATE orchestration_v2_projection_subagents SET payload_json=?").run(
           JSON.stringify({
@@ -326,3 +370,79 @@ it.each(["completionDelivery", "terminalResultObservation"])(
     }
   },
 );
+
+it.each([
+  "terminalResultObservation",
+  "completionDelivery",
+  "observe-disposed",
+  "unverified acknowledgement",
+])("retains only proven %s evidence from an earlier attempt of a restarted reader", (source) => {
+  using db = new NodeSqlite.DatabaseSync(":memory:");
+  createProjectionTables(db);
+  const day = "2026-11-22";
+  const at = (hour) => `${day}T${hour}:00:00.000Z`;
+  const requestedAt = at("06");
+  const completedAt = at("07");
+  const observedAt = at("08");
+  const restartedAt = at("09");
+  const settledAt = at("10");
+  const wakeAt = at("11");
+  const result = "child finished";
+  const fingerprint = resultFingerprint(result);
+  const task = { id: "task", status: "completed", completedAt, result, updatedAt: observedAt };
+  const delivery = { state: "acknowledged", observedByRunId: "reader" };
+  if (source === "terminalResultObservation") {
+    task.terminalResultObservation = {
+      runId: "reader",
+      at: observedAt,
+      resultFingerprint: fingerprint,
+    };
+  } else if (source === "completionDelivery") {
+    task.completionDelivery = { ...delivery, observedAt, resultFingerprint: fingerprint };
+  } else {
+    const disposed = source === "observe-disposed";
+    task.completionDelivery = { ...delivery, state: disposed ? "disposed" : "acknowledged" };
+    db.prepare(
+      "INSERT INTO orchestration_command_receipts VALUES ('old-read','thread','chat',?,'accepted')",
+    ).run(`delegated_task.completion-delivery.${disposed ? "observe-disposed" : "acknowledge"}`);
+    db.prepare(
+      "INSERT INTO orchestration_events VALUES (1,'old-read','thread','chat',2,'subagent.updated',?,?)",
+    ).run(observedAt, JSON.stringify(task));
+  }
+  db.prepare("INSERT INTO orchestration_v2_projection_subagents VALUES ('task','chat',?,?)").run(
+    observedAt,
+    JSON.stringify(task),
+  );
+  const reader = {
+    requestedAt,
+    startedAt: requestedAt,
+    activeAttemptId: "first",
+    status: "running",
+  };
+  db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES ('reader','chat',?)").run(
+    JSON.stringify(reader),
+  );
+  db.exec(`INSERT INTO orchestration_v2_projection_runs VALUES ('wake','chat','{"userMessageId":"msg"}');
+      INSERT INTO orchestration_v2_projection_run_attempts VALUES ('first','chat','reader'), ('wake-attempt','chat','wake');`);
+  db.prepare(
+    "INSERT INTO orchestration_v2_projection_messages VALUES ('msg','wake','chat','user',?,?)",
+  ).run(wakeAt, JSON.stringify({ createdBy: "agent", delegatedCompletion: { taskIds: ["task"] } }));
+  db.prepare(
+    "INSERT INTO orchestration_v2_projection_provider_turns VALUES ('chat','wake-attempt',?,?)",
+  ).run(wakeAt, JSON.stringify({ nativeWakeStarted: true }));
+  const repeated = () => wakeReport(db, day).all.repeated;
+  const expected = source === "unverified acknowledgement" ? 0 : 1;
+  expect(repeated()).toBe(expected);
+  const updateReader = db.prepare(
+    "UPDATE orchestration_v2_projection_runs SET payload_json=? WHERE run_id='reader'",
+  );
+  db.exec("INSERT INTO orchestration_v2_projection_run_attempts VALUES ('second','chat','reader')");
+  const restarted = { ...reader, startedAt: restartedAt, activeAttemptId: "second" };
+  updateReader.run(JSON.stringify(restarted));
+  expect(repeated()).toBe(expected);
+  updateReader.run(JSON.stringify({ ...restarted, status: "completed", completedAt: settledAt }));
+  expect(repeated()).toBe(expected);
+  // Even proven content cannot be credited before this run existed.
+  updateReader.run(JSON.stringify({ ...restarted, requestedAt: restartedAt }));
+  expect(repeated()).toBe(0);
+});

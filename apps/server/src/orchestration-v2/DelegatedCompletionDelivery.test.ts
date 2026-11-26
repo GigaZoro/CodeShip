@@ -1,4 +1,3 @@
-import * as NodeCrypto from "node:crypto";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -29,6 +28,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -47,6 +47,7 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { applyToProjection } from "./ProjectionStore.ts";
+import { resultFingerprint as fingerprintResult } from "./taskResultReadEvidence.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
@@ -67,9 +68,7 @@ const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-orchestration-v2-delegated-completion-",
 });
 
-const resultFingerprint = NodeCrypto.createHash("sha256")
-  .update("child finished", "utf16le")
-  .digest("hex");
+const resultFingerprint = fingerprintResult("child finished");
 
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -154,7 +153,7 @@ const layerTest = Layer.mergeAll(
   ),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
   Layer.provide(ServerSettings.layerTest()),
@@ -1000,9 +999,8 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
           observedByRunId: scenario === "foreign" ? RunId.make("foreign") : runId,
           providerInstanceId:
             scenario === "provider" ? ProviderInstanceId.make("other") : modelSelection.instanceId,
-          resultFingerprint: NodeCrypto.createHash("sha256")
-            .update(scenario === "changed" ? "old result" : "child finished", "utf16le")
-            .digest("hex"),
+          resultFingerprint:
+            scenario === "changed" ? fingerprintResult("old result") : resultFingerprint,
         });
         const [task] = (yield* orchestrator.getThreadProjection(threadId)).subagents;
         assert.deepEqual(task?.completionDelivery, { state: "claimed", observedByRunId: null });
@@ -1269,6 +1267,8 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         const seed = yield* orchestrator.getThreadProjection(threadId);
         const run = seed.runs[0]!;
         const task = seed.subagents[0]!;
+        const historyCommandId = CommandId.make(`command:${threadId}:seed-reader`);
+        const historyEventId = EventId.make(`event:${threadId}:task`);
         yield* sink.commitCommand({
           commandType:
             state === "disposed"
@@ -1277,7 +1277,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
           acceptedAt: firstRead,
           threadId,
           effects: [],
-          commandId: CommandId.make(`command:${threadId}:seed-reader`),
+          commandId: historyCommandId,
           events: [
             {
               id: EventId.make(`event:${threadId}:first`),
@@ -1293,7 +1293,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
               },
             },
             {
-              id: EventId.make(`event:${threadId}:task`),
+              id: historyEventId,
               type: "subagent.updated",
               threadId,
               nodeId: taskId,
@@ -1317,7 +1317,6 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
                   terminalResultObservation: {
                     runId: firstRunId,
                     at: firstRead,
-                    verified: true as const,
                   },
                 }),
                 updatedAt: firstRead,
@@ -1340,6 +1339,38 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
             },
           ],
         });
+        if (legacy === "impossible" || legacy === "timestamp-only") {
+          // These versions persisted a boolean marker that the current event codec omits.
+          const sql = yield* SqlClient.SqlClient;
+          const [eventRows, taskRows] = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const eventRows = yield* sql<{ marker: string }>`
+                UPDATE orchestration_events
+                SET payload_json = json_set(payload_json, '$.terminalResultObservation.verified', json('true'))
+                WHERE stream_id = ${threadId} AND event_id = ${historyEventId}
+                RETURNING json_type(payload_json, '$.terminalResultObservation.verified') AS marker
+              `;
+              const taskRows = yield* sql<{ marker: string }>`
+                UPDATE orchestration_v2_projection_subagents
+                SET payload_json = json_set(payload_json, '$.terminalResultObservation.verified', json('true'))
+                WHERE thread_id = ${threadId} AND subagent_id = ${taskId}
+                RETURNING json_type(payload_json, '$.terminalResultObservation.verified') AS marker
+              `;
+              return [eventRows, taskRows] as const;
+            }),
+          );
+          assert.deepEqual(eventRows, [{ marker: "true" }]);
+          assert.deepEqual(taskRows, [{ marker: "true" }]);
+          const history = yield* sink
+            .readByCommandId({ commandId: historyCommandId })
+            .pipe(Stream.runCollect);
+          const replayed = history.reduce(
+            (projection, { event }) => applyToProjection(projection, event),
+            seed,
+          );
+          const persisted = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(replayed.subagents[0], persisted.subagents[0]);
+        }
         if (legacy === "prepublication") {
           // Publishing the result carries the earlier acknowledgement onto the terminal row.
           yield* sink.write({

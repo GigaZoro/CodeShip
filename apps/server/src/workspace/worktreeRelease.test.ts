@@ -370,7 +370,7 @@ const sealedCheckout = (options: { inPlace?: true; longRoot?: true } = {}) =>
           : [{ name: ".env", stamp: setupFileStamp(await NodeFSP.lstat(link, { bigint: true })) }],
       }),
     );
-    return { fs, path, root, project, checkout, modules, admin, head };
+    return { fs, path, root, project, checkout, modules, admin, head, git };
   });
 
 const queueRelease = (fixture: { root: string; checkout: string }, runId = "finished") =>
@@ -425,6 +425,50 @@ it.live.skipIf(isWindowsHost)(
         );
       expect(yield* releaseHold(request, project)).toBeNull();
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+it.live.each([
+  "another branch",
+  "a symbolic branch alias",
+  "detached HEAD",
+  "a different reachable commit",
+] as const)("holds the queued checkout when its HEAD switches to %s", (change) =>
+  Effect.gen(function* () {
+    const fixture = yield* sealedCheckout();
+    const { fs, git, project, checkout, head } = fixture;
+    const { file } = yield* queueRelease(fixture);
+    const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
+    expect(yield* releaseHold(request, project)).toBeNull();
+    if (change === "a different reachable commit") {
+      yield* git(
+        project,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "new durable commit",
+      );
+      yield* git(checkout, "reset", "--hard", "main");
+      expect(yield* git(checkout, "rev-parse", "HEAD")).not.toBe(head);
+    } else {
+      if (change === "another branch") yield* git(checkout, "switch", "-c", "other");
+      else if (change === "detached HEAD") yield* git(checkout, "switch", "--detach", head);
+      else {
+        yield* git(checkout, "symbolic-ref", "refs/heads/alias", "refs/heads/feature");
+        yield* git(checkout, "symbolic-ref", "HEAD", "refs/heads/alias");
+      }
+      expect(yield* git(checkout, "rev-parse", "HEAD")).toBe(head);
+    }
+    expect(yield* releaseHold(request, project)).toBe(
+      change === "a different reachable commit"
+        ? "checkout HEAD changed since release was queued"
+        : "checkout branch changed since release was queued",
+    );
+    expect(yield* fs.exists(file)).toBe(true);
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
 it.live("holds a newly set pull request base after an absent base was queued", () =>
