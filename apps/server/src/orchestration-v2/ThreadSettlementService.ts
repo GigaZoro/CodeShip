@@ -174,7 +174,7 @@ export function dropExpiredHolds<K>(holds: Map<K, number>, nowMs: number): void 
 type ScheduledSettlementFields = "startedByScheduledTask" | "hasPendingScheduledWork";
 type SettlementRuleThread = Omit<
   ProjectionStore.ProjectionSettlementCandidate,
-  "parentWorktreePath" | "parentResultAt" | ScheduledSettlementFields
+  "parentWorktreePath" | "parentResultAt" | "parentResultKey" | ScheduledSettlementFields
 >;
 
 export function isAutoSettlementCandidate(
@@ -632,9 +632,9 @@ export const make = Effect.gen(function* () {
           threadId: thread.id,
           snapshotAt: thread.updatedAt,
           settledAt,
-          ...(deliveredAt === null || thread.parentResultAt === null
+          ...(deliveredAt === null || thread.parentResultKey === null
             ? {}
-            : { parentResultAt: thread.parentResultAt }),
+            : { parentResultKey: thread.parentResultKey }),
         });
         return null;
       },

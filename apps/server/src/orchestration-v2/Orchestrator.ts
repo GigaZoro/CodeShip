@@ -15046,13 +15046,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
               ),
             );
-          const resultAt = candidate?.parentResultAt ?? null;
           if (
             candidate === undefined ||
-            (command.parentResultAt !== undefined &&
-              (resultAt === null ||
-                DateTime.toEpochMillis(resultAt) !==
-                  DateTime.toEpochMillis(command.parentResultAt)))
+            (command.parentResultKey !== undefined &&
+              candidate.parentResultKey !== command.parentResultKey)
           ) {
             return yield* new OrchestratorDispatchError({
               commandId: command.commandId,
@@ -15715,9 +15712,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        ...(command.type === "thread.auto-settle"
+          ? {
+              autoSettleGuard: {
+                snapshotAt: command.snapshotAt,
+                ...(command.parentResultKey === undefined
+                  ? {}
+                  : { parentResultKey: command.parentResultKey }),
+              },
+            }
+          : {}),
       })
       .pipe(mapDispatchError(command));
 
+    if (committed.rejectedByGuard === true) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          committed.receipt.error ??
+          `Thread ${commandThreadId(command)} changed before automatic settlement.`,
+      });
+    }
     if (!committed.committed) {
       return yield* replayCommandReceipt(command, committed.receipt, committed.storedEvents);
     }
@@ -15782,6 +15798,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         ),
       );
+    // The parent's task result is part of this decision: taking the parent's lock before the
+    // child's serializes command writers, while autoSettleGuard rechecks inside the commit tx.
+    if (command.type === "thread.auto-settle") {
+      const child = yield* findThread(command.threadId);
+      const parentThreadId =
+        child?.lineage.relationshipToParent === "subagent" ? child.lineage.parentThreadId : null;
+      return yield* parentThreadId === null || parentThreadId === command.threadId
+        ? dispatch
+        : threadDispatch.withLock(parentThreadId, dispatch);
+    }
     // Answering a message-mode question can also start a follow-up.
     if (
       command.type !== "runtime-request.respond" &&

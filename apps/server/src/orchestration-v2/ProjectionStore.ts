@@ -10,6 +10,7 @@ import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/
 import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
 import { TURN_ITEM_PAYLOAD_REMOVE_PATHS, turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
+import * as Hash from "effect/Hash";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeThreadFind } from "./ThreadFind.ts";
@@ -302,6 +303,8 @@ export type ProjectionSettlementCandidate = Pick<
     readonly parentWorktreePath: string | null;
     /** When the parent's latest task on this child completed with a result. */
     readonly parentResultAt: DateTime.Utc | null;
+    /** Names that result by task and content, since a result can change under the same completedAt. */
+    readonly parentResultKey: string | null;
   };
 
 const ProjectionCheckpointContext = Schema.Struct({
@@ -1284,6 +1287,8 @@ type SettlementThreadRow = Pick<
   readonly has_pending_scheduled_work: number;
   readonly parent_worktree_path: string | null;
   readonly parent_result_at: string | null;
+  readonly parent_result_task_id: string | null;
+  readonly parent_result_text: string | null;
 };
 
 type ShellRunItemCountRow = {
@@ -7531,7 +7536,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHEN task.status = 'completed'
                   AND json_extract(task.payload_json, '$.result') IS NOT NULL
                 THEN task.completed_at
-              END AS parent_result_at
+              END AS parent_result_at,
+              CASE
+                WHEN task.status = 'completed'
+                  AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                THEN task.subagent_id
+              END AS parent_result_task_id,
+              CASE
+                WHEN task.status = 'completed'
+                  AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                THEN json_extract(task.payload_json, '$.result')
+              END AS parent_result_text
             FROM orchestration_v2_projection_threads t
             LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = (
               SELECT latest.run_id FROM orchestration_v2_projection_runs latest
@@ -7625,6 +7640,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     row.parent_result_at === null
                       ? null
                       : DateTime.makeUnsafe(row.parent_result_at),
+                  parentResultKey:
+                    row.parent_result_task_id === null || row.parent_result_text === null
+                      ? null
+                      : `${row.parent_result_task_id}:${row.parent_result_at ?? ""}:${row.parent_result_text.length}:${Hash.string(row.parent_result_text)}`,
                   activityRunStatus: null,
                   activityRunStartedAt: null,
                   pendingRuntimeRequest: null,

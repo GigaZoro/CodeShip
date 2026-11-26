@@ -1,3 +1,7 @@
+## 2026-11-26 — Finished subagent threads settle only on the result they delivered
+
+- A subagent thread now settles on its parent's result only if that result is still the one delivered, even when the parent writes a new task or revises the result in the same instant or while the settle is committing.
+
 ## 2026-11-26 — Large command logs retain their final output
 
 - Commands started on macOS and Linux keep a bounded log with their latest output, including the last lines written while CodeShip is restarting.
