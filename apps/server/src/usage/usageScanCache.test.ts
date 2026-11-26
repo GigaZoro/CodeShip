@@ -692,6 +692,52 @@ describe("scan cache merge", () => {
     ).toEqual([]);
   });
 
+  it("keeps the latest confirmed value and expiry for a call first witnessed at EOF", () => {
+    const call = (id: string, outputTokens: number) =>
+      record({
+        provider: "muse",
+        dedupeKey: JSON.stringify(["muse", id]),
+        totals: { ...record().totals, outputTokens },
+      });
+    const old = call("A", 1);
+    const sibling = call("B", 2);
+    const latest = call("A", 99);
+    const first = row({
+      provider: "muse",
+      observedAtMs: 10,
+      size: 100,
+      records: [sibling],
+      tailRecords: [old],
+    });
+    const empty = row({ provider: "muse", observedAtMs: 20, size: 0, records: [] });
+    const returned = row({ provider: "muse", observedAtMs: 30, size: 80, records: [latest] });
+    const last = row({ provider: "muse", observedAtMs: 40, size: 90, records: [sibling] });
+    const reload = (entry: CachedFile) =>
+      decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
+    const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
+    const orders = (rows: readonly CachedFile[]): CachedFile[][] =>
+      rows.length === 0
+        ? [[]]
+        : rows.flatMap((item) =>
+            orders(rows.filter((other) => other !== item)).map((rest) => [item, ...rest]),
+          );
+    for (const order of orders([first, empty, returned, last])) {
+      const merged = order.reduce(merge);
+      for (const cutoff of [20, 21, 40])
+        expect(retainedSuperseded(merged, cutoff, "muse")).toEqual([latest]);
+      expect(retainedSuperseded(merged, 41, "muse")).toEqual([]);
+    }
+    for (const cutoff of [21, 31]) {
+      const pruned = reload(pruneSuperseded([first, empty, returned].reduce(merge), 35, cutoff));
+      expect(pruned.peerTails).toBeUndefined();
+      expect(retainedSuperseded(merge(pruned, last), 40, "muse")).toEqual([latest]);
+    }
+    const completion = { ...empty, observedAtMs: 15, size: first.size + 1 };
+    expect(
+      retainedSuperseded([first, empty, returned, last, completion].reduce(merge), 40, "muse"),
+    ).toEqual([]);
+  });
+
   it("keeps the held row when nothing tells two rows apart", () => {
     const held = row();
     expect(mergeScanEntry(held, row())).toBe(held);

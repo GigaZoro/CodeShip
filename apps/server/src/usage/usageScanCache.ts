@@ -353,11 +353,11 @@ function provedTailReplacement(entry: CachedFile, tail: PeerTail) {
     : undefined;
 }
 
-function provedPeerTails(entry: CachedFile, cutoffMs: number): readonly SupersededRecord[] {
+function provedPeerTails(entry: CachedFile, throughMs = Infinity): readonly SupersededRecord[] {
   return (
     entry.peerTails?.flatMap((tail) => {
       const sinceMs = provedTailReplacement(entry, tail);
-      if (sinceMs === undefined || sinceMs < cutoffMs) return [];
+      if (sinceMs === undefined || sinceMs > throughMs) return [];
       const { size: _size, ...record } = tail;
       return [{ ...record, sinceMs }];
     }) ?? []
@@ -370,29 +370,13 @@ interface ReadEvidence {
   readonly liveKeys?: ReadonlySet<string>;
 }
 
-export function carrySuperseded(
+function collectHistory(
   winner: CachedFile,
-  loser: CachedFile,
-  read?: ReadEvidence,
-): CachedFile {
-  if (loser === winner || !supportsUsageRetention(winner.provider)) return winner;
-  const sameProvider = loser.provider === winner.provider;
-  const otherProviderAtMs = latest(
-    winner.otherProviderAtMs,
-    sameProvider ? loser.otherProviderAtMs : loser.observedAtMs,
-  );
-  const expiredThroughMs = latest(
-    winner.expiredThroughMs,
-    sameProvider ? loser.expiredThroughMs : undefined,
-  );
-  const floor = expiredThroughMs ?? -Infinity;
-  const priorReads = mergePriorReads(
-    winner,
-    loser,
-    Math.max(floor, otherProviderAtMs ?? -Infinity),
-  );
-  const peerTails = mergePeerTails(winner, loser, floor, otherProviderAtMs, read === undefined);
-
+  priorReads: readonly PriorRead[] = winner.priorReads ?? [],
+  floor = winner.expiredThroughMs ?? -Infinity,
+  otherProviderAtMs = winner.otherProviderAtMs,
+  liveKeys?: ReadonlySet<string>,
+) {
   const members = new Map<string, Set<string>>();
   const covered = new Map<string, Map<string, boolean>>();
   function keysOf(group: string) {
@@ -420,14 +404,13 @@ export function carrySuperseded(
     return contains;
   }
   const retained = new Map<string, SupersededRecord>();
-  let liveKeys = read?.liveKeys;
   let simultaneousRecords: Map<string | null, UsageRecord> | undefined;
   const tailKeys = new Set(winner.tailRecords.map((record) => record.dedupeKey));
   function consider(
     record: KeyedUsageRecord,
     seenMs: number,
     sinceMs: number,
-    original?: SupersededRecord,
+    source: CachedFile | SupersededRecord,
   ) {
     if (seenMs < floor || seenMs <= (otherProviderAtMs ?? -Infinity)) return;
     liveKeys ??= new Set(
@@ -435,7 +418,8 @@ export function carrySuperseded(
     );
     const key = record.dedupeKey;
     const liveCommitted = liveKeys.has(key) && !tailKeys.has(key);
-    let groups = original === undefined ? readGroupsOf(loser, key) : (original.readGroups ?? []);
+    let original = "record" in source ? source : undefined;
+    let groups = "record" in source ? (source.readGroups ?? []) : readGroupsOf(source, key);
     if (liveCommitted) {
       // A surviving exact key can still witness that a missing sibling was a different call.
       if (groups.length)
@@ -499,6 +483,51 @@ export function carrySuperseded(
     }
   }
   carryHistory(winner);
+  return {
+    consider,
+    carryHistory,
+    sorted: () =>
+      [...retained.values()].sort((a, b) => (a.record.dedupeKey < b.record.dedupeKey ? -1 : 1)),
+  };
+}
+
+function historyWithProvedTails(entry: CachedFile, proved: readonly SupersededRecord[]) {
+  if (proved.length === 0) return entry.superseded ?? [];
+  const history = collectHistory(entry);
+  for (const item of proved) history.consider(item.record, item.seenMs, item.sinceMs, item);
+  return history.sorted();
+}
+
+export function carrySuperseded(
+  winner: CachedFile,
+  loser: CachedFile,
+  read?: ReadEvidence,
+): CachedFile {
+  if (loser === winner || !supportsUsageRetention(winner.provider)) return winner;
+  const sameProvider = loser.provider === winner.provider;
+  const otherProviderAtMs = latest(
+    winner.otherProviderAtMs,
+    sameProvider ? loser.otherProviderAtMs : loser.observedAtMs,
+  );
+  const expiredThroughMs = latest(
+    winner.expiredThroughMs,
+    sameProvider ? loser.expiredThroughMs : undefined,
+  );
+  const floor = expiredThroughMs ?? -Infinity;
+  const priorReads = mergePriorReads(
+    winner,
+    loser,
+    Math.max(floor, otherProviderAtMs ?? -Infinity),
+  );
+  const peerTails = mergePeerTails(winner, loser, floor, otherProviderAtMs, read === undefined);
+
+  const { consider, carryHistory, sorted } = collectHistory(
+    winner,
+    priorReads,
+    floor,
+    otherProviderAtMs,
+    read?.liveKeys,
+  );
   if (sameProvider) carryHistory(loser);
   if (
     sameProvider &&
@@ -507,18 +536,16 @@ export function carrySuperseded(
     loser.observedAtMs > (otherProviderAtMs ?? -Infinity)
   ) {
     for (const record of loser.records) {
-      if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity);
+      if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity, loser);
     }
     // A local full re-read proves replacement immediately. Peer tails wait for size evidence.
     if (read !== undefined && read.retainedPrefix === undefined) {
       for (const record of loser.tailRecords) {
-        if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity);
+        if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity, loser);
       }
     }
   }
-  const superseded = [...retained.values()].sort((a, b) =>
-    a.record.dedupeKey < b.record.dedupeKey ? -1 : 1,
-  );
+  const superseded = sorted();
   if (
     sameItems(winner.superseded, superseded) &&
     sameItems(winner.priorReads, priorReads) &&
@@ -1134,10 +1161,9 @@ export const retainedSuperseded = (
   provider: UsageProviderKind,
 ): readonly UsageRecord[] => {
   if (entry.provider !== provider) return [];
-  const candidates = [
-    ...(entry.superseded ?? []).filter((item) => item.sinceMs >= retentionCutoffMs),
-    ...provedPeerTails(entry, retentionCutoffMs),
-  ];
+  const candidates = historyWithProvedTails(entry, provedPeerTails(entry)).filter(
+    (item) => item.sinceMs >= retentionCutoffMs,
+  );
   if (candidates.length === 0) return [];
   const accepted = [...entry.records, ...entry.tailRecords];
   const acceptedKeys = new Set(accepted.map((record) => record.dedupeKey));
@@ -1257,8 +1283,17 @@ export function pruneSuperseded(
   const peerTails = tails.filter(
     ({ seenMs }) => readTime(firstReadAfter(reads, seenMs, entry.observedAtMs)) > floor,
   );
-  const superseded = retained
-    .filter((item) => item.sinceMs >= retentionCutoffMs)
+  // Earlier peers cannot reverse a size comparison once its successor is behind the pruning boundary.
+  const finalized = provedPeerTails(entry, floor);
+  const history = historyWithProvedTails(entry, finalized);
+  let liveKeys: Set<string | null> | undefined;
+  const superseded = history
+    .filter((item) => {
+      if (item.sinceMs >= retentionCutoffMs) return true;
+      if (item.seenMs !== entry.observedAtMs || !item.readGroups?.length) return false;
+      liveKeys ??= new Set(entry.records.map((record) => record.dedupeKey));
+      return liveKeys.has(item.record.dedupeKey);
+    })
     .map((item) => (item.sinceMs <= nowMs ? item : { ...item, sinceMs: nowMs }));
   if (
     sameItems(reads, priorReads) &&
