@@ -1,22 +1,32 @@
 import { Platform } from "react-native";
 
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import {
-  THREAD_LIST_V2_ESTIMATED_ROW_HEIGHTS,
-  THREAD_LIST_V2_ROW_CONTENT_CLASS_NAMES,
-  THREAD_LIST_V2_SLIM_ROW_CLASS_NAMES,
-} from "./thread-list-v2-row-appearance";
+
+const ROW_DENSITY = {
+  comfortable: {
+    ios: "min-h-[44px] px-5 py-2.5",
+    android: "min-h-[48px] px-3 py-2.5",
+    slim: "py-2",
+    estimatedHeight: 72,
+  },
+  compact: {
+    ios: "min-h-[44px] px-5 py-1.5",
+    android: "min-h-[48px] px-3 py-1.5",
+    slim: "py-1",
+    estimatedHeight: 64,
+  },
+};
 
 export function useThreadListRowContentClassName() {
-  return THREAD_LIST_V2_ROW_CONTENT_CLASS_NAMES[useAppearancePreferences().interfaceDensity][
+  return ROW_DENSITY[useAppearancePreferences().interfaceDensity][
     Platform.OS === "android" ? "android" : "ios"
   ];
 }
 
 export function useThreadListSlimRowClassName() {
-  return THREAD_LIST_V2_SLIM_ROW_CLASS_NAMES[useAppearancePreferences().interfaceDensity];
+  return ROW_DENSITY[useAppearancePreferences().interfaceDensity].slim;
 }
 
 export function useThreadListEstimatedRowHeight() {
-  return THREAD_LIST_V2_ESTIMATED_ROW_HEIGHTS[useAppearancePreferences().interfaceDensity];
+  return ROW_DENSITY[useAppearancePreferences().interfaceDensity].estimatedHeight;
 }

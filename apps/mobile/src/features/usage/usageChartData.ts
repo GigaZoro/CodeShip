@@ -1,5 +1,5 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
-import type { DailyTotals, MergedUsage } from "@t3tools/shared/usageMerge";
+import { usageChartValue, type DailyTotals, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { usageEmptyMessage } from "@t3tools/shared/usageFormat";
 
 export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
@@ -48,10 +48,9 @@ export function buildChartDays(
   const byDay = new Map(daily.map((totals) => [totals.day, totals]));
   return days.map((day) => {
     const totals = byDay.get(day);
-    const values = PROVIDER_ORDER.map((provider) => {
-      const entry = totals?.byProvider.get(provider);
-      const value = entry === undefined ? 0 : metric === "cost" ? entry.costUsd : entry.totalTokens;
-      return { provider, value };
+    const values = PROVIDER_ORDER.flatMap((provider) => {
+      const value = usageChartValue(totals?.byProvider.get(provider), metric);
+      return value === null ? [] : [{ provider, value }];
     });
     return {
       day,

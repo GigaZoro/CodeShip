@@ -78,6 +78,7 @@ describe("readAntigravityUsage", () => {
         const dir = yield* tempDir;
         const stamp = protoNumber(1, 1780000000);
         const usage = [
+          ...protoNumber(1, 1532),
           ...protoNumber(2, 100),
           ...protoNumber(3, 40),
           ...protoNumber(4, 5),
@@ -91,12 +92,16 @@ describe("readAntigravityUsage", () => {
           ...protoNumber(3, 3),
           ...protoText(11, "retry-1"),
         ];
+        const retryWithoutModel = [...protoNumber(2, 7), ...protoText(11, "retry-2")];
         const generation = protoBytes(1, [
+          ...protoNumber(3, 1532),
           ...protoBytes(4, usage),
-          ...protoText(19, "Gemini 3 Pro"),
+          ...protoText(19, "gemini-default"),
+          ...protoText(21, "gemini-4-neon"),
           ...protoBytes(9, protoBytes(4, stamp)),
         ]);
         const step = [
+          ...protoBytes(24, [...protoNumber(1, 1532), ...protoText(12, "gemini-default")]),
           ...protoBytes(9, usage),
           ...protoBytes(8, stamp),
           ...protoBytes(28, protoBytes(2, retry)),
@@ -108,14 +113,35 @@ describe("readAntigravityUsage", () => {
               0,
               new Uint8Array(generation),
             ]);
-            yield* db.run("INSERT INTO steps VALUES (?, ?)", [0, new Uint8Array(step)]);
+            yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
+              8,
+              new Uint8Array(protoBytes(1, protoText(19, "Gemini 3 Pro"))),
+            ]);
+            yield* db.run("INSERT INTO steps VALUES (?, ?)", [8, new Uint8Array(step)]);
+            yield* db.run("INSERT INTO steps VALUES (?, ?)", [
+              9,
+              new Uint8Array([
+                ...protoBytes(24, [...protoNumber(1, 1532), ...protoText(12, "gemini-4-neon")]),
+                ...protoBytes(8, stamp),
+                ...protoBytes(28, protoBytes(2, retryWithoutModel)),
+              ]),
+            ]);
+            yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
+              2,
+              new Uint8Array(
+                protoBytes(1, [
+                  ...protoText(19, "gemini-4-hydrogen"),
+                  ...protoBytes(4, [...protoNumber(1, 1525), ...retryWithoutModel]),
+                ]),
+              ),
+            ]);
           }),
         );
         const result = yield* readAntigravityUsage(dir, 0);
         assert.deepStrictEqual(result.errors, []);
         const read = records(result);
-        assert.strictEqual(read.length, 2);
-        const main = read.find((record) => record.model === "gemini-3-pro");
+        assert.strictEqual(read.length, 3);
+        const main = read.find((record) => record.model === "gemini-4-neon");
         assert.isDefined(main);
         assert.strictEqual(main?.timestampMs, 1780000000000);
         assert.strictEqual(main?.sessionId, "session-1");
@@ -129,6 +155,10 @@ describe("readAntigravityUsage", () => {
         assert.strictEqual(
           read.find((record) => record.model === "claude-opus-4-6")?.totals.uncachedInputTokens,
           12,
+        );
+        assert.strictEqual(
+          read.find((record) => record.model === "gemini-4-hydrogen")?.totals.uncachedInputTokens,
+          7,
         );
         assert.deepStrictEqual(records(yield* readAntigravityUsage(dir, 1780000000001)), []);
       }).pipe(Effect.provide(NodeServices.layer)),
@@ -151,13 +181,32 @@ describe("readAntigravityUsage", () => {
               new Uint8Array(protoBytes(9, protoNumber(2, 10 + idx))),
             ]);
           }
+          for (const [index, usageId] of [1532, 1525].entries()) {
+            const idx = 2 + index;
+            yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
+              idx,
+              new Uint8Array(
+                protoBytes(1, [...protoNumber(3, 1532), ...protoText(19, "gemini-4-neon")]),
+              ),
+            ]);
+            yield* db.run("INSERT INTO steps VALUES (?, ?)", [
+              idx,
+              new Uint8Array(
+                protoBytes(9, [
+                  ...protoNumber(1, usageId),
+                  ...protoNumber(2, 12),
+                  ...protoText(11, `response-${idx}`),
+                ]),
+              ),
+            ]);
+          }
         }),
       );
       const result = yield* readAntigravityUsage(dir, 0);
       assert.deepStrictEqual(result.errors, []);
       assert.deepStrictEqual(
         records(result).map((record) => record.model),
-        ["gemini-3-pro", "claude-opus-4-6"],
+        ["gemini-3-pro", "claude-opus-4-6", "gemini-4-neon", "antigravity-model-1525"],
       );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -384,9 +433,20 @@ describe("readAntigravityUsage", () => {
           ]);
         }),
       );
+      yield* seedDatabase(path.join(dir, "conversation_summaries.db"), (db) =>
+        db
+          .exec(
+            "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)",
+          )
+          .pipe(Effect.asVoid),
+      );
       yield* fileSystem.writeFileString(path.join(dir, "broken.db"), "not a sqlite database");
       const result = yield* readAntigravityUsage(dir, 0);
-      assert.strictEqual(result.errors.length, 1);
+      assert.deepStrictEqual(result.errors, [path.join(dir, "broken.db")]);
+      assert.deepStrictEqual(
+        result.files.map((file) => file.path),
+        [path.join(dir, "steps.db")],
+      );
       assert.strictEqual(records(result)[0]?.model, "gemini-2.5-pro");
       assert.strictEqual(records(result)[0]?.totals.outputTokens, 5);
     }).pipe(Effect.provide(NodeServices.layer)),

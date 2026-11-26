@@ -1594,8 +1594,6 @@ const catalog: MessageCatalog = {
   "{path}:{start}–{end} is not in the loaded diff.":
     "{path}:{start}–{end} немає в завантажених змінах.",
   "{percent} from cache": "{percent} з кешу",
-  "{percent} of cost · {tokens} tokens": "{percent} вартості · токенів: {tokens}",
-  "{percent} of tokens · {cost}": "{percent} токенів · {cost}",
   "{percent}% done": "Виконано {percent}%",
   "{percent}% left": "Залишилось {percent}%",
   "{percent}% left · {elapsed}% of the window left":

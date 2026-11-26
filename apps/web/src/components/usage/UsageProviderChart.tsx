@@ -3,13 +3,14 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 import { useLayoutEffect, useRef, useState } from "react";
 import { updatingProvidersLabel } from "@t3tools/client-runtime/state/usage-progress";
 
-import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
+import { usageChartValue, type DailyTotals, type HourlyTotals } from "@t3tools/shared/usageMerge";
 import {
   formatDayShort,
   formatDateTimeShort,
   formatHourShort,
   formatRelativeHourShort,
   formatTokens,
+  formatUsageCost,
   formatUsd,
 } from "@t3tools/shared/usageFormat";
 import { cn } from "~/lib/utils";
@@ -43,7 +44,7 @@ interface UsageProviderChartProps {
 export interface DayColumn {
   readonly bands: readonly {
     readonly provider: UsageProviderKind;
-    readonly value: number;
+    readonly value: number | null;
   }[];
   readonly total: number;
 }
@@ -51,16 +52,6 @@ export interface DayColumn {
 interface Point {
   readonly x: number;
   readonly y: number;
-}
-
-function valueFor(
-  totals: DailyTotals | HourlyTotals | undefined,
-  provider: UsageProviderKind,
-  metric: UsageChartMetric,
-): number {
-  const entry = totals?.byProvider.get(provider);
-  if (entry === undefined) return 0;
-  return metric === "tokens" ? entry.totalTokens : entry.costUsd;
 }
 
 export function buildPeriodColumns(
@@ -72,9 +63,9 @@ export function buildPeriodColumns(
     const entry = byPeriod.get(period);
     const bands = PROVIDER_ORDER.map((provider) => ({
       provider,
-      value: valueFor(entry, provider, metric),
+      value: usageChartValue(entry?.byProvider.get(provider), metric),
     }));
-    return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
+    return { bands, total: bands.reduce((sum, band) => sum + (band.value ?? 0), 0) };
   });
 }
 
@@ -145,18 +136,14 @@ function smoothCurve(points: readonly Point[]): readonly CurveSegment[] {
   return segments;
 }
 
-function curvePath(segments: readonly CurveSegment[]): string {
-  const first = segments[0];
-  if (first === undefined) return "";
-  let path = `M${first.from.x.toFixed(2)},${first.from.y.toFixed(2)}`;
-  for (const segment of segments) {
+function curvePath(points: readonly Point[]): string {
+  const first = points[0]!;
+  let path = `M${first.x.toFixed(2)},${first.y.toFixed(2)}`;
+  if (points.length === 1) return `${path} l0,0`;
+  for (const segment of smoothCurve(points)) {
     path += ` C${segment.c1.x.toFixed(2)},${segment.c1.y.toFixed(2)} ${segment.c2.x.toFixed(2)},${segment.c2.y.toFixed(2)} ${segment.to.x.toFixed(2)},${segment.to.y.toFixed(2)}`;
   }
   return path;
-}
-
-function areaPath(line: string) {
-  return line === "" ? "" : `${line} L${VIEW_WIDTH},${VIEW_HEIGHT} L0,${VIEW_HEIGHT} Z`;
 }
 
 function niceScale(peak: number, count: number): { max: number; ticks: readonly number[] } {
@@ -185,7 +172,7 @@ function chartScale(
     (max, column) =>
       chartType === "bar"
         ? Math.max(max, column.total)
-        : column.bands.reduce((inner, band) => Math.max(inner, band.value), max),
+        : column.bands.reduce((inner, band) => Math.max(inner, band.value ?? 0), max),
     0,
   );
   return peak === 0 && loadingProviders.size > 0
@@ -207,7 +194,7 @@ export function buildChart(
 ) {
   const columns = buildPeriodColumns(periods, byPeriod, metric).map((column) => {
     const bands = column.bands.filter((band) => providers.includes(band.provider));
-    return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
+    return { bands, total: bands.reduce((sum, band) => sum + (band.value ?? 0), 0) };
   });
   const scale = chartScale(columns, loadingProviders, chartType);
   const stepX =
@@ -222,40 +209,52 @@ export function buildChart(
       ? columns.flatMap((column, index) => {
           let base = 0;
           return column.bands.flatMap(({ provider, value }) => {
+            if (value === null || value <= 0) return [];
             const y = valueToY(base + value, scale.max);
             const height = valueToY(base, scale.max) - y;
             base += value;
-            return value <= 0
-              ? []
-              : [
-                  {
-                    provider,
-                    period: periods[index],
-                    x: index * stepX + stepX * 0.1,
-                    y,
-                    width: stepX * 0.8,
-                    height,
-                  },
-                ];
+            return [
+              {
+                provider,
+                period: periods[index],
+                x: index * stepX + stepX * 0.1,
+                y,
+                width: stepX * 0.8,
+                height,
+              },
+            ];
           });
         })
       : [];
   const paths = (chartType === "area" ? providers : []).map((provider) => {
     const slot = columns[0]?.bands.findIndex((band) => band.provider === provider) ?? -1;
-    const line = curvePath(
-      smoothCurve(
-        columns.map((column, periodIndex) => ({
-          x: periodIndex * stepX,
-          y: valueToY(column.bands[slot]?.value ?? 0, scale.max),
-        })),
-      ),
+    const runs: Point[][] = [];
+    let run: Point[] | null = null;
+    let total = 0;
+    for (const [index, column] of columns.entries()) {
+      const value = column.bands[slot]?.value;
+      if (value == null) {
+        run = null;
+      } else {
+        if (run === null) {
+          run = [];
+          runs.push(run);
+        }
+        run.push({ x: index * stepX, y: valueToY(value, scale.max) });
+        total += value;
+      }
+    }
+    const lines = runs.map(curvePath);
+    const areas = runs.map(
+      (points, index) =>
+        `${lines[index]} L${points.at(-1)!.x},${VIEW_HEIGHT} L${points[0]!.x},${VIEW_HEIGHT} Z`,
     );
     return {
       provider,
       loading: loadingProviders.has(provider),
-      total: columns.reduce((sum, column) => sum + (column.bands[slot]?.value ?? 0), 0),
-      line,
-      area: areaPath(line),
+      total,
+      line: lines.join(" "),
+      area: areas.join(" "),
     };
   });
 
@@ -272,18 +271,30 @@ export function buildChart(
 function UsageChartTooltip({
   tooltipRef,
   label,
-  column,
+  period,
   providers,
   loadingProviders,
-  format,
+  metric,
 }: {
   readonly tooltipRef: React.Ref<HTMLDivElement>;
   readonly label: string;
-  readonly column: DayColumn | undefined;
+  readonly period: DailyTotals | undefined;
   readonly providers: readonly UsageProviderKind[];
   readonly loadingProviders: ReadonlySet<UsageProviderKind>;
-  readonly format: (value: number) => string;
+  readonly metric: UsageChartMetric;
 }) {
+  const total = { records: 0, unpricedRecords: 0, costUsd: 0, totalTokens: 0 };
+  const format = (entry: typeof total | undefined) =>
+    metric === "cost" ? formatUsageCost(entry) : formatTokens(entry?.totalTokens ?? 0);
+  for (const provider of providers) {
+    const entry = period?.byProvider.get(provider);
+    if (entry) {
+      total.records += entry.records;
+      total.unpricedRecords += entry.unpricedRecords;
+      total.costUsd += entry.costUsd;
+      total.totalTokens += entry.totalTokens;
+    }
+  }
   const partial = providers.some((provider) => loadingProviders.has(provider));
   return (
     <div
@@ -313,7 +324,7 @@ function UsageChartTooltip({
                 loadingProviders.has(provider) ? "text-muted-foreground" : "text-foreground",
               )}
             >
-              {format(column?.bands.find((band) => band.provider === provider)?.value ?? 0)}
+              {format(period?.byProvider.get(provider))}
             </span>
           </div>
         );
@@ -321,7 +332,7 @@ function UsageChartTooltip({
       <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-1">
         <span className="text-muted-foreground">{t("Total")}</span>
         <span className={cn("tabular-nums", partial ? "text-muted-foreground" : "text-foreground")}>
-          {format(column?.total ?? 0)}
+          {format(total)}
         </span>
       </div>
     </div>
@@ -330,23 +341,23 @@ function UsageChartTooltip({
 
 function UsageChartPlot({
   periods,
-  columns,
+  byPeriod,
   stepX,
   offsetX,
   providers,
   loadingProviders,
-  format,
+  metric,
   formatTooltipPeriod,
   ariaLabel,
   children,
 }: {
   readonly periods: readonly string[];
-  readonly columns: readonly DayColumn[];
+  readonly byPeriod: ReadonlyMap<string, DailyTotals>;
   readonly stepX: number;
   readonly offsetX: number;
   readonly providers: readonly UsageProviderKind[];
   readonly loadingProviders: ReadonlySet<UsageProviderKind>;
-  readonly format: (value: number) => string;
+  readonly metric: UsageChartMetric;
   readonly formatTooltipPeriod: (period: string) => string;
   readonly ariaLabel: string;
   readonly children: React.ReactNode;
@@ -453,10 +464,10 @@ function UsageChartPlot({
         <UsageChartTooltip
           tooltipRef={tooltipRef}
           label={formatTooltipPeriod(hoveredPeriod)}
-          column={columns[hoverIndex]}
+          period={byPeriod.get(hoveredPeriod)}
           providers={providers}
           loadingProviders={loadingProviders}
-          format={format}
+          metric={metric}
         />
       )}
     </div>
@@ -478,9 +489,10 @@ export function UsageProviderChart({
   hour12,
 }: UsageProviderChartProps) {
   const periods = resolution === "hour" ? hours : days;
-  const { columns, scale, paths, stepX, offsetX, bars } = buildChart(
+  const byPeriod = usageChartPeriodIndex(daily, hourly, resolution);
+  const { scale, paths, stepX, offsetX, bars } = buildChart(
     periods,
-    usageChartPeriodIndex(daily, hourly, resolution),
+    byPeriod,
     metric,
     providers,
     loadingProviders,
@@ -520,12 +532,12 @@ export function UsageProviderChart({
 
         <UsageChartPlot
           periods={periods}
-          columns={columns}
+          byPeriod={byPeriod}
           stepX={stepX}
           offsetX={offsetX}
           providers={providers}
           loadingProviders={loadingProviders}
-          format={format}
+          metric={metric}
           formatTooltipPeriod={formatTooltipPeriod}
           ariaLabel={
             resolution === "hour"
@@ -576,6 +588,7 @@ export function UsageProviderChart({
               fill="none"
               stroke={PROVIDER_PRESENTATION[provider].color}
               strokeWidth={2}
+              strokeLinecap="round"
               strokeDasharray={loading ? "4 3" : undefined}
               vectorEffect="non-scaling-stroke"
             />

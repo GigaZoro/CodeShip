@@ -894,10 +894,15 @@ it("keeps every provider's chart strokes and bars at 3:1 or higher in both theme
     daily: [
       {
         day,
-        costUsd: 1,
-        totalTokens: 100,
+        costUsd: PROVIDER_ORDER.length,
+        totalTokens: 100 * PROVIDER_ORDER.length,
+        records: PROVIDER_ORDER.length,
+        unpricedRecords: 0,
         byProvider: new Map(
-          PROVIDER_ORDER.map((provider) => [provider, { costUsd: 1, totalTokens: 100 }]),
+          PROVIDER_ORDER.map((provider) => [
+            provider,
+            { costUsd: 1, totalTokens: 100, records: 1, unpricedRecords: 0 },
+          ]),
         ),
       },
     ],

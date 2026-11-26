@@ -16,13 +16,25 @@ it("plots reported spend without tokens and distinguishes missing priced data", 
         day,
         costUsd: 1,
         totalTokens: 0,
-        byProvider: new Map([["codex" as const, { costUsd: 1, totalTokens: 0 }]]),
+        records: 1,
+        unpricedRecords: 0,
+        byProvider: new Map([
+          ["codex" as const, { costUsd: 1, totalTokens: 0, records: 1, unpricedRecords: 0 }],
+        ]),
       },
     ],
   };
   const periods = usageChartTotals(spend, false);
   expect(usageChartEmptyMessage(periods, spend, "cost")).toBeNull();
   expect(buildChartDays([day], periods, "cost")[0]?.total).toBe(1);
+  const unknown = { costUsd: 0, totalTokens: 100, records: 1, unpricedRecords: 1 };
+  const mixed = [
+    { ...periods[0]!, byProvider: new Map(periods[0]!.byProvider).set("antigravity", unknown) },
+  ];
+  expect(
+    buildChartDays([day], mixed, "cost")[0]?.values.map((entry) => entry.provider),
+  ).not.toContain("antigravity");
+  expect(buildChartDays([day], mixed, "tokens")[0]?.total).toBe(100);
   expect(usageChartEmptyMessage(periods, spend, "tokens")).toBe("No tokens recorded");
   const zeroCost = { ...empty, records: 1, totalTokens: 1 };
   const unpriced = { ...zeroCost, costQuality: { ...zeroCost.costQuality, unpricedShare: 1 } };

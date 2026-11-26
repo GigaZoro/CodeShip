@@ -280,6 +280,7 @@ export function applyUsageLimitsUpdate(input: {
     previous?.usageAllowed === true && newlyUsedUp ? false : previous?.usageAllowed;
   return {
     ...makeUsageLimits({ checkedAt, windows }),
+    ...(previous?.source !== undefined ? { source: previous.source } : {}),
     ...(accountReadAt !== undefined && accountReadAt !== checkedAt ? { accountReadAt } : {}),
     ...(accountReadAt === undefined && unavailable === undefined ? { streamOnly: true } : {}),
     ...(creditsObservedAt !== undefined && creditsObservedAt !== accountReadAt
@@ -329,7 +330,8 @@ export function resolveUsageLimitsAfterProbe(input: {
   if (probed === undefined || probed.unavailable?.reason === "unsupported") return probed;
   if (
     published &&
-    (differs(published.accountKey, probed.accountKey) ||
+    (published.source !== probed.source ||
+      differs(published.accountKey, probed.accountKey) ||
       differs(published.credentialFingerprint, probed.credentialFingerprint) ||
       differs(published.plan, probed.plan))
   ) {

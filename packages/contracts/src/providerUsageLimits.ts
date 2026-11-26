@@ -122,6 +122,8 @@ export type ServerProviderResetCreditsError = typeof ServerProviderResetCreditsE
 /** Clear bars for unavailable accounts; retain last good bars after a failed probe. */
 export const ServerProviderUsageLimits = Schema.Struct({
   checkedAt: IsoDateTime,
+  /** Older Antigravity readings came from an unsupported Google endpoint. */
+  source: ForwardCompatibleOptional(Schema.Literal("antigravity-acp")),
   windows: ForwardCompatibleArray(ServerProviderUsageWindow),
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   /** The provider account's `usageAccountKey`: equal on every machine, never the id itself. */
@@ -163,6 +165,13 @@ export const ServerProviderUsageLimits = Schema.Struct({
 });
 export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 
+export function hasSupportedUsageLimits(
+  driver: ProviderDriverKind,
+  limits: ServerProviderUsageLimits,
+): boolean {
+  return driver !== "antigravity" || limits.source === "antigravity-acp";
+}
+
 /** Partial updates merge windows by id; omitted windows remain unchanged. */
 export const ProviderUsageLimitsUpdate = Schema.Struct({
   windows: Schema.Array(ServerProviderUsageWindow),
@@ -180,7 +189,9 @@ export const UsageLimitSourceAccount = Schema.Struct({
   plan: Schema.optional(TrimmedNonEmptyString),
   workspaceId: Schema.optional(TrimmedNonEmptyString),
   usageLimits: ServerProviderUsageLimits,
-});
+}).check(
+  Schema.makeFilter((account) => hasSupportedUsageLimits(account.driver, account.usageLimits)),
+);
 export type UsageLimitSourceAccount = typeof UsageLimitSourceAccount.Type;
 
 export const UsageLimitSourceSnapshot = Schema.Struct({

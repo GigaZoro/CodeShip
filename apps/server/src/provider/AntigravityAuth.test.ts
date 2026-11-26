@@ -57,6 +57,7 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
     readonly authorizationUrls?: ReadonlyArray<string>;
     readonly supportsLogout?: boolean;
     readonly persist?: Effect.Effect<void, ProviderSetupError>;
+    readonly beforeCatalogPublication?: Effect.Effect<void>;
     readonly beforeInitialize?: Effect.Effect<void>;
     readonly forwardCallback?: Effect.Effect<void, ProviderSetupError>;
   } = {},
@@ -126,7 +127,8 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
         } satisfies AntigravityAuthRuntime;
       }),
     onAuthenticated: () =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        yield* options.beforeCatalogPublication ?? Effect.void;
         catalog = ["gemini-test"];
         events.push("catalog-published");
       }),
@@ -192,7 +194,13 @@ it.layer(NodeServices.layer)("AntigravityAuth", (it) => {
 
   it.effect("keeps a remote flow private and waits for native auth and catalog discovery", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const publishing = yield* Deferred.make<void>();
+      const releaseCatalog = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        beforeCatalogPublication: Deferred.succeed(publishing, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseCatalog)),
+        ),
+      });
       const state = yield* harness.auth.controller.start(
         owner,
         Effect.sync(() => harness.events.push("sessions-stop")),
@@ -222,7 +230,20 @@ it.layer(NodeServices.layer)("AntigravityAuth", (it) => {
 
       yield* Deferred.succeed(harness.authenticated, undefined);
       yield* Deferred.succeed(harness.discovered, undefined);
+      yield* Deferred.await(publishing);
+      const readQuota = yield* harness.auth.withProcess(Effect.void, Effect.succeed(75)).pipe(
+        Effect.scoped,
+        Effect.orElseSucceed(() => null),
+        Effect.cachedWithTTL("5 minutes"),
+      );
+      const firstRead = yield* harness.auth.awaitProfilePublication.pipe(
+        Effect.andThen(readQuota),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.succeed(releaseCatalog, undefined);
       const succeeded = yield* phase(harness.auth, "succeeded");
+      assert.equal(yield* Fiber.join(firstRead), 75);
+      assert.equal(yield* readQuota, 75);
       assert.deepEqual(harness.catalog(), ["gemini-test"]);
       assert.isAbove(harness.events.indexOf("sessions-stop"), harness.events.indexOf("saved"));
       assert.isNull(succeeded.authorizationUrl);

@@ -1,5 +1,5 @@
 import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
-import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
+import { isUsageCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 
 import type { UsageViewEnvironment } from "@t3tools/client-runtime/state/usage-view";
 
@@ -62,7 +62,7 @@ export function UsageModelDialog({
   );
   const providers = [model.provider];
   const presentation = PROVIDER_PRESENTATION[model.provider];
-  const costUnknown = isModelCostUnknown(model);
+  const costUnknown = isUsageCostUnknown(model);
   const hitRate = cacheHitRate(model);
   const perMillion = costPerMillionTokens(model);
   const stats = [

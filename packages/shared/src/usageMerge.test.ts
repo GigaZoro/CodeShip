@@ -10,7 +10,8 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { isModelCostUnknown, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+import { formatUsageCost } from "./usageFormat.ts";
+import { isUsageCostUnknown, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
 
 const decodeSummary = Schema.decodeUnknownSync(UsageSummary);
 
@@ -438,20 +439,26 @@ describe("mergeUsage", () => {
     expect(merged.models[0]).toMatchObject({ model: "gpt-5", costUsd: 20, totalTokens: 2320 });
   });
 
-  it("marks a model with no known rates as unpriced rather than free", () => {
+  it("marks usage with no known rates as unpriced at each level", () => {
     const merged = mergeUsage(
       [
         environment(
           "env-a",
           summary(
             [
-              bucket({ costUsd: 75 }),
+              bucket({ costUsd: 75, hourStart: "2026-08-07T01:00:00.000Z" }),
               bucket({
                 provider: "codex",
                 model: "unknown-model",
+                hourStart: "2026-08-07T02:00:00.000Z",
                 costUsd: 0,
                 costSource: "unpriced",
                 unpricedRecords: 5,
+              }),
+              bucket({
+                costUsd: 0,
+                hourStart: "2026-08-07T03:00:00.000Z",
+                model: "free-model",
               }),
             ],
             [
@@ -465,9 +472,19 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.models.find((model) => model.model === "unknown-model")?.unpricedRecords).toBe(5);
-    expect(merged.models.filter(isModelCostUnknown).map((model) => model.model)).toEqual([
+    expect(merged.models.filter(isUsageCostUnknown).map((model) => model.model)).toEqual([
       "unknown-model",
     ]);
+    expect(merged.providers.find((provider) => provider.provider === "codex")).toMatchObject({
+      records: 5,
+      unpricedRecords: 5,
+    });
+    expect(formatUsageCost(merged)).toBe("$75.00");
+    const day = merged.daily[0]!;
+    expect(formatUsageCost(day)).toBe("$75.00");
+    expect(formatUsageCost(day.byProvider.get("codex"))).toBe("Unpriced");
+    expect(merged.hourly.map(formatUsageCost)).toEqual(["$75.00", "Unpriced", "$0.00"]);
+    expect(formatUsageCost(merged.hourly[1]?.byProvider.get("codex"))).toBe("Unpriced");
   });
 
   it("splits cost by category and speed, counting older servers as unsplit standard cost", () => {
@@ -529,6 +546,37 @@ describe("mergeUsage", () => {
       ["partly-reported", 928],
     ]);
   });
+
+  it.each([
+    ["unpriced", 0, undefined, 0],
+    ["unpriced", 100, undefined, null],
+    ["providerReported", 100, undefined, null],
+    ["providerReported", 100, 0, null],
+    ["providerReported", 100, 100, 0],
+    ["modelPriced", 100, undefined, 0],
+  ] as const)(
+    "reads cache savings for %s usage with %i cached tokens and %s priced",
+    (costSource, cachedInputTokens, pricedCacheReadTokens, expected) => {
+      const record = bucket({
+        totals: { ...bucket().totals, cachedInputTokens },
+        pricedCacheReadTokens,
+        costSource,
+        cacheSavingsUsd: 0,
+        unpricedRecords: costSource === "unpriced" ? 5 : 0,
+        costUsd: costSource === "providerReported" ? 1 : 0,
+      });
+      const usage = mergeUsage(
+        [
+          environment(
+            "env-a",
+            summary([record], [{ provider: "claude", hostId: "mac", homePath: "/a" }]),
+          ),
+        ],
+        USAGE_CONTRACT_VERSION,
+      );
+      expect(usage.costQuality.cacheSavingsUsd).toBe(expected);
+    },
+  );
 
   it("keeps two machines apart when hostname and home path collide", () => {
     const shape = { provider: "claude" as const, hostId: "mac", homePath: "/Users/theo/.claude" };

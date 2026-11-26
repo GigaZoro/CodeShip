@@ -68,7 +68,7 @@ describe("usage pricing", () => {
 
     expect(cacheSavingsUsd(table, cursorRecord("claude-fable-5-1-thinking-high"))).toBeCloseTo(9);
     expect(cacheSavingsUsd(table, cursorRecord("cursor-grok-4.7-high-fast"))).toBeCloseTo(1.5);
-    expect(cacheSavingsUsd(table, cursorRecord("default"))).toBe(0);
+    expect(cacheSavingsUsd(table, cursorRecord("default"))).toBeNull();
     expect(priceUsage(table, cursorRecord("grok-4.7-xhigh-fast"))).toMatchObject({
       costUsd: 0.25,
       costSource: "providerReported",
@@ -129,7 +129,7 @@ describe("usage pricing", () => {
 
     expect(cost("claude-opus-5-5", "fast")).toBeCloseTo(2 * cost("claude-opus-5-5", "standard"));
     expect(cacheSavingsUsd(table, record("claude-opus-5-5", null, "fast"))).toBeCloseTo(
-      2 * cacheSavingsUsd(table, record("claude-opus-5-5")),
+      2 * cacheSavingsUsd(table, record("claude-opus-5-5"))!,
     );
     expect(cost("claude-fable-5-1", "fast")).toBe(cost("claude-fable-5-1", "standard"));
     expect(cost("claude-opus-5-5", "fast", overrides)).toBe(
@@ -190,7 +190,7 @@ describe("usage pricing", () => {
     expect(cost("gpt-6-astra", "fast")).toBeCloseTo(2 * standard);
     expect(cost("gpt-6-astra", "ultrafast")).toBeCloseTo(6 * standard);
     expect(cacheSavingsUsd(table, record("gpt-6-astra", null, "ultrafast"))).toBeCloseTo(
-      6 * cacheSavingsUsd(table, record("gpt-6-astra")),
+      6 * cacheSavingsUsd(table, record("gpt-6-astra"))!,
     );
     expect(cost("gpt-6-sol", "ultrafast")).toBe(cost("gpt-6-sol", "standard"));
   });

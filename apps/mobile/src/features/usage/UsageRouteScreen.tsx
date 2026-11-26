@@ -21,7 +21,7 @@ import { EnvironmentId, type UsageProviderKind } from "@t3tools/contracts";
 import { type RouteProp, useIsFocused, useRoute } from "@react-navigation/native";
 import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
 import { usageProgress } from "@t3tools/client-runtime/state/usage-progress";
-import { isModelCostUnknown, type DailyTotals, type MergedUsage } from "@t3tools/shared/usageMerge";
+import { isUsageCostUnknown, type DailyTotals, type MergedUsage } from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
   enumerateHourStarts,
@@ -29,7 +29,9 @@ import {
   formatDayShort,
   formatHourShort,
   formatPercent,
+  formatProviderUsageDetail,
   formatTokens,
+  formatUsageCost,
   formatUsd,
   makeWindow,
   usageEmptyMessage,
@@ -754,17 +756,24 @@ function ChartCard(props: {
 
 function UsageSummary(props: { readonly merged: MergedUsage; readonly metric: UsageChartMetric }) {
   const { merged, metric } = props;
+  const unpriced = isUsageCostUnknown(merged);
   return (
     <View className="gap-0.5">
       <Text className="text-sm text-foreground-muted">
         {metric === "cost" ? t("Raw token cost") : t("Processed tokens")}
       </Text>
       <UsageFigure className="text-4xl font-t3-bold tabular-nums text-foreground">
-        {metric === "cost" ? `${formatUsd(merged.costUsd)}*` : formatTokens(merged.totalTokens)}
+        {metric === "cost"
+          ? unpriced
+            ? t("Unpriced")
+            : `${formatUsd(merged.costUsd)}*`
+          : formatTokens(merged.totalTokens)}
       </UsageFigure>
       <Text className="text-sm text-foreground-muted">
         {metric === "cost"
-          ? t("* if billed at full API rate")
+          ? unpriced
+            ? t("no known rates")
+            : t("* if billed at full API rate")
           : t("Across {count} sessions", { count: formatCount(merged.sessions) })}
       </Text>
     </View>
@@ -864,11 +873,11 @@ function ProviderSection(props: {
                 {totals === null
                   ? "–"
                   : metric === "cost"
-                    ? formatUsd(totals.costUsd)
+                    ? formatUsageCost(totals)
                     : formatTokens(totals.totalTokens)}
               </UsageFigure>
             </View>
-            {props.compact ? null : (
+            {props.compact || (metric === "cost" && totals && isUsageCostUnknown(totals)) ? null : (
               <View className="h-1 flex-row overflow-hidden rounded-full bg-subtle">
                 <View
                   className="h-full rounded-full"
@@ -878,17 +887,7 @@ function ProviderSection(props: {
               </View>
             )}
             <Text className="text-sm text-foreground-muted">
-              {totals === null
-                ? "–"
-                : metric === "cost"
-                  ? t("{share} of cost · {tokens} tokens", {
-                      share: formatPercent(share),
-                      tokens: formatTokens(totals.totalTokens),
-                    })
-                  : t("{share} of tokens · {cost}", {
-                      share: formatPercent(share),
-                      cost: formatUsd(totals.costUsd),
-                    })}
+              {totals === null ? "–" : formatProviderUsageDetail(totals, metric)}
             </Text>
           </View>
         );
@@ -926,13 +925,19 @@ function TotalsSection(props: {
         <MetricCell
           columns={props.columns}
           label={t("Cache savings")}
-          value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+          value={
+            merged.costQuality.cacheSavingsUsd === null
+              ? t("Unpriced")
+              : formatUsd(merged.costQuality.cacheSavingsUsd)
+          }
           detail={
-            merged.costUsd > 0
-              ? t("{ratio}x the raw cost", {
-                  ratio: (merged.costQuality.cacheSavingsUsd / merged.costUsd).toFixed(1),
-                })
-              : t("vs full input rates")
+            merged.costQuality.cacheSavingsUsd === null
+              ? t("no known rates")
+              : merged.costUsd > 0
+                ? t("{ratio}x the raw cost", {
+                    ratio: (merged.costQuality.cacheSavingsUsd / merged.costUsd).toFixed(1),
+                  })
+                : t("vs full input rates")
           }
         />
         <MetricCell
@@ -1116,11 +1121,11 @@ function ModelsSection(props: {
                 {metric === "tokens"
                   ? t("{share} of tokens · {cost}", {
                       share: formatPercent(model.tokenShare),
-                      cost: isModelCostUnknown(model)
+                      cost: isUsageCostUnknown(model)
                         ? t("no known rates")
                         : formatUsd(model.costUsd),
                     })
-                  : isModelCostUnknown(model)
+                  : isUsageCostUnknown(model)
                     ? t("no known rates · {tokens} tokens", {
                         tokens: formatTokens(model.totalTokens),
                       })
@@ -1133,7 +1138,7 @@ function ModelsSection(props: {
             <UsageFigure className="text-base tabular-nums text-foreground">
               {metric === "tokens"
                 ? formatTokens(model.totalTokens)
-                : isModelCostUnknown(model)
+                : isUsageCostUnknown(model)
                   ? t("Unpriced")
                   : formatUsd(model.costUsd)}
             </UsageFigure>

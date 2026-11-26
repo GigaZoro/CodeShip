@@ -7,6 +7,7 @@ import {
   nodeRuntimeUnavailableMessage,
 } from "@t3tools/shared/nodeRuntime";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -16,7 +17,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
-import { HttpClient } from "effect/http";
 import type { AcpError } from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -40,6 +40,7 @@ import {
 } from "../antigravityAuthSupport.ts";
 import {
   antigravityModelOptions,
+  isQualifiedAntigravityRelease,
   makeAntigravityAcpRuntime,
   type AntigravityAcpRuntimeInput,
 } from "../acp/AntigravityAcpSupport.ts";
@@ -55,7 +56,10 @@ import { makeAntigravityAdapterV2 } from "../../orchestration-v2/Adapters/Antigr
 import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeLogging";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityProvider } from "../AntigravityProvider.ts";
-import { makeAntigravityUsageProbe } from "../antigravityUsageLimits.ts";
+import {
+  readAntigravityAcpQuota,
+  unavailableAntigravityLimits,
+} from "../antigravityUsageLimits.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import {
@@ -77,7 +81,6 @@ export type AntigravityDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
-  | HttpClient.HttpClient
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | ModelCatalog.ModelCatalog
@@ -109,7 +112,6 @@ export const AntigravityDriver: ProviderDriver<
   }) {
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
-    const httpClient = yield* HttpClient.HttpClient;
     const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const host = yield* ProviderHost.ProviderHost;
@@ -190,6 +192,7 @@ export const AntigravityDriver: ProviderDriver<
     const makeRuntime = Effect.fn("AntigravityDriver.makeRuntime")(function* (
       input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
       profileDirectory = profiles.active,
+      quotaOnly = false,
     ): Effect.fn.Return<
       AcpSessionRuntime.AcpSessionRuntime["Service"],
       AcpError | ProviderSetupError,
@@ -213,6 +216,16 @@ export const AntigravityDriver: ProviderDriver<
             }),
         ),
       );
+      if (
+        quotaOnly &&
+        (executable.source !== "managed" || !isQualifiedAntigravityRelease(executable.version))
+      ) {
+        return yield* new ProviderSetupError({
+          instanceId,
+          operation: "resolve",
+          detail: "This Antigravity runtime does not support quota checks.",
+        });
+      }
       const profile = yield* prepareAntigravityProfile({
         profileDirectory,
         baseEnv: processEnvironment,
@@ -279,7 +292,9 @@ export const AntigravityDriver: ProviderDriver<
             .start()
             .pipe(
               Effect.tapError((cause): Effect.Effect<void> =>
-                input.onAuthorizationUrl === undefined && isAntigravitySignInRequiredError(cause)
+                !quotaOnly &&
+                input.onAuthorizationUrl === undefined &&
+                isAntigravitySignInRequiredError(cause)
                   ? provider.onAuthRequired
                   : Effect.void,
               ),
@@ -290,6 +305,7 @@ export const AntigravityDriver: ProviderDriver<
     const makeDisposableRuntime = Effect.fn("AntigravityDriver.makeDisposableRuntime")(function* (
       input: Pick<AntigravityAcpRuntimeInput, "onAuthorizationUrl"> & {
         readonly profileDirectory?: string;
+        readonly quotaOnly?: boolean;
       },
     ) {
       const profileDirectory = input.profileDirectory ?? profiles.active;
@@ -323,6 +339,7 @@ export const AntigravityDriver: ProviderDriver<
           ...(input.onAuthorizationUrl ? { onAuthorizationUrl: input.onAuthorizationUrl } : {}),
         },
         profileDirectory,
+        input.quotaOnly,
       );
       return {
         ...runtime,
@@ -420,22 +437,58 @@ export const AntigravityDriver: ProviderDriver<
       };
     });
 
-    const usage = yield* makeAntigravityUsageProbe({
-      get profileDirectory() {
-        return profiles.active;
-      },
-      authMethod: auth.authMethod,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(Crypto.Crypto, crypto),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
+    const withDisposableRuntime = Effect.fn("AntigravityDriver.withDisposableRuntime")(function* <
+      A,
+      E,
+    >(
+      quotaOnly: boolean,
+      use: (runtime: AcpSessionRuntime.AcpSessionRuntime["Service"]) => Effect.Effect<A, E>,
+    ) {
+      const processScope = yield* Scope.make();
+      yield* Effect.addFinalizer((exit) => Scope.close(processScope, exit));
+      return yield* authFlow
+        .withProcess(
+          Scope.close(processScope, Exit.void),
+          makeDisposableRuntime({ quotaOnly }).pipe(Effect.flatMap(use)),
+        )
+        .pipe(Effect.provideService(Scope.Scope, processScope));
+    }, Effect.scoped);
+
+    const readUsage = Effect.fn("AntigravityDriver.readUsage")(function* () {
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
+      if (!antigravityAuthUsesBrowser(auth.authMethod))
+        return unavailableAntigravityLimits(checkedAt, "unsupported");
+      const installed = yield* installation.resolve(settings.binaryPath, processEnvironment);
+      if (installed.source !== "managed" || !isQualifiedAntigravityRelease(installed.version)) {
+        return unavailableAntigravityLimits(checkedAt, "unsupported");
+      }
+      // The managed runtime stores the active profile's login here. A probe must never initiate sign-in.
+      if (
+        !(yield* fileSystem.exists(path.join(profiles.active, "antigravity-acp", "acp_token.json")))
+      ) {
+        return unavailableAntigravityLimits(checkedAt, "unsupported");
+      }
+      return yield* withDisposableRuntime(true, readAntigravityAcpQuota);
+    });
+    // An ACP launch unpacks the runtime; repeated status refreshes share the same recent read.
+    const [probeUsage, clearUsage] = yield* Effect.cachedInvalidateWithTTL(
+      readUsage().pipe(
+        Effect.timeout("30 seconds"),
+        Effect.catch(() =>
+          DateTime.now.pipe(
+            Effect.map((now) =>
+              unavailableAntigravityLimits(DateTime.formatIso(now), "probeFailed"),
+            ),
+          ),
+        ),
+      ),
+      "5 minutes",
     );
     const provider = yield* makeAntigravityProvider(settings, {
       stampIdentity: classifyModels,
       probe,
-      probeUsage: usage.probe,
-      clearUsage: usage.clear,
+      probeUsage: authFlow.awaitProfilePublication.pipe(Effect.andThen(probeUsage)),
+      clearUsage,
       auth: { type: auth.authMethod, label: antigravityAuthLabel(auth.authMethod) },
       supportsTextGeneration: Effect.suspend(() =>
         isAntigravityTextGenerationAvailable(profiles.active),
@@ -494,21 +547,10 @@ export const AntigravityDriver: ProviderDriver<
     });
 
     const refreshModels = Effect.fn("AntigravityDriver.refreshModels")(
-      function* () {
-        const processScope = yield* Scope.make();
-        yield* Effect.addFinalizer((exit) => Scope.close(processScope, exit));
-        yield* authFlow
-          .withProcess(
-            Scope.close(processScope, Exit.void),
-            Effect.gen(function* () {
-              const runtime = yield* makeDisposableRuntime({});
-              const started = yield* runtime.start();
-              yield* publishCatalog(started, runtime);
-            }),
-          )
-          .pipe(Effect.provideService(Scope.Scope, processScope));
-      },
-      Effect.scoped,
+      () =>
+        withDisposableRuntime(false, (runtime) =>
+          runtime.start().pipe(Effect.flatMap((started) => publishCatalog(started, runtime))),
+        ),
       Effect.timeoutOrElse({
         duration: "90 seconds",
         orElse: () =>

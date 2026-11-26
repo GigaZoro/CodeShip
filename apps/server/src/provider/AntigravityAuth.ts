@@ -65,6 +65,7 @@ interface OwnedProcess {
 
 export interface AntigravityAuth {
   readonly controller: ProviderAuthController;
+  readonly awaitProfilePublication: Effect.Effect<void>;
   readonly withProcess: <A, E, R>(
     stop: Effect.Effect<void>,
     task: Effect.Effect<A, E, R>,
@@ -628,5 +629,11 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
     }),
   );
 
-  return { controller, withProcess };
+  // Catalog publication can trigger a quota read before the new profile admits processes.
+  const awaitProfilePublication = Effect.suspend(() =>
+    operation === "publishing" && activeFlow?.fiber
+      ? Fiber.await(activeFlow.fiber).pipe(Effect.asVoid)
+      : Effect.void,
+  );
+  return { controller, withProcess, awaitProfilePublication };
 });

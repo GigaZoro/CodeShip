@@ -73,6 +73,7 @@ describe("UsageAggregator", () => {
 
     expect(bucket).toMatchObject({
       costUsd: expect.closeTo(0.016875),
+      pricedCacheReadTokens: 2000,
       categoryCostUsd: {
         input: expect.closeTo(0.003),
         cacheRead: expect.closeTo(0.003),
@@ -180,6 +181,7 @@ describe("UsageAggregator", () => {
     expect(result.buckets[0]?.costUsd).toBe(0);
     expect(result.buckets[0]?.costSource).toBe("unpriced");
     expect(result.buckets[0]?.unpricedRecords).toBe(1);
+    expect(result.buckets[0]?.pricedCacheReadTokens).toBe(0);
     expect(result.buckets[0]?.totals.outputTokens).toBe(50);
   });
 

@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AcpRegistryUrlAuthAction } from "./acpRegistry.ts";
 import {
@@ -27,7 +28,11 @@ import { ManagedPolicySummary } from "./managedPolicy.ts";
 import { ModelCapabilities, ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
-import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
+import {
+  hasSupportedUsageLimits,
+  ServerProviderUsageLimits,
+  UsageLimitSourceSnapshots,
+} from "./providerUsageLimits.ts";
 import { ServerSettings } from "./settings.ts";
 import { DesktopUpdateChannelSchema } from "./ipc.ts";
 
@@ -290,7 +295,19 @@ export const ServerProvider = Schema.Struct({
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   compatibilityAdvisory: Schema.optionalKey(ServerProviderCompatibilityAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
-});
+}).pipe(
+  Schema.middlewareDecoding((decode) =>
+    Effect.map(
+      decode,
+      Option.map((provider) => {
+        if (!provider.usageLimits || hasSupportedUsageLimits(provider.driver, provider.usageLimits))
+          return provider;
+        const { usageLimits: _internalQuota, ...rest } = provider;
+        return rest;
+      }),
+    ),
+  ),
+);
 export type ServerProvider = typeof ServerProvider.Type;
 
 export const ServerProviders = ForwardCompatibleArray(ServerProvider);

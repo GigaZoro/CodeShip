@@ -59,6 +59,7 @@ export const UsageBucket = Schema.Struct({
   totals: UsageTokenTotals,
   costUsd: Schema.Number,
   cacheSavingsUsd: Schema.Number,
+  pricedCacheReadTokens: Schema.optional(NonNegativeInt),
   categoryCostUsd: Schema.optional(UsageCategoryCost),
   fastCostUsd: Schema.optional(Schema.Number),
   ultrafastCostUsd: Schema.optional(Schema.Number),

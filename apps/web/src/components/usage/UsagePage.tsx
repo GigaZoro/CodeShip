@@ -41,7 +41,7 @@ import {
 
 import {
   isCompatibleUsageContractVersion,
-  isModelCostUnknown,
+  isUsageCostUnknown,
   type DailyTotals,
   type HourlyTotals,
   type MergedUsage,
@@ -66,7 +66,9 @@ import {
   formatDateTimeShort,
   formatDayShort,
   formatPercent,
+  formatProviderUsageDetail,
   formatTokens,
+  formatUsageCost,
   formatUsd,
   makeWindow,
   usageWindowLabel,
@@ -882,7 +884,7 @@ function UsageOverview({
                 figureClass(loadingPartial),
               )}
             >
-              {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
+              {metric === "cost" ? formatUsageCost(merged) : formatTokens(merged.totalTokens)}
             </span>
             <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
               <span className="shrink-0">
@@ -934,7 +936,6 @@ function UsageOverview({
             }
             const provider = row.provider;
             const totals = providerRows.find((entry) => entry.provider === provider)?.totals;
-            const share = metric === "cost" ? (totals?.costShare ?? 0) : (totals?.tokenShare ?? 0);
             const providerSessions = totals?.sessions ?? 0;
             const sessionLabel = tn(providerSessions, "{count} session", "{count} sessions", {
               count: formatCount(providerSessions),
@@ -978,22 +979,12 @@ function UsageOverview({
                     {totals == null
                       ? "–"
                       : metric === "cost"
-                        ? formatUsd(totals.costUsd)
+                        ? formatUsageCost(totals)
                         : formatTokens(totals.totalTokens)}
                   </span>
                 </div>
                 <span className={cn("text-xs text-muted-foreground", figureClass(providerLoading))}>
-                  {totals == null
-                    ? "–"
-                    : metric === "cost"
-                      ? t("{percent} of cost · {tokens} tokens", {
-                          percent: formatPercent(share),
-                          tokens: formatTokens(totals?.totalTokens ?? 0),
-                        })
-                      : t("{percent} of tokens · {cost}", {
-                          percent: formatPercent(share),
-                          cost: formatUsd(totals?.costUsd ?? 0),
-                        })}
+                  {totals == null ? "–" : formatProviderUsageDetail(totals, metric)}
                 </span>
               </div>
             );
@@ -1056,7 +1047,11 @@ function UsageOverview({
           <Metric
             loading={loadingPartial}
             label={t("Cache savings")}
-            value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+            value={
+              merged.costQuality.cacheSavingsUsd === null
+                ? t("Unpriced")
+                : formatUsd(merged.costQuality.cacheSavingsUsd)
+            }
           />
         </div>
       </section>
@@ -1181,7 +1176,7 @@ function UsageOverview({
                         ) : null}
                       </td>
                       <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
-                        {isModelCostUnknown(model) ? (
+                        {isUsageCostUnknown(model) ? (
                           <span className="text-muted-foreground">{t("Unpriced")}</span>
                         ) : (
                           formatUsd(model.costUsd)
@@ -1255,7 +1250,7 @@ function UsageOverview({
                         >
                           {metric === "tokens"
                             ? formatTokens(period.byProvider.get(provider)?.totalTokens ?? 0)
-                            : formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
+                            : formatUsageCost(period.byProvider.get(provider))}
                         </td>
                       ))}
                       <td
@@ -1266,7 +1261,7 @@ function UsageOverview({
                       >
                         {metric === "tokens"
                           ? formatTokens(period.totalTokens)
-                          : formatUsd(period.costUsd)}
+                          : formatUsageCost(period)}
                       </td>
                       <td
                         className={cn(
@@ -1275,7 +1270,7 @@ function UsageOverview({
                         )}
                       >
                         {metric === "tokens"
-                          ? formatUsd(period.costUsd)
+                          ? formatUsageCost(period)
                           : formatTokens(period.totalTokens)}
                       </td>
                     </tr>

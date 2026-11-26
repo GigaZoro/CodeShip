@@ -1,3 +1,10 @@
+## 2026-11-26 — Provider usage shows what was measured
+
+- Usage includes Antigravity conversations from the default managed profile and attributes token counts to the model named in the matching generation record.
+- Antigravity reads remaining subscription quota from the signed-in runtime’s built-in `/usage` command. Older readings from Google's internal endpoints are discarded.
+- Web, desktop, and mobile show **Unpriced** when none of the usage in a total has a known price. A known zero rate still shows $0.00, and mixed totals include the priced records.
+- Android opens the workspace and Usage again with either thread-list density selected.
+
 ## 2026-11-26 — Longer server traces and a scheduled launch log
 
 - The local trace retains slow and failed SQLite queries and drops routine successful ones. Larger trace backups make the oldest available span easier to find in `trace summary`.

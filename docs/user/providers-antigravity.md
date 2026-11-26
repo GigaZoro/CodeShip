@@ -143,9 +143,11 @@ is refused while the runtime is in use.
 
 ## Check access and troubleshoot
 
-Open **Usage > Limits** to see the remaining Gemini and shared Claude/GPT allowances
-for Google sign-ins. Each group has separate five-hour and weekly limits and reset
-times. Limits refresh with provider status and include usage outside T3.CodeShip.
+Open **Usage** to see tokens and estimated API cost from Antigravity's local conversation
+history. With the managed runtime and a Google sign-in, **Usage > Limits** shows the remaining
+allowances reported by the built-in `/usage` command. If you use the same account on two
+environments, its limits can appear twice because the command omits the account ID.
+Threads show any retry time the runtime supplies when a request reaches a limit.
 
 A server restart keeps your Google sign-in. The provider shows the saved account
 until a session, a refresh, or a sign-out reports something new.

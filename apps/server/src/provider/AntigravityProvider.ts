@@ -9,7 +9,6 @@ import {
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { antigravityModelFamily, createModelCapabilities } from "@t3tools/shared/model";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -45,10 +44,6 @@ const HEALTH_CHECK_TIMEOUT = "90 seconds";
 const SIGN_IN_MESSAGE = "Sign in with Google to use Antigravity.";
 const AUTH_UNCHECKED_MESSAGE =
   "Antigravity is installed. Google account access is not checked yet.";
-// Set while a finished quota read republishes, so that health check does not read again.
-const PublishingUsage = Context.Reference<boolean>("t3/provider/AntigravityPublishingUsage", {
-  defaultValue: () => false,
-});
 
 type SessionSetupResult = Pick<
   AcpSessionRuntime.AcpSessionRuntimeStartResult["sessionSetupResult"],
@@ -237,7 +232,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   const republish = yield* Deferred.make<Effect.Effect<ServerProvider>>();
   const scope = yield* Effect.scope;
   const startUsageRead = Effect.fn("AntigravityProvider.startUsageRead")(function* () {
-    if (!options.probeUsage || (yield* PublishingUsage)) return;
+    if (!options.probeUsage || !settings.enabled) return;
     const probe = options.probeUsage.pipe(
       Effect.flatMap((probed) =>
         SubscriptionRef.update(metadata, (state) => ({
@@ -255,7 +250,6 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       Effect.andThen(
         Deferred.await(republish).pipe(
           Effect.flatten,
-          Effect.provideService(PublishingUsage, true),
           Effect.ignoreCause({ log: true }),
           Effect.forkIn(scope),
         ),
@@ -340,7 +334,6 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         },
       } satisfies AntigravityProviderState;
     });
-    if (initialized !== undefined) yield* refreshUsage;
     return yield* options.stampIdentity(next.draft);
   });
 
@@ -529,6 +522,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     snapshot: {
       ...managed,
       getSnapshot,
+      // Only an explicit refresh may launch ACP. Periodic health checks stay local.
+      refresh: managed.refresh.pipe(
+        Effect.tap((snapshot) =>
+          snapshot.enabled && snapshot.installed && snapshot.status !== "error"
+            ? refreshUsage
+            : Effect.void,
+        ),
+      ),
       refreshUsage: startUsageRead().pipe(
         Effect.flatMap((fiber) => (fiber ? Fiber.await(fiber) : Effect.void)),
         Effect.asVoid,
@@ -546,12 +547,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           return { ...state, draft };
         }),
       ),
-      Effect.andThen(
-        Deferred.await(republish).pipe(
-          Effect.flatten,
-          Effect.provideService(PublishingUsage, true),
-        ),
-      ),
+      Effect.andThen(Deferred.await(republish).pipe(Effect.flatten)),
       Effect.asVoid,
     ),
     onSignedOut: clearAccountMetadata(),

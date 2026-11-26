@@ -291,10 +291,11 @@ export function cacheSavingsUsd(
   table: RateTable,
   record: PricedRecord,
   overrides?: RateTable,
-): number {
+): number | null {
+  if (record.totals.cachedInputTokens === 0) return 0;
   const rate =
     overrides?.get(record.model.trim()) ?? lookupRate(table, record.rateModel ?? record.model);
-  if (rate === null) return 0;
+  if (rate === null) return null;
   const rates = ratesAt(rate, record.speed);
   return record.totals.cachedInputTokens * (rates.inputCostPerToken - rates.cacheReadCostPerToken);
 }

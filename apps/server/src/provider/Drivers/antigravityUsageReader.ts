@@ -108,25 +108,31 @@ function withRateModel(record: UsageRecord): UsageRecord {
   return rateModel === record.model ? record : { ...record, rateModel };
 }
 
-function modelName(name: string, id: number): string {
-  if (name) {
-    const normalized = name
-      .toLowerCase()
-      .replace(/\s*\([^)]*\)\s*$/, "")
-      .replaceAll(" ", "-");
-    if (normalized.startsWith("claude-")) {
-      return normalized
-        .replace(/^claude-(4(?:\.\d+)?)-(sonnet|opus|haiku)/, "claude-$2-$1")
-        .replaceAll(".", "-");
-    }
-    return normalized;
+function modelName(name: string): string {
+  const normalized = name
+    .toLowerCase()
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .replaceAll(" ", "-");
+  if (normalized.startsWith("claude-")) {
+    return normalized
+      .replace(/^claude-(4(?:\.\d+)?)-(sonnet|opus|haiku)/, "claude-$2-$1")
+      .replaceAll(".", "-");
   }
-  return MODEL_IDS[id] ?? (id > 0 ? `antigravity-model-${id}` : "");
+  return normalized;
+}
+
+function isConcreteModel(model: string): boolean {
+  return (
+    /^(?:gemini-\d|claude-(?:sonnet|opus|haiku)-\d|gpt-)/.test(model) &&
+    !/^gemini-3-flash-(?:agent(?:-[ab])?|[ab])$/.test(model)
+  );
 }
 
 interface Metadata {
   model: string;
+  modelId: number;
   timestampMs: number | null;
+  primaryUsage: Fields | undefined;
   usages: Fields[];
 }
 
@@ -139,20 +145,22 @@ function metadata(bytes: Uint8Array, step: boolean): Metadata {
   const model = step ? nested(data, 24) : data;
   const usage = bytesAt(data, step ? 9 : 4);
   // Copy the usage bytes: subarrays kept in usages would hold each row's whole blob alive.
-  const usages = usage === undefined ? [] : [fields(usage.slice())];
+  const primaryUsage = usage === undefined ? undefined : fields(usage.slice());
+  const usages = primaryUsage === undefined ? [] : [primaryUsage];
   for (const retry of data.get(step ? 28 : 17) ?? []) {
     if (!(retry instanceof Uint8Array)) throw new Error("Invalid retry metadata");
     const retryUsage = bytesAt(fields(retry), 2);
     if (retryUsage !== undefined) usages.push(fields(retryUsage.slice()));
   }
+  const names = [textAt(model, step ? 12 : 19), textAt(model, step ? 8 : 21)].map(modelName);
   return {
-    model: modelName(
-      textAt(model, step ? 12 : 19) || textAt(model, step ? 8 : 21),
-      numberAt(model, step ? 1 : 3),
-    ),
+    model: names.find(isConcreteModel) ?? names.find(Boolean) ?? "",
+    modelId:
+      numberAt(model, step ? 1 : 3) || (primaryUsage === undefined ? 0 : numberAt(primaryUsage, 1)),
     timestampMs: step
       ? (timestamp(nested(data, 8)) ?? timestamp(nested(data, 1)))
       : timestamp(nested(nested(data, 9), 4)),
+    primaryUsage,
     usages,
   };
 }
@@ -165,6 +173,7 @@ function blob(value: unknown): Uint8Array {
 interface UsageCandidate {
   record: UsageRecord;
   keys: readonly string[];
+  modelQuality: number;
   timestampQuality: number;
 }
 
@@ -200,6 +209,7 @@ const readDatabase = Effect.fn("readDatabase")(function* (
       )).map((row) => row.name),
     );
     if (!tables.has("gen_metadata") && !tables.has("steps")) {
+      if (tables.has("conversation_summaries")) return null;
       return yield* new AntigravityDatabaseDecodeError({ path });
     }
     // Seek by rowid regardless of indexes; idx normally aliases rowid, but sort for layouts where it does not.
@@ -263,6 +273,32 @@ const readDatabase = Effect.fn("readDatabase")(function* (
   }).pipe(sql.withTransaction);
 });
 
+function usageModel(
+  usage: Fields,
+  entry: Metadata,
+  indexed: Metadata | undefined,
+  hasIdentity: boolean,
+) {
+  const primary = usage === entry.primaryUsage;
+  const usageId = numberAt(usage, 1);
+  // A retry can use another model. Only its own ID can tie it to the enclosing metadata.
+  const id = usageId || (primary ? entry.modelId : 0);
+  const direct = (primary || usageId > 0) && id === entry.modelId ? entry.model : "";
+  if (isConcreteModel(direct)) return { model: direct, quality: 5 };
+
+  const anonymous = primary && !hasIdentity && !id && !direct;
+  const matching =
+    indexed && (anonymous || (id > 0 && indexed.modelId === id)) ? indexed : undefined;
+  if (matching && isConcreteModel(matching.model)) return { model: matching.model, quality: 4 };
+  const modelId = id || matching?.modelId || 0;
+  const known = MODEL_IDS[modelId];
+  if (known) return { model: known, quality: 3 };
+  const alias = direct || matching?.model;
+  if (alias) return { model: alias, quality: 2 };
+  if (modelId) return { model: `antigravity-model-${modelId}`, quality: 1 };
+  return { model: "antigravity-unknown", quality: 0 };
+}
+
 function usageCandidates(
   sessionId: string,
   generations: ReadonlyArray<{ idx: number; entry: Metadata }>,
@@ -271,12 +307,16 @@ function usageCandidates(
   fallbackTimestamp: number,
 ): UsageCandidate[] {
   const records: UsageCandidate[] = [];
-  const generationModels = new Map(generations.map(({ idx, entry }) => [idx, entry.model]));
+  // Some stores keep only the model metadata in generation rows and the usage in same-index steps.
+  const generationModels = new Map(
+    generations.filter(({ entry }) => !entry.usages.length).map(({ idx, entry }) => [idx, entry]),
+  );
   for (const [source, entries] of [
     ["step", steps],
     ["generation", generations],
   ] as const) {
     for (const [index, { idx, entry }] of entries.entries()) {
+      const indexed = source === "step" ? generationModels.get(idx) : undefined;
       for (const [usageIndex, usage] of entry.usages.entries()) {
         const outputTokens = Math.max(numberAt(usage, 3), numberAt(usage, 9) + numberAt(usage, 10));
         const totals = {
@@ -298,16 +338,12 @@ function usageCandidates(
           const id = textAt(usage, key);
           return id ? [`antigravity:${key}:${id}`] : [];
         });
+        const model = usageModel(usage, entry, indexed, keys.length > 0);
         const record: UsageRecord = {
           provider: "antigravity",
           sessionId,
           timestampMs: entry.timestampMs ?? trajectoryTimestamp ?? fallbackTimestamp,
-          model:
-            MODEL_IDS[numberAt(usage, 1)] ||
-            entry.model ||
-            (source === "step" ? generationModels.get(idx) : "") ||
-            modelName("", numberAt(usage, 1)) ||
-            "antigravity-unknown",
+          model: model.model,
           totals,
           reportedCostUsd: null,
           speed: "standard",
@@ -316,6 +352,7 @@ function usageCandidates(
         records.push({
           record,
           keys,
+          modelQuality: model.quality,
           timestampQuality: entry.timestampMs !== null ? 2 : trajectoryTimestamp !== null ? 1 : 0,
         });
       }
@@ -326,7 +363,7 @@ function usageCandidates(
 
 interface CachedDatabase {
   readonly fingerprint: string;
-  readonly candidates: readonly UsageCandidate[];
+  readonly candidates: readonly UsageCandidate[] | null;
 }
 
 /** Fingerprint canonical DB/WAL paths by size, mtime and ctime; WAL holds new rows, and ctime catches restored mtimes. */
@@ -367,6 +404,12 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
     const target = groups[a]!;
     const source = groups[b]!;
     const first = target.owner < source.owner ? target : source;
+    const bestModel =
+      source.modelQuality === target.modelQuality
+        ? first
+        : source.modelQuality > target.modelQuality
+          ? source
+          : target;
     const bestTime =
       source.timestampQuality > target.timestampQuality ||
       (source.timestampQuality === target.timestampQuality &&
@@ -377,12 +420,7 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
     const y = source.record.totals;
     target.record = {
       ...first.record,
-      model:
-        first.record.model === "antigravity-unknown"
-          ? first === target
-            ? source.record.model
-            : target.record.model
-          : first.record.model,
+      model: bestModel.record.model,
       timestampMs: bestTime.record.timestampMs,
       totals: {
         uncachedInputTokens: Math.max(x.uncachedInputTokens, y.uncachedInputTokens),
@@ -393,6 +431,7 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
       },
     };
     target.timestampQuality = bestTime.timestampQuality;
+    target.modelQuality = bestModel.modelQuality;
     target.owner = first.owner;
     target.fileIndex = first.fileIndex;
     target.size += source.size;

@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
-import { ServerProviderUsageWindow } from "./providerUsageLimits.ts";
+import { ServerProviderUsageWindow, UsageLimitSourceSnapshot } from "./providerUsageLimits.ts";
 import {
   OtlpEndpointCheckInput,
   resolveEnvironmentMachineKind,
@@ -14,6 +14,7 @@ import { ServerSettings } from "./settings.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
+const decodeUsageLimitSource = Schema.decodeUnknownSync(UsageLimitSourceSnapshot);
 
 const baseProviderSnapshot = {
   instanceId: "codex",
@@ -70,6 +71,29 @@ describe("server config forward compatibility", () => {
     expect(parsed.usageLimits?.windows).toEqual([
       { id: "primary", kind: "session", label: "Session", usedPercent: 12 },
     ]);
+    const [olderAntigravity] = decodeServerProviders([
+      { ...parsed, instanceId: "antigravity-personal", driver: "antigravity" },
+    ]);
+    expect(olderAntigravity?.instanceId).toBe("antigravity-personal");
+    expect(olderAntigravity).not.toHaveProperty("usageLimits");
+    const fromAcp = { ...parsed.usageLimits, source: "antigravity-acp" };
+    const currentAntigravity = decodeServerProvider({
+      ...olderAntigravity,
+      usageLimits: fromAcp,
+    });
+    expect(currentAntigravity.usageLimits).toEqual(fromAcp);
+    const hub = decodeUsageLimitSource({
+      id: "hub",
+      kind: "cliproxy",
+      label: "Hub",
+      checkedAt: parsed.checkedAt,
+      accounts: ["codex", "antigravity"].map((driver) => ({
+        id: driver,
+        driver,
+        usageLimits: parsed.usageLimits,
+      })),
+    });
+    expect(hub.accounts.map(({ driver }) => driver)).toEqual(["codex"]);
   });
 
   it("decodes a used-up window's first-seen time across server versions", () => {
