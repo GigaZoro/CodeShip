@@ -18,6 +18,7 @@ import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -34,6 +35,7 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   isListedThreadLineage,
+  isProviderNativeSubagentThread,
   threadFolderKeyOf,
   type ContextMenuItem,
   type EnvironmentId,
@@ -697,24 +699,103 @@ export function isSidebarHiddenThread(thread: Pick<SidebarThreadSummary, "lineag
   return !isListedThreadLineage(thread.lineage);
 }
 
-// Subagent and side-chat threads have no sidebar row, so an open one is represented by
-// its nearest listed ancestor. A broken chain (missing parent, cycle,
-// other environment) resolves to the thread itself, which then matches no row.
-export function resolveSidebarRowThreadId(
-  threadId: ThreadId,
-  environmentId: EnvironmentId,
-  threads: readonly Pick<SidebarThreadSummary, "id" | "environmentId" | "lineage">[],
-): ThreadId {
-  const findThread = (id: ThreadId) =>
-    threads.find((thread) => thread.id === id && thread.environmentId === environmentId);
-  const visited = new Set<ThreadId>();
-  let thread = findThread(threadId);
-  while (thread !== undefined && isSidebarHiddenThread(thread)) {
-    if (thread.lineage.parentThreadId === null || visited.has(thread.id)) return threadId;
-    visited.add(thread.id);
-    thread = findThread(thread.lineage.parentThreadId);
+type SidebarTreeThread = Pick<
+  SidebarThreadSummary,
+  | "archivedAt"
+  | "createdAt"
+  | "creationSource"
+  | "delegatedFrom"
+  | "environmentId"
+  | "id"
+  | "lineage"
+>;
+
+// The thread whose row a thread without its own row shows under; null for a listed thread.
+function sidebarParentKey(
+  thread: SidebarTreeThread,
+  delegatedUnderParent: ReadonlySet<string>,
+): string | null {
+  if (!isListedThreadLineage(thread.lineage)) {
+    const parentId = thread.lineage.parentThreadId;
+    return parentId === null
+      ? null
+      : scopedThreadKey(scopeThreadRef(thread.environmentId, parentId));
   }
-  return thread?.id ?? threadId;
+  const delegatedFrom = thread.delegatedFrom;
+  return delegatedFrom != null &&
+    delegatedUnderParent.has(
+      threadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+    )
+    ? scopedThreadKey(scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId))
+    : null;
+}
+
+// Provider-native subagents stay in their parent chat's task list, as Claude desktop keeps them
+// out of its session list; open side chats, CodeShip subagents and delegated tasks nest in the tree.
+function sidebarTreeParentKey(
+  thread: SidebarTreeThread,
+  delegatedUnderParent: ReadonlySet<string>,
+): string | null {
+  return thread.archivedAt !== null || isProviderNativeSubagentThread(thread)
+    ? null
+    : sidebarParentKey(thread, delegatedUnderParent);
+}
+
+/** The open child chats nested under each sidebar row, by the parent's scoped key, newest first. */
+export function groupSidebarTreeChildren<T extends SidebarTreeThread>(
+  threads: readonly T[],
+  delegatedUnderParent: ReadonlySet<string>,
+): ReadonlyMap<string, readonly T[]> {
+  const children = new Map<string, T[]>();
+  for (const thread of threads) {
+    const parentKey = sidebarTreeParentKey(thread, delegatedUnderParent);
+    if (parentKey === null) continue;
+    const siblings = children.get(parentKey);
+    if (siblings) siblings.push(thread);
+    else children.set(parentKey, [thread]);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((left, right) =>
+      left.createdAt === right.createdAt
+        ? left.id < right.id
+          ? 1
+          : -1
+        : left.createdAt < right.createdAt
+          ? 1
+          : -1,
+    );
+  }
+  return children;
+}
+
+/**
+ * The sidebar rows from the open thread's listed ancestor down to the open thread, by scoped
+ * key. The path ends at the deepest thread the tree shows, so a provider-native subagent or an
+ * archived child resolves to the chat that started it. A broken chain (missing parent, cycle) resolves to
+ * the thread alone, which then matches no row.
+ */
+export function resolveSidebarRoutePath<T extends SidebarTreeThread>(
+  routeKey: string,
+  findThread: (key: string) => T | undefined,
+  delegatedUnderParent: ReadonlySet<string>,
+): readonly string[] {
+  const chain: T[] = [];
+  const visited = new Set<string>();
+  let key: string | null = routeKey;
+  while (key !== null) {
+    const thread = findThread(key);
+    if (thread === undefined || visited.has(key)) return [routeKey];
+    visited.add(key);
+    chain.push(thread);
+    key = sidebarParentKey(thread, delegatedUnderParent);
+  }
+  const path: string[] = [];
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const thread = chain[index]!;
+    if (path.length > 0 && sidebarTreeParentKey(thread, delegatedUnderParent) === null) break;
+    path.push(sidebarThreadKey(thread));
+  }
+  return path;
 }
 
 /**

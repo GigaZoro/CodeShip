@@ -39,11 +39,14 @@ import {
   BellIcon,
   BellOffIcon,
   ArrowRightLeftIcon,
+  BotIcon,
   CheckIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   ClockIcon,
   GitBranchIcon,
+  MessagesSquareIcon,
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
@@ -677,6 +680,10 @@ type SidebarThreadRowProps = {
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
+  /** The child chats nested under this row; a copy row never shows them. */
+  childCount: number;
+  childrenExpanded: boolean;
+  onToggleChildren: (threadKey: string) => void;
 };
 
 // Mounted only while renaming, so each rename starts uncommitted.
@@ -1130,6 +1137,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </span>
   );
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
+  const hasTreeChildren = !copy && props.childCount > 0;
+  const treeToggle = hasTreeChildren ? (
+    <SidebarTreeToggle
+      threadKey={threadKey}
+      count={props.childCount}
+      expanded={props.childrenExpanded}
+      onToggle={props.onToggleChildren}
+    />
+  ) : null;
   const tags = thread.source.tags;
   const tagChips = tags?.length ? (
     <span className="flex max-w-[40%] shrink-0 items-center gap-1">
@@ -1380,6 +1396,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   .filter(Boolean)
                   .join(", ")}
                 aria-current={accessibility.current}
+                aria-expanded={hasTreeChildren ? props.childrenExpanded : undefined}
                 data-testid={
                   indented
                     ? "sidebar-row-folder"
@@ -1450,6 +1467,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 />
               ) : null}
               {multiline ? null : terminalStatusIcon}
+              {treeToggle}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   {t("Regenerating title")}
@@ -1619,6 +1637,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 .filter(Boolean)
                 .join(", ")}
               aria-current={accessibility.current}
+              aria-expanded={hasTreeChildren ? props.childrenExpanded : undefined}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
@@ -1656,6 +1675,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : (
                 <span className="flex-1" />
               )}
+              {treeToggle}
               {sortable?.isDragging ? (
                 dragDestination
               ) : (
@@ -1808,6 +1828,162 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
+    </li>
+  );
+});
+
+/** Shows or hides a row's child chats; ArrowRight and ArrowLeft on the row press it too. */
+function SidebarTreeToggle(props: {
+  threadKey: string;
+  count: number;
+  expanded: boolean;
+  onToggle: (threadKey: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-sidebar-tree-toggle
+      aria-expanded={props.expanded}
+      aria-label={
+        props.expanded
+          ? tn(props.count, "Hide {count} child chat", "Hide {count} child chats")
+          : tn(props.count, "Show {count} child chat", "Show {count} child chats")
+      }
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        props.onToggle(props.threadKey);
+      }}
+      // The row's drag starts on pointer down.
+      onPointerDown={(event) => event.stopPropagation()}
+      className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-0.5 rounded-sm px-1 text-xs tabular-nums text-secondary-label outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    >
+      <ChevronRightIcon
+        aria-hidden
+        className={cn(
+          "size-3 shrink-0 transition-transform motion-reduce:transition-none",
+          props.expanded && "rotate-90",
+        )}
+      />
+      {props.count}
+    </button>
+  );
+}
+
+/** Where a parent row's content starts: a top-level row, a folder row, or a row in a machine's project folder. */
+export type SidebarTreeInset = "row" | "folder" | "machine-folder";
+const SIDEBAR_TREE_INSET_REM: Record<SidebarTreeInset, number> = {
+  row: 0.625,
+  folder: 2.25,
+  "machine-folder": 3.875,
+};
+const SIDEBAR_TREE_STEP_REM = 1;
+
+/** A child chat nested under its parent's row: a side chat, a subagent or a delegated task. */
+export const SidebarChildThreadRow = memo(function SidebarChildThreadRow(props: {
+  thread: SidebarThreadSummary;
+  rowId: string;
+  parentRowId: string;
+  depth: number;
+  inset: SidebarTreeInset;
+  childCount: number;
+  expanded: boolean;
+  isActive: boolean;
+  // Set on the active row only; scrolls it into view when a reveal is owed.
+  onReveal?: ((row: HTMLElement) => void) | undefined;
+  onOpen: (thread: SidebarThreadSummary) => void;
+  onToggleChildren: (threadKey: string) => void;
+}) {
+  const threadRef = scopeThreadRef(props.thread.environmentId, props.thread.id);
+  // Arranged from quiet shells; the live shell keeps only this row's status current.
+  const thread = useThreadShell(threadRef) ?? props.thread;
+  const machineConnection = useEnvironmentConnectionSummary(thread.environmentId);
+  const status = resolveThreadRowStatus({
+    status: resolveThreadStatus(thread),
+    goalActive: thread.goal?.status === "active",
+    isWoke: false,
+    isUnread: false,
+    machine: machineConnection ? machineAvailability(machineConnection.connectionState) : "live",
+  });
+  const sideChat = thread.lineage.sideChat === true;
+  const RelationIcon = sideChat ? MessagesSquareIcon : BotIcon;
+  const inset = SIDEBAR_TREE_INSET_REM[props.inset];
+  const { onReveal } = props;
+  const open = () => props.onOpen(thread);
+  return (
+    <li className="relative list-none">
+      {Array.from({ length: props.depth }, (_, level) => (
+        <span
+          key={level}
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 w-px bg-sidebar-border/70"
+          style={{ insetInlineStart: `${inset + level * SIDEBAR_TREE_STEP_REM + 0.5}rem` }}
+        />
+      ))}
+      <div
+        ref={(row) => {
+          if (row !== null) onReveal?.(row);
+        }}
+        role="treeitem"
+        tabIndex={-1}
+        data-sidebar-row={props.rowId}
+        data-sidebar-parent={props.parentRowId}
+        aria-expanded={props.childCount > 0 ? props.expanded : undefined}
+        aria-current={props.isActive ? "page" : undefined}
+        aria-label={[
+          thread.title,
+          sideChat ? t("Side chat") : t("Subagent"),
+          status?.lastKnown?.label ?? status?.label,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+        data-testid="sidebar-row-child"
+        className={cn(
+          "group/sidebar-row relative flex h-(--sidebar-thread-row-height) w-full cursor-pointer items-center gap-1.5 rounded-md pe-2.5 text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          props.isActive
+            ? "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
+            : "text-sidebar-foreground hover:bg-sidebar-row-hover",
+        )}
+        style={{ paddingInlineStart: `${inset + props.depth * SIDEBAR_TREE_STEP_REM}rem` }}
+        onClick={open}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          open();
+        }}
+      >
+        <RelationIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+        <span
+          aria-hidden
+          className={cn(
+            "min-w-0 flex-1 truncate text-sm",
+            props.isActive ? "text-foreground" : "text-secondary-label",
+          )}
+          dir={textDirection(thread.title)}
+        >
+          {thread.title}
+        </span>
+        {props.childCount > 0 ? (
+          <SidebarTreeToggle
+            threadKey={scopedThreadKey(threadRef)}
+            count={props.childCount}
+            expanded={props.expanded}
+            onToggle={props.onToggleChildren}
+          />
+        ) : null}
+        <span aria-hidden className="flex shrink-0 items-center text-xs tabular-nums">
+          {status ? (
+            <span className={cn("inline-flex items-center gap-1 font-medium", status.className)}>
+              <ThreadRowStatusContent status={status} iconClassName="size-3" />
+            </span>
+          ) : (
+            <span className="text-secondary-label">
+              <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
+            </span>
+          )}
+        </span>
+      </div>
     </li>
   );
 });

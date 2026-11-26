@@ -6453,6 +6453,12 @@ const catalog: MessageCatalog = {
   "Hidden slide": "Прихований слайд",
   Hide: "Сховати",
   "Hide {color} usage": "Сховати використання: {color}",
+  "Hide {count} child chats": {
+    one: "Сховати {count} дочірній чат",
+    few: "Сховати {count} дочірні чати",
+    many: "Сховати {count} дочірніх чатів",
+    other: "Сховати {count} дочірнього чату",
+  },
   "Hide {host} accounts": "Сховати облікові записи {host}",
   "Hide {name}": "Сховати {name}",
   "Hide {tab}": "Сховати {tab}",
@@ -11162,6 +11168,12 @@ const catalog: MessageCatalog = {
   "Shorten selection": "Скоротити виділення",
   Show: "Показати",
   "Show {color} usage": "Показати використання: {color}",
+  "Show {count} child chats": {
+    one: "Показати {count} дочірній чат",
+    few: "Показати {count} дочірні чати",
+    many: "Показати {count} дочірніх чатів",
+    other: "Показати {count} дочірнього чату",
+  },
   "Show {count} hidden test files": {
     one: "Показати {count} прихований файл тестів",
     few: "Показати {count} приховані файли тестів",

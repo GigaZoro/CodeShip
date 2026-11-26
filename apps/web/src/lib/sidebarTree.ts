@@ -20,6 +20,11 @@ export const SIDEBAR_TREE_PROPS = {
 } as const;
 
 /** Ref callback for a sidebar list; installs the tree and returns its cleanup. */
+// A thread row opens its chat on click, so its child chats expand through their own toggle.
+function expander(row: HTMLElement): HTMLElement {
+  return row.querySelector<HTMLElement>("[data-sidebar-tree-toggle]") ?? row;
+}
+
 export function attachSidebarTree(element: HTMLElement | null) {
   return element ? installSidebarTree(element) : undefined;
 }
@@ -213,14 +218,14 @@ export function installSidebarTree(
         target = rows.at(-1);
         break;
       case "ArrowRight":
-        if (row.getAttribute("aria-expanded") === "false") row.click();
+        if (row.getAttribute("aria-expanded") === "false") expander(row).click();
         else
           target = rows.find(
             (candidate) => candidate.dataset.sidebarParent === row.dataset.sidebarRow,
           );
         break;
       case "ArrowLeft":
-        if (row.getAttribute("aria-expanded") === "true") row.click();
+        if (row.getAttribute("aria-expanded") === "true") expander(row).click();
         else
           target = rows.find(
             (candidate) => candidate.dataset.sidebarRow === row.dataset.sidebarParent,

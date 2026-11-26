@@ -15,7 +15,8 @@ import {
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
-  resolveSidebarRowThreadId,
+  groupSidebarTreeChildren,
+  resolveSidebarRoutePath,
   belongsInSidebarWorkingShelf,
   isSidebarEnvironmentDisconnected,
   orderItemsByPreferredIds,
@@ -48,6 +49,7 @@ import {
   sidebarSectionsListThread,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import {
   sortActiveThreadsByOrderKey,
   sortPinnedThreadsByOrderKey,
@@ -156,45 +158,114 @@ describe("deleteSelectedThreadEntries", () => {
   });
 });
 
-describe("sidebar thread lineage helpers", () => {
-  it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
-    const environmentId = EnvironmentId.make("environment-row");
-    const otherEnvironmentId = EnvironmentId.make("environment-other");
-    const subagentOf = (id: string, parentId: ThreadId, environment = environmentId) =>
-      makeThreadFixture({
-        id: ThreadId.make(id),
-        environmentId: environment,
-        lineage: {
-          rootThreadId: parentId,
-          parentThreadId: parentId,
-          relationshipToParent: "subagent",
-        },
-      });
-    const root = makeThreadFixture({ id: ThreadId.make("thread-root"), environmentId });
-    const fork = makeThreadFixture({
-      id: ThreadId.make("thread-fork"),
+describe("sidebar chat tree", () => {
+  const environmentId = EnvironmentId.make("environment-row");
+  const linkedEnvironmentId = EnvironmentId.make("environment-linked");
+  const keyOf = (thread: { environmentId: EnvironmentId; id: ThreadId }) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const childOf = (
+    id: string,
+    parentId: ThreadId,
+    overrides: ThreadFixtureOverrides & { sideChat?: true } = {},
+  ) => {
+    const { sideChat, ...rest } = overrides;
+    return makeThreadFixture({
+      id: ThreadId.make(id),
       environmentId,
+      creationSource: "mcp",
       lineage: {
-        rootThreadId: root.id,
-        parentThreadId: root.id,
-        relationshipToParent: "fork",
+        rootThreadId: parentId,
+        parentThreadId: parentId,
+        relationshipToParent: sideChat ? null : "subagent",
+        ...(sideChat ? { sideChat } : {}),
       },
+      ...rest,
     });
-    const child = subagentOf("thread-child", root.id);
-    const grandchild = subagentOf("thread-grandchild", child.id);
-    const forkChild = subagentOf("thread-fork-child", fork.id);
-    const orphan = subagentOf("thread-orphan", ThreadId.make("thread-missing"));
-    const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
-    const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
+  };
+  const root = makeThreadFixture({ id: ThreadId.make("thread-root"), environmentId });
+  const fork = makeThreadFixture({
+    id: ThreadId.make("thread-fork"),
+    environmentId,
+    lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent: "fork" },
+  });
+  const older = childOf("thread-older", root.id, { createdAt: "2026-01-01T00:00:00.000Z" });
+  const sideChat = childOf("thread-side", root.id, {
+    sideChat: true,
+    createdAt: "2026-01-02T00:00:00.000Z",
+  });
+  const native = childOf("thread-native", root.id, { creationSource: "provider" });
+  const archived = childOf("thread-archived", root.id, { archivedAt: "2026-01-03T00:00:00.000Z" });
+  const grandchild = childOf("thread-grandchild", older.id);
+  const underNative = childOf("thread-under-native", native.id);
+  const forkChild = childOf("thread-fork-child", fork.id);
+  const delegatedFrom = { environmentId, threadId: root.id, title: "Root" };
+  const delegated = makeThreadFixture({
+    id: ThreadId.make("thread-delegated"),
+    environmentId: linkedEnvironmentId,
+    delegatedFrom,
+    createdAt: "2026-01-04T00:00:00.000Z",
+  });
+  const delegatedListed = makeThreadFixture({
+    id: ThreadId.make("thread-delegated-listed"),
+    environmentId: linkedEnvironmentId,
+    delegatedFrom,
+  });
+  const threads = [
+    root,
+    fork,
+    older,
+    sideChat,
+    native,
+    archived,
+    grandchild,
+    underNative,
+    forkChild,
+    delegated,
+    delegatedListed,
+  ];
+  const delegatedUnderParent = new Set([
+    threadKey({ environmentId: linkedEnvironmentId, threadId: delegated.id }),
+  ]);
+  const findThread = (key: string) => threads.find((thread) => keyOf(thread) === key);
 
-    expect(resolveSidebarRowThreadId(child.id, environmentId, threads)).toBe(root.id);
-    expect(resolveSidebarRowThreadId(grandchild.id, environmentId, threads)).toBe(root.id);
-    expect(resolveSidebarRowThreadId(forkChild.id, environmentId, threads)).toBe(fork.id);
-    expect(resolveSidebarRowThreadId(elsewhere.id, otherEnvironmentId, threads)).toBe(elsewhere.id);
-    expect(resolveSidebarRowThreadId(orphan.id, environmentId, threads)).toBe(orphan.id);
-    const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
-    const loopB = subagentOf("thread-loop-b", loopA.id);
-    expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
+  it("nests side chats, CodeShip subagents and delegated tasks under their parent, newest first", () => {
+    const children = groupSidebarTreeChildren(threads, delegatedUnderParent);
+    const keysUnder = (parent: (typeof threads)[number]) =>
+      children.get(keyOf(parent))?.map((thread) => thread.id);
+
+    expect(keysUnder(root)).toEqual([delegated.id, sideChat.id, older.id]);
+    expect(keysUnder(older)).toEqual([grandchild.id]);
+    expect(keysUnder(fork)).toEqual([forkChild.id]);
+    expect(keysUnder(native)).toEqual([underNative.id]);
+    expect(children.has(keyOf(delegatedListed))).toBe(false);
+  });
+
+  it("resolves an open chat to the rows from its listed ancestor down to it", () => {
+    const pathOf = (thread: (typeof threads)[number]) =>
+      resolveSidebarRoutePath(keyOf(thread), findThread, delegatedUnderParent);
+
+    expect(pathOf(root)).toEqual([keyOf(root)]);
+    expect(pathOf(grandchild)).toEqual([keyOf(root), keyOf(older), keyOf(grandchild)]);
+    expect(pathOf(sideChat)).toEqual([keyOf(root), keyOf(sideChat)]);
+    expect(pathOf(forkChild)).toEqual([keyOf(fork), keyOf(forkChild)]);
+    expect(pathOf(delegated)).toEqual([keyOf(root), keyOf(delegated)]);
+    expect(pathOf(delegatedListed)).toEqual([keyOf(delegatedListed)]);
+    // Provider-native subagents, their children and archived children resolve to the chat that started them.
+    expect(pathOf(native)).toEqual([keyOf(root)]);
+    expect(pathOf(underNative)).toEqual([keyOf(root)]);
+    expect(pathOf(archived)).toEqual([keyOf(root)]);
+
+    const orphan = childOf("thread-orphan", ThreadId.make("thread-missing"));
+    const loopA = childOf("thread-loop-a", ThreadId.make("thread-loop-b"));
+    const loopB = childOf("thread-loop-b", loopA.id);
+    const broken = [orphan, loopA, loopB];
+    const findBroken = (key: string) => broken.find((thread) => keyOf(thread) === key);
+    expect(resolveSidebarRoutePath(keyOf(orphan), findBroken, delegatedUnderParent)).toEqual([
+      keyOf(orphan),
+    ]);
+    expect(resolveSidebarRoutePath(keyOf(loopA), findBroken, delegatedUnderParent)).toEqual([
+      keyOf(loopA),
+    ]);
   });
 });
 

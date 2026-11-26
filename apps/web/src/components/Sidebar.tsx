@@ -302,7 +302,8 @@ import {
   useThreadJumpHintsVisible,
   type SidebarListItem,
   type SidebarSection,
-  resolveSidebarRowThreadId,
+  groupSidebarTreeChildren,
+  resolveSidebarRoutePath,
 } from "./Sidebar.logic";
 import {
   createSidebarCollisionDetection,
@@ -350,9 +351,11 @@ import { TooltipProvider } from "./ui/tooltip";
 import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
+  SidebarChildThreadRow,
   SidebarSearchResultRow,
   SortableThreadRow,
   type SidebarProviderEntry,
+  type SidebarTreeInset,
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
@@ -438,6 +441,12 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 const PINNED_SHELF_EXPANDED_KEY = "t3code:sidebar:pinned-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
+const TREE_EXPANDED_KEY = "t3code:sidebar:tree-expanded";
+// A toggle moves its key to the end, so the cap forgets the rows toggled longest ago.
+const TREE_EXPANDED_MAX_KEYS = 500;
+const SidebarTreeExpandedKeys = Schema.Array(Schema.String);
+const EMPTY_TREE_EXPANDED: readonly string[] = [];
+const EMPTY_TREE_KEYS: ReadonlySet<string> = new Set();
 
 const inboxReturns = createInboxReturnTracker();
 
@@ -1814,19 +1823,13 @@ export default function Sidebar({
     ),
   );
   const tagFilterOptions = threadTagFilterOptions(availableTags, selectedTags);
-  const routeRowThreadKey =
-    routeThreadRef === null
-      ? null
-      : scopedThreadKey(
-          scopeThreadRef(
-            routeThreadRef.environmentId,
-            resolveSidebarRowThreadId(
-              routeThreadRef.threadId,
-              routeThreadRef.environmentId,
-              threads,
-            ),
-          ),
-        );
+  const shellByKey = new Map(threads.map((thread) => [threadShellKey(thread), thread] as const));
+  // From the open thread's own row down the chat tree to the open thread.
+  const routePath =
+    routeThreadKey === null
+      ? []
+      : resolveSidebarRoutePath(routeThreadKey, (key) => shellByKey.get(key), delegatedUnderParent);
+  const routeRowThreadKey = routePath[0] ?? null;
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
 
   // History, the palette and links can open a thread the scope hides or the list
@@ -1839,7 +1842,7 @@ export default function Sidebar({
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
-    findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
+    findThread: (key) => shellByKey.get(key),
     listsThread: (thread) =>
       sidebarSectionsListThread(thread, {
         statusFilter,
@@ -1887,6 +1890,44 @@ export default function Sidebar({
     setPersistedMachineScopeIds,
   ]);
   const revealActiveRow = useActiveRowReveal(routeReveal, routeRowThreadKey);
+  const treeChildren = groupSidebarTreeChildren(threads, delegatedUnderParent);
+  const [expandedTreeKeyList, setExpandedTreeKeyList] = useLocalStorage(
+    TREE_EXPANDED_KEY,
+    EMPTY_TREE_EXPANDED,
+    SidebarTreeExpandedKeys,
+  );
+  const expandedTreeKeys = new Set(expandedTreeKeyList);
+  // The open thread's ancestors expand on their own; collapsing one holds until the route changes.
+  const [routeTreeCollapse, setRouteTreeCollapse] = useState<{
+    readonly routeKey: string | null;
+    readonly keys: ReadonlySet<string>;
+  }>({ routeKey: null, keys: EMPTY_TREE_KEYS });
+  const collapsedOnRoute =
+    routeTreeCollapse.routeKey === routeThreadKey ? routeTreeCollapse.keys : EMPTY_TREE_KEYS;
+  const routeAncestorKeys = new Set(routePath.slice(0, -1));
+  const isTreeExpanded = (key: string) =>
+    expandedTreeKeys.has(key) || (routeAncestorKeys.has(key) && !collapsedOnRoute.has(key));
+  const toggleTreeChildren = useStableCallback((key: string) => {
+    const expanded = isTreeExpanded(key);
+    setExpandedTreeKeyList((keys) => {
+      const rest = keys.filter((candidate) => candidate !== key);
+      return expanded ? rest : [...rest, key].slice(-TREE_EXPANDED_MAX_KEYS);
+    });
+    if (!routeAncestorKeys.has(key)) return;
+    const keys = new Set(collapsedOnRoute);
+    if (expanded) keys.add(key);
+    else keys.delete(key);
+    setRouteTreeCollapse({ routeKey: routeThreadKey, keys });
+  });
+  // The open thread's row, or its nearest ancestor's while a collapsed row hides it.
+  let activeRowKey = routeRowThreadKey;
+  for (let index = 1; index < routePath.length && isTreeExpanded(routePath[index - 1]!); index++) {
+    activeRowKey = routePath[index]!;
+  }
+  const revealTreeRow = useStableCallback((row: HTMLElement) => {
+    if (routeRowThreadKey !== null) revealActiveRow(row, routeRowThreadKey);
+  });
+  // A side chat opens in its parent's side panel, where it is used.
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const scratchMachineLabelFor = (
     thread: Pick<SidebarThreadSummary, "environmentId" | "projectId">,
@@ -2598,6 +2639,17 @@ export default function Sidebar({
       params: buildThreadRouteParams(threadRef),
     });
   };
+
+  const openTreeChild = useStableCallback((thread: SidebarThreadSummary) => {
+    const parentId = thread.lineage.parentThreadId;
+    if (thread.lineage.sideChat === true && parentId !== null) {
+      const parentRef = scopeThreadRef(thread.environmentId, parentId);
+      useRightPanelStore.getState().openSideChat(parentRef, thread.id);
+      void navigateToThread(parentRef);
+      return;
+    }
+    void navigateToThread(scopeThreadRef(thread.environmentId, thread.id));
+  });
 
   const handleThreadFileDrop = async (threadRef: ScopedThreadRef, files: File[]) => {
     const dropId = queuePendingFileDrop({ threadRef, files });
@@ -4875,11 +4927,55 @@ export default function Sidebar({
                     )}
                   >
                     {(() => {
+                      const renderTreeChildren = (
+                        parentKey: string,
+                        parentRowId: string,
+                        depth: number,
+                        inset: SidebarTreeInset,
+                        ancestors: ReadonlySet<string>,
+                      ): ReactNode[] => {
+                        const rows: ReactNode[] = [];
+                        for (const child of treeChildren.get(parentKey) ?? EMPTY_THREADS) {
+                          const childKey = threadShellKey(child);
+                          if (ancestors.has(childKey)) continue;
+                          const rowId = `tree:${childKey}`;
+                          const childCount = treeChildren.get(childKey)?.length ?? 0;
+                          const expanded = childCount > 0 && isTreeExpanded(childKey);
+                          rows.push(
+                            <SidebarChildThreadRow
+                              key={rowId}
+                              thread={child}
+                              rowId={rowId}
+                              parentRowId={parentRowId}
+                              depth={depth}
+                              inset={inset}
+                              childCount={childCount}
+                              expanded={expanded}
+                              isActive={activeRowKey === childKey}
+                              onReveal={activeRowKey === childKey ? revealTreeRow : undefined}
+                              onOpen={openTreeChild}
+                              onToggleChildren={toggleTreeChildren}
+                            />,
+                          );
+                          if (expanded) {
+                            rows.push(
+                              ...renderTreeChildren(
+                                childKey,
+                                rowId,
+                                depth + 1,
+                                inset,
+                                new Set(ancestors).add(childKey),
+                              ),
+                            );
+                          }
+                        }
+                        return rows;
+                      };
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection | "needs-you",
                         folder?: SidebarFolder,
-                      ) => {
+                      ): ReactNode[] => {
                         // The tree row of the folder this row sits in.
                         const folderRow = folder ? sidebarFolderRowId(folder.key) : undefined;
                         const inMachineFolder =
@@ -4896,6 +4992,8 @@ export default function Sidebar({
                           renamingThreadKey === threadKey &&
                           (copy ? renamingCopy : !renamingCopy || !workingCopyKeys.has(threadKey));
                         const isCard = needsYou || section === "active" || section === "working";
+                        const childCount = copy ? 0 : (treeChildren.get(threadKey)?.length ?? 0);
+                        const childrenExpanded = childCount > 0 && isTreeExpanded(threadKey);
                         // Pinned rows list one line each, as pinned tasks do; so does the Working
                         // shelf beside one-line folder rows.
                         const rowVariant = folderRow
@@ -4908,7 +5006,7 @@ export default function Sidebar({
                             : isCard
                               ? "card"
                               : "slim";
-                        return (
+                        const row = (
                           <SortableThreadRow
                             key={copy ? `copy:${threadKey}` : threadKey}
                             // Needs you rows sit outside the sortable list, whose sections they would cross.
@@ -4968,9 +5066,9 @@ export default function Sidebar({
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
                             waitingSince={needsYou ? needsYouSinceOf(thread) : null}
-                            isActive={routeRowThreadKey === threadKey}
+                            isActive={activeRowKey === threadKey}
                             revealRef={
-                              routeRowThreadKey === threadKey && !copy ? revealActiveRow : undefined
+                              activeRowKey === threadKey && !copy ? revealActiveRow : undefined
                             }
                             isRouteThread={routeThreadKey === threadKey}
                             openPullRequestsInRightPanel={routeThreadRef !== null}
@@ -5021,8 +5119,28 @@ export default function Sidebar({
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}
+                            childCount={childCount}
+                            childrenExpanded={childrenExpanded}
+                            onToggleChildren={toggleTreeChildren}
                           />
                         );
+                        if (!childrenExpanded) return [row];
+                        const inset: SidebarTreeInset =
+                          folder === undefined
+                            ? "row"
+                            : folder.kind === "project" && inMachineFolder
+                              ? "machine-folder"
+                              : "folder";
+                        return [
+                          row,
+                          ...renderTreeChildren(
+                            threadKey,
+                            threadKey,
+                            1,
+                            inset,
+                            new Set([threadKey]),
+                          ),
+                        ];
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
@@ -5054,7 +5172,7 @@ export default function Sidebar({
                                   key="needs-you-header"
                                   count={needsYouNowThreads.length}
                                 />,
-                                ...needsYouNowThreads.map((thread) =>
+                                ...needsYouNowThreads.flatMap((thread) =>
                                   renderThreadRow(thread, "needs-you"),
                                 ),
                               ]
@@ -5065,7 +5183,7 @@ export default function Sidebar({
                                   key="needs-you-later-header"
                                   count={needsYouLaterThreads.length}
                                 />,
-                                ...needsYouLaterThreads.map((thread) =>
+                                ...needsYouLaterThreads.flatMap((thread) =>
                                   renderThreadRow(thread, "needs-you"),
                                 ),
                               ]
@@ -5183,7 +5301,7 @@ export default function Sidebar({
                           );
                           for (const thread of folder.threads) {
                             items.push(
-                              renderThreadRow(
+                              ...renderThreadRow(
                                 thread,
                                 sectionByThreadKey.get(threadShellKey(thread)) ?? "active",
                                 folder,
@@ -5212,7 +5330,7 @@ export default function Sidebar({
                         if (item.kind === "thread") {
                           // Folders draw active rows in their own place below.
                           if (folders !== null && item.section === "active") continue;
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          items.push(...renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
                         if (item.marker === "active-placeholder") pushUserFolders();
@@ -5239,7 +5357,7 @@ export default function Sidebar({
                               />,
                             );
                             for (const thread of folder.threads) {
-                              items.push(renderThreadRow(thread, "active", folder));
+                              items.push(...renderThreadRow(thread, "active", folder));
                             }
                             pushFolderMoreRow(folder, folder.member !== null);
                           };
@@ -5260,7 +5378,7 @@ export default function Sidebar({
                               />,
                             );
                             for (const thread of folder.threads) {
-                              items.push(renderThreadRow(thread, "active", folder));
+                              items.push(...renderThreadRow(thread, "active", folder));
                             }
                             pushFolderMoreRow(folder, false);
                             for (const project of folder.projects) pushProjectFolder(project);

@@ -745,7 +745,11 @@ reviewer's brief. Reviews use turns on the reviewers' accounts. A reviewer set t
 Auto runs where Auto mode starts a new chat, and on its saved model while Auto mode
 is off.
 
-On web and desktop, use **Agents** to follow work delegated to subagents.
+On web and desktop, use **Agents** to follow work delegated to subagents. In the sidebar, a chat
+that started side chats, subagents or delegated tasks shows how many next to its title: click the
+count, or press Right Arrow on the row, to list them underneath it, and Left Arrow to fold them
+away. Opening one of them unfolds the chats above it. Subagents a provider runs on its own, such as
+Claude's Task tool, are listed only in **Agents**.
 On mobile, open a subagent from its conversation card or **Agents**. On iOS
 layouts with an inspector, its thread opens beside the parent. Maximize it to
 fill the screen; close the full-screen view to return to the parent and inspector.

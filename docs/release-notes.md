@@ -209,6 +209,11 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — Child chats nest under their parent in the sidebar
+
+- On web and desktop, a chat that started side chats, subagents or delegated tasks shows how many next to its title. Click the count, or press Right Arrow on the row, to list them underneath, newest first; a child chat with children of its own nests the same way. The sidebar remembers which chats you expanded.
+- Opening a child chat expands the chats above it and highlights its row. A side chat opens beside its parent. Subagents a provider runs on its own, such as Claude's Task tool, stay in the parent's **Agents** list, and archived child chats stay out of the tree.
+
 ## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
 
 - Maintainers: server tests that link a folder make a junction on Windows, which needs no special rights, and the few that need a real file symlink skip where the machine cannot make one. Before, on a Windows machine without Developer Mode, about twenty storage cleanup, settings, review, session scanner and uninstall tests failed before checking anything. The `check:changed` worktree reuse test also links its packages again in each checkout, because Windows copies a junction as a folder.

@@ -110,6 +110,29 @@ describe("sidebar keyboard navigation", () => {
     expect(group.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("folds a thread row's child chats through its toggle without opening the thread", () => {
+    using tree = setup();
+    const thread = tree.row("thread");
+    thread.setAttribute("aria-expanded", "false");
+    const open = vi.fn();
+    thread.addEventListener("click", open);
+    const toggle = document.createElement("span");
+    toggle.dataset.sidebarTreeToggle = "";
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const expanded = thread.getAttribute("aria-expanded") === "true";
+      thread.setAttribute("aria-expanded", String(!expanded));
+    });
+    thread.append(toggle);
+    tree.install();
+    thread.focus();
+    press(thread, "ArrowRight");
+    expect(thread.getAttribute("aria-expanded")).toBe("true");
+    press(thread, "ArrowLeft");
+    expect(thread.getAttribute("aria-expanded")).toBe("false");
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("levels rows by their depth under nested folders", () => {
     using tree = setup();
     const machine = tree.row("machine");
