@@ -1,3 +1,7 @@
+## 2026-11-26 — Single-executable server builds load Zod via createRequire
+
+- Fixed `build-exe` in fork releases by loading the external `zod` runtime dependency lazily through `createRequire` in `ClaudeAdapterV2` instead of a static ESM import.
+
 ## 2026-11-26 — Windows command cleanup respects reused process IDs
 
 - When CodeShip detects that another process has taken a command's PID, it remembers that process's start time so cleanup can spare its children even after it has exited.
