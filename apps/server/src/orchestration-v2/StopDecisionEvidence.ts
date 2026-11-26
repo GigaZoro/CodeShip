@@ -116,7 +116,7 @@ const recordCommittedContinuation = Effect.fn("StopDecisionEvidence.commit")(fun
   for (const { event } of events) {
     if (
       (event.type !== "run.created" && event.type !== "run.updated") ||
-      String(event.payload.userMessageId) !== String(command.commandId)
+      event.payload.userMessageId !== command.messageId
     )
       continue;
     const run = event.payload;

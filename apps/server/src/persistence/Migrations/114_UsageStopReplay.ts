@@ -11,11 +11,12 @@ export default Effect.gen(function* () {
       SELECT d.source_key, d.occurrence_key, d.observed_ms,
         CASE
           WHEN d.occurrence_key IS NULL THEN 4
+          WHEN attempt.attempt_id IS NOT NULL AND initiating.payload_json ->> 'userMessageId' IS NULL THEN 4
           WHEN EXISTS (
             SELECT 1 FROM orchestration_v2_projection_turn_items steer
             WHERE steer.node_id = attempt.root_node_id AND steer.run_id = attempt.run_id
               AND steer.type = 'user_message' AND steer.status = 'completed'
-              AND steer.payload_json ->> 'createdBy' = 'user'
+              AND steer.payload_json ->> 'messageId' IS NOT initiating.payload_json ->> 'userMessageId'
               AND steer.payload_json ->> 'inputIntent' IN ('steer', 'promoted_queued_to_steer')
           ) THEN 4
           WHEN attempt.status = 'completed' THEN 0
@@ -37,6 +38,14 @@ export default Effect.gen(function* () {
         ON created.sequence = d.attempt_sequence AND created.event_type = 'run-attempt.created'
       LEFT JOIN orchestration_v2_projection_run_attempts attempt
         ON attempt.attempt_id = created.payload_json ->> '$.id'
+      LEFT JOIN orchestration_events initiating ON initiating.sequence = (
+        SELECT r.sequence FROM orchestration_events r
+        WHERE r.command_id = created.command_id AND r.stream_id = created.stream_id
+          AND r.event_type IN ('run.created','run.updated')
+          AND r.payload_json ->> 'id' = attempt.run_id
+          AND r.payload_json ->> 'activeAttemptId' = attempt.attempt_id
+        ORDER BY r.sequence LIMIT 1
+      )
     )
     SELECT source_key, occurrence_key,
       CASE MIN(rank) WHEN 0 THEN 'recovered' WHEN 1 THEN 'failed_attempt' WHEN 2 THEN 'pinned'
