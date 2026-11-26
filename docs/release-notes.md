@@ -1,3 +1,7 @@
+## 2026-11-26 — Claude settings failures in server logs
+
+- When Claude settings resolution fails, the server log records which step failed and the failure category without exposing settings contents or raw SDK errors.
+
 ## 2026-11-26 — Delegated reviews stop after three rounds per change
 
 - A chat counts the review tasks it delegates. Each review result says its round, such as "Review round 2 of 3 in this chat", and reviewers started in parallel share a round. A fourth review round of the same change is refused with a reason that quotes the review rule: a third round that still finds blocking defects means the change needs re-planning or splitting. Once it is re-planned or split, the agent passes `newReviewPart` with one line saying how, and that review starts round 1 of a new part. The count lives with the chat, so it survives compaction and restarts.

@@ -469,59 +469,62 @@ export interface ClaudeSettingsCascade {
  * comes from resolveSettings given the account's own cache: by default it would read this
  * process's, which belongs to another account.
  */
-export const readClaudeSettingsCascade = Effect.fn("ClaudeSettingsCascade.read")(function* (
-  input: ClaudeSettingsCascadeInput,
-) {
-  const { fileSystem, path } = input;
-  const files = yield* resolveClaudeSettingsFiles(
-    input.homePath,
-    input.environment,
-    yield* claudeSettingsReads(input),
-  ).pipe(Effect.provideService(Path.Path, path));
-  const flag =
-    input.flagSettings === undefined
-      ? undefined
-      : yield* validClaudeFlagSettings(input.flagSettings, fileSystem, path);
-  // An empty object tells resolveSettings there is no organization cache. Claude Code also starts
-  // without one it cannot read, and then fetches the organization's settings.
-  const remote = yield* fileSystem
-    .readFileString(path.join(input.homePath, "remote-settings.json"))
-    .pipe(
-      Effect.flatMap(decodeClaudeSettingsObject),
-      Effect.asSome,
-      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedSome({})),
-      Effect.catch((error) =>
-        Effect.logWarning(POLICY_CACHE_REASON, { reason: error.message }).pipe(
-          Effect.as(Option.none<Record<string, unknown>>()),
+export const readClaudeSettingsCascade = Effect.fn("ClaudeSettingsCascade.read")(
+  function* (input: ClaudeSettingsCascadeInput) {
+    const { fileSystem, path } = input;
+    const files = yield* resolveClaudeSettingsFiles(
+      input.homePath,
+      input.environment,
+      yield* claudeSettingsReads(input),
+    ).pipe(Effect.provideService(Path.Path, path));
+    const flag =
+      input.flagSettings === undefined
+        ? undefined
+        : yield* validClaudeFlagSettings(input.flagSettings, fileSystem, path);
+    // An empty object tells resolveSettings there is no organization cache. Claude Code also starts
+    // without one it cannot read, and then fetches the organization's settings.
+    const remote = yield* fileSystem
+      .readFileString(path.join(input.homePath, "remote-settings.json"))
+      .pipe(
+        Effect.flatMap(decodeClaudeSettingsObject),
+        Effect.asSome,
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedSome({})),
+        Effect.catch((error) =>
+          Effect.logWarning(POLICY_CACHE_REASON, { reason: error.message }).pipe(
+            Effect.as(Option.none<Record<string, unknown>>()),
+          ),
         ),
-      ),
-    );
-  const policy = yield* Effect.tryPromise({
-    try: () =>
-      resolveClaudeSettings({
-        settingSources: [],
-        serverManagedSettings: claudeSdkShapedSettings(
-          Option.getOrElse(remote, () => ({})) as ClaudeSdkSettings,
-        ),
-      }),
-    catch: (cause) =>
-      new ClaudeSettingsResolveError({ phase: "policy-resolution", kind: "sdk-error", cause }),
-  });
-  const tiers: ReadonlyArray<ClaudeSdkSettings> = [
-    ...files,
-    ...(flag === undefined ? [] : [flag]),
-    policy.effective,
-  ];
-  return {
-    tiers,
-    unreadablePolicy: claudePolicyHelperApplies(policy.effective, yield* HostProcess.Platform)
-      ? POLICY_HELPER_REASON
-      : Option.isNone(remote)
-        ? POLICY_CACHE_REASON
-        : undefined,
-    flagRejected: input.flagSettings !== undefined && flag === undefined,
-  } satisfies ClaudeSettingsCascade;
-});
+      );
+    const policy = yield* Effect.tryPromise({
+      try: () =>
+        resolveClaudeSettings({
+          settingSources: [],
+          serverManagedSettings: claudeSdkShapedSettings(
+            Option.getOrElse(remote, () => ({})) as ClaudeSdkSettings,
+          ),
+        }),
+      catch: (cause) =>
+        new ClaudeSettingsResolveError({ phase: "policy-resolution", kind: "sdk-error", cause }),
+    });
+    const tiers: ReadonlyArray<ClaudeSdkSettings> = [
+      ...files,
+      ...(flag === undefined ? [] : [flag]),
+      policy.effective,
+    ];
+    return {
+      tiers,
+      unreadablePolicy: claudePolicyHelperApplies(policy.effective, yield* HostProcess.Platform)
+        ? POLICY_HELPER_REASON
+        : Option.isNone(remote)
+          ? POLICY_CACHE_REASON
+          : undefined,
+      flagRejected: input.flagSettings !== undefined && flag === undefined,
+    } satisfies ClaudeSettingsCascade;
+  },
+  Effect.tapErrorTag("ClaudeSettingsResolveError", ({ phase, kind }) =>
+    Effect.logError("Claude's settings could not be resolved.", { phase, kind }),
+  ),
+);
 
 /**
  * The cascade's tiers for a Claude provider outside a turn, whose launch arguments may limit them,
