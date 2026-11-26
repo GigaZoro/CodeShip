@@ -770,7 +770,7 @@ export const make = Effect.gen(function* () {
     const retentionCutoffMs = nowMs - CACHE_RETENTION_MS;
     for (const [filePath, held] of fileCache) {
       const entry = pruneSuperseded(held, nowMs, retentionCutoffMs);
-      const { missingSinceMs, presentSinceMs, ...contents } = entry;
+      const { missingSinceMs, presentSinceMs } = entry;
       if (
         missingSinceMs !== undefined &&
         missingSinceMs < retentionCutoffMs &&
@@ -778,6 +778,7 @@ export const make = Effect.gen(function* () {
       ) {
         fileCache.delete(filePath);
       } else if ((missingSinceMs ?? 0) > nowMs || (presentSinceMs ?? 0) > nowMs) {
+        const { missingSinceMs: _missing, presentSinceMs: _present, ...contents } = entry;
         fileCache.set(
           filePath,
           missingSinceMs === undefined
@@ -1679,14 +1680,20 @@ export const make = Effect.gen(function* () {
       const retainedFiles = [...(files ?? [])];
       const liveIndex = new Map(retainedFiles.map((file, index) => [file.path, index]));
       for (const [filePath, entry] of fileCache) {
-        if (entry.provider !== provider || !isWithinDirectory(filePath, dir)) continue;
+        if (entry.provider !== provider) continue;
         const index = liveIndex.get(filePath);
+        const includeCached =
+          index === undefined &&
+          entry.mtimeMs >= windowStartMs &&
+          isRetained(entry, retentionCutoffMs);
+        if (!includeCached && entry.superseded === undefined) continue;
+        if (index === undefined && !isWithinDirectory(filePath, dir)) continue;
         const superseded = retainedSuperseded(entry, retentionCutoffMs, provider);
         if (index !== undefined) {
           if (superseded.length === 0) continue;
           const file = retainedFiles[index]!;
           retainedFiles[index] = { ...file, records: [...file.records, ...superseded] };
-        } else if (entry.mtimeMs >= windowStartMs && isRetained(entry, retentionCutoffMs)) {
+        } else if (includeCached) {
           retainedFiles.push({
             path: filePath,
             records: [...entry.records, ...entry.tailRecords, ...superseded],
