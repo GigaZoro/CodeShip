@@ -760,7 +760,7 @@ export const layer: Layer.Layer<
         const lookup = projects
           .getById(input.thread.projectId)
           .pipe(Effect.map(Option.getOrUndefined));
-        const released = yield* releasedWorktree(
+        let released = yield* releasedWorktree(
           fileSystem,
           directory,
           canonical,
@@ -793,15 +793,26 @@ export const layer: Layer.Layer<
         const restoring = restoringWorktreeFile(directory, canonical);
         if (exists && !released) return;
         if (input.readOnly) return yield* new ReadOnlyWorktreeRecoveryError();
-        // Pruning the registration would strand the staged original before cleanup can restore it.
+        // Recover a verified setup plan or finish a stage Git has already unregistered.
         if (
           !exists &&
           released?.receipt.endsWith(".releasing") &&
           (yield* HostProcess.isWindows) &&
           (yield* fileSystem.exists(windowsRemovalStage(canonical)))
-        )
-          return yield* new WorktreeRecreateBlockedError({ worktreePath, reason: "removal" });
-        const setupPending = released !== null && released.receipt === released.setupReceipt;
+        ) {
+          const blocked = new WorktreeRecreateBlockedError({ worktreePath, reason: "removal" });
+          const project = yield* lookup;
+          if (!project) return yield* blocked;
+          const finished = yield* gitWorkflow
+            .finishStagedWindowsRemoval(project.workspaceRoot, released.request, released.contents)
+            .pipe(Effect.mapError(() => blocked));
+          if (!finished) return yield* blocked;
+          const current = yield* readReleaseFile(released.receipt, canonical);
+          if (current?.contents !== released.contents) return yield* blocked;
+          const completed = released.receipt.replace(/\.releasing$/, ".released");
+          yield* fileSystem.rename(released.receipt, completed);
+          released = { ...released, receipt: completed };
+        }
         if (
           exists &&
           ((yield* fileSystem.realPath(canonical)) !== canonical ||
@@ -845,7 +856,7 @@ export const layer: Layer.Layer<
             contents: current.contents,
           };
         });
-        if (exists && setupPending) {
+        if (exists && released && released.receipt === released.setupReceipt) {
           const current = yield* gitWorkflow.currentBranch(canonical);
           if (current !== branch)
             return yield* new RecoveredWorktreeSetupError({

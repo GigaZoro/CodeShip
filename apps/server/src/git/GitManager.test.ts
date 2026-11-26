@@ -55,6 +55,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "../vcs/VcsProjectConfig.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
+import { readReleasedBranchBase } from "../workspace/worktreeRelease.ts";
 import type {
   SourceControlProvider,
   SourceControlRefSelector,
@@ -4026,8 +4027,8 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       }),
   );
 
-  it.effect.each(["main", "release/1.2"])(
-    "generates PR content from branch changes when the remote base advances (%s)",
+  it.effect.each(["main", "release/1.2", "release/1.2\u00a0"])(
+    "creates a PR on the recorded base after recovery when the remote base advances (%s)",
     (baseBranch) =>
       Effect.gen(function* () {
         const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -4036,6 +4037,10 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         const remoteDir = yield* createBareRemote();
         yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
         yield* runGit(repoDir, ["push", "-u", "origin", baseBranch]);
+        if (baseBranch === "release/1.2\u00a0") {
+          // The shorter remote ref stays at the old commit while the selected base advances.
+          yield* runGit(repoDir, ["push", "origin", "HEAD:refs/heads/release/1.2"]);
+        }
         yield* runGit(remoteDir, [
           "--git-dir=.",
           "symbolic-ref",
@@ -4050,7 +4055,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           path: worktreePath,
           refName: baseBranch,
           newRefName: "feature/remote-base",
-          baseRefName: baseBranch,
+          baseRefName: `refs/remotes/origin/${baseBranch}`,
         });
         NodeFS.writeFileSync(NodePath.join(worktreePath, "feature.txt"), "feature\n");
         yield* runGit(worktreePath, ["add", "feature.txt"]);
@@ -4097,6 +4102,34 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           },
         });
 
+        const topic = "feature/remote-base";
+        const savedBase = yield* readReleasedBranchBase(worktreePath, topic);
+        expect(savedBase).toMatchObject({
+          name: baseBranch,
+          ref: `refs/remotes/origin/${baseBranch}`,
+        });
+        const { commitSha: previousHead } = yield* driver.resolveCommit({
+          cwd: worktreePath,
+          revision: "HEAD",
+        });
+        yield* runGit(repoDir, ["worktree", "remove", worktreePath]);
+        yield* runGit(repoDir, ["branch", "-D", topic]);
+        const workflow = yield* GitWorkflowService.make.pipe(
+          Effect.provideService(GitManager.GitManager, manager),
+          Effect.provide(Layer.merge(layerEmptyStores, VcsDriverRegistry.layer)),
+        );
+        yield* workflow.createWorktree(
+          { cwd: repoDir, path: worktreePath, refName: baseBranch, newRefName: topic },
+          {
+            releasedBranch: {
+              previousHead,
+              baseRef: `refs/remotes/origin/${baseBranch}`,
+              durableRefs: [`refs/remotes/origin/${topic}`],
+              recordedBase: { ...savedBase, receiptHash: "a".repeat(64) },
+            },
+          },
+        );
+        yield* runGit(worktreePath, ["branch", "--set-upstream-to=origin/" + topic, topic]);
         const result = yield* runStackedAction(manager, {
           cwd: worktreePath,
           action: "create_pr",

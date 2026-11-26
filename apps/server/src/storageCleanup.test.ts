@@ -830,6 +830,99 @@ it.live.each(["redundant", "unique", "published"] as const)(
     ),
 );
 
+it.live.each(["lock acquired", "staged", "pointer removed"] as const)(
+  "finishes an interrupted Windows release after %s and permits the next release",
+  (stop) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let stage: string | undefined;
+        let stopped = false;
+        const fixture = yield* cleanupFixture(undefined, true).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            rename: (from, to) =>
+              Effect.gen(function* () {
+                if (!stopped && to === stage && stop === "lock acquired") {
+                  stopped = true;
+                  return yield* fs.remove(NodePath.join(from, "injected-stop"));
+                }
+                yield* fs.rename(from, to);
+                if (!stopped && to === stage && stop === "staged") {
+                  stopped = true;
+                  yield* fs.remove(NodePath.join(to, "injected-stop"));
+                }
+              }),
+            remove: (target, options) =>
+              fs.remove(target, options).pipe(
+                Effect.andThen(() => {
+                  if (
+                    stopped ||
+                    !stage ||
+                    target !== NodePath.join(stage, ".git") ||
+                    stop !== "pointer removed"
+                  )
+                    return Effect.void;
+                  stopped = true;
+                  return fs.remove(NodePath.join(stage, "injected-stop"));
+                }),
+              ),
+          }),
+        );
+        fixture.disable();
+        stage = windowsRemovalStage(fixture.worktree);
+        const runId = RunId.make("finished-windows");
+        const owner = shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          status: "completed",
+          latestRunId: runId,
+          latestRunCompletedAt: at(0),
+        });
+        fixture.setThreads([owner]);
+        const queue = () =>
+          queueWorktreeRelease({
+            stateDir: fixture.config.stateDir,
+            threadId: owner.id,
+            runId,
+            worktreePath: fixture.worktree,
+            durableRef: "refs/heads/main",
+          });
+        const { file } = yield* queue();
+        const first = yield* fixture.service.runNow;
+        expect(stopped, first.entries[0]?.reason).toBe(true);
+        expect(yield* fs.exists(file + ".releasing")).toBe(true);
+        expect(yield* fs.exists(fixture.worktree)).toBe(stop === "lock acquired");
+        expect(yield* fs.exists(stage)).toBe(stop !== "lock acquired");
+
+        yield* fixture.command(fixture.repo, ["worktree", "prune", "--expire", "now"]);
+        if (stop === "lock acquired") {
+          const listing = yield* fixture.command(fixture.repo, ["worktree", "list", "--porcelain"]);
+          expect(listing.stdout).toContain("locked ");
+        } else if (stop === "staged") {
+          const listing = yield* fixture.command(fixture.repo, ["worktree", "list", "--porcelain"]);
+          expect(listing.stdout).toContain("branch refs/heads/feature");
+          expect(yield* fs.readFileString(NodePath.join(stage, "tracked.txt"))).toBe("original\n");
+        } else expect(yield* fs.readDirectory(stage)).toEqual([]);
+
+        const recovered = yield* fixture.service.runNow;
+        expect(yield* fs.exists(file + ".released"), recovered.entries[0]?.reason).toBe(true);
+        expect(yield* fs.exists(stage)).toBe(false);
+        yield* fs.remove(file + ".released");
+        yield* fixture.command(fixture.repo, [
+          "worktree",
+          "add",
+          "--",
+          fixture.worktree,
+          "feature",
+        ]);
+        yield* queue();
+        const next = yield* fixture.service.runNow;
+        expect(next.entries[0]?.outcome, next.entries[0]?.reason).toBe("removed");
+      }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+    ),
+);
+
 it.live("preserves a Windows checkout switched during the final removal status", () =>
   runCleanupTest(
     Effect.gen(function* () {
@@ -894,6 +987,53 @@ it.live("preserves a Windows checkout switched during the final removal status",
   ),
 );
 
+const removeLockedWindowsFile = (
+  fs: FileSystem.FileSystem,
+  target: string,
+  options?: Parameters<FileSystem.FileSystem["remove"]>[1],
+) =>
+  Effect.gen(function* () {
+    yield* Effect.acquireRelease(
+      Effect.promise(
+        () =>
+          new Promise<NodeChildProcess.ChildProcess>((resolve, reject) => {
+            const child = NodeChildProcess.spawn(
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; $f=[IO.File]::Open($env:T3_LOCKED_FILE,'Open','Read','Read'); [Console]::Out.WriteLine('locked'); [Console]::In.ReadLine() > $null; $f.Dispose()",
+              ],
+              {
+                env: { ...process.env, T3_LOCKED_FILE: target },
+                stdio: ["pipe", "pipe", "pipe"],
+              },
+            );
+            child.on("error", reject);
+            child.once("exit", () =>
+              reject(new Error("Windows file lock exited before acquisition")),
+            );
+            child.stdout.once("data", (data) =>
+              String(data).includes("locked")
+                ? resolve(child)
+                : reject(new Error("Could not acquire Windows file lock")),
+            );
+          }),
+      ),
+      (child) =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              if (child.exitCode !== null || child.signalCode !== null) return resolve();
+              child.once("exit", () => resolve());
+              child.stdin?.end("\n");
+            }),
+        ),
+    );
+    yield* fs.remove(target, options);
+  }).pipe(Effect.scoped);
+
 it.live("recovers the original Windows checkout after a file blocks receipt removal", () =>
   runCleanupTest(
     Effect.gen(function* () {
@@ -901,48 +1041,6 @@ it.live("recovers the original Windows checkout after a file blocks receipt remo
       let checkout = "";
       let inject = true;
       let partial = false;
-      const removeLocked = (target: string, options?: Parameters<typeof fs.remove>[1]) =>
-        Effect.gen(function* () {
-          yield* Effect.acquireRelease(
-            Effect.promise(
-              () =>
-                new Promise<NodeChildProcess.ChildProcess>((resolve, reject) => {
-                  const child = NodeChildProcess.spawn(
-                    "powershell.exe",
-                    [
-                      "-NoProfile",
-                      "-NonInteractive",
-                      "-Command",
-                      "$ErrorActionPreference='Stop'; $f=[IO.File]::Open($env:T3_LOCKED_FILE,'Open','Read','Read'); [Console]::Out.WriteLine('locked'); [Console]::In.ReadLine() > $null; $f.Dispose()",
-                    ],
-                    {
-                      env: { ...process.env, T3_LOCKED_FILE: target },
-                      stdio: ["pipe", "pipe", "pipe"],
-                    },
-                  );
-                  child.on("error", reject);
-                  child.once("exit", () =>
-                    reject(new Error("Windows file lock exited before acquisition")),
-                  );
-                  child.stdout.once("data", (data) =>
-                    String(data).includes("locked")
-                      ? resolve(child)
-                      : reject(new Error("Could not acquire Windows file lock")),
-                  );
-                }),
-            ),
-            (child) =>
-              Effect.promise(
-                () =>
-                  new Promise<void>((resolve) => {
-                    if (child.exitCode !== null || child.signalCode !== null) return resolve();
-                    child.once("exit", () => resolve());
-                    child.stdin?.end("\n");
-                  }),
-              ),
-          );
-          yield* fs.remove(target, options);
-        }).pipe(Effect.scoped);
       const fixture = yield* cleanupFixture(undefined, true).pipe(
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
@@ -952,7 +1050,7 @@ it.live("recovers the original Windows checkout after a file blocks receipt remo
               if (inject && target === NodePath.join(stage, "tracked.txt")) {
                 partial = !(yield* fs.exists(NodePath.join(stage, ".gitignore")));
                 yield* fs.writeFileString(NodePath.join(stage, "late-note"), "owner data");
-                if (isWindowsHost) return yield* removeLocked(target, options);
+                if (isWindowsHost) return yield* removeLockedWindowsFile(fs, target, options);
                 return yield* fs.remove(NodePath.join(target, "locked"));
               }
               return yield* fs.remove(target, options);
@@ -1236,6 +1334,7 @@ it.live.each(["direct land", "no change"] as const)(
 describe("owned setup output", () => {
   const scenarios = [
     "standard setup only",
+    "a locked installed file during release",
     "an added dependency file",
     "an edited dependency file",
     "a replaced done marker",
@@ -1293,6 +1392,7 @@ describe("owned setup output", () => {
     ];
     const windowsWithPosix = [
       "standard setup only",
+      "a locked installed file during release",
       "an edited dependency file",
       "a dirty install input",
       "a failed configure followed by recovery",
@@ -1313,10 +1413,34 @@ describe("owned setup output", () => {
     (scenario) =>
       runCleanupTest(
         Effect.gen(function* () {
-          const fixture = yield* cleanupFixture(undefined, true);
+          const localFs = yield* FileSystem.FileSystem;
+          let stage = "";
+          let markerRemoved = false;
+          let injectLocked = scenario === "a locked installed file during release";
+          const fixture = yield* cleanupFixture(undefined, true).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...localFs,
+              remove: (target, options) =>
+                Effect.gen(function* () {
+                  if (
+                    injectLocked &&
+                    target === NodePath.join(stage, "node_modules/shared-dependency.js")
+                  ) {
+                    markerRemoved = !(yield* localFs.exists(
+                      NodePath.join(stage, ".t3/setup-done"),
+                    ));
+                    if (isWindowsHost)
+                      return yield* removeLockedWindowsFile(localFs, target, options);
+                    return yield* localFs.remove(NodePath.join(target, "locked"));
+                  }
+                  yield* localFs.remove(target, options);
+                }),
+            }),
+          );
           fixture.disable();
           const { fs, repo, command } = fixture;
           const worktree = yield* fs.realPath(fixture.worktree);
+          stage = windowsRemovalStage(worktree);
           yield* fs.writeFileString(
             NodePath.join(repo, ".gitignore"),
             ".env\n.npmrc\nnode_modules/\n.t3/\n",
@@ -1407,6 +1531,7 @@ if (process.env.T3_TEST_CONCURRENT_WORKTREE) {
 }
 
 fs.writeFileSync("node_modules/.pnpm/example/node_modules/example/index.js", "module");
+fs.writeFileSync("node_modules/shared-dependency.js", "other installed module");
 
 if (!fs.existsSync("node_modules/example")) {
   const target = ".pnpm/example/node_modules/example";
@@ -1880,6 +2005,32 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
               ? { saveIgnored: true }
               : {}),
           });
+          if (scenario === "a locked installed file during release") {
+            const receipt = yield* fs.readFileString(file);
+            expect((yield* decodeReleaseRequest(receipt)).requiresSetupProof).toBe(true);
+            const cleanup = fixture.service.runNow;
+            const stopped = (yield* cleanup).entries[0];
+            expect(
+              markerRemoved,
+              `Lock must interrupt removal after the setup marker: ${stopped?.reason}`,
+            ).toBe(true);
+            expect(stopped?.outcome, stopped?.reason).toBe("failed");
+            injectLocked = false;
+            const remaining = (yield* fs.exists(stage)) ? stage : worktree;
+            const late = NodePath.join(remaining, "node_modules", "new-owner-file.txt");
+            yield* fs.writeFileString(late, "keep user data");
+            yield* cleanup;
+            expect(yield* fs.readFileString(late)).toBe("keep user data");
+            expect(yield* fs.readFileString(file + ".releasing")).toBe(receipt);
+            yield* fs.remove(late);
+            const retried = yield* cleanup;
+            expect(
+              yield* fs.exists(worktree),
+              `Retry must finish the interrupted release: ${retried.entries[0]?.reason}`,
+            ).toBe(false);
+            expect(yield* fs.readFileString(file + ".released")).toBe(receipt);
+            return;
+          }
           const released =
             configureFailure ||
             scenario === "standard setup only" ||
@@ -1995,7 +2146,14 @@ fs.writeFileSync("node_modules/seen-inputs.json", JSON.stringify(Object.fromEntr
                 NodePath.join(worktree, "apps/server/node_modules/local.js"),
               ),
             ).toBe("added during setup");
-        }),
+        }).pipe(
+          Effect.provideService(
+            HostProcess.Platform,
+            scenario === "a locked installed file during release"
+              ? "win32"
+              : HostProcess.Platform.defaultValue(),
+          ),
+        ),
       ),
   );
 });
@@ -2101,7 +2259,24 @@ it.live(
   () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const fixture = yield* cleanupFixture(undefined, true);
+        const fs = yield* FileSystem.FileSystem;
+        const removing = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        let receiptFile: string | undefined;
+        const fixture = yield* cleanupFixture(undefined, true).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            rename: (from, to) =>
+              Effect.gen(function* () {
+                // All hosts claim the receipt after closing admission and before moving the checkout.
+                if (from === receiptFile && to === from + ".releasing") {
+                  yield* Deferred.succeed(removing, undefined);
+                  yield* Deferred.await(finish);
+                }
+                yield* fs.rename(from, to);
+              }),
+          }),
+        );
         fixture.disable();
         const sibling = fixture.worktree + "-sibling";
         yield* fixture.command(fixture.repo, ["worktree", "add", "-b", "sibling", sibling]);
@@ -2116,13 +2291,14 @@ it.live(
           latestRunCompletedAt: at(0),
         });
         fixture.setThreads([owner]);
-        yield* queueWorktreeRelease({
+        const { file } = yield* queueWorktreeRelease({
           stateDir: fixture.config.stateDir,
           threadId: owner.id,
           runId,
           worktreePath: fixture.worktree,
           durableRef: "refs/heads/main",
         });
+        receiptFile = file;
         fixture.setOpenSessionCwd(fixture.worktree);
         fixture.setSessionLive(false);
         fixture.setOnLiveCheck(
@@ -2130,11 +2306,6 @@ it.live(
             Effect.sync(() => fixture.setOnLiveCheck(Effect.void)),
             [sibling],
           ),
-        );
-        const removing = yield* Deferred.make<void>();
-        const finish = yield* Deferred.make<void>();
-        fixture.setBeforeRemoval(
-          Deferred.succeed(removing, undefined).pipe(Effect.andThen(Deferred.await(finish))),
         );
         const sweep = yield* fixture.service.runNow.pipe(Effect.forkChild);
         expect(
@@ -2146,6 +2317,9 @@ it.live(
         const conflictingPath = (yield* HostProcess.isWindows)
           ? NodePath.toNamespacedPath(alias.toUpperCase())
           : alias;
+        expect(yield* fs.realPath(conflictingPath)).toBe(
+          yield* fs.realPath(NodePath.join(fixture.worktree, "vendor")),
+        );
         const conflicting = yield* withWorkspaceProcessStart(fixture.fs.exists(fixture.worktree), [
           conflictingPath,
         ]).pipe(Effect.forkChild({ startImmediately: true }));
@@ -2163,7 +2337,8 @@ it.live(
           ).toBe(true);
         }
         yield* Deferred.succeed(finish, undefined);
-        expect((yield* Fiber.join(sweep)).entries[0]?.outcome).toBe("removed");
+        const entry = (yield* Fiber.join(sweep)).entries[0];
+        expect(entry?.outcome, entry?.reason).toBe("removed");
         expect(yield* Fiber.join(conflicting)).toBe(false);
         expect(yield* Fiber.join(unknown)).toBe(false);
       }),
@@ -2639,10 +2814,10 @@ it.effect("requires the native delegate response for the exact approved child ru
     // readTask returns the original run and its transfer even after a continuation publishes
     // the same summary. The latest terminal fields identify the continuation's publication.
     const responseFor = (
-      latestTerminalRunId: RunId,
+      latestTerminalRunId: RunId | undefined,
       transferIds?: {
-        resultContextTransferId: string;
-        latestTerminalResultContextTransferId: string;
+        resultContextTransferId?: string | null;
+        latestTerminalResultContextTransferId?: string | null;
       },
     ) => {
       const response = {
@@ -2658,9 +2833,9 @@ it.effect("requires the native delegate response for the exact approved child ru
         options: [],
         summary,
         latestTerminalRunId,
-        latestTerminalStatus: "completed",
-        latestTerminalSummary: null,
-        latestTerminalResultContextTransferId: null,
+        latestTerminalStatus: latestTerminalRunId === undefined ? undefined : "completed",
+        latestTerminalSummary: latestTerminalRunId === undefined ? undefined : null,
+        latestTerminalResultContextTransferId: latestTerminalRunId === undefined ? undefined : null,
         hasPendingQuestion: false,
         pendingApproval: null,
         waitTimedOut: false,
@@ -2687,6 +2862,24 @@ it.effect("requires the native delegate response for the exact approved child ru
     };
     const updateResponse = (payload: string) =>
       sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = ${payload} WHERE turn_item_id = 'call'`;
+    yield* updateResponse(responseFor(previous));
+    expect(yield* consumed(approved)).toBe(false);
+    yield* updateResponse(responseFor(previous, { resultContextTransferId: null }));
+    expect(yield* consumed(approved)).toBe(false);
+    yield* updateResponse(responseFor(undefined));
+    expect(yield* consumed(approved)).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'failed' WHERE run_id = ${previous}`;
+    expect(yield* consumed(approved)).toBe(true);
+    yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = ${previous}`;
+    yield* updateResponse(
+      responseFor(approved, {
+        resultContextTransferId: null,
+        latestTerminalResultContextTransferId: "unrelated",
+      }),
+    );
+    expect(yield* consumed(approved)).toBe(false);
+    yield* updateResponse(responseFor(approved, { ...transfers, resultContextTransferId: null }));
+    expect(yield* consumed(approved)).toBe(true);
     yield* updateResponse(responseFor(previous, transfers));
     expect(yield* consumed(approved)).toBe(false);
     yield* updateResponse(
@@ -5478,6 +5671,7 @@ describe("storage cleanup reports and local file policies", () => {
   it.live.each([
     ["unchanged", "removed", "No commits beyond the project branch"],
     ["unmerged", "kept", "Has commits beyond the project branch"],
+    ["Unicode project branch", "kept", "Has commits beyond the project branch"],
     ["detached", "kept", "Project branch is unavailable"],
     ["merged-only", "kept", "No remote is configured for merged-worktree cleanup"],
   ] as const)("cleans archived local-only worktrees: %s", ([state, outcome, reason]) =>
@@ -5488,11 +5682,14 @@ describe("storage cleanup reports and local file policies", () => {
           worktreeUnchanged: state !== "merged-only",
           worktreeOnMerge: true,
         });
-        yield* command(repo, ["branch", "-m", "main", "trunk"]);
+        const projectBranch = state === "Unicode project branch" ? "main\u00a0" : "trunk";
+        yield* command(repo, ["branch", "-m", "main", projectBranch]);
         setThreads([shell({ branch: "feature", worktreePath: worktree, archivedAt: at(-DAY_MS) })]);
-        if (state === "unmerged") {
+        if (state === "unmerged" || state === "Unicode project branch") {
           yield* fs.writeFileString(`${worktree}/tracked.txt`, "unmerged work\n");
           yield* command(worktree, ["commit", "-am", "unmerged work"]);
+          if (state === "Unicode project branch")
+            yield* command(repo, ["branch", "main", "feature"]);
         }
         if (state === "detached") yield* command(repo, ["checkout", "--detach"]);
 

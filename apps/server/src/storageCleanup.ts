@@ -70,6 +70,7 @@ import {
   decodeReleaseRequest,
   hasNonDirectoryParent,
   finishInterruptedRemoval,
+  finishWindowsSetupRemoval,
   restoreStagedWindowsCheckout,
   observedCheckoutPath,
   worktreeReleaseName,
@@ -80,6 +81,7 @@ import {
   trackedPosixMetadataHold,
   type ReleaseRequest,
 } from "./workspace/worktreeRelease.ts";
+import { releaseDigest } from "./workspace/worktreeReleaseReceipt.ts";
 import {
   existingWorkspacePath,
   observeWorkspaceStarts,
@@ -1403,10 +1405,22 @@ const make = Effect.gen(function* () {
             () => Effect.succeed(false),
           ),
         );
-        if (!exists && release?.file.endsWith(".releasing") && project) {
+        if (
+          release?.file.endsWith(".releasing") &&
+          project &&
+          (!exists || (yield* HostProcess.isWindows))
+        ) {
           if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)
             return keep(withdrawn);
-          exists = yield* restoreStagedWindowsCheckout(project.workspaceRoot, release.request);
+          const finishedSetupRemoval =
+            !exists &&
+            (yield* finishWindowsSetupRemoval(
+              project.workspaceRoot,
+              release.request,
+              release.contents,
+            ));
+          if (!finishedSetupRemoval)
+            exists = yield* restoreStagedWindowsCheckout(project.workspaceRoot, release.request);
         }
         if (!exists) {
           if (release?.file.endsWith(".releasing")) {
@@ -1528,7 +1542,7 @@ const make = Effect.gen(function* () {
               allowNonZeroExit: true,
             });
             if (projectHead.exitCode !== 0) return keep("project branch is unavailable");
-            defaultRef = projectHead.stdout.trim();
+            defaultRef = gitOutputLine(projectHead.stdout);
             branch = defaultRef.slice("refs/heads/".length);
           } else {
             const defaultBranchKey = `${repositoryCwd}\0${remote}`;
@@ -1850,7 +1864,16 @@ const make = Effect.gen(function* () {
         }
         const prepareRemoval = prepareLinkedWorktreeRemoval({
           operation: "StorageCleanup.cleanupGit",
-          ...(release ? { release: release.request } : {}),
+          ...(release
+            ? {
+                release: {
+                  ...release.request,
+                  ...(!release.request.savedFiles || release.request.savedSetupExtras
+                    ? { setupReceiptHash: releaseDigest(release.contents) }
+                    : {}),
+                },
+              }
+            : {}),
           cwd: project.workspaceRoot,
           worktreePath: release?.request.worktreePath ?? worktreePath,
           // Git requires force for submodules; recursive checks above cannot make removal atomic.

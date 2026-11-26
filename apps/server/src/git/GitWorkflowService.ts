@@ -43,6 +43,8 @@ import { gitFailureFacts } from "../vcs/GitVcsDriverCore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import {
   type CheckoutRecoveryOptions,
+  finishInterruptedRemoval,
+  finishWindowsSetupRemoval,
   type ReleaseRequest,
   readReleasedBranchBase,
   recoverInterruptedWorktree,
@@ -106,6 +108,11 @@ export class GitWorkflowService extends Context.Service<
       branch: string,
       options?: CheckoutRecoveryOptions,
     ) => Effect.Effect<void, GitCommandError>;
+    readonly finishStagedWindowsRemoval: (
+      projectRoot: string,
+      request: ReleaseRequest,
+      receipt: string,
+    ) => Effect.Effect<boolean, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
       options?: GitVcsDriver.CreateWorktreeOptions & {
@@ -652,6 +659,25 @@ export const make = Effect.gen(function* () {
                   detail: "Could not verify the interrupted checkout.",
                   cause,
                 }),
+          ),
+        ),
+    ),
+    finishStagedWindowsRemoval: Effect.fn("GitWorkflowService.finishStagedWindowsRemoval")(
+      (projectRoot, request, receipt) =>
+        Effect.gen(function* () {
+          yield* finishWindowsSetupRemoval(projectRoot, request, receipt);
+          return (yield* finishInterruptedRemoval(projectRoot, request)) === null;
+        }).pipe(
+          Effect.provide(worktreeContext),
+          Effect.mapError(
+            (cause) =>
+              new GitCommandError({
+                operation: "GitWorkflowService.finishStagedWindowsRemoval",
+                command: "git worktree remove",
+                cwd: request.worktreePath,
+                detail: "Could not finish the interrupted worktree removal.",
+                cause,
+              }),
           ),
         ),
     ),

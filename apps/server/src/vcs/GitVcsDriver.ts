@@ -396,6 +396,11 @@ export class GitVcsDriver extends Context.Service<
       cwd: string,
       branch: string,
     ) => Effect.Effect<string | null, GitCommandError>;
+    /** The exact qualified Git ref recorded for the pull request base. */
+    readonly readBranchBaseRef: (
+      cwd: string,
+      branch: string,
+    ) => Effect.Effect<string | null, GitCommandError>;
     readonly resolveBranchName: (
       cwd: string,
       refName: string,

@@ -23,6 +23,7 @@ import {
   findCaseVariantReleaseReceipt,
   gitObjectIdPattern as oid,
   readReleaseFile,
+  releaseDigest,
   releaseFile,
   releaseReceiptPath,
   releaseStages,
@@ -50,8 +51,13 @@ import {
   windowsSetupHost,
 } from "../../../../scripts/lib/windows-worktree-files.ts";
 import {
+  checkoutDirectoryIdentity,
+  clearWindowsRemovalLock,
   gitFileIdentity,
+  ownsWindowsRemovalLock,
+  prepareLinkedWorktreeRemoval,
   removeEmptyWindowsRemovalStage,
+  windowsRemovalPlanName,
   windowsRemovalStage,
 } from "../vcs/worktreeRemoval.ts";
 import {
@@ -97,7 +103,12 @@ export interface CheckoutRecoveryOptions {
   /** A claimed removal may resume the original checkout only after a read-only verification. */
   readonly original?: Pick<
     ReleaseRequest,
-    "head" | "identity" | "savedFiles" | "savedSetupExtras" | "requiresSetupProof"
+    | "head"
+    | "identity"
+    | "directoryIdentity"
+    | "savedFiles"
+    | "savedSetupExtras"
+    | "requiresSetupProof"
   > & {
     readonly backupDirectory: string;
   };
@@ -456,22 +467,26 @@ export const readReleasedBranchBase = Effect.fn("WorktreeRelease.readBranchBase"
   return { name, ref, ...(legacyName ? { legacyName } : {}) };
 });
 
-// A staged checkout has its original pointer and may be missing tracked files after a process stop.
-export const restoreStagedWindowsCheckout = Effect.fn(
-  "WorktreeRelease.restoreStagedWindowsCheckout",
-)(function* (projectRoot: string, request: ReleaseRequest) {
-  if (!(yield* HostProcess.isWindows)) return false;
+const stagedWindowsCheckout = Effect.fn("WorktreeRelease.stagedWindowsCheckout")(function* (
+  projectRoot: string,
+  request: ReleaseRequest,
+) {
   const fs = yield* FileSystem.FileSystem;
   const cwd = request.worktreePath;
   const stage = windowsRemovalStage(cwd);
-  if (!(yield* fs.exists(stage)) || (yield* existingWorkspacePath(stage)) !== stage) return false;
+  if (!(yield* fs.exists(stage)) || (yield* existingWorkspacePath(stage)) !== stage) return null;
+  if (
+    request.directoryIdentity &&
+    (yield* checkoutDirectoryIdentity(stage)) !== request.directoryIdentity
+  )
+    return null;
   const pointer = NodePath.join(stage, ".git");
   if (!(yield* fs.exists(pointer)) || (yield* gitFileIdentity(pointer)) !== request.identity)
-    return false;
+    return null;
   const line = gitOutputLine(yield* fs.readFileString(pointer));
-  if (!line.startsWith("gitdir: ")) return false;
+  if (!line.startsWith("gitdir: ")) return null;
   const registered = NodePath.resolve(cwd, line.slice(8));
-  if (!(yield* fs.exists(registered))) return false;
+  if (!(yield* fs.exists(registered))) return null;
   const admin = yield* existingWorkspacePath(registered);
   const common = yield* existingWorkspacePath(
     gitOutputLine(
@@ -479,10 +494,75 @@ export const restoreStagedWindowsCheckout = Effect.fn(
     ),
   );
   if (NodePath.relative(NodePath.dirname(admin), NodePath.join(common, "worktrees")) !== "")
-    return false;
+    return null;
   const back = gitOutputLine(yield* fs.readFileString(NodePath.join(admin, "gitdir")));
   if (NodePath.relative(NodePath.resolve(admin, back), NodePath.join(cwd, ".git")) !== "")
-    return false;
+    return null;
+  return { stage, pointer, admin, common };
+});
+
+export const finishWindowsSetupRemoval = Effect.fn("WorktreeRelease.finishWindowsSetupRemoval")(
+  function* (projectRoot: string, request: ReleaseRequest, receipt: string) {
+    if ((request.savedFiles && !request.savedSetupExtras) || !(yield* HostProcess.isWindows))
+      return false;
+    const staged = yield* stagedWindowsCheckout(projectRoot, request);
+    if (!staged) return false;
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(NodePath.join(staged.admin, windowsRemovalPlanName)))) return false;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const operation = "WorktreeRelease.finishWindowsSetupRemoval";
+    const context = yield* Effect.context<
+      GitVcsDriver.GitVcsDriver | FileSystem.FileSystem | Path.Path
+    >();
+    const verifyReleaseHistory = Effect.gen(function* () {
+      const history = yield* releaseHistory({
+        request,
+        projectRoot,
+        cwd: staged.stage,
+        admin: staged.admin,
+        common: staged.common,
+        staged: true,
+      });
+      if (typeof history === "string")
+        return yield* new GitCommandError({
+          operation,
+          command: "git rev-list",
+          cwd: request.worktreePath,
+          detail: history,
+        });
+    }).pipe(Effect.provide(context));
+    const remove = yield* prepareLinkedWorktreeRemoval({
+      operation,
+      cwd: projectRoot,
+      worktreePath: request.worktreePath,
+      force: false,
+      release: { ...request, setupReceiptHash: releaseDigest(receipt) },
+      resume: true,
+      verifyReleaseHistory,
+      execute: git.execute,
+      run: (args) => git.execute({ operation, cwd: projectRoot, args, timeoutMs: 300_000 }),
+    });
+    yield* remove;
+    return true;
+  },
+);
+
+// A staged checkout has its original pointer and may be missing tracked files after a process stop.
+export const restoreStagedWindowsCheckout = Effect.fn(
+  "WorktreeRelease.restoreStagedWindowsCheckout",
+)(function* (projectRoot: string, request: ReleaseRequest) {
+  if (!(yield* HostProcess.isWindows)) return false;
+  const fs = yield* FileSystem.FileSystem;
+  const cwd = request.worktreePath;
+  if (yield* fs.exists(cwd)) {
+    const original = yield* registeredReleaseCheckout(request, projectRoot);
+    if (typeof original !== "string") yield* clearWindowsRemovalLock(original.admin);
+    return true;
+  }
+  const staged = yield* stagedWindowsCheckout(projectRoot, request);
+  if (!staged) return false;
+  const { stage, pointer, admin } = staged;
+  if (yield* fs.exists(NodePath.join(admin, windowsRemovalPlanName))) return false;
   const stagedGit = (args: string[], options: Parameters<typeof readGit>[2] = {}) =>
     readGit(stage, ["--git-dir", admin, "--work-tree", stage, ...args], {
       maxOutputBytes: 64 * 1024 * 1024,
@@ -494,13 +574,16 @@ export const restoreStagedWindowsCheckout = Effect.fn(
   ).split(/\r?\n/);
   const adminFiles = yield* fs.readDirectory(admin);
   if (
-    adminFiles.some((name) => name === "locked" || name.endsWith(".lock")) ||
+    adminFiles.some((name) => name.endsWith(".lock")) ||
+    (adminFiles.includes("locked") && !(yield* ownsWindowsRemovalLock(admin))) ||
     binding.length !== 2 ||
     binding[0] !== request.head ||
     binding[1] !== branchRef ||
     gitOutputLine(yield* stagedGit(["symbolic-ref", "--no-recurse", "HEAD"])) !== branchRef
   )
     return false;
+  if (!adminFiles.includes("locked"))
+    yield* fs.link(NodePath.join(admin, "gitdir"), NodePath.join(admin, "locked"));
   const tracked = yield* stagedGit(["ls-files", "-v", "-z"]);
   if (tracked.split("\0").some((record) => record && !record.startsWith("H "))) return false;
   const stagedStatus = (untracked: "no" | "normal") =>
@@ -537,6 +620,7 @@ export const restoreStagedWindowsCheckout = Effect.fn(
   )
     return false;
   yield* fs.rename(stage, cwd);
+  yield* clearWindowsRemovalLock(admin);
   return typeof (yield* registeredReleaseCheckout(request, projectRoot)) !== "string";
 });
 
@@ -565,7 +649,7 @@ export const finishInterruptedRemoval = Effect.fn("WorktreeRelease.finishInterru
     if (
       (yield* HostProcess.isWindows) &&
       (yield* fs.exists(stage)) &&
-      !(yield* removeEmptyWindowsRemovalStage(stage, request.identity))
+      !(yield* removeEmptyWindowsRemovalStage(stage, request.identity, request.directoryIdentity))
     )
       return "staged checkout has remaining files that require its owner";
     return null;
@@ -1124,6 +1208,9 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
     ...(input.alsoDurable?.length ? { alsoDurable: input.alsoDurable } : {}),
     head: (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim(),
     identity,
+    ...((yield* HostProcess.isWindows)
+      ? { directoryIdentity: yield* checkoutDirectoryIdentity(cwd) }
+      : {}),
   });
   const extras = input.saveIgnored
     ? null
@@ -1303,6 +1390,8 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   if (
     options.original &&
     (identity !== options.original.identity ||
+      (options.original.directoryIdentity !== undefined &&
+        (yield* checkoutDirectoryIdentity(cwd)) !== options.original.directoryIdentity) ||
       (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim() !== options.original.head)
   )
     return yield* refuse("The original checkout or its HEAD changed during removal.");
@@ -1313,6 +1402,7 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   )
     return yield* refuse("The restored checkout belongs to another repository or branch.");
   const { admin } = registration;
+  if (options.original && (yield* HostProcess.isWindows)) yield* clearWindowsRemovalLock(admin);
   const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
   // The release belongs to a different checkout. Its receipt cannot authorize changes
   // to the replacement's hook records, even when the current turn is writable.
@@ -1472,26 +1562,32 @@ const registeredReleaseCheckout = Effect.fn("WorktreeRelease.registeredCheckout"
     )) !== cwd
   )
     return "working directory changed";
-  if ((yield* gitFileIdentity(path.join(cwd, ".git"))) !== request.identity)
+  if (
+    (yield* gitFileIdentity(path.join(cwd, ".git"))) !== request.identity ||
+    (request.directoryIdentity !== undefined &&
+      (yield* checkoutDirectoryIdentity(cwd)) !== request.directoryIdentity)
+  )
     return "checkout was replaced";
   return (yield* worktreeRegistration(cwd, projectRoot)) ?? "checkout registration changed";
 });
 
-export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
-  request: ReleaseRequest,
-  projectRoot: string,
-) {
+// An interrupted removal lasts longer than the approval that first checked these refs.
+const releaseHistory = Effect.fn("WorktreeRelease.inspectHistory")(function* (input: {
+  request: ReleaseRequest;
+  projectRoot: string;
+  cwd: string;
+  admin: string;
+  common: string;
+  staged?: true;
+}) {
+  const { request, projectRoot, cwd, admin, common, staged } = input;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const cwd = request.worktreePath;
-  if (request.family && !(yield* supportsFamilyCheckoutHook((args) => readGit(cwd, args))))
-    return familyHookUnavailable;
-  const registration = yield* registeredReleaseCheckout(request, projectRoot);
-  if (typeof registration === "string") return registration;
-  const { admin, common } = registration;
+  const readHistoryGit = (args: string[]) =>
+    readGit(cwd, staged ? ["--git-dir", admin, "--work-tree", cwd, ...args] : args);
   if (yield* fs.exists(path.join(common, "info", "grafts"))) return "repository uses grafts";
   {
-    const current = yield* readReleasedBranchBase(cwd, request.branch);
+    const current = yield* readReleasedBranchBase(staged ? projectRoot : cwd, request.branch);
     const recorded = request.branchBase;
     // A receipt queued before bases were recorded vouches only for a branch without one.
     if (recorded === undefined) {
@@ -1506,9 +1602,13 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   }
   const anchors: string[] = [];
   for (const ref of new Set([request.durableRef, ...(request.alsoDurable ?? [])])) {
-    yield* readGit(cwd, ["check-ref-format", ref]);
+    yield* readHistoryGit(["check-ref-format", ref]);
     const anchor = gitOutputLine(
-      yield* readGit(cwd, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", ref]),
+      yield* readHistoryGit([
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname)%00%(symref)",
+        ref,
+      ]),
     ).split("\0");
     if (
       anchor.length !== 3 ||
@@ -1520,9 +1620,9 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       return "durable ref is unavailable";
     anchors.push(anchor[1]!);
   }
-  const currentHead = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
+  const currentHead = (yield* readHistoryGit(["rev-parse", "--verify", "HEAD"])).trim();
   if (!oid.test(currentHead)) return "worktree history could not be inspected";
-  if (windowsSetupHost) {
+  if (windowsSetupHost && !staged) {
     const hold = yield* windowsInspectionHold(
       admin,
       {},
@@ -1534,7 +1634,11 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const tips = new Set([request.head, currentHead]);
   let setupProof: Awaited<ReturnType<typeof readSetupProof>> = null;
   for (const name of yield* fs.readDirectory(admin)) {
-    if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
+    if (
+      ["HEAD", "index", "commondir", "gitdir"].includes(name) ||
+      (staged && (name === "locked" || name === windowsRemovalPlanName))
+    )
+      continue;
     if (name === setupProofName) {
       const read = yield* Effect.result(readCheckoutSetupProof(cwd, admin, projectRoot));
       if (Result.isFailure(read))
@@ -1557,7 +1661,11 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     if (name === "AUTO_MERGE") {
       const marker = yield* readAutoMergeMarker(file);
       if (marker === null) return "worktree metadata requires its owner";
-      const tree = (yield* readGit(cwd, ["rev-parse", "--verify", currentHead + "^{tree}"])).trim();
+      const tree = (yield* readHistoryGit([
+        "rev-parse",
+        "--verify",
+        currentHead + "^{tree}",
+      ])).trim();
       if (!oid.test(tree) || marker !== tree + "\n")
         return "worktree has an unpreserved auto-merge tree";
       continue;
@@ -1580,7 +1688,10 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
     if (name === "COMMIT_EDITMSG") {
       if (
         contents.replaceAll("\r\n", "\n") !==
-        (yield* readGit(cwd, ["log", "-1", "--format=format:%B", "HEAD"])).replaceAll("\r\n", "\n")
+        (yield* readHistoryGit(["log", "-1", "--format=format:%B", "HEAD"])).replaceAll(
+          "\r\n",
+          "\n",
+        )
       )
         return "worktree contains an unpreserved commit message";
       continue;
@@ -1595,8 +1706,26 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       if (tips.size > 256) return "worktree history exceeds inspection limit";
     }
   }
-  if ((yield* readGit(cwd, ["rev-list", "--max-count=1", ...tips, "--not", ...anchors])).trim())
+  if ((yield* readHistoryGit(["rev-list", "--max-count=1", ...tips, "--not", ...anchors])).trim())
     return "worktree has commits outside the durable ref";
+  return { setupProof };
+});
+
+export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
+  request: ReleaseRequest,
+  projectRoot: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const cwd = request.worktreePath;
+  if (request.family && !(yield* supportsFamilyCheckoutHook((args) => readGit(cwd, args))))
+    return familyHookUnavailable;
+  const registration = yield* registeredReleaseCheckout(request, projectRoot);
+  if (typeof registration === "string") return registration;
+  const { admin, common } = registration;
+  const history = yield* releaseHistory({ request, projectRoot, cwd, admin, common });
+  if (typeof history === "string") return history;
+  const { setupProof } = history;
   const index = yield* trackedIndex(cwd);
   if (index && !index.endsWith("\0")) return "incomplete worktree index";
   const trackedLinks: string[] = [];

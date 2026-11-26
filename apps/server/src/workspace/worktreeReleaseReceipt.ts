@@ -54,6 +54,7 @@ export const ReleaseRequest = Schema.Struct({
   savedAllocatedBytes: Schema.optional(Schema.Number),
   head: Schema.String.check(Schema.isPattern(gitObjectIdPattern)),
   identity: Schema.String,
+  directoryIdentity: Schema.optional(Schema.String),
 });
 export type ReleaseRequest = typeof ReleaseRequest.Type;
 const requestJson = Schema.fromJsonString(ReleaseRequest);

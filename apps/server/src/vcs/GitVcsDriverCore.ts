@@ -56,7 +56,7 @@ import { familyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import { countGitSpawn } from "./GitSpawnBudget.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
-import { prepareLinkedWorktreeRemoval } from "./worktreeRemoval.ts";
+import { prepareLinkedWorktreeRemoval, windowsRemovalStage } from "./worktreeRemoval.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -2288,10 +2288,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       readonly knownDefaultBranch?: string | null;
     },
   ) {
-    const configuredBaseRef =
-      refName === null
-        ? null
-        : yield* readConfigString(cwd, `branch.${refName}.t3-merge-base-ref`, gitOutputLine);
+    const configuredBaseRef = refName === null ? null : yield* readBranchBaseRef(cwd, refName);
     if (
       configuredBaseRef?.startsWith("refs/heads/") ||
       configuredBaseRef?.startsWith("refs/remotes/")
@@ -3186,7 +3183,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             key: branchBaseConfigKey(branch),
             value: currentUpstream.branchName,
           });
-          if (!(yield* readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`))) {
+          if (!(yield* readBranchBaseRef(cwd, branch))) {
             yield* writeConfigValue({
               cwd,
               key: `branch.${branch}.t3-merge-base-ref`,
@@ -4198,6 +4195,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* refuseOptionLikeRefName("GitVcsDriver.createBranch", input.cwd, input.startPoint);
     yield* createBranchAt("GitVcsDriver.createBranch", input, "git branch create failed");
   });
+
+  const readBranchBaseRef = (cwd: string, branch: string) =>
+    readConfigString(cwd, `branch.${branch}.t3-merge-base-ref`, gitOutputLine);
 
   const readBranchBase: GitVcsDriver.GitVcsDriver["Service"]["readBranchBase"] = Effect.fn(
     "GitVcsDriver.readBranchBase",
@@ -5532,6 +5532,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const pruneWorktrees: GitVcsDriver.GitVcsDriver["Service"]["pruneWorktrees"] = Effect.fn(
     "pruneWorktrees",
   )(function* (input) {
+    if (yield* HostProcess.isWindows) {
+      // An interrupted release from before staging acquired Git locks may still need its registration.
+      const listing = yield* executeWorktreeList("GitVcsDriver.pruneWorktrees", input.cwd, []);
+      if (listing.stdoutTruncated) return;
+      for (const record of listing.stdout.split("\0\0")) {
+        const [name, ...fields] = record.split("\0");
+        if (
+          !name?.startsWith("worktree ") ||
+          !fields.some((field) => field === "prunable" || field.startsWith("prunable "))
+        )
+          continue;
+        const stage = windowsRemovalStage(name.slice("worktree ".length));
+        if (
+          yield* fileSystem.exists(path.join(stage, ".git")).pipe(Effect.orElseSucceed(() => true))
+        )
+          return;
+      }
+    }
     yield* executeGit("GitVcsDriver.pruneWorktrees", input.cwd, ["worktree", "prune"], {
       timeoutMs: 15_000,
       fallbackErrorDetail: "git worktree prune failed",
@@ -5781,6 +5799,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     getReviewDiffFileContents,
     readConfigValue,
     readBranchBase,
+    readBranchBaseRef,
     resolveBranchName,
     listRefs,
     createWorktree: Effect.fnUntraced(function* (input, options) {

@@ -23,6 +23,7 @@ import {
   parseGitCheckoutProgressLine,
 } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { windowsRemovalStage } from "./worktreeRemoval.ts";
 import {
   decodeReleaseRequest,
   queueWorktreeRelease,
@@ -1403,6 +1404,31 @@ it.layer(layerTest)("Git worktree locks and removal", (it) => {
       assert.isTrue(NodeFS.lstatSync(link).isSymbolicLink());
       assert.deepEqual(NodeFS.readdirSync(pathService.dirname(worktreePath)), ["linked"]);
     }),
+  );
+
+  it.effect("preserves an unpinned staged Windows checkout when another checkout prunes", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const checkout = path.join(yield* makeTmpDir("git-worktrees-"), "staged");
+      yield* driver.createWorktree({
+        cwd,
+        path: checkout,
+        refName: initialBranch,
+        newRefName: "recover-me",
+      });
+      const admin = yield* git(checkout, ["rev-parse", "--absolute-git-dir"]);
+      yield* fs.rename(checkout, windowsRemovalStage(checkout));
+      yield* driver.pruneWorktrees({ cwd });
+      assert.isTrue(yield* fs.exists(path.join(admin.trim(), "HEAD")));
+      assert.include(
+        yield* git(cwd, ["worktree", "list", "--porcelain"]),
+        "branch refs/heads/recover-me",
+      );
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
   );
 
   it.effect("prunes stale registrations when removing an already-gone worktree", () =>

@@ -1,14 +1,28 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- lstat must inspect junctions without following them.
 import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Hardlink aliases change ctime when unlinked.
+import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Staging paths use the checkout's native spelling.
 import * as NodePath from "node:path";
 import { GitCommandError } from "@t3tools/contracts";
 import { gitOutputLine } from "@t3tools/shared/git";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import {
+  checkWindowsWorktreeFiles,
+  windowsSetupHost,
+} from "../../../../scripts/lib/windows-worktree-files.ts";
+import {
+  missingSetupPath,
+  setupFileStamp,
+  setupProofName,
+} from "../../../../scripts/lib/worktree-setup-proof.ts";
 
 import { existingWorkspacePath } from "../workspace/workspaceLease.ts";
 import type { ReleaseRequest } from "../workspace/worktreeReleaseReceipt.ts";
@@ -16,6 +30,9 @@ import type * as GitVcsDriver from "./GitVcsDriver.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
 
 const INDEX_LIST_MAX_BYTES = 64 * 1024 * 1024;
+const MAX_REMOVAL_ENTRIES = 2_000_000;
+const MAX_REMOVAL_PLAN_BYTES = 256 * 1024 * 1024;
+export const windowsRemovalPlanName = "t3-removal-plan-v1";
 export const windowsRemovalStage = (worktreePath: string) => worktreePath + ".t3-removing";
 
 export const gitFileIdentity = (file: string) =>
@@ -25,33 +42,214 @@ export const gitFileIdentity = (file: string) =>
     return [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs].join("/");
   });
 
+export const checkoutDirectoryIdentity = (directory: string) =>
+  Effect.tryPromise(async () => {
+    const stat = await NodeFSP.lstat(directory, { bigint: true });
+    if (!stat.isDirectory() || stat.ino === 0n) throw new Error("Expected a worktree directory");
+    return [stat.dev, stat.ino, stat.birthtimeNs].join("/");
+  });
+
+// A hard link from Git's backlink publishes the lock exclusively and identifies it after a crash.
+export const ownsWindowsRemovalLock = (admin: string) =>
+  Effect.tryPromise(async () => {
+    const locked = await NodeFSP.lstat(NodePath.join(admin, "locked"), { bigint: true }).catch(
+      missingSetupPath,
+    );
+    if (!locked?.isFile() || locked.ino === 0n) return false;
+    const backlink = await NodeFSP.lstat(NodePath.join(admin, "gitdir"), { bigint: true });
+    return backlink.isFile() && locked.dev === backlink.dev && locked.ino === backlink.ino;
+  });
+
+export const clearWindowsRemovalLock = Effect.fn("WorktreeRemoval.clearLock")(function* (
+  admin: string,
+) {
+  if (!(yield* ownsWindowsRemovalLock(admin))) return false;
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.remove(NodePath.join(admin, "locked"));
+  return true;
+});
+
 export const removeEmptyWindowsRemovalStage = Effect.fn("WorktreeRemoval.removeEmptyStage")(
-  function* (stage: string, pointerIdentity: string) {
+  function* (stage: string, pointerIdentity: string, directoryIdentity?: string) {
     const fs = yield* FileSystem.FileSystem;
     if (!(yield* Effect.tryPromise(() => NodeFSP.lstat(stage))).isDirectory()) return false;
+    const observed = yield* checkoutDirectoryIdentity(stage);
     const files = yield* fs.readDirectory(stage);
-    if (!files.length) return true;
-    if (files.length !== 1 || files[0] !== ".git") return false;
-    const pointer = NodePath.join(stage, ".git");
-    if ((yield* gitFileIdentity(pointer)) !== pointerIdentity) return false;
-    yield* fs.remove(pointer);
+    if (files.length === 0) {
+      if (observed !== directoryIdentity) return true;
+    } else {
+      if (
+        files.length !== 1 ||
+        files[0] !== ".git" ||
+        (directoryIdentity !== undefined && observed !== directoryIdentity)
+      )
+        return false;
+      const pointer = NodePath.join(stage, ".git");
+      if ((yield* gitFileIdentity(pointer)) !== pointerIdentity) return false;
+      yield* fs.remove(pointer);
+    }
+    if ((yield* checkoutDirectoryIdentity(stage)) !== observed) return false;
     return yield* removeEmptyDirectory(stage);
   },
 );
 
-const entryIdentity = async (target: string) => {
+type RemovalEntry = {
+  readonly relative: string;
+  readonly directory: boolean;
+  readonly identity: string;
+};
+const RemovalIdentities = Schema.Record(Schema.String, Schema.String);
+type RemovalPlan = typeof RemovalIdentities.Type;
+const encodeRemovalPlan = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      receiptHash: Schema.String,
+      root: Schema.String,
+      checkout: RemovalIdentities,
+      admin: RemovalIdentities,
+    }),
+  ),
+);
+const checkoutIgnored = new Set([".git"]);
+const adminIgnored = new Set(["gitdir", "locked", windowsRemovalPlanName]);
+
+const entryIdentity = async (
+  target: string,
+  retainHardlinkIdentity: boolean | "capture" = false,
+  signal?: AbortSignal,
+) => {
   const stat = await NodeFSP.lstat(target, { bigint: true });
+  if (stat.ino === 0n) throw new Error("File has no removal identity");
   const directory = stat.isDirectory();
   // Unlinking a child changes its parent's timestamps, but not its directory identity.
-  return {
-    directory,
-    identity: [
-      stat.dev,
-      stat.ino,
-      stat.birthtimeNs,
-      ...(directory ? [] : [stat.ctimeNs, stat.size]),
-    ].join("/"),
+  const fileId = [stat.dev, stat.ino, stat.birthtimeNs, stat.mode];
+  if (directory) return { directory, identity: fileId.join("/") };
+  if (
+    retainHardlinkIdentity === false ||
+    (retainHardlinkIdentity === "capture" && stat.nlink === 1n)
+  ) {
+    return { directory, identity: [...fileId, stat.ctimeNs, stat.mtimeNs, stat.size].join("/") };
+  }
+
+  // Other entries in the plan can alias this inode. Their removal changes its ctime and link count.
+  const stable = [stat.dev, stat.ino, stat.birthtimeNs, stat.mode, stat.mtimeNs, stat.size];
+  const stamp = (value: typeof stat) =>
+    [
+      value.dev,
+      value.ino,
+      value.birthtimeNs,
+      value.mode,
+      value.ctimeNs,
+      value.mtimeNs,
+      value.size,
+    ].join("/");
+  const hash = NodeCrypto.createHash("sha256");
+  if (stat.isSymbolicLink()) hash.update(await NodeFSP.readlink(target, { encoding: "buffer" }));
+  else if (stat.isFile()) {
+    if (stat.size > 512n * 1024n ** 2n)
+      throw new Error("Hardlink exceeds removal inspection limit");
+    const handle = await NodeFSP.open(target, "r");
+    try {
+      if (stamp(await handle.stat({ bigint: true })) !== stamp(stat))
+        throw new Error("File changed before removal inspection");
+      const buffer = Buffer.allocUnsafe(128 * 1024);
+      let remaining = Number(stat.size);
+      while (remaining > 0) {
+        signal?.throwIfAborted();
+        const { bytesRead } = await handle.read(
+          buffer,
+          0,
+          Math.min(remaining, buffer.length),
+          null,
+        );
+        if (bytesRead === 0) throw new Error("File was truncated during removal inspection");
+        hash.update(buffer.subarray(0, bytesRead));
+        remaining -= bytesRead;
+      }
+      if (stamp(await handle.stat({ bigint: true })) !== stamp(stat))
+        throw new Error("File changed during removal inspection");
+    } finally {
+      await handle.close();
+    }
+  } else throw new Error("Unsupported hardlink in removal plan");
+  if (stamp(await NodeFSP.lstat(target, { bigint: true })) !== stamp(stat))
+    throw new Error("File changed during removal inspection");
+  return { directory, identity: `linked/${stable.join("/")}/${hash.digest("hex")}` };
+};
+
+const listRemovalEntries = async (
+  root: string,
+  signal: AbortSignal,
+  ignored: ReadonlySet<string>,
+  captureHardlinks: boolean,
+  approved?: RemovalPlan,
+): Promise<RemovalEntry[]> => {
+  const entries: RemovalEntry[] = [];
+  let count = 0;
+  const visit = async (directory: string, parent: string, depth: number) => {
+    for (const name of (await NodeFSP.readdir(directory)).sort()) {
+      signal.throwIfAborted();
+      if (!parent && ignored.has(name.toLowerCase())) continue;
+      if (++count > MAX_REMOVAL_ENTRIES || depth > 128)
+        throw new Error("Checkout exceeds removal inspection limit");
+      const target = NodePath.join(directory, name);
+      const relative = parent ? parent + "/" + name : name;
+      const expected = approved && Object.getOwnPropertyDescriptor(approved, relative)?.value;
+      const hardlink = approved
+        ? typeof expected === "string" && expected.startsWith("linked/")
+        : captureHardlinks && "capture";
+      const info = await entryIdentity(target, hardlink, signal);
+      if (approved && info.identity !== expected)
+        throw new Error(`Checkout entry changed during removal: ${relative}`);
+      if (info.directory) await visit(target, relative, depth + 1);
+      entries.push({ relative, ...info });
+    }
   };
+  await visit(root, "", 1);
+  return entries;
+};
+
+const identities = (entries: readonly RemovalEntry[]): RemovalPlan =>
+  Object.fromEntries(entries.map(({ relative, identity }) => [relative, identity]));
+
+const readRemovalPlan = async (file: string, expectedReceiptHash: string | undefined) => {
+  const before = await NodeFSP.lstat(file, { bigint: true }).catch(missingSetupPath);
+  if (!before?.isFile() || before.ino === 0n || before.size > MAX_REMOVAL_PLAN_BYTES)
+    throw new Error("Unrecognized Windows removal plan");
+  const handle = await NodeFSP.open(file, "r");
+  try {
+    const stamp = setupFileStamp(before);
+    if (setupFileStamp(await handle.stat({ bigint: true })) !== stamp)
+      throw new Error("Windows removal plan changed before reading");
+    const buffer = Buffer.alloc(Number(before.size) + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const chunk = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
+    if (
+      BigInt(bytesRead) !== before.size ||
+      setupFileStamp(await NodeFSP.lstat(file, { bigint: true })) !== stamp
+    )
+      throw new Error("Windows removal plan changed while reading");
+    const plan = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
+    if (
+      !expectedReceiptHash ||
+      plan?.receiptHash !== expectedReceiptHash ||
+      typeof plan.root !== "string" ||
+      !plan.checkout ||
+      typeof plan.checkout !== "object" ||
+      Array.isArray(plan.checkout) ||
+      !plan.admin ||
+      typeof plan.admin !== "object" ||
+      Array.isArray(plan.admin)
+    )
+      throw new Error("Unrecognized Windows removal plan");
+    return plan as { root: string; checkout: RemovalPlan; admin: RemovalPlan };
+  } finally {
+    await handle.close();
+  }
 };
 
 /**
@@ -67,7 +265,14 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   readonly cwd: string;
   readonly worktreePath: string;
   readonly force: boolean;
-  readonly release?: Pick<ReleaseRequest, "identity" | "head" | "branch">;
+  readonly release?: Pick<ReleaseRequest, "identity" | "head" | "branch" | "directoryIdentity"> & {
+    readonly setupReceiptHash?: string;
+  };
+  readonly resume?: boolean;
+  readonly verifyReleaseHistory?: Effect.Effect<
+    void,
+    GitCommandError | PlatformError.PlatformError | Cause.UnknownError
+  >;
   readonly execute: GitVcsDriver.GitVcsDriver["Service"]["execute"];
   readonly run: (args: ReadonlyArray<string>) => Effect.Effect<A, E, R>;
 }) {
@@ -75,6 +280,11 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   const path = yield* Path.Path;
   const worktreePath = input.worktreePath;
   const gitFile = path.join(worktreePath, ".git");
+  const stage = windowsRemovalStage(worktreePath);
+  const stagedPointer = path.join(stage, ".git");
+  const resuming = input.resume === true;
+  const checkout = resuming ? stage : worktreePath;
+  const pointer = resuming ? stagedPointer : gitFile;
   // Git's own refusals, worded the way it prints them.
   const refuse = (message: string, cause?: unknown) =>
     new GitCommandError({
@@ -85,18 +295,25 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
       ...(cause === undefined ? {} : { cause }),
     });
   const notAWorktree = refuse(`'${worktreePath}' is not a working tree`);
+  if (
+    resuming &&
+    (!input.release ||
+      input.force ||
+      (yield* existingWorkspacePath(stage).pipe(Effect.mapError(() => notAWorktree))) !== stage)
+  )
+    return yield* notAWorktree;
   // Git refuses to remove a worktree with untracked files unless forced, but
   // its check honors `status.showUntrackedFiles=no` and would delete them.
   const statusConfig = ["-c", "status.showUntrackedFiles=normal"];
   const windows = yield* HostProcess.isWindows;
   const linked =
     windows &&
-    (yield* fileSystem.stat(gitFile).pipe(
+    (yield* fileSystem.stat(pointer).pipe(
       Effect.map((info) => info.type === "File"),
       Effect.orElseSucceed(() => false),
     ));
   if (!linked) {
-    if (windows && input.release) return yield* notAWorktree;
+    if (resuming || (windows && input.release)) return yield* notAWorktree;
     return input.run([
       ...statusConfig,
       "worktree",
@@ -132,9 +349,9 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   // A registered worktree of this repository: its `.git` file names an admin
   // directory under the common `worktrees/`, whose `gitdir` points back.
   const adminDir = path.resolve(
-    worktreePath,
+    checkout,
     gitOutputLine(
-      yield* gitOutput(worktreePath, ["rev-parse", "--absolute-git-dir"]).pipe(
+      yield* gitOutput(checkout, ["rev-parse", "--absolute-git-dir"]).pipe(
         Effect.mapError(() => notAWorktree),
       ),
     ),
@@ -144,7 +361,12 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
     gitOutputLine(yield* gitOutput(input.cwd, ["rev-parse", "--git-common-dir"])),
   );
   const pointsBack = yield* fileSystem.readFileString(path.join(adminDir, "gitdir")).pipe(
-    Effect.flatMap((gitdir) => samePath(path.resolve(adminDir, gitOutputLine(gitdir)), gitFile)),
+    Effect.flatMap((gitdir) => {
+      const backlink = path.resolve(adminDir, gitOutputLine(gitdir));
+      return resuming
+        ? Effect.succeed(path.relative(backlink, gitFile) === "")
+        : samePath(backlink, gitFile);
+    }),
     Effect.orElseSucceed(() => false),
   );
   if (!pointsBack || !(yield* samePath(path.dirname(adminDir), path.join(commonDir, "worktrees"))))
@@ -161,7 +383,13 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
         : Effect.fail(refuse(`cannot inspect the lock of '${worktreePath}'`, error)),
     ),
   );
-  if (locked) {
+  if (
+    locked &&
+    !(
+      resuming &&
+      (yield* ownsWindowsRemovalLock(adminDir).pipe(Effect.mapError(() => notAWorktree)))
+    )
+  ) {
     const reason = (yield* fileSystem.readFileString(lockFile).pipe(Effect.option)).pipe(
       Option.map((text) => text.trim()),
       Option.getOrElse(() => ""),
@@ -174,7 +402,7 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   }
   const boundEnv = { GIT_DIR: gitFile, GIT_WORK_TREE: worktreePath };
   let cleanIndex = "";
-  if (!input.force) {
+  if (!input.force && !resuming) {
     // Bound like Git's own check, so `core.worktree` can't point it elsewhere.
     const submodules = refuse("working trees containing submodules cannot be moved or removed");
     // An unreadable path counts as present, so a doubt refuses.
@@ -221,32 +449,46 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   }
   const approved = input.release;
   const changed = refuse(`contents of '${worktreePath}' changed during removal`);
-  if ((yield* gitFileIdentity(gitFile).pipe(Effect.mapError(inspectError))) !== approved.identity)
+  if ((yield* gitFileIdentity(pointer).pipe(Effect.mapError(inspectError))) !== approved.identity)
     return yield* changed;
   // A sibling can be renamed atomically even when the repository is on another volume.
   // Git may prune its own registration, so no checkout contents belong inside the admin directory.
-  const stage = windowsRemovalStage(worktreePath);
-  const stagedPointer = path.join(stage, ".git");
-  if (yield* fileSystem.exists(stage).pipe(Effect.mapError(inspectError)))
+  if (!resuming && (yield* fileSystem.exists(stage).pipe(Effect.mapError(inspectError))))
     return yield* refuse(`worktree removal is already staged at '${stage}'`);
-  const entries = yield* Effect.tryPromise({
-    try: async () => {
-      const plan: { relative: string; directory: boolean; identity: string }[] = [];
-      const visit = async (directory: string, parent: string) => {
-        for (const name of (await NodeFSP.readdir(directory)).sort()) {
-          if (!parent && name.toLowerCase() === ".git") continue;
-          const target = path.join(directory, name);
-          const relative = parent ? parent + "/" + name : name;
-          const info = await entryIdentity(target);
-          if (info.directory) await visit(target, relative);
-          plan.push({ relative, ...info });
-        }
-      };
-      await visit(worktreePath, "");
-      return plan;
-    },
-    catch: inspectError,
-  });
+  const setupProof = path.join(adminDir, setupProofName);
+  const setupReceiptHash =
+    approved.setupReceiptHash &&
+    (resuming || (yield* fileSystem.exists(setupProof).pipe(Effect.mapError(inspectError))))
+      ? approved.setupReceiptHash
+      : undefined;
+  const planFile = path.join(adminDir, windowsRemovalPlanName);
+  const inspect = <B>(read: (signal: AbortSignal) => Promise<B>) =>
+    Effect.tryPromise(read).pipe(Effect.timeout("10 minutes"), Effect.mapError(inspectError));
+  const plan = resuming
+    ? yield* inspect(() => readRemovalPlan(planFile, setupReceiptHash))
+    : undefined;
+  const root = yield* checkoutDirectoryIdentity(checkout).pipe(Effect.mapError(inspectError));
+  if (
+    plan &&
+    (root !== plan.root ||
+      (yield* fileSystem.exists(worktreePath).pipe(Effect.mapError(inspectError))))
+  )
+    return yield* changed;
+  const entries = yield* inspect((signal) =>
+    listRemovalEntries(
+      checkout,
+      signal,
+      checkoutIgnored,
+      setupReceiptHash !== undefined,
+      plan?.checkout,
+    ),
+  );
+  const admin = setupReceiptHash
+    ? (plan?.admin ??
+      identities(
+        yield* inspect((signal) => listRemovalEntries(adminDir, signal, adminIgnored, false)),
+      ))
+    : undefined;
   const tracked = new Set(
     cleanIndex
       .split("\0")
@@ -262,7 +504,11 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   const removedTracked: string[] = [];
   const stagedEnv = { GIT_DIR: adminDir, GIT_WORK_TREE: stage };
   const sameCheckout = Effect.gen(function* () {
-    if ((yield* gitFileIdentity(stagedPointer)) !== approved.identity) return false;
+    if (
+      !(yield* ownsWindowsRemovalLock(adminDir)) ||
+      (yield* gitFileIdentity(stagedPointer)) !== approved.identity
+    )
+      return false;
     const back = gitOutputLine(yield* fileSystem.readFileString(path.join(adminDir, "gitdir")));
     const branchRef = "refs/heads/" + approved.branch;
     const binding = gitOutputLine(
@@ -278,15 +524,73 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
       ) === branchRef
     );
   });
+  const verifyAdmin = Effect.gen(function* () {
+    if (!admin) return;
+    const remaining = yield* inspect((signal) =>
+      listRemovalEntries(adminDir, signal, adminIgnored, false, admin),
+    );
+    if (remaining.length !== Object.keys(admin).length) return yield* changed;
+  });
   const removeContents = Effect.gen(function* () {
-    if (!(yield* sameCheckout)) return yield* changed;
+    if (
+      !(yield* sameCheckout) ||
+      (yield* checkoutDirectoryIdentity(stage)) !== root ||
+      (yield* fileSystem.exists(worktreePath)) ||
+      (approved.setupReceiptHash && !setupReceiptHash && (yield* fileSystem.exists(setupProof)))
+    )
+      return yield* changed;
+    if (input.verifyReleaseHistory) yield* input.verifyReleaseHistory;
+    yield* verifyAdmin;
+    if (setupReceiptHash && admin) {
+      // Recheck metadata whose contents are outside Node's timestamps and primary data stream.
+      if (windowsSetupHost)
+        yield* inspect((signal) =>
+          checkWindowsWorktreeFiles(stage, { privateStage: true, signal }),
+        );
+      if (resuming && windowsSetupHost) {
+        const targets = (yield* fileSystem.readDirectory(adminDir)).filter(
+          (name) => name !== windowsRemovalPlanName,
+        );
+        yield* inspect((signal) => checkWindowsWorktreeFiles(adminDir, { targets, signal }));
+      }
+      if (!resuming) {
+        const encoded = yield* encodeRemovalPlan({
+          receiptHash: setupReceiptHash,
+          root,
+          checkout: identities(entries),
+          admin,
+        });
+        const contents = Buffer.from(encoded);
+        if (contents.length > MAX_REMOVAL_PLAN_BYTES) return yield* changed;
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const temp = yield* fileSystem.makeTempFileScoped({
+              directory: commonDir,
+              prefix: "t3-removal-",
+            });
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const handle = yield* fileSystem.open(temp, { flag: "w" });
+                yield* handle.writeAll(contents);
+                yield* handle.sync;
+              }),
+            );
+            yield* fileSystem.link(temp, planFile);
+          }),
+        );
+      }
+    }
     for (const entry of deletionOrder) {
       const target = path.join(stage, entry.relative);
       if (
         path.relative(path.dirname(target), yield* fileSystem.realPath(path.dirname(target))) !== ""
       )
         return yield* changed;
-      if ((yield* Effect.tryPromise(() => entryIdentity(target))).identity !== entry.identity)
+      if (
+        (yield* Effect.tryPromise((signal) =>
+          entryIdentity(target, entry.identity.startsWith("linked/"), signal),
+        )).identity !== entry.identity
+      )
         return yield* changed;
       if (entry.directory) {
         if (!(yield* removeEmptyDirectory(target))) return yield* changed;
@@ -297,6 +601,9 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
     }
   });
   const restoreDeleted = Effect.gen(function* () {
+    // A partially removed setup no longer matches the aggregate seal. Keep its exact deletion
+    // plan with the staged checkout so either cleanup or its owner can finish the release.
+    if (setupReceiptHash && (yield* fileSystem.exists(planFile))) return;
     if ((yield* fileSystem.exists(worktreePath)) || !(yield* sameCheckout)) return;
     if ((yield* gitOutput(stage, ["ls-files", "--stage", "-z"], stagedEnv)) !== cleanIndex) return;
     if (removedTracked.length) {
@@ -309,7 +616,10 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
         stdin: removedTracked.join("\0") + "\0",
       });
     }
-    if (!(yield* fileSystem.exists(worktreePath))) yield* fileSystem.rename(stage, worktreePath);
+    if (!(yield* fileSystem.exists(worktreePath))) {
+      yield* fileSystem.rename(stage, worktreePath);
+      yield* clearWindowsRemovalLock(adminDir);
+    }
   });
   const unregister = Effect.gen(function* () {
     yield* removeContents;
@@ -321,6 +631,9 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
       (yield* fileSystem.exists(worktreePath))
     )
       return yield* changed;
+    if (input.verifyReleaseHistory) yield* input.verifyReleaseHistory;
+    yield* verifyAdmin;
+    if (!(yield* clearWindowsRemovalLock(adminDir))) return yield* changed;
     // Without --force, Git refuses a replacement directory at the original path.
     const result = yield* input.run([...statusConfig, "worktree", "remove", "--", worktreePath]);
     if (
@@ -333,9 +646,23 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
     return result;
   });
   return Effect.gen(function* () {
-    if (yield* fileSystem.exists(stage))
-      return yield* refuse(`worktree removal is already staged at '${stage}'`);
-    yield* fileSystem.rename(worktreePath, stage);
+    if (
+      approved.directoryIdentity !== undefined &&
+      (yield* checkoutDirectoryIdentity(checkout)) !== approved.directoryIdentity
+    )
+      return yield* changed;
+    if (resuming) {
+      if (!(yield* ownsWindowsRemovalLock(adminDir))) {
+        const remaining = yield* fileSystem.readDirectory(stage);
+        if (remaining.length !== 1 || remaining[0] !== ".git") return yield* changed;
+        yield* fileSystem.link(path.join(adminDir, "gitdir"), lockFile);
+      }
+    } else {
+      if (yield* fileSystem.exists(stage))
+        return yield* refuse(`worktree removal is already staged at '${stage}'`);
+      yield* fileSystem.link(path.join(adminDir, "gitdir"), lockFile);
+      yield* fileSystem.rename(worktreePath, stage);
+    }
     const result = yield* unregister.pipe(
       Effect.tapError(() =>
         restoreDeleted.pipe(
@@ -347,7 +674,10 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
         ),
       ),
     );
-    if (!(yield* removeEmptyWindowsRemovalStage(stage, approved.identity))) return yield* changed;
+    if (
+      !(yield* removeEmptyWindowsRemovalStage(stage, approved.identity, approved.directoryIdentity))
+    )
+      return yield* changed;
     return result;
   }).pipe(Effect.mapError((cause) => refuse(`failed to delete '${worktreePath}'`, cause)));
 });

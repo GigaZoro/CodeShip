@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The release CLI reads its thread bindings from SQLite.
 import * as NodeSqlite from "node:sqlite";
+import * as NodeFSP from "node:fs/promises";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
@@ -66,9 +67,17 @@ import {
   queueWorktreeRelease,
   releaseHold,
   releasePath,
+  restoreStagedWindowsCheckout,
   worktreeReleaseName,
 } from "../workspace/worktreeRelease.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { releaseDigest } from "../workspace/worktreeReleaseReceipt.ts";
+import {
+  sealSetupMarkers,
+  sealSetupTrees,
+  setupFileStamp,
+  writeSetupProof,
+} from "../../../../scripts/lib/worktree-setup-proof.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
@@ -76,7 +85,7 @@ import {
   pendingFamilyCheckoutHook,
   runningFamilyCheckoutHook,
 } from "../vcs/familyWorktreeCheckout.ts";
-import { windowsRemovalStage } from "../vcs/worktreeRemoval.ts";
+import { prepareLinkedWorktreeRemoval, windowsRemovalStage } from "../vcs/worktreeRemoval.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -2403,6 +2412,24 @@ effectIt.effect.each([
     allowsStart: false,
   },
   {
+    name: "finishes a verified partial Windows setup release after its durable ref advances",
+    state: "verified partial setup",
+    owner: true,
+    allowsStart: true,
+  },
+  {
+    name: "preserves a changed dependency in a staged Windows setup release",
+    state: "verified changed setup",
+    owner: true,
+    allowsStart: false,
+  },
+  {
+    name: "holds a staged Windows setup release after its durable ref is rewritten",
+    state: "verified rewritten anchor",
+    owner: true,
+    allowsStart: false,
+  },
+  {
     name: "holds an unrelated chat while removal is claimed",
     state: "intact",
     owner: false,
@@ -2411,6 +2438,18 @@ effectIt.effect.each([
   {
     name: "recovers a missing checkout for its recorded owner",
     state: "missing",
+    owner: true,
+    allowsStart: true,
+  },
+  {
+    name: "recreates an unregistered Windows checkout with an empty removal stage",
+    state: "windows unregistered",
+    owner: true,
+    allowsStart: true,
+  },
+  {
+    name: "recovers a missing checkout while another Windows release is staged",
+    state: "sibling staged",
     owner: true,
     allowsStart: true,
   },
@@ -2486,10 +2525,40 @@ effectIt.effect.each([
     yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
     yield* fs.writeFileString(path.join(workspaceRoot, "tracked"), "original");
     yield* fs.writeFileString(path.join(workspaceRoot, "remaining"), "preserved");
+    const unregistered = state === "windows unregistered";
+    const changedSetup = state === "verified changed setup";
+    const rewrittenAnchor = state === "verified rewritten anchor";
+    const interruptedSetup = state === "verified partial setup" || changedSetup || rewrittenAnchor;
+    if (interruptedSetup)
+      yield* fs.writeFileString(path.join(workspaceRoot, ".gitignore"), ".t3/\nnode_modules/\n");
     yield* git(workspaceRoot, ["add", "."]);
     yield* git(workspaceRoot, ["commit", "-m", "base"]);
     yield* git(workspaceRoot, ["worktree", "add", "-b", oldBranch, worktreePath]);
     const isSetup = state.startsWith("setup ");
+    if (interruptedSetup) {
+      const marker = "83c3b572-0640-4e21-bdc7-c24f84a7830c\n";
+      yield* fs.makeDirectory(path.join(worktreePath, ".t3"));
+      yield* fs.writeFileString(path.join(worktreePath, ".t3", "setup-done"), marker);
+      yield* fs.makeDirectory(path.join(worktreePath, "node_modules"));
+      yield* fs.writeFileString(path.join(worktreePath, "node_modules", "installed.js"), "module");
+      const admin = gitOutputLine(
+        (yield* git(worktreePath, ["rev-parse", "--absolute-git-dir"])).stdout,
+      );
+      const head = gitOutputLine((yield* git(worktreePath, ["rev-parse", "HEAD"])).stdout);
+      yield* Effect.tryPromise(async (signal) =>
+        writeSetupProof(admin, path.join(admin, "pending-setup"), {
+          root: await NodeFSP.realpath(workspaceRoot),
+          checkout: setupFileStamp(
+            await NodeFSP.lstat(path.join(worktreePath, ".git"), { bigint: true }),
+          ),
+          head,
+          marker,
+          ...(await sealSetupTrees(worktreePath, ["node_modules"], signal)),
+          markerMetadataV1: await sealSetupMarkers(worktreePath, "setup-done", signal),
+          links: [],
+        }),
+      );
+    }
     if (isSetup) {
       yield* fs.writeFileString(path.join(workspaceRoot, ".git/info/exclude"), "private.txt\n");
       yield* fs.writeFileString(path.join(worktreePath, "private.txt"), "saved private data");
@@ -2505,7 +2574,7 @@ effectIt.effect.each([
       gitWorkflow,
       runSetup,
     });
-    const { file, savedFiles } = yield* queueWorktreeRelease({
+    const queue = queueWorktreeRelease({
       threadId: owner ? harness.projection().thread.id : "old-owner",
       runId: "finished",
       worktreePath,
@@ -2513,20 +2582,75 @@ effectIt.effect.each([
       stateDir: path.join(root, "state"),
       saveIgnored: isSetup,
     });
+    const { file, savedFiles } = yield* unregistered
+      ? queue.pipe(Effect.provideService(HostProcess.Platform, "win32"))
+      : queue;
     const contents = yield* fs.readFileString(file);
-    expect((yield* decodeReleaseRequest(contents)).family).toBeUndefined();
+    const release = yield* decodeReleaseRequest(contents);
+    expect(release.family).toBeUndefined();
     const staged = state === "windows staged";
+    const siblingStaged = state === "sibling staged";
+    const missing = state === "missing" || siblingStaged || unregistered;
     const stage = windowsRemovalStage(worktreePath);
-    const removing = state === "intact" || state === "partial" || staged;
+    const removing =
+      state === "intact" || state === "partial" || staged || interruptedSetup || unregistered;
     const receipt = file + (removing ? ".releasing" : isSetup ? ".setup" : ".released");
     yield* fs.rename(file, receipt);
     let lock: string | undefined;
     if (removing) {
       if (state === "partial") yield* fs.remove(tracked);
-      if (staged) yield* fs.rename(worktreePath, stage);
+      if (staged || unregistered) yield* fs.rename(worktreePath, stage);
+      if (unregistered) {
+        yield* git(workspaceRoot, ["worktree", "remove", "--", worktreePath]);
+        for (const name of ["tracked", "remaining", ".git"])
+          yield* fs.remove(path.join(stage, name));
+      }
+      if (interruptedSetup) {
+        expect(release.requiresSetupProof).toBe(true);
+        const operation = "test.singletonRestore.interruptedSetup";
+        const prepared = yield* prepareLinkedWorktreeRemoval({
+          operation,
+          cwd: workspaceRoot,
+          worktreePath,
+          force: false,
+          release: { ...release, setupReceiptHash: releaseDigest(contents) },
+          execute: driver.execute,
+          run: (args) => driver.execute({ operation, cwd: workspaceRoot, args }),
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            remove: (target, options) =>
+              target === path.join(stage, "node_modules", "installed.js")
+                ? fs.remove(path.join(target, "locked"))
+                : fs.remove(target, options),
+          }),
+        );
+        yield* Effect.flip(prepared);
+        expect(yield* fs.exists(path.join(stage, ".t3", "setup-done"))).toBe(false);
+        expect(yield* fs.exists(path.join(stage, "node_modules", "installed.js"))).toBe(true);
+        if (changedSetup)
+          yield* fs.writeFileString(
+            path.join(stage, "node_modules", "installed.js"),
+            "owner edits",
+          );
+        if (rewrittenAnchor) {
+          const unrelated = gitOutputLine(
+            (yield* git(workspaceRoot, [
+              "commit-tree",
+              `${release.head}^{tree}`,
+              "-m",
+              "Rewrite durable ref",
+            ])).stdout,
+          );
+          yield* git(workspaceRoot, ["update-ref", "refs/heads/main", unrelated]);
+        } else if (!changedSetup) {
+          yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "Advance durable ref"]);
+        }
+      }
     } else {
       yield* git(workspaceRoot, ["worktree", "remove", "--force", worktreePath]);
-      if (state !== "missing") {
+      if (!missing) {
         yield* git(workspaceRoot, [
           "worktree",
           "add",
@@ -2563,15 +2687,50 @@ effectIt.effect.each([
       }
     }
 
-    if (staged) yield* harness.start.pipe(Effect.provideService(HostProcess.Platform, "win32"));
+    if (siblingStaged) {
+      const sibling = path.join(worktreesDir, "project", "sibling");
+      yield* git(workspaceRoot, ["worktree", "add", "-b", "sibling", sibling]);
+      const release = yield* queueWorktreeRelease({
+        threadId: "sibling-owner",
+        runId: "finished",
+        worktreePath: sibling,
+        durableRef: "refs/heads/main",
+        stateDir: path.join(root, "state"),
+      });
+      const claim = release.file + ".releasing";
+      yield* fs.rename(release.file, claim);
+      yield* fs.rename(sibling, windowsRemovalStage(sibling));
+      yield* harness.start.pipe(Effect.provideService(HostProcess.Platform, "win32"));
+      const request = yield* decodeReleaseRequest(yield* fs.readFileString(claim));
+      expect(
+        yield* restoreStagedWindowsCheckout(workspaceRoot, request).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+        ),
+      ).toBe(true);
+      expect(yield* fs.readFileString(path.join(sibling, "remaining"))).toBe("preserved");
+    } else if (staged || interruptedSetup || unregistered)
+      yield* harness.start.pipe(Effect.provideService(HostProcess.Platform, "win32"));
     else yield* harness.start;
 
     expect(harness.open).toHaveBeenCalledTimes(allowsStart ? 1 : 0);
     expect(harness.startTurn).toHaveBeenCalledTimes(allowsStart ? 1 : 0);
-    expect(runSetup).toHaveBeenCalledTimes(allowsStart && (state === "missing" || isSetup) ? 1 : 0);
+    expect(runSetup).toHaveBeenCalledTimes(
+      allowsStart && (missing || isSetup || interruptedSetup) ? 1 : 0,
+    );
     if (allowsStart && owner) expect(yield* fs.exists(receipt)).toBe(false);
     else expect(yield* fs.readFileString(receipt)).toBe(contents);
-    expect(yield* fs.exists(worktreePath)).toBe(!staged && (state !== "missing" || allowsStart));
+    expect(yield* fs.exists(worktreePath)).toBe(
+      !staged && !changedSetup && !rewrittenAnchor && (!missing || allowsStart),
+    );
+    if (unregistered) expect(yield* fs.exists(stage)).toBe(false);
+    if (changedSetup)
+      expect(yield* fs.readFileString(path.join(stage, "node_modules", "installed.js"))).toBe(
+        "owner edits",
+      );
+    if (rewrittenAnchor)
+      expect(yield* fs.readFileString(path.join(stage, "node_modules", "installed.js"))).toBe(
+        "module",
+      );
     if (state === "replacement") expect(yield* fs.readFileString(tracked)).toBe("new owner's edit");
     if (
       state === "partial" ||
@@ -2580,7 +2739,7 @@ effectIt.effect.each([
       state === "setup missing file"
     )
       expect(yield* fs.exists(tracked)).toBe(false);
-    if (removing)
+    if (removing && !changedSetup && !rewrittenAnchor)
       expect(yield* fs.readFileString(staged ? path.join(stage, "remaining") : remaining)).toBe(
         "preserved",
       );

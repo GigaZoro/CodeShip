@@ -57,15 +57,19 @@ const originalDelegateRunIdSql = `
         AND spawn.source_thread_id=t.thread_id AND spawn.type='subagent_spawn'))
 `;
 
-const publicationSourceSql = `
-  SELECT publisher.run_id FROM orchestration_v2_projection_context_transfers publication
-  JOIN orchestration_v2_projection_runs publisher ON publisher.run_id=json_extract(publication.payload_json,'$.sourcePoint.runId')
-    AND publisher.thread_id=t.child_thread_id AND publisher.status=t.status AND publisher.completed_at <= t.completed_at
-  WHERE publication.context_transfer_id=(${publicationTransferIdSql})
-    AND coalesce(json_extract(publisher.payload_json,'$.delegatedTaskId'), (
+const possiblePublishingRunsSql = `
+  SELECT child.run_id FROM orchestration_v2_projection_runs child
+  WHERE child.thread_id=t.child_thread_id AND child.status=t.status AND child.completed_at <= t.completed_at
+    AND coalesce(json_extract(child.payload_json,'$.delegatedTaskId'), (
       SELECT json_extract(shell.payload_json,'$.forkedFrom.nodeId') FROM orchestration_v2_projection_threads shell
       WHERE shell.thread_id=t.child_thread_id AND json_extract(shell.payload_json,'$.forkedFrom.type')='node'
     ))=t.subagent_id
+`;
+
+const publicationSourceSql = `
+  SELECT publisher.run_id FROM orchestration_v2_projection_context_transfers publication
+  JOIN (${possiblePublishingRunsSql}) publisher ON publisher.run_id=json_extract(publication.payload_json,'$.sourcePoint.runId')
+  WHERE publication.context_transfer_id=(${publicationTransferIdSql})
 `;
 
 // t is the projected task. Older public acknowledgements recorded only a run ID. Their
@@ -144,17 +148,19 @@ export const provenTaskResultReadsSql = `
       AND json_type(call.response,'$.summary') = 'text'
       AND CAST(json_extract(call.response,'$.summary') AS BLOB) = CAST(json_extract(t.payload_json,'$.result') AS BLOB)
       AND (${nativeResultCopiesAgreeSql})
-      AND (json_extract(call.response,'$.resultContextTransferId') IS NULL
-        OR json_extract(call.response,'$.resultContextTransferId') = (${publicationTransferIdSql})
+      AND (json_extract(call.response,'$.resultContextTransferId') = (${publicationTransferIdSql})
         OR (
-          -- delegate_task's primary transfer can still refer to the original child. Its latest
-          -- terminal fields must independently identify the publication and the returned bytes.
-          json_extract(call.response,'$.latestTerminalRunId') = publisher.run_id
+          json_type(call.response,'$.latestTerminalRunId') = 'text'
+          AND json_extract(call.response,'$.latestTerminalRunId') = publisher.run_id
           AND json_extract(call.response,'$.latestTerminalStatus') = t.status
-          AND json_extract(call.response,'$.latestTerminalResultContextTransferId') = (${publicationTransferIdSql})
           AND (json_type(call.response,'$.latestTerminalSummary') = 'null'
-            OR CAST(json_extract(call.response,'$.latestTerminalSummary') AS BLOB) = CAST(json_extract(call.response,'$.summary') AS BLOB))
-          AND EXISTS (
+            OR (json_type(call.response,'$.latestTerminalSummary') = 'text'
+              AND CAST(json_extract(call.response,'$.latestTerminalSummary') AS BLOB) = CAST(json_extract(call.response,'$.summary') AS BLOB)))
+          AND (json_extract(call.response,'$.latestTerminalResultContextTransferId') = (${publicationTransferIdSql})
+            OR (json_extract(call.response,'$.resultContextTransferId') IS NULL
+              AND json_extract(call.response,'$.latestTerminalResultContextTransferId') IS NULL))
+          AND (json_extract(call.response,'$.resultContextTransferId') IS NULL OR EXISTS (
+            -- delegate_task's primary transfer can still refer to the original child.
             SELECT 1 FROM orchestration_v2_projection_context_transfers initial
             WHERE initial.context_transfer_id = json_extract(call.response,'$.resultContextTransferId')
               AND initial.target_run_id = t.run_id AND initial.source_thread_id = t.child_thread_id
@@ -163,6 +169,17 @@ export const provenTaskResultReadsSql = `
               AND json_extract(initial.payload_json,'$.sourcePoint.runId') = original.run_id
               AND json_extract(initial.payload_json,'$.createdAt') < t.completed_at
               AND json_extract(initial.payload_json,'$.consumedAt') = json_extract(initial.payload_json,'$.createdAt')
+          ))
+        )
+        OR (
+          -- Equal summaries cannot identify a publisher when this response predates terminal run evidence.
+          json_extract(call.response,'$.resultContextTransferId') IS NULL
+          AND json_extract(call.response,'$.latestTerminalRunId') IS NULL
+          AND json_extract(call.response,'$.latestTerminalStatus') IS NULL
+          AND json_extract(call.response,'$.latestTerminalSummary') IS NULL
+          AND json_extract(call.response,'$.latestTerminalResultContextTransferId') IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM (${possiblePublishingRunsSql}) sibling WHERE sibling.run_id != publisher.run_id
           )
         ))
   ) evidence
