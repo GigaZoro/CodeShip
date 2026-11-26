@@ -615,7 +615,13 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
         yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),
         { fetchedFrom: null, remoteNames: ["origin", "upstream"] },
       );
-      yield* git(cwd, ["remote", "remove", "origin"]);
+      yield* git(cwd, ["remote", "rename", "origin", "fork"]);
+      yield* git(source, ["push", fork, `${sha}:refs/tags/shared-base`]);
+      assert.deepEqual(
+        yield* driver.fetchCommit({ cwd, commitSha: sha, preferredRemote: "upstream" }),
+        { fetchedFrom: "upstream", remoteNames: ["upstream", "fork"] },
+      );
+      yield* git(cwd, ["remote", "remove", "fork"]);
       yield* git(cwd, ["remote", "remove", "upstream"]);
       assert.deepEqual(
         yield* driver.fetchCommit({ cwd, commitSha: "1234567890abcdef1234567890abcdef12345678" }),

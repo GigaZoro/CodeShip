@@ -133,7 +133,10 @@ const LaunchWorkspaceStrategy = OrchestrationV2ThreadLaunchWorkspaceStrategy.map
   ([root, existingWorktree, worktree]) => [
     root,
     existingWorktree,
-    worktree.mapFields((fields) => ({ ...fields, baseRef: Schema.optional(fields.baseRef) })),
+    worktree.mapFields(({ preferredRemote: _peerRemote, ...fields }) => ({
+      ...fields,
+      baseRef: Schema.optional(fields.baseRef),
+    })),
   ],
 );
 export type LaunchWorkspaceStrategy = typeof LaunchWorkspaceStrategy.Type;
@@ -187,6 +190,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     launchId: Schema.optional(Schema.String.check(Schema.isPattern(REMOTE_DELEGATE_THREAD_ID))),
     /** Set by a linked environment for the `modelSelection` options its delegated task inherited rather than named; ignored otherwise. */
     inheritedOptionIds: Schema.optional(Schema.Array(Schema.String)),
+    matchedRemote: Schema.optional(TrimmedNonEmptyString),
   }),
   success: Schema.Struct({
     threadId: ThreadId,

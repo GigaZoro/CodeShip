@@ -278,7 +278,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
                 projectId,
               );
-        const strategy = yield* withWorktreeBase(input.workspaceStrategy, readProject);
+        const base = yield* withWorktreeBase(input.workspaceStrategy, readProject);
+        const strategy =
+          delegatedFrom && base?.type === "worktree" && input.matchedRemote !== undefined
+            ? { ...base, preferredRemote: input.matchedRemote }
+            : base;
         // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
         if (!replaying && strategy?.type === "worktree")
           yield* ThreadLaunch.ThreadLaunchService.pipe(

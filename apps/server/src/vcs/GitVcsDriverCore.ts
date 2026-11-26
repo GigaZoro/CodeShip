@@ -5056,7 +5056,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "GitVcsDriver.fetchCommit",
   )(function* (input) {
     const remoteNames = yield* listRemoteNames(input.cwd);
-    const primary = pickPrimaryRemoteName(remoteNames);
+    const primary =
+      input.preferredRemote !== undefined && remoteNames.includes(input.preferredRemote)
+        ? input.preferredRemote
+        : pickPrimaryRemoteName(remoteNames);
     const ordered =
       primary === null ? [] : [primary, ...remoteNames.filter((name) => name !== primary)];
     // One broken remote says nothing about the others; its error stands only if none has it.

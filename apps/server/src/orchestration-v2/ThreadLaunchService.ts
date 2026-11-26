@@ -314,14 +314,19 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Fetches `sha`, which the checkout lacks, from the project's remotes, the primary first. The
+   * Fetches `sha`, which the checkout lacks, from the project's remotes, starting with the matched remote or primary. The
    * refusal when it is still no commit here: a fetched SHA may name a tree or blob.
    */
   const fetchCommitFromRemotes = Effect.fn("ThreadLaunchService.fetchCommitFromRemotes")(function* (
     cwd: string,
     sha: string,
+    preferredRemote: string | undefined,
   ) {
-    const { fetchedFrom, remoteNames } = yield* git.fetchCommit({ cwd, commitSha: sha });
+    const { fetchedFrom, remoteNames } = yield* git.fetchCommit({
+      cwd,
+      commitSha: sha,
+      preferredRemote,
+    });
     if (fetchedFrom === null)
       return {
         lookup: remoteNames.length === 0 ? "no-remote" : "remotes-lack-commit",
@@ -348,7 +353,7 @@ const make = Effect.gen(function* () {
       // A commit names no remote branch, so the remote lookup below would find `origin` for any
       // hash and call a commit the remote does not hold resolved.
       if (strategy.startFromOrigin === true && isCommitSha(baseRef)) {
-        const refusal = yield* fetchCommitFromRemotes(cwd, baseRef);
+        const refusal = yield* fetchCommitFromRemotes(cwd, baseRef, strategy.preferredRemote);
         return refusal === undefined ? undefined : { project, ...refusal };
       }
       const remote =
@@ -515,6 +520,7 @@ const make = Effect.gen(function* () {
           const refusal = yield* fetchCommitFromRemotes(
             project.workspaceRoot,
             input.workspaceStrategy.baseRef,
+            input.workspaceStrategy.preferredRemote,
           ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
           if (refusal !== undefined)
             return yield* mapError(

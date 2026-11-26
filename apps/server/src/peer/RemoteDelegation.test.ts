@@ -336,8 +336,11 @@ const launchedSelection = (
 };
 
 /** A box from before `inheritedOptionIds`: its launch takes no such argument. */
-const { inheritedOptionIds: _inheritedOptionIds, ...olderLaunchFields } =
-  ProjectToolkit.tools.t3_thread_launch.parametersSchema.fields;
+const {
+  inheritedOptionIds: _inheritedOptionIds,
+  matchedRemote: _matchedRemote,
+  ...olderLaunchFields
+} = ProjectToolkit.tools.t3_thread_launch.parametersSchema.fields;
 const layerOlderProjectRegistration = McpHttpServer.toolkitRegistration(
   Toolkit.make(
     ...Object.values({
@@ -800,7 +803,7 @@ const makeLaptop = (
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
   /** The parent project's repository, or why reading the project or its repository fails. */
-  identity: RepositoryIdentity | ProjectService.ProjectRepositoryReadError = {
+  identity: RepositoryIdentity | ProjectService.ProjectRepositoryReadError | null = {
     canonicalKey: "github.com/acme/app",
   } as RepositoryIdentity,
   /** The parent checkout's Git remotes. */
@@ -1596,12 +1599,18 @@ it.effect(
 
         const result = yield* a.call("delegate_task", {
           task: "Run the suite on the box.",
+          isolation: "worktree",
           target: {
             environmentId: box.environmentId,
             options: [{ id: "reasoningEffort", value: "high" }],
           },
         });
         expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect((yield* Ref.get(thread.launched))?.workspaceStrategy).toEqual({
+          type: "worktree",
+          baseRef: parentCommit,
+          startFromOrigin: true,
+        });
         expect(launchedSelection(b, result)).toEqual({
           ...modelSelection,
           options: [
@@ -2143,6 +2152,7 @@ const otherRepository: Project = {
 it.effect.each([
   { project: "found by repository", projectId: undefined, baseRef: parentCommit },
   { project: "named, of this repository", projectId: boxProject, baseRef: parentCommit },
+  { project: "named, matched by upstream", projectId: forkOfFork.id, baseRef: parentCommit },
   {
     project: "named, of another repository",
     projectId: otherRepository.id,
@@ -2154,7 +2164,7 @@ it.effect.each([
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread, [...boxProjects, otherRepository]);
+        const b = yield* serveBox(thread, [...boxProjects, forkOfFork, otherRepository]);
         const offers = yield* SubscriptionRef.make<
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
@@ -2176,6 +2186,9 @@ it.effect.each([
           type: "worktree",
           baseRef,
           startFromOrigin: true,
+          ...(baseRef === parentCommit
+            ? { preferredRemote: projectId === forkOfFork.id ? "upstream" : "origin" }
+            : {}),
         });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -2291,7 +2304,7 @@ it.effect("refuses worktree isolation when this thread's checkout has no Git rem
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers, undefined, undefined, []);
+      const a = yield* makeLaptop(database, offers, undefined, null, []);
       yield* linkTo(a.links, b, "auto");
       yield* seedParent(a);
 
@@ -2351,7 +2364,12 @@ it.effect(
         expect(result.isError).toBe(true);
         expect(failureMessage(result)).toContain(refusal);
         expect(yield* Ref.get(asked)).toEqual([
-          { type: "worktree", baseRef: parentCommit, startFromOrigin: true },
+          {
+            type: "worktree",
+            baseRef: parentCommit,
+            startFromOrigin: true,
+            preferredRemote: "origin",
+          },
         ]);
         expect(yield* Ref.get(thread.launched)).toBeNull();
         const failed = yield* a.orchestrator

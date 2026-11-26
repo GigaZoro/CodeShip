@@ -52,11 +52,13 @@ export function runVcsDriverContractSuite<R, E>(input: VcsDriverContractSuiteInp
 
   it.layer(input.layer)(`${input.name} VCS driver contract`, (it) => {
     describe("repository detection", () => {
-      it.effect("returns null outside a repository", () =>
+      it.effect("returns null outside a repository and in a folder that is gone", () =>
         Effect.gen(function* () {
           const cwd = yield* makeTmpDir();
           const driver = yield* VcsDriver.VcsDriver;
 
+          const path = yield* Path.Path;
+          assert.equal(yield* driver.detectRepository(path.join(cwd, "gone")), null);
           assert.equal(yield* driver.detectRepository(cwd), null);
           assert.equal(yield* driver.isInsideWorkTree(cwd), false);
         }),

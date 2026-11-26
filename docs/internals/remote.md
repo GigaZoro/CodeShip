@@ -196,7 +196,8 @@ parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
 then no machine can fetch the commit. Whether the other machine's remotes hold it,
 including a commit that only a tag reaches, is for that machine to say. There
 `ThreadLaunchService` fetches a SHA base the checkout lacks from the project's remotes
-in order: the primary first, then the others. A remote that fails, on its credentials
+in order: the receiver’s remote that matched the repository first, then the others.
+Without a match hint it starts with the primary remote. A remote that fails, on its credentials
 or its network, is passed over. A server that refuses a fetch by SHA is asked again
 through the branches and tags it advertises. The launch is refused before any thread is
 created only when every remote answered and none has the commit. The refusal names

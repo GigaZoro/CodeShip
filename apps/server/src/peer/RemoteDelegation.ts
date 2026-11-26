@@ -14,6 +14,7 @@ import {
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
+  type RepositoryIdentity,
   repositoryKeysOf,
   repositoryMatchRank,
   type RunId,
@@ -80,6 +81,17 @@ export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>
       ),
   },
 );
+
+function matchedRemoteName(
+  source: RepositoryIdentity,
+  candidate: RepositoryIdentity | null | undefined,
+) {
+  if (!candidate) return undefined;
+  const theirs = repositoryKeysOf(candidate);
+  const key = repositoryKeysOf(source).find((key) => theirs.includes(key));
+  if (key === undefined) return undefined;
+  return candidate.origin && key === theirs[0] ? "origin" : candidate.locator.remoteName;
+}
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 
@@ -213,9 +225,24 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     parentProjectId: ProjectId,
     requested: ProjectId | undefined,
+    worktree: boolean,
   ) {
-    if (requested !== undefined) return { projectId: requested } as const;
-    if (yield* managedFolders.isScratchProject(parentProjectId)) return { scratch: true } as const;
+    if (requested !== undefined) {
+      const target = { projectId: requested };
+      if (!worktree) return { target };
+      const identity = yield* parentIdentity(parentProjectId);
+      if (identity === null) return { target, differentRepository: true };
+      const there = yield* forwarding.call(
+        scope,
+        ProjectToolkit.tools.t3_project_read,
+        environmentId,
+        target,
+      );
+      const matchedRemote = matchedRemoteName(identity, there.repositoryIdentity);
+      return { target, matchedRemote, differentRepository: matchedRemote === undefined };
+    }
+    if (yield* managedFolders.isScratchProject(parentProjectId))
+      return { target: { scratch: true } } as const;
     const identity = yield* parentIdentity(parentProjectId);
     if (identity === null) {
       return yield* new OrchestratorMcpFailure({
@@ -224,7 +251,9 @@ const make = Effect.gen(function* () {
       });
     }
     const keys = repositoryKeysOf(identity);
-    let matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+    let matches: Array<
+      Tool.Success<typeof ProjectToolkit.tools.t3_project_list>["projects"][number]
+    > = [];
     let bestRank = Number.POSITIVE_INFINITY;
     let cursor: number | null = 0;
     while (cursor !== null) {
@@ -242,7 +271,15 @@ const make = Effect.gen(function* () {
       }
       cursor = listed.nextCursor;
     }
-    if (matches.length === 1) return { projectId: matches[0]!.id } as const;
+    if (matches.length === 1) {
+      const project = matches[0]!;
+      return {
+        target: { projectId: project.id },
+        matchedRemote: worktree
+          ? matchedRemoteName(identity, project.repositoryIdentity)
+          : undefined,
+      };
+    }
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message:
@@ -325,40 +362,10 @@ const make = Effect.gen(function* () {
       Effect.orDie,
     );
 
-  /**
-   * A new worktree there. Only a project of this thread's repository can fetch its commit, so a
-   * named project of another repository starts from its own default branch.
-   */
-  const remoteWorktree = Effect.fn("RemoteDelegation.remoteWorktree")(function* (
-    scope: ThreadScope,
-    environmentId: EnvironmentId,
-    parent: { readonly projectId: ProjectId; readonly worktreePath: string | null },
-    requested: ProjectId | undefined,
-  ) {
-    if (requested !== undefined) {
-      const identity = yield* parentIdentity(parent.projectId);
-      if (identity === null) return { type: "worktree" } as const;
-      const there = yield* forwarding.call(
-        scope,
-        ProjectToolkit.tools.t3_project_read,
-        environmentId,
-        { projectId: requested },
-      );
-      if (repositoryMatchRank(identity, there.repositoryIdentity) === -1) {
-        return { type: "worktree" } as const;
-      }
-    }
-    return yield* parentCommitWorktree(parent);
-  });
-
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
     function* (scope, parent, input, { key, commandId }) {
       const taskId = derive.delegatedTaskNode({ commandId });
       const { target } = input;
-      const workspaceStrategy =
-        input.isolation === "worktree"
-          ? yield* remoteWorktree(scope, target.environmentId, parent.thread, target.projectId)
-          : undefined;
       // The provider and model inherit as they do for a task here. Another
       // provider there has no model to inherit, so the caller names one.
       const inherited = parent.thread.modelSelection;
@@ -421,12 +428,23 @@ const make = Effect.gen(function* () {
         input.interactionMode === undefined || input.interactionMode === "inherit"
           ? undefined
           : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
+      const worktree = input.isolation === "worktree";
+      const automaticBase =
+        worktree && target.projectId === undefined
+          ? yield* parentCommitWorktree(parent.thread)
+          : undefined;
       const where = yield* resolveRemoteProject(
         scope,
         target.environmentId,
         parent.thread.projectId,
         target.projectId,
+        worktree,
       );
+      const workspaceStrategy = !worktree
+        ? undefined
+        : where.differentRepository
+          ? ({ type: "worktree" } as const)
+          : (automaticBase ?? (yield* parentCommitWorktree(parent.thread)));
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
       // the forwarder scopes the launch's, and the record's names it.
@@ -550,7 +568,10 @@ const make = Effect.gen(function* () {
                 ProjectToolkit.tools.t3_thread_launch,
                 remoteChild.environmentId,
                 {
-                  ...where,
+                  ...where.target,
+                  ...(where.matchedRemote === undefined
+                    ? {}
+                    : { matchedRemote: where.matchedRemote }),
                   title: input.title ?? parent.thread.title,
                   ...selection,
                   ...(runtimeMode === undefined ? {} : { runtimeMode }),
@@ -567,7 +588,7 @@ const make = Effect.gen(function* () {
                   },
                 },
                 // A peer that predates it checks no option, so it runs them all as before.
-                ["inheritedOptionIds"],
+                ["inheritedOptionIds", "matchedRemote"],
               );
             const launch = (
               staysAuto
