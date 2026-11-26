@@ -255,7 +255,7 @@ it.effect(
           getMessageCount: () => Effect.die("unused message count"),
           getMemoryAdmissionQueue: () => Effect.die("unused getMemoryAdmissionQueue"),
           getSubagentCount: () => Effect.die("unused subagent count"),
-          legacyTaskResultReadAt: () => Effect.die("unused legacy task read"),
+          firstProvenTaskResultRead: () => Effect.die("unused legacy task read"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
           getTurnItem: () => Effect.die("unused turn item read"),
           getThreadRecords: () => Effect.die("unused record read"),

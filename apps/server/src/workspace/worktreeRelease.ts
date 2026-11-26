@@ -1226,7 +1226,12 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     return yield* refuse("The restored checkout belongs to another repository or branch.");
   const { admin } = registration;
   const head = (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
-  const adminFiles = yield* settleFamilyCheckoutHook(cwd, admin, head);
+  // The release belongs to a different checkout. Its receipt cannot authorize changes
+  // to the replacement's hook records, even when the current turn is writable.
+  const adminFiles =
+    options.replacementOf === undefined
+      ? yield* settleFamilyCheckoutHook(cwd, admin, head)
+      : yield* fs.readDirectory(admin);
   if (adminFiles.includes("locked") || adminFiles.some((entry) => entry.endsWith(".lock")))
     return yield* refuse("The restored checkout is locked.");
   const verifyVisibleTrackedFiles = readGit(cwd, ["ls-files", "-v", "-z"], {

@@ -1,3 +1,8 @@
+import {
+  provenTaskResultReadsSql,
+  recordedTaskReadsSql,
+  resultFingerprint,
+} from "../apps/server/src/orchestration-v2/taskResultReadEvidence.ts";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
 
@@ -69,31 +74,24 @@ export function wakeReport(db, day) {
         WHERE b.run_id=r.run_id AND b.thread_id=r.thread_id AND t.started_at IS NOT NULL
         ORDER BY ${startEvidence("t")} DESC,t.started_at,t.rowid LIMIT 1)
   `);
-  const observed = db.prepare(`
-    WITH task AS (
-      SELECT * FROM orchestration_v2_projection_subagents WHERE subagent_id=? AND thread_id=?
-    ), reads AS (
-      SELECT json_extract(payload_json,'$.terminalResultObservation.runId') AS reader,
-        json_extract(payload_json,'$.terminalResultObservation.at') AS at,
-        json_extract(payload_json,'$.terminalResultObservation.verified') AS verified, 0 AS priority FROM task
-      UNION ALL
-      SELECT json_extract(payload_json,'$.completionDelivery.observedByRunId'),
-        json_extract(payload_json,'$.completionDelivery.observedAt'), 0, 1 FROM task
-      WHERE json_extract(payload_json,'$.completionDelivery.state') IN ('acknowledged','disposed')
-    ), first_read AS (
-    SELECT reads.reader, reads.at FROM reads JOIN task
-      JOIN orchestration_v2_projection_runs r ON r.thread_id=task.thread_id AND r.run_id=reads.reader
-    WHERE reads.verified IS 1 OR (
-        json_extract(task.payload_json,'$.status') IN ('completed','failed','cancelled','interrupted')
-        AND json_type(task.payload_json,'$.result')='text'
-        AND json_extract(task.payload_json,'$.completedAt') <= reads.at
-        AND coalesce(json_extract(r.payload_json,'$.startedAt'),json_extract(r.payload_json,'$.requestedAt')) <= reads.at
-        AND (json_extract(r.payload_json,'$.completedAt') >= reads.at
-          OR json_extract(r.payload_json,'$.status') IN ('preparing','starting','running','waiting'))
-      )
-    ORDER BY reads.priority LIMIT 1
-    ) SELECT 1 FROM first_read WHERE reader != ? AND at < ?
+  const recordedReads = db.prepare(`${recordedTaskReadsSql} AND t.subagent_id=? AND t.thread_id=?`);
+  const earlierRead = db.prepare(`
+    SELECT (SELECT json_object('reader', reader, 'at', at) FROM (${provenTaskResultReadsSql})
+      ORDER BY at,read_sequence LIMIT 1) AS first_read FROM orchestration_v2_projection_subagents t
+    WHERE t.subagent_id=? AND t.thread_id=?
   `);
+  function previouslyRead(taskId, wake) {
+    const records = recordedReads.all(taskId, wake.thread_id);
+    const digest = records[0] && resultFingerprint(JSON.parse(records[0].result_json));
+    const verified = records.filter((record) => record.fingerprint === digest);
+    let first = verified.find((record) => record.priority === 0);
+    if (!first) {
+      const event = JSON.parse(earlierRead.get(taskId, wake.thread_id)?.first_read ?? "null");
+      const current = verified[0];
+      first = current && (!event || current.at < event.at) ? current : event;
+    }
+    return first != null && first.reader !== wake.run_id && first.at < wake.started_at;
+  }
   // A terminal result arriving while the chat had no other active provider turn could not have been handled by that chat.
   const fresh = db.prepare(`
     SELECT 1 FROM orchestration_v2_projection_subagents s
@@ -120,7 +118,7 @@ export function wakeReport(db, day) {
     if (tasks?.length || eventIds.length) wakesWithEventIdentity++;
     if (tasks?.length) {
       const members = tasks.map((id) => {
-        if (observed.get(id, row.thread_id, row.run_id, row.started_at)) return "repeated";
+        if (previouslyRead(id, row)) return "repeated";
         if (fresh.get(id, row.thread_id, row.started_at, row.turnRow, row.started_at))
           return "fresh";
         return "unknown";

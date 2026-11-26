@@ -1,4 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercises the real setup script in a linked Git checkout.
+import { resultFingerprint } from "./orchestration-v2/taskResultReadEvidence.ts";
 import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Link identity requires native lstat, including dangling links.
 import * as NodeFSP from "node:fs/promises";
@@ -41,11 +42,13 @@ import * as Settings from "./serverSettings.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
+import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ServerActivation } from "./serverActivation.ts";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   EventId,
   NodeId,
@@ -397,7 +400,9 @@ const cleanupFixture = (
     const activated = yield* Deferred.make<void>();
     const provideFixtureSql = (fallback: SqlClient.SqlClient) =>
       Effect.provideService(SqlClient.SqlClient, sqlOverride ?? fallback);
-    const context = yield* Layer.build(StorageCleanup.layer).pipe(
+    const context = yield* Layer.build(
+      Layer.merge(StorageCleanup.layer, ThreadCommandExecutor.layer),
+    ).pipe(
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
@@ -541,6 +546,7 @@ const cleanupFixture = (
     );
     return {
       service: Context.get(context, StorageCleanup.StorageCleanup),
+      threadCommands: Context.get(context, ThreadCommandExecutor.ThreadCommandExecutor),
       repo,
       setTerminals: (terminals: TerminalSummary[]) =>
         terminalListener?.({ type: "snapshot", terminals }) ?? Effect.void,
@@ -1974,7 +1980,7 @@ const seedDelegateResult = (
         ${reportedAt}, ${JSON.stringify({ sourcePoint: { runId: childRunId } })})`;
     return sql`UPDATE orchestration_v2_projection_subagents
       SET payload_json = json_set(payload_json, '$.completionDelivery.observedByRunId', ${observerRunId},
-        '$.completionDelivery.observedAt', ${observedAt}),
+        '$.completionDelivery.observedAt', ${observedAt}, '$.completionDelivery.resultFingerprint', ${resultFingerprint("Finished delegated work")}),
         updated_at = ${observedAt}
       WHERE subagent_id = ${taskId}`;
   });
@@ -2060,7 +2066,7 @@ it.effect("requires the approved child's result and a completed parent run that 
       (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin,
        status, completed_at, updated_at, payload_json, completion_delivery_state)
       VALUES (${taskId},'parent','spawner','root','test','child','app_owned','completed',${now},${now},
-        '{"result":"Done","completionDelivery":{"observedByRunId":"reader"}}','acknowledged')`;
+        '{"result":"Done","completionDelivery":{"state":"acknowledged","observedByRunId":"reader"}}','acknowledged')`;
     yield* sql`INSERT INTO orchestration_v2_projection_context_transfers
       (context_transfer_id, source_thread_id, target_thread_id, target_run_id, type, status, updated_at, payload_json)
       VALUES ('transfer','child','parent','spawner','subagent_result','consumed',${now},'{"sourcePoint":{"runId":"previous"}}')`;
@@ -2070,14 +2076,38 @@ it.effect("requires the approved child's result and a completed parent run that 
     // A later write can carry an observer that acknowledged the task before it published its result.
     expect(yield* consumed()).toBe(false);
     yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json,
-      '$.terminalResultObservation', json(${JSON.stringify({ runId: "reader", at: now })}))`;
+      '$.terminalResultObservation', json(${JSON.stringify({ runId: "reader", at: now, verified: true })}))`;
+    expect(yield* consumed()).toBe(false);
+    const historical = {
+      id: taskId,
+      status: "completed",
+      result: "Done",
+      updatedAt: now,
+      completionDelivery: { state: "acknowledged", observedByRunId: "reader" },
+    };
+    yield* sql`INSERT INTO orchestration_events(event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,
+      command_id,actor_kind,payload_json,metadata_json,application_event_version)
+      VALUES ('observation','thread','parent',1,'subagent.updated',${now},'read-result','server',${JSON.stringify(historical)},'{}',2)`;
+    yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,
+      accepted_at,result_sequence,status) VALUES ('read-result','thread','parent',
+        'delegated_task.completion-delivery.acknowledge',${now},1,'accepted')`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_command_receipts SET command_type='delegated_task.completion-delivery.observe-disposed' WHERE command_id='read-result'`;
+    yield* sql`UPDATE orchestration_events SET payload_json=json_set(payload_json,'$.completionDelivery.state','disposed','$.result','Old result') WHERE event_id='observation'`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_events SET payload_json=json_set(payload_json,'$.result','Done') WHERE event_id='observation'`;
     expect(yield* consumed()).toBe(true);
+    yield* sql`DELETE FROM orchestration_events WHERE event_id='observation'`;
+
     yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_remove(payload_json, '$.terminalResultObservation')`;
     const later = DateTime.formatIso(at(DAY_MS));
     yield* sql`UPDATE orchestration_v2_projection_subagents SET updated_at = ${later}`;
     expect(yield* consumed()).toBe(false);
     yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json =
       json_set(payload_json, '$.completionDelivery.observedAt', ${now})`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json =
+      json_set(payload_json, '$.completionDelivery.resultFingerprint', ${resultFingerprint("Done")})`;
     expect(yield* consumed()).toBe(true);
     yield* sql`UPDATE orchestration_v2_projection_subagents SET completed_at = ${later}`;
     expect(yield* consumed()).toBe(false);
@@ -2552,6 +2582,45 @@ it.live("releases the bound family only after every member settles and delivers"
         archivedAt: at(-DAY_MS),
       });
       fixture.setThreads([child, owner, historical]);
+      const waiting = yield* Deferred.make<void>();
+      const withLock = fixture.threadCommands.withLock;
+      const tracked = NodePath.join(fixture.worktree, "tracked.txt");
+      const localData = isWindowsHost
+        ? tracked + ":owner-data"
+        : NodePath.join(fixture.repo, "tracked-alias");
+      const sweep = yield* withLock(
+        child.id,
+        Effect.gen(function* () {
+          using _lock = vi
+            .spyOn(fixture.threadCommands, "withLock")
+            .mockImplementation((id, effect) =>
+              (id === child.id ? Deferred.succeed(waiting, undefined) : Effect.void).pipe(
+                Effect.andThen(withLock(id, effect)),
+              ),
+            );
+          const checking = yield* fixture.service.runNow.pipe(Effect.forkChild);
+          expect(
+            yield* Effect.raceFirst(
+              Deferred.await(waiting).pipe(Effect.as("waiting")),
+              Fiber.join(checking).pipe(Effect.map((r) => r.entries[0]?.reason)),
+            ),
+          ).toBe("waiting");
+          if (isWindowsHost)
+            yield* Effect.promise(() => NodeFSP.writeFile(localData, "owner data"));
+          else yield* fixture.fs.link(tracked, localData);
+          return checking;
+        }),
+      );
+      const held = (yield* Fiber.join(sweep)).entries.find((item) => item.threadId === owner.id);
+      expect(held?.outcome, held?.reason).toBe("kept");
+      expect(held?.reason).toContain(
+        isWindowsHost ? "private-stream" : 'unverified hard links at "tracked.txt"',
+      );
+      expect(yield* fixture.fs.exists(file)).toBe(true);
+      expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
+      if (isWindowsHost)
+        expect(yield* Effect.promise(() => NodeFSP.readFile(localData, "utf8"))).toBe("owner data");
+      yield* Effect.promise(() => NodeFSP.unlink(localData));
       const report = yield* fixture.service.runNow;
       const entry = report.entries.find((item) => item.threadId === owner.id);
       expect(report.entries.some((item) => item.threadId === historical.id)).toBe(false);
@@ -2982,11 +3051,32 @@ describe.skipIf(!isDarwinHost)("automatic cleanup on macOS", () => {
     (location) =>
       runCleanupTest(
         Effect.gen(function* () {
-          const fixture = yield* submoduleCleanupFixture();
+          const git = yield* GitVcsDriver.GitVcsDriver;
+          let lateWrite: { root: string; child: string; fork: string } | undefined;
+          let childChecked = false;
+          const fixture = yield* submoduleCleanupFixture().pipe(
+            Effect.provideService(GitVcsDriver.GitVcsDriver, {
+              ...git,
+              execute: (input) =>
+                git.execute(input).pipe(
+                  Effect.tap(() =>
+                    Effect.gen(function* () {
+                      if (input.operation !== "StorageCleanup.localChanges" || !lateWrite) return;
+                      if (input.cwd === lateWrite.child) childChecked = true;
+                      if (childChecked && input.cwd === lateWrite.root) {
+                        const { fork } = lateWrite;
+                        yield* Effect.promise(() => NodeFSP.writeFile(fork, "owner data"));
+                        lateWrite = undefined;
+                      }
+                    }),
+                  ),
+                ),
+            }),
+          );
           const cwd = location === "checkout" ? fixture.worktree : fixture.child;
           const fork = `${cwd}/tracked.txt/..namedfork/rsrc`;
           fixture.setPolicy("tracked-changes");
-          yield* fixture.fs.writeFileString(fork, "owner data");
+          lateWrite = { root: fixture.worktree, child: fixture.child, fork };
           yield* fixture.fs.writeFileString(`${fixture.worktree}/.env`, "keep while held");
           expect((yield* fixture.command(cwd, ["status", "--porcelain"])).stdout).toBe("");
           const report = yield* fixture.service.runNow;

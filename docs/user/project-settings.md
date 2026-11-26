@@ -647,6 +647,8 @@ When a root chat shares the exact checkout and branch with its subagents or side
 the root chat's IDs. The command records each member and its current run. The root must
 settle after the work finishes. A parent must receive each delegate's result in a
 completed run. An unfinished run or an outstanding delivery keeps the checkout.
+If an older acknowledgement cannot establish which result the parent received, read the
+delegate's final result again from an active parent run and let that run finish.
 If membership or a run changes, issue a new request once the family finishes. A member,
 or a new fork or side chat that inherits its checkout, can start the first follow-up.
 
@@ -701,8 +703,9 @@ changes and switch it back to the expected branch shown in the error. Send a fol
 owning chat to retry setup in this checkout. Keep the setup receipt and saved-file directory
 through recovery. Rollback becomes available after setup finishes.
 
-Read-only turns can use an intact checkout. If the checkout needs recovery, an owner must
-start a turn with write access. If Git's post-checkout hook exited with an error, check the
+Read-only turns can use an intact checkout, including a replacement at a former checkout's
+path once CodeShip verifies its Git registration, branch, and hook state. If the checkout
+needs recovery, an owner must start a turn with write access. If Git's post-checkout hook exited with an error, check the
 hook's changes before retrying it. After correcting the cause, send a new message yourself
 in an owning chat. If the hook's exit could not
 be confirmed, CodeShip shows the path of its running record. Inspect the process and checkout on

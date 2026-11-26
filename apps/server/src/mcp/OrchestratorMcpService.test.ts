@@ -1,3 +1,4 @@
+import { resultFingerprint } from "../orchestration-v2/taskResultReadEvidence.ts";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -151,7 +152,14 @@ describe("OrchestratorMcpService", () => {
                     completedAt: at,
                   },
                 ]),
-            { id: current, status: "running", ordinal: 2, providerInstanceId, threadId },
+            {
+              id: current,
+              status: "running",
+              ordinal: 2,
+              providerInstanceId,
+              threadId,
+              activeAttemptId: null,
+            },
           ],
           subagents: [
             {
@@ -168,7 +176,10 @@ describe("OrchestratorMcpService", () => {
               completionDelivery: {
                 state: "acknowledged",
                 observedByRunId: prior === null ? null : previous,
-                ...(prior !== null && { observedAt: DateTime.formatIso(at) }),
+                ...(prior !== null && {
+                  observedAt: DateTime.formatIso(at),
+                  resultFingerprint: resultFingerprint("command result"),
+                }),
               },
             },
           ],
@@ -179,9 +190,10 @@ describe("OrchestratorMcpService", () => {
             getThreadRecords: () => Effect.succeed(parent),
             dispatch: (command) =>
               Effect.gen(function* () {
-                assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");
-                if (command.type === "delegated_task.completion-delivery.acknowledge") {
-                  assert.equal(command.parentThreadId, threadId);
+                assert.equal(command.type, "delegated_task.completion-delivery.observe");
+                if (command.type === "delegated_task.completion-delivery.observe") {
+                  assert.equal(command.source, "explicit");
+                  assert.equal(command.threadId, threadId);
                   assert.equal(command.taskId, taskId);
                   yield* Ref.update(observations, (ids) => [...ids, command.observedByRunId]);
                 }
@@ -232,7 +244,16 @@ describe("OrchestratorMcpService", () => {
       const acknowledgementAttempts = yield* Ref.make(0);
       const parentProjection = {
         thread: { id: parentThreadId },
-        runs: [],
+        runs: [
+          {
+            id: RunId.make("run:mcp-ack-parent"),
+            status: "running",
+            ordinal: 1,
+            threadId: parentThreadId,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            activeAttemptId: null,
+          },
+        ],
         contextTransfers: [],
         subagents: [
           {
@@ -273,6 +294,7 @@ describe("OrchestratorMcpService", () => {
         runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       let hasNestedWork = true;
+      let parentActive = true;
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -288,7 +310,10 @@ describe("OrchestratorMcpService", () => {
                         status: "running" as const,
                       })),
                     }
-                  : parentProjection
+                  : {
+                      ...parentProjection,
+                      runs: parentActive ? parentProjection.runs : [],
+                    }
                 : hasNestedWork
                   ? {
                       ...childProjection,
@@ -353,6 +378,9 @@ describe("OrchestratorMcpService", () => {
         const commandIds = yield* Ref.get(acknowledgementCommandIds);
         assert.equal(commandIds.length, 2);
         assert.notEqual(commandIds[0], commandIds[1]);
+        parentActive = false;
+        assert.equal((yield* service.taskStatus(scope, taskId)).summary, "terminal result");
+        assert.deepEqual(yield* Ref.get(acknowledgementCommandIds), commandIds);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
   );
@@ -363,26 +391,37 @@ describe("OrchestratorMcpService", () => {
       const childThreadId = ThreadId.make("thread:mcp-restart-child");
       const taskId = NodeId.make("node:mcp-restart-task");
       const dispatched = yield* Ref.make(0);
+      let publishedResult: string | null = null;
       let awaitsRestart = true;
       let readFails = true;
-      const parentProjection = {
-        thread: { id: parentThreadId },
-        runs: [],
-        contextTransfers: [],
-        subagents: [
-          {
-            id: taskId,
-            threadId: parentThreadId,
-            origin: "app_owned",
-            childThreadId,
-            driver: "codex",
-            model: "gpt-5.6-terra",
-            status: "running",
-            result: null,
-            completionDelivery: { state: "pending" },
-          },
-        ],
-      } as unknown as OrchestrationV2ThreadProjection;
+      const parentProjection = () =>
+        ({
+          thread: { id: parentThreadId },
+          runs: [
+            {
+              id: RunId.make("run:mcp-restart-parent"),
+              activeAttemptId: null,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              threadId: parentThreadId,
+              ordinal: 1,
+              status: "running",
+            },
+          ],
+          contextTransfers: [],
+          subagents: [
+            {
+              id: taskId,
+              threadId: parentThreadId,
+              origin: "app_owned",
+              childThreadId,
+              driver: "codex",
+              model: "gpt-5.6-terra",
+              status: publishedResult === null ? "running" : "cancelled",
+              result: publishedResult,
+              completionDelivery: { state: "pending" },
+            },
+          ],
+        }) as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
         thread: { id: childThreadId, title: "Child" },
         runs: [
@@ -405,7 +444,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
-            Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
+            Effect.succeed(threadId === parentThreadId ? parentProjection() : childProjection),
           delegatedTaskResultPending: () =>
             readFails
               ? Effect.fail(new OrchestratorProjectionError({ threadId: childThreadId }))
@@ -449,6 +488,10 @@ describe("OrchestratorMcpService", () => {
         awaitsRestart = false;
         const settled = yield* service.taskStatus(scope, taskId);
         assert.equal(settled.status, "cancelled");
+        assert.equal(yield* Ref.get(dispatched), 0);
+        publishedResult = "The child was cancelled.";
+        const published = yield* service.taskStatus(scope, taskId);
+        assert.equal(published.summary, publishedResult);
         assert.equal(yield* Ref.get(dispatched), 1);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
@@ -1480,11 +1523,13 @@ describe("OrchestratorMcpService provider resolution", () => {
       runs: [
         {
           id: parentRunId,
+          threadId: parentThreadId,
           ordinal: 1,
           status: "running",
           rootNodeId: parentNodeId,
           providerInstanceId: codexInstanceId,
           modelSelection,
+          activeAttemptId: null,
         },
       ],
       contextTransfers: [],
@@ -1504,6 +1549,8 @@ describe("OrchestratorMcpService provider resolution", () => {
 
   it.effect.each([
     "parent completion",
+    "parent completion after its caller settles",
+    "parent completion after its caller is replaced",
     "nested child completion",
     "child run completion",
     "child question",
@@ -1512,17 +1559,21 @@ describe("OrchestratorMcpService provider resolution", () => {
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
       const subscribed = yield* Deferred.make<void>();
+      const observedBy = yield* Ref.make<ReadonlyArray<RunId | null>>([]);
       const nestedId = NodeId.make("node:mcp-wait-nested");
       const childRunId = RunId.make("run:mcp-wait-child");
       const childRootId = NodeId.make("node:mcp-wait-child-root");
-      const eventThreadId = wake === "parent completion" ? parentThreadId : childThreadId;
+      const parentCompletion = wake.startsWith("parent completion");
+      const callerSettled = wake === "parent completion after its caller settles";
+      const callerReplaced = wake === "parent completion after its caller is replaced";
+      const eventThreadId = parentCompletion ? parentThreadId : childThreadId;
       const eventType =
         wake === "child run completion"
           ? "run.updated"
           : wake === "child question" || wake === "child approval"
             ? "runtime-request.updated"
             : "subagent.updated";
-      const terminal = wake.endsWith("completion");
+      const terminal = parentCompletion || wake.endsWith("completion");
       let ready = false;
       const task = () => ({
         id: taskId,
@@ -1535,8 +1586,22 @@ describe("OrchestratorMcpService provider resolution", () => {
         childThreadId,
         model: "gpt-5.4",
         status: ready && terminal ? "completed" : "running",
-        result: ready && wake === "parent completion" ? "done" : null,
+        result: ready && parentCompletion ? "done" : null,
       });
+      const parent = () => {
+        const projection = parentProjection([task()]);
+        if (!ready || !(callerSettled || callerReplaced)) return projection;
+        const run = projection.runs[0]!;
+        return {
+          ...projection,
+          runs: [
+            { ...run, status: "completed" as const },
+            ...(callerReplaced
+              ? [{ ...run, id: RunId.make("run:mcp-wait-successor"), ordinal: 2 }]
+              : []),
+          ],
+        };
+      };
       const child = () =>
         ({
           ...childProjection,
@@ -1576,7 +1641,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
-            Effect.sync(() => (threadId === parentThreadId ? parentProjection([task()]) : child())),
+            Effect.sync(() => (threadId === parentThreadId ? parent() : child())),
           getThreadEventSequence: () => Effect.succeed(0),
           delegatedTaskResultPending: () => Effect.succeed(false),
           streamStoredEventsFrom: (input) =>
@@ -1586,11 +1651,16 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Stream.concat(Stream.fromQueue(events)),
                 )
               : Stream.never,
-          dispatch: () =>
-            Effect.succeed({
-              sequence: 1,
-              storedEvents: [{ event: { type: "subagent.updated", payload: task() } }],
-            } as never),
+          dispatch: (command) =>
+            ("observedByRunId" in command
+              ? Ref.update(observedBy, (ids) => [...ids, command.observedByRunId])
+              : Effect.void
+            ).pipe(
+              Effect.as({
+                sequence: 1,
+                storedEvents: [{ event: { type: "subagent.updated", payload: task() } }],
+              } as never),
+            ),
         }),
         ServerSettings.layerTest(),
         providerRegistryLayer([
@@ -1613,7 +1683,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           .pipe(Effect.forkChild);
         yield* Deferred.await(subscribed);
         ready = true;
-        if (wake === "parent completion") {
+        if (parentCompletion) {
           yield* Queue.offer(events, {
             sequence: 2,
             event: {
@@ -1628,14 +1698,20 @@ describe("OrchestratorMcpService provider resolution", () => {
           event: {
             type: eventType,
             threadId: eventThreadId,
-            payload: { id: wake === "parent completion" ? taskId : nestedId },
+            payload: { id: parentCompletion ? taskId : nestedId },
           },
         } as unknown as OrchestrationV2StoredEvent);
         const result = yield* Fiber.join(waiting);
         assert.isFalse(result.waitTimedOut);
         if (terminal) {
           assert.equal(result.status, "completed");
-          if (wake === "parent completion") assert.equal(result.summary, "done");
+          if (parentCompletion) {
+            assert.equal(result.summary, "done");
+            assert.deepEqual(
+              yield* Ref.get(observedBy),
+              callerSettled || callerReplaced ? [] : [parentRunId],
+            );
+          }
         } else {
           assert.equal(result.status, "running");
           if (wake === "child question") assert.isTrue(result.hasPendingQuestion);

@@ -1,3 +1,4 @@
+import { provenTaskResultReadsSql } from "./taskResultReadEvidence.ts";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
@@ -557,10 +558,12 @@ export interface ProjectionStoreV2Shape {
     runIds: ReadonlyArray<RunId>,
   ) => Effect.Effect<ReadonlyArray<MessageId>, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
-  readonly legacyTaskResultReadAt: (
+  readonly firstProvenTaskResultRead: (
     task: OrchestrationV2Subagent,
-    runId: RunId,
-  ) => Effect.Effect<DateTime.Utc | null, ProjectionStoreV2Error>;
+  ) => Effect.Effect<
+    { readonly runId: RunId; readonly at: DateTime.Utc } | null,
+    ProjectionStoreV2Error
+  >;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
@@ -977,7 +980,9 @@ function preserveCompletionDelivery(
       ? { completionDelivery: current.completionDelivery }
       : {}),
     ...(current.terminalResultObservation === undefined ||
-    (!current.terminalResultObservation.verified && next.terminalResultObservation?.verified)
+    (next.terminalResultObservation?.resultFingerprint !== undefined &&
+      current.terminalResultObservation.resultFingerprint !==
+        next.terminalResultObservation.resultFingerprint)
       ? {}
       : { terminalResultObservation: current.terminalResultObservation }),
   };
@@ -2599,8 +2604,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ELSE excluded.payload_json
                 END,
                   CASE WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation') = 'object'
-                    AND (json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.verified') IS 1
-                      OR json_extract(excluded.payload_json, '$.terminalResultObservation.verified') IS NOT 1)
+                    AND (json_type(excluded.payload_json, '$.terminalResultObservation.resultFingerprint') IS NOT 'text'
+                      OR json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.resultFingerprint') = json_extract(excluded.payload_json, '$.terminalResultObservation.resultFingerprint'))
                     THEN json_object('terminalResultObservation', json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation'))
                     ELSE '{}' END
                 )
@@ -6397,27 +6402,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.map((rows) => rows[0]?.count ?? 0),
         Effect.mapError(controlReadError(threadId)),
       );
-    const legacyTaskResultReadAt: ProjectionStoreV2Shape["legacyTaskResultReadAt"] = (
-      task,
-      runId,
-    ) =>
-      sql<{ at: string }>`
-        WITH first_observer_event AS (
-          SELECT command_id, occurred_at, payload_json FROM orchestration_events
-          WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${task.threadId}
-            AND event_type = 'subagent.updated' AND json_extract(payload_json, '$.id') = ${task.id}
-            AND json_extract(payload_json, '$.completionDelivery.observedByRunId') = ${runId}
-          ORDER BY sequence LIMIT 1
+    const firstProvenTaskResultRead: ProjectionStoreV2Shape["firstProvenTaskResultRead"] = (task) =>
+      sql<{ runId: RunId; at: string }>`
+        WITH first AS MATERIALIZED (
+          SELECT (SELECT json_object('reader',reader,'at',at) FROM (${sql.literal(provenTaskResultReadsSql)})
+            ORDER BY at,read_sequence LIMIT 1) AS evidence FROM orchestration_v2_projection_subagents t
+          WHERE t.thread_id = ${task.threadId} AND t.subagent_id = ${task.id}
         )
-        SELECT e.occurred_at AS at FROM first_observer_event e
-        JOIN orchestration_command_receipts receipt ON receipt.command_id = e.command_id
-        WHERE receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = ${task.threadId} AND receipt.status = 'accepted'
-          AND receipt.command_type IN ('delegated_task.completion-delivery.acknowledge', 'delegated_task.completion-delivery.observe-disposed')
-          AND json_extract(e.payload_json, '$.status') IN ('completed','failed','cancelled','interrupted')
-          AND json_extract(e.payload_json, '$.result') = ${task.result}
-          AND json_extract(e.payload_json, '$.updatedAt') = e.occurred_at
+        SELECT json_extract(evidence,'$.reader') AS runId, json_extract(evidence,'$.at') AS at
+        FROM first WHERE evidence IS NOT NULL
       `.pipe(
-        Effect.map((rows) => (rows[0] ? DateTime.makeUnsafe(rows[0].at) : null)),
+        Effect.map((rows) =>
+          rows[0] ? { runId: rows[0].runId, at: DateTime.makeUnsafe(rows[0].at) } : null,
+        ),
         Effect.mapError(controlReadError(task.threadId)),
       );
     const getSubagentCount: ProjectionStoreV2Shape["getSubagentCount"] = (threadId) =>
@@ -8461,7 +8458,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getMessageIdsInRuns: readOnReader(getMessageIdsInRuns),
       getMessageCount: readOnReader(getMessageCount),
       getSubagentCount: readOnReader(getSubagentCount),
-      legacyTaskResultReadAt: readOnReader(legacyTaskResultReadAt),
+      firstProvenTaskResultRead: readOnReader(firstProvenTaskResultRead),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getThreadRecords: (threadId, fields, filter) =>

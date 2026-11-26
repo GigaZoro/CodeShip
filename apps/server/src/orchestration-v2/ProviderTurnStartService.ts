@@ -766,8 +766,6 @@ export const layer: Layer.Layer<
           projectionStore.getThreadShell,
           exists,
           Effect.fnUntraced(function* (identity: string) {
-            // Verifying a replacement can settle an interrupted hook record.
-            if (input.readOnly) return yield* new ReadOnlyWorktreeRecoveryError();
             const project = yield* lookup;
             if (!project)
               return yield* new WorktreeRecreateBlockedError({

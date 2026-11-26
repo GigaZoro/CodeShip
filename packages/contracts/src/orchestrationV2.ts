@@ -670,6 +670,7 @@ export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Struct({
   state: OrchestrationV2DelegatedCompletionTaskDeliveryState,
   observedByRunId: Schema.NullOr(RunId),
   observedAt: Schema.optional(IsoDateTime),
+  resultFingerprint: Schema.optional(Schema.String),
 });
 export type OrchestrationV2DelegatedCompletionTaskDelivery =
   typeof OrchestrationV2DelegatedCompletionTaskDelivery.Type;
@@ -1133,7 +1134,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
     Schema.Struct({
       runId: RunId,
       at: Schema.DateTimeUtc,
-      verified: Schema.optional(Schema.Literal(true)),
+      resultFingerprint: Schema.optional(Schema.String),
     }),
   ),
   status: Schema.Literals([
@@ -2655,7 +2656,7 @@ export const OrchestrationV2SubagentJson = OrchestrationV2Subagent.mapFields((fi
     Schema.Struct({
       runId: RunId,
       at: Schema.DateTimeUtcFromString,
-      verified: Schema.optional(Schema.Literal(true)),
+      resultFingerprint: Schema.optional(Schema.String),
     }),
   ),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -3793,6 +3794,17 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.completion-delivery.observe"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    taskId: NodeId,
+    observedByRunId: RunId,
+    observedByAttemptId: Schema.NullOr(RunAttemptId),
+    providerInstanceId: ProviderInstanceId,
+    resultFingerprint: Schema.String,
+    source: Schema.Literals(["implicit", "explicit"]),
+  }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.completion-delivery.observe-disposed"),
     commandId: CommandId,

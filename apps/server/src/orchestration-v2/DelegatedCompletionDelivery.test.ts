@@ -17,6 +17,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  RunAttemptId,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -1009,6 +1010,69 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
       }),
   );
 
+  it.effect.each([
+    { source: "explicit", staleAttempt: false, recordsRead: true },
+    { source: "implicit", staleAttempt: false, recordsRead: false },
+    { source: "explicit", staleAttempt: true, recordsRead: false },
+  ] as const)(
+    "resolves an admitted $source read against disposal with stale attempt $staleAttempt",
+    ({ source, staleAttempt, recordsRead }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const now = yield* DateTime.now;
+        const scenario = `disposed-during-read:${source}:${staleAttempt}`;
+        const threadId = ThreadId.make(`thread:${scenario}`);
+        const taskId = NodeId.make(`node:${scenario}`);
+        const runId = RunId.make(`run:${scenario}`);
+        yield* seedParentWithTerminalTask({
+          threadId,
+          taskId,
+          runId,
+          projectId: ProjectId.make(`project:${scenario}`),
+          rootNodeId: NodeId.make(`node:${scenario}:root`),
+          deliveryState: "claimed",
+          now,
+        });
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const read = {
+          type: "delegated_task.completion-delivery.observe",
+          commandId: CommandId.make(`command:${scenario}:observe`),
+          threadId,
+          taskId,
+          observedByRunId: runId,
+          observedByAttemptId: staleAttempt
+            ? RunAttemptId.make("attempt:replaced")
+            : before.runs[0]!.activeAttemptId,
+          providerInstanceId: modelSelection.instanceId,
+          resultFingerprint,
+          source,
+        } as const;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.dispose",
+          commandId: CommandId.make(`command:${scenario}:dispose`),
+          parentThreadId: threadId,
+          taskId,
+        });
+
+        const receipt = yield* orchestrator.dispatch(read);
+
+        const [task] = (yield* orchestrator.getThreadProjection(threadId)).subagents;
+        assert.deepEqual(task?.completionDelivery, {
+          state: "disposed",
+          observedByRunId: recordsRead ? runId : null,
+          ...(recordsRead && { observedAt: DateTime.formatIso(now), resultFingerprint }),
+        });
+        assert.deepEqual(
+          task?.terminalResultObservation,
+          recordsRead ? { runId, at: now, resultFingerprint } : undefined,
+        );
+        assert.deepEqual(
+          receipt.storedEvents.map(({ event }) => event.type),
+          recordsRead ? ["subagent.updated"] : [],
+        );
+      }),
+  );
+
   it.effect(
     "treats repeated acknowledge and dispose with distinct command IDs as successful no-ops",
     () =>
@@ -1070,7 +1134,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         assert.deepEqual(firstAckTask.event.payload.terminalResultObservation, {
           runId,
           at: firstAckTask.event.payload.updatedAt,
-          verified: true,
+          resultFingerprint,
         });
         assert.equal(firstAckTask.event.payload.completionDelivery?.state, "acknowledged");
         assert.equal(secondAckTask.event.payload.completionDelivery?.state, "acknowledged");
@@ -1091,6 +1155,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
             state: "acknowledged",
             observedByRunId: runId,
             observedAt: DateTime.formatIso(firstAckTask.event.payload.updatedAt),
+            resultFingerprint,
           },
         );
 
@@ -1172,7 +1237,8 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
   );
 
   it.effect.each([
-    { state: "acknowledged", legacy: "valid" },
+    { state: "acknowledged", legacy: "timestamp-only" },
+    { state: "acknowledged", legacy: "fingerprinted-command" },
     { state: "acknowledged", legacy: "impossible" },
     { state: "acknowledged", legacy: "prepublication" },
     { state: "disposed", legacy: "valid" },
@@ -1238,14 +1304,21 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
                 completionDelivery: {
                   state,
                   observedByRunId: legacy === "none" ? null : firstRunId,
+                  ...(legacy === "fingerprinted-command" && {
+                    observedAt: DateTime.formatIso(firstRead),
+                  }),
                 },
                 ...(legacy === "prepublication" && {
                   status: "running" as const,
                   result: null,
                   completedAt: null,
                 }),
-                ...(legacy === "impossible" && {
-                  terminalResultObservation: { runId: firstRunId, at: firstRead },
+                ...((legacy === "impossible" || legacy === "timestamp-only") && {
+                  terminalResultObservation: {
+                    runId: firstRunId,
+                    at: firstRead,
+                    verified: true as const,
+                  },
                 }),
                 updatedAt: firstRead,
               },
@@ -1319,14 +1392,18 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         )!.event;
         const recorded = (yield* orchestrator.getThreadProjection(threadId)).subagents[0]!;
         const expectedFirst =
-          legacy === "valid"
+          legacy === "valid" || legacy === "fingerprinted-command"
             ? { runId: firstRunId, at: firstRead }
             : { runId: reader, at: recorded.updatedAt };
-        assert.deepEqual(recorded.terminalResultObservation, { ...expectedFirst, verified: true });
+        assert.deepEqual(recorded.terminalResultObservation, {
+          ...expectedFirst,
+          resultFingerprint,
+        });
         assert.deepEqual(recorded.completionDelivery, {
           state,
           observedByRunId: reader,
           observedAt: DateTime.formatIso(recorded.updatedAt),
+          resultFingerprint,
         });
         assert.deepEqual(applyToProjection(before, event).subagents[0], recorded);
         yield* read("again");
@@ -1415,6 +1492,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
           state: "acknowledged",
           observedByRunId: priorStatus === "completed" ? originalRunId : observingRunId,
           observedAt: (yield* readDelivery())?.observedAt,
+          resultFingerprint,
         });
         const saved = (yield* orchestrator.getThreadProjection(threadId)).subagents[0]!;
         assert.isString(saved.completionDelivery?.observedAt);

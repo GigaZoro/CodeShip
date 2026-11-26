@@ -736,6 +736,7 @@ describe("orchestrator MCP toolkit", () => {
             state: expectedState,
             observedByRunId: observingRun?.id,
             observedAt: expect.any(String),
+            resultFingerprint: expect.any(String),
           };
 
           if (disposedRead === null) {

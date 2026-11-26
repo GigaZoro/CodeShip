@@ -1,5 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- compare a result fingerprint synchronously under the command lock.
-import * as NodeCrypto from "node:crypto";
+import { resultFingerprint } from "./taskResultReadEvidence.ts";
 import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import type {
   GuestShareId,
@@ -765,6 +764,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "provider-session.detach-idle":
     case "run.memory-admit":
     case "run.memory-wait":
+    case "delegated_task.completion-delivery.observe":
     case "delegated_task.completion-delivery.observe-disposed":
     case "message.dispatch":
     case "notification.delivery.accept":
@@ -1009,13 +1009,14 @@ function previousTaskResultObservation(
   )
     return;
   const run = runs.find((r) => r.id === delivery.observedByRunId && r.threadId === task.threadId);
-  const at =
-    delivery.observedAt !== undefined
-      ? DateTime.makeUnsafe(delivery.observedAt)
-      : task.terminalResultObservation?.runId === delivery.observedByRunId
-        ? task.terminalResultObservation.at
-        : undefined;
-  if (run === undefined || at === undefined || !taskResultReadDuringRun(task, run, at)) return;
+  if (
+    run === undefined ||
+    delivery.observedAt === undefined ||
+    delivery.resultFingerprint !== terminalTaskResultFingerprint(task)
+  )
+    return;
+  const at = DateTime.makeUnsafe(delivery.observedAt);
+  if (!taskResultReadDuringRun(task, run, at)) return;
   return { run, at };
 }
 
@@ -1043,7 +1044,7 @@ export function terminalTaskResultFingerprint(
   task: Pick<OrchestrationV2Subagent, "status" | "result">,
 ): string | null {
   if (!isTerminalDelegatedTaskStatus(task.status) || typeof task.result !== "string") return null;
-  return NodeCrypto.createHash("sha256").update(task.result, "utf16le").digest("hex");
+  return resultFingerprint(task.result);
 }
 
 function delegatedTaskTerminalStatus(
@@ -3033,33 +3034,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       observer: RunId | null,
       now: DateTime.Utc,
     ) {
+      const fingerprint = terminalTaskResultFingerprint(task);
+      if (fingerprint === null) return undefined;
       const first = task.terminalResultObservation;
-      if (first?.verified) return first;
-      const firstRun =
-        first && runs.find((run) => run.id === first.runId && run.threadId === task.threadId);
-      if (first && firstRun && taskResultReadDuringRun(task, firstRun, first.at)) {
-        return { ...first, verified: true as const };
-      }
-      const previous = previousTaskResultObservation(task, runs);
-      if (previous !== undefined)
-        return { runId: previous.run.id, at: previous.at, verified: true as const };
-      const priorId = task.completionDelivery?.observedByRunId;
-      if (priorId != null && first === undefined) {
-        const run = runs.find((r) => r.id === priorId && r.threadId === task.threadId);
-        if (run !== undefined) {
-          const at = yield* projectionStore
-            .legacyTaskResultReadAt(task, priorId)
-            .pipe(
-              Effect.mapError(
-                (cause) => new OrchestratorProjectionError({ threadId: task.threadId, cause }),
-              ),
-            );
-          if (at !== null && taskResultReadDuringRun(task, run, at)) {
-            return { runId: run.id, at, verified: true as const };
-          }
+      if (first?.resultFingerprint === fingerprint) return first;
+      const state = task.completionDelivery?.state;
+      if (state === "acknowledged" || state === "disposed") {
+        const prior = yield* projectionStore
+          .firstProvenTaskResultRead(task)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: task.threadId, cause }),
+            ),
+          );
+        const recorded = previousTaskResultObservation(task, runs);
+        if (recorded && (prior === null || DateTime.isLessThan(recorded.at, prior.at))) {
+          return { runId: recorded.run.id, at: recorded.at, resultFingerprint: fingerprint };
         }
+        if (prior !== null) return { ...prior, resultFingerprint: fingerprint };
       }
-      return observer === null ? undefined : { runId: observer, at: now, verified: true as const };
+      return observer === null
+        ? undefined
+        : { runId: observer, at: now, resultFingerprint: fingerprint };
     },
   );
 
@@ -3165,7 +3161,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       completionDelivery: {
         state,
         observedByRunId: verifiedRead ? observingRunId : null,
-        ...(verifiedRead && { observedAt: DateTime.formatIso(now) }),
+        ...(verifiedRead && {
+          observedAt: DateTime.formatIso(now),
+          resultFingerprint: acknowledgement.resultFingerprint,
+        }),
       },
       updatedAt: now,
     };
@@ -3263,72 +3262,99 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
-  const dispatchDisposedTaskResultObservation = Effect.fn(
-    "Orchestrator.dispatchDisposedTaskResultObservation",
-  )(function* (
-    command: Extract<
-      OrchestrationV2InternalCommand,
-      { readonly type: "delegated_task.completion-delivery.observe-disposed" }
-    >,
-    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-  ) {
-    const { subagents } = yield* loadProjectionForCommand(command, ["subagents"], {
-      subagentIds: [command.taskId],
-    });
-    const task = subagents.find(
-      (candidate) =>
-        candidate.id === command.taskId &&
-        candidate.threadId === command.threadId &&
-        candidate.origin === "app_owned",
-    );
-    if (
-      task?.completionDelivery?.state !== "disposed" ||
-      terminalTaskResultFingerprint(task) !== command.resultFingerprint
+  const dispatchTaskResultObservation = Effect.fn("Orchestrator.dispatchTaskResultObservation")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        {
+          readonly type:
+            | "delegated_task.completion-delivery.observe"
+            | "delegated_task.completion-delivery.observe-disposed";
+        }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     ) {
-      return;
-    }
-    const previous = task.completionDelivery.observedByRunId;
-    const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
-      runIds: [command.observedByRunId, previous, task.terminalResultObservation?.runId].filter(
-        (id): id is RunId => id != null,
-      ),
-    });
-    const observer = runs.find((run) => run.id === command.observedByRunId);
-    if (
-      observer?.providerInstanceId !== command.providerInstanceId ||
-      !canRefreshDelegatedTaskObservation(task, runs, observer)
-    ) {
-      return;
-    }
-    const now = yield* DateTime.now;
-    yield* emit(
-      events,
-      command,
-    )({
-      type: "subagent.updated",
-      threadId: task.threadId,
-      ...(task.runId === null ? {} : { runId: task.runId }),
-      nodeId: task.id,
-      driver: task.driver,
-      providerInstanceId: task.providerInstanceId,
-      occurredAt: now,
-      payload: {
-        ...task,
-        terminalResultObservation: yield* firstTaskResultObservation(
-          task,
-          runs,
-          command.observedByRunId,
-          now,
+      const { subagents } = yield* loadProjectionForCommand(command, ["subagents"], {
+        subagentIds: [command.taskId],
+      });
+      const task = subagents.find(
+        (candidate) =>
+          candidate.id === command.taskId &&
+          candidate.threadId === command.threadId &&
+          candidate.origin === "app_owned",
+      );
+      if (task === undefined || terminalTaskResultFingerprint(task) !== command.resultFingerprint)
+        return;
+      const state = task.completionDelivery?.state;
+      const disposedOnly = command.type === "delegated_task.completion-delivery.observe-disposed";
+      if (
+        disposedOnly ? state !== "disposed" : state === "disposed" && command.source === "implicit"
+      )
+        return;
+      const previous = task.completionDelivery?.observedByRunId;
+      const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
+        runIds: [command.observedByRunId, previous, task.terminalResultObservation?.runId].filter(
+          (id): id is RunId => id != null,
         ),
-        completionDelivery: {
-          state: "disposed",
-          observedByRunId: command.observedByRunId,
-          observedAt: DateTime.formatIso(now),
+      });
+      const observer = runs.find((run) => run.id === command.observedByRunId);
+      const now = yield* DateTime.now;
+      if (
+        observer?.providerInstanceId !== command.providerInstanceId ||
+        observer.threadId !== task.threadId ||
+        !isActiveRun(observer) ||
+        (!disposedOnly &&
+          (observer.activeAttemptId !== command.observedByAttemptId ||
+            !taskResultReadDuringRun(task, observer, now)))
+      ) {
+        return;
+      }
+      if (state !== "acknowledged" && state !== "disposed") {
+        yield* dispatchDelegatedTaskCompletionDeliveryResolution(
+          {
+            type: "delegated_task.completion-delivery.acknowledge",
+            commandId: command.commandId,
+            parentThreadId: command.threadId,
+            taskId: command.taskId,
+            observedByRunId: command.observedByRunId,
+            providerInstanceId: command.providerInstanceId,
+            resultFingerprint: command.resultFingerprint,
+          },
+          events,
+        );
+        return;
+      }
+      if (!canRefreshDelegatedTaskObservation(task, runs, observer)) return;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "subagent.updated",
+        threadId: task.threadId,
+        ...(task.runId === null ? {} : { runId: task.runId }),
+        nodeId: task.id,
+        driver: task.driver,
+        providerInstanceId: task.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...task,
+          terminalResultObservation: yield* firstTaskResultObservation(
+            task,
+            runs,
+            command.observedByRunId,
+            now,
+          ),
+          completionDelivery: {
+            state,
+            observedByRunId: command.observedByRunId,
+            observedAt: DateTime.formatIso(now),
+            resultFingerprint: command.resultFingerprint,
+          },
+          updatedAt: now,
         },
-        updatedAt: now,
-      },
-    });
-  });
+      });
+    },
+  );
 
   const disposeDelegatedCompletionCohort = Effect.fn(
     "Orchestrator.disposeDelegatedCompletionCohort",
@@ -15633,8 +15659,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.completion-delivery.dispose":
         yield* dispatchDelegatedTaskCompletionDeliveryResolution(command, events);
         break;
+      case "delegated_task.completion-delivery.observe":
       case "delegated_task.completion-delivery.observe-disposed":
-        yield* dispatchDisposedTaskResultObservation(command, events);
+        yield* dispatchTaskResultObservation(command, events);
         break;
       case "thread.created.record":
         yield* dispatchCreatedThreadRecord(command, events);
@@ -15751,6 +15778,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "delegated_task.remote.complete" ||
           command.type === "thread.message.star" ||
           // Another reader or a run settlement can overtake a result observation.
+          command.type === "delegated_task.completion-delivery.observe" ||
           command.type === "delegated_task.completion-delivery.observe-disposed" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||

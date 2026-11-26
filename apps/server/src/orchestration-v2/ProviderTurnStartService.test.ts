@@ -66,7 +66,11 @@ import {
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { familyHookOperation } from "../vcs/familyWorktreeCheckout.ts";
+import {
+  familyHookOperation,
+  pendingFamilyCheckoutHook,
+  runningFamilyCheckoutHook,
+} from "../vcs/familyWorktreeCheckout.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -2221,7 +2225,7 @@ effectIt.effect(
       const start = Effect.fnUntraced(function* (
         workspaceRoot: string,
         branch: string,
-        originalFamily = false,
+        caller: "new owner" | "original family" | "read-only" = "new owner",
       ) {
         const harness = makeHarness(workspaceRoot);
         const projection = harness.projection();
@@ -2231,7 +2235,7 @@ effectIt.effect(
             ...projection.thread,
             branch,
             projectId: workspaceRoot === project ? projectId : ProjectId.make("new-project"),
-            ...(originalFamily
+            ...(caller === "original family"
               ? {
                   lineage: {
                     parentThreadId: owner,
@@ -2241,6 +2245,9 @@ effectIt.effect(
                 }
               : {}),
           },
+          runs: projection.runs.map((run) =>
+            caller === "read-only" ? { ...run, readOnlyGuestShare: true } : run,
+          ),
         });
         yield* harness.start;
         expect(harness.startTurn.mock.calls).toHaveLength(harness.open.mock.calls.length);
@@ -2276,8 +2283,8 @@ effectIt.effect(
       }
       expect(yield* start(otherProject, "feature-restore")).toBe(0);
       expect(yield* start(project, "feature/restore")).toBe(0);
-      expect(yield* start(project, "feature/restore", true)).toBe(0);
-      expect(yield* start(project, "feature-restore", true)).toBe(0);
+      expect(yield* start(project, "feature/restore", "original family")).toBe(0);
+      expect(yield* start(project, "feature-restore", "original family")).toBe(0);
       yield* fs.writeFileString(
         file + ".released",
         JSON.stringify({ ...(yield* decodeReleaseRequest(contents)), identity: "unknown" }),
@@ -2285,6 +2292,19 @@ effectIt.effect(
       expect(yield* start(project, "feature-restore")).toBe(0);
       yield* fs.writeFileString(file + ".released", contents);
       expect(yield* start(project, "feature-restore")).toBe(1);
+      expect(yield* start(project, "feature-restore", "read-only")).toBe(1);
+      const admin = (yield* git(worktreePath, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+      const head = (yield* git(worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+      const hookRecord = head + "\n" + worktreePath;
+      const pending = path.join(admin, pendingFamilyCheckoutHook);
+      const running = path.join(admin, runningFamilyCheckoutHook);
+      yield* fs.writeFileString(pending, hookRecord);
+      yield* fs.writeFileString(running, hookRecord);
+      expect(yield* start(project, "feature-restore", "read-only")).toBe(0);
+      expect(yield* fs.readFileString(running)).toBe(hookRecord);
+      expect(yield* fs.readFileString(pending)).toBe(hookRecord);
+      yield* fs.remove(running);
+      yield* fs.remove(pending);
       expect(yield* fs.readFileString(file + ".released")).toBe(contents);
       expect(yield* fs.readFileString(path.join(worktreePath, "tracked"))).toBe("new owner's edit");
       yield* git(worktreePath, ["add", "tracked"]);
@@ -2292,7 +2312,7 @@ effectIt.effect(
       yield* git(project, ["worktree", "remove", worktreePath]);
       yield* git(otherProject, ["worktree", "add", "-b", "feature/restore", worktreePath]);
       expect(yield* start(otherProject, "feature/restore")).toBe(1);
-      expect(yield* start(project, "feature/restore", true)).toBe(0);
+      expect(yield* start(project, "feature/restore", "original family")).toBe(0);
       expect(yield* fs.readFileString(file + ".released")).toBe(contents);
       expect(runSetup).not.toHaveBeenCalled();
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
@@ -2507,7 +2527,7 @@ effectIt.effect.each([
 effectIt.effect.each([
   { share: "open", checkout: "missing", blocked: true },
   { share: "closed", checkout: "setup pending", blocked: true },
-  { share: "closed", checkout: "replacement receipt", blocked: true },
+  { share: "closed", checkout: "replacement receipt", blocked: false },
   { share: "open", checkout: "intact", blocked: false },
   { share: "unsupported", checkout: "missing", blocked: true },
 ] as const)(
@@ -2561,7 +2581,7 @@ effectIt.effect.each([
         branch: checkout === "replacement receipt" ? "old-branch" : projection.thread.branch,
         durableRef: "refs/heads/main",
         head: "1".repeat(40),
-        identity: "original",
+        identity: "1/2/3/4",
       });
       if (marker !== null) {
         yield* fs.makeDirectory(directory, { recursive: true });
@@ -2603,7 +2623,18 @@ effectIt.effect.each([
 
       expect(pruneWorktrees).not.toHaveBeenCalled();
       expect(createWorktree).not.toHaveBeenCalled();
-      expect(recoverInterruptedWorktree).not.toHaveBeenCalled();
+      if (checkout === "replacement receipt") {
+        expect(recoverInterruptedWorktree.mock.calls).toEqual([
+          [
+            worktreePath,
+            expect.any(String),
+            projection.thread.branch,
+            { replacementOf: "1/2/3/4" },
+          ],
+        ]);
+      } else {
+        expect(recoverInterruptedWorktree).not.toHaveBeenCalled();
+      }
       expect(runSetup).not.toHaveBeenCalled();
       if (marker !== null) expect(yield* fs.readFileString(marker)).toBe(contents);
       if (blocked) {

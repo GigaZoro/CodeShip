@@ -1,14 +1,21 @@
+import { resultFingerprint } from "../apps/server/src/orchestration-v2/taskResultReadEvidence.ts";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "vitest";
 import { decision, wakeReport } from "./wake-usage.mjs";
 
 function createProjectionTables(db) {
   db.exec(`
-      CREATE TABLE orchestration_v2_projection_runs(run_id,thread_id,payload_json);
+      CREATE TABLE orchestration_v2_projection_runs(run_id,thread_id,payload_json,
+        status AS (json_extract(payload_json,'$.status')), requested_at AS (json_extract(payload_json,'$.requestedAt')),
+        completed_at AS (json_extract(payload_json,'$.completedAt')));
       CREATE TABLE orchestration_v2_projection_messages(message_id,run_id,thread_id,role,created_at,payload_json);
       CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id);
       CREATE TABLE orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json);
-      CREATE TABLE orchestration_v2_projection_subagents(subagent_id,thread_id,updated_at,payload_json);
+      CREATE TABLE orchestration_v2_projection_subagents(subagent_id,thread_id,updated_at,payload_json,
+        status AS (json_extract(payload_json,'$.status')), completed_at AS (json_extract(payload_json,'$.completedAt')),
+        completion_delivery_state AS (json_extract(payload_json,'$.completionDelivery.state')));
+      CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY, command_id, aggregate_kind, stream_id, application_event_version, event_type, occurred_at, payload_json);
+      CREATE TABLE orchestration_command_receipts(command_id PRIMARY KEY, aggregate_kind, aggregate_id, command_type, status);
     `);
 }
 
@@ -41,7 +48,12 @@ it("measures provider starts and uses only prior same-chat observations of every
         status: "completed",
         result: "done",
         terminalResultObservation: { runId: "observer", at: before },
-        completionDelivery: { state: "acknowledged", observedByRunId: "observer" },
+        completionDelivery: {
+          state: "acknowledged",
+          observedByRunId: "observer",
+          observedAt: before,
+          resultFingerprint: resultFingerprint("done"),
+        },
       }),
     );
     for (const [id, thread, ts, tasks] of [
@@ -155,6 +167,57 @@ it("measures provider starts and uses only prior same-chat observations of every
     expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(0);
     observer.run(JSON.stringify({ startedAt: before, completedAt: before, status: "completed" }));
     expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(1);
+    const legacy = {
+      id: "seen",
+      status: "completed",
+      result: "done",
+      completedAt: before,
+      updatedAt: before,
+      terminalResultObservation: { runId: "observer", at: before, verified: true },
+      completionDelivery: { state: "disposed", observedByRunId: "observer" },
+    };
+    db.prepare(
+      "UPDATE orchestration_v2_projection_subagents SET payload_json=? WHERE subagent_id='seen'",
+    ).run(JSON.stringify(legacy));
+    db.prepare(
+      "INSERT INTO orchestration_events VALUES (1,'read','thread','a',2,'subagent.updated',?,?)",
+    ).run(
+      before,
+      JSON.stringify({
+        ...legacy,
+        completionDelivery: { ...legacy.completionDelivery, state: "acknowledged" },
+      }),
+    );
+    db.exec(
+      "INSERT INTO orchestration_command_receipts VALUES ('read','thread','a','delegated_task.completion-delivery.acknowledge','accepted')",
+    );
+    expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(0);
+    db.exec(
+      "UPDATE orchestration_command_receipts SET command_type='delegated_task.completion-delivery.observe-disposed'",
+    );
+    db.prepare("UPDATE orchestration_events SET payload_json=?").run(
+      JSON.stringify({ ...legacy, result: "different" }),
+    );
+    expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(0);
+    db.prepare("UPDATE orchestration_events SET payload_json=?").run(JSON.stringify(legacy));
+    expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(1);
+    const unpaired = "result\ud800\u0000";
+    const textRead = {
+      ...legacy,
+      result: unpaired,
+      completionDelivery: {
+        ...legacy.completionDelivery,
+        observedAt: before,
+        resultFingerprint: resultFingerprint(unpaired),
+      },
+    };
+    const setTask = db.prepare(
+      "UPDATE orchestration_v2_projection_subagents SET payload_json=? WHERE subagent_id='seen'",
+    );
+    setTask.run(JSON.stringify(textRead));
+    expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(1);
+    setTask.run(JSON.stringify({ ...textRead, result: "result\ud801\u0000" }));
+    expect(wakeReport(db, "2026-11-22").chats.a.repeated).toBe(0);
     for (const id of ["d", "e", "f"])
       insert(
         "provider_turns",
@@ -220,7 +283,12 @@ it.each(["completionDelivery", "terminalResultObservation"])(
       );
       const observation =
         source === "completionDelivery"
-          ? { state: "acknowledged", observedByRunId: "wake", observedAt }
+          ? {
+              state: "acknowledged",
+              observedByRunId: "wake",
+              observedAt,
+              resultFingerprint: resultFingerprint("done"),
+            }
           : { at: observedAt, runId: "wake" };
       db.prepare(
         "INSERT INTO orchestration_v2_projection_subagents VALUES ('task','chat',?,?)",
@@ -238,8 +306,17 @@ it.each(["completionDelivery", "terminalResultObservation"])(
             status: "completed",
             result: "done",
             completedAt,
-            terminalResultObservation: { runId: "wake", at: observedAt, verified: true },
-            completionDelivery: { state: "acknowledged", observedByRunId: "later", observedAt },
+            terminalResultObservation: {
+              runId: "wake",
+              at: observedAt,
+              resultFingerprint: resultFingerprint("done"),
+            },
+            completionDelivery: {
+              state: "acknowledged",
+              observedByRunId: "later",
+              observedAt,
+              resultFingerprint: resultFingerprint("done"),
+            },
           }),
         );
         expect(wakeReport(db, day).all).toMatchObject({ wakes: 1, repeated: 0, unknown: 1 });

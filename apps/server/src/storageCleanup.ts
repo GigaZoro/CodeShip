@@ -41,6 +41,11 @@ import { parse as parseYaml } from "yaml";
 import * as ServerConfig from "./config.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
+import {
+  provenTaskResultReadsSql,
+  recordedTaskReadsSql,
+  resultFingerprint,
+} from "./orchestration-v2/taskResultReadEvidence.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
@@ -280,33 +285,15 @@ interface TaskResultCandidate {
   readonly spawningRun: string | null;
   readonly delivery: string | null;
   readonly canCheckWake: number | null;
+  readonly hasRecordedRead: number;
 }
-
-const taskHasCompletedObserver = (sql: SqlClient.SqlClient) => sql`
-  CASE WHEN (t.completion_delivery_state = 'acknowledged' OR (
-      t.completion_delivery_state = 'disposed'
-      AND json_extract(t.payload_json, '$.completionDelivery.state') = 'disposed'
-    )) AND t.status IN ('completed','failed','cancelled','interrupted')
-  THEN EXISTS (
-    SELECT 1 FROM orchestration_v2_projection_runs observer
-    WHERE observer.run_id = json_extract(t.payload_json, '$.completionDelivery.observedByRunId')
-      AND observer.thread_id = t.thread_id AND observer.status = 'completed'
-      AND coalesce(json_extract(t.payload_json, '$.completionDelivery.observedAt'),
-        CASE WHEN json_extract(t.payload_json, '$.terminalResultObservation.runId') = observer.run_id
-          THEN json_extract(t.payload_json, '$.terminalResultObservation.at') END)
-        BETWEEN max(t.completed_at, coalesce(json_extract(observer.payload_json, '$.startedAt'), observer.requested_at))
-          AND observer.completed_at
-  ) AND json_type(t.payload_json, '$.result') IS 'text'
-  ELSE 0 END
-`;
 
 // A cancel, Stop, archive, deleted thread, removed wake or answered launch failure disposes a
 // delivery by decision, and a Stop or archive also ends a wake already delivered, so those results
 // need no reader. Only a result whose spawning run is gone was dropped undecided; it stays held
 // until a completed parent run reads it.
 const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
-  NOT (${taskHasCompletedObserver(sql)})
-  AND NOT (
+  NOT (
     t.status IN ('completed','failed','cancelled','interrupted')
     AND EXISTS (
       SELECT 1 FROM orchestration_v2_projection_runs spawner
@@ -321,6 +308,8 @@ const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
 const taskResultCandidate = (sql: SqlClient.SqlClient) => sql`
   t.subagent_id AS id, t.thread_id AS threadId, t.run_id AS spawningRun,
   t.completion_delivery_state AS delivery,
+  (json_type(t.payload_json, '$.terminalResultObservation.resultFingerprint') IS 'text'
+    OR json_type(t.payload_json, '$.completionDelivery.resultFingerprint') IS 'text') AS hasRecordedRead,
   (t.status IN ('completed','failed','cancelled','interrupted')
     AND t.completion_delivery_state IN ('acknowledged','delivered')
     AND json_type(t.payload_json, '$.result') = 'text') AS canCheckWake
@@ -359,6 +348,23 @@ const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* 
   sql: SqlClient.SqlClient,
   task: TaskResultCandidate,
 ) {
+  if (task.hasRecordedRead && (task.delivery === "acknowledged" || task.delivery === "disposed")) {
+    const reads = yield* sql<{ result_json: string; fingerprint: string }>`
+      ${sql.literal(recordedTaskReadsSql)} AND t.subagent_id = ${task.id} AND t.thread_id = ${task.threadId}
+        AND t.completion_delivery_state = json_extract(t.payload_json,'$.completionDelivery.state')
+        AND observer.status = 'completed'
+    `.pipe(NodeSqliteClient.readOnly);
+    const digest = reads[0] && resultFingerprint(JSON.parse(reads[0].result_json));
+    if (reads.some((read) => read.fingerprint === digest)) return true;
+  }
+  if (task.delivery === "acknowledged" || task.delivery === "disposed") {
+    const rows = yield* sql`SELECT 1 FROM orchestration_v2_projection_subagents t
+      WHERE t.subagent_id = ${task.id} AND t.thread_id = ${task.threadId}
+        AND t.completion_delivery_state = json_extract(t.payload_json,'$.completionDelivery.state')
+        AND EXISTS (SELECT 1 FROM (${sql.literal(provenTaskResultReadsSql)}) WHERE reader_status = 'completed')
+      LIMIT 1`.pipe(NodeSqliteClient.readOnly);
+    if (rows.length !== 0) return true;
+  }
   if (!task.canCheckWake) return false;
   let after = "";
   let soleWake = false;
@@ -891,13 +897,6 @@ const make = Effect.gen(function* () {
     return file === undefined ? null : `has ignored files (${file})`;
   });
 
-  const finalLocalChangesReason = Effect.fn("StorageCleanup.finalLocalChangesReason")(function* (
-    cwd: string,
-    rules: WorktreeCleanupRules,
-  ) {
-    return (yield* localChangesReason(cwd, rules)) ?? (yield* trackedPosixMetadataHold(cwd));
-  });
-
   const submoduleRemoval = Effect.fn("StorageCleanup.submoduleRemoval")(
     function* (cwd: string, rules: WorktreeCleanupRules) {
       const inspect = (args: string[], maxOutputBytes = 64 * 1024) =>
@@ -913,7 +912,7 @@ const make = Effect.gen(function* () {
       const modules = path.join(admin.stdout.replace(/\n$/, ""), "modules");
       const stored = yield* fs.exists(modules);
       if (!stored && !(yield* fs.exists(path.join(cwd, ".gitmodules"))))
-        return { force: false, reason: null };
+        return { force: false, reason: null, paths: [] };
       const populated = yield* inspect([
         "submodule",
         "foreach",
@@ -968,7 +967,7 @@ const make = Effect.gen(function* () {
       }
       // Check files after walking stored history to shorten the gap before forced removal.
       for (const submodule of paths) {
-        const changes = yield* finalLocalChangesReason(submodule, rules);
+        const changes = yield* localChangesReason(submodule, rules);
         if (changes !== null) return { force: false, reason: `submodule ${changes}` };
       }
       const force = stored || paths.length > 0;
@@ -1009,7 +1008,7 @@ const make = Effect.gen(function* () {
           for (const name of names) unchecked.push(path.join(target, name));
         }
       }
-      return { force, reason: null };
+      return { force, reason: null, paths };
     },
     Effect.orElseSucceed(() => ({ force: false, reason: "submodules could not be inspected" })),
   );
@@ -1778,10 +1777,10 @@ const make = Effect.gen(function* () {
           head.commitSha
         )
           return keep("commit changed since check");
-        const finalChanges = release
-          ? yield* releaseHold(release.request, project.workspaceRoot)
-          : yield* finalLocalChangesReason(worktreePath, settings);
-        if (finalChanges !== null) return keep(finalChanges);
+        if (!release) {
+          const changes = yield* localChangesReason(worktreePath, settings);
+          if (changes !== null) return keep(changes);
+        }
         const currentSettings = yield* settingsService.getSettings;
         const current = resolveWorktreeCleanup(currentSettings, thread.projectId);
         if (
@@ -1794,15 +1793,25 @@ const make = Effect.gen(function* () {
         )
           return keep("settings changed since check");
         const submodules = release
-          ? { force: false, reason: null }
+          ? { force: false, reason: null, paths: [] }
           : yield* submoduleRemoval(worktreePath, settings);
         if (submodules.reason !== null) return keep(submodules.reason);
-        // Finish the submodule checks before discarding allowed untracked files.
-        if (!release && settings.worktreeKeepWhen === "tracked-changes")
-          yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
         if (submodules.force) {
           const changes = yield* localChangesReason(worktreePath, settings);
           if (changes !== null) return keep(changes);
+        }
+        if (!release) {
+          // Git status ignores metadata. Inspect every populated checkout after the history
+          // walk and final status checks, before either clean or forced removal can delete data.
+          for (const cwd of [...submodules.paths, worktreePath]) {
+            const hold = yield* trackedPosixMetadataHold(cwd);
+            if (hold !== null) return keep(cwd === worktreePath ? hold : `submodule ${hold}`);
+          }
+          if (!submodules.force && settings.worktreeKeepWhen === "tracked-changes") {
+            yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
+            const hold = yield* trackedPosixMetadataHold(worktreePath);
+            if (hold !== null) return keep(hold);
+          }
         }
         const remove = removeLinkedWorktree({
           operation: "StorageCleanup.cleanupGit",
@@ -1815,10 +1824,14 @@ const make = Effect.gen(function* () {
         });
         if (release) {
           const removeApproved = Effect.gen(function* () {
-            const admissionHold = yield* beginRemoval;
-            if (admissionHold !== null) return admissionHold;
+            // A family command may have changed tracked metadata, ignored files or the checkout
+            // itself while we waited for its lock. Verify the owner's receipt before claiming it.
+            const changed = yield* releaseHold(release.request, project.workspaceRoot);
+            if (changed !== null) return changed;
             const lastHold = yield* blockedSinceCheck();
             if (lastHold !== null) return lastHold;
+            const admissionHold = yield* beginRemoval;
+            if (admissionHold !== null) return admissionHold;
             const base = release.file.replace(/\.releasing$/, "");
             const claimed = base + ".releasing";
             const won =

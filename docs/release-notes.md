@@ -44,7 +44,7 @@
 - Recreating a deleted task branch restores the pull request base recorded at release, including its remote. An owner-recreated branch keeps the base its owner chose.
 - A root chat can release its shared checkout once its subagents and side chats finish and their results arrive. A follow-up from the family or a new fork can recreate the checkout from the project's current base.
 - A task you cancel, and any task of a chat you stop or archive, no longer keeps the checkout. A finished task's result that the chat has not read still keeps it until a completed run reads it.
-- Cleanup checks that the reading run received the published result. A later read can qualify a checkout for release while preserving the time of the first verified read in wake reports.
+- Cleanup checks that the reading run received the published result. If a run ends while it waits for a delegate, its successor can read the result itself. Wake reports retain the time of the first verified read.
 - When cleanup keeps a checkout because a check failed, the reason names the check and its error, or says that it timed out.
 - A family checkout no longer stays held when CodeShip stopped between the two steps that start or finish its post-checkout hook. The next follow-up clears the stale step and runs or reports the hook as usual.
 - A release queued before CodeShip recorded pull request bases asks you to release the checkout again, instead of reporting that the base changed.

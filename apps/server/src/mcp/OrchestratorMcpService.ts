@@ -216,6 +216,19 @@ interface ResolvedTarget {
 }
 
 type TaskResultRead = "implicit" | "task-status" | "full-thread-read";
+type TaskResultReader = Pick<OrchestrationV2Run, "id" | "activeAttemptId">;
+
+// A provider reuses its thread credential across runs. Bind reads to the run at admission.
+function taskResultReader(
+  scope: McpThreadInvocationScope["thread"],
+  parent: Pick<OrchestrationV2ThreadProjection, "runs">,
+): OrchestrationV2Run | undefined {
+  const active = ThreadManagementService.latestActiveRun(parent);
+  return active?.providerInstanceId === scope.providerInstanceId &&
+    active.threadId === scope.threadId
+    ? active
+    : undefined;
+}
 
 type TerminalTaskStatus = Extract<
   OrchestratorMcpDelegateTaskResult["status"],
@@ -1999,97 +2012,74 @@ const make = Effect.gen(function* () {
       ? crypto.randomUUIDv4().pipe(Effect.orDie)
       : Effect.succeed(clientRequestId);
 
-  const acknowledgeTaskResult = Effect.fn("OrchestratorMcpService.acknowledgeTaskResult")(
-    function* (
-      scope: McpThreadInvocationScope,
-      task: OrchestrationV2Subagent,
-      parent: Pick<OrchestrationV2ThreadProjection, "runs">,
-      source: TaskResultRead,
-    ) {
-      const resultFingerprint = terminalTaskResultFingerprint(task);
-      if (resultFingerprint === null) return;
-      const active = ThreadManagementService.latestActiveRun(parent);
-      const observingRun =
-        active?.providerInstanceId === scope.thread.providerInstanceId &&
-        active.threadId === scope.thread.threadId
-          ? active
-          : undefined;
-      const logObservationError = (
-        error: Effect.Error<ReturnType<typeof threadManagement.dispatch>>,
-      ) =>
-        Effect.logError("orchestrator-mcp.task-result-observation-failed", {
-          threadId: scope.thread.threadId,
-          taskId: task.id,
-          source,
-          error: error._tag,
-          cause: error,
-        });
-      if (task.completionDelivery?.state === "disposed") {
-        if (
-          (source !== "task-status" && source !== "full-thread-read") ||
-          observingRun === undefined ||
-          !canRefreshDelegatedTaskObservation(task, parent.runs, observingRun)
-        ) {
-          return;
-        }
-        yield* threadManagement
-          .dispatch({
-            type: "delegated_task.completion-delivery.observe-disposed",
-            commandId: stableCommandId({
-              scope,
-              requestKey: yield* requestKey(undefined),
-              operation: `${source}-observe-disposed-result`,
-            }),
-            threadId: scope.thread.threadId,
-            taskId: task.id,
-            observedByRunId: observingRun.id,
-            providerInstanceId: scope.thread.providerInstanceId,
-            resultFingerprint,
-          })
-          .pipe(Effect.catch(logObservationError));
-        return;
-      }
-      const refresh = task.completionDelivery?.state === "acknowledged";
-      if (refresh && !canRefreshDelegatedTaskObservation(task, parent.runs, observingRun)) {
-        return;
-      }
-      const dispatch = threadManagement.dispatch({
-        type: "delegated_task.completion-delivery.acknowledge",
-        commandId: stableCommandId({
-          scope,
-          requestKey: yield* requestKey(undefined),
-          operation:
-            source === "full-thread-read" ? "thread-read-acknowledge" : "task-status-acknowledge",
-        }),
-        parentThreadId: scope.thread.threadId,
+  const observeTaskResult = Effect.fn("OrchestratorMcpService.observeTaskResult")(function* (
+    scope: McpThreadInvocationScope,
+    task: OrchestrationV2Subagent,
+    parent: Pick<OrchestrationV2ThreadProjection, "runs">,
+    reader: TaskResultReader,
+    source: TaskResultRead,
+  ) {
+    const resultFingerprint = terminalTaskResultFingerprint(task);
+    if (resultFingerprint === null) return;
+    const observingRun = taskResultReader(scope.thread, parent);
+    if (observingRun?.id !== reader.id || observingRun.activeAttemptId !== reader.activeAttemptId)
+      return;
+    const logObservationError = (
+      error: Effect.Error<ReturnType<typeof threadManagement.dispatch>>,
+    ) =>
+      Effect.logError("orchestrator-mcp.task-result-observation-failed", {
+        threadId: scope.thread.threadId,
         taskId: task.id,
-        observedByRunId: observingRun?.id ?? null,
-        providerInstanceId: scope.thread.providerInstanceId,
-        resultFingerprint,
+        source,
+        error: error._tag,
+        cause: error,
       });
-      if (refresh) {
-        yield* dispatch.pipe(Effect.catch(logObservationError));
-        return;
-      }
-      yield* dispatch.pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to acknowledge delegated task ${task.id}: ${errorMessage(error)}`,
-          ),
+    const state = task.completionDelivery?.state;
+    if (state === "disposed" && source === "implicit") return;
+    const refresh = state === "acknowledged" || state === "disposed";
+    if (refresh && !canRefreshDelegatedTaskObservation(task, parent.runs, observingRun)) {
+      return;
+    }
+    const dispatch = threadManagement.dispatch({
+      type: "delegated_task.completion-delivery.observe",
+      commandId: stableCommandId({
+        scope,
+        requestKey: yield* requestKey(undefined),
+        operation: `${source}-observe-result`,
+      }),
+      threadId: scope.thread.threadId,
+      taskId: task.id,
+      observedByRunId: reader.id,
+      observedByAttemptId: reader.activeAttemptId,
+      providerInstanceId: scope.thread.providerInstanceId,
+      resultFingerprint,
+      source: source === "implicit" ? "implicit" : "explicit",
+    });
+    if (refresh) {
+      yield* dispatch.pipe(Effect.catch(logObservationError));
+      return;
+    }
+    yield* dispatch.pipe(
+      Effect.mapError((error) =>
+        failure(
+          "orchestration_error",
+          `Unable to acknowledge delegated task ${task.id}: ${errorMessage(error)}`,
         ),
-      );
-    },
-  );
+      ),
+    );
+  });
 
   const readTask = Effect.fn("OrchestratorMcpService.readTask")(function* (
     scope: McpThreadInvocationScope,
     taskId: NodeId,
     waitTimedOut = false,
-    acknowledgeTerminal: TaskResultRead | false = false,
+    delivery?: "task-status" | TaskResultReader,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     yield* requireCapability(scope);
     const parentProjection = yield* loadTaskParent(scope.thread.threadId, taskId);
+    const reader =
+      delivery === "task-status" ? taskResultReader(scope.thread, parentProjection) : delivery;
+    const source = delivery === "task-status" ? "task-status" : "implicit";
     const task = parentProjection.subagents.find(
       (candidate) =>
         candidate.id === taskId &&
@@ -2107,8 +2097,8 @@ const make = Effect.gen(function* () {
     }
     if (task.childThreadId === null) {
       const result = readRecordedTask(task, waitTimedOut);
-      if (acknowledgeTerminal && isTerminalTaskStatus(result.status)) {
-        yield* acknowledgeTaskResult(scope, task, parentProjection, acknowledgeTerminal);
+      if (reader !== undefined && isTerminalTaskStatus(result.status)) {
+        yield* observeTaskResult(scope, task, parentProjection, reader, source);
       }
       return result;
     }
@@ -2260,8 +2250,8 @@ const make = Effect.gen(function* () {
       endsTaskWait(result) || task.completionDelivery?.state === "disposed"
         ? result
         : { ...result, next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT };
-    if (acknowledgeTerminal && isTerminalTaskStatus(status)) {
-      yield* acknowledgeTaskResult(scope, task, parentProjection, acknowledgeTerminal);
+    if (reader !== undefined && isTerminalTaskStatus(status)) {
+      yield* observeTaskResult(scope, task, parentProjection, reader, source);
     }
     return response;
   });
@@ -2270,13 +2260,14 @@ const make = Effect.gen(function* () {
   const awaitTask = Effect.fn("OrchestratorMcpService.awaitTask")(function* (
     scope: McpThreadInvocationScope,
     taskId: NodeId,
+    reader: TaskResultReader,
     requestedTimeoutMs: number | undefined,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     const timeoutMs = Math.min(
       MAX_WAIT_TIMEOUT_MS,
       Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
     );
-    const waited = yield* waitForTask(scope, taskId, timeoutMs);
+    const waited = yield* waitForTask(scope, taskId, reader, timeoutMs);
     if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) {
       return waited.value;
     }
@@ -2313,7 +2304,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
-    return yield* readTask(scope, taskId, Option.isNone(waited), "implicit");
+    return yield* readTask(scope, taskId, Option.isNone(waited), reader);
   });
 
   /**
@@ -2437,7 +2428,12 @@ const make = Effect.gen(function* () {
   };
 
   const waitForTask = Effect.fn("OrchestratorMcpService.waitForTask")(
-    function* (scope: McpThreadInvocationScope, taskId: NodeId, _timeoutMs: number) {
+    function* (
+      scope: McpThreadInvocationScope,
+      taskId: NodeId,
+      reader: TaskResultReader,
+      _timeoutMs: number,
+    ) {
       const streamError = (error: unknown) =>
         failure(
           "orchestration_error",
@@ -2447,7 +2443,7 @@ const make = Effect.gen(function* () {
       const afterSequence = yield* threadManagement
         .getThreadEventSequence(scope.thread.threadId)
         .pipe(Effect.mapError(streamError));
-      const initial = yield* readTask(scope, taskId, false, "implicit");
+      const initial = yield* readTask(scope, taskId, false, reader);
       if (endsTaskWait(initial)) {
         return Option.some(initial);
       }
@@ -2481,12 +2477,12 @@ const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       ).pipe(
         Stream.mapError(streamError),
-        Stream.mapEffect(() => readTask(scope, taskId, false, "implicit")),
+        Stream.mapEffect(() => readTask(scope, taskId, false, reader)),
         Stream.filter(endsTaskWait),
         Stream.runHead,
       );
     },
-    (effect, _scope, _taskId, timeoutMs) =>
+    (effect, _scope, _taskId, _reader, timeoutMs) =>
       effect.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.map(Option.flatten)),
   );
 
@@ -3588,8 +3584,8 @@ const make = Effect.gen(function* () {
         yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
         yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
         return yield* input.mode === "wait"
-          ? awaitTask(scope, original.id, input.timeoutMs)
-          : readTask(scope, original.id, false, "implicit");
+          ? awaitTask(scope, original.id, parentRun, input.timeoutMs)
+          : readTask(scope, original.id, false, parentRun);
       }
       const environmentId =
         original === undefined
@@ -3603,8 +3599,8 @@ const make = Effect.gen(function* () {
           { key, commandId },
         );
         return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, input.timeoutMs)
-          : readTask(scope, taskId, false, "implicit");
+          ? awaitTask(scope, taskId, parentRun, input.timeoutMs)
+          : readTask(scope, taskId, false, parentRun);
       }
       const foreignProjectId =
         original === undefined &&
@@ -3842,9 +3838,9 @@ const make = Effect.gen(function* () {
       }
 
       if (input.mode !== "wait") {
-        return yield* readTask(scope, taskId, false, "implicit");
+        return yield* readTask(scope, taskId, false, parentRun);
       }
-      return yield* awaitTask(scope, taskId, input.timeoutMs);
+      return yield* awaitTask(scope, taskId, parentRun, input.timeoutMs);
     }),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
@@ -4380,6 +4376,10 @@ const make = Effect.gen(function* () {
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
       const { parent, target, shell } = yield* loadReadableThread(scope, input.threadId);
+      const reader =
+        parent !== undefined && scope.thread !== undefined
+          ? taskResultReader(scope.thread, parent)
+          : undefined;
       const view = input.view ?? "messages";
       const afterPosition = input.afterPosition ?? -1;
       const limit = input.limit ?? DEFAULT_THREAD_READ_LIMIT;
@@ -4430,6 +4430,7 @@ const make = Effect.gen(function* () {
       if (
         parent !== undefined &&
         scope.thread !== undefined &&
+        reader !== undefined &&
         tasks.length > 0 &&
         (input.textOffset ?? 0) === 0
       ) {
@@ -4455,7 +4456,7 @@ const make = Effect.gen(function* () {
             })
           ) {
             const threadScope = scope as McpThreadInvocationScope;
-            yield* acknowledgeTaskResult(threadScope, task, parent, "full-thread-read");
+            yield* observeTaskResult(threadScope, task, parent, reader, "full-thread-read");
           }
         }
       }
