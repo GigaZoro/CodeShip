@@ -89,8 +89,11 @@ per core, slow enough to fail the timeouts they were guarded by.
   own commands can compete for niced CPU time. When a potentially saturated Linux host reports
   niced time, admission measures which threads ran below an incoming command's priority over a
   second sample window. Linux accounts nice per thread and charges kernel time separately.
-  Only observed lower-priority user time is deducted. Unattributed time stays busy, including
-  when thread readings are unavailable. When at least 10% of host CPU time was niced, the
+  Admission counts ambiguous thread identities and work that can raise its own priority as busy.
+  In particular, a worker can inherit its leader's TID and start time during `exec`. A surviving
+  sibling distinguishes a multithreaded leader's own CPU counter across samples. Unavailable
+  readings stay busy. The estimate assumes host administrators leave thread priorities alone
+  during the sample. When at least 10% of host CPU time was niced, the
   queue message gives both the total niced share and the share deducted from busy time.
 - The hold applies only while another `t3_command_run` command of this server is running. With
   none running the first queued command starts whatever the reading: other programs can keep

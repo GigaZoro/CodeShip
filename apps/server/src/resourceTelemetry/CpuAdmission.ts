@@ -160,8 +160,8 @@ export const layer = Layer.effect(
     const sample = Effect.sync(() => cpuTimesOf(NodeOS.cpus()));
     return yield* linux
       ? make(sample, {
-          startYieldingNiceSample: startYieldingNiceSample(
-            NodeOS.getPriority() + AGENT_NICE_INCREMENT,
+          startYieldingNiceSample: Effect.suspend(() =>
+            startYieldingNiceSample(NodeOS.getPriority() + AGENT_NICE_INCREMENT),
           ),
         })
       : make(sample);
