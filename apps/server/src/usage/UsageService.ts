@@ -66,6 +66,7 @@ import {
   type TranscriptPathFailure,
 } from "./usageTranscriptReader.ts";
 import {
+  afterEvictedRead,
   carrySuperseded,
   claimedLegacyScanCacheName,
   decodeScanCache,
@@ -174,6 +175,7 @@ const decodeCacheShape = Schema.decodeUnknownOption(
     models: Schema.Array(Schema.String),
     sessions: Schema.Array(Schema.String),
     importedV11: Schema.optionalKey(Schema.Array(Schema.String)),
+    evictedReads: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
   }),
 );
 
@@ -237,6 +239,10 @@ export const make = Effect.gen(function* () {
     signPayload(usageScanSettingsKey(settings), settingsKeySecret);
 
   const fileCache: ScanCache = new Map();
+  // A peer can publish an arbitrarily old read under a new name, even after compaction.
+  // Keep its per-path cutoff after the records themselves have been evicted.
+  const evictedReads = new Map<string, number>();
+  const unsavedEvictions = new Map<string, number>();
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
   const correctedRecord = (record: UsageRecord) => resolvedRecords.get(record) ?? record;
   const correctedBatch = (records: readonly UsageRecord[]) =>
@@ -244,10 +250,16 @@ export const make = Effect.gen(function* () {
   const sourceCache = new Map<string, CachedSource>();
   /** Monotonic time from which a path whose existence check was abandoned may be checked again. */
   const expiredCheckRetryAt = new Map<string, number>();
-  /** Counts changes to fileCache and sourceCache; a sync writes while it is ahead of the saved one. */
+  /** A sync writes while this generation is ahead of the last durable generation. */
   let generation = 0;
   const observedAt = (filePath: string, nowMs: number) =>
-    Math.max(nowMs, (fileCache.get(filePath)?.observedAtMs ?? -Infinity) + 1);
+    Math.max(
+      nowMs,
+      Math.max(
+        fileCache.get(filePath)?.observedAtMs ?? -Infinity,
+        evictedReads.get(filePath) ?? -Infinity,
+      ) + 1,
+    );
   const isWithinDirectory = (filePath: string, dir: string) => {
     const relative = path.relative(dir, filePath);
     return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
@@ -583,11 +595,11 @@ export const make = Effect.gen(function* () {
       ? Object.keys(sourceRows).length - sources.size
       : null;
     const complete = Option.isSome(shape) && entriesDropped === 0 && sourcesDropped === 0;
-    const imports = Option.getOrUndefined(shape)?.importedV11 ?? [];
-    return { version, entries, sources, imports, complete, entriesDropped, sourcesDropped };
+    const metadata = Option.getOrUndefined(shape);
+    return { version, entries, sources, metadata, complete, entriesDropped, sourcesDropped };
   });
 
-  // Merging only adds or supersedes rows, so a row a scan just stored cannot be lost to disk.
+  // A physical read after an eviction has a later observation time than the saved cutoff.
   // A row that wins unchanged is already saved, unless an older format holds it: a later
   // build may not read that format, so a snapshot of ours saves the row again.
   const mergeIntoMemory = (
@@ -596,10 +608,13 @@ export const make = Effect.gen(function* () {
     durable: boolean,
   ) => {
     let changed = false;
-    for (const [file, incoming] of entries) {
+    for (const [file, row] of entries) {
+      const cutoff = evictedReads.get(file);
+      const incoming = cutoff === undefined ? row : afterEvictedRead(row, cutoff);
+      if (incoming === undefined) continue;
       const held = fileCache.get(file);
       const merged = held === undefined ? incoming : mergeScanEntry(held, incoming);
-      if (durable && merged === incoming) durableFiles.set(file, incoming);
+      if (durable && merged === row) durableFiles.set(file, row);
       if (merged === held) continue;
       fileCache.set(file, merged);
       changed = true;
@@ -634,6 +649,21 @@ export const make = Effect.gen(function* () {
     }
     unreadInputs.delete(file);
     const decoded = yield* decodeDocument(raw.success);
+    if (currentStore && decoded.version === USAGE_SCAN_CACHE_VERSION) {
+      for (const [filePath, throughMs] of Object.entries(decoded.metadata?.evictedReads ?? {})) {
+        if ((unsavedEvictions.get(filePath) ?? Infinity) <= throughMs)
+          unsavedEvictions.delete(filePath);
+        if (throughMs <= (evictedReads.get(filePath) ?? -Infinity)) continue;
+        evictedReads.set(filePath, throughMs);
+        const held = fileCache.get(filePath);
+        if (held !== undefined) {
+          const retained = afterEvictedRead(held, throughMs);
+          if (retained === undefined) fileCache.delete(filePath);
+          else if (retained !== held) fileCache.set(filePath, retained);
+        }
+        generation += 1;
+      }
+    }
     mergeIntoMemory(
       decoded.entries,
       decoded.sources,
@@ -647,7 +677,7 @@ export const make = Effect.gen(function* () {
         if (decoded.version !== USAGE_SCAN_CACHE_VERSION) olderFormatInputs.add(file);
         storedChars.set(file, raw.success.length);
         if (decoded.version === USAGE_SCAN_CACHE_VERSION) {
-          for (const name of decoded.imports) {
+          for (const name of decoded.metadata?.importedV11 ?? []) {
             if (isScanCacheInput(name)) importedV11.add(name);
           }
         }
@@ -701,6 +731,21 @@ export const make = Effect.gen(function* () {
     return false;
   });
 
+  const evictFile = (filePath: string, entry: CachedFile, retentionCutoffMs: number) => {
+    fileCache.delete(filePath);
+    // A cold file read for a historical query can leave the cache immediately. Only an expired
+    // observation or missing period is evidence against an older peer.
+    const throughMs =
+      entry.missingSinceMs !== undefined
+        ? Math.max(entry.missingSinceMs, entry.observedAtMs)
+        : entry.observedAtMs < retentionCutoffMs
+          ? entry.observedAtMs
+          : entry.expiredThroughMs;
+    if (throughMs === undefined || throughMs <= (evictedReads.get(filePath) ?? -Infinity)) return;
+    evictedReads.set(filePath, throughMs);
+    unsavedEvictions.set(filePath, throughMs);
+  };
+
   // An old mtime on a file newly found missing starts deletion retention today. A file still
   // present can lose its cache row once its displaced records have also expired.
   const checkExpiredFiles = Effect.fn("UsageService.checkExpiredFiles")(function* (
@@ -746,7 +791,7 @@ export const make = Effect.gen(function* () {
             if (fileCache.get(filePath) !== entry) return;
             if (exists) {
               if (hasRetainedSuperseded(entry, retentionCutoffMs)) return;
-              fileCache.delete(filePath);
+              evictFile(filePath, entry, retentionCutoffMs);
             } else {
               fileCache.set(filePath, markMissing(entry, nowMs));
             }
@@ -774,9 +819,9 @@ export const make = Effect.gen(function* () {
       if (
         missingSinceMs !== undefined &&
         missingSinceMs < retentionCutoffMs &&
-        entry.superseded === undefined
+        !hasRetainedSuperseded(entry, retentionCutoffMs)
       ) {
-        fileCache.delete(filePath);
+        evictFile(filePath, entry, retentionCutoffMs);
       } else if ((missingSinceMs ?? 0) > nowMs || (presentSinceMs ?? 0) > nowMs) {
         const { missingSinceMs: _missing, presentSinceMs: _present, ...contents } = entry;
         fileCache.set(
@@ -856,13 +901,15 @@ export const make = Effect.gen(function* () {
       !full &&
       changedFiles.length === 0 &&
       changedSources.length === 0 &&
-      unsavedImports.size === 0
+      unsavedImports.size === 0 &&
+      unsavedEvictions.size === 0
     ) {
       savedGeneration = capturedGeneration;
       return true;
     }
     const covered = [...retirable];
     const imports = [...(full ? importedV11 : unsavedImports)];
+    const evictions = new Map(full ? evictedReads : unsavedEvictions);
     snapshotSeq += 1;
     const name = scanCacheSnapshotName(writerId, snapshotSeq);
     const file = path.join(storeDir, name);
@@ -872,6 +919,7 @@ export const make = Effect.gen(function* () {
       scanCacheDocumentPieces(full ? files : changedFiles, {
         sources: Object.fromEntries(full ? sources : changedSources),
         ...(imports.length === 0 ? {} : { importedV11: imports }),
+        ...(evictions.size === 0 ? {} : { evictedReads: Object.fromEntries(evictions) }),
       }),
     ).pipe(Effect.result);
     if (written._tag === "Failure") {
@@ -883,6 +931,9 @@ export const make = Effect.gen(function* () {
     }
     storedChars.set(file, written.success);
     unsavedImports.clear();
+    for (const [filePath, throughMs] of evictions) {
+      if (unsavedEvictions.get(filePath) === throughMs) unsavedEvictions.delete(filePath);
+    }
     savedGeneration = capturedGeneration;
     if (!full) {
       for (const [changed, entry] of changedFiles) durableFiles.set(changed, entry);
@@ -1686,7 +1737,7 @@ export const make = Effect.gen(function* () {
           index === undefined &&
           entry.mtimeMs >= windowStartMs &&
           isRetained(entry, retentionCutoffMs);
-        if (!includeCached && entry.superseded === undefined) continue;
+        if (!includeCached && !hasRetainedSuperseded(entry, retentionCutoffMs)) continue;
         if (index === undefined && !isWithinDirectory(filePath, dir)) continue;
         const superseded = retainedSuperseded(entry, retentionCutoffMs, provider);
         if (index !== undefined) {
