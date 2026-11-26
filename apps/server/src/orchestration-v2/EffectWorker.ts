@@ -300,7 +300,6 @@ export const layerExecutor: Layer.Layer<
                   Effect.gen(function* () {
                     if (
                       error._tag !== "ProviderTurnControlError" ||
-                      !(error.turnCompleted || error.requiresNewTurn) ||
                       effect.request.type !== "provider-turn.steer"
                     ) {
                       return yield* error;
@@ -319,6 +318,7 @@ export const layerExecutor: Layer.Layer<
                         effect.request.providerTurnId,
                         effect.request.messageId,
                       );
+                    if (!(error.turnCompleted || error.requiresNewTurn)) return yield* error;
                     const projection = yield* threads.getThreadRecords(
                       effect.threadId,
                       ["messages", "runs"],

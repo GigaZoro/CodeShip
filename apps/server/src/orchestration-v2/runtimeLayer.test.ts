@@ -73,6 +73,8 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { runMigrations } from "../persistence/Migrations.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
@@ -131,7 +133,7 @@ import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { userFacingDispatchErrorMessage } from "./UserFacingErrors.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerPlatformTest = Layer.mergeAll(
   ProviderSkillsTestkit.layer,
@@ -320,24 +322,32 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
     }),
   );
 
-const layerTest = Layer.mergeAll(
-  RuntimeLayer.layer,
-  RuntimeLayer.layerEventSink,
-  ProjectStore.layer,
-  ProjectionStore.layer,
-  EffectOutbox.layer,
-  ThreadCommandExecutor.layer,
-).pipe(
-  Layer.provide(McpSessionRegistryTestkit.layer),
-  Layer.provide(McpProviderSessions.layer),
-  Layer.provideMerge(SqlitePersistence.layerMemory),
-  Layer.provide(layerCheckpointStoreTest),
-  Layer.provide(layerServerConfig),
-  Layer.provideMerge(ServerSettings.layerTest()),
-  Layer.provide(layerTestProviderInstanceRegistry),
-  Layer.provide(layerGitWorkflowTest),
-  Layer.provide(layerProjectServiceTest),
-  Layer.provide(layerPlatformTest),
+const makeRuntimeTestLayer = (database = SqlitePersistence.layerMemory) =>
+  Layer.mergeAll(
+    RuntimeLayer.layer,
+    RuntimeLayer.layerEventSink,
+    ProjectStore.layer,
+    ProjectionStore.layer,
+    EffectOutbox.layer,
+    ThreadCommandExecutor.layer,
+  ).pipe(
+    Layer.provide(McpSessionRegistryTestkit.layer),
+    Layer.provide(McpProviderSessions.layer),
+    Layer.provideMerge(database),
+    Layer.provide(layerCheckpointStoreTest),
+    Layer.provide(layerServerConfig),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provide(layerTestProviderInstanceRegistry),
+    Layer.provide(layerGitWorkflowTest),
+    Layer.provide(layerProjectServiceTest),
+    Layer.provide(layerPlatformTest),
+  );
+
+const layerTest = makeRuntimeTestLayer();
+const layerBeforeSteerTargetMigration = makeRuntimeTestLayer(
+  Layer.effectDiscard(runMigrations({ toMigrationInclusive: 114 })).pipe(
+    Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+  ),
 );
 
 /** Lets a held automatic start go, as the memory admission queue does once there is room. */
@@ -10309,6 +10319,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "replay-missed",
     "replay-missed-disabled",
     "replay-unrelated",
+    "replay-lost-ack",
+    "replay-missed-failed",
     "setup-expired",
   ] as const)("recovers only the current scheduled occurrence: %s", (scenario) =>
     Effect.gen(function* () {
@@ -10519,6 +10531,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         const run = projection.runs.find((row) => row.userMessageId === command.messageId)!;
         const attempt = projection.attempts.find((row) => row.id === run.activeAttemptId)!;
         const missed = scenario.startsWith("replay-missed");
+        const lostAck = scenario === "replay-lost-ack";
+        const failedTurn = scenario === "replay-missed-failed";
         if (!held) {
           const outbox = yield* EffectOutbox.EffectOutboxV2;
           // The fixture supplies the running provider turn normally created by these start effects.
@@ -10543,29 +10557,48 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           const [delivery] = yield* outbox.listByCommandId(CommandId.make(`${threadId}:change`));
           assert(delivery?.request.type === "provider-turn.steer");
           const request = delivery.request;
-          if (missed) {
-            yield* events.write({
-              events: [
-                {
-                  id: EventId.make(`${threadId}:turn-ended`),
-                  type: "provider-turn.updated",
-                  threadId,
-                  runId: run.id,
-                  occurredAt: now,
-                  payload: { ...providerTurn, status: "completed", completedAt: now },
+          const endTurn = events.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}:turn-ended`),
+                type: "provider-turn.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  ...providerTurn,
+                  status: failedTurn ? "failed" : "completed",
+                  completedAt: now,
                 },
-                {
-                  id: EventId.make(`${threadId}:run-ended`),
-                  type: "run.updated",
-                  threadId,
-                  runId: run.id,
-                  occurredAt: now,
-                  payload: { ...run, status: "completed", completedAt: now },
-                },
-              ],
-            });
-          }
-          if (missed) {
+              },
+              {
+                id: EventId.make(`${threadId}:run-ended`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, status: failedTurn ? "failed" : "completed", completedAt: now },
+              },
+            ],
+          });
+          if (missed) yield* endTurn;
+          if (lostAck)
+            steerTurn.mockReturnValueOnce(
+              endTurn.pipe(
+                Effect.orDie,
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver,
+                      providerThreadId: providerTurn.providerThreadId,
+                      providerTurnId: providerTurn.id,
+                      cause: "acknowledgement lost",
+                    }),
+                  ),
+                ),
+              ),
+            );
+          if (missed || lostAck) {
             const settings = yield* ServerSettings.ServerSettingsService;
             yield* settings.updateSettings({
               providerInstances: {
@@ -10575,14 +10608,20 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           }
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           assert.isTrue(yield* worker.runOnce());
-          assert.equal((yield* outbox.listByCommandId(delivery.commandId))[0]?.status, "succeeded");
+          if (failedTurn) {
+            yield* TestClock.adjust("1 second");
+            assert.isTrue(yield* worker.runOnce());
+          }
+          const settled = (yield* outbox.listByCommandId(delivery.commandId))[0]!;
+          assert.equal(settled.status, failedTurn ? "pending" : "succeeded");
+          assert.equal(settled.attemptCount, failedTurn ? 2 : 1);
           if (missed) assert.isEmpty(steerTurn.mock.calls);
           else assert.equal(steerTurn.mock.calls[0]?.[0].message.messageId, request.messageId);
-          if (missed) {
+          if (missed || lostAck) {
             const afterFallback = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(
               afterFallback.runs.some((candidate) => candidate.userMessageId === request.messageId),
-              scenario !== "replay-missed-disabled",
+              !failedTurn && scenario !== "replay-missed-disabled",
             );
           }
           if (scenario === "replay-unrelated") {
@@ -10628,16 +10667,58 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               threadId,
               runId: run.id,
               occurredAt: now,
-              payload: { ...attempt, status: "completed", completedAt: now },
+              payload: {
+                ...attempt,
+                status: failedTurn ? "failed" : "completed",
+                completedAt: now,
+              },
             },
           ],
         });
+        if (lostAck) {
+          const [oldReplay] =
+            yield* sql`SELECT classification FROM usage_stop_replay WHERE source_key = ${evidenceKey(source.id)}`;
+          assert.equal(oldReplay?.classification, "recovered");
+          assert.deepEqual(yield* sql`SELECT * FROM usage_stop_missed_steers`, []);
+          const followUp = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.userMessageId === MessageId.make(`${threadId}:change`),
+          )!;
+          yield* events.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}:follow-up-completed`),
+                type: "run.updated",
+                threadId,
+                runId: followUp.id,
+                occurredAt: now,
+                payload: { ...followUp, status: "completed", completedAt: now },
+              },
+            ],
+          });
+
+          yield* orchestrator.dispatch({
+            type: "thread.archive",
+            threadId,
+            commandId: CommandId.make(`${threadId}:archive`),
+          });
+          const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+          yield* maintenance.compactEventStore();
+          const compacted = yield* maintenance.compactColdThreadHistory({
+            idleBefore: DateTime.add(now, { days: 1 }),
+          });
+          assert.equal(compacted.threadCount, 1);
+          yield* runMigrations({ toMigrationInclusive: 115 });
+        }
         assert.deepEqual(
           yield* sql`SELECT classification, decisions, attributable_lost_tokens
           FROM usage_stop_replay WHERE source_key = ${evidenceKey(source.id)}`,
           [
             {
-              classification: held || missed ? "recovered" : "unknown",
+              classification: failedTurn
+                ? "failed_attempt"
+                : held || missed
+                  ? "recovered"
+                  : "unknown",
               decisions: 1,
               attributable_lost_tokens: null,
             },
@@ -10806,7 +10887,15 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       assert.isUndefined(
         (yield* projections.getLimitRecoveryCandidates(sweep)).find((row) => row.id === threadId),
       );
-    }).pipe(Effect.provide(scenario.startsWith("replay-") ? Layer.fresh(layerTest) : Layer.empty)),
+    }).pipe(
+      Effect.provide(
+        scenario.startsWith("replay-")
+          ? Layer.fresh(
+              scenario === "replay-lost-ack" ? layerBeforeSteerTargetMigration : layerTest,
+            )
+          : Layer.empty,
+      ),
+    ),
   );
 
   it.effect.each(["still-current", "moved-on", "moved-on-then-lost-more"] as const)(

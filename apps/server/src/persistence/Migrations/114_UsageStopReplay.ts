@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { Fragment } from "effect/sql/Statement";
 
 // Terminal stops use the source run's key. A provider hold belongs to its specific attempt.
 // Older receipts did not preserve that distinction.
@@ -11,11 +12,15 @@ export default Effect.gen(function* () {
     message_id TEXT NOT NULL,
     PRIMARY KEY (provider_turn_id, message_id)
   ) WITHOUT ROWID`;
-  yield* sql`CREATE VIEW usage_stop_replay AS
+  yield* createUsageStopReplay(sql, sql.literal("0"));
+});
+
+export function createUsageStopReplay(sql: SqlClient.SqlClient, uncertainSteering: Fragment) {
+  return sql`CREATE VIEW usage_stop_replay AS
     WITH decisions AS (
       SELECT d.source_key, d.occurrence_key, d.observed_ms,
         CASE
-          WHEN d.occurrence_key IS NULL THEN 4
+          WHEN d.occurrence_key IS NULL OR (${uncertainSteering}) THEN 4
           WHEN attempt.attempt_id IS NOT NULL AND initiating.payload_json ->> 'userMessageId' IS NULL THEN 4
           WHEN EXISTS (
             SELECT 1 FROM orchestration_v2_projection_turn_items steer
@@ -61,4 +66,4 @@ export default Effect.gen(function* () {
       COUNT(*) AS decisions, MIN(observed_ms) AS first_observed_ms,
       NULL AS attributable_lost_tokens
     FROM decisions GROUP BY source_key, occurrence_key`;
-});
+}
