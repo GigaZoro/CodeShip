@@ -70,10 +70,29 @@ export function wakeReport(db, day) {
         ORDER BY ${startEvidence("t")} DESC,t.started_at,t.rowid LIMIT 1)
   `);
   const observed = db.prepare(`
-    SELECT 1 FROM orchestration_v2_projection_subagents s JOIN orchestration_v2_projection_runs r
-      ON r.thread_id=s.thread_id AND r.run_id=coalesce(json_extract(s.payload_json,'$.terminalResultObservation.runId'),json_extract(s.payload_json,'$.completionDelivery.observedByRunId'))
-    WHERE s.subagent_id=? AND s.thread_id=? AND r.run_id != ? AND coalesce(json_extract(s.payload_json,'$.terminalResultObservation.at'),s.updated_at) < ?
-      AND (json_type(s.payload_json,'$.terminalResultObservation.at')='text' OR json_extract(s.payload_json,'$.completionDelivery.state')='acknowledged')
+    WITH task AS (
+      SELECT * FROM orchestration_v2_projection_subagents WHERE subagent_id=? AND thread_id=?
+    ), reads AS (
+      SELECT json_extract(payload_json,'$.terminalResultObservation.runId') AS reader,
+        json_extract(payload_json,'$.terminalResultObservation.at') AS at,
+        json_extract(payload_json,'$.terminalResultObservation.verified') AS verified, 0 AS priority FROM task
+      UNION ALL
+      SELECT json_extract(payload_json,'$.completionDelivery.observedByRunId'),
+        json_extract(payload_json,'$.completionDelivery.observedAt'), 0, 1 FROM task
+      WHERE json_extract(payload_json,'$.completionDelivery.state') IN ('acknowledged','disposed')
+    ), first_read AS (
+    SELECT reads.reader, reads.at FROM reads JOIN task
+      JOIN orchestration_v2_projection_runs r ON r.thread_id=task.thread_id AND r.run_id=reads.reader
+    WHERE reads.verified IS 1 OR (
+        json_extract(task.payload_json,'$.status') IN ('completed','failed','cancelled','interrupted')
+        AND json_type(task.payload_json,'$.result')='text'
+        AND json_extract(task.payload_json,'$.completedAt') <= reads.at
+        AND coalesce(json_extract(r.payload_json,'$.startedAt'),json_extract(r.payload_json,'$.requestedAt')) <= reads.at
+        AND (json_extract(r.payload_json,'$.completedAt') >= reads.at
+          OR json_extract(r.payload_json,'$.status') IN ('preparing','starting','running','waiting'))
+      )
+    ORDER BY reads.priority LIMIT 1
+    ) SELECT 1 FROM first_read WHERE reader != ? AND at < ?
   `);
   // A terminal result arriving while the chat had no other active provider turn could not have been handled by that chat.
   const fresh = db.prepare(`

@@ -732,7 +732,11 @@ describe("orchestrator MCP toolkit", () => {
           });
           const observingRun = afterParentlessRead.runs.find((run) => run.status === "running");
           expect(observingRun).toBeDefined();
-          const expectedDelivery = { state: expectedState, observedByRunId: observingRun?.id };
+          const expectedDelivery = {
+            state: expectedState,
+            observedByRunId: observingRun?.id,
+            observedAt: expect.any(String),
+          };
 
           if (disposedRead === null) {
             yield* orchestrator.dispatch({

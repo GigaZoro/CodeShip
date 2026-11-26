@@ -87,6 +87,11 @@ export const RuntimePolicyV2Override = Schema.Struct({
 });
 export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 
+export const isReadOnlyGuestRun = (
+  thread: Pick<OrchestrationV2AppThread, "guestShare">,
+  run?: Pick<OrchestrationV2Run, "readOnlyGuestShare">,
+): boolean => isReadOnlyGuestShare(thread.guestShare) || run?.readOnlyGuestShare === true;
+
 export interface RuntimePolicyV2Shape {
   readonly resolve: (input: {
     readonly thread: OrchestrationV2AppThread;
@@ -190,8 +195,7 @@ export const layerFromProjectStore: Layer.Layer<
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
-        const readOnly =
-          isReadOnlyGuestShare(input.thread.guestShare) || input.run?.readOnlyGuestShare === true;
+        const readOnly = isReadOnlyGuestRun(input.thread, input.run);
         if (readOnly) {
           const capabilities =
             instance === undefined

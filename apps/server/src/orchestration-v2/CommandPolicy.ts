@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   type OrchestrationV2Command,
+  type OrchestrationV2ConversationMessage,
   OrchestrationV2ProviderCapabilities,
   type OrchestrationV2GoalCommand,
   type OrchestrationV2ProviderGoalStatus,
@@ -57,6 +58,16 @@ type MessageDispatchMode = Extract<
   OrchestrationV2Command,
   { readonly type: "message.dispatch" }
 >["dispatchMode"];
+
+export const typedByPersonInClient = (
+  message: Pick<
+    OrchestrationV2ConversationMessage,
+    "createdBy" | "creationSource" | "scheduledTaskId"
+  >,
+): boolean =>
+  message.createdBy === "user" &&
+  (message.creationSource === "web" || message.creationSource === "mobile") &&
+  message.scheduledTaskId === undefined;
 
 export function isNativeMaintenanceCommand(message: {
   readonly text: string;

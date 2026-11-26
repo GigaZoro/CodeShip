@@ -68,6 +68,7 @@ import {
   releasePath,
   releaseReceiptPath,
   releaseHold,
+  trackedPosixMetadataHold,
   type ReleaseRequest,
 } from "./workspace/worktreeRelease.ts";
 import {
@@ -290,6 +291,11 @@ const taskHasCompletedObserver = (sql: SqlClient.SqlClient) => sql`
     SELECT 1 FROM orchestration_v2_projection_runs observer
     WHERE observer.run_id = json_extract(t.payload_json, '$.completionDelivery.observedByRunId')
       AND observer.thread_id = t.thread_id AND observer.status = 'completed'
+      AND coalesce(json_extract(t.payload_json, '$.completionDelivery.observedAt'),
+        CASE WHEN json_extract(t.payload_json, '$.terminalResultObservation.runId') = observer.run_id
+          THEN json_extract(t.payload_json, '$.terminalResultObservation.at') END)
+        BETWEEN max(t.completed_at, coalesce(json_extract(observer.payload_json, '$.startedAt'), observer.requested_at))
+          AND observer.completed_at
   ) AND json_type(t.payload_json, '$.result') IS 'text'
   ELSE 0 END
 `;
@@ -885,6 +891,13 @@ const make = Effect.gen(function* () {
     return file === undefined ? null : `has ignored files (${file})`;
   });
 
+  const finalLocalChangesReason = Effect.fn("StorageCleanup.finalLocalChangesReason")(function* (
+    cwd: string,
+    rules: WorktreeCleanupRules,
+  ) {
+    return (yield* localChangesReason(cwd, rules)) ?? (yield* trackedPosixMetadataHold(cwd));
+  });
+
   const submoduleRemoval = Effect.fn("StorageCleanup.submoduleRemoval")(
     function* (cwd: string, rules: WorktreeCleanupRules) {
       const inspect = (args: string[], maxOutputBytes = 64 * 1024) =>
@@ -955,7 +968,7 @@ const make = Effect.gen(function* () {
       }
       // Check files after walking stored history to shorten the gap before forced removal.
       for (const submodule of paths) {
-        const changes = yield* localChangesReason(submodule, rules);
+        const changes = yield* finalLocalChangesReason(submodule, rules);
         if (changes !== null) return { force: false, reason: `submodule ${changes}` };
       }
       const force = stored || paths.length > 0;
@@ -1767,7 +1780,7 @@ const make = Effect.gen(function* () {
           return keep("commit changed since check");
         const finalChanges = release
           ? yield* releaseHold(release.request, project.workspaceRoot)
-          : yield* localChangesReason(worktreePath, settings);
+          : yield* finalLocalChangesReason(worktreePath, settings);
         if (finalChanges !== null) return keep(finalChanges);
         const currentSettings = yield* settingsService.getSettings;
         const current = resolveWorktreeCleanup(currentSettings, thread.projectId);
@@ -1780,13 +1793,13 @@ const make = Effect.gen(function* () {
           )
         )
           return keep("settings changed since check");
-        // Clean only untracked files. Ordinary worktrees retain Git's final tracked-edit check.
-        if (!release && settings.worktreeKeepWhen === "tracked-changes")
-          yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
         const submodules = release
           ? { force: false, reason: null }
           : yield* submoduleRemoval(worktreePath, settings);
         if (submodules.reason !== null) return keep(submodules.reason);
+        // Finish the submodule checks before discarding allowed untracked files.
+        if (!release && settings.worktreeKeepWhen === "tracked-changes")
+          yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
         if (submodules.force) {
           const changes = yield* localChangesReason(worktreePath, settings);
           if (changes !== null) return keep(changes);

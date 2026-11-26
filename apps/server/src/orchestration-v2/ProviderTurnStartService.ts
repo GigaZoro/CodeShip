@@ -69,7 +69,8 @@ import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
-import { isActiveRun } from "./CommandPolicy.ts";
+import { isActiveRun, typedByPersonInClient } from "./CommandPolicy.ts";
+import { originalDemandId } from "./demandId.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -147,6 +148,15 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
 ) {
   override get message(): string {
     return `Could not recreate branch '${this.branch}' at ${this.worktreePath}: the project workspace has no commit to start it from.`;
+  }
+}
+
+class ReadOnlyWorktreeRecoveryError extends Schema.TaggedError<ReadOnlyWorktreeRecoveryError>()(
+  "ReadOnlyWorktreeRecoveryError",
+  {},
+) {
+  override get message(): string {
+    return "This workspace needs recovery before it can run read-only. With the read-only guest link closed, the owner can send a new message to recover it.";
   }
 }
 
@@ -738,6 +748,7 @@ export const layer: Layer.Layer<
         readonly thread: OrchestrationV2AppThread;
         readonly worktreePath: string;
         readonly branch: string;
+        readonly readOnly: boolean;
         readonly followUpAt: number | undefined;
       }) {
         const { branch } = input;
@@ -755,6 +766,8 @@ export const layer: Layer.Layer<
           projectionStore.getThreadShell,
           exists,
           Effect.fnUntraced(function* (identity: string) {
+            // Verifying a replacement can settle an interrupted hook record.
+            if (input.readOnly) return yield* new ReadOnlyWorktreeRecoveryError();
             const project = yield* lookup;
             if (!project)
               return yield* new WorktreeRecreateBlockedError({
@@ -779,6 +792,7 @@ export const layer: Layer.Layer<
         const worktreePath = released?.request.family ? canonical : input.worktreePath;
         const restoring = restoringWorktreeFile(directory, canonical);
         if (exists && !released) return;
+        if (input.readOnly) return yield* new ReadOnlyWorktreeRecoveryError();
         const setupPending = released !== null && released.receipt === released.setupReceipt;
         if (
           exists &&
@@ -1301,25 +1315,74 @@ export const layer: Layer.Layer<
         });
         return;
       }
+      // A side chat shares its parent's worktree; the turn that gets its context asks before acting.
+      const resolvedPolicy = yield* runtimePolicy
+        .resolve({
+          thread:
+            projection.thread.lineage.sideChat === true &&
+            (sideChatHandoff !== undefined ||
+              !projection.runs.some((previous) => previous.ordinal < run.ordinal))
+              ? { ...projection.thread, runtimeMode: "approval-required" }
+              : projection.thread,
+          modelSelection: run.modelSelection,
+          run,
+        })
+        .pipe(Effect.result);
+      if (resolvedPolicy._tag === "Failure") {
+        const error = resolvedPolicy.failure;
+        if (error._tag === "RuntimePolicyResolveError") return yield* error;
+        yield* settleStartFailure(
+          error._tag === "RuntimePolicyAboveCeilingError"
+            ? {
+                signal: "runtime-mode-above-ceiling",
+                title: "Thread mode is above the policy limit",
+                error,
+                message: error.message,
+              }
+            : {
+                signal: "read-only-guest-link-unsupported",
+                title: "Provider cannot run read-only",
+                error,
+                message: error.message,
+              },
+        );
+        return;
+      }
+      const resolvedRuntimePolicy = resolvedPolicy.success;
       const { worktreePath, branch } = projection.thread;
       if (
         worktreePath !== null &&
         branch !== null &&
         (yield* isManagedWorktreePath(worktreePath))
       ) {
+        const { thread, runs } = yield* projectionStore.getThreadRecords(
+          projection.thread.id,
+          ["runs"],
+          { runIds: [run.id] },
+        );
+        const current = runs.find((candidate) => candidate.id === run.id);
+        if (current?.activeAttemptId !== attempt.id || current.status !== "starting") return;
+        const { sandboxPolicy } = resolvedRuntimePolicy;
         const recreateResult = yield* Effect.result(
           recreateMissingWorktree({
             thread: projection.thread,
             worktreePath,
             branch,
+            readOnly:
+              RuntimePolicy.isReadOnlyGuestRun(thread, current) ||
+              (Predicate.hasProperty(sandboxPolicy, "type") && sandboxPolicy.type === "readOnly"),
             followUpAt:
-              message.createdBy === "user" &&
+              typedByPersonInClient(message) &&
               message.role === "user" &&
-              !message.scheduledTaskId &&
+              message.context?.guest === undefined &&
               !message.delegatedCompletion &&
+              !message.idleCompaction &&
+              !message.notification &&
               !message.senderThreadId &&
-              !run.automaticContinuationOfRunId &&
-              !run.restartContinuationOfRunId
+              !current.automaticContinuationOfRunId &&
+              !current.restartContinuationOfRunId &&
+              (current.demandId === undefined ||
+                current.demandId === originalDemandId("message", thread.id, message.id))
                 ? DateTime.toEpochMillis(message.createdAt)
                 : undefined,
           }).pipe(
@@ -1329,7 +1392,8 @@ export const layer: Layer.Layer<
               return cause._tag === "WorktreeRecreateNoBaseError" ||
                 cause._tag === "RecoveredWorktreeSetupError" ||
                 cause._tag === "WorktreeReleaseReceiptError" ||
-                cause._tag === "WorktreeRecreateBlockedError"
+                cause._tag === "WorktreeRecreateBlockedError" ||
+                cause._tag === "ReadOnlyWorktreeRecoveryError"
                 ? cause
                 : new WorktreeRecreateError({ worktreePath, branch, cause });
             }),
@@ -1341,8 +1405,27 @@ export const layer: Layer.Layer<
             | WorktreeRecreateError
             | WorktreeRecreateBlockedError
             | WorktreeReleaseReceiptError
-            | RecoveredWorktreeSetupError,
+            | RecoveredWorktreeSetupError
+            | ReadOnlyWorktreeRecoveryError,
         ) {
+          if (error._tag === "ReadOnlyWorktreeRecoveryError") {
+            yield* settleRunBeforeStart({
+              signal: "read-only-worktree-recovery",
+              status: "failed",
+              now: yield* DateTime.now,
+              providerInstanceId: run.providerInstanceId,
+              itemProviderThreadId: run.providerThreadId,
+              item: {
+                type: "error",
+                title: "Workspace needs recovery",
+                failure: makeProviderFailure({
+                  class: "permission_error",
+                  message: error.message,
+                }),
+              },
+            });
+            return;
+          }
           const setupFailed = error._tag === "RecoveredWorktreeSetupError";
           if (retriesLater(error) && (!setupFailed || error.disposition === "retryable"))
             return yield* error;
@@ -1412,40 +1495,6 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
-      // A side chat shares its parent's worktree; the turn that gets its context asks before acting.
-      const resolvedPolicy = yield* runtimePolicy
-        .resolve({
-          thread:
-            projection.thread.lineage.sideChat === true &&
-            (sideChatHandoff !== undefined ||
-              !projection.runs.some((previous) => previous.ordinal < run.ordinal))
-              ? { ...projection.thread, runtimeMode: "approval-required" }
-              : projection.thread,
-          modelSelection: run.modelSelection,
-          run,
-        })
-        .pipe(Effect.result);
-      if (resolvedPolicy._tag === "Failure") {
-        const error = resolvedPolicy.failure;
-        if (error._tag === "RuntimePolicyResolveError") return yield* error;
-        yield* settleStartFailure(
-          error._tag === "RuntimePolicyAboveCeilingError"
-            ? {
-                signal: "runtime-mode-above-ceiling",
-                title: "Thread mode is above the policy limit",
-                error,
-                message: error.message,
-              }
-            : {
-                signal: "read-only-guest-link-unsupported",
-                title: "Provider cannot run read-only",
-                error,
-                message: error.message,
-              },
-        );
-        return;
-      }
-      const resolvedRuntimePolicy = resolvedPolicy.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,

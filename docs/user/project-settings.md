@@ -621,6 +621,9 @@ to **Uncommitted changes**, which protects tracked edits and untracked files but
 files such as `.env` and build output. **Any local files** also protects ignored files other than
 `node_modules`. **Edited tracked files** protects only tracked edits and allows untracked and
 ignored files to be deleted. Branches and thread history stay; starting another turn recreates the checkout.
+On macOS and Linux, cleanup keeps a checkout when a tracked file or directory has metadata
+that Git cannot restore, such as a resource fork, a custom extended attribute or an access
+control list. This also applies to tracked files inside populated submodules.
 Merge cleanup requires a merged pull request whose commits are included in the remote default
 branch. A squash or rebase merge on GitHub also counts when the pull request targeted the default
 branch and the worktree is still at the pull request's last commit.
@@ -698,8 +701,10 @@ changes and switch it back to the expected branch shown in the error. Send a fol
 owning chat to retry setup in this checkout. Keep the setup receipt and saved-file directory
 through recovery. Rollback becomes available after setup finishes.
 
-If Git's post-checkout hook exited with an error, check the hook's changes before retrying it.
-After correcting the cause, send a new message in an owning chat. If the hook's exit could not
+Read-only turns can use an intact checkout. If the checkout needs recovery, an owner must
+start a turn with write access. If Git's post-checkout hook exited with an error, check the
+hook's changes before retrying it. After correcting the cause, send a new message yourself
+in an owning chat. If the hook's exit could not
 be confirmed, CodeShip shows the path of its running record. Inspect the process and checkout on
 the server host before making any change to that record. A running or interrupted hook may have
 already performed some of its actions.

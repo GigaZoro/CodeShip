@@ -669,6 +669,7 @@ export type OrchestrationV2DelegatedCompletionTaskDeliveryState =
 export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Struct({
   state: OrchestrationV2DelegatedCompletionTaskDeliveryState,
   observedByRunId: Schema.NullOr(RunId),
+  observedAt: Schema.optional(IsoDateTime),
 });
 export type OrchestrationV2DelegatedCompletionTaskDelivery =
   typeof OrchestrationV2DelegatedCompletionTaskDelivery.Type;
@@ -1129,7 +1130,11 @@ export const OrchestrationV2Subagent = Schema.Struct({
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   terminalResultObservation: Schema.optional(
-    Schema.Struct({ runId: RunId, at: Schema.DateTimeUtc }),
+    Schema.Struct({
+      runId: RunId,
+      at: Schema.DateTimeUtc,
+      verified: Schema.optional(Schema.Literal(true)),
+    }),
   ),
   status: Schema.Literals([
     "idle",
@@ -2647,7 +2652,11 @@ export type OrchestrationV2ExecutionNodeJson = typeof OrchestrationV2ExecutionNo
 export const OrchestrationV2SubagentJson = OrchestrationV2Subagent.mapFields((fields) => ({
   ...fields,
   terminalResultObservation: Schema.optional(
-    Schema.Struct({ runId: RunId, at: Schema.DateTimeUtcFromString }),
+    Schema.Struct({
+      runId: RunId,
+      at: Schema.DateTimeUtcFromString,
+      verified: Schema.optional(Schema.Literal(true)),
+    }),
   ),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -3754,6 +3763,8 @@ export const OrchestrationV2Command = Schema.Union([
     parentThreadId: ThreadId,
     taskId: NodeId,
     observedByRunId: Schema.NullOr(RunId),
+    providerInstanceId: Schema.optional(ProviderInstanceId),
+    resultFingerprint: Schema.optional(Schema.String),
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.completion-delivery.dispose"),

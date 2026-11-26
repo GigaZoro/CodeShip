@@ -557,6 +557,10 @@ export interface ProjectionStoreV2Shape {
     runIds: ReadonlyArray<RunId>,
   ) => Effect.Effect<ReadonlyArray<MessageId>, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
+  readonly legacyTaskResultReadAt: (
+    task: OrchestrationV2Subagent,
+    runId: RunId,
+  ) => Effect.Effect<DateTime.Utc | null, ProjectionStoreV2Error>;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
@@ -972,7 +976,8 @@ function preserveCompletionDelivery(
     ...(next.completionDelivery === undefined && current.completionDelivery !== undefined
       ? { completionDelivery: current.completionDelivery }
       : {}),
-    ...(current.terminalResultObservation === undefined
+    ...(current.terminalResultObservation === undefined ||
+    (!current.terminalResultObservation.verified && next.terminalResultObservation?.verified)
       ? {}
       : { terminalResultObservation: current.terminalResultObservation }),
   };
@@ -2594,6 +2599,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ELSE excluded.payload_json
                 END,
                   CASE WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation') = 'object'
+                    AND (json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.verified') IS 1
+                      OR json_extract(excluded.payload_json, '$.terminalResultObservation.verified') IS NOT 1)
                     THEN json_object('terminalResultObservation', json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation'))
                     ELSE '{}' END
                 )
@@ -6390,6 +6397,29 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.map((rows) => rows[0]?.count ?? 0),
         Effect.mapError(controlReadError(threadId)),
       );
+    const legacyTaskResultReadAt: ProjectionStoreV2Shape["legacyTaskResultReadAt"] = (
+      task,
+      runId,
+    ) =>
+      sql<{ at: string }>`
+        WITH first_observer_event AS (
+          SELECT command_id, occurred_at, payload_json FROM orchestration_events
+          WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${task.threadId}
+            AND event_type = 'subagent.updated' AND json_extract(payload_json, '$.id') = ${task.id}
+            AND json_extract(payload_json, '$.completionDelivery.observedByRunId') = ${runId}
+          ORDER BY sequence LIMIT 1
+        )
+        SELECT e.occurred_at AS at FROM first_observer_event e
+        JOIN orchestration_command_receipts receipt ON receipt.command_id = e.command_id
+        WHERE receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = ${task.threadId} AND receipt.status = 'accepted'
+          AND receipt.command_type IN ('delegated_task.completion-delivery.acknowledge', 'delegated_task.completion-delivery.observe-disposed')
+          AND json_extract(e.payload_json, '$.status') IN ('completed','failed','cancelled','interrupted')
+          AND json_extract(e.payload_json, '$.result') = ${task.result}
+          AND json_extract(e.payload_json, '$.updatedAt') = e.occurred_at
+      `.pipe(
+        Effect.map((rows) => (rows[0] ? DateTime.makeUnsafe(rows[0].at) : null)),
+        Effect.mapError(controlReadError(task.threadId)),
+      );
     const getSubagentCount: ProjectionStoreV2Shape["getSubagentCount"] = (threadId) =>
       sql<{
         count: number;
@@ -8431,6 +8461,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getMessageIdsInRuns: readOnReader(getMessageIdsInRuns),
       getMessageCount: readOnReader(getMessageCount),
       getSubagentCount: readOnReader(getSubagentCount),
+      legacyTaskResultReadAt: readOnReader(legacyTaskResultReadAt),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getThreadRecords: (threadId, fields, filter) =>

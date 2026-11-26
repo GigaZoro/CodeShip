@@ -127,6 +127,7 @@ import {
   isActiveRun,
   isNativeMaintenanceCommand,
   resolveMessageDispatchIntent,
+  typedByPersonInClient,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
 import {
@@ -981,8 +982,45 @@ function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]
   );
 }
 
+function taskResultReadDuringRun(
+  task: OrchestrationV2Subagent,
+  run: OrchestrationV2Run,
+  at: DateTime.Utc,
+) {
+  return (
+    task.completedAt !== null &&
+    isTerminalDelegatedTaskStatus(task.status) &&
+    typeof task.result === "string" &&
+    DateTime.isGreaterThanOrEqualTo(at, task.completedAt) &&
+    DateTime.isGreaterThanOrEqualTo(at, run.startedAt ?? run.requestedAt) &&
+    (isActiveRun(run) ||
+      (run.completedAt !== null && DateTime.isLessThanOrEqualTo(at, run.completedAt)))
+  );
+}
+
+function previousTaskResultObservation(
+  task: OrchestrationV2Subagent,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+) {
+  const delivery = task.completionDelivery;
+  if (
+    (delivery?.state !== "acknowledged" && delivery?.state !== "disposed") ||
+    delivery.observedByRunId === null
+  )
+    return;
+  const run = runs.find((r) => r.id === delivery.observedByRunId && r.threadId === task.threadId);
+  const at =
+    delivery.observedAt !== undefined
+      ? DateTime.makeUnsafe(delivery.observedAt)
+      : task.terminalResultObservation?.runId === delivery.observedByRunId
+        ? task.terminalResultObservation.at
+        : undefined;
+  if (run === undefined || at === undefined || !taskResultReadDuringRun(task, run, at)) return;
+  return { run, at };
+}
+
 export function canRefreshDelegatedTaskObservation(
-  task: Pick<OrchestrationV2Subagent, "threadId" | "completionDelivery">,
+  task: OrchestrationV2Subagent,
   runs: ReadonlyArray<OrchestrationV2Run>,
   observingRun: OrchestrationV2Run | undefined,
 ): boolean {
@@ -991,32 +1029,20 @@ export function canRefreshDelegatedTaskObservation(
     (delivery?.state !== "acknowledged" && delivery?.state !== "disposed") ||
     observingRun === undefined ||
     observingRun.threadId !== task.threadId ||
-    !isActiveRun(observingRun) ||
-    observingRun.id === delivery.observedByRunId
-  ) {
+    !isActiveRun(observingRun)
+  )
     return false;
-  }
-  if (delivery.observedByRunId === null) return true;
-  const previous = runs.find(
-    (run) => run.id === delivery.observedByRunId && run.threadId === task.threadId,
-  );
+  const previous = previousTaskResultObservation(task, runs);
   return (
-    previous !== undefined &&
-    previous.status !== "completed" &&
-    isOrchestrationV2TerminalRunStatus(previous.status)
+    previous === undefined ||
+    (previous.run.status !== "completed" && isOrchestrationV2TerminalRunStatus(previous.run.status))
   );
 }
 
-export function disposedTaskResultFingerprint(
-  task: Pick<OrchestrationV2Subagent, "completionDelivery" | "status" | "result">,
+export function terminalTaskResultFingerprint(
+  task: Pick<OrchestrationV2Subagent, "status" | "result">,
 ): string | null {
-  if (
-    task.completionDelivery?.state !== "disposed" ||
-    !isTerminalDelegatedTaskStatus(task.status) ||
-    typeof task.result !== "string"
-  ) {
-    return null;
-  }
+  if (!isTerminalDelegatedTaskStatus(task.status) || typeof task.result !== "string") return null;
   return NodeCrypto.createHash("sha256").update(task.result, "utf16le").digest("hex");
 }
 
@@ -1093,17 +1119,6 @@ const withoutMemoryAdmission = (run: OrchestrationV2Run): OrchestrationV2Run => 
   const { memoryAdmission: _earlierWait, ...rest } = run;
   return rest;
 };
-
-/** A message a person typed in a client, not one an agent, the server or a scheduled task sent. */
-const typedByPersonInClient = (
-  command: Pick<
-    OrchestrationV2ConversationMessage,
-    "createdBy" | "creationSource" | "scheduledTaskId"
-  >,
-) =>
-  command.createdBy === "user" &&
-  (command.creationSource === "web" || command.creationSource === "mobile") &&
-  command.scheduledTaskId === undefined;
 
 const sameKnownDemand = (left: string | null | undefined, right: string | null | undefined) =>
   left != null && left === right;
@@ -3011,6 +3026,43 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ),
   );
 
+  const firstTaskResultObservation = Effect.fn("Orchestrator.firstTaskResultObservation")(
+    function* (
+      task: OrchestrationV2Subagent,
+      runs: ReadonlyArray<OrchestrationV2Run>,
+      observer: RunId | null,
+      now: DateTime.Utc,
+    ) {
+      const first = task.terminalResultObservation;
+      if (first?.verified) return first;
+      const firstRun =
+        first && runs.find((run) => run.id === first.runId && run.threadId === task.threadId);
+      if (first && firstRun && taskResultReadDuringRun(task, firstRun, first.at)) {
+        return { ...first, verified: true as const };
+      }
+      const previous = previousTaskResultObservation(task, runs);
+      if (previous !== undefined)
+        return { runId: previous.run.id, at: previous.at, verified: true as const };
+      const priorId = task.completionDelivery?.observedByRunId;
+      if (priorId != null && first === undefined) {
+        const run = runs.find((r) => r.id === priorId && r.threadId === task.threadId);
+        if (run !== undefined) {
+          const at = yield* projectionStore
+            .legacyTaskResultReadAt(task, priorId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestratorProjectionError({ threadId: task.threadId, cause }),
+              ),
+            );
+          if (at !== null && taskResultReadDuringRun(task, run, at)) {
+            return { runId: run.id, at, verified: true as const };
+          }
+        }
+      }
+      return observer === null ? undefined : { runId: observer, at: now, verified: true as const };
+    },
+  );
+
   const dispatchDelegatedTaskCompletionDeliveryResolution = Effect.fn(
     "Orchestrator.dispatchDelegatedTaskCompletionDeliveryResolution",
   )(function* (
@@ -3057,14 +3109,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "delegated_task.completion-delivery.acknowledge"
         ? command.observedByRunId
         : null;
+    const observer = projection.runs.find((run) => run.id === observingRunId);
+    const acknowledgement =
+      command.type === "delegated_task.completion-delivery.acknowledge" ? command : undefined;
+    const readerActive =
+      observer !== undefined && observer.threadId === task.threadId && isActiveRun(observer);
+    const staleRead =
+      acknowledgement !== undefined &&
+      ((observingRunId !== null &&
+        (!readerActive ||
+          (acknowledgement.resultFingerprint !== undefined &&
+            acknowledgement.providerInstanceId !== observer?.providerInstanceId) ||
+          !isTerminalDelegatedTaskStatus(task.status) ||
+          typeof task.result !== "string")) ||
+        (acknowledgement.resultFingerprint !== undefined &&
+          terminalTaskResultFingerprint(task) !== acknowledgement.resultFingerprint));
+    const verifiedRead =
+      acknowledgement?.resultFingerprint !== undefined && readerActive && !staleRead;
     const refreshObservation =
-      command.type === "delegated_task.completion-delivery.acknowledge" &&
+      verifiedRead &&
       task.completionDelivery?.state === "acknowledged" &&
-      canRefreshDelegatedTaskObservation(
-        task,
-        projection.runs,
-        projection.runs.find((run) => run.id === observingRunId),
-      );
+      canRefreshDelegatedTaskObservation(task, projection.runs, observer);
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     // task_status and t3_thread_read use distinct command IDs, so two
@@ -3072,6 +3137,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // existing task row so the second dispatch is a successful idempotent
     // no-op rather than "already acknowledged/disposed" or empty-events.
     if (
+      staleRead ||
       (task.completionDelivery?.state === state && !refreshObservation) ||
       (command.type === "delegated_task.completion-delivery.acknowledge" &&
         task.completionDelivery?.state === "disposed")
@@ -3090,14 +3156,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const updatedTask: OrchestrationV2Subagent = {
       ...task,
-      ...(task.terminalResultObservation === undefined &&
-      command.type === "delegated_task.completion-delivery.acknowledge" &&
-      command.observedByRunId !== null
-        ? { terminalResultObservation: { runId: command.observedByRunId, at: now } }
-        : {}),
+      terminalResultObservation: yield* firstTaskResultObservation(
+        task,
+        projection.runs,
+        verifiedRead ? observingRunId : null,
+        now,
+      ),
       completionDelivery: {
         state,
-        observedByRunId: observingRunId,
+        observedByRunId: verifiedRead ? observingRunId : null,
+        ...(verifiedRead && { observedAt: DateTime.formatIso(now) }),
       },
       updatedAt: now,
     };
@@ -3215,13 +3283,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     if (
       task?.completionDelivery?.state !== "disposed" ||
-      disposedTaskResultFingerprint(task) !== command.resultFingerprint
+      terminalTaskResultFingerprint(task) !== command.resultFingerprint
     ) {
       return;
     }
     const previous = task.completionDelivery.observedByRunId;
     const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
-      runIds: previous === null ? [command.observedByRunId] : [command.observedByRunId, previous],
+      runIds: [command.observedByRunId, previous, task.terminalResultObservation?.runId].filter(
+        (id): id is RunId => id != null,
+      ),
     });
     const observer = runs.find((run) => run.id === command.observedByRunId);
     if (
@@ -3244,7 +3314,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: {
         ...task,
-        completionDelivery: { state: "disposed", observedByRunId: command.observedByRunId },
+        terminalResultObservation: yield* firstTaskResultObservation(
+          task,
+          runs,
+          command.observedByRunId,
+          now,
+        ),
+        completionDelivery: {
+          state: "disposed",
+          observedByRunId: command.observedByRunId,
+          observedAt: DateTime.formatIso(now),
+        },
         updatedAt: now,
       },
     });
@@ -14583,10 +14663,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: childRun.providerThreadId,
         status: terminalStatus,
         result: result.text,
-        ...(task.completionDelivery?.state === "disposed" &&
+        ...((task.completionDelivery?.state === "disposed" ||
+          task.completionDelivery?.state === "acknowledged") &&
         task.completionDelivery.observedByRunId !== null &&
         task.result !== result.text
-          ? { completionDelivery: { state: "disposed" as const, observedByRunId: null } }
+          ? { completionDelivery: { state: task.completionDelivery.state, observedByRunId: null } }
           : {}),
         completedAt: now,
         updatedAt: now,

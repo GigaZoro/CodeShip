@@ -34,14 +34,17 @@
 - The release preserves new build caches, including Astro’s generated data, and other ignored output in a private backup. Run `t3 thread backups <thread-id>` to find the files and their retained allocation, including after a follow-up.
 - On macOS, an ignored build directory can be backed up when its Apple provenance attribute matches the saved copy byte for byte.
 - On Windows, the service keeps the checkout if a tracked file gains an alternate data stream after its owner requests release.
+- On macOS and Linux, cleanup keeps checkouts with tracked metadata that Git cannot restore, including resource forks and extended attributes.
 - Follow-ups show setup progress in the recreated checkout. Interrupted setup can resume, and a failed configure step can retry using the dependencies already installed. CodeShip keeps checkouts with modified dependencies, in-place installs or directory metadata the backup cannot preserve. On macOS and Linux it also checks installed files and setup markers for extended attributes and access control lists.
 
 ## 2026-11-25 — Release a completed family's shared checkout
 
 - If rollback finds a checkout awaiting release recovery, it directs you to send a follow-up in the owning chat. The follow-up restores the checkout before you retry rollback.
+- A read-only guest can use an intact checkout. If recovery requires running setup or a checkout hook, an owner can start it from the owning chat.
 - Recreating a deleted task branch restores the pull request base recorded at release, including its remote. An owner-recreated branch keeps the base its owner chose.
 - A root chat can release its shared checkout once its subagents and side chats finish and their results arrive. A follow-up from the family or a new fork can recreate the checkout from the project's current base.
 - A task you cancel, and any task of a chat you stop or archive, no longer keeps the checkout. A finished task's result that the chat has not read still keeps it until a completed run reads it.
+- Cleanup checks that the reading run received the published result. A later read can qualify a checkout for release while preserving the time of the first verified read in wake reports.
 - When cleanup keeps a checkout because a check failed, the reason names the check and its error, or says that it timed out.
 - A family checkout no longer stays held when CodeShip stopped between the two steps that start or finish its post-checkout hook. The next follow-up clears the stale step and runs or reports the hook as usual.
 - A release queued before CodeShip recorded pull request bases asks you to release the checkout again, instead of reporting that the base changed.

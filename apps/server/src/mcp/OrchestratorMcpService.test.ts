@@ -134,11 +134,23 @@ describe("OrchestratorMcpService", () => {
         const previous = RunId.make("run:mcp-command-first-observer");
         const current = RunId.make("run:mcp-command-next-observer");
         const providerInstanceId = ProviderInstanceId.make("codex");
+        const at = yield* DateTime.now;
         const observations = yield* Ref.make<ReadonlyArray<RunId | null>>([]);
         const parent = {
           thread: { id: threadId },
           runs: [
-            ...(prior === null ? [] : [{ id: previous, status: prior, ordinal: 1, threadId }]),
+            ...(prior === null
+              ? []
+              : [
+                  {
+                    id: previous,
+                    status: prior,
+                    ordinal: 1,
+                    threadId,
+                    startedAt: at,
+                    completedAt: at,
+                  },
+                ]),
             { id: current, status: "running", ordinal: 2, providerInstanceId, threadId },
           ],
           subagents: [
@@ -151,9 +163,12 @@ describe("OrchestratorMcpService", () => {
               providerInstanceId,
               status: "completed",
               result: "command result",
+              completedAt: at,
+              updatedAt: at,
               completionDelivery: {
                 state: "acknowledged",
                 observedByRunId: prior === null ? null : previous,
+                ...(prior !== null && { observedAt: DateTime.formatIso(at) }),
               },
             },
           ],
@@ -228,6 +243,7 @@ describe("OrchestratorMcpService", () => {
             driver: "codex",
             model: "gpt-5.6-terra",
             result: "terminal result",
+            status: "completed",
             completionDelivery: { state: "pending" },
           },
         ],
@@ -1354,6 +1370,7 @@ describe("OrchestratorMcpService.pageIncludesTerminalTaskResult", () => {
           threadId: parentThreadId,
           childThreadId,
           origin: "app_owned",
+          result: delivered.text,
         } as never,
         target: {
           thread: { id: childThreadId },

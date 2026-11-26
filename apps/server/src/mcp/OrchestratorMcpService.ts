@@ -134,7 +134,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import {
   canRefreshDelegatedTaskObservation,
-  disposedTaskResultFingerprint,
+  terminalTaskResultFingerprint,
 } from "../orchestration-v2/Orchestrator.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -215,7 +215,7 @@ interface ResolvedTarget {
   readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined;
 }
 
-type TaskResultRead = "implicit" | "task-status" | "thread-read";
+type TaskResultRead = "implicit" | "task-status" | "full-thread-read";
 
 type TerminalTaskStatus = Extract<
   OrchestratorMcpDelegateTaskResult["status"],
@@ -964,7 +964,7 @@ export function pageIncludesTerminalTaskResult(input: {
     return (
       text !== null &&
       text.length <= textPageEnd(text, 0, input.maxChars) &&
-      (input.task.completionDelivery?.state !== "disposed" || text === input.task.result)
+      text === input.task.result
     );
   });
 }
@@ -2004,8 +2004,10 @@ const make = Effect.gen(function* () {
       scope: McpThreadInvocationScope,
       task: OrchestrationV2Subagent,
       parent: Pick<OrchestrationV2ThreadProjection, "runs">,
-      source: TaskResultRead | "full-thread-read",
+      source: TaskResultRead,
     ) {
+      const resultFingerprint = terminalTaskResultFingerprint(task);
+      if (resultFingerprint === null) return;
       const active = ThreadManagementService.latestActiveRun(parent);
       const observingRun =
         active?.providerInstanceId === scope.thread.providerInstanceId &&
@@ -2030,8 +2032,6 @@ const make = Effect.gen(function* () {
         ) {
           return;
         }
-        const resultFingerprint = disposedTaskResultFingerprint(task);
-        if (resultFingerprint === null) return;
         yield* threadManagement
           .dispatch({
             type: "delegated_task.completion-delivery.observe-disposed",
@@ -2059,11 +2059,13 @@ const make = Effect.gen(function* () {
           scope,
           requestKey: yield* requestKey(undefined),
           operation:
-            source === "thread-read" ? "thread-read-acknowledge" : "task-status-acknowledge",
+            source === "full-thread-read" ? "thread-read-acknowledge" : "task-status-acknowledge",
         }),
         parentThreadId: scope.thread.threadId,
         taskId: task.id,
         observedByRunId: observingRun?.id ?? null,
+        providerInstanceId: scope.thread.providerInstanceId,
+        resultFingerprint,
       });
       if (refresh) {
         yield* dispatch.pipe(Effect.catch(logObservationError));
@@ -4453,11 +4455,7 @@ const make = Effect.gen(function* () {
             })
           ) {
             const threadScope = scope as McpThreadInvocationScope;
-            if (task.completionDelivery?.state === "disposed") {
-              yield* acknowledgeTaskResult(threadScope, task, parent, "full-thread-read");
-            } else {
-              yield* readTask(threadScope, task.id, false, "thread-read");
-            }
+            yield* acknowledgeTaskResult(threadScope, task, parent, "full-thread-read");
           }
         }
       }

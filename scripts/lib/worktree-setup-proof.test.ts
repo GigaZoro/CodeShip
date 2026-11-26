@@ -7,6 +7,69 @@ import * as NodePath from "node:path";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { expect, it } from "vite-plus/test";
 import * as setup from "./worktree-setup-proof.ts";
+import { inspectPosixMetadata } from "./posix-worktree-metadata.ts";
+
+it.skipIf(isWindowsHost)(
+  "inspects tracked parent directories and symlinks without following their targets",
+  async () => {
+    const temp = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "tracked-metadata-"));
+    try {
+      const root = NodePath.join(temp, "checkout");
+      const parent = NodePath.join(root, "nested");
+      const link = NodePath.join(parent, "link");
+      const target = NodePath.join(temp, "external");
+      await NodeFSP.mkdir(parent, { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(root, ".git"), "pointer");
+      await NodeFSP.writeFile(target, "owner");
+      await NodeFSP.symlink(target, link);
+      const inspect = (name = "nested/link", mode = "120000") =>
+        inspectPosixMetadata(
+          root,
+          { tracked: `H ${mode} ${"1".repeat(40)} 0\t${name}\0` },
+          AbortSignal.timeout(10_000),
+        );
+      const setAttribute = (path: string) => {
+        const run = NodeUtil.promisify(NodeChildProcess.execFile);
+        return isDarwinHost
+          ? run("/usr/bin/xattr", ["-sw", "user.codeship", "owner", path])
+          : run("/usr/bin/python3", [
+              "-I",
+              "-c",
+              "import os, sys; os.setxattr(sys.argv[1], 'user.codeship', b'owner', follow_symlinks=False)",
+              path,
+            ]);
+      };
+      await setAttribute(target);
+      expect(await inspect()).toBeDefined();
+      await NodeFSP.unlink(target);
+      expect(await inspect()).toBeDefined();
+      if (isDarwinHost) {
+        await setAttribute(link);
+        await expect(inspect()).rejects.toThrow(/extended attributes.*"nested\/link"/);
+        await NodeFSP.unlink(link);
+        await NodeFSP.symlink(target, link);
+      }
+      const name = "nested/source\nfile";
+      const file = NodePath.join(root, name);
+      await NodeFSP.writeFile(file, "data");
+      await NodeFSP.link(file, target);
+      await expect(inspect(name, "100644")).rejects.toThrow(
+        'unverified hard links at "nested/source\\nfile"',
+      );
+      await NodeFSP.unlink(target);
+      await NodeFSP.chmod(file, 0);
+      await expect(inspect(name, "100644")).rejects.toThrow(
+        /(?:permissions|EACCES).*"nested\/source\\nfile"/,
+      );
+      await NodeFSP.unlink(file);
+      await expect(inspect(name, "100644")).rejects.toThrow(/ENOENT.*"nested\/source\\nfile"/);
+      await setAttribute(parent);
+      await expect(inspect()).rejects.toThrow(/extended attributes.*"nested"/);
+    } finally {
+      await NodeFSP.rm(temp, { recursive: true, force: true });
+    }
+  },
+);
 
 it("reports a whole added cache subtree and rejects simultaneous edits to installed files", async () => {
   const cwd = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "setup-proof-"));

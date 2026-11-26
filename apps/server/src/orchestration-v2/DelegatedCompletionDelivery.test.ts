@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -44,6 +45,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { applyToProjection } from "./ProjectionStore.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
@@ -63,6 +65,10 @@ const layerPlatformTest = Layer.mergeAll(
 const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-orchestration-v2-delegated-completion-",
 });
+
+const resultFingerprint = NodeCrypto.createHash("sha256")
+  .update("child finished", "utf16le")
+  .digest("hex");
 
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -165,6 +171,8 @@ const seedParentWithTerminalTask = (input: {
   readonly completionWake?: "always" | "settled_only";
   readonly deliveryTaskIds?: ReadonlyArray<NodeId>;
   readonly parentRunStatus?: "running" | "completed";
+  readonly taskStatus?: "running" | "completed";
+  readonly taskResult?: string | null;
   readonly siblingTasks?: ReadonlyArray<{
     readonly id: NodeId;
     readonly deliveryState: "delivered" | "claimed";
@@ -303,8 +311,8 @@ const seedParentWithTerminalTask = (input: {
               state: task.deliveryState,
               observedByRunId: task.deliveryState === "acknowledged" ? input.runId : null,
             },
-            status: "completed" as const,
-            result: "child finished",
+            status: input.taskStatus ?? ("completed" as const),
+            result: input.taskResult === undefined ? "child finished" : input.taskResult,
             startedAt: input.now,
             completedAt: input.now,
             updatedAt: input.now,
@@ -962,6 +970,45 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
     }),
   );
 
+  it.effect.each(["settled", "foreign", "provider", "unpublished", "working", "changed"] as const)(
+    "does not resolve a delivery on a stale or unverified %s result read",
+    (scenario) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:invalid-read-${scenario}`);
+        const runId = RunId.make(`run:${threadId}`);
+        const taskId = NodeId.make(`node:${threadId}:task`);
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId: ProjectId.make(`project:${threadId}`),
+          rootNodeId: NodeId.make(`node:${threadId}:root`),
+          runId,
+          taskId,
+          deliveryState: "claimed",
+          parentRunStatus: scenario === "settled" ? "completed" : "running",
+          taskStatus: scenario === "working" ? "running" : "completed",
+          taskResult: scenario === "unpublished" ? null : "child finished",
+          now,
+        });
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make(`command:${threadId}:ack`),
+          parentThreadId: threadId,
+          taskId,
+          observedByRunId: scenario === "foreign" ? RunId.make("foreign") : runId,
+          providerInstanceId:
+            scenario === "provider" ? ProviderInstanceId.make("other") : modelSelection.instanceId,
+          resultFingerprint: NodeCrypto.createHash("sha256")
+            .update(scenario === "changed" ? "old result" : "child finished", "utf16le")
+            .digest("hex"),
+        });
+        const [task] = (yield* orchestrator.getThreadProjection(threadId)).subagents;
+        assert.deepEqual(task?.completionDelivery, { state: "claimed", observedByRunId: null });
+        assert.isUndefined(task?.terminalResultObservation);
+      }),
+  );
+
   it.effect(
     "treats repeated acknowledge and dispose with distinct command IDs as successful no-ops",
     () =>
@@ -991,6 +1038,8 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
           parentThreadId: threadId,
           taskId,
           observedByRunId: runId,
+          providerInstanceId: modelSelection.instanceId,
+          resultFingerprint,
         });
         const secondAck = yield* orchestrator.dispatch({
           type: "delegated_task.completion-delivery.acknowledge",
@@ -998,6 +1047,8 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
           parentThreadId: threadId,
           taskId,
           observedByRunId: runId,
+          providerInstanceId: modelSelection.instanceId,
+          resultFingerprint,
         });
 
         const firstAckTask = firstAck.storedEvents.find(
@@ -1019,6 +1070,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         assert.deepEqual(firstAckTask.event.payload.terminalResultObservation, {
           runId,
           at: firstAckTask.event.payload.updatedAt,
+          verified: true,
         });
         assert.equal(firstAckTask.event.payload.completionDelivery?.state, "acknowledged");
         assert.equal(secondAckTask.event.payload.completionDelivery?.state, "acknowledged");
@@ -1038,6 +1090,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
           {
             state: "acknowledged",
             observedByRunId: runId,
+            observedAt: DateTime.formatIso(firstAckTask.event.payload.updatedAt),
           },
         );
 
@@ -1118,6 +1171,172 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
       }),
   );
 
+  it.effect.each([
+    { state: "acknowledged", legacy: "valid" },
+    { state: "acknowledged", legacy: "impossible" },
+    { state: "acknowledged", legacy: "prepublication" },
+    { state: "disposed", legacy: "valid" },
+    { state: "disposed", legacy: "none" },
+  ] as const)(
+    "preserves the first verified read of a $state result with $legacy legacy evidence",
+    ({ state, legacy }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const published = DateTime.subtract(now, { minutes: 5 });
+        const firstRead = DateTime.subtract(now, { minutes: 3 });
+        const settled = DateTime.subtract(now, { minutes: legacy === "impossible" ? 4 : 2 });
+        const threadId = ThreadId.make(`thread:first-read-${state}-${legacy}`);
+        const firstRunId = RunId.make(`run:${threadId}:first`);
+        const reader = RunId.make(`run:${threadId}:reader`);
+        const taskId = NodeId.make(`node:${threadId}:task`);
+        yield* seedParentWithTerminalTask({
+          threadId,
+          runId: firstRunId,
+          taskId,
+          projectId: ProjectId.make(`project:${threadId}`),
+          rootNodeId: NodeId.make(`node:${threadId}:root`),
+          now: published,
+          deliveryState: "delivered",
+        });
+        const seed = yield* orchestrator.getThreadProjection(threadId);
+        const run = seed.runs[0]!;
+        const task = seed.subagents[0]!;
+        yield* sink.commitCommand({
+          commandType:
+            state === "disposed"
+              ? "delegated_task.completion-delivery.observe-disposed"
+              : "delegated_task.completion-delivery.acknowledge",
+          acceptedAt: firstRead,
+          threadId,
+          effects: [],
+          commandId: CommandId.make(`command:${threadId}:seed-reader`),
+          events: [
+            {
+              id: EventId.make(`event:${threadId}:first`),
+              type: "run.updated",
+              threadId,
+              runId: firstRunId,
+              occurredAt: settled,
+              payload: {
+                ...run,
+                status:
+                  legacy === "impossible" || legacy === "prepublication" ? "completed" : "failed",
+                completedAt: settled,
+              },
+            },
+            {
+              id: EventId.make(`event:${threadId}:task`),
+              type: "subagent.updated",
+              threadId,
+              nodeId: taskId,
+              driver,
+              occurredAt: firstRead,
+              payload: {
+                ...task,
+                completionDelivery: {
+                  state,
+                  observedByRunId: legacy === "none" ? null : firstRunId,
+                },
+                ...(legacy === "prepublication" && {
+                  status: "running" as const,
+                  result: null,
+                  completedAt: null,
+                }),
+                ...(legacy === "impossible" && {
+                  terminalResultObservation: { runId: firstRunId, at: firstRead },
+                }),
+                updatedAt: firstRead,
+              },
+            },
+            {
+              id: EventId.make(`event:${threadId}:reader`),
+              type: "run.created",
+              threadId,
+              runId: reader,
+              occurredAt: now,
+              payload: {
+                ...run,
+                id: reader,
+                ordinal: 2,
+                requestedAt: now,
+                startedAt: now,
+                userMessageId: MessageId.make(`message:${threadId}:reader`),
+              },
+            },
+          ],
+        });
+        if (legacy === "prepublication") {
+          // Publishing the result carries the earlier acknowledgement onto the terminal row.
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`event:${threadId}:published`),
+                type: "subagent.updated",
+                threadId,
+                nodeId: taskId,
+                driver,
+                occurredAt: settled,
+                payload: {
+                  ...task,
+                  completedAt: settled,
+                  updatedAt: settled,
+                  completionDelivery: { state, observedByRunId: firstRunId },
+                },
+              },
+            ],
+          });
+        }
+        const read = (suffix: string) => {
+          const commandId = CommandId.make(`command:${threadId}:read-${suffix}`);
+          return orchestrator.dispatch(
+            state === "disposed"
+              ? {
+                  type: "delegated_task.completion-delivery.observe-disposed",
+                  commandId,
+                  threadId,
+                  taskId,
+                  providerInstanceId: modelSelection.instanceId,
+                  observedByRunId: reader,
+                  resultFingerprint,
+                }
+              : {
+                  type: "delegated_task.completion-delivery.acknowledge",
+                  commandId,
+                  parentThreadId: threadId,
+                  taskId,
+                  providerInstanceId: modelSelection.instanceId,
+                  observedByRunId: reader,
+                  resultFingerprint,
+                },
+          );
+        };
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const accepted = yield* read("first");
+        const event = accepted.storedEvents.find(
+          (entry) => entry.event.type === "subagent.updated",
+        )!.event;
+        const recorded = (yield* orchestrator.getThreadProjection(threadId)).subagents[0]!;
+        const expectedFirst =
+          legacy === "valid"
+            ? { runId: firstRunId, at: firstRead }
+            : { runId: reader, at: recorded.updatedAt };
+        assert.deepEqual(recorded.terminalResultObservation, { ...expectedFirst, verified: true });
+        assert.deepEqual(recorded.completionDelivery, {
+          state,
+          observedByRunId: reader,
+          observedAt: DateTime.formatIso(recorded.updatedAt),
+        });
+        assert.deepEqual(applyToProjection(before, event).subagents[0], recorded);
+        yield* read("again");
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).subagents[0],
+          recorded,
+        );
+      }),
+  );
+
   it.effect.each([null, "failed", "completed"] as const)(
     "records a later explicit observation with a prior observer of status %s",
     (priorStatus) =>
@@ -1145,8 +1364,13 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
             parentThreadId: threadId,
             taskId,
             observedByRunId,
+            providerInstanceId: modelSelection.instanceId,
+            resultFingerprint,
           });
         yield* acknowledge("first", priorStatus === null ? null : originalRunId);
+        const first = (yield* orchestrator.getThreadProjection(threadId)).subagents[0]!
+          .terminalResultObservation;
+        const settledAt = yield* DateTime.now;
         const original = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
         const observing = {
           ...original,
@@ -1163,7 +1387,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
               threadId,
               runId: originalRunId,
               occurredAt: now,
-              payload: { ...original, status: priorStatus ?? "completed", completedAt: now },
+              payload: { ...original, status: priorStatus ?? "completed", completedAt: settledAt },
             },
             {
               id: EventId.make(`event:${threadId}:observing`),
@@ -1190,7 +1414,12 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         assert.deepEqual(yield* readDelivery(), {
           state: "acknowledged",
           observedByRunId: priorStatus === "completed" ? originalRunId : observingRunId,
+          observedAt: (yield* readDelivery())?.observedAt,
         });
+        const saved = (yield* orchestrator.getThreadProjection(threadId)).subagents[0]!;
+        assert.isString(saved.completionDelivery?.observedAt);
+        if (first !== undefined) assert.deepEqual(saved.terminalResultObservation, first);
+        else assert.equal(saved.terminalResultObservation?.runId, observingRunId);
       }),
   );
 

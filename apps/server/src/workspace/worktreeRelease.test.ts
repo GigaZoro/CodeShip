@@ -385,6 +385,48 @@ const queueRelease = (fixture: { root: string; checkout: string }, runId = "fini
     });
   });
 
+it.live.skipIf(isWindowsHost)(
+  "retains metadata already on a tracked file when release is queued",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* sealedCheckout();
+      const { fs, path, checkout, project } = fixture;
+      const tracked = path.join(checkout, ".gitignore");
+      const darwin = (yield* HostProcess.Platform) === "darwin";
+      const fork = tracked + "/..namedfork/rsrc";
+      if (darwin) yield* fs.writeFileString(fork, "owner data");
+      else
+        yield* Effect.tryPromise(() =>
+          runFile("/usr/bin/python3", [
+            "-I",
+            "-c",
+            "import os,sys; os.setxattr(sys.argv[1], 'user.codeship', b'owner data')",
+            tracked,
+          ]),
+        );
+      const release = yield* queueRelease(fixture);
+      const request = yield* decodeReleaseRequest(yield* fs.readFileString(release.file));
+      expect(yield* releaseHold(request, project)).toContain(
+        darwin ? 'resource fork at ".gitignore"' : 'extended attributes or ACL at ".gitignore"',
+      );
+      if (darwin) {
+        expect(yield* fs.readFileString(fork)).toBe("owner data");
+        yield* Effect.tryPromise(() =>
+          runFile("/usr/bin/xattr", ["-d", "com.apple.ResourceFork", tracked]),
+        );
+      } else
+        yield* Effect.tryPromise(() =>
+          runFile("/usr/bin/python3", [
+            "-I",
+            "-c",
+            "import os,sys; assert os.getxattr(sys.argv[1], 'user.codeship') == b'owner data'; os.removexattr(sys.argv[1], 'user.codeship')",
+            tracked,
+          ]),
+        );
+      expect(yield* releaseHold(request, project)).toBeNull();
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
 it.live("holds a newly set pull request base after an absent base was queued", () =>
   Effect.gen(function* () {
     const fixture = yield* sealedCheckout();

@@ -35,6 +35,7 @@ export {
   type ReleaseRequest,
 } from "./worktreeReleaseReceipt.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { inspectPosixMetadata } from "../../../../scripts/lib/posix-worktree-metadata.ts";
 import {
   hasSetupOnlyStatus,
   inspectSetupProof,
@@ -361,6 +362,43 @@ const readGit = Effect.fn("WorktreeRelease.readGit")(function* (
     });
   return result.stdout;
 });
+
+const trackedIndex = (cwd: string) =>
+  readGit(cwd, ["ls-files", "-v", "--stage", "-z"], { maxOutputBytes: 64 * 1024 * 1024 });
+
+export const trackedPosixMetadataHold = Effect.fn("WorktreeRelease.trackedPosixMetadataHold")(
+  function* (cwd: string, index?: string) {
+    if (windowsSetupHost) return null;
+    const records = index ?? (yield* trackedIndex(cwd));
+    return yield* Effect.tryPromise((signal) =>
+      inspectPosixMetadata(cwd, { tracked: records }, signal),
+    ).pipe(
+      Effect.map((evidence) =>
+        evidence
+          ? null
+          : "tracked POSIX metadata could not be preserved (incomplete inspector report)",
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          failedCheckHold(
+            "tracked POSIX metadata could not be preserved",
+            "inspecting tracked POSIX metadata",
+            error,
+          ),
+        ),
+      ),
+    );
+  },
+  Effect.catch((error) =>
+    Effect.succeed(
+      failedCheckHold(
+        "tracked POSIX metadata could not be preserved",
+        "reading the worktree index",
+        error,
+      ),
+    ),
+  ),
+);
 
 // Branch deletion also removes the repository-local base settings, including the key used by older checkouts.
 export const readReleasedBranchBase = Effect.fn("WorktreeRelease.readBranchBase")(function* (
@@ -1461,9 +1499,7 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   }
   if ((yield* readGit(cwd, ["rev-list", "--max-count=1", ...tips, "--not", ...anchors])).trim())
     return "worktree has commits outside the durable ref";
-  const index = yield* readGit(cwd, ["ls-files", "-v", "--stage", "-z"], {
-    maxOutputBytes: 64 * 1024 * 1024,
-  });
+  const index = yield* trackedIndex(cwd);
   if (index && !index.endsWith("\0")) return "incomplete worktree index";
   const trackedLinks: string[] = [];
   for (const item of index.split("\0").filter(Boolean)) {
@@ -1550,5 +1586,5 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       }
     }
   }
-  return null;
+  return yield* trackedPosixMetadataHold(cwd, index);
 });

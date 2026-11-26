@@ -15,6 +15,8 @@ import {
   ContextHandoffId,
   ContextTransferId,
   GitCommandError,
+  GuestMessageId,
+  GuestShareId,
   MessageId,
   NodeId,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
@@ -64,6 +66,7 @@ import {
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { familyHookOperation } from "../vcs/familyWorktreeCheckout.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -276,7 +279,14 @@ function startWithMissingWorktree(
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () =>
+            Effect.succeed({
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              cwd: worktreePath,
+            }),
+        }),
       ),
     ),
   );
@@ -1038,12 +1048,11 @@ function makeLocalCommandHarness(input: {
           return { committed, storedEvents: [] };
         }),
   );
-  const resolveRuntimePolicy = vi.fn(
-    ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
-      Effect.succeed({
-        cwd: thread.worktreePath ?? "/tmp/native-account-command",
-        runtimeMode: thread.runtimeMode,
-      } as never),
+  const resolveRuntimePolicy = vi.fn<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>(({ thread }) =>
+    Effect.succeed({
+      cwd: thread.worktreePath ?? "/tmp/native-account-command",
+      runtimeMode: thread.runtimeMode,
+    } as never),
   );
   const getProject = vi.fn<ProjectService.ProjectService["Service"]["getById"]>(() =>
     Effect.succeedSome({
@@ -2493,6 +2502,221 @@ effectIt.effect.each([
         expect(yield* fs.readFileString(tracked)).toBe("tracked setup edit");
     }
   }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+effectIt.effect.each([
+  { share: "open", checkout: "missing", blocked: true },
+  { share: "closed", checkout: "setup pending", blocked: true },
+  { share: "closed", checkout: "replacement receipt", blocked: true },
+  { share: "open", checkout: "intact", blocked: false },
+  { share: "unsupported", checkout: "missing", blocked: true },
+] as const)(
+  "keeps worktree startup read-only for $checkout when the guest link is $share",
+  ({ share, checkout, blocked }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-read-only-turn-" }),
+      );
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "checkout");
+      const directory = path.join(root, "state", ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+      const pruneWorktrees = vi.fn(() => Effect.void);
+      const createWorktree = vi.fn(() => Effect.succeed({} as never));
+      const recoverInterruptedWorktree = vi.fn(() => Effect.void);
+      const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" as const }));
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        fileSystem: fs,
+        worktreesDir,
+        worktreePath,
+        nativeTurn: true,
+        gitWorkflow: {
+          pruneWorktrees,
+          createWorktree,
+          recoverInterruptedWorktree,
+          listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
+          currentBranch: () => Effect.succeed("feature/restore"),
+        } as GitWorkflow.GitWorkflowService["Service"],
+        runSetup,
+      });
+      const projection = harness.projection();
+      if (checkout === "missing") {
+        yield* fs.makeDirectory(path.dirname(worktreePath), { recursive: true });
+      } else {
+        yield* fs.makeDirectory(worktreePath, { recursive: true });
+      }
+      const receipt = path.join(directory, worktreeReleaseName(worktreePath));
+      const marker =
+        checkout === "setup pending"
+          ? receipt + ".setup"
+          : checkout === "replacement receipt"
+            ? receipt + ".released"
+            : null;
+      const contents = JSON.stringify({
+        threadId: checkout === "replacement receipt" ? "former-owner" : projection.thread.id,
+        runId: "finished",
+        worktreePath,
+        branch: checkout === "replacement receipt" ? "old-branch" : projection.thread.branch,
+        durableRef: "refs/heads/main",
+        head: "1".repeat(40),
+        identity: "original",
+      });
+      if (marker !== null) {
+        yield* fs.makeDirectory(directory, { recursive: true });
+        yield* fs.writeFileString(marker, contents);
+      }
+      harness.setProjection({
+        ...projection,
+        thread: {
+          ...projection.thread,
+          guestShare:
+            share === "closed"
+              ? null
+              : {
+                  id: GuestShareId.make("read-only-link"),
+                  host: "example.test",
+                  access: "read-only",
+                  createdAt: "2026-09-04T11:00:00Z",
+                  expiresAt: "2026-09-04T13:00:00Z",
+                  guestName: "Guest",
+                  messages: [],
+                },
+        },
+        runs: projection.runs.map((run) =>
+          share === "closed" ? { ...run, readOnlyGuestShare: true } : run,
+        ),
+      });
+      if (share === "unsupported") {
+        harness.resolveRuntimePolicy.mockReturnValue(
+          Effect.fail(
+            new RuntimePolicy.RuntimePolicyReadOnlyUnsupportedError({
+              threadId: projection.thread.id,
+              providerInstanceId: harness.newInstanceId,
+            }),
+          ),
+        );
+      }
+
+      yield* harness.startWithRetry;
+
+      expect(pruneWorktrees).not.toHaveBeenCalled();
+      expect(createWorktree).not.toHaveBeenCalled();
+      expect(recoverInterruptedWorktree).not.toHaveBeenCalled();
+      expect(runSetup).not.toHaveBeenCalled();
+      if (marker !== null) expect(yield* fs.readFileString(marker)).toBe(contents);
+      if (blocked) {
+        expect(harness.startTurn).not.toHaveBeenCalled();
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().turnItems.at(-1)).toMatchObject(
+          share === "unsupported"
+            ? { title: "Provider cannot run read-only" }
+            : {
+                failure: {
+                  class: "permission_error",
+                  message: expect.stringContaining("read-only"),
+                },
+              },
+        );
+      } else {
+        expect(harness.startTurn).toHaveBeenCalledOnce();
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+effectIt.effect.each([
+  { author: "owner on web", source: "web", retry: true },
+  { author: "owner on mobile", source: "mobile", retry: true },
+  { author: "approved guest", source: "web", retry: false },
+  { author: "server follow-up", source: "server", retry: false },
+  { author: "continuation of existing work", source: "web", retry: false },
+] as const)(
+  "uses only fresh owner input to retry a failed checkout hook ($author)",
+  ({ author, source, retry }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-hook-retry-policy-" }),
+      );
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "checkout");
+      const directory = path.join(root, "state", ServerConfig.WORKTREE_RELEASE_DIRECTORY);
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.makeDirectory(worktreePath, { recursive: true });
+      yield* fs.writeFileString(path.join(worktreePath, ".git"), "Git registration fixture");
+      const recoverInterruptedWorktree = vi.fn<
+        GitWorkflow.GitWorkflowService["Service"]["recoverInterruptedWorktree"]
+      >((_cwd, _project, _branch, options) =>
+        options?.followUpAt === undefined
+          ? Effect.fail(
+              new GitCommandError({
+                operation: familyHookOperation,
+                command: "checkout hook",
+                cwd: worktreePath,
+                detail: "The checkout hook needs a new follow-up.",
+              }),
+            )
+          : Effect.void,
+      );
+      const runSetup = vi.fn(() => Effect.succeed({ status: "no-script" as const }));
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        fileSystem: fs,
+        worktreesDir,
+        worktreePath,
+        nativeTurn: true,
+        gitWorkflow: { recoverInterruptedWorktree } as GitWorkflow.GitWorkflowService["Service"],
+        runSetup,
+      });
+      const projection = harness.projection();
+      const receipt = path.join(directory, worktreeReleaseName(worktreePath)) + ".restoring";
+      yield* fs.writeFileString(
+        receipt,
+        JSON.stringify({
+          threadId: projection.thread.id,
+          runId: "finished",
+          worktreePath,
+          branch: projection.thread.branch,
+          durableRef: "refs/heads/main",
+          head: "1".repeat(40),
+          identity: "original",
+        }),
+      );
+      harness.setProjection({
+        ...projection,
+        runs: projection.runs.map((run) =>
+          author === "continuation of existing work" ? { ...run, demandId: null } : run,
+        ),
+        messages: projection.messages.map((message) => ({
+          ...message,
+          creationSource: source,
+          ...(author === "approved guest"
+            ? {
+                context: {
+                  version: 1 as const,
+                  records: [],
+                  guest: {
+                    guestMessageId: GuestMessageId.make("guest-message"),
+                    name: "Guest",
+                    text: message.text,
+                  },
+                },
+              }
+            : {}),
+        })),
+      });
+
+      yield* harness.startWithRetry;
+
+      expect(
+        recoverInterruptedWorktree.mock.calls.map(([, , , options]) => options?.followUpAt),
+      ).toEqual([retry ? DateTime.toEpochMillis(projection.messages[0]!.createdAt) : undefined]);
+      expect(runSetup).toHaveBeenCalledTimes(retry ? 1 : 0);
+      expect(harness.startTurn).toHaveBeenCalledTimes(retry ? 1 : 0);
+      expect(yield* fs.exists(receipt)).toBe(!retry);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 effectIt.effect(

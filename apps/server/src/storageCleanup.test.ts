@@ -26,7 +26,7 @@ import {
   type TerminalMetadataStreamEvent,
   type TerminalSummary,
 } from "@t3tools/contracts";
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
@@ -1973,7 +1973,8 @@ const seedDelegateResult = (
       VALUES ('transfer', ${childId}, ${parentId}, 'spawner', 'subagent_result', 'consumed',
         ${reportedAt}, ${JSON.stringify({ sourcePoint: { runId: childRunId } })})`;
     return sql`UPDATE orchestration_v2_projection_subagents
-      SET payload_json = json_set(payload_json, '$.completionDelivery.observedByRunId', ${observerRunId}),
+      SET payload_json = json_set(payload_json, '$.completionDelivery.observedByRunId', ${observerRunId},
+        '$.completionDelivery.observedAt', ${observedAt}),
         updated_at = ${observedAt}
       WHERE subagent_id = ${taskId}`;
   });
@@ -2066,7 +2067,21 @@ it.effect("requires the approved child's result and a completed parent run that 
     expect(yield* consumed()).toBe(false);
     yield* sql`UPDATE orchestration_v2_projection_context_transfers
       SET payload_json = json_set(payload_json, '$.sourcePoint.runId', ${run})`;
+    // A later write can carry an observer that acknowledged the task before it published its result.
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json,
+      '$.terminalResultObservation', json(${JSON.stringify({ runId: "reader", at: now })}))`;
     expect(yield* consumed()).toBe(true);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_remove(payload_json, '$.terminalResultObservation')`;
+    const later = DateTime.formatIso(at(DAY_MS));
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET updated_at = ${later}`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json =
+      json_set(payload_json, '$.completionDelivery.observedAt', ${now})`;
+    expect(yield* consumed()).toBe(true);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET completed_at = ${later}`;
+    expect(yield* consumed()).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET completed_at = ${now}, updated_at = ${now}`;
     yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{"delegatedTaskId":"other-task"}' WHERE run_id = ${run}`;
     expect(yield* consumed()).toBe(false);
     yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = json_set(payload_json, '$.delegatedTaskId', ${taskId}) WHERE run_id = ${run}`;
@@ -2960,6 +2975,32 @@ it.live.each(["repository", "worktree"] as const)(
       }),
     ),
 );
+
+describe.skipIf(!isDarwinHost)("automatic cleanup on macOS", () => {
+  it.live.each(["checkout", "nested submodule"] as const)(
+    "keeps a tracked resource fork in the %s",
+    (location) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* submoduleCleanupFixture();
+          const cwd = location === "checkout" ? fixture.worktree : fixture.child;
+          const fork = `${cwd}/tracked.txt/..namedfork/rsrc`;
+          fixture.setPolicy("tracked-changes");
+          yield* fixture.fs.writeFileString(fork, "owner data");
+          yield* fixture.fs.writeFileString(`${fixture.worktree}/.env`, "keep while held");
+          expect((yield* fixture.command(cwd, ["status", "--porcelain"])).stdout).toBe("");
+          const report = yield* fixture.service.runNow;
+          const entry = report.entries.find((item) => item.path === fixture.worktree);
+          expect(entry?.outcome, entry?.reason).toBe("kept");
+          expect(entry?.reason).toMatch(/tracked POSIX metadata/i);
+          expect(yield* fixture.fs.readFileString(fork)).toBe("owner data");
+          expect(yield* fixture.fs.readFileString(`${fixture.worktree}/.env`)).toBe(
+            "keep while held",
+          );
+        }),
+      ),
+  );
+});
 
 it.live("keeps an ignored repository inside a registered submodule", () =>
   runCleanupTest(
