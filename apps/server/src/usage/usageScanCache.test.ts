@@ -732,7 +732,7 @@ describe("scan cache merge", () => {
       expect(pruned.peerTails).toBeUndefined();
       expect(retainedSuperseded(merge(pruned, last), 40, "muse")).toEqual([latest]);
     }
-    const prunedBeforeReturn = reload(pruneSuperseded([first, empty, last].reduce(merge), 40, 21));
+    const prunedBeforeReturn = reload(pruneSuperseded([first, empty, last].reduce(merge), 113, 21));
     for (const merged of [
       merge(prunedBeforeReturn, returned),
       merge(returned, prunedBeforeReturn),
@@ -748,7 +748,15 @@ describe("scan cache merge", () => {
     const completedBeforePrune = reload(
       pruneSuperseded([first, completion, empty, last].reduce(merge), 40, 21),
     );
-    expect(retainedSuperseded(merge(completedBeforePrune, returned), 40, "muse")).toEqual([]);
+    for (const merged of [
+      merge(completedBeforePrune, returned),
+      merge(merge(prunedBeforeReturn, returned), completion),
+      merge(merge(prunedBeforeReturn, completion), returned),
+      merge(prunedBeforeReturn, merge(completion, returned)),
+    ]) {
+      for (const cutoff of [21, 40, 41])
+        expect(retainedSuperseded(merged, cutoff, "muse")).toEqual([]);
+    }
   });
 
   it("keeps the held row when nothing tells two rows apart", () => {

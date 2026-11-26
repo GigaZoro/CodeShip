@@ -69,6 +69,13 @@ type KeyedUsageRecord = UsageRecord & { readonly dedupeKey: string };
 type PriorRead = number | readonly [time: number, size: number];
 type PeerTail = Omit<SupersededRecord, "sinceMs"> & { readonly size: number };
 
+interface PeerTailGroup {
+  readonly group: string;
+  readonly seenMs: number;
+  readonly size: number;
+  readonly next: PriorRead;
+}
+
 export interface CachedFile {
   readonly size: number;
   readonly needsReparse?: true;
@@ -97,6 +104,8 @@ export interface CachedFile {
   readonly priorReads?: readonly PriorRead[];
   /** A peer may report the intervening shorter version after we discard its old row. */
   readonly peerTails?: readonly PeerTail[];
+  /** The expired payload is gone, but an earlier peer may still change what its EOF proves. */
+  readonly peerTailGroups?: readonly PeerTailGroup[];
   /** Most recent expired read. A peer's earlier sighting cannot revive history absent by this read. */
   readonly expiredThroughMs?: number;
   /** The last read by a different provider invalidates earlier identities for this path. */
@@ -310,7 +319,6 @@ function groupMembers(group: string): readonly string[] | undefined {
 function mergePeerTails(
   winner: CachedFile,
   loser: CachedFile,
-  floor: number,
   otherProviderAtMs: number | undefined,
   peer: boolean,
 ) {
@@ -318,7 +326,7 @@ function mergePeerTails(
   if (!winner.peerTails && !loser.peerTails && !loseTail) return [];
   const candidates = new Map<string, PeerTail>();
   function add(item: PeerTail) {
-    if (item.seenMs < floor || item.seenMs <= (otherProviderAtMs ?? -Infinity)) return;
+    if (item.seenMs <= (otherProviderAtMs ?? -Infinity)) return;
     const id = JSON.stringify([item.seenMs, item.record.dedupeKey, item.readGroups ?? []]);
     const held = candidates.get(id);
     if (
@@ -347,21 +355,93 @@ function mergePeerTails(
   return [...candidates.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, item]) => item);
 }
 
+function firstSuccessor(entry: CachedFile, seenMs: number) {
+  return firstReadAfter(entry.priorReads ?? [], seenMs, [entry.observedAtMs, entry.size]);
+}
+
+function earliestRead(a: PriorRead, b: PriorRead, after: number) {
+  if (readTime(b) <= after || readTime(b) > readTime(a)) return a;
+  if (readTime(a) === readTime(b) && (readSize(a) ?? -1) >= (readSize(b) ?? -1)) return a;
+  return b;
+}
+
+function successorOfPair(winner: CachedFile, loser: CachedFile, seenMs: number) {
+  const next = firstSuccessor(winner, seenMs);
+  if (winner.provider !== loser.provider) return next;
+  const other = firstSuccessor(loser, seenMs);
+  return readTime(next) <= seenMs ? other : earliestRead(next, other, seenMs);
+}
+
+function mergeTailGroups(
+  winner: CachedFile,
+  loser: CachedFile,
+  minimum: number,
+  original: readonly PeerTailGroup[],
+  incoming: readonly PeerTailGroup[],
+) {
+  if (!original.length && !incoming.length) return [];
+  const groups = new Map<string, PeerTailGroup>();
+  for (const item of [...original, ...incoming]) {
+    if (item.seenMs <= minimum) continue;
+    const id = JSON.stringify([item.seenMs, item.group]);
+    const held = groups.get(id);
+    let next = earliestRead(item.next, successorOfPair(winner, loser, item.seenMs), item.seenMs);
+    if (held) next = earliestRead(next, held.next, item.seenMs);
+    const size = Math.max(item.size, held?.size ?? 0);
+    const same = (candidate: PeerTailGroup) =>
+      candidate.size === size &&
+      readTime(candidate.next) === readTime(next) &&
+      readSize(candidate.next) === readSize(next);
+    groups.set(id, held && same(held) ? held : same(item) ? item : { ...item, size, next });
+  }
+  return [...groups].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, item]) => item);
+}
+
+function relevantTailGroups(
+  groups: readonly PeerTailGroup[],
+  entry: CachedFile,
+  history: readonly SupersededRecord[],
+  tails: readonly PeerTail[],
+) {
+  if (groups.length === 0) return groups;
+  const keys = new Set<string | null>();
+  for (const records of [entry.records, entry.tailRecords]) {
+    for (const record of records) keys.add(record.dedupeKey);
+  }
+  for (const item of history) keys.add(item.record.dedupeKey);
+  for (const item of tails) keys.add(item.record.dedupeKey);
+  return groups.filter(({ group }) => groupMembers(group)?.some((key) => keys.has(key)));
+}
+
+function expiredTailGroups(
+  tails: readonly PeerTail[],
+  floor: number,
+  winner: CachedFile,
+  loser: CachedFile,
+) {
+  const result: PeerTailGroup[] = [];
+  for (const tail of tails) {
+    if (!tail.readGroups?.length || tail.seenMs > floor) continue;
+    const next = successorOfPair(winner, loser, tail.seenMs);
+    if (readTime(next) <= tail.seenMs || readTime(next) > floor) continue;
+    for (const group of tail.readGroups)
+      result.push({ seenMs: tail.seenMs, size: tail.size, next, group });
+  }
+  return result;
+}
+
 function provedTailReplacement(entry: CachedFile, tail: PeerTail) {
-  const next = firstReadAfter(entry.priorReads ?? [], tail.seenMs, [
-    entry.observedAtMs,
-    entry.size,
-  ]);
+  const next = firstSuccessor(entry, tail.seenMs);
   return readTime(next) > tail.seenMs && (readSize(next) ?? Infinity) < tail.size
     ? readTime(next)
     : undefined;
 }
 
-function provedPeerTails(entry: CachedFile, throughMs = Infinity): readonly SupersededRecord[] {
+function provedPeerTails(entry: CachedFile): readonly SupersededRecord[] {
   return (
     entry.peerTails?.flatMap((tail) => {
       const sinceMs = provedTailReplacement(entry, tail);
-      if (sinceMs === undefined || sinceMs > throughMs) return [];
+      if (sinceMs === undefined) return [];
       const { size: _size, ...record } = tail;
       return [{ ...record, sinceMs }];
     }) ?? []
@@ -489,9 +569,9 @@ function collectHistory(
     }
   }
   carryHistory(winner);
-  function sorted() {
+  function sorted(conditional: readonly string[] = []) {
     // A late peer may supply one member after only its sibling kept the proof they coexisted.
-    const groups = new Set<string>();
+    const groups = new Set(conditional);
     for (const item of retained.values()) {
       for (const group of item.readGroups ?? []) groups.add(group);
     }
@@ -519,10 +599,16 @@ function collectHistory(
 }
 
 function historyWithProvedTails(entry: CachedFile, proved: readonly SupersededRecord[]) {
-  if (proved.length === 0) return entry.superseded ?? [];
+  const conditional =
+    entry.superseded?.length || proved.length
+      ? (entry.peerTailGroups
+          ?.filter((item) => (readSize(item.next) ?? Infinity) < item.size)
+          .map((item) => item.group) ?? [])
+      : [];
+  if (proved.length === 0 && conditional.length === 0) return entry.superseded ?? [];
   const history = collectHistory(entry);
   for (const item of proved) history.consider(item.record, item.seenMs, item.sinceMs, item);
-  return history.sorted();
+  return history.sorted(conditional);
 }
 
 export function carrySuperseded(
@@ -546,7 +632,18 @@ export function carrySuperseded(
     loser,
     Math.max(floor, otherProviderAtMs ?? -Infinity),
   );
-  const peerTails = mergePeerTails(winner, loser, floor, otherProviderAtMs, read === undefined);
+  const allTails = mergePeerTails(winner, loser, otherProviderAtMs, read === undefined);
+  const expired = expiredTailGroups(allTails, floor, winner, loser);
+  const peerTails = allTails.filter(
+    (tail) => tail.seenMs >= floor || readTime(successorOfPair(winner, loser, tail.seenMs)) > floor,
+  );
+  const mergedGroups = mergeTailGroups(
+    winner,
+    loser,
+    otherProviderAtMs ?? -Infinity,
+    winner.peerTailGroups ?? [],
+    [...(sameProvider ? (loser.peerTailGroups ?? []) : []), ...expired],
+  );
 
   const { consider, carryHistory, sorted } = collectHistory(
     winner,
@@ -574,20 +671,29 @@ export function carrySuperseded(
     }
   }
   const superseded = sorted();
+  const peerTailGroups = relevantTailGroups(mergedGroups, winner, superseded, peerTails);
   if (
     sameItems(winner.superseded, superseded) &&
     sameItems(winner.priorReads, priorReads) &&
     sameItems(winner.peerTails, peerTails) &&
+    sameItems(winner.peerTailGroups, peerTailGroups) &&
     winner.expiredThroughMs === expiredThroughMs &&
     winner.otherProviderAtMs === otherProviderAtMs
   )
     return winner;
-  const { superseded: _old, priorReads: _times, peerTails: _tails, ...entry } = winner;
+  const {
+    superseded: _old,
+    priorReads: _times,
+    peerTails: _tails,
+    peerTailGroups: _groups,
+    ...entry
+  } = winner;
   return {
     ...entry,
     ...(superseded.length ? { superseded } : {}),
     ...(priorReads.length ? { priorReads } : {}),
     ...(peerTails.length ? { peerTails } : {}),
+    ...(peerTailGroups.length ? { peerTailGroups } : {}),
     ...(expiredThroughMs === undefined ? {} : { expiredThroughMs }),
     ...(otherProviderAtMs === undefined ? {} : { otherProviderAtMs }),
   };
@@ -667,6 +773,12 @@ interface SerializedFile {
     size: number,
     record: SerializedRecord,
     groups?: readonly number[],
+  ])[];
+  readonly tg?: readonly (readonly [
+    seenMs: number,
+    size: number,
+    next: PriorRead,
+    groupIndex: number,
   ])[];
   readonly ex?: number;
   readonly op?: number;
@@ -762,6 +874,14 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
               ] as const,
           ),
         }),
+    ...(entry.peerTailGroups
+      ? {
+          tg: entry.peerTailGroups.map(
+            ({ seenMs, size, next, group }) =>
+              [seenMs, size, next, intern(groups, (groupIndex ??= new Map()), group)] as const,
+          ),
+        }
+      : {}),
     ...(entry.expiredThroughMs === undefined ? {} : { ex: entry.expiredThroughMs }),
     ...(entry.otherProviderAtMs === undefined ? {} : { op: entry.otherProviderAtMs }),
     ...(entry.superseded === undefined
@@ -1091,10 +1211,38 @@ export function decodeScanCache(
       )
     )
       continue;
+    const peerTailGroups: PeerTailGroup[] = [];
+    if (entry.tg !== undefined) {
+      if (
+        !isRecordArray(entry.tg) ||
+        !entry.tg.every((item) => {
+          if (!isRecordArray(item) || item.length !== 4) return false;
+          const [seenMs, size, next, groupIndex] = item;
+          if (
+            typeof seenMs !== "number" ||
+            !Number.isFinite(seenMs) ||
+            typeof size !== "number" ||
+            !Number.isSafeInteger(size) ||
+            size < 0 ||
+            !isPriorRead(next) ||
+            readTime(next) <= seenMs ||
+            readTime(next) > observedAtMs ||
+            typeof groupIndex !== "number" ||
+            !Number.isInteger(groupIndex) ||
+            typeof groups[groupIndex] !== "string"
+          )
+            return false;
+          peerTailGroups.push({ seenMs, size, next, group: groups[groupIndex]! });
+          return true;
+        })
+      )
+        continue;
+    }
     const decoded: CachedFile = {
       ...(superseded.length ? { superseded } : {}),
       ...(priorReads?.length ? { priorReads } : {}),
       ...(peerTails.length ? { peerTails } : {}),
+      ...(peerTailGroups.length ? { peerTailGroups } : {}),
       ...(entry.ex === undefined ? {} : { expiredThroughMs: entry.ex }),
       ...(entry.op === undefined ? {} : { otherProviderAtMs: entry.op }),
       size: entry.s,
@@ -1261,18 +1409,28 @@ export function afterEvictedRead(entry: CachedFile, throughMs: number): CachedFi
   if (entry.observedAtMs <= throughMs) return undefined;
   const superseded = entry.superseded?.filter(({ seenMs }) => seenMs > throughMs) ?? [];
   const peerTails = entry.peerTails?.filter(({ seenMs }) => seenMs > throughMs) ?? [];
+  const retainedGroups = entry.peerTailGroups?.filter(({ seenMs }) => seenMs > throughMs) ?? [];
+  const peerTailGroups = relevantTailGroups(retainedGroups, entry, superseded, peerTails);
   const priorReads = entry.priorReads?.filter((read) => readTime(read) > throughMs) ?? [];
   if (
     sameItems(entry.superseded, superseded) &&
     sameItems(entry.peerTails, peerTails) &&
+    sameItems(entry.peerTailGroups, peerTailGroups) &&
     sameItems(entry.priorReads, priorReads)
   )
     return entry;
-  const { superseded: _old, peerTails: _tails, priorReads: _reads, ...rest } = entry;
+  const {
+    superseded: _old,
+    peerTails: _tails,
+    peerTailGroups: _groups,
+    priorReads: _reads,
+    ...rest
+  } = entry;
   return {
     ...rest,
     ...(superseded.length ? { superseded } : {}),
     ...(peerTails.length ? { peerTails } : {}),
+    ...(peerTailGroups.length ? { peerTailGroups } : {}),
     ...(priorReads.length ? { priorReads } : {}),
   };
 }
@@ -1285,7 +1443,8 @@ export function pruneSuperseded(
   if (
     entry.priorReads === undefined &&
     entry.superseded === undefined &&
-    entry.peerTails === undefined
+    entry.peerTails === undefined &&
+    entry.peerTailGroups === undefined
   )
     return entry;
   const reads = entry.priorReads ?? [];
@@ -1311,11 +1470,16 @@ export function pruneSuperseded(
   const peerTails = tails.filter(
     ({ seenMs }) => readTime(firstReadAfter(reads, seenMs, entry.observedAtMs)) > floor,
   );
-  // Earlier peers cannot reverse a size comparison once its successor is behind the pruning boundary.
-  const finalized = provedPeerTails(entry, floor);
-  const history = historyWithProvedTails(entry, finalized);
+  const expired = expiredTailGroups(tails, floor, entry, entry);
+  const mergedGroups = mergeTailGroups(
+    entry,
+    entry,
+    entry.otherProviderAtMs ?? -Infinity,
+    entry.peerTailGroups ?? [],
+    expired,
+  );
   let liveKeys: Set<string | null> | undefined;
-  const superseded = history
+  const superseded = retained
     .filter((item) => {
       if (item.sinceMs >= retentionCutoffMs) return true;
       if (item.seenMs !== entry.observedAtMs || !item.readGroups?.length) return false;
@@ -1323,19 +1487,28 @@ export function pruneSuperseded(
       return liveKeys.has(item.record.dedupeKey);
     })
     .map((item) => (item.sinceMs <= nowMs ? item : { ...item, sinceMs: nowMs }));
+  const peerTailGroups = relevantTailGroups(mergedGroups, entry, superseded, peerTails);
   if (
     sameItems(reads, priorReads) &&
     sameItems(tails, peerTails) &&
+    sameItems(entry.peerTailGroups, peerTailGroups) &&
     sameItems(retained, superseded) &&
     floor === (entry.expiredThroughMs ?? -Infinity)
   )
     return entry;
-  const { superseded: _old, priorReads: _times, peerTails: _tails, ...rest } = entry;
+  const {
+    superseded: _old,
+    priorReads: _times,
+    peerTails: _tails,
+    peerTailGroups: _groups,
+    ...rest
+  } = entry;
   return {
     ...rest,
     ...(superseded.length ? { superseded } : {}),
     ...(priorReads.length ? { priorReads } : {}),
     ...(peerTails.length ? { peerTails } : {}),
+    ...(peerTailGroups.length ? { peerTailGroups } : {}),
     ...(Number.isFinite(floor) ? { expiredThroughMs: floor } : {}),
   };
 }
