@@ -1,6 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous routing needs deterministic opaque identifiers.
 import * as NodeCrypto from "node:crypto";
 import type {
+  MessageId,
+  ProviderTurnId,
   OrchestrationV2ServerCommand,
   OrchestrationV2StoredEvent,
   RunAttemptId,
@@ -54,6 +56,17 @@ const logFailure =
         ),
       ),
     );
+
+export const recordMissedSteer = Effect.fn("StopDecisionEvidence.missedSteer")(function* (
+  sql: SqlClient.SqlClient,
+  providerTurnId: ProviderTurnId,
+  messageId: MessageId,
+) {
+  yield* sql`INSERT INTO usage_stop_missed_steers (provider_turn_id, message_id)
+    VALUES (${providerTurnId}, ${messageId}) ON CONFLICT DO NOTHING`.pipe(
+    logFailure("missed-steer"),
+  );
+});
 
 const RECENT_DECISIONS = 4096;
 

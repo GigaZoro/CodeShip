@@ -93,8 +93,6 @@ import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { LATER_RUN_ACTIVE_MESSAGE } from "./CheckpointRollbackService.ts";
-import * as ProviderTurnControl from "./ProviderTurnControlService.ts";
-import * as RunExecution from "./RunExecutionService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -10308,6 +10306,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "replay-held",
     "replay-agent",
     "replay-user",
+    "replay-missed",
+    "replay-missed-disabled",
+    "replay-unrelated",
     "setup-expired",
   ] as const)("recovers only the current scheduled occurrence: %s", (scenario) =>
     Effect.gen(function* () {
@@ -10517,8 +10518,16 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         const projection = yield* orchestrator.getThreadProjection(threadId);
         const run = projection.runs.find((row) => row.userMessageId === command.messageId)!;
         const attempt = projection.attempts.find((row) => row.id === run.activeAttemptId)!;
+        const missed = scenario.startsWith("replay-missed");
         if (!held) {
-          const { steerTurn } = yield* attachRunningTurn(threadId, run);
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          // The fixture supplies the running provider turn normally created by these start effects.
+          yield* outbox.cancelUnsettled({
+            threadId,
+            effectTypes: ["provider-turn.start", "thread-title.generate"],
+            reason: "Test provider already attached",
+          });
+          const { steerTurn, providerTurn } = yield* attachRunningTurn(threadId, run);
           yield* orchestrator.dispatch({
             type: "message.dispatch",
             commandId: CommandId.make(`${threadId}:change`),
@@ -10531,26 +10540,85 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
             text: "Do something else instead.",
             attachments: [],
           });
-          const outbox = yield* EffectOutbox.EffectOutboxV2;
           const [delivery] = yield* outbox.listByCommandId(CommandId.make(`${threadId}:change`));
           assert(delivery?.request.type === "provider-turn.steer");
           const request = delivery.request;
-          yield* Effect.flatMap(ProviderTurnControl.ProviderTurnControlServiceV2, (control) =>
-            control.steer({ threadId, ...request }),
-          ).pipe(
-            Effect.provide(
-              ProviderTurnControl.layer.pipe(
-                Layer.provide(
-                  Layer.mergeAll(
-                    ProviderSkillsTestkit.layer,
-                    layerProjectServiceTest,
-                    Layer.mock(RunExecution.RunExecutionServiceV2)({}),
-                  ),
-                ),
-              ),
-            ),
-          );
-          assert.equal(steerTurn.mock.calls[0]?.[0].message.messageId, request.messageId);
+          if (missed) {
+            yield* events.write({
+              events: [
+                {
+                  id: EventId.make(`${threadId}:turn-ended`),
+                  type: "provider-turn.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: { ...providerTurn, status: "completed", completedAt: now },
+                },
+                {
+                  id: EventId.make(`${threadId}:run-ended`),
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: { ...run, status: "completed", completedAt: now },
+                },
+              ],
+            });
+          }
+          if (missed) {
+            const settings = yield* ServerSettings.ServerSettingsService;
+            yield* settings.updateSettings({
+              providerInstances: {
+                [alternateInstanceId]: { driver, enabled: scenario !== "replay-missed-disabled" },
+              },
+            });
+          }
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          assert.isTrue(yield* worker.runOnce());
+          assert.equal((yield* outbox.listByCommandId(delivery.commandId))[0]?.status, "succeeded");
+          if (missed) assert.isEmpty(steerTurn.mock.calls);
+          else assert.equal(steerTurn.mock.calls[0]?.[0].message.messageId, request.messageId);
+          if (missed) {
+            const afterFallback = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              afterFallback.runs.some((candidate) => candidate.userMessageId === request.messageId),
+              scenario !== "replay-missed-disabled",
+            );
+          }
+          if (scenario === "replay-unrelated") {
+            const otherTurn = ProviderTurnId.make(`${threadId}:older-turn`);
+            yield* events.write({
+              events: [
+                {
+                  id: EventId.make(`${threadId}:older-completed`),
+                  type: "provider-turn.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...providerTurn,
+                    id: otherTurn,
+                    ordinal: providerTurn.ordinal + 1,
+                    runAttemptId: source.activeAttemptId,
+                    status: "completed",
+                    completedAt: now,
+                  },
+                },
+              ],
+            });
+            yield* outbox.enqueue([
+              {
+                ...delivery,
+                id: `${delivery.id}:older-turn`,
+                request: { ...request, providerTurnId: otherTurn },
+                availableAt: now,
+              },
+            ]);
+            assert.isTrue(yield* worker.runOnce());
+            assert.deepEqual(
+              yield* sql`SELECT provider_turn_id FROM usage_stop_missed_steers WHERE message_id = ${request.messageId}`,
+              [{ provider_turn_id: otherTurn }],
+            );
+          }
         }
         yield* events.write({
           events: [
@@ -10569,7 +10637,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           FROM usage_stop_replay WHERE source_key = ${evidenceKey(source.id)}`,
           [
             {
-              classification: held ? "recovered" : "unknown",
+              classification: held || missed ? "recovered" : "unknown",
               decisions: 1,
               attributable_lost_tokens: null,
             },
@@ -10738,7 +10806,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       assert.isUndefined(
         (yield* projections.getLimitRecoveryCandidates(sweep)).find((row) => row.id === threadId),
       );
-    }),
+    }).pipe(Effect.provide(scenario.startsWith("replay-") ? Layer.fresh(layerTest) : Layer.empty)),
   );
 
   it.effect.each(["still-current", "moved-on", "moved-on-then-lost-more"] as const)(

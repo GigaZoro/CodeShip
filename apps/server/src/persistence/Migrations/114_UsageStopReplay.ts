@@ -6,6 +6,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`ALTER TABLE usage_stop_decisions ADD COLUMN occurrence_key TEXT`;
+  yield* sql`CREATE TABLE usage_stop_missed_steers (
+    provider_turn_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    PRIMARY KEY (provider_turn_id, message_id)
+  ) WITHOUT ROWID`;
   yield* sql`CREATE VIEW usage_stop_replay AS
     WITH decisions AS (
       SELECT d.source_key, d.occurrence_key, d.observed_ms,
@@ -18,6 +23,9 @@ export default Effect.gen(function* () {
               AND steer.type = 'user_message' AND steer.status = 'completed'
               AND steer.payload_json ->> 'messageId' IS NOT initiating.payload_json ->> 'userMessageId'
               AND steer.payload_json ->> 'inputIntent' IN ('steer', 'promoted_queued_to_steer')
+              AND NOT EXISTS (SELECT 1 FROM usage_stop_missed_steers missed
+                WHERE missed.provider_turn_id = steer.provider_turn_id
+                  AND missed.message_id = steer.payload_json ->> 'messageId')
           ) THEN 4
           WHEN attempt.status = 'completed' THEN 0
           -- Ended attempts, and dispatches that failed before any attempt ran, prove nothing.
