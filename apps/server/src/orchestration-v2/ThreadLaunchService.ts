@@ -14,6 +14,7 @@ import {
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   orchestrationV2RunAwaitsMemory,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -60,19 +61,7 @@ import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { DispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
-export type ThreadLaunchWorkspaceStrategy =
-  | { readonly type: "root"; readonly branch?: string | undefined }
-  | {
-      readonly type: "existing_worktree";
-      readonly worktreePath: string;
-      readonly branch?: string | undefined;
-    }
-  | {
-      readonly type: "worktree";
-      readonly baseRef: string;
-      readonly branch?: string | undefined;
-      readonly startFromOrigin?: boolean | undefined;
-    };
+export type ThreadLaunchWorkspaceStrategy = OrchestrationV2ThreadLaunchWorkspaceStrategy;
 
 export interface ThreadLaunchInitialMessage {
   readonly demandId?: string | null;
