@@ -83,6 +83,12 @@ export const make = Effect.gen(function* () {
       modelSelection: ModelSelection,
     ) => Effect.Effect<A, TextGenerationError>,
   ) {
+    if (selection.quotaAwareAuto === true) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "Auto needs a provider selection before starting text generation.",
+      });
+    }
     const snapshots = yield* registry.listInstances.pipe(
       Effect.flatMap((instances) =>
         Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot),

@@ -995,5 +995,15 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
           }
         : selection,
     ]);
+    const refusal = yield* Effect.flip(
+      service.generateThreadTitle({
+        cwd: "/tmp",
+        message: "Fresh Auto title",
+        linkedContext: "",
+        modelSelection: { ...selection, quotaAwareAuto: true },
+      }),
+    );
+    expect(refusal.operation).toBe("generateThreadTitle");
+    expect(calls).toHaveLength(1);
   }),
 );

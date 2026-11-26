@@ -763,6 +763,8 @@ function alternateLaunches(
 export function failoverLimitedLaunch(
   input: AccountRoutingContext & McpSignIns & LaunchInput,
 ): LaunchRoute {
+  if (input.selection.quotaAwareAuto === true)
+    return { selection: input.selection, failover: null };
   const primary = primaryLaunch(input);
   const unchanged =
     input.selection.autoAccount === true ? { selection: input.selection, failover: null } : primary;
@@ -872,6 +874,7 @@ function selectionWait(
 }
 
 function launchWait(input: AccountRoutingContext & LaunchInput): UsageWait | null {
+  if (input.selection.quotaAwareAuto === true) return null;
   const primary = primaryLaunch({ ...input, mcpSignInsNeeded: new Map() });
   const blocked = selectionWait(input, primary.selection);
   if (blocked === null) return null;
@@ -1415,8 +1418,8 @@ export const layer = Layer.effect(
     const readCreditsFresh = Effect.fn("AccountRouting.readCreditsFresh")(function* (
       instanceId: ProviderInstanceId,
       model: string,
-      nowMs: number,
     ) {
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
       const providers = yield* providerRegistry.getProviders;
       if (
         !creditReadingIsStale(
@@ -1693,10 +1696,10 @@ export const layer = Layer.effect(
         });
       }),
       creditRefusal: Effect.fn("AccountRouting.creditRefusal")(function* (input) {
-        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const providers = yield* readCreditsFresh(input.instanceId, input.model, nowMs);
+        const providers = yield* readCreditsFresh(input.instanceId, input.model);
         const provider = providers.find((entry) => entry.instanceId === input.instanceId);
         if (provider === undefined) return null;
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
         if (creditReadingIsStale(provider, input.model, nowMs))
           return { credits: "unverified" as const };
         return yield* judgeCredits({
@@ -1762,6 +1765,7 @@ export const layer = Layer.effect(
       }).pipe(Effect.withSpan("AccountRouting.holds")),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {
+          if (input.selection.quotaAwareAuto === true) return null;
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const limited = yield* readLimits(now, providers);
@@ -1799,6 +1803,7 @@ export const layer = Layer.effect(
       failoverLaunch: Effect.fn("AccountRouting.failoverLaunch")(
         function* (input) {
           const stay: LaunchRoute = { selection: input.selection, failover: null };
+          if (input.selection.quotaAwareAuto === true) return stay;
           const settings = yield* serverSettings.getSettings;
           if (!settings.failoverLimitedThreads) return stay;
           const now = yield* DateTime.now;

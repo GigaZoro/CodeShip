@@ -876,6 +876,7 @@ const make = Effect.gen(function* () {
       const thread = yield* orchestrator.getThreadShell(input.threadId);
       if (thread === null) return command;
       const selection = input.selection ?? thread.modelSelection;
+      if (selection.quotaAwareAuto === true) return command;
       const fresh =
         !input.newThread &&
         command.launchAlreadyRouted !== true &&

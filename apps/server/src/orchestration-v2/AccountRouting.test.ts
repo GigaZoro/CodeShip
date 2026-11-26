@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -1250,6 +1252,11 @@ describe("cross-provider launch routing", () => {
       fallbackModelSelections: alternatives,
     };
     assert.include(failoverLimitedLaunch(context).selection, expected);
+    const unresolved = { ...named, quotaAwareAuto: true };
+    assert.deepEqual(failoverLimitedLaunch({ ...context, selection: unresolved }), {
+      selection: unresolved,
+      failover: null,
+    });
     assert.isNull(usageBlock({ ...context, delegates: [] }));
   });
 
@@ -2129,7 +2136,11 @@ describe("prepaid Codex credits", () => {
     readonly held?: Ref.Ref<boolean>;
     readonly database?: Layer.Layer<SqlClient.SqlClient>;
     /** What a full read of the account finds, and how many were made. */
-    readonly fresh?: { readonly reading: ServerProvider; readonly reads: Ref.Ref<number> };
+    readonly fresh?: {
+      readonly reading: ServerProvider;
+      readonly reads: Ref.Ref<number>;
+      readonly wait?: Effect.Effect<void>;
+    };
     /** The runs underway, and how many times they were looked up. */
     readonly underway?: {
       readonly runs: ReadonlyArray<OrchestrationV2Run>;
@@ -2175,6 +2186,7 @@ describe("prepaid Codex credits", () => {
               input.fresh === undefined
                 ? Effect.die("No full read was expected.")
                 : Ref.update(input.fresh.reads, (reads) => reads + 1).pipe(
+                    Effect.andThen(input.fresh.wait ?? Effect.void),
                     Effect.andThen(Ref.set(input.reading, input.fresh.reading)),
                     Effect.as([input.fresh.reading]),
                   ),
@@ -2397,7 +2409,6 @@ describe("prepaid Codex credits", () => {
             : {}),
         },
       };
-      // The reading in hand shows plan room; Codex has used the plan up since.
       const layer = routingLayer({
         optedIn: [],
         reading: yield* Ref.make<ServerProvider>(mixed),
@@ -2407,6 +2418,32 @@ describe("prepaid Codex credits", () => {
         routing.creditRefusal({ threadId: allowed, instanceId: paid, model }),
       ).pipe(Effect.provide(layer));
       assert.deepEqual({ credits: refusal?.credits, reads: yield* Ref.get(reads) }, expected);
+    }),
+  );
+
+  it.effect("admits a plan with room as soon as its full read completes", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const started = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      const reads = yield* Ref.make(0);
+      const layer = routingLayer({
+        optedIn: [],
+        reading: yield* Ref.make(codexAccount(paid, { checkedAt: "2026-11-03T11:00:00.000Z" })),
+        fresh: {
+          reads,
+          wait: Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finished))),
+          reading: codexAccount(paid, { weeklyUsed: 30, checkedAt: "2026-11-03T12:00:00.001Z" }),
+        },
+      });
+      const admission = yield* AccountRouting.AccountRouting.use((routing) =>
+        routing.creditRefusal({ threadId: allowed, instanceId: paid, model }),
+      ).pipe(Effect.provide(layer), Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(1);
+      yield* Deferred.succeed(finished, undefined);
+      assert.isNull(yield* Fiber.join(admission));
+      assert.equal(yield* Ref.get(reads), 1);
     }),
   );
 
