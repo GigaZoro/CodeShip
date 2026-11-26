@@ -1615,32 +1615,39 @@ describe("composerDraftStore modelSelection", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider).toEqual({});
   });
 
-  it("releases an auto-account pick on whichever account the thread runs it", () => {
-    const store = useComposerDraftStore.getState();
-    const pick = { ...createModelSelection(CODEX_INSTANCE, "gpt-5.5"), autoAccount: true };
-    store.setModelSelection(threadRef, pick, { explicit: true });
-    const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId);
-    h.update({
-      status: "running",
-      modelSelection: { ...pick, instanceId: CODEX_SECONDARY_INSTANCE },
-    });
-    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  it.each(["autoAccount", "quotaAwareAuto"] as const)(
+    "releases a %s pick on the account the thread runs it",
+    (intent) => {
+      const store = useComposerDraftStore.getState();
+      const pick = { ...createModelSelection(CODEX_INSTANCE, "gpt-5.5"), [intent]: true };
+      store.setModelSelection(threadRef, pick, { explicit: true });
+      expect(
+        draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+      ).toEqual(pick);
+      const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId);
+      h.update({
+        status: "running",
+        modelSelection: { ...pick, instanceId: CODEX_SECONDARY_INSTANCE },
+      });
+      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
 
-    // A pick on one account pins the thread even though it ran on auto.
-    store.setModelSelection(threadRef, createModelSelection(CODEX_INSTANCE, "gpt-5.5"), {
-      explicit: true,
-    });
-    const pinned = deriveEffectiveComposerModelState({
-      draft: draftFor(threadId, TEST_ENVIRONMENT_ID),
-      providers: [],
-      selectedProvider: CODEX_DRIVER,
-      selectedInstanceId: CODEX_INSTANCE,
-      threadModelSelection: h.model(),
-      projectModelSelection: null,
-      settings: DEFAULT_UNIFIED_SETTINGS,
-    });
-    expect(pinned.autoAccount).toBe(false);
-  });
+      // A pick on one account pins the thread even though it ran on auto.
+      store.setModelSelection(threadRef, createModelSelection(CODEX_INSTANCE, "gpt-5.5"), {
+        explicit: true,
+      });
+      const pinned = deriveEffectiveComposerModelState({
+        draft: draftFor(threadId, TEST_ENVIRONMENT_ID),
+        providers: [],
+        selectedProvider: CODEX_DRIVER,
+        selectedInstanceId: CODEX_INSTANCE,
+        threadModelSelection: h.model(),
+        projectModelSelection: null,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+      });
+      expect(pinned.autoAccount).toBe(false);
+      expect(pinned.quotaAwareAuto).toBe(false);
+    },
+  );
 
   it("retains an unavailable provider pick through differing durable model updates", () => {
     const store = useComposerDraftStore.getState();

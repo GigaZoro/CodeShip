@@ -48,6 +48,7 @@ import {
   ProviderCreditGrant,
   ProviderCreditUse,
   ServerProviderResetKind,
+  ServerProviderUsageScope,
 } from "./providerUsageLimits.ts";
 import { PullRequestState } from "./pullRequest.ts";
 import {
@@ -661,17 +662,21 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
   usage: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Add each Claude and Codex account's usage: meters, credits, banked resets. Reads one older than 10 minutes again.",
+        "Add available usage for enabled provider accounts: meters, credits, banked resets. Reads one older than 10 minutes again.",
     }),
   ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 
 export const OrchestratorMcpUsageMeter = Schema.Struct({
-  /** `session`, `weekly_all`, `weekly_scoped:<model>`, or the provider's own id for another meter. */
+  /** The provider's id, with legacy aliases for Claude and Codex session and weekly meters. */
   id: Schema.String,
-  /** The one model a scoped meter limits; null when it limits the account. */
+  /** The provider's id when `id` is a legacy alias. */
+  nativeId: Schema.optional(Schema.String),
+  /** The model or family the provider named, if given. */
   model: Schema.NullOr(Schema.String),
+  scope: Schema.optional(ServerProviderUsageScope),
+  observedAt: Schema.optional(IsoDateTime),
   usedPercent: Schema.Number,
   windowMinutes: Schema.NullOr(Schema.Number),
   resetsAt: Schema.NullOr(Schema.String),

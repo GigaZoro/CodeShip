@@ -175,17 +175,19 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         const differs = (a: string | undefined, b: string | undefined) =>
           a !== undefined && b !== undefined && a !== b;
         const switchedAccount =
+          probedSnapshot.auth.status === "unauthenticated" ||
           differs(probedSnapshot.auth.email?.toLowerCase(), previous.email?.toLowerCase()) ||
+          differs(probedSnapshot.auth.profileId, previous.profileId) ||
           (probedSnapshot.auth.workspaceId !== undefined &&
             probedSnapshot.auth.workspaceId !== previous.workspaceId);
-        const usageLimits = switchedAccount
-          ? probedSnapshot.usageLimits
-          : resolveUsageLimitsAfterProbe({
-              published: state.snapshot.usageLimits,
-              probed: probedSnapshot.usageLimits,
-            });
+        const usageLimits = resolveUsageLimitsAfterProbe({
+          published: switchedAccount ? undefined : state.snapshot.usageLimits,
+          probed: probedSnapshot.usageLimits,
+        });
         const workspaceId =
-          usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
+          !switchedAccount && probedSnapshot.usageLimits?.unavailable?.reason === "probeFailed"
+            ? state.snapshot.auth.workspaceId
+            : undefined;
         const snapshot = withUsageLimits(
           workspaceId && !probedSnapshot.auth.workspaceId
             ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
@@ -269,8 +271,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     const { snapshot } = yield* Ref.get(snapshotStateRef);
     if (
       !snapshot.enabled ||
-      !snapshot.usageLimits ||
-      snapshot.usageLimits.unavailable?.reason === "unsupported"
+      (!snapshot.usageLimits && !input.invalidateUsageCache && !input.checkUsageLimits) ||
+      snapshot.usageLimits?.unavailable?.reason === "unsupported"
     )
       return;
     // An in-flight refresh may have read cached usage, so one refresh waits behind it.

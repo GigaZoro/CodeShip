@@ -102,7 +102,7 @@ function canonicalModelSelectionOptions(
   );
 }
 
-/** Same model run. `autoAccount` picks the account rather than configuring the run, so it is ignored. */
+/** Compares the concrete run independently of how its destination was chosen. */
 export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection): boolean {
   if (left.instanceId !== right.instanceId || left.model !== right.model) {
     return false;
@@ -117,27 +117,31 @@ export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection
   );
 }
 
-/** Same pick, including whether the server chooses the account. */
+function modelRoutingIntent(selection: ModelSelection) {
+  if (selection.quotaAwareAuto === true) return "quota-aware";
+  return selection.autoAccount === true ? "auto-account" : "pinned";
+}
+
+/** Same pick, including how the server chooses its destination. */
 export function modelPicksEqual(left: ModelSelection, right: ModelSelection): boolean {
   return (
-    (left.autoAccount === true) === (right.autoAccount === true) &&
-    modelSelectionsEqual(left, right)
+    modelRoutingIntent(left) === modelRoutingIntent(right) && modelSelectionsEqual(left, right)
   );
 }
 
 /** `selection` with the server picking its account, or pinned to the account it names. */
 export function withAutoAccount(selection: ModelSelection, autoAccount: boolean): ModelSelection {
-  const { autoAccount: _previous, ...pinned } = selection;
+  const { autoAccount: _autoAccount, quotaAwareAuto: _quotaAwareAuto, ...pinned } = selection;
   return autoAccount ? { ...pinned, autoAccount: true } : pinned;
 }
 
-/** Keeps every field of `selection`, such as `autoAccount`, while replacing its options. */
+/** Keeps the selected destination and routing intent while replacing the options. */
 export function withModelSelectionOptions(
   selection: ModelSelection,
   options: ReadonlyArray<ProviderOptionSelection> | null | undefined,
 ): ModelSelection {
-  const next = createModelSelection(selection.instanceId, selection.model, options);
-  return selection.autoAccount === true ? { ...next, autoAccount: true } : next;
+  const { options: _previous, ...pick } = selection;
+  return options?.length ? { ...pick, options: cloneSelections(options) } : pick;
 }
 
 /**
@@ -146,7 +150,8 @@ export function withModelSelectionOptions(
  * Two Auto picks match: the server runs both on the model and account Auto settles on.
  */
 export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
-  if (pick.autoAccount === true && thread.autoAccount === true) return true;
+  const intent = modelRoutingIntent(pick);
+  if (intent !== "pinned" && intent === modelRoutingIntent(thread)) return true;
   const withoutFastModeOff = (selection: ModelSelection) =>
     withModelSelectionOptions(
       selection,

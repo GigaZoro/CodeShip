@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { applyUsageLimitsUpdate, resolveUsageLimitsAfterProbe } from "./usageLimits.ts";
 
 const checkedAt = "2026-09-03T12:00:00.000Z";
+const later = "2026-09-03T12:00:05.000Z";
 const session = {
   id: "five_hour",
   kind: "session",
@@ -23,6 +24,27 @@ const weekly = {
 const published = { checkedAt, windows: [session, weekly] };
 
 describe("applyUsageLimitsUpdate", () => {
+  it("preserves the observation time of an omitted window across a sparse update and failed probe", () => {
+    const updated = applyUsageLimitsUpdate({
+      previous: published,
+      checkedAt: later,
+      update: { windows: [{ ...session, usedPercent: 55 }] },
+    });
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: updated,
+        probed: {
+          checkedAt: "2026-09-03T12:00:10.000Z",
+          windows: [],
+          unavailable: { reason: "probeFailed" },
+        },
+      })?.windows,
+    ).toEqual([
+      { ...session, usedPercent: 55, observedAt: later },
+      { ...weekly, observedAt: checkedAt },
+    ]);
+  });
+
   it("recovers a failed probe from an available stream snapshot and retains it across failed refreshes", () => {
     const failed = {
       checkedAt,
@@ -31,7 +53,7 @@ describe("applyUsageLimitsUpdate", () => {
     };
     const update = { windows: [session], available: true as const };
     const recovered = applyUsageLimitsUpdate({ previous: failed, checkedAt, update });
-    expect(recovered).toEqual({ checkedAt, windows: [session] });
+    expect(recovered).toEqual({ checkedAt, windows: [{ ...session, observedAt: checkedAt }] });
     expect(resolveUsageLimitsAfterProbe({ published: recovered, probed: failed })).toBe(recovered);
     const unsupported = { ...failed, unavailable: { reason: "unsupported" as const } };
     expect(applyUsageLimitsUpdate({ previous: unsupported, checkedAt, update })).toBe(unsupported);
@@ -51,6 +73,31 @@ describe("applyUsageLimitsUpdate", () => {
     expect(next).toBe(published);
   });
 
+  it("keeps exhaustion for the same shared models and restarts it when membership changes", () => {
+    const window = {
+      ...weekly,
+      usedPercent: 100,
+      observedAt: checkedAt,
+      exhaustedSince: checkedAt,
+      scope: { models: ["a", "b"] as const },
+    };
+    const previous = { checkedAt, windows: [window] };
+    const update = (models?: readonly [string, ...string[]]) =>
+      applyUsageLimitsUpdate({
+        previous,
+        checkedAt: later,
+        update: {
+          windows: [{ ...weekly, usedPercent: 100, ...(models && { scope: { models } }) }],
+        },
+      });
+    expect(update()).toBe(previous);
+    expect(update(["b", "a"])).toBe(previous);
+    expect(update(["a", "c"])?.windows[0]).toMatchObject({
+      scope: { models: ["a", "c"] },
+      exhaustedSince: later,
+    });
+  });
+
   it("upserts by id and keeps the reset a percent-only update omits", () => {
     const next = applyUsageLimitsUpdate({
       previous: published,
@@ -63,7 +110,10 @@ describe("applyUsageLimitsUpdate", () => {
     expect(next).toEqual({
       checkedAt: "2026-09-03T12:00:05.000Z",
       accountReadAt: checkedAt,
-      windows: [{ ...session, usedPercent: 55 }, weekly],
+      windows: [
+        { ...session, usedPercent: 55, observedAt: later },
+        { ...weekly, observedAt: checkedAt },
+      ],
     });
     // A later update still names the full read the account fields came from.
     expect(
@@ -88,7 +138,11 @@ describe("applyUsageLimitsUpdate", () => {
   it("marks a first sparse update as unavailable", () => {
     expect(
       applyUsageLimitsUpdate({ previous: undefined, checkedAt, update: { windows: [weekly] } }),
-    ).toEqual({ checkedAt, windows: [weekly], unavailable: { reason: "probeFailed" } });
+    ).toEqual({
+      checkedAt,
+      windows: [{ ...weekly, observedAt: checkedAt }],
+      unavailable: { reason: "probeFailed" },
+    });
   });
 
   it("keeps when a window was first seen used up until it drops below 100%", () => {
@@ -99,15 +153,18 @@ describe("applyUsageLimitsUpdate", () => {
       checkedAt: at(1),
       update: { windows: [{ ...weekly, usedPercent: 100 }] },
     })!;
-    const firstSeen = { ...weekly, usedPercent: 100, exhaustedSince: at(1) };
-    expect(spent.windows).toEqual([session, firstSeen]);
+    const firstSeen = { ...weekly, usedPercent: 100, exhaustedSince: at(1), observedAt: at(1) };
+    expect(spent.windows).toEqual([{ ...session, observedAt: checkedAt }, firstSeen]);
 
     const omitted = applyUsageLimitsUpdate({
       previous: spent,
       checkedAt: at(60),
       update: { windows: [{ ...session, usedPercent: 55 }] },
     })!;
-    expect(omitted.windows).toEqual([{ ...session, usedPercent: 55 }, firstSeen]);
+    expect(omitted.windows).toEqual([
+      { ...session, usedPercent: 55, observedAt: at(60) },
+      firstSeen,
+    ]);
     expect(usageWindowLimitEnd(omitted, omitted.windows[1]!)).toBe(Date.parse(at(1 + 300)));
 
     expect(
@@ -126,7 +183,7 @@ describe("applyUsageLimitsUpdate", () => {
         checkedAt: at(60),
         update: { windows: [{ ...session, usedPercent: 55 }] },
       })?.windows[1],
-    ).toEqual({ ...weekly, usedPercent: 100, exhaustedSince: checkedAt });
+    ).toEqual({ ...weekly, usedPercent: 100, exhaustedSince: checkedAt, observedAt: checkedAt });
 
     expect(
       applyUsageLimitsUpdate({
@@ -134,7 +191,7 @@ describe("applyUsageLimitsUpdate", () => {
         checkedAt: at(62),
         update: { windows: [{ ...weekly, usedPercent: 80 }] },
       })?.windows[1],
-    ).toEqual({ ...weekly, usedPercent: 80 });
+    ).toEqual({ ...weekly, usedPercent: 80, observedAt: at(62) });
   });
 
   it("preserves reset credits and programs when a streamed window update changes usage", () => {
@@ -149,7 +206,10 @@ describe("applyUsageLimitsUpdate", () => {
     expect(next).toEqual({
       checkedAt: "2026-09-03T12:00:05.000Z",
       accountReadAt: checkedAt,
-      windows: [{ ...session, usedPercent: 55 }, weekly],
+      windows: [
+        { ...session, usedPercent: 55, observedAt: later },
+        { ...weekly, observedAt: checkedAt },
+      ],
       resetCredits,
       resetPrograms,
     });
@@ -209,12 +269,59 @@ describe("applyUsageLimitsUpdate", () => {
 });
 
 describe("resolveUsageLimitsAfterProbe", () => {
+  it.each([
+    ["accountKey", "account-a", "account-b"],
+    ["credentialFingerprint", "credential-a", "credential-b"],
+    ["plan", "pro", "team"],
+  ] as const)("keeps observations within their %s", (key, before, after) => {
+    const old = {
+      ...published,
+      checkedAt: later,
+      [key]: before,
+      windows: [{ ...session, usedPercent: 100, exhaustedSince: "2026-09-03T11:00:00.000Z" }],
+    };
+    const read = {
+      ...published,
+      [key]: after,
+      windows: [{ ...session, usedPercent: 100 }],
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: old, probed: read })?.windows).toEqual([
+      { ...session, usedPercent: 100, exhaustedSince: checkedAt, observedAt: checkedAt },
+    ]);
+  });
+
+  it("does not carry exhaustion when a reset starts a new window", () => {
+    const old = {
+      ...published,
+      windows: [{ ...session, usedPercent: 100, exhaustedSince: checkedAt }],
+    };
+    const newReset = "2026-09-03T20:00:00.000Z";
+    const readAt = "2026-09-03T15:00:00.000Z";
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: old,
+        probed: {
+          checkedAt: readAt,
+          windows: [{ ...session, usedPercent: 100, resetsAt: newReset }],
+        },
+      })?.windows,
+    ).toEqual([
+      {
+        ...session,
+        usedPercent: 100,
+        resetsAt: newReset,
+        exhaustedSince: readAt,
+        observedAt: readAt,
+      },
+    ]);
+  });
+
   it("uses read order for windows while taking metadata from the successful probe", () => {
     const live = {
       checkedAt: "2026-09-03T12:00:05.000Z",
       windows: [
-        { ...session, usedPercent: 95 },
-        { ...weekly, usedPercent: 70 },
+        { ...session, usedPercent: 95, observedAt: later },
+        { ...weekly, usedPercent: 70, observedAt: checkedAt },
       ],
       resetCredits: { availableCount: 2 },
       externalUsage: { label: "Old dashboard", url: "https://example.com/old" },
@@ -230,13 +337,17 @@ describe("resolveUsageLimitsAfterProbe", () => {
       ...probed,
       checkedAt: live.checkedAt,
       accountReadAt: probed.checkedAt,
-      windows: live.windows,
+      windows: [live.windows[0]],
     });
 
     const sameTime = { ...probed, checkedAt: live.checkedAt };
     const newer = { ...probed, checkedAt: "2026-09-03T12:00:06.000Z" };
-    expect(resolveUsageLimitsAfterProbe({ published: live, probed: sameTime })).toEqual(sameTime);
-    expect(resolveUsageLimitsAfterProbe({ published: live, probed: newer })).toEqual(newer);
+    for (const probe of [sameTime, newer]) {
+      expect(resolveUsageLimitsAfterProbe({ published: live, probed: probe })).toEqual({
+        ...probe,
+        windows: [{ ...probe.windows[0], observedAt: probe.checkedAt }],
+      });
+    }
   });
 
   it("keeps a newer streamed update's credits, and a window it used up withdraws the read's yes", () => {
@@ -253,7 +364,7 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published: streamed, probed })).toEqual({
       checkedAt: streamed.checkedAt,
       accountReadAt: probed.checkedAt,
-      windows: streamed.windows,
+      windows: streamed.windows.map((window) => ({ ...window, observedAt: streamed.checkedAt })),
       credits: streamed.credits,
       usageAllowed: false,
     });
@@ -305,6 +416,7 @@ describe("resolveUsageLimitsAfterProbe", () => {
         ...weekly,
         usedPercent: 100,
         exhaustedSince: expected,
+        observedAt: probed.checkedAt,
       });
     },
   );

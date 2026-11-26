@@ -11,6 +11,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { createMuseSdkHost, makeMuseEnvironment } from "./sdk.ts";
 import { parseMuseVersion } from "./maintenance.ts";
 import { discoverMuseModels, museModelCapabilities } from "./modelCatalog.ts";
+import { museSubscriptionLimits } from "./usageLimits.ts";
 import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   buildServerProvider,
@@ -149,14 +150,22 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         "Muse Code SDK could not read the model catalog. Check your Muse installation and run `muse login` on this T3.CodeShip server host.",
     });
   }
-  const { models, live } = catalog.success.value;
+  const { models, live, usage } = catalog.success.value;
   if (live) yield* onLiveCatalog;
   // MSP reports no login state; a turn Muse refuses for its login marks the account signed out.
   return snapshot(
     {
       installed: true,
       version,
-      auth: { status: "unknown" },
+      auth: {
+        status: "unknown",
+        ...(museEnvironment.META_API_KEY
+          ? { funding: "metered" }
+          : usage
+            ? { funding: "included" }
+            : {}),
+      },
+      ...(usage ? { usageLimits: museSubscriptionLimits(usage) } : {}),
       ...(models.length > 0
         ? { status: "ready" }
         : {

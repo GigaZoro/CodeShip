@@ -521,7 +521,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
   }
 
   const auth: ServerProviderAuth = apiKey
-    ? { status: "authenticated", type: "api_key", label: "xAI API key" }
+    ? { status: "authenticated", type: "api_key", label: "xAI API key", funding: "metered" }
     : cliModels.authenticated === true
       ? { status: "authenticated", type: "cached_token", label: "Grok account" }
       : cliModels.authenticated === false

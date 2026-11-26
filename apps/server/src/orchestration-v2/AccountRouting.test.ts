@@ -40,6 +40,7 @@ import {
 import {
   type AccountRoutingContext,
   accountsWithRoom,
+  automaticAccountEligibility,
   failoverLimitedLaunch,
   routeAutoAccount,
   usageBlock,
@@ -1618,6 +1619,138 @@ describe("accountsWithRoom", () => {
   });
 });
 
+describe("verified funding for automatic admission", () => {
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const custom = ProviderDriverKind.make("custom-local-agent");
+  const weeklyReset = "2026-11-06T00:00:00.000Z";
+
+  it.each([
+    {
+      name: "Google OAuth without usage metrics",
+      driver: antigravity,
+      authType: "oauth-personal",
+      funding: "included",
+      admits: true,
+    },
+    {
+      name: "Gemini key",
+      driver: antigravity,
+      authType: "gemini-api-key",
+      funding: "metered",
+      admits: false,
+    },
+    {
+      name: "Agent Platform",
+      driver: antigravity,
+      authType: "agent-platform",
+      funding: "metered",
+      admits: false,
+    },
+    {
+      name: "a custom adapter with an included model",
+      driver: custom,
+      modelFunding: "included",
+      admits: true,
+    },
+    {
+      name: "a custom adapter with OAuth and no payer declaration",
+      driver: custom,
+      authType: "oauth-personal",
+      admits: false,
+    },
+    {
+      name: "a known driver with an unidentified payer",
+      driver: claude,
+      authType: "customEndpoint",
+      admits: false,
+    },
+    {
+      name: "a metered model on an included account",
+      driver: custom,
+      funding: "included",
+      modelFunding: "metered",
+      admits: false,
+    },
+    {
+      name: "an included account disabled in the project",
+      driver: custom,
+      funding: "included",
+      disabled: true,
+      admits: false,
+    },
+    {
+      name: "an included account held after a refusal with no metrics",
+      driver: custom,
+      funding: "included",
+      held: true,
+      admits: false,
+    },
+    {
+      name: "an included account whose provider refused ordinary usage without a reset",
+      driver: custom,
+      funding: "included",
+      ordinaryUsageRefused: true,
+      admits: false,
+    },
+  ] as const)("admits $name only with verified funding and room", (row) => {
+    const account = provider(primary, {
+      driver: row.driver,
+      auth: {
+        status: "authenticated",
+        ...("authType" in row ? { type: row.authType } : {}),
+        ...("funding" in row ? { funding: row.funding } : {}),
+      },
+      models: provider(primary).models.map((model) => ({
+        ...model,
+        ...("modelFunding" in row ? { funding: row.modelFunding } : {}),
+      })),
+      ...("ordinaryUsageRefused" in row
+        ? {
+            usageLimits: {
+              checkedAt: provider(primary).checkedAt,
+              usageAllowed: false,
+              windows: [],
+            },
+          }
+        : {}),
+    });
+    const context = {
+      providers: [account],
+      settings: {
+        ...settings([primary]),
+        providerInstances: { [primary]: { driver: row.driver, enabled: true } },
+        projectSettingsOverrides:
+          "disabled" in row
+            ? { [projectId]: { providerInstances: { [primary]: { enabled: false } } } }
+            : {},
+      },
+      nowMs,
+      recordedLimits: new Map(
+        "held" in row
+          ? [[primary, [{ resetAt: weeklyReset, refusedAt: "2026-11-03T11:00:00Z" }]]]
+          : [],
+      ),
+      projectId,
+      driver: row.driver,
+      model: auto.model,
+      mcpSignInsNeeded: signIns(),
+      funding: "verified" as const,
+    };
+    assert.deepEqual(
+      accountsWithRoom(context).map(({ instanceId }) => instanceId),
+      row.admits ? [primary] : [],
+    );
+    if ("ordinaryUsageRefused" in row) {
+      assert.deepEqual(automaticAccountEligibility(account, context), {
+        kind: "usage_limited",
+        model: auto.model,
+        onCredits: false,
+        limitedUntilMs: null,
+      });
+    }
+  });
+});
+
 describe("prepaid Codex credits", () => {
   const codexDriver = ProviderDriverKind.make("codex");
   const paid = ProviderInstanceId.make("codex_paid");
@@ -1639,6 +1772,7 @@ describe("prepaid Codex credits", () => {
   ) =>
     provider(instanceId, {
       driver: codexDriver,
+      auth: { status: "authenticated", type: "chatgpt", funding: "included" },
       models: [{ ...provider(primary).models[0]!, slug: model, aliases: [] }],
       usageLimits: codexRateLimitsToLimits({
         checkedAt: read.checkedAt ?? "2026-11-03T11:59:00.000Z",
@@ -1765,18 +1899,22 @@ describe("prepaid Codex credits", () => {
       room: true,
     },
   ] as const)("$name", ({ optedIn, read, room, ...credits }) => {
+    const input = {
+      ...context(
+        [codexAccount(paid, read)],
+        optedIn,
+        "access" in credits ? credits.access : counted,
+        "allowance" in credits ? credits.allowance : cap,
+      ),
+      driver: codexDriver,
+      model,
+    };
     assert.deepEqual(
-      accountsWithRoom({
-        ...context(
-          [codexAccount(paid, read)],
-          optedIn,
-          "access" in credits ? credits.access : counted,
-          "allowance" in credits ? credits.allowance : cap,
-        ),
-        driver: codexDriver,
-        model,
-      }).map((account) => account.instanceId),
-      room === true ? [paid] : [],
+      accountsWithRoom({ ...input, funding: "verified" }).map(({ instanceId, onCredits }) => ({
+        instanceId,
+        onCredits,
+      })),
+      room === true ? [{ instanceId: paid, onCredits: true }] : [],
     );
   });
 

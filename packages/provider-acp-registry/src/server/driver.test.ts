@@ -143,7 +143,9 @@ describe("acpRegistrySnapshotReadiness", () => {
           ready: true,
           icon: null,
           authMethods: [],
-          models: [{ id: "probe-model", name: "Probe model", description: null }],
+          models: [
+            { id: "probe-model", name: "Probe model", description: null, funding: "included" },
+          ],
           currentModelId: "probe-model",
           configOptions: [],
           sessionManagement: {
@@ -164,7 +166,7 @@ describe("acpRegistrySnapshotReadiness", () => {
       applyAcpRegistryLiveConfiguration(
         provider,
         {
-          models: [{ id: "live-model", name: "Live model", description: null }],
+          models: [{ id: "live-model", name: "Live model", description: null, funding: "metered" }],
           currentModelId: "live-model",
           configOptions: [],
         },
@@ -173,7 +175,7 @@ describe("acpRegistrySnapshotReadiness", () => {
     ).toMatchObject({
       auth: { status: "unknown", canLogout: true },
       nativeSessions: { canList: true, canLoad: true, canResume: true },
-      models: [{ slug: "live-model", isDefault: true }],
+      models: [{ slug: "live-model", isDefault: true, funding: "metered" }],
     });
 
     expect(
@@ -203,6 +205,7 @@ describe("acpRegistrySnapshotReadiness", () => {
       {
         slug: "probe-model",
         isDefault: true,
+        funding: "included",
         capabilities: { optionDescriptors: [{ id: "effort", currentValue: "high" }] },
       },
     ]);

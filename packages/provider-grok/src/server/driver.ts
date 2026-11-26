@@ -191,9 +191,13 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
           ),
         (snapshot) =>
           readGrokAccount(processEnv).pipe(
-            Effect.map(({ email, usageLimits }) => ({
+            Effect.map(({ email, funding, usageLimits }) => ({
               ...snapshot,
-              auth: email ? { ...snapshot.auth, email } : snapshot.auth,
+              auth: {
+                ...snapshot.auth,
+                ...(email ? { email } : {}),
+                ...(funding ? { funding } : {}),
+              },
               usageLimits,
             })),
           ),

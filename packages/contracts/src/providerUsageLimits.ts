@@ -12,6 +12,26 @@ import {
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 
+export const ServerProviderUsageScope = Schema.Union([
+  Schema.Literals([
+    "account",
+    "model",
+    "gemini-default",
+    "gemini-argon",
+    "third-party",
+    "opencode-go",
+    "cursor-auto",
+    "cursor-api",
+    "spending-cap",
+    "unknown",
+  ]),
+  Schema.Struct({
+    /** Canonical catalog slugs drawing on the same provider allowance. */
+    models: Schema.NonEmptyArray(TrimmedNonEmptyString).check(Schema.isUnique()),
+  }),
+]);
+export type ServerProviderUsageScope = typeof ServerProviderUsageScope.Type;
+
 /** Stable per-provider ids let sparse updates merge with full probes. */
 export const ServerProviderUsageWindow = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -20,10 +40,13 @@ export const ServerProviderUsageWindow = Schema.Struct({
   usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
   resetsAt: Schema.optional(IsoDateTime),
   windowDurationMins: Schema.optional(NonNegativeInt),
+  /** When this window was last observed, independent of other windows in the snapshot. */
+  observedAt: Schema.optional(IsoDateTime),
   /** When the window was first seen at 100%; absent below 100% and from older servers. */
   exhaustedSince: Schema.optional(IsoDateTime),
-  /** The model a scoped window limits, by the provider's name for it (Claude's `Fable`). */
+  /** The model a scoped window limits, by slug or a provider's family name (Claude's `Fable`). */
   model: Schema.optional(TrimmedNonEmptyString),
+  scope: Schema.optional(ServerProviderUsageScope),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 

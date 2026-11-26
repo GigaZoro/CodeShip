@@ -99,7 +99,7 @@ import {
 } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
-import { autoModePick } from "@t3tools/shared/serverSettings";
+import { autoModePick, canAccountRun } from "@t3tools/shared/serverSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   normalizeThreadPullRequestKey,
@@ -1737,22 +1737,40 @@ const make = Effect.gen(function* () {
    * usable, and with `usage`, those whose usage reading is stale.
    */
   const loadProvidersRechecked = Effect.fn("OrchestratorMcpService.loadProvidersRechecked")(
-    function* (usage: boolean) {
+    function* (includeUsage?: (provider: ServerProvider) => boolean) {
       const providers = yield* loadProviders;
       const nowMs = yield* Clock.currentTimeMillis;
       const recheckBy = yield* recheckDeadline;
-      return yield* recheckInstances(
+      const readiness = recheckInstances(
         providers
           .filter(
             (provider) =>
-              (isRecheckable(provider) &&
-                nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS) ||
-              (usage && publishesUsage(provider) && usageReadingStale(provider, nowMs)),
+              isRecheckable(provider) &&
+              nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS,
           )
           .map((provider) => provider.instanceId),
         providers,
         recheckBy,
       );
+      if (!includeUsage) return yield* readiness;
+      const shouldRefresh = (provider: ServerProvider) =>
+        includeUsage(provider) &&
+        provider.usageLimits?.unavailable?.reason !== "unsupported" &&
+        usageReadingStale(provider, nowMs);
+      const instanceIds = providers.filter(shouldRefresh).map((provider) => provider.instanceId);
+      if (instanceIds.length === 0) return yield* readiness;
+      const [health] = yield* Effect.all(
+        [
+          readiness,
+          providerRegistry.refreshUsageIfStale({
+            instanceIds,
+            shouldRefresh,
+            waitMs: recheckBy - nowMs,
+          }),
+        ],
+        { concurrency: 2 },
+      );
+      return { providers: yield* loadProviders, checking: health.checking };
     },
   );
 
@@ -3345,9 +3363,15 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope);
-      const { providers, checking } = yield* loadProvidersRechecked(input.usage === true);
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
+      const { providers, checking } = yield* loadProvidersRechecked(
+        input.usage
+          ? (provider) =>
+              orchestrationCapableInstanceIds.has(provider.instanceId) &&
+              canAccountRun(provider, settings, parent?.thread.projectId ?? null)
+          : undefined,
+      );
       const availability = Option.isNone(accountRouting)
         ? {
             accounts: new Map<ProviderInstanceId, string>(),

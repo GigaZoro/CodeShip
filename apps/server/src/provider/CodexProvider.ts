@@ -95,6 +95,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel> | undefined;
   readonly serviceTier?: string | undefined;
+  readonly usesNativeOpenAiBackend?: boolean;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
   readonly storedLogin?: CodexStoredChatGptLogin | undefined;
 }
@@ -684,6 +685,11 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     version,
     models,
     serviceTier: config?.service_tier ?? undefined,
+    usesNativeOpenAiBackend:
+      config !== undefined &&
+      (config.model_provider ?? "openai") === "openai" &&
+      config["openai_base_url"] == null &&
+      !input.environment?.OPENAI_BASE_URL?.trim(),
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
     ...(storedLogin ? { storedLogin } : {}),
   } satisfies CodexAppServerProviderSnapshot;
@@ -813,7 +819,12 @@ export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCode
   },
 );
 
-function accountProbeStatus({ account, rateLimits, storedLogin }: CodexAppServerProviderSnapshot): {
+function accountProbeStatus({
+  account,
+  rateLimits,
+  storedLogin,
+  usesNativeOpenAiBackend,
+}: CodexAppServerProviderSnapshot): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProvider["auth"];
   readonly message?: string;
@@ -830,6 +841,14 @@ function accountProbeStatus({ account, rateLimits, storedLogin }: CodexAppServer
     (workspaceId && storedLogin?.accountId === workspaceId ? storedLogin.email : undefined);
   const auth = {
     status: account.account ? ("authenticated" as const) : ("unknown" as const),
+    funding:
+      account.account?.type === "apiKey"
+        ? "metered"
+        : account.account?.type === "chatgpt" &&
+            account.requiresOpenaiAuth &&
+            usesNativeOpenAiBackend
+          ? "included"
+          : "unknown",
     ...(account.account?.type ? { type: account.account?.type } : {}),
     ...(authLabel ? { label: authLabel } : {}),
     ...(authEmail ? { email: authEmail } : {}),

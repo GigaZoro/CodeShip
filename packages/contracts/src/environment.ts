@@ -126,6 +126,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageResetRedeemer: Schema.optionalKey(Schema.Boolean),
   /** Honors `autoModeProvider`, `autoModeModels` and `ModelSelection.autoAccount`; hide Auto where absent. */
   autoMode: Schema.optionalKey(Schema.Boolean),
+  /** Resolves fresh `ModelSelection.quotaAwareAuto` picks on the destination. */
+  quotaAwareAuto: Schema.optionalKey(Schema.Boolean),
   /** Stores `newThreadsUseLastModel`; hide its switch where absent. */
   lastPickedModel: Schema.optionalKey(Schema.Boolean),
   /** Serves provider.skills.export and provider.skills.install; hide Copy to machine where absent. */

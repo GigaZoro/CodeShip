@@ -41,6 +41,11 @@ capabilities, never the driver kind.
 - **Instances.** Session state, catalogs, and credentials belong to a provider instance, not the
   driver. Remove ambient credentials the instance did not configure, so two instances cannot
   silently share an account or billing.
+- **Auto funding.** Declare `included` only when the executable account or model can use its
+  allowance without falling through to paid usage. Leave funding unknown when a login, model
+  name or quota reading does not establish this. ACP agents can declare funding for each model
+  through `_meta["t3.codes/funding"]` on its model entry or model-select choice. That declaration
+  must hold across the workspaces where the instance advertises it.
 - **Status checks.** Background status and model refreshes must not open a session that can start
   MCP servers, run hooks, or launch a login. Keep heavier probes behind an explicit refresh. A
   `--version` that misses its deadline on a busy machine is not a failure: run the check through

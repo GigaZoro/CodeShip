@@ -1,12 +1,34 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
-import { ModelSelection } from "./modelSelection.ts";
+import { CanonicalModelSelection, ModelSelection } from "./modelSelection.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
 const encodeModelSelection = Schema.encodeUnknownEffect(ModelSelection);
+const decodeCanonicalSelection = Schema.decodeUnknownEffect(CanonicalModelSelection);
+const decodeLegacySelection = Schema.decodeUnknownEffect(
+  CanonicalModelSelection.mapFields(Struct.omit(["quotaAwareAuto"])),
+);
+
+it.effect("keeps quota-aware Auto distinct from legacy Auto on the wire", () =>
+  Effect.gen(function* () {
+    const concrete = {
+      instanceId: ProviderInstanceId.make("custom_account"),
+      model: "custom-model",
+    };
+    const legacy = { ...concrete, autoAccount: true };
+    const quotaAware = { ...concrete, quotaAwareAuto: true };
+
+    assert.deepStrictEqual(yield* decodeModelSelection(legacy), legacy);
+    const encoded = yield* encodeModelSelection(yield* decodeModelSelection(quotaAware));
+    assert.deepStrictEqual(encoded, quotaAware);
+    assert.deepStrictEqual(yield* decodeCanonicalSelection(encoded), quotaAware);
+    assert.deepStrictEqual(yield* decodeLegacySelection(encoded), concrete);
+  }),
+);
 
 it.effect("ModelSelection migrates legacy `provider` field to `instanceId`", () =>
   Effect.gen(function* () {

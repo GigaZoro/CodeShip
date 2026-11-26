@@ -637,6 +637,7 @@ export interface EffectiveComposerModelState {
   modelOptions: ProviderOptionSelectionsByProvider | null;
   /** The server picks the account; see `ModelSelection.autoAccount`. */
   autoAccount: boolean;
+  quotaAwareAuto: boolean;
 }
 
 interface ComposerDraftModelState {
@@ -997,12 +998,15 @@ function normalizeModelSelection(
   if (!model) {
     return null;
   }
-  const autoAccount = candidate?.autoAccount === true ? { autoAccount: true as const } : {};
+  const routing = {
+    ...(candidate?.autoAccount === true ? { autoAccount: true } : {}),
+    ...(candidate?.quotaAwareAuto === true ? { quotaAwareAuto: true } : {}),
+  };
   if (Array.isArray(candidate?.options)) {
     const selections = coerceProviderOptionSelections(candidate.options);
     return {
       ...createModelSelection(instanceId, model, selections),
-      ...autoAccount,
+      ...routing,
     } as NormalizedModelSelection;
   }
   const kindForLegacyOptions = normalizeProviderDriverKind(instanceId);
@@ -1016,7 +1020,7 @@ function normalizeModelSelection(
   const options = kindForLegacyOptions ? modelOptions?.[kindForLegacyOptions] : undefined;
   return {
     ...createModelSelection(instanceId, model, options),
-    ...autoAccount,
+    ...routing,
   } as NormalizedModelSelection;
 }
 
@@ -1033,11 +1037,7 @@ function legacySyncModelSelectionOptions(
   }
   const kind = normalizeProviderDriverKind(modelSelection.instanceId);
   const options = kind ? modelOptions?.[kind] : undefined;
-  return createModelSelection(
-    modelSelection.instanceId,
-    modelSelection.model,
-    options,
-  ) as NormalizedModelSelection;
+  return withModelSelectionOptions(modelSelection, options);
 }
 
 function legacyMergeModelSelectionIntoProviderModelOptions(
@@ -1178,9 +1178,7 @@ export function deriveEffectiveComposerModelState(input: {
     ].find((selections) => modelSelectionByProviderToOptions(selections) !== null) ?? null;
   const modelOptions = modelSelectionByProviderToOptions(optionSelections);
   // A draft pick decides alone: picking a model on one account pins the thread to it.
-  const autoAccount =
-    (activeSelection ?? input.threadModelSelection ?? input.projectModelSelection)?.autoAccount ===
-    true;
+  const selection = activeSelection ?? input.threadModelSelection ?? input.projectModelSelection;
 
   return {
     selectedModel,
@@ -1190,7 +1188,8 @@ export function deriveEffectiveComposerModelState(input: {
       optionSelections,
       selectedModel,
     }),
-    autoAccount,
+    autoAccount: selection?.autoAccount === true,
+    quotaAwareAuto: selection?.quotaAwareAuto === true,
   };
 }
 

@@ -761,13 +761,20 @@ describe("makeManagedServerProvider", () => {
           checkedAt: "2026-04-10T00:05:00.000Z",
           accountReadAt: "2026-04-10T00:00:01.000Z",
           windows: [
-            { id: "five_hour", kind: "session", label: "Session", usedPercent: 10 },
+            {
+              id: "five_hour",
+              kind: "session",
+              label: "Session",
+              usedPercent: 10,
+              observedAt: "2026-04-10T00:00:01.000Z",
+            },
             {
               id: "seven_day",
               kind: "weekly",
               label: "Weekly",
               usedPercent: 25,
               resetsAt: "2026-04-17T00:00:00.000Z",
+              observedAt: "2026-04-10T00:05:00.000Z",
             },
           ],
         });
@@ -831,6 +838,7 @@ describe("makeManagedServerProvider", () => {
           kind: "session",
           label: "Session",
           usedPercent: 60,
+          observedAt: "2026-04-10T00:00:02.000Z",
         } as const;
         yield* provider.applyUsageLimits({
           checkedAt: "2026-04-10T00:00:02.000Z",
@@ -893,7 +901,7 @@ describe("makeManagedServerProvider", () => {
         const partial = yield* provider.getSnapshot;
         assert.deepStrictEqual(partial.usageLimits, {
           checkedAt: "2026-04-10T00:00:02.000Z",
-          windows: [weekly],
+          windows: [{ ...weekly, observedAt: "2026-04-10T00:00:02.000Z" }],
           unavailable: failedLimits.unavailable,
         });
         yield* provider.applyUsageLimits({
@@ -901,7 +909,7 @@ describe("makeManagedServerProvider", () => {
           windows: [{ ...weekly }],
         });
         assert.strictEqual(yield* provider.getSnapshot, partial);
-        assert.deepStrictEqual((yield* provider.refresh).usageLimits, failedLimits);
+        assert.deepStrictEqual((yield* provider.refresh).usageLimits, partial.usageLimits);
 
         const completeLimits = {
           checkedAt: "2026-04-10T00:00:04.000Z",
@@ -911,7 +919,13 @@ describe("makeManagedServerProvider", () => {
           ],
         } as const;
         yield* Ref.set(probeSnapshot, { ...refreshedSnapshot, usageLimits: completeLimits });
-        assert.deepStrictEqual((yield* provider.refresh).usageLimits, completeLimits);
+        assert.deepStrictEqual((yield* provider.refresh).usageLimits, {
+          ...completeLimits,
+          windows: completeLimits.windows.map((window) => ({
+            ...window,
+            observedAt: completeLimits.checkedAt,
+          })),
+        });
       }),
     ).pipe(Effect.provide(layerAlwaysRunTest)),
   );

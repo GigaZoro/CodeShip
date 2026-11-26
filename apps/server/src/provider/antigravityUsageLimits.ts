@@ -124,14 +124,21 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
   for (const group of groups ?? []) {
     for (const bucket of group.buckets ?? []) {
       if (bucket.disabled) continue;
-      // Argon is metered apart from the default Gemini buckets; keep its group name.
-      const family = bucket.bucketId.startsWith("gemini-argon-")
-        ? group.displayName?.trim() || "Gemini Argon"
+      const scope = bucket.bucketId.startsWith("gemini-argon-")
+        ? "gemini-argon"
         : bucket.bucketId.startsWith("gemini-")
-          ? "Gemini"
+          ? "gemini-default"
           : bucket.bucketId.startsWith("3p-")
-            ? "Claude & GPT (shared)"
-            : group.displayName?.trim() || bucket.bucketId;
+            ? "third-party"
+            : "unknown";
+      const family =
+        scope === "gemini-argon"
+          ? group.displayName?.trim() || "Gemini Argon"
+          : scope === "gemini-default"
+            ? "Gemini"
+            : scope === "third-party"
+              ? "Claude & GPT (shared)"
+              : group.displayName?.trim() || bucket.bucketId;
       const weekly = bucket.window === "weekly";
       const session = bucket.window === "5h";
       const windowDurationMins = SUMMARY_WINDOW_MINS.get(bucket.window ?? "");
@@ -142,7 +149,7 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
         weekly ? "weekly" : session ? "session" : "other",
         windowDurationMins,
       );
-      if (window) windows.set(window.id, window);
+      if (window) windows.set(window.id, { ...window, scope });
     }
   }
   return [...windows.values()];
@@ -175,7 +182,9 @@ function modelWindows(models: typeof Models.Type) {
       );
       if (!window) continue;
       const previous = windows.get(window.id);
-      if (!previous || window.usedPercent > previous.usedPercent) windows.set(window.id, window);
+      if (!previous || window.usedPercent > previous.usedPercent) {
+        windows.set(window.id, { ...window, scope: "unknown" });
+      }
     }
   }
   return [...windows.values()];

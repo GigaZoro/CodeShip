@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { ProjectId, ThreadId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
-import { ProviderOptionDescriptor } from "./model.ts";
+import { ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const AcpRegistryAgentId = TrimmedNonEmptyString.check(
@@ -265,6 +265,7 @@ export const AcpRegistryProbeModel = Schema.Struct({
   id: AcpRegistryProbeText,
   name: AcpRegistryProbeText,
   description: AcpRegistryProbeDescription,
+  funding: Schema.optionalKey(ServerProviderFunding),
 });
 export type AcpRegistryProbeModel = typeof AcpRegistryProbeModel.Type;
 

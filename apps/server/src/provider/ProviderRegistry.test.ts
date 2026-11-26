@@ -1972,6 +1972,119 @@ it.layer(
       }),
     );
 
+    it.effect("shares a custom adapter's stale quota refresh across bounded waits", () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("custom-quota");
+        const instanceId = ProviderInstanceId.make("custom-quota");
+        const old = decodeServerProvider({
+          instanceId,
+          driver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-06-10T00:00:00.000Z",
+          version: "1.0.0",
+          models: [{ slug: "default", name: "Default", isCustom: false, capabilities: null }],
+        });
+        const fresh = {
+          ...old,
+          usageLimits: {
+            checkedAt: old.checkedAt,
+            windows: [{ id: "quota", kind: "other", label: "Quota", usedPercent: 40 }],
+          },
+        } as const satisfies ServerProvider;
+        const snapshot = yield* Ref.make(old);
+        const reads = yield* Ref.make(0);
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const instance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: "custom-quota" },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            resolveMaintenance: () => Effect.die("usage refresh does not need maintenance"),
+            getSnapshot: Ref.get(snapshot),
+            refresh: Effect.die("usage refresh should use the dedicated quota reader"),
+            refreshUsage: Effect.gen(function* () {
+              yield* Ref.update(reads, (count) => count + 1);
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              yield* Ref.set(snapshot, fresh);
+            }),
+            streamChanges: Stream.empty,
+            applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
+          },
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        } satisfies ProviderInstance;
+        const withoutLocalMeter: ServerProvider = {
+          ...old,
+          instanceId: ProviderInstanceId.make("custom-unmetered"),
+          usageLimits: {
+            checkedAt: old.checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" },
+          },
+        };
+        const signedOut: ServerProvider = {
+          ...old,
+          instanceId: ProviderInstanceId.make("custom-signed-out"),
+          auth: { status: "unauthenticated" },
+        };
+        const instances = [
+          instance,
+          ...[withoutLocalMeter, signedOut].map((provider) => ({
+            ...instance,
+            instanceId: provider.instanceId,
+            snapshot: { ...instance.snapshot, getSnapshot: Effect.succeed(provider) },
+          })),
+        ];
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const read = (waitMs: number) =>
+            registry.refreshUsageIfStale({
+              instanceIds: instances.map((entry) => entry.instanceId),
+              shouldRefresh: (provider) => !provider.usageLimits?.windows.length,
+              waitMs,
+            });
+          const first = yield* read(1_000).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          const second = yield* read(2_000).pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust("1 second");
+          expect(yield* Fiber.join(first)).toContainEqual(expect.objectContaining(old));
+
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(second)).toContainEqual(expect.objectContaining(fresh));
+          expect(yield* read(1_000)).toContainEqual(expect.objectContaining(fresh));
+          expect(yield* Ref.get(reads)).toBe(1);
+        }).pipe(
+          Effect.provide(
+            ProviderRegistry.layer.pipe(
+              Layer.provide(layerUnusedMutator),
+              Layer.provide(
+                Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+                  getInstance: (id) =>
+                    Effect.succeed(instances.find((entry) => entry.instanceId === id)),
+                  listInstances: Effect.succeed(instances),
+                  listUnavailable: Effect.succeed([]),
+                  streamChanges: Stream.empty,
+                  subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+                }),
+              ),
+              Layer.provide(
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-quota-" }),
+              ),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+        );
+      }),
+    );
+
     it.effect("persists the merged snapshot when a live update has empty models", () =>
       Effect.gen(function* () {
         const cursorDriver = ProviderDriverKind.make("cursor");
@@ -3264,6 +3377,16 @@ it.layer(
         );
         assert.strictEqual(status.status, "warning");
         assert.strictEqual(status.auth.status, "unknown");
+        const signedIn = yield* checkClaudeProviderStatus(
+          { ...defaultClaudeSettings, homePath: configDir },
+          claudeCapabilities({
+            tokenSource: "oauth",
+            apiKeySource: "none",
+            apiProvider: "firstParty",
+          }),
+          {},
+        );
+        assert.strictEqual(signedIn.auth.funding, "unknown");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {
@@ -3287,6 +3410,7 @@ it.layer(
         );
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.auth.status, "authenticated");
+        assert.strictEqual(status.auth.funding, "metered");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {

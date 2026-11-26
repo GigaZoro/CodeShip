@@ -802,6 +802,16 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     capabilities.apiKeySource === "none" &&
     (capabilities.tokenSource === "oauth" ||
       capabilities.tokenSource === "CLAUDE_CODE_OAUTH_TOKEN");
+  const nativeApiKey =
+    !customApiEndpoint &&
+    capabilities.apiProvider === "firstParty" &&
+    normalizeClaudeAuthMethod(capabilities.apiKeySource) === "apiKey";
+  const funding =
+    authMetadata?.type === "apiKey" || authMetadata?.type === "bedrock" || nativeApiKey
+      ? "metered"
+      : allowStreamedLimits && Option.isSome(settings)
+        ? "included"
+        : "unknown";
   const usageReading = !capabilities.usage
     ? makeUnavailableUsageLimits({
         checkedAt,
@@ -857,6 +867,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       status: "ready",
       auth: {
         status: "authenticated",
+        funding,
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(loginProfileId ? { profileId: loginProfileId } : {}),
         ...(loginExpiresAt ? { loginExpiresAt } : {}),

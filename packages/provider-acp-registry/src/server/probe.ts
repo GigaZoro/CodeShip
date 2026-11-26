@@ -3,6 +3,7 @@ import {
   AcpRegistryOperationError,
   AcpRegistryListSessionsResult,
   AcpRegistryProbeResult,
+  ServerProviderFunding,
   type AcpRegistryProbeAuthMethod,
   type AcpRegistryProbeModel,
   type AcpRegistryUrlAuthAction,
@@ -47,6 +48,7 @@ const MAX_COMMAND_LINE_LENGTH = 2_048;
 const PROBE_TIMEOUT_SECONDS = 60;
 const PROBE_TIMEOUT = `${PROBE_TIMEOUT_SECONDS} seconds`;
 const COMMAND_ADVERTISEMENT_GRACE = "500 millis";
+const isProviderFunding = Schema.is(ServerProviderFunding);
 
 const boundedText = (value: string, maximumLength: number): string =>
   value.trim().slice(0, maximumLength);
@@ -62,6 +64,7 @@ export function normalizeAcpRegistryWebUrl(value: string): string | undefined {
 
 function normalizedModel(id: string, candidate: AcpRegistryProbeModel): AcpRegistryProbeModel {
   return {
+    ...candidate,
     id,
     name: boundedText(candidate.name, MAX_NAME_LENGTH) || id,
     description:
@@ -215,18 +218,19 @@ export function normalizeAcpRegistryLiveConfiguration(
   const modelOption = findModelConfigOption(configOptions);
   const currentModelId =
     modelOption?.type === "select" ? modelOption.currentValue : modelState?.currentModelId;
-  const candidates =
+  const advertised =
     modelOption === undefined
-      ? (modelState?.availableModels ?? []).map((model) => ({
-          id: model.modelId,
-          name: model.name,
-          description: model.description ?? null,
-        }))
-      : flattenSelectChoices(modelOption.options).map((model) => ({
-          id: model.value,
-          name: model.name,
-          description: model.description ?? null,
-        }));
+      ? (modelState?.availableModels ?? [])
+      : flattenSelectChoices(modelOption.options);
+  const candidates = advertised.map((model) => {
+    const funding = model._meta?.["t3.codes/funding"];
+    return {
+      id: "value" in model ? model.value : model.modelId,
+      name: model.name,
+      description: model.description ?? null,
+      ...(isProviderFunding(funding) ? { funding } : {}),
+    };
+  });
   const boundedCurrentModelId =
     currentModelId === undefined
       ? null

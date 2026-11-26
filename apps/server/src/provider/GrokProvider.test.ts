@@ -479,6 +479,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
         status: "authenticated",
         type: "api_key",
         label: "xAI API key",
+        funding: "metered",
       });
       expect(snapshot.status).toBe("warning");
     }),
@@ -570,6 +571,36 @@ describe("Grok usage limits", () => {
 });
 
 it.layer(NodeServices.layer)("readGrokAccount", (it) => {
+  it.effect("identifies subscription funding only with a confirmed zero extra spending cap", () =>
+    Effect.gen(function* () {
+      const currentPeriod = { type: "USAGE_PERIOD_TYPE_WEEKLY" };
+      for (const [config, expected] of [
+        [{ currentPeriod, onDemandCap: {} }, "included"],
+        [{ currentPeriod, onDemandCap: { val: 0 } }, "included"],
+        [{ currentPeriod, onDemandCap: { val: 500 } }, undefined],
+        [{ currentPeriod, onDemandCap: { amount: 500 } }, undefined],
+        [{ currentPeriod }, undefined],
+        [{ onDemandCap: {} }, undefined],
+      ] as const) {
+        const account = yield* readGrokAccount({
+          GROK_AUTH: '{"https://accounts.x.ai/sign-in":{"key":"session-token"}}',
+        }).pipe(
+          Effect.provideService(
+            FileSystem.FileSystem,
+            FileSystem.makeNoop({ readFileString: () => Effect.succeed("") }),
+          ),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ config }))),
+            ),
+          ),
+        );
+        expect(account.funding).toBe(expected);
+      }
+    }),
+  );
+
   it.effect("reads the configured Grok home and prefers the current login scope to legacy", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

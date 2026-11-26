@@ -206,6 +206,14 @@ function accountLimitDetail(
   model?: string,
 ): LimitEnd | null {
   if (!isSubscriptionAccount(provider)) return null;
+  return usageLimitDetail(provider, input, model);
+}
+
+function usageLimitDetail(
+  provider: ServerProvider,
+  input: LimitInput,
+  model?: string,
+): LimitEnd | null {
   const canonical = model === undefined ? null : canonicalModel(provider, model);
   const ends = refusalEnds(
     provider,
@@ -309,27 +317,42 @@ export function modelScopeHolds(
 }
 
 /** The model this account would run for `model`, usage limits aside, or null when it cannot. */
-function runnableModel(
-  provider: ServerProvider,
-  input: Pick<AccountRoutingContext, "settings"> & {
-    readonly projectId: ProjectId;
-    readonly model: string;
-  },
-): string | null {
+type ModelAdmissionInput = Pick<AccountRoutingContext, "settings"> & {
+  readonly projectId: ProjectId;
+  readonly model: string;
+};
+
+function runnableModel(provider: ServerProvider, input: ModelAdmissionInput): string | null {
   return canAccountRun(provider, input.settings, input.projectId)
     ? resolveSelectableModel(provider.driver, input.model, provider.models)
     : null;
 }
 
 /** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
-function usableModel(
-  provider: ServerProvider,
-  input: Pick<AccountRoutingContext, "settings"> & {
-    readonly projectId: ProjectId;
-    readonly model: string;
-  },
-): string | null {
+function usableModel(provider: ServerProvider, input: ModelAdmissionInput): string | null {
   return isSubscriptionAccount(provider) ? runnableModel(provider, input) : null;
+}
+
+/** Checks a proposed automatic pick before ranking it or waiting for its usage to reset. */
+export function automaticAccountEligibility(
+  provider: ServerProvider,
+  input: LimitInput & ModelAdmissionInput,
+) {
+  const model = runnableModel(provider, input);
+  if (model === null) return { kind: "account_unavailable" } as const;
+  const funding =
+    provider.models.find((entry) => entry.slug === model)?.funding ?? provider.auth.funding;
+  if (funding !== "included")
+    return { kind: funding === "metered" ? "metered" : "funding_unverified" } as const;
+  const limit = usageLimitDetail(provider, input, model);
+  const onCredits = runsOnCredits(provider, input, model);
+  const usageAllowed = onCredits || provider.usageLimits?.usageAllowed !== false;
+  return {
+    kind: limit === null && usageAllowed ? "eligible" : "usage_limited",
+    model,
+    onCredits,
+    limitedUntilMs: limit?.end ?? null,
+  } as const;
 }
 
 /** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
@@ -378,6 +401,8 @@ interface AccountSearch extends AccountRoutingContext {
   readonly model: string;
   /** Order accounts with room by their next weekly reset on `model` first, then the saved order. */
   readonly preferEarliestReset?: boolean;
+  /** Automatic picks require a payer declaration. Explicit account routing retains its policy. */
+  readonly funding?: "verified";
 }
 
 export type ObserveAccount = (id: ProviderInstanceId, reason: AccountEligibility) => void;
@@ -387,6 +412,8 @@ export type AccountEligibility =
   | "driver_pinned"
   | "unsupported_driver"
   | "account_unavailable"
+  | "metered"
+  | "funding_unverified"
   | "usage_limited";
 
 /**
@@ -403,7 +430,7 @@ export function accountsWithRoom(
   /** New work on it spends the prepaid credits the user allowed, not plan usage. */
   readonly onCredits: boolean;
 }> {
-  if (!supportsAccountFailover(input.driver)) {
+  if (input.funding !== "verified" && !supportsAccountFailover(input.driver)) {
     if (observe)
       for (const provider of input.providers) observe(provider.instanceId, "unsupported_driver");
     return [];
@@ -413,27 +440,19 @@ export function accountsWithRoom(
       observe?.(provider.instanceId, "driver_pinned");
       return [];
     }
-    const model = modelWithRoom(provider, input);
-    observe?.(
-      provider.instanceId,
-      model !== null
-        ? "eligible"
-        : usableModel(provider, input) === null
-          ? "account_unavailable"
-          : "usage_limited",
-    );
-    return model === null
-      ? []
-      : [
-          {
-            instanceId: provider.instanceId,
-            model,
-            onCredits: runsOnCredits(provider, input, canonicalModel(provider, model)),
-            resetAt: input.preferEarliestReset
-              ? (nextWeeklyResetMs(provider, input.nowMs, model) ?? Infinity)
-              : Infinity,
-          },
-        ];
+    const admission = accountSearchEligibility(provider, input);
+    observe?.(provider.instanceId, admission.kind);
+    if (admission.kind !== "eligible") return [];
+    return [
+      {
+        instanceId: provider.instanceId,
+        model: admission.model,
+        onCredits: admission.onCredits,
+        resetAt: input.preferEarliestReset
+          ? (nextWeeklyResetMs(provider, input.nowMs, admission.model) ?? Infinity)
+          : Infinity,
+      },
+    ];
   });
   const ordered = orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
@@ -449,15 +468,29 @@ export function accountsWithRoom(
   });
 }
 
+function accountSearchEligibility(provider: ServerProvider, input: AccountSearch) {
+  if (input.funding === "verified") return automaticAccountEligibility(provider, input);
+  const model = usableModel(provider, input);
+  if (model === null) return { kind: "account_unavailable" } as const;
+  const limitedUntilMs = accountLimitEnd(provider, input, model);
+  return {
+    kind: limitedUntilMs === null ? "eligible" : "usage_limited",
+    model,
+    onCredits: runsOnCredits(provider, input, model),
+    limitedUntilMs,
+  } as const;
+}
+
 /** Accounts of `driver` that could run `model` but for usage, each with when its limits on it end. */
 function accountsByLimitEnd(input: AccountSearch) {
-  if (!supportsAccountFailover(input.driver)) return [];
+  if (input.funding !== "verified" && !supportsAccountFailover(input.driver)) return [];
   return input.providers.flatMap((provider) => {
     if (provider.driver !== input.driver) return [];
-    const model = usableModel(provider, input);
-    if (model === null) return [];
-    const end = accountLimitEnd(provider, input, model);
-    return [{ instanceId: provider.instanceId, model, end }];
+    const admission = accountSearchEligibility(provider, input);
+    return admission.kind === "eligible" ||
+      (admission.kind === "usage_limited" && admission.limitedUntilMs !== null)
+      ? [{ instanceId: provider.instanceId, model: admission.model, end: admission.limitedUntilMs }]
+      : [];
   });
 }
 
@@ -961,6 +994,7 @@ export class AccountRouting extends Context.Service<
         readonly driver: ProviderDriverKind;
         readonly projectId: ProjectId;
         readonly model: string;
+        readonly funding?: "verified";
       } & CreditRequest,
     ) => Effect.Effect<
       ReadonlyArray<{

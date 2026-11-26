@@ -1,3 +1,7 @@
+## 2026-11-26 — More precise provider quota readings
+
+- Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
+
 ## 2026-11-25 — Antigravity 1.4.5 is no longer marked incompatible
 
 - Settings no longer marks the managed Antigravity runtime, 1.4.5, as incompatible or offers an update it cannot install. T3.CodeShip checked T3 Code's provider compatibility rules against its own release number, such as 2026.1125.11, so it took on a rule meant for T3 Code 0.1.10 and later, which needs Antigravity 1.5. Each release now keeps the T3 Code version it is built from and checks the rules against that version.

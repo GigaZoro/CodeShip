@@ -24,7 +24,7 @@ import {
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ManagedPolicySummary } from "./managedPolicy.ts";
-import { ModelCapabilities, ProviderOptionDescriptor } from "./model.ts";
+import { ModelCapabilities, ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
@@ -70,6 +70,8 @@ export const ServerProviderAuth = Schema.Struct({
   subscriptionSharing: Schema.optional(Schema.Boolean),
   profileId: Schema.optional(TrimmedNonEmptyString),
   workspaceId: Schema.optional(TrimmedNonEmptyString),
+  /** Published by the adapter when it can identify the payer independently of usage metrics. */
+  funding: Schema.optionalKey(ServerProviderFunding),
   /**
    * When the saved login stops renewing and needs signing in again. Absent when the provider has
    * no such date or the server could not read it; a date in the past means the login has lapsed.
@@ -83,6 +85,8 @@ export const ServerProviderModel = Schema.Struct({
   name: TrimmedNonEmptyString,
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
+  /** Overrides the account funding when the adapter can identify this model's payer separately. */
+  funding: Schema.optionalKey(ServerProviderFunding),
   aliases: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   badge: Schema.optional(Schema.Literal("new")),
   isCustom: Schema.Boolean,

@@ -11,36 +11,48 @@ import type {
   ServerProviderResetKindUnknownReason,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+import { usageWindowScope } from "@t3tools/shared/usageLimits";
 
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
 const USAGE_READING_MAX_AGE_MS = 10 * 60_000;
 
 export function publishesUsage(provider: ServerProvider): boolean {
-  return provider.enabled && (provider.driver === "claudeAgent" || provider.driver === "codex");
+  return provider.enabled;
 }
 
-/**
- * Whether the account's last full usage read is missing or older than `USAGE_READING_MAX_AGE_MS`,
- * and no probe ran since then: one that left no newer reading would fail the same way again.
- */
+/** A recent unsuccessful probe still counts toward the cooldown for the next read. */
 export function usageReadingStale(provider: ServerProvider, now: number): boolean {
   const limits = provider.usageLimits;
   const old = (at: string | undefined) =>
     at === undefined || now - Date.parse(at) > USAGE_READING_MAX_AGE_MS;
-  return old(limits?.accountReadAt ?? limits?.checkedAt) && old(provider.checkedAt);
+  if (!old(provider.checkedAt)) return false;
+  return (
+    old(limits?.accountReadAt ?? limits?.checkedAt) ||
+    limits?.windows.some((window) => window.observedAt !== undefined && old(window.observedAt)) ===
+      true
+  );
 }
 
-function meterId(window: ServerProviderUsageWindow): string {
+function meterId(driver: ServerProvider["driver"], window: ServerProviderUsageWindow): string {
+  if (driver !== "claudeAgent" && driver !== "codex") return window.id;
   if (window.kind === "weekly") {
     return window.model === undefined ? "weekly_all" : `weekly_scoped:${window.model}`;
   }
   return window.kind === "session" ? "session" : window.id;
 }
 
-function meter(window: ServerProviderUsageWindow): OrchestratorMcpUsageMeter {
+function meter(
+  driver: ServerProvider["driver"],
+  window: ServerProviderUsageWindow,
+  lastFullRead: string,
+): OrchestratorMcpUsageMeter {
+  const id = meterId(driver, window);
   return {
-    id: meterId(window),
+    id,
+    ...(id === window.id ? {} : { nativeId: window.id }),
     model: window.model ?? null,
+    scope: usageWindowScope(driver, window),
+    observedAt: window.observedAt ?? lastFullRead,
     usedPercent: window.usedPercent,
     windowMinutes: window.windowDurationMins ?? null,
     resetsAt: window.resetsAt ?? null,
@@ -100,6 +112,16 @@ function usageError(provider: ServerProvider): OrchestratorMcpUsageError | undef
   if (limits === undefined) return "not_read";
   if (limits.unavailable?.reason === "unsupported") return "unsupported";
   if (limits.unavailable !== undefined && limits.windows.length === 0) return "read_failed";
+  if (
+    limits.windows.length === 0 &&
+    limits.usageAllowed === undefined &&
+    limits.credits === undefined &&
+    limits.resetCredits === undefined &&
+    limits.resetCreditsError === undefined &&
+    limits.resetPrograms === undefined
+  ) {
+    return "not_read";
+  }
   return undefined;
 }
 
@@ -140,7 +162,7 @@ export function releaseReport(
 }
 
 /**
- * The `usage` an enabled Claude or Codex account publishes in `orchestrator_capabilities`: its
+ * The `usage` an enabled provider account publishes in `orchestrator_capabilities`: its
  * meters, credits and banked resets, keyed by a hash of the account id. A provider's own error
  * text is never published, since it can name the account. `limited` is the account's usage hold.
  */
@@ -165,7 +187,9 @@ export function providerUsageFields(
       accountKey: limits.accountKey ?? null,
       plan: limits.plan ?? null,
       measuredAt: limits.checkedAt,
-      meters: limits.windows.map(meter),
+      meters: limits.windows.map((window) =>
+        meter(provider.driver, window, limits.accountReadAt ?? limits.checkedAt),
+      ),
       credits:
         limits.credits === undefined
           ? null

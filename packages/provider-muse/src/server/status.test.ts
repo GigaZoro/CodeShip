@@ -21,11 +21,11 @@ import {
 import { checkMuseProviderStatus } from "./status.ts";
 
 const settings = Schema.decodeSync(MuseSettings);
-const makeHost = (catalog: Record<string, unknown>) => {
+const makeHost = (catalog: Record<string, unknown>, usage?: Record<string, unknown>) => {
   const host: MuseSdkHost = {
     initializeResult: { grantedCapabilities: [] },
     connection: {
-      request: vi.fn(async () => catalog),
+      request: vi.fn(async (method) => (method === "usage/read" ? { usage } : catalog)),
       command: vi.fn(async () => ({})),
       mintCommandId: () => "test-command",
       onNotification: () => {},
@@ -144,14 +144,14 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
         const host = makeHost(metaCatalog);
         const snapshot = yield* checkMuseProviderStatus(
           settings({ enabled: true, binaryPath, customModels: ["muse-custom"] }),
-          undefined,
+          { ...process.env, META_API_KEY: "instance-key" },
           undefined,
           async () => host,
         );
         expect(snapshot.status).toBe("ready");
         expect(snapshot.message).toBeUndefined();
         expect(snapshot.slashCommands).toEqual([COMPACT_SLASH_COMMAND]);
-        expect(snapshot.auth).toEqual({ status: "unknown" });
+        expect(snapshot.auth).toEqual({ status: "unknown", funding: "metered" });
         expect(snapshot.version).toBe("1.0.3-R2198.1");
         expect(snapshot.models.map((model) => model.slug)).toEqual([
           "muse-wonder-1.0",
@@ -174,26 +174,40 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
 
   // Muse falls back to its compiled-in catalog when the server rejects its login.
   it.effect.each([
-    { source: "providerCatalog", live: true },
-    { source: "bundledCatalog", live: false },
-    { source: undefined, live: false },
+    { source: "providerCatalog", live: true, age: 0, included: true },
+    { source: "providerCatalog", live: true, age: 1, included: false },
+    { source: "bundledCatalog", live: false, age: 0, included: false },
+    { source: undefined, live: false, age: 0, included: false },
   ])(
     "reads a working login only from a model list the server sent (source $source)",
-    ({ source, live }) =>
+    ({ source, live, age, included }) =>
       Effect.scoped(
         Effect.gen(function* () {
           const binaryPath = yield* fakeCli();
+          const now = Date.parse("2026-11-25T10:00:00Z");
+          yield* TestClock.setTime(now);
+          const usage = {
+            tier: "pro",
+            observedAtMs: now - age,
+            window: { usedPercent: 120, windowDurationMins: 300, resetsAtMs: now + 3_600_000 },
+            weekly: { usedPercent: 80, resetsAtMs: now + 86_400_000 },
+          };
           let reportedLive = false;
-          yield* checkMuseProviderStatus(
+          const snapshot = yield* checkMuseProviderStatus(
             settings({ enabled: true, binaryPath }),
             undefined,
             undefined,
-            async () => makeHost(source === undefined ? metaCatalog : { ...metaCatalog, source }),
+            async () =>
+              makeHost(source === undefined ? metaCatalog : { ...metaCatalog, source }, usage),
             Effect.sync(() => {
               reportedLive = true;
             }),
           );
           expect(reportedLive).toBe(live);
+          expect(snapshot.auth.funding).toBe(included ? "included" : undefined);
+          expect(snapshot.usageLimits?.windows.map((window) => window.usedPercent)).toEqual(
+            included ? [100, 80] : undefined,
+          );
         }),
       ),
   );

@@ -15,6 +15,8 @@ import {
   modelPicksEqual,
   modelSelectionsEqual,
   offeredOptionSelections,
+  withAutoAccount,
+  withModelSelectionOptions,
 } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
@@ -118,6 +120,15 @@ describe("descriptor helpers", () => {
     // The account choice is not part of the run, but it is part of the pick.
     expect(modelSelectionsEqual(left, { ...reordered, autoAccount: true })).toBe(true);
     expect(modelPicksEqual(left, { ...reordered, autoAccount: true })).toBe(false);
+    const quotaAware = { ...left, quotaAwareAuto: true };
+    expect(modelSelectionsEqual(left, quotaAware)).toBe(true);
+    expect(modelPicksEqual(left, quotaAware)).toBe(false);
+    expect(modelPicksEqual({ ...left, autoAccount: true }, quotaAware)).toBe(false);
+    expect(withAutoAccount(quotaAware, false)).toEqual(left);
+    expect(withModelSelectionOptions(quotaAware, reordered.options)).toEqual({
+      ...reordered,
+      quotaAwareAuto: true,
+    });
   });
 
   it("matches an Auto draft pick to whichever model and account Auto put the thread on", () => {
@@ -133,6 +144,10 @@ describe("descriptor helpers", () => {
       draftModelPickMatchesThread({ ...pick, autoAccount: true }, { ...thread, autoAccount: true }),
     ).toBe(true);
     expect(draftModelPickMatchesThread({ ...pick, autoAccount: true }, pick)).toBe(false);
+    const quotaAware = { ...pick, quotaAwareAuto: true };
+    expect(draftModelPickMatchesThread(quotaAware, { ...thread, quotaAwareAuto: true })).toBe(true);
+    expect(draftModelPickMatchesThread(quotaAware, { ...thread, autoAccount: true })).toBe(false);
+    expect(draftModelPickMatchesThread(quotaAware, pick)).toBe(false);
   });
 });
 

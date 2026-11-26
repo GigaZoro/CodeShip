@@ -1334,6 +1334,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(providers),
       refreshInstance: () => Effect.succeed(providers),
+      refreshUsageIfStale: () => Effect.succeed(providers),
     });
 
   const adapterRegistryLayer = (instanceIds: ReadonlyArray<ProviderInstanceId>) =>
@@ -2079,6 +2080,78 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
   });
+
+  it.effect("capabilities refresh only stale runnable meters through the usage reader", () =>
+    Effect.gen(function* () {
+      const now = "2026-11-13T00:20:00.000Z";
+      const before = "2026-11-13T00:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(now));
+      const instance = (id: string, checkedAt = before): ServerProvider => ({
+        ...providerSnapshot({
+          instanceId: ProviderInstanceId.make(id),
+          driver: ProviderDriverKind.make("custom"),
+          model: "standard",
+        }),
+        checkedAt,
+        usageLimits: {
+          checkedAt,
+          windows: [{ id: "quota", kind: "weekly", label: "Weekly", usedPercent: 20 }],
+        },
+      });
+      const stale = instance("stale");
+      const blocked = instance("project-disabled");
+      const noAdapter = instance("no-adapter");
+      const fresh = instance("fresh", now);
+      const unsupported: ServerProvider = {
+        ...instance("unsupported"),
+        usageLimits: { checkedAt: before, windows: [], unavailable: { reason: "unsupported" } },
+      };
+      let providers = [stale, blocked, noAdapter, fresh, unsupported];
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(parentProjection([])),
+        }),
+        ServerSettings.layerTest({
+          providerInstances: Object.fromEntries(
+            providers.map(({ instanceId, driver }) => [instanceId, { driver, enabled: true }]),
+          ),
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [blocked.instanceId]: { enabled: false } } },
+          },
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.sync(() => providers),
+          refreshUsageIfStale: ({ instanceIds, shouldRefresh }) =>
+            Effect.sync(() => {
+              assert.deepEqual(instanceIds, [stale.instanceId]);
+              assert.isFalse(shouldRefresh(instance("stale", now)));
+              providers = [instance("stale", now), blocked, noAdapter, fresh, unsupported];
+              return providers;
+            }),
+        }),
+        adapterRegistryLayer([
+          stale.instanceId,
+          blocked.instanceId,
+          fresh.instanceId,
+          unsupported.instanceId,
+        ]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      const result = yield* Effect.flatMap(
+        OrchestratorMcpService.OrchestratorMcpService,
+        (service) => service.capabilities(scope, { usage: true }),
+      ).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+      assert.equal(
+        result.providers.find((provider) => provider.providerInstanceId === stale.instanceId)?.usage
+          ?.measuredAt,
+        now,
+      );
+    }),
+  );
 
   it.effect.each([
     {

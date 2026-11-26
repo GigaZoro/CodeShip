@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  ANTIGRAVITY_DEFAULT_MODEL,
   type ModelSelection,
   type ServerSettings,
   type ProjectId,
@@ -12,6 +13,7 @@ import {
   isProviderAvailable,
   type ServerProvider,
   type ServerProviderUsageLimits,
+  type ServerProviderUsageScope,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
@@ -72,33 +74,69 @@ export function usageWindowLimitEnd(
   );
 }
 
-/** Whether a used-up window limits `model`; null asks whether it limits the whole account. */
-function windowLimitsModel(
+export function usageWindowScope(
   driver: ServerProvider["driver"],
-  windowId: string,
+  window: ServerProviderUsageWindow,
+): ServerProviderUsageScope {
+  if (window.scope !== undefined) return window.scope;
+  if (window.model !== undefined) return "model";
+  switch (driver) {
+    case "claudeAgent":
+      return claudeUsageWindowScope(window.id) === undefined ? "account" : "model";
+    case "antigravity":
+      // An untagged gemini-weekly could be an aggregate from the legacy models endpoint.
+      if (window.id === "gemini-5h") return "gemini-default";
+      if (window.id.startsWith("gemini-argon-")) return "gemini-argon";
+      if (window.id.startsWith("3p-")) return "third-party";
+      return "unknown";
+    case "codex":
+      return window.id === CODEX_CREDIT_LIMIT_WINDOW_ID ? "spending-cap" : "account";
+    case "opencode":
+      return window.id.startsWith("go_") ? "opencode-go" : "account";
+    case "cursor":
+      if (window.id === "autoPercentUsed") return "cursor-auto";
+      if (window.id === "apiPercentUsed") return "cursor-api";
+      return window.id === "totalPercentUsed" ? "unknown" : "account";
+    default:
+      return "account";
+  }
+}
+
+const usesCursorAutoPool = (model: string) => /^(auto|default|grok|composer)/.test(model);
+
+/** Whether a rate window covers a canonical model slug. Pass null for account-wide windows. */
+export function usageWindowAppliesToModel(
+  driver: ServerProvider["driver"],
+  window: ServerProviderUsageWindow,
   model: string | null,
 ): boolean {
-  switch (driver) {
-    case "claudeAgent": {
-      // A `seven_day_<model>` window limits only the model it names, such as Fable.
-      const scope = claudeUsageWindowScope(windowId);
-      return scope === undefined || usageScopeCoversModel(scope, model);
+  const scope = usageWindowScope(driver, window);
+  if (scope === "account") return true;
+  if (model === null) return false;
+  if (typeof scope === "object") return scope.models.includes(model);
+  switch (scope) {
+    case "model": {
+      const family = driver === "claudeAgent" ? claudeUsageWindowScope(window.id) : undefined;
+      return family === undefined ? window.model === model : usageScopeCoversModel(family, model);
     }
-    case "antigravity": {
-      const family = model?.match(/^(gemini|claude|gpt)-/)?.[1];
-      const pool = windowId.match(/^(gemini|claude|gpt|3p)-/)?.[1];
+    case "gemini-default":
       return (
-        pool === undefined ||
-        (model !== null &&
-          (family === undefined ||
-            pool === family ||
-            (pool === "3p" && (family === "claude" || family === "gpt"))))
+        model === ANTIGRAVITY_DEFAULT_MODEL ||
+        (model.startsWith("gemini-") && !usageScopeCoversModel("argon", model))
       );
-    }
-    case "opencode":
-      return !windowId.startsWith("go_") || (model?.startsWith("opencode-go/") ?? false);
-    default:
+    case "gemini-argon":
+      return model.startsWith("gemini-") && usageScopeCoversModel("argon", model);
+    case "third-party":
+      return /^(claude|gpt)-/.test(model);
+    case "opencode-go":
+      return model.startsWith("opencode-go/");
+    case "cursor-auto":
+      return usesCursorAutoPool(model);
+    case "cursor-api":
       return true;
+    case "spending-cap":
+    case "unknown":
+      return false;
   }
 }
 
@@ -116,7 +154,7 @@ export function nextWeeklyResetMs(
     return window.kind === "weekly" &&
       reset !== null &&
       reset > now &&
-      windowLimitsModel(provider.driver, window.id, model)
+      usageWindowAppliesToModel(provider.driver, window, model)
       ? [reset]
       : [];
   });
@@ -129,10 +167,13 @@ function usedUpWindows(provider: ServerProvider | undefined, now: number) {
   const end = (window: ServerProviderUsageWindow) => usageWindowLimitEnd(limits, window);
   // The provider's own yes outranks its percentages, which can stay at 100% after a banked reset.
   if (limits.usageAllowed === true) return { end, windows: [] };
-  const live = limits.windows.filter((window) => end(window) > now);
+  const live = limits.windows.filter((window) => {
+    const scope = usageWindowScope(provider.driver, window);
+    return scope !== "spending-cap" && scope !== "unknown" && end(window) > now;
+  });
   const usedUp = live.filter((window) => window.usedPercent >= 100);
   const accountWide = (window: ServerProviderUsageWindow) =>
-    windowLimitsModel(provider.driver, window.id, null);
+    usageWindowAppliesToModel(provider.driver, window, null);
   if (limits.usageAllowed !== false || usedUp.some(accountWide)) return { end, windows: usedUp };
   // Its no outranks them too: the fullest account-wide windows hold the account until they reset.
   const held = live.filter(accountWide);
@@ -165,13 +206,23 @@ export function exhaustedUsageWindow(
   if (model === undefined) return latestEnding(windows, end);
   if (provider.driver === "cursor") {
     const api = windows.find((window) => window.id === "apiPercentUsed");
-    if (model !== null && !/^(auto|default|grok|composer)/.test(model)) return api;
     // Auto and Cursor's own models fall back to the other pool, so the first one back frees them.
     const auto = windows.find((window) => window.id === "autoPercentUsed");
-    return auto && api && (end(auto) < end(api) ? auto : api);
+    const pooled =
+      model !== null && !usesCursorAutoPool(model)
+        ? api
+        : auto && api && (end(auto) < end(api) ? auto : api);
+    return latestEnding(
+      windows.filter((window) =>
+        window === auto || window === api
+          ? window === pooled
+          : usageWindowAppliesToModel(provider.driver, window, model),
+      ),
+      end,
+    );
   }
   return latestEnding(
-    windows.filter((window) => windowLimitsModel(provider.driver, window.id, model)),
+    windows.filter((window) => usageWindowAppliesToModel(provider.driver, window, model)),
     end,
   );
 }
@@ -214,11 +265,15 @@ export function exhaustedModelUsageWindow(
   const used = usedUpWindows(provider, now);
   if (provider === undefined || used === null) return undefined;
   return latestEnding(
-    used.windows.filter(
-      (window) =>
-        windowLimitsModel(provider.driver, window.id, model) &&
-        !windowLimitsModel(provider.driver, window.id, null),
-    ),
+    used.windows.filter((window) => {
+      const scope = usageWindowScope(provider.driver, window);
+      return (
+        scope !== "cursor-auto" &&
+        scope !== "cursor-api" &&
+        scope !== "account" &&
+        usageWindowAppliesToModel(provider.driver, window, model)
+      );
+    }),
     used.end,
   );
 }

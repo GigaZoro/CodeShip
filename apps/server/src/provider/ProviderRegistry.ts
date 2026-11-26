@@ -22,6 +22,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
+import { isAccountReady } from "@t3tools/shared/serverSettings";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -64,6 +65,13 @@ export class ProviderRegistry extends Context.Service<
     readonly refreshInstance: (
       instanceId: ProviderInstanceId,
     ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+    /** Reads only requested, runnable accounts that still need a decisive quota observation. */
+    readonly refreshUsageIfStale: (input: {
+      readonly instanceIds: ReadonlyArray<ProviderInstanceId>;
+      readonly shouldRefresh: (provider: ServerProvider) => boolean;
+      readonly waitMs: number;
+    }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
     /** Re-reads secret-backed environments first, so a fixed secret applies without a restart. */
     readonly reloadSecretsAndRefresh: (
@@ -932,6 +940,79 @@ export const layer = Layer.effect(
       return yield* Ref.get(providersRef);
     });
 
+    const usageReads = new Map<ProviderInstance, Deferred.Deferred<void>>();
+    const sharedUsageRead = Effect.fn("ProviderRegistry.sharedUsageRead")(function* (
+      instance: ProviderInstance,
+      shouldRefresh: (provider: ServerProvider) => boolean,
+    ) {
+      const providers = yield* Ref.get(providersRef);
+      const provider = providers.find((entry) => entry.instanceId === instance.instanceId);
+      if (provider === undefined || !isAccountReady(provider) || !shouldRefresh(provider)) {
+        return Option.none();
+      }
+      const limits = provider.usageLimits;
+      // Unsupported limits may be external; they have no local meter to re-read.
+      if (limits?.unavailable?.reason === "unsupported") return Option.none();
+      const source = buildSnapshotSource(instance);
+      const dedicatedRead = instance.snapshot.refreshUsage;
+      if (dedicatedRead === undefined && limits === undefined) return Option.none();
+
+      const running = usageReads.get(instance);
+      if (running !== undefined) return Option.some(running);
+      const done = Deferred.makeUnsafe<void>();
+      usageReads.set(instance, done);
+      const read = dedicatedRead
+        ? dedicatedRead.pipe(Effect.andThen(source.getSnapshot))
+        : source.refresh;
+      yield* read.pipe(
+        Effect.timeoutOption("60 seconds"),
+        Effect.flatMap((next) =>
+          Option.isNone(next)
+            ? Effect.void
+            : instanceRegistry
+                .getInstance(instance.instanceId)
+                .pipe(
+                  Effect.flatMap((current) =>
+                    current === instance
+                      ? correlateSnapshotWithSource(source, next.value).pipe(
+                          Effect.flatMap(syncProvider),
+                          Effect.asVoid,
+                        )
+                      : Effect.void,
+                  ),
+                ),
+        ),
+        Effect.catchCause(recoverRefreshFailure),
+        Effect.ensuring(
+          Effect.sync(() => usageReads.delete(instance)).pipe(
+            Effect.andThen(Deferred.succeed(done, undefined)),
+          ),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(serviceScope),
+      );
+      return Option.some(done);
+    }, Effect.uninterruptible);
+
+    const refreshUsageIfStale = Effect.fn("ProviderRegistry.refreshUsageIfStale")(function* ({
+      instanceIds,
+      shouldRefresh,
+      waitMs,
+    }: Parameters<ProviderRegistry["Service"]["refreshUsageIfStale"]>[0]) {
+      yield* Effect.forEach(
+        new Set(instanceIds),
+        (instanceId) =>
+          instanceRegistry.getInstance(instanceId).pipe(
+            Effect.flatMap((instance) =>
+              instance?.enabled ? sharedUsageRead(instance, shouldRefresh) : Effect.succeedNone,
+            ),
+            Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Deferred.await })),
+          ),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.timeoutOption(Math.max(0, waitMs)));
+      return yield* Ref.get(providersRef);
+    });
+
     const updateProviders = (
       update: (providers: ReadonlyArray<ServerProvider>) => ReadonlyArray<ServerProvider>,
     ) =>
@@ -1060,6 +1141,7 @@ export const layer = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      refreshUsageIfStale,
       reloadSecretsAndRefresh: (instanceId?: ProviderInstanceId) =>
         reloadSecretsAndRefresh(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshWorkspaceSnapshot: (input) =>

@@ -877,6 +877,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerModelOptions,
     selectedModel,
     selectedAutoAccount,
+    selectedQuotaAwareAuto,
     composerProviderState,
   } = useComposerProviderModel({
     providerStatuses,
@@ -993,6 +994,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedModelSelection: ModelSelection = {
     ...createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     ...(selectedAutoAccount ? { autoAccount: true } : {}),
+    ...(selectedQuotaAwareAuto ? { quotaAwareAuto: true } : {}),
   };
   const autoPick = autoModeTarget({
     selection: selectedModelSelection,

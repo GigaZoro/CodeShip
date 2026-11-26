@@ -1,6 +1,33 @@
 import * as DateTime from "effect/DateTime";
+import { makeUsageLimits, clampPercent } from "@t3tools/provider-core/server/usageLimits";
 
 import { LATEST_DATE_MS, type MuseSubscriptionUsage } from "./protocol.ts";
+
+export function museSubscriptionLimits(usage: MuseSubscriptionUsage) {
+  const format = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+  const observedAt = format(usage.observedAtMs);
+  return makeUsageLimits({
+    checkedAt: observedAt,
+    windows: [
+      {
+        id: "session",
+        kind: "session",
+        label: "Session",
+        usedPercent: clampPercent(usage.window.usedPercent),
+        resetsAt: format(usage.window.resetsAtMs),
+        observedAt,
+      },
+      {
+        id: "weekly",
+        kind: "weekly",
+        label: "Weekly",
+        usedPercent: clampPercent(usage.weekly.usedPercent),
+        resetsAt: format(usage.weekly.resetsAtMs),
+        observedAt,
+      },
+    ],
+  });
+}
 
 /** Credential proxies may omit error.quota from 429 refusals; inspect text too. */
 export function isMuseUsageLimitFailure(message: string | undefined): boolean {

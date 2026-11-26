@@ -1,4 +1,3 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
@@ -16,6 +15,8 @@ const ModelSelectionWire = Schema.Struct({
    * account the selection last ran on.
    */
   autoAccount: Schema.optionalKey(Schema.Boolean),
+  /** The destination resolves the account and profile for fresh Auto work. */
+  quotaAwareAuto: Schema.optionalKey(Schema.Boolean),
 });
 
 const ModelSelectionSource = Schema.Struct({
@@ -24,12 +25,13 @@ const ModelSelectionSource = Schema.Struct({
   model: Schema.Unknown,
   options: Schema.optional(Schema.Unknown),
   autoAccount: Schema.optional(Schema.Unknown),
+  quotaAwareAuto: Schema.optional(Schema.Unknown),
 });
 
 export const ModelSelection = ModelSelectionSource.pipe(
   Schema.decodeTo(
     ModelSelectionWire,
-    SchemaTransformation.transformEffect({
+    SchemaTransformation.transform({
       decode: (raw) => {
         const instanceIdSource =
           raw.instanceId !== undefined
@@ -43,7 +45,8 @@ export const ModelSelection = ModelSelectionSource.pipe(
         };
         if (raw.options !== undefined) base.options = raw.options;
         if (raw.autoAccount !== undefined) base.autoAccount = raw.autoAccount;
-        return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
+        if (raw.quotaAwareAuto !== undefined) base.quotaAwareAuto = raw.quotaAwareAuto;
+        return base as typeof ModelSelectionWire.Encoded;
       },
       encode: (value) => {
         const base: Record<string, unknown> = {
@@ -52,7 +55,8 @@ export const ModelSelection = ModelSelectionSource.pipe(
         };
         if (value.options !== undefined) base.options = value.options;
         if (value.autoAccount !== undefined) base.autoAccount = value.autoAccount;
-        return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
+        if (value.quotaAwareAuto !== undefined) base.quotaAwareAuto = value.quotaAwareAuto;
+        return base as typeof ModelSelectionSource.Encoded;
       },
     }),
   ),
@@ -71,5 +75,6 @@ export const CanonicalModelSelection = Schema.Struct({
   instanceId: ProviderInstanceId,
   model: AdvertisedNonEmptyString,
   options: Schema.optionalKey(Schema.Array(ProviderOptionSelection)),
-  autoAccount: Schema.optionalKey(Schema.Boolean),
+  autoAccount: ModelSelectionWire.fields.autoAccount,
+  quotaAwareAuto: ModelSelectionWire.fields.quotaAwareAuto,
 });

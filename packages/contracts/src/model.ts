@@ -4,6 +4,9 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
+export const ServerProviderFunding = Schema.Literals(["included", "metered", "unknown"]);
+export type ServerProviderFunding = typeof ServerProviderFunding.Type;
+
 export const ProviderOptionDescriptorType = Schema.Literals(["select", "boolean"]);
 export type ProviderOptionDescriptorType = typeof ProviderOptionDescriptorType.Type;
 

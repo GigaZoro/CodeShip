@@ -29,6 +29,7 @@ const GrokUsageResponse = Schema.Struct({
   config: Schema.optional(
     Schema.Struct({
       creditUsagePercent: Schema.optional(Schema.Number),
+      onDemandCap: Schema.optional(Schema.Unknown),
       currentPeriod: Schema.optional(
         Schema.Struct({
           type: Schema.optional(Schema.String),
@@ -153,6 +154,17 @@ const readGrokCredential = Effect.fn("readGrokCredential")(function* (
   return credential?.auth_mode === "api_key" ? undefined : credential;
 });
 
+function includedGrokFunding(
+  config: (typeof GrokUsageResponse.Type)["config"],
+): "included" | undefined {
+  const period = config?.currentPeriod?.type?.replace(/^USAGE_PERIOD_TYPE_/, "");
+  const cap = config?.onDemandCap;
+  if (period !== "WEEKLY" && period !== "MONTHLY") return undefined;
+  if (typeof cap !== "object" || cap === null || Array.isArray(cap)) return undefined;
+  // Grok encodes a zero-dollar cap as {} or { val: 0 }. An omitted cap allows extra spending.
+  return Object.keys(cap).length === 0 || ("val" in cap && cap.val === 0) ? "included" : undefined;
+}
+
 export const readGrokAccount = Effect.fn("readGrokAccount")(function* (
   environment: NodeJS.ProcessEnv = process.env,
 ) {
@@ -165,13 +177,18 @@ export const readGrokAccount = Effect.fn("readGrokAccount")(function* (
   const credential = yield* Effect.option(
     readGrokCredential(environment).pipe(Effect.timeout("10 seconds")),
   );
-  if (Option.isNone(credential)) return { email: undefined, usageLimits: probeFailed };
+  if (Option.isNone(credential))
+    return { email: undefined, funding: undefined, usageLimits: probeFailed };
   const email = credential.value?.email?.trim() || undefined;
   const token = credential.value?.key?.trim();
   if (!token) {
-    return { email, usageLimits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }) };
+    return {
+      email,
+      funding: undefined,
+      usageLimits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+    };
   }
-  const usageLimits = yield* Effect.gen(function* () {
+  const billing = yield* Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const response = yield* client.execute(
       HttpClientRequest.get("https://cli-chat-proxy.grok.com/v1/billing?format=credits").pipe(
@@ -181,10 +198,13 @@ export const readGrokAccount = Effect.fn("readGrokAccount")(function* (
     const body = yield* HttpClientResponse.schemaBodyJson(GrokUsageResponse)(
       yield* HttpClientResponse.filterStatusOk(response),
     );
-    return grokUsageResponseToLimits(body, checkedAt);
+    return {
+      funding: includedGrokFunding(body.config),
+      usageLimits: grokUsageResponseToLimits(body, checkedAt),
+    };
   }).pipe(
     Effect.timeout("10 seconds"),
-    Effect.orElseSucceed(() => probeFailed),
+    Effect.orElseSucceed(() => ({ funding: undefined, usageLimits: probeFailed })),
   );
-  return { email, usageLimits };
+  return { email, ...billing };
 });

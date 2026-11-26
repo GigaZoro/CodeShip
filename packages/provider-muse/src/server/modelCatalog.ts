@@ -2,8 +2,10 @@ import type { SendUserTurnOptions } from "@muse-code/sdk";
 import { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { MuseSubscriptionUsage } from "./protocol.ts";
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
 
 type MuseReasoningEffort = NonNullable<SendUserTurnOptions<never>["reasoningEffort"]>;
@@ -47,6 +49,9 @@ const decodeModelList = Schema.decodeUnknownEffect(
 );
 // Muse serves its compiled-in catalog when the server rejects its login, so only this one proves the login works.
 const LIVE_CATALOG_SOURCE = "providerCatalog";
+const decodeUsage = Schema.decodeUnknownEffect(
+  Schema.Struct({ usage: Schema.optionalKey(MuseSubscriptionUsage) }),
+);
 
 export function museModelCapabilities(
   model?: Pick<
@@ -105,6 +110,7 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
   cwd?: string,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
+  const startedAt = DateTime.toEpochMillis(yield* DateTime.now);
   const host = yield* Effect.acquireRelease(
     createMuseSdkHostEffect(
       {
@@ -143,5 +149,24 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
       },
     ];
   });
-  return { models, live: catalog.source === LIVE_CATALOG_SOURCE };
+  const live = catalog.source === LIVE_CATALOG_SOURCE;
+  const observation =
+    live && !environment?.META_API_KEY
+      ? yield* Effect.tryPromise(() => host.connection.request("usage/read", {})).pipe(
+          Effect.flatMap(decodeUsage),
+          Effect.map((read) => read.usage),
+          Effect.timeout("500 millis"),
+          Effect.orElseSucceed(() => undefined),
+        )
+      : undefined;
+  // A cached observation may belong to an earlier credential on this machine.
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  const usage =
+    observation &&
+    observation.tier.trim() &&
+    observation.observedAtMs >= startedAt &&
+    observation.observedAtMs <= now
+      ? observation
+      : undefined;
+  return { models, live, usage };
 });

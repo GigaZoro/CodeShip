@@ -384,7 +384,12 @@ describe("new thread model fallback", () => {
     ["cursor", ["autoPercentUsed", "apiPercentUsed"], "composer-2.5", true],
     ["antigravity", ["gemini-weekly"], "claude-opus-5-5", false],
     ["antigravity", ["3p-weekly"], "claude-opus-5-5", true],
-    ["antigravity", ["gemini-weekly"], "antigravity-default", true],
+    ["antigravity", ["gemini-weekly"], "gemini-4-neon", true],
+    ["antigravity", ["gemini-weekly"], "gemini-4-argon-high", false],
+    ["antigravity", ["gemini-argon-wtu-weekly"], "gemini-4-neon", false],
+    ["antigravity", ["gemini-argon-wtu-weekly"], "gemini-4-argon-high", true],
+    ["antigravity", ["3p-weekly"], "gpt-6.2-astra", true],
+    ["antigravity", ["3p-weekly"], "unknown-model", false],
     ["opencode", ["go_weekly"], "opencode/big-pickle", false],
     ["opencode", ["go_weekly"], "opencode-go/big-pickle", true],
     ["claudeAgent", ["seven_day_fable"], "claude-opus-5-5", false],
@@ -403,7 +408,12 @@ describe("new thread model fallback", () => {
             driver: ProviderDriverKind.make(driver),
             usageLimits: {
               checkedAt: limited.checkedAt,
-              windows: ids.map((id) => ({ ...window, id, usedPercent: 100 })),
+              windows: ids.map((id) => ({
+                ...window,
+                id,
+                usedPercent: 100,
+                ...(id === "gemini-weekly" ? { scope: "gemini-default" as const } : {}),
+              })),
             },
           }),
           available,
@@ -417,6 +427,7 @@ it.each([
   ["claudeAgent", ["seven_day_opus"], false],
   ["claudeAgent", ["seven_day"], true],
   ["codex", ["5h"], true],
+  ["codex", ["individual"], false],
   ["cursor", ["apiPercentUsed"], false],
   ["cursor", ["apiPercentUsed", "autoPercentUsed"], true],
   ["antigravity", ["gemini-weekly"], false],
@@ -435,6 +446,36 @@ it.each([
       null,
     ) !== undefined,
   ).toBe(limited);
+});
+
+it.each([
+  { driver: "antigravity", id: "gemini-weekly", model: "gemini-4-neon", applies: false },
+  { driver: "antigravity", id: "unclassified-quota", model: "gemini-4-neon", applies: false },
+  { driver: "example-adapter", id: "model-quota", model: "example/model-a", applies: true },
+  { driver: "example-adapter", id: "model-quota", model: "example/model-b", applies: false },
+  { driver: "example-adapter", id: "shared-pool", model: "example/model-a", applies: true },
+  { driver: "example-adapter", id: "shared-pool", model: "example/model-b", applies: true },
+  { driver: "example-adapter", id: "shared-pool", model: "example/model-c", applies: false },
+] as const)("uses scope evidence for $driver $id on $model", ({ driver, id, model, applies }) => {
+  const live = provider({
+    driver: ProviderDriverKind.make(driver),
+    usageLimits: {
+      checkedAt: "2026-09-03T11:00:00Z",
+      windows: [
+        {
+          ...window,
+          id,
+          usedPercent: 100,
+          ...(id === "model-quota" ? { model: "example/model-a" } : {}),
+          ...(id === "shared-pool"
+            ? { scope: { models: ["example/model-a", "example/model-b"] as const } }
+            : {}),
+        },
+      ],
+    },
+  });
+  expect(exhaustedUsageWindow(live, now, model) !== undefined).toBe(applies);
+  expect(exhaustedUsageWindow(live, now, null)).toBeUndefined();
 });
 
 describe("pace", () => {

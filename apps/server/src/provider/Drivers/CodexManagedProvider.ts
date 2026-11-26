@@ -190,6 +190,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       profileId: saved.value.clientId,
       status: "authenticated" as const,
       type: "chatgpt",
+      funding: "included" as const,
       label: "ChatGPT",
       ...(saved.value.email?.trim() ? { email: saved.value.email.trim() } : {}),
     };

@@ -111,6 +111,7 @@ function modelsFromDiscovery(
           slug: model.id,
           name: model.name,
           isCustom: false,
+          ...(model.funding !== undefined ? { funding: model.funding } : {}),
           ...(model.id === discovery?.currentModelId ? { isDefault: true } : {}),
           capabilities,
         }));
@@ -271,6 +272,7 @@ export function applyAcpRegistryLiveConfiguration(
             id: model.slug,
             name: model.name,
             description: null,
+            ...(model.funding !== undefined ? { funding: model.funding } : {}),
           })),
           currentModelId: probedModels.find((model) => model.isDefault)?.slug ?? null,
         };
