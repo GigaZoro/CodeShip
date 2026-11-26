@@ -2,6 +2,7 @@
 
 - CodeShip upgrades its managed Codex CLI to 0.172.0 on macOS, Windows and Linux. Accounts with access to GPT-6.2 Astra or Sol can select them for chats and delegated tasks. The model picker shows the required update on older Codex installations.
 - Automatic provider updates now check hourly while CodeShip runs. Managed Codex and Antigravity can install compatible stable releases between app updates.
+- The managed Antigravity 1.5.2 update keeps quota reporting and MP4 input for Gemini on macOS and Linux.
 - CodeShip can now update native stable-channel fx installations on macOS and Linux.
 
 ## 2026-11-26 — Assignment-restricted reviews

@@ -46,7 +46,6 @@ import {
 } from "../antigravityAuthSupport.ts";
 import {
   antigravityModelOptions,
-  isQualifiedAntigravityRelease,
   makeAntigravityAcpRuntime,
   type AntigravityAcpRuntimeInput,
 } from "../acp/AntigravityAcpSupport.ts";
@@ -64,6 +63,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityProvider } from "../AntigravityProvider.ts";
 import {
   readAntigravityAcpQuota,
+  supportsAntigravityAcpQuota,
   unavailableAntigravityLimits,
 } from "../antigravityUsageLimits.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -263,7 +263,7 @@ export const AntigravityDriver: ProviderDriver<
       );
       if (
         quotaOnly &&
-        (executable.source !== "managed" || !isQualifiedAntigravityRelease(executable.version))
+        (executable.source !== "managed" || !supportsAntigravityAcpQuota(executable.version))
       ) {
         return yield* new ProviderSetupError({
           instanceId,
@@ -504,7 +504,7 @@ export const AntigravityDriver: ProviderDriver<
       if (!antigravityAuthUsesBrowser(auth.authMethod))
         return unavailableAntigravityLimits(checkedAt, "unsupported");
       const installed = yield* installation.resolve(settings.binaryPath, processEnvironment);
-      if (installed.source !== "managed" || !isQualifiedAntigravityRelease(installed.version)) {
+      if (installed.source !== "managed" || !supportsAntigravityAcpQuota(installed.version)) {
         return unavailableAntigravityLimits(checkedAt, "unsupported");
       }
       // The managed runtime stores the active profile's login here. A probe must never initiate sign-in.
