@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   carrySuperseded,
   decodeScanCache,
+  hasRetainedSuperseded,
   isFullSaveDue,
   markMissing,
   markPresent,
@@ -757,6 +758,18 @@ describe("scan cache merge", () => {
       for (const cutoff of [21, 40, 41])
         expect(retainedSuperseded(merged, cutoff, "muse")).toEqual([]);
     }
+    const prunedWithoutFirst = reload(
+      pruneSuperseded([completion, empty, last].reduce(merge), 113, 21),
+    );
+    const lateFirst = merge(merge(prunedWithoutFirst, returned), first);
+    expect(lateFirst.peerTails).toBeUndefined();
+    expect(
+      hasRetainedSuperseded(
+        merge(reload(pruneSuperseded([empty, last].reduce(merge), 113, 21)), first),
+        21,
+      ),
+    ).toBe(false);
+    expect(retainedSuperseded(reload(pruneSuperseded(lateFirst, 123, 31)), 31, "muse")).toEqual([]);
   });
 
   it("keeps the held row when nothing tells two rows apart", () => {

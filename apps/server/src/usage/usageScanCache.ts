@@ -634,9 +634,7 @@ export function carrySuperseded(
   );
   const allTails = mergePeerTails(winner, loser, otherProviderAtMs, read === undefined);
   const expired = expiredTailGroups(allTails, floor, winner, loser);
-  const peerTails = allTails.filter(
-    (tail) => tail.seenMs >= floor || readTime(successorOfPair(winner, loser, tail.seenMs)) > floor,
-  );
+  const peerTails = allTails.filter((tail) => tail.seenMs >= floor);
   const mergedGroups = mergeTailGroups(
     winner,
     loser,
@@ -1401,7 +1399,9 @@ export const retainedSuperseded = (
 export const hasRetainedSuperseded = (entry: CachedFile, retentionCutoffMs: number): boolean =>
   (entry.superseded?.some(({ sinceMs }) => sinceMs >= retentionCutoffMs) ?? false) ||
   (entry.peerTails?.some(
-    (tail) => (provedTailReplacement(entry, tail) ?? -Infinity) >= retentionCutoffMs,
+    (tail) =>
+      tail.seenMs >= (entry.expiredThroughMs ?? -Infinity) &&
+      (provedTailReplacement(entry, tail) ?? -Infinity) >= retentionCutoffMs,
   ) ??
     false);
 
@@ -1463,12 +1463,12 @@ export function pruneSuperseded(
   }
   if (entry.observedAtMs < retentionCutoffMs) floor = entry.observedAtMs;
   for (const item of retained) {
-    if (item.sinceMs < retentionCutoffMs)
-      floor = Math.max(floor, readTime(firstReadAfter(reads, item.seenMs, entry.observedAtMs)));
+    if (item.sinceMs < retentionCutoffMs) floor = Math.max(floor, item.sinceMs);
   }
   const priorReads = reads.filter((read) => readTime(read) > floor);
   const peerTails = tails.filter(
-    ({ seenMs }) => readTime(firstReadAfter(reads, seenMs, entry.observedAtMs)) > floor,
+    ({ seenMs }) =>
+      seenMs >= floor && readTime(firstReadAfter(reads, seenMs, entry.observedAtMs)) > floor,
   );
   const expired = expiredTailGroups(tails, floor, entry, entry);
   const mergedGroups = mergeTailGroups(
