@@ -3998,6 +3998,26 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live("leaves expired usage out when a shorter transcript returns after deletion", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(transcript, claudeLine(1, 5) + claudeLine(2, 12)),
+      );
+      yield* Effect.gen(function* () {
+        assert.strictEqual(yield* outputTokensAfterRestart, 17);
+        yield* Effect.promise(() => NodeFSP.unlink(transcript));
+        assert.strictEqual(yield* outputTokensAfterRestart, 17);
+        yield* TestClock.setTime(CURSOR_NOW + 92 * DAY_MS + 1);
+        yield* writeTranscriptAtCursorNow(transcript, 5);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-expired-restore", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live.each(["peer", "migration", "late archive", "unrelated peer write"] as const)(
     "keeps a verified correction ahead of a stale %s",
     (scenario) =>

@@ -259,6 +259,7 @@ export function carrySuperseded(
 
   const retained = new Map<string, SupersededRecord>();
   let liveKeys = read?.liveKeys;
+  let simultaneousRecords: Map<string | null, UsageRecord> | undefined;
   const tailKeys = new Set(winner.tailRecords.map((record) => record.dedupeKey));
   function consider(
     record: KeyedUsageRecord,
@@ -271,7 +272,14 @@ export function carrySuperseded(
       winner.records.map((live) => live.dedupeKey).filter((key) => key !== null),
     );
     const key = record.dedupeKey;
-    if (liveKeys.has(key) && !tailKeys.has(key)) return;
+    if (liveKeys.has(key) && !tailKeys.has(key)) {
+      if (seenMs !== winner.observedAtMs) return;
+      // A later snapshot that lacks this call must pick the same value even if it met both peers separately.
+      simultaneousRecords ??= new Map(winner.records.map((live) => [live.dedupeKey, live]));
+      const live = simultaneousRecords.get(key);
+      if (live && (sameRecord(live, record) || recordIdentity(live) <= recordIdentity(record)))
+        return;
+    }
     const held = retained.get(key);
     if (held !== undefined && held.seenMs > seenMs) return;
     sinceMs = Math.min(sinceMs, firstReadAfter(priorReads, seenMs, winner.observedAtMs));

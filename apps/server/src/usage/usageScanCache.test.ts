@@ -510,6 +510,19 @@ describe("scan cache merge", () => {
     ).toEqual(["a:", "c:"]);
   });
 
+  it("keeps one historical value when simultaneous reads disagree about the same call", () => {
+    const larger = row({ size: 200, records: [record({ reportedCostUsd: 9 })] });
+    const smaller = row({ size: 100, records: [record({ reportedCostUsd: 1 })] });
+    const later = row({ observedAtMs: 3000, records: [] });
+    const tied = mergeScanEntry(larger, smaller);
+    expect(tied.records).toEqual(larger.records);
+    expect(retainedSuperseded(tied, 0, "claude")).toEqual([]);
+    const merged = mergeScanEntry(tied, later);
+    expect(retainedSuperseded(merged, 0, "claude")).toHaveLength(1);
+    expect(mergeScanEntry(mergeScanEntry(later, smaller), larger)).toEqual(merged);
+    expect(mergeScanEntry(mergeScanEntry(later, larger), smaller)).toEqual(merged);
+  });
+
   it("discards older identities when a different provider read the same path", () => {
     const before = row({ observedAtMs: 10 });
     const switched = row({ observedAtMs: 20, provider: "codex", records: [] });
