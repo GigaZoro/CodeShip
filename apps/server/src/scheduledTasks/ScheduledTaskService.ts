@@ -129,6 +129,7 @@ import * as DueHint from "../scheduling/DueHint.ts";
 import { isDraining as isUpdateDraining } from "../cloud/updateDrain.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as LaunchJournal from "./LaunchJournal.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import {
   isMissedFixedTimeRun,
@@ -1145,6 +1146,7 @@ export const layer = Layer.effect(
     // Optional so tests without accounts run every launch on the task's own account.
     const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
     const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
+    const journal = yield* LaunchJournal.LaunchJournal;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");
@@ -2887,6 +2889,14 @@ export const layer = Layer.effect(
           check: fire?.check,
         });
         yield* notifyChanged;
+        const milestone = (name: LaunchJournal.LaunchMilestone["milestone"], detail?: string) =>
+          journal.record({
+            taskId: active.id,
+            runId: runRecordId,
+            milestone: name,
+            ...(detail === undefined ? {} : { detail }),
+          });
+        yield* milestone("started", recordTrigger);
 
         const fireKey =
           webhook === undefined
@@ -2928,6 +2938,8 @@ export const layer = Layer.effect(
                 ),
               );
         const threadMode = scheduledTaskThreadMode(active);
+
+        yield* milestone("prompt_ready", Result.isSuccess(prompt) ? "read" : "failed");
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
@@ -2997,8 +3009,16 @@ export const layer = Layer.effect(
                   if (threadId !== undefined) {
                     yield* nameRunChat(task.id, runRecordId, threadId, active.group ?? null);
                   }
+                  yield* milestone("launching", threadId);
                   const launched = yield* threadLaunch.launch({
                     commandId,
+                    onMilestone: (name, threadId) =>
+                      journal.record({
+                        taskId: active.id,
+                        runId: runRecordId,
+                        milestone: name,
+                        threadId,
+                      }),
                     ...(threadId === undefined ? {} : { threadId }),
                     projectId: active.projectId,
                     title: active.title,
@@ -3021,6 +3041,7 @@ export const layer = Layer.effect(
                     ...(active.group == null ? {} : { folder: active.group }),
                   });
                   if (threadMode !== "new_thread") yield* bindThread(active, launched.threadId);
+                  yield* milestone("launched", launched.threadId);
                   return launched.threadId;
                 }),
               )
@@ -3042,6 +3063,7 @@ export const layer = Layer.effect(
             ? prompt.failure.message
             : dispatchErrorMessage(result.cause);
         const threadId = runSucceeded ? result.value : null;
+        yield* milestone("finished", lastRunStatus);
         // One transaction, so an edit cannot land between reading the schedule and
         // writing the next run computed from it. The origin is read first: it reads
         // files, and the transaction holds SQLite's writer lock.
@@ -3313,7 +3335,7 @@ export const layer = Layer.effect(
     ) {
       const { reason, next, now, startedAt = now, usageHold, ...details } = skip;
       const scheduledFor = fire.scheduledFor ?? task.nextRunAt;
-      return yield* sql.withTransaction(
+      const skipped = yield* sql.withTransaction(
         Effect.gen(function* () {
           const moved = yield* sql`
             UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}, usage_hold_json = ${usageHold ?? null}
@@ -3336,6 +3358,15 @@ export const layer = Layer.effect(
           return true;
         }),
       );
+      if (skipped) {
+        yield* journal.record({
+          taskId: task.id,
+          runId: `${task.id}:${scheduledFor}:${reason}`,
+          milestone: "skipped",
+          detail: reason,
+        });
+      }
+      return skipped;
     });
 
     const recordNoWorkSkip = Effect.fn("ScheduledTaskService.recordNoWorkSkip")(function* (
@@ -4314,6 +4345,7 @@ export const layer = Layer.effect(
               watching,
             }),
           );
+          yield* journal.record({ taskId: task.id, milestone: "deferred", detail: deferredTo });
           yield* notifyChanged;
         });
         if (!resumed && plan.rank > 0) {

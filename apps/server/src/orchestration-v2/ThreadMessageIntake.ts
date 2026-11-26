@@ -34,6 +34,7 @@ function dispatchWasNotAccepted(
     case "OrchestratorProviderSelectionBusyError":
     case "OrchestratorRuntimeModeAboveCeilingError":
     case "OrchestratorContinuationSnoozedError":
+    case "OrchestratorReviewRoundLimitError":
     case "ThreadManagementThreadArchivedError":
     case "ThreadManagementProviderInstanceDisabledError":
     case "ThreadManagementWorktreeRestoreError":

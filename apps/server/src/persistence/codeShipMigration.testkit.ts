@@ -40,6 +40,7 @@ import Migration032 from "./CodeShipMigrations/032_ThreadPreferences.ts";
 import Migration033 from "./CodeShipMigrations/033_ScheduledTaskLastRunId.ts";
 import Migration034 from "./CodeShipMigrations/034_UsageStopDecisions.ts";
 import Migration035 from "./CodeShipMigrations/035_TurnItemMessageIndex.ts";
+import Migration036 from "./CodeShipMigrations/036_IncrementalEventStoreCompaction.ts";
 
 const bodies = [
   Migration001,
@@ -77,6 +78,7 @@ const bodies = [
   Migration033,
   Migration034,
   Migration035,
+  Migration036,
 ] as const;
 
 /** Reproduce the released fork history before the ledgers split, including actual schema changes. */

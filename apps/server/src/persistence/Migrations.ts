@@ -173,7 +173,8 @@ import CodeShipMigration0032 from "./CodeShipMigrations/032_ThreadPreferences.ts
 import CodeShipMigration0033 from "./CodeShipMigrations/033_ScheduledTaskLastRunId.ts";
 import CodeShipMigration0034 from "./CodeShipMigrations/034_UsageStopDecisions.ts";
 import CodeShipMigration0035 from "./CodeShipMigrations/035_TurnItemMessageIndex.ts";
-import CodeShipMigration0036 from "./CodeShipMigrations/036_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0036 from "./CodeShipMigrations/036_IncrementalEventStoreCompaction.ts";
+import CodeShipMigration0037 from "./CodeShipMigrations/037_PayloadIndexesJsonValid.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -334,7 +335,8 @@ const codeShipMigrationEntries = [
   [33, "ScheduledTaskLastRunId", CodeShipMigration0033],
   [34, "UsageStopDecisions", CodeShipMigration0034],
   [35, "TurnItemMessageIndex", CodeShipMigration0035],
-  [36, "PayloadIndexesJsonValid", CodeShipMigration0036],
+  [36, "IncrementalEventStoreCompaction", CodeShipMigration0036],
+  [37, "PayloadIndexesJsonValid", CodeShipMigration0037],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

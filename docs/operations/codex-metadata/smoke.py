@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from threading import Event, Thread
+import traceback
 
 
 def smoke(binary):
@@ -53,7 +54,7 @@ def smoke(binary):
         outputs = []
         first_input = ""
         child_inputs = []
-        child_started = Event()
+        child_answered = Event()
         child_prompt = "Confirm this repository review is ready."
         rg = binary.parent.parent / "codex-path" / ("rg.exe" if windows else "rg")
         # Exercise the packaged helper even on builders that already have ripgrep on PATH.
@@ -87,7 +88,6 @@ def smoke(binary):
                          or request.get("client_metadata", {}).get("x-openai-subagent")) == "collab_spawn"
                 if child:
                     child_inputs.append(json.dumps(request["input"]))
-                    child_started.set()
                     item = {"type": "message", "id": "child-reply", "role": "assistant",
                             "content": [{"type": "output_text", "text": "review ready"}]}
                 elif not outputs:
@@ -103,8 +103,11 @@ def smoke(binary):
                     else:
                         item = run_code("spawn", f"text(await tools.collaboration__spawn_agent({args}));")
                 else:
-                    # Requests from the parent and child can arrive in either order.
-                    child_started.wait(timeout=15)
+                    # Requests from the parent and child can arrive in either order. This reply ends the
+                    # run, and exec then exits without waiting for the child, so the child's reply must
+                    # already be written: one written after exit hits a closed socket (BrokenPipeError).
+                    if not child_answered.wait(timeout=15):
+                        raise TimeoutError("Metadata child reply exceeded its 15-second deadline")
                     item = {"type": "message", "id": "reply", "role": "assistant",
                             "content": [{"type": "output_text", "text": "repository read complete"}]}
                 if not child:
@@ -122,8 +125,21 @@ def smoke(binary):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                if child:
+                    child_answered.set()
 
-        with ThreadingHTTPServer(("127.0.0.1", 0), Model) as server:
+        handler_errors = []
+
+        class Server(ThreadingHTTPServer):
+            # The default only prints the traceback, so a run with a crashed handler still passed.
+            # A crashed child handler never answers, so release the parent's final reply now
+            # instead of after its timeout.
+            def handle_error(self, request, client_address):
+                handler_errors.append(traceback.format_exc())
+                child_answered.set()
+                super().handle_error(request, client_address)
+
+        with Server(("127.0.0.1", 0), Model) as server:
             (codex_home / "config.toml").write_text(f"""
 model = "gpt-5.2"
 model_provider = "fixture"
@@ -170,6 +186,8 @@ stream_max_retries = 0
             finally:
                 server.shutdown()
                 worker.join()
+        if handler_errors:
+            raise RuntimeError("The loopback model failed to answer a request:\n" + "".join(handler_errors))
         started = [p.name for p in (account_start, cli_start) if p.exists()]
         if started:
             raise RuntimeError(f"Metadata started configured MCP servers: {started}")

@@ -192,7 +192,8 @@ export function buildTraitsTriggerDisplay(
     }
     const label =
       input.ultrathinkPromptControlled && descriptor.id === input.primarySelectDescriptorId
-        ? "Ultrathink"
+        ? // oxlint-disable-next-line t3code/no-untranslated-text -- Ultrathink is the feature keyword, shown as written
+          "Ultrathink"
         : descriptor.type === "boolean"
           ? descriptor.currentValue === true
             ? resolve(msg("{label} On"), { label: descriptor.label })

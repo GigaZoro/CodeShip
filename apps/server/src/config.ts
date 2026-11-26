@@ -31,6 +31,10 @@ export const WORKTREE_RELEASE_DIRECTORY = "worktree-releases";
 
 export const DEFAULT_PORT = 3773;
 
+// A busy trace wrote 10.4 MB/min before filtering, of which 5.55 MB/min was routine SQLite.
+export const DEFAULT_TRACE_MAX_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_TRACE_MAX_FILES = 128;
+
 export const RuntimeMode = Schema.Literals(["web", "desktop"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 
@@ -245,8 +249,8 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     traceMinLevel: "Info",
     traceTimingEnabled: true,
     traceBatchWindowMs: 200,
-    traceMaxBytes: 10 * 1024 * 1024,
-    traceMaxFiles: 10,
+    traceMaxBytes: DEFAULT_TRACE_MAX_BYTES,
+    traceMaxFiles: DEFAULT_TRACE_MAX_FILES,
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpLogsUrl: undefined,

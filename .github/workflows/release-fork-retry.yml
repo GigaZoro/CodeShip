@@ -9,8 +9,8 @@ name: Release (fork) retry
 # and uses no build time. Other failures rerun twice right away, then from the
 # schedule, which GitHub delays by hours under load.
 #
-# Main publishes Windows and Linux. For a macOS release, reruns and replacement
-# dispatches share three immediate attempts and 24 total attempts.
+# Main publishes Windows and Linux. The separately dispatched macOS workflow
+# handles runner shortages itself. The schedule also checks the latest macOS release.
 #
 # Release (fork) publishes main's head for Windows and Linux. A run whose commit
 # is no longer main is left alone: main's own run releases it, and publishing
@@ -20,7 +20,7 @@ name: Release (fork) retry
 
 on:
   workflow_run:
-    workflows: [Release (fork), Release (fork) macOS]
+    workflows: [Release (fork)]
     types: [completed]
   schedule:
     - cron: "17,47 * * * *"
@@ -132,13 +132,8 @@ jobs:
 
   catch-up-macos:
     name: Attach the macOS app to the latest release
-    if: >-
-      github.repository != 'pingdotgg/t3code' &&
-      (github.event_name == 'schedule' ||
-       (github.event.workflow_run.name == 'Release (fork) macOS' &&
-        github.event.workflow_run.event == 'workflow_dispatch' &&
-        github.event.workflow_run.conclusion == 'failure' &&
-        github.event.workflow_run.head_repository.full_name == github.repository))
+    if: github.event_name == 'schedule' && github.repository != 'pingdotgg/t3code'
+    # GitHub can deliver delayed schedule events together.
     concurrency:
       group: retry-fork-macos
       cancel-in-progress: false
@@ -154,40 +149,6 @@ jobs:
       - name: Rerun or start the macOS build of the latest release
         env:
           GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
-          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          IMMEDIATE_ATTEMPTS: 3
-        run: |
-          set -euo pipefail
-          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
-            --jq '"\(.tag_name) \(.target_commitish) \(.published_at) \(any(.assets[]; .name == "latest-mac.yml"))"')"
-          read -r tag sha published has_feed <<<"$release"
-          version="${tag#v}"
-          export TITLE="Release (fork) macOS $tag"
-          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]] &&
-             [[ "$RUN_SHA" != "$sha" || ( "$RUN_TITLE" != "$TITLE" && "$RUN_TITLE" != "$TITLE (branch dispatch)" ) ]]; then
-            echo "This failure belongs to a different release."
-            exit 0
-          fi
-          # Until its own feed is attached, a release carries the previous one's.
-          if [[ "$has_feed" == true ]]; then
-            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern latest-mac.yml --dir "$RUNNER_TEMP/feed"
-            if grep -Fxq "version: $version" "$RUNNER_TEMP/feed/latest-mac.yml"; then
-              echo "$tag has its macOS app."
-              exit 0
-            fi
-          fi
-          plan="$(node .github/scripts/fork-release.cjs recover-macos "$tag" "$sha" "$published")"
-          read -r action id <<<"$plan"
-          case "$action" in
-            wait) echo "Waiting for the macOS release or its next scheduled attempt." ;;
-            rerun) gh run rerun "$id" --failed --repo "$GITHUB_REPOSITORY" ;;
-            dispatch)
-              gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$tag" \
-                -f version="$version" -f bundle_run="$id"
-              ;;
-            *) echo "::error::Unexpected macOS recovery decision."; exit 1 ;;
-          esac
+          # Scheduled runs check out the default branch.
+          DEFAULT_BRANCH: ${{ github.ref_name }}
+        run: node .github/scripts/fork-release.cjs recover-macos

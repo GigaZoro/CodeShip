@@ -40,9 +40,13 @@ without one, and GitHub outages make downloads such as Electron's time out for h
 Jobs that never got a runner can retry immediately, up to 24 attempts. Other failures get two
 immediate retries followed by the half-hourly schedule. The schedule also starts a missing release.
 
-For the latest macOS release, the initial build, reruns and replacement dispatches share a budget
-of three immediate attempts and 24 attempts in total. Before reusing a run, recovery checks that
-its JS bundle came from the publishing run. If only attachment failed and the signed app artifact
+A failed **Release (fork) macOS** build for the latest release runs its recovery job on Linux.
+It reruns failed jobs from another build of the same release when it can reuse its artifacts,
+or dispatches a replacement from the published tag. This works even when GitHub delivers no
+`workflow_run` event and delays the scheduled catch-up for hours. When GitHub gives the build
+no runner, recovery continues up to 24 total attempts across all reruns and replacements.
+Other failures get two immediate retries, then wait for scheduled catch-up. Before reusing a run,
+recovery checks that its JS bundle came from the publishing run. If only attachment failed and the signed app artifact
 is available, it retries attachment even after the JS bundle expires. When it cannot verify an
 older run’s source, recovery starts a fresh build with the publisher’s bundle if available.
 To repair a release by hand, run **Release (fork) macOS** from the published tag and enter its

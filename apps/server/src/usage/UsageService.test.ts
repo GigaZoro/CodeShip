@@ -53,6 +53,7 @@ import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsag
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityUsage from "../provider/Drivers/AntigravityUsage.ts";
+import { resolveAntigravityInstanceDirectories } from "../provider/antigravityAuthSupport.ts";
 import * as ProviderHostLive from "../provider/ProviderHostLive.ts";
 import { totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usage";
 import * as UsageService from "./UsageService.ts";
@@ -3103,14 +3104,21 @@ describe("UsageService", () => {
   it.effect("reads Antigravity history from each instance's data directory", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
+      const prefix = "usage-service-antigravity-instances-test";
       const first = NodePath.join(home, "antigravity-first");
       const second = NodePath.join(home, "antigravity-second");
+      const { profile } = yield* resolveAntigravityInstanceDirectories(
+        NodePath.join(home, prefix, "userdata"),
+        ProviderInstanceId.make("antigravity"),
+      ).pipe(Effect.provide(NodeServices.layer));
+      const histories = [
+        [first, 7],
+        [second, 11],
+        [NodePath.join(profile, "antigravity-acp", "conversations"), 13],
+      ] as const;
       yield* Effect.promise(async () => {
-        for (const [dir, outputTokens] of [
-          [first, 7],
-          [second, 11],
-        ] as const) {
-          await NodeFSP.mkdir(dir);
+        for (const [dir, outputTokens] of histories) {
+          await NodeFSP.mkdir(dir, { recursive: true });
           const db = new NodeSqlite.DatabaseSync(
             NodePath.join(dir, `${NodePath.basename(dir)}.db`),
           );
@@ -3139,7 +3147,7 @@ describe("UsageService", () => {
       const service = yield* UsageService.make.pipe(
         Effect.provide(
           layerService({
-            prefix: "usage-service-antigravity-instances-test",
+            prefix,
             home,
             settings: {
               providerInstances: {
@@ -3155,10 +3163,7 @@ describe("UsageService", () => {
       const roots = summary.sources
         .filter((source) => source.fingerprint.provider === "antigravity")
         .map((source) => source.fingerprint.resolvedHomePath);
-      for (const [dir, outputTokens] of [
-        [first, 7],
-        [second, 11],
-      ] as const) {
+      for (const [dir, outputTokens] of histories) {
         const root = yield* Effect.promise(() => NodeFSP.realpath(dir));
         assert.include(roots, root);
         assert.strictEqual(

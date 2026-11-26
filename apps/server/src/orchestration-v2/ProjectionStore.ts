@@ -557,6 +557,14 @@ export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
   "thread" | K
 >;
 
+export interface ProjectionReviewRound {
+  readonly part: number;
+  readonly round: number;
+  /** The reason the round's part was started with, on its first round. */
+  readonly newPartReason: string | null;
+  readonly answered: boolean;
+}
+
 /**
  * A page holds the oldest matches after `afterPosition`, or with `beforePosition`,
  * the newest matches before it. `itemId` ignores both bounds.
@@ -693,6 +701,10 @@ export interface ProjectionStoreV2Shape {
   readonly hasPendingDelegatedCompletion: (
     childThreadId: ThreadId,
   ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  /** The thread's latest review round, and whether a reviewer in it has answered. */
+  readonly getLatestReviewRound: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProjectionReviewRound | null, ProjectionStoreV2Error>;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
   ) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -7891,6 +7903,48 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           Effect.mapError(controlReadError(childThreadId)),
         ),
       );
+    // A reviewer's answer is readable in its own thread as soon as its run completes, before the
+    // parent records it, so that run answers the round. A rollback there rewrites the run's status,
+    // so the parent's records of completed work in that thread, follow-ups included, keep the round
+    // answered. A reviewer in another environment has no thread here; its own record answers it.
+    const getLatestReviewRound: ProjectionStoreV2Shape["getLatestReviewRound"] = (threadId) =>
+      sql<{ part: number; round: number; newPartReason: string | null; answered: number }>`
+        SELECT
+          json_extract(reviewer.payload_json, '$.review.part') AS part,
+          json_extract(reviewer.payload_json, '$.review.round') AS round,
+          MAX(json_extract(reviewer.payload_json, '$.review.newPartReason')) AS newPartReason,
+          MAX(
+            reviewer.status = 'completed'
+            OR EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_subagents AS work
+              WHERE work.child_thread_id = reviewer.child_thread_id
+                AND work.thread_id = reviewer.thread_id
+                AND work.status = 'completed'
+            )
+            OR EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs AS run
+              WHERE run.thread_id = reviewer.child_thread_id AND run.status = 'completed'
+            )
+          ) AS answered
+        FROM orchestration_v2_projection_subagents AS reviewer
+        WHERE reviewer.thread_id = ${threadId}
+          AND json_type(reviewer.payload_json, '$.review') IS NOT NULL
+        GROUP BY part, round
+        ORDER BY part DESC, round DESC
+        LIMIT 1`.pipe(
+        Effect.map((rows) => {
+          const row = rows[0];
+          return row === undefined
+            ? null
+            : {
+                part: row.part,
+                round: row.round,
+                newPartReason: row.newPartReason,
+                answered: row.answered === 1,
+              };
+        }),
+        Effect.mapError(controlReadError(threadId)),
+      );
     const getNextTurnItemOrdinal: ProjectionStoreV2Shape["getNextTurnItemOrdinal"] = (threadId) =>
       sql<{ ordinal: number | null }>`SELECT MAX(ordinal) AS ordinal
         FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}`.pipe(
@@ -11371,6 +11425,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getRunCount: readOnReader(getRunCount),
       listAppOwnedChildThreadIds: readOnReader(listAppOwnedChildThreadIds),
       hasPendingDelegatedCompletion: readOnReader(hasPendingDelegatedCompletion),
+      getLatestReviewRound: readOnReader(getLatestReviewRound),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getMessagesById: readOnReader(getMessagesById),

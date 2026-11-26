@@ -10,7 +10,7 @@ const layer = it.layer(NodeSqliteClient.layer({ filename: ":memory:" }));
 const AT = "2026-11-15T00:00:00.000Z";
 const BROKEN = "{broken";
 
-layer("036_PayloadIndexesJsonValid", (it) => {
+layer("037_PayloadIndexesJsonValid", (it) => {
   // A new database runs the unguarded migrations 3, 10 and 13 before this one.
   it.effect("keeps a malformed payload writable in every table the fork indexes by payload", () =>
     Effect.gen(function* () {

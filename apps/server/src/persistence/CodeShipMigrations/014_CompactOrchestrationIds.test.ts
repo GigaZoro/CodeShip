@@ -130,7 +130,8 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
       [33, "ScheduledTaskLastRunId"],
       [34, "UsageStopDecisions"],
       [35, "TurnItemMessageIndex"],
-      [36, "PayloadIndexesJsonValid"],
+      [36, "IncrementalEventStoreCompaction"],
+      [37, "PayloadIndexesJsonValid"],
     ]);
     assert.deepStrictEqual(yield* eventPayloadIds, {
       "event:first": ROOT,

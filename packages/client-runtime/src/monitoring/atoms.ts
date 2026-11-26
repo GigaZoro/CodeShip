@@ -183,6 +183,7 @@ export function executeMonitoringQuery<A, E>(
       error: new EnvironmentRpcUnavailableError({
         environmentId,
         reason: "timeout",
+        // oxlint-disable-next-line t3code/no-untranslated-text -- Monitoring displays its own translated timeout status.
         message: "The request timed out.",
       }),
     },

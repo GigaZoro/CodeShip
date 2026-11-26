@@ -7,7 +7,13 @@ import {
 } from "@t3tools/contracts";
 
 import { getFormattingLocale, t } from "./i18n.ts";
-import { sourceIdentity, type MergedUsage, type UsageContractMismatch } from "./usageMerge.ts";
+import {
+  isUsageCostUnknown,
+  sourceIdentity,
+  type MergedUsage,
+  type ProviderTotals,
+  type UsageContractMismatch,
+} from "./usageMerge.ts";
 
 export function usageEmptyMessage(
   usage: Pick<MergedUsage, "records" | "costQuality" | "totalTokens" | "costUsd">,
@@ -92,6 +98,35 @@ export function usageSourceMessages(
 
 export function formatUsd(value: number, locale?: string): string {
   return numberFormatter("currency", displayLocale(locale)).format(value);
+}
+
+export function formatUsageCost(
+  usage: Pick<MergedUsage, "costUsd" | "records" | "unpricedRecords"> | undefined,
+  locale?: string,
+): string {
+  return usage && isUsageCostUnknown(usage)
+    ? t("Unpriced")
+    : formatUsd(usage?.costUsd ?? 0, locale);
+}
+
+export function formatProviderUsageDetail(
+  usage: ProviderTotals,
+  metric: "cost" | "tokens",
+  locale?: string,
+): string {
+  if (metric === "tokens") {
+    return t("{share} of tokens · {cost}", {
+      share: formatPercent(usage.tokenShare, locale),
+      cost: formatUsageCost(usage, locale),
+    });
+  }
+  const tokens = formatTokens(usage.totalTokens, locale);
+  return isUsageCostUnknown(usage)
+    ? t("{tokens} tokens", { tokens })
+    : t("{share} of cost · {tokens} tokens", {
+        share: formatPercent(usage.costShare, locale),
+        tokens,
+      });
 }
 
 export function formatCount(value: number, locale?: string): string {

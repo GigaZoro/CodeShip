@@ -28,6 +28,7 @@ import {
   legacyThreadPullRequestKey,
 } from "../sourceControl/threadPullRequests.ts";
 import {
+  DELEGATED_REVIEW_ROUND_LIMIT,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
@@ -71,6 +72,7 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2StoredEvent,
+  type OrchestrationV2DelegatedReviewRequest,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
@@ -428,6 +430,15 @@ export class OrchestratorProviderSelectionBusyError extends Schema.TaggedError<O
   }
 }
 
+export class OrchestratorReviewRoundLimitError extends Schema.TaggedError<OrchestratorReviewRoundLimitError>()(
+  "OrchestratorReviewRoundLimitError",
+  { commandId: CommandId, threadId: ThreadId, part: Schema.Number, rounds: Schema.Number },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} already delegated ${this.rounds} review rounds of part ${this.part} of its change. Re-plan or split the change before another.`;
+  }
+}
+
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
 
 export function isStaleDispatchError(error: unknown): boolean {
@@ -535,6 +546,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorProviderSelectionBusyError,
   OrchestratorRuntimeModeAboveCeilingError,
   OrchestratorContinuationSnoozedError,
+  OrchestratorReviewRoundLimitError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -11185,6 +11197,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Parent node ${command.parentNodeId} is not part of active run ${parentRun.id}.`,
         });
       }
+      const review = yield* reviewRound(command);
 
       const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
         Effect.mapError(
@@ -11261,6 +11274,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         model: command.modelSelection.model,
         modelSelection: command.modelSelection,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
+        ...(review === undefined ? {} : { review }),
         status: "running",
         result: null,
         startedAt: now,
@@ -11543,6 +11557,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       status: run.status === "queued" ? (run.queueHeld === true ? "idle" : "pending") : "running",
       progress: undefined,
       cancelledRunId: undefined,
+      // A message to a reviewer is not a review round of its own.
+      review: undefined,
       result: null,
       startedAt: now,
       completedAt: null,
@@ -11700,6 +11716,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Parent run ${command.parentRunId} is stopping.`,
       });
     }
+    const review = yield* reviewRound(command);
     const now = yield* DateTime.now;
     const taskNodeId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
     const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem({
@@ -11763,6 +11780,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // The child's thread is on the other machine, so its effort and options are kept here.
         modelSelection: command.modelSelection,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
+        ...(review === undefined ? {} : { review }),
         status: "running",
         result: null,
         startedAt: now,
@@ -14396,6 +14414,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     projectionStore
       .getSubagentCount(threadId)
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+
+  /**
+   * A review task's round in its parent thread. Reviewers started before the latest round has a
+   * completed review join it; a new part (the change re-planned or split) starts at round 1, and
+   * reviewers of that part named with the same reason before it is answered join it.
+   */
+  const reviewRound = Effect.fn("orchestrationV2.reviewRound")(function* (command: {
+    readonly commandId: CommandId;
+    readonly parentThreadId: ThreadId;
+    readonly review?: OrchestrationV2DelegatedReviewRequest | undefined;
+  }) {
+    if (command.review === undefined) return undefined;
+    const threadId = command.parentThreadId;
+    const latest = yield* projectionStore
+      .getLatestReviewRound(threadId)
+      .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+    const reason = command.review.newPartReason;
+    const joins =
+      latest !== null &&
+      !latest.answered &&
+      (reason === undefined || (latest.round === 1 && latest.newPartReason === reason));
+    const place =
+      latest === null
+        ? { part: 1, round: 1 }
+        : joins
+          ? { part: latest.part, round: latest.round }
+          : reason === undefined
+            ? { part: latest.part, round: latest.round + 1 }
+            : { part: latest.part + 1, round: 1 };
+    if (latest !== null && place.round > DELEGATED_REVIEW_ROUND_LIMIT) {
+      return yield* new OrchestratorReviewRoundLimitError({
+        commandId: command.commandId,
+        threadId,
+        part: latest.part,
+        rounds: latest.round,
+      });
+    }
+    return { ...place, ...(reason === undefined ? {} : { newPartReason: reason }) };
+  });
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
     command: OrchestrationV2ServerCommand,
@@ -18861,12 +18918,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     if (Result.isFailure(decision)) {
       const cause = decision.failure;
-      // A refusal based on current thread state or modes must allow a retry when they change.
+      // A refusal based on current thread state, modes or a review round must allow a retry when they change.
       if (
         cause._tag === "OrchestratorSendTargetUnavailableError" ||
         cause._tag === "OrchestratorThreadAboveModeLimitError" ||
         cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
-        cause._tag === "OrchestratorContinuationSnoozedError"
+        cause._tag === "OrchestratorContinuationSnoozedError" ||
+        cause._tag === "OrchestratorReviewRoundLimitError"
       ) {
         return yield* cause;
       }

@@ -31,15 +31,17 @@ const published = { checkedAt, windows: [session, weekly] };
 describe("applyUsageLimitsUpdate", () => {
   it("preserves the observation time of an omitted window across a sparse update and failed probe", () => {
     const updated = applyUsageLimitsUpdate({
-      previous: published,
+      previous: { ...published, source: "antigravity-acp" },
       checkedAt: later,
       update: { windows: [{ ...session, usedPercent: 55 }] },
     });
+    expect(updated?.source).toBe("antigravity-acp");
     expect(
       resolveUsageLimitsAfterProbe({
         published: updated,
         probed: {
           checkedAt: "2026-09-03T12:00:10.000Z",
+          source: "antigravity-acp",
           windows: [],
           unavailable: { reason: "probeFailed" },
         },
@@ -717,6 +719,8 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published, probed: failed })).toBe(published);
     expect(resolveUsageLimitsAfterProbe({ published, probed: unsupported })).toBe(unsupported);
     expect(resolveUsageLimitsAfterProbe({ published: undefined, probed: failed })).toBe(failed);
+    const failedAcpRead = { ...failed, source: "antigravity-acp" as const };
+    expect(resolveUsageLimitsAfterProbe({ published, probed: failedAcpRead })).toBe(failedAcpRead);
   });
 
   it("takes the reset fields a failed probe read, dropping the ones it no longer has", () => {

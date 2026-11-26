@@ -68,7 +68,7 @@ const make = Effect.gen(function* () {
   }) {
     const roots: Array<string> = [];
     for (const instance of instances) roots.push(...(yield* dataRoots(instance.environment)));
-    for (const { instanceId } of instances) {
+    for (const { instanceId, configured } of instances) {
       const directories = yield* resolveAntigravityInstanceDirectories(
         host.paths.stateDir,
         instanceId,
@@ -84,7 +84,10 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      roots.push(path.join(directories.profile, "antigravity-acp"));
+      const root = path.join(directories.profile, "antigravity-acp");
+      if (configured || (yield* fileSystem.exists(root).pipe(Effect.orElseSucceed(() => true)))) {
+        roots.push(root);
+      }
     }
     // Profiles of removed or renamed instances keep their history on disk; keep counting it.
     const profilesDir = path.join(host.paths.stateDir, "providers", "antigravity");

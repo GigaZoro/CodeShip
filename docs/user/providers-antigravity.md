@@ -56,6 +56,6 @@ During browser sign-in, chats continue using the current Google account. CodeShi
 
 ## Usage and troubleshooting
 
-- T3.CodeShip does not read your Google account's Antigravity allowances; **Usage** shows tokens and cost from Antigravity's local history.
+- Open **Usage** to see tokens and estimated API cost from Antigravity's local conversation history. With the managed runtime and a Google sign-in, **Usage > Limits** shows the remaining allowances reported by the built-in `/usage` command. If you use the same account on two environments, its limits can appear twice because the command omits the account ID.
 - Use **Refresh provider status** (web/desktop) or **Refresh models** (mobile) to reload models and access.
 - For `SUBSCRIPTION_REQUIRED` or account restriction errors, see [Google's account plans](https://antigravity.google/docs/plans).

@@ -55,6 +55,24 @@ edits are not copied. A linked-environment target (`target.environmentId`) runs 
 project's checkout and rejects worktree isolation. To launch an isolated thread there, use
 `t3_thread_launch` with `environmentId` and a worktree `workspaceStrategy`.
 
+Each independent delegated review round uses a new `delegate_task` call with the
+original brief, prior findings, responses, and unresolved objections. Track each
+reviewer by its own `taskId` and give each reviewer call its own
+`clientRequestId`, reused only to retry that call: parallel reviewers share a
+round, and a repeated key returns the first reviewer instead of starting another.
+The parent thread counts its `role: "review"` tasks in rounds, and the result's
+`reviewRound` reports the task's round. Reviewers started while the latest round
+is unanswered join that round, so parallel reviewers of one diff share it. A
+review that would be round 4 is refused with `review_round_limit`, quoting the
+review rule that a third round still finding blocking defects means re-plan or
+split the change. A call with `newReviewPart`, one line saying how the change
+was re-planned or split, starts round 1 of a new part instead. While that round
+is unanswered, more reviewers of the part join it by repeating the same line or
+leaving `newReviewPart` out; a different line starts another part. A round is
+answered once a run in one of its reviewers' threads completes; a failed or
+cancelled reviewer leaves it open for a retry, and follow-up work in a
+reviewer's thread is not a round of its own.
+
 ## `t3_command_run`
 
 Runs a shell command that ends (tests, a build, an install, a push, a deploy, a long script) as an app-owned task of

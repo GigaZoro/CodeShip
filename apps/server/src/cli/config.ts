@@ -101,7 +101,7 @@ export const traceFileConfig = Config.String("T3CODE_TRACE_FILE").pipe(
   Config.map(Option.getOrUndefined),
 );
 export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
-  Config.withDefault(10),
+  Config.withDefault(ServerConfig.DEFAULT_TRACE_MAX_FILES),
 );
 
 const EnvServerConfig = Config.all({
@@ -109,7 +109,9 @@ const EnvServerConfig = Config.all({
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
   traceTimingEnabled: Config.Boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
   traceFile: traceFileConfig,
-  traceMaxBytes: Config.Int("T3CODE_TRACE_MAX_BYTES").pipe(Config.withDefault(10 * 1024 * 1024)),
+  traceMaxBytes: Config.Int("T3CODE_TRACE_MAX_BYTES").pipe(
+    Config.withDefault(ServerConfig.DEFAULT_TRACE_MAX_BYTES),
+  ),
   traceMaxFiles: traceMaxFilesConfig,
   traceBatchWindowMs: Config.Int("T3CODE_TRACE_BATCH_WINDOW_MS").pipe(Config.withDefault(1_000)),
   otlpTracesUrl: Config.String("T3CODE_OTLP_TRACES_URL").pipe(

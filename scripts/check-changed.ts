@@ -69,6 +69,7 @@ import {
 import { GIT_CALL_TIMEOUT_MS, REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
+import { macAwakeMs } from "../.github/scripts/landing-turn.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import {
   isRepositoryCommandManifest,
@@ -264,6 +265,25 @@ const awakeSeconds = Effect.fnUntraced(function* (seconds: number) {
 /** `None` once `effect` has run for `seconds` of the machine's time awake, and is interrupted. */
 const awakeTimeoutOption = <A, E, R>(effect: Effect.Effect<A, E, R>, seconds: number) =>
   Effect.raceFirst(Effect.asSome(effect), Effect.as(awakeSeconds(seconds), Option.none<A>()));
+
+export const noticingSleep = Effect.fn("checkChanged.noticingSleep")(function* <
+  A extends {
+    readonly ok: boolean;
+  },
+  E,
+  R,
+>(effect: Effect.Effect<A, E, R>, readAwakeMs: () => number) {
+  const awake = Effect.try({ try: readAwakeMs, catch: String }).pipe(Effect.option);
+  const startAwake = yield* awake;
+  const startWall = yield* Clock.currentTimeMillis;
+  const result = yield* effect;
+  if (result.ok || Option.isNone(startAwake)) return { ...result, slept: false };
+  const endAwake = yield* awake;
+  const wallElapsed = (yield* Clock.currentTimeMillis) - startWall;
+  // Allow for the cost and resolution of sampling two independent clocks.
+  const slept = Option.isSome(endAwake) && wallElapsed - (endAwake.value - startAwake.value) > 1000;
+  return { ...result, slept };
+});
 
 export interface Step<R> {
   readonly name: string;
@@ -1062,7 +1082,11 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   request: typeof TestRequest.Type,
   concurrency: number,
   platform: string,
-  run: (concurrency: number) => Effect.Effect<{ readonly ok: boolean; readonly output: string }>,
+  run: (concurrency: number) => Effect.Effect<{
+    readonly ok: boolean;
+    readonly output: string;
+    readonly slept?: boolean;
+  }>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1072,6 +1096,7 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
   const completed: Array<string> = [];
   let output = "";
   let ok = true;
+  let sleepRetried = false;
   const killedExit = platform === "win32" ? undefined : 137;
   const summaries = Effect.gen(function* () {
     const versions = (yield* fs.exists(cache)) ? yield* fs.readDirectory(cache) : [];
@@ -1088,25 +1113,40 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
     const result = yield* run(limit);
     output += result.output;
     if (result.ok) break;
-    ok = false;
+    const retryAfterSleep = result.slept === true && !sleepRetried;
+    if (retryAfterSleep) {
+      sleepRetried = true;
+      output +=
+        "\ncheck:changed: the Mac slept during the tests; retrying unfinished or failed groups.\n";
+    } else {
+      ok = false;
+    }
 
     // Vite+ 1.4 kills in-flight siblings after a failure. Leave those groups pending so they get a
     // complete run and report their own failures. Unix reports a killed task as exit 137; Windows
     // gives it a status a failed task can have, so there only a serial attempt settles one.
     const [summaryFile] = yield* summaries;
-    if (!summaryFile) break;
+    if (!summaryFile) {
+      if (retryAfterSleep) continue;
+      break;
+    }
     const summary = yield* decodeTestSummary(yield* fs.readFileString(summaryFile));
     const settled = summary.tasks
       .filter((task) => {
         const failure = task.result.Spawned?.outcome.Failed;
         return (
-          limit === 1 ||
           failure === undefined ||
-          (killedExit !== undefined && failure.exit_code !== killedExit)
+          (!retryAfterSleep &&
+            (limit === 1 || (killedExit !== undefined && failure.exit_code !== killedExit)))
         );
       })
       .map((task) => task.task_name)
       .filter((task) => remaining.delete(task));
+    if (retryAfterSleep) {
+      completed.push(...settled);
+      if (remaining.size === 0) ok = false;
+      continue;
+    }
     if (settled.length === 0) {
       if (limit === 1 || !summary.tasks.some((task) => remaining.has(task.task_name))) break;
       // A task can itself exit 137. A serial attempt makes that distinguishable from fail-fast.
@@ -1907,8 +1947,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             },
             groups,
             platform,
-            (limit) =>
-              spawnVp(
+            (limit) => {
+              const run = spawnVp(
                 spawner,
                 platform,
                 [
@@ -1922,7 +1962,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
                 root,
                 env,
                 collect,
-              ),
+              );
+              return platform === "darwin" ? noticingSleep(run, macAwakeMs) : run;
+            },
           );
           const changed = yield* finish;
           return changed.length === 0

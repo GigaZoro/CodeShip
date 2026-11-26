@@ -45,6 +45,7 @@ import {
   keepModuleCache,
   runSpawner,
   runSteps,
+  noticingSleep,
   runTestGroups,
   spawnVp,
   splitTests,
@@ -283,6 +284,86 @@ describe("check:changed", () => {
         assert.deepStrictEqual(attempts, []);
         assert.deepStrictEqual(result, { ok: false, output: expected });
       }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each([true, false])(
+    "retries a sleep-affected group once and uses the retry's result (%s)",
+    (passes) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* slotDirectory;
+        const cache = NodePath.join(directory, "cache");
+        const version = NodePath.join(cache, "v18");
+        const requestFile = NodePath.join(directory, "request.json");
+        yield* fs.makeDirectory(version, { recursive: true });
+        const request = {
+          files: ["packages/shared/a.test.ts", "packages/shared/b.test.ts"],
+          groupSize: 1,
+          uncached: ["packages/shared/a.test.ts"],
+        };
+        const [first, second] = cachedTestTasks(JSON.stringify(request))["test-cache"]!.dependsOn!;
+        let runs = 0;
+        const result = yield* runTestGroups(cache, requestFile, request, 1, "darwin", () =>
+          Effect.gen(function* () {
+            const retry = runs++ > 0;
+            const requested = JSON.parse(yield* fs.readFileString(requestFile));
+            assert.deepStrictEqual(requested.completed, retry ? [first] : []);
+            const ok = retry && passes;
+            const tasks = retry ? [failed(second!, 1)] : [hit(first!), failed(second!, 1)];
+            yield* fs.writeFileString(
+              NodePath.join(version, "last-summary.json"),
+              JSON.stringify({ tasks }),
+            );
+            return { ok, output: "", slept: !ok };
+          }).pipe(Effect.orDie),
+        );
+        assert.deepStrictEqual([runs, result.ok], [2, passes]);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails a test group that failed while the machine stayed awake at once", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* slotDirectory;
+      const cache = NodePath.join(directory, "cache");
+      yield* fs.makeDirectory(NodePath.join(cache, "v18"), { recursive: true });
+      let runs = 0;
+      const result = yield* runTestGroups(
+        cache,
+        NodePath.join(directory, "request.json"),
+        { files: ["packages/shared/a.test.ts"], groupSize: 1, uncached: [] },
+        1,
+        "linux",
+        () => Effect.sync(() => (runs++, { ok: false, output: "hung\n", slept: false })),
+      );
+      assert.strictEqual(runs, 1);
+      assert.isFalse(result.ok);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each([
+    { name: "a sleep", wallElapsed: 900_000, awakeElapsed: 1000, slept: true },
+    { name: "an awake stall", wallElapsed: 900_000, awakeElapsed: 900_000, slept: false },
+  ])("distinguishes $name at test exit", ({ wallElapsed, awakeElapsed, slept }) =>
+    Effect.gen(function* () {
+      const clock = yield* Clock.Clock;
+      let wall = 0;
+      let awake = 0;
+      const result = yield* noticingSleep(
+        Effect.sync(() => {
+          wall += wallElapsed;
+          awake += awakeElapsed;
+          return { ok: false };
+        }),
+        () => awake,
+      ).pipe(
+        Effect.provideService(Clock.Clock, {
+          ...clock,
+          currentTimeMillis: Effect.sync(() => wall),
+        }),
+      );
+      assert.deepStrictEqual(result, { ok: false, slept });
+    }),
   );
 
   it.effect("seeds committed rows and publishes passes after success or interruption", () =>
@@ -1391,10 +1472,20 @@ const fixtureConfig = {
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
+// The run under test reads none of the settings of the check:changed run or landing turn running
+// these tests, such as a landing's test step limit, so its steps run the same for whoever runs
+// them. Windows reads environment names in any case, so they are left out whatever their case.
+const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
+const withoutCallerSettings = (from: Readonly<Record<string, string>>) =>
+  Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name)));
+
 const env: Record<string, string> = {
-  ...Object.fromEntries(
-    Object.entries(process.env).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("GIT_"),
+  ...withoutCallerSettings(
+    Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] =>
+          entry[1] !== undefined && !entry[0].startsWith("GIT_"),
+      ),
     ),
   ),
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -1880,13 +1971,6 @@ const providerEnv = NodePath.join(
   "../packages/shared/src/testing/providerEnv.ts",
 );
 
-// The run under test reads none of the settings of the check:changed run or landing turn running
-// these tests, such as a landing's test step limit, so its steps run the same for whoever runs
-// them. Windows reads environment names in any case, so they are left out whatever their case.
-const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
-const withoutCallerSettings = (from: Readonly<Record<string, string>>) =>
-  Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name)));
-
 const summaryOf = (stdout: string) => stdout.slice(stdout.lastIndexOf("check:changed summary"));
 
 function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
@@ -1905,6 +1989,10 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
+    ".github/scripts/landing-turn.cjs",
+    ".github/scripts/bounded-git.cjs",
+    ".github/scripts/lease-queue.cjs",
+    ".github/scripts/release-notes.cjs",
     ".github/scripts/git-history.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));

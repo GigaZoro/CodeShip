@@ -120,6 +120,7 @@ import * as SharedTaskPeerCheck from "./scheduledTasks/SharedTaskPeerCheck.ts";
 import * as SharedTaskPull from "./scheduledTasks/SharedTaskPull.ts";
 import * as SharedSettings from "./sharedSettings/SharedSettings.ts";
 import * as SharedSettingsPull from "./sharedSettings/SharedSettingsPull.ts";
+import * as LaunchJournal from "./scheduledTasks/LaunchJournal.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
 import * as MonitoringService from "./monitoring/MonitoringService.ts";
 import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
@@ -773,6 +774,7 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(UsageLimitSources.layerResetFallback),
   Layer.provide(layerTaskFolders),
   Layer.provide(layerScheduledTaskWebhookOrigin),
+  Layer.provide(LaunchJournal.layer),
   Layer.provide(ProviderUsageAnalytics.layer),
   Layer.provide(layerCheckpointStore),
   Layer.provide(layerGitWorkflow),

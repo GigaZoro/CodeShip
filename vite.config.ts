@@ -601,10 +601,14 @@ export default defineConfig({
       },
       {
         // UI text goes through the translator; see docs/internals/i18n.md.
-        files: ["apps/{web,mobile,desktop}/src/**/*.{ts,tsx}"],
+        files: [
+          "apps/{web,mobile,desktop}/src/**/*.{ts,tsx}",
+          "packages/client-runtime/src/**/*.{ts,tsx}",
+        ],
         excludeFiles: [
           "**/*.{test,spec,bench}.{ts,tsx}",
           "**/test-fixtures.ts",
+          "**/*TestFixtures.ts",
           "apps/mobile/src/features/development/**",
           "apps/mobile/src/features/showcase/**",
         ],

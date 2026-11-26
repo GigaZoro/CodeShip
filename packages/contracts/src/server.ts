@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AcpRegistryUrlAuthAction } from "./acpRegistry.ts";
 import {
@@ -27,7 +28,11 @@ import { ManagedPolicySummary } from "./managedPolicy.ts";
 import { ModelCapabilities, ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
-import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
+import {
+  hasSupportedUsageLimits,
+  ServerProviderUsageLimits,
+  UsageLimitSourceSnapshots,
+} from "./providerUsageLimits.ts";
 import { ServerSettings } from "./settings.ts";
 import { DesktopUpdateChannelSchema } from "./ipc.ts";
 
@@ -268,7 +273,7 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
-export const ServerProvider = Schema.Struct({
+const ServerProviderFields = Schema.Struct({
   // Only instanceId is stable enough for provider routing.
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
@@ -354,16 +359,40 @@ export const ServerProvider = Schema.Struct({
   /** Set by the client, never sent: the `catalogDigest` its slash commands and skills belong to. */
   loadedCatalogDigest: Schema.optionalKey(TrimmedNonEmptyString),
 });
+
+const stripUnsupportedUsageLimits = <
+  P extends {
+    readonly driver: typeof ServerProviderFields.Type.driver;
+    readonly usageLimits?: typeof ServerProviderFields.Type.usageLimits;
+  },
+>(
+  provider: P,
+): P => {
+  if (!provider.usageLimits || hasSupportedUsageLimits(provider.driver, provider.usageLimits))
+    return provider;
+  const { usageLimits: _internalQuota, ...rest } = provider;
+  return rest as P;
+};
+
+export const ServerProvider = ServerProviderFields.pipe(
+  Schema.middlewareDecoding((decode) =>
+    Effect.map(decode, Option.map(stripUnsupportedUsageLimits)),
+  ),
+);
 export type ServerProvider = typeof ServerProvider.Type;
 
 /** A provider without the lists that equal the ones its reader already holds. */
-export const ServerProviderDelta = ServerProvider.mapFields((fields) => ({
+export const ServerProviderDelta = ServerProviderFields.mapFields((fields) => ({
   ...fields,
   models: Schema.optionalKey(fields.models),
   // Declared again without the decoding default, which would read as a change to an empty list.
   slashCommands: Schema.optionalKey(Schema.Array(ServerProviderSlashCommand)),
   skills: Schema.optionalKey(Schema.Array(ServerProviderSkill)),
-}));
+})).pipe(
+  Schema.middlewareDecoding((decode) =>
+    Effect.map(decode, Option.map(stripUnsupportedUsageLimits)),
+  ),
+);
 export type ServerProviderDelta = typeof ServerProviderDelta.Type;
 
 const sameJson = (left: unknown, right: unknown) =>

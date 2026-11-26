@@ -59,6 +59,8 @@ import {
   refuseAgentModePick,
   resolveInteractionMode,
   resolveRuntimeMode,
+  reviewRequest,
+  reviewRoundLimitFailure,
   taskPrompt,
   withoutAgentModePicks,
 } from "../mcp/delegatedTaskModes.ts";
@@ -517,6 +519,7 @@ const make = Effect.gen(function* () {
       // the forwarder scopes the launch's, and the record's names it.
       const task = taskPrompt(input);
       const title = input.title ?? parent.thread.title;
+      const review = yield* reviewRequest(input);
       // The thread there is named here, from the same scope and key, so the task is recorded
       // before the launch: a crash or lost reply after the launch leaves a task whose follower
       // finds its thread, and one before it a task whose thread is gone, which the follower fails.
@@ -548,21 +551,26 @@ const make = Effect.gen(function* () {
           modelSelection,
           remoteChild: requestedChild,
           completionWake: input.mode === "wait" ? "settled_only" : "always",
+          ...(review === undefined ? {} : { review }),
         })
         .pipe(
-          // The cause goes to the log; the caller learns only that recording failed.
-          Effect.tapError((cause) =>
-            Effect.logWarning("remote-delegation.record-failed", {
-              parentThreadId: scope.thread.threadId,
-              cause,
-            }),
-          ),
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "Unable to record the delegated task.",
-              }),
+          Effect.catch((cause) =>
+            cause._tag === "OrchestratorReviewRoundLimitError"
+              ? Effect.fail(reviewRoundLimitFailure(cause))
+              : // The cause goes to the log; the caller learns only that recording failed.
+                Effect.logWarning("remote-delegation.record-failed", {
+                  parentThreadId: scope.thread.threadId,
+                  cause,
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new OrchestratorMcpFailure({
+                        code: "orchestration_error",
+                        message: "Unable to record the delegated task.",
+                      }),
+                    ),
+                  ),
+                ),
           ),
         );
       // A task that ended here before its launch answered may have had a stop sent there before

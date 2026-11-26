@@ -26,7 +26,9 @@ import { createEnvironmentCommand } from "./runtime.ts";
 import { t } from "@t3tools/shared/i18n";
 
 const MINT_TIMEOUT_MS = 8_000;
+// oxlint-disable-next-line t3code/no-untranslated-text -- stored label sent to the other environment, not shown by this module
 const PEER_PAIRING_CODE_LABEL = "T3.CodeShip link";
+// oxlint-disable-next-line t3code/no-untranslated-text -- stored label sent to the other environment, not shown by this module
 const MCP_APPROVAL_CODE_LABEL = "App sign-in";
 
 /** Minting failed; the user can still paste a code from the other environment. */

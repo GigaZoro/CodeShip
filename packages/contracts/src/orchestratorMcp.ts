@@ -60,6 +60,7 @@ import { secretRequestPageUrl } from "./secretRequest.ts";
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
 import { LastThreadTitleRegeneration, ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
+  DelegatedReviewNewPartReason,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2DelegatedFrom,
@@ -201,6 +202,11 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   ),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
+  // Annotate the optional: a description on the trimmed string never reaches the tool schema.
+  newReviewPart: Schema.optional(DelegatedReviewNewPartReason).annotate({
+    description:
+      "Role 'review' only. One line on how the change was re-planned or split since its last review. Starts round 1 of a new part. Required after 3 review rounds in this chat.",
+  }),
   auto: Schema.optional(OrchestratorMcpAuto),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
@@ -282,6 +288,8 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
     description: "True only on the timed-out wait call. The child keeps running.",
   }),
   next: Schema.optional(OrchestratorMcpRunningTaskNext),
+  /** A review task's round in its parent thread, such as "Review round 2 of 3 in this chat." */
+  reviewRound: Schema.optional(Schema.String),
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
 
@@ -1553,6 +1561,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_credential_required",
       "target_required",
       "memory_short",
+      /** A fourth review round of one part of a change, refused until it is re-planned or split. */
+      "review_round_limit",
       /** Auto mode is off where the thread would start, or its provider has no enabled account there. */
       "auto_mode_unavailable",
       /**

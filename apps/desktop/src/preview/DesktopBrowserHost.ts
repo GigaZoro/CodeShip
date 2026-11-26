@@ -158,8 +158,11 @@ interface AttachedTab {
    */
   agentUsed: boolean;
   focusReleasing: boolean;
-  /** The sessions sharing the guest's one Chromium screencast; it stops with the last of them. */
-  readonly screencasts: Map<string | undefined, { started: boolean; pending: number }>;
+  /** Each session sharing the guest's one Chromium screencast; it stops with the last of them. */
+  readonly screencasts: Map<
+    string | undefined,
+    { started: boolean; pending: number; params: Record<string, unknown> }
+  >;
   readonly onMessage: (
     event: Electron.Event,
     method: string,
@@ -170,6 +173,30 @@ interface AttachedTab {
   /** Stops waiting for the first page; set until the tab is announced. */
   stopWaiting: (() => void) | null;
 }
+
+/**
+ * Chromium runs one screencast per debugger client, so the sessions sharing it get the most
+ * demanding of their parameters: the best quality and the largest frames, as often as any wants.
+ */
+const mergeScreencastParams = (streams: Iterable<Record<string, unknown>>) => {
+  const sessions = [...streams];
+  const merged: Record<string, unknown> = {
+    format: sessions.some((params) => params["format"] === "png") ? "png" : "jpeg",
+    everyNthFrame: Math.min(
+      ...sessions.map((params) =>
+        typeof params["everyNthFrame"] === "number" ? params["everyNthFrame"] : 1,
+      ),
+    ),
+  };
+  for (const key of ["quality", "maxWidth", "maxHeight"] as const) {
+    const values = sessions.map((params) => params[key]);
+    const numbers = values.filter((value): value is number => typeof value === "number");
+    // A session without a size limit wants the guest's full size.
+    const unlimited = key !== "quality" && numbers.length < values.length;
+    if (numbers.length > 0 && !unlimited) merged[key] = Math.max(...numbers);
+  }
+  return merged;
+};
 
 export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
@@ -513,8 +540,17 @@ export const make = Effect.gen(function* () {
 
   /** An owner that leaves without stopping would otherwise keep the screencast running unseen. */
   const leaveScreencast = (tab: AttachedTab, owner: string | undefined) => {
-    if (!tab.screencasts.delete(owner) || tab.screencasts.size > 0) return;
-    void tab.debuggee.debugger.sendCommand("Page.stopScreencast").catch(() => {});
+    if (!tab.screencasts.delete(owner)) return;
+    if (tab.screencasts.size === 0) {
+      void tab.debuggee.debugger.sendCommand("Page.stopScreencast").catch(() => {});
+    } else {
+      void tab.debuggee.debugger
+        .sendCommand(
+          "Page.startScreencast",
+          mergeScreencastParams([...tab.screencasts.values()].map((entry) => entry.params)),
+        )
+        .catch(() => {});
+    }
   };
 
   /** A detached session, such as a closed viewer, waits on nothing it sent. */
@@ -581,17 +617,27 @@ export const make = Effect.gen(function* () {
           // A child session's screencast is not the page's, such as a late one on a detached session.
           const stream =
             sessionId === undefined && method === "Page.startScreencast"
-              ? (tab.screencasts.get(owner) ?? { started: false, pending: 0 })
+              ? (tab.screencasts.get(owner) ?? { started: false, pending: 0, params })
               : undefined;
           if (stream) {
             stream.pending += 1;
+            stream.params = params;
             tab.screencasts.set(owner, stream);
             if (owner !== undefined) streamingOwners.add(owner);
+            params = mergeScreencastParams(
+              [...tab.screencasts.values()].map((entry) => entry.params),
+            );
             syncPainting(tab);
           } else if (sessionId === undefined && method === "Page.stopScreencast") {
             tab.screencasts.delete(owner);
             syncPainting(tab);
-            if (tab.screencasts.size > 0) return Promise.resolve({});
+            // The others keep streaming at their own parameters.
+            if (tab.screencasts.size > 0) {
+              method = "Page.startScreencast";
+              params = mergeScreencastParams(
+                [...tab.screencasts.values()].map((entry) => entry.params),
+              );
+            }
           }
           if (annotated(method)) return Promise.reject(new Error(t(ANNOTATING_MESSAGE)));
           // A person's input through a viewer, or Playwright's own housekeeping, is not the agent's.

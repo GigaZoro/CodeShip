@@ -8114,7 +8114,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const claudeInstanceId = ProviderInstanceId.make("claude_work");
       const staleInstanceId = ProviderInstanceId.make("claude_stale");
       const maxEffort = { id: "effort", value: "max" };
-      const commands: Array<{ readonly modelSelection?: unknown }> = [];
+      const commands: Array<{ readonly modelSelection?: unknown; readonly review?: unknown }> = [];
       const task = {
         id: taskId,
         threadId: parentThreadId,
@@ -8185,13 +8185,22 @@ describe("OrchestratorMcpService provider resolution", () => {
                 : childProjection,
             ),
           dispatch: (command) =>
-            Effect.sync(() => {
-              commands.push(command as { readonly modelSelection?: unknown });
-              return {
-                sequence: 1,
-                storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
-              } as never;
-            }),
+            command.type === "delegated_task.request" && command.task.endsWith("Round 4.")
+              ? Effect.fail(
+                  new Orchestrator.OrchestratorReviewRoundLimitError({
+                    commandId: command.commandId,
+                    threadId: parentThreadId,
+                    part: 1,
+                    rounds: 3,
+                  }),
+                )
+              : Effect.sync(() => {
+                  commands.push(command as { readonly modelSelection?: unknown });
+                  return {
+                    sequence: 1,
+                    storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                  } as never;
+                }),
         }),
         ServerSettings.layerTest({
           delegatedTaskModelSelections: {
@@ -8226,15 +8235,20 @@ describe("OrchestratorMcpService provider resolution", () => {
       );
       yield* Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        for (const [index, [role, target]] of (
+        const newPartReason = "Split the migration into its own change.";
+        for (const [index, [role, target, newReviewPart]] of (
           [
-            ["implementation", undefined],
-            ["implementation", { model: "gpt-5.4" }],
-            ["review", undefined],
+            ["implementation", undefined, undefined],
+            ["implementation", { model: "gpt-5.4" }, undefined],
+            ["review", undefined, undefined],
             // A reviewer named by account runs there, though a setting picks it with Auto.
-            ["review", { providerInstanceId: claudeInstanceId, model: "claude-opus" }],
+            [
+              "review",
+              { providerInstanceId: claudeInstanceId, model: "claude-opus" },
+              newPartReason,
+            ],
             // Given options run as named, on the role's model or the reviewer's account.
-            ["implementation", { options: { effort: "max" } }],
+            ["implementation", { options: { effort: "max" } }, undefined],
             [
               "review",
               {
@@ -8242,15 +8256,17 @@ describe("OrchestratorMcpService provider resolution", () => {
                 model: "claude-opus",
                 options: { effort: "max" },
               },
+              undefined,
             ],
-            ["research", { options: { effort: "max" } }],
-            ["design", undefined],
+            ["research", { options: { effort: "max" } }, undefined],
+            ["design", undefined, undefined],
           ] as const
         ).entries()) {
           yield* service.delegateTask(scope, {
             task: "Do the work.",
             role,
             ...(target === undefined ? {} : { target: yield* decodeTarget(target) }),
+            ...(newReviewPart === undefined ? {} : { newReviewPart }),
             mode: "async",
             clientRequestId: `${role}:${index}`,
           });
@@ -8280,6 +8296,31 @@ describe("OrchestratorMcpService provider resolution", () => {
             { instanceId: codexInstanceId, model: "gpt-5.4" },
           ],
         );
+        // Only a review task asks its parent to count it.
+        assert.deepEqual(
+          commands.map((command) => command.review),
+          [undefined, undefined, {}, { newPartReason }, undefined, {}, undefined, undefined],
+        );
+        const misplaced = yield* service
+          .delegateTask(scope, {
+            task: "Do the work.",
+            role: "implementation",
+            newReviewPart: newPartReason,
+            mode: "async",
+          })
+          .pipe(Effect.flip);
+        assert.equal(misplaced.code, "invalid_request");
+        const refused = yield* service
+          .delegateTask(scope, {
+            task: "Round 4.",
+            role: "review",
+            mode: "async",
+            clientRequestId: "review:round-4",
+          })
+          .pipe(Effect.flip);
+        assert.equal(refused.code, "review_round_limit");
+        assert.include(refused.message, "~/.agents/rules/review.md");
+        assert.equal(commands.length, 8);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );

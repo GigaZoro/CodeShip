@@ -90,7 +90,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 
 import * as Layer from "effect/Layer";
-
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 
 import * as Path from "effect/Path";
@@ -6270,8 +6270,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     // regression: #21806 an unresolved policy restricts bypass without caching the failed result
     it.effect(
       "ignores settings files Claude cannot read and retries an unresolved policy on the next turn",
-      () =>
-        Effect.gen(function* () {
+      () => {
+        const errors: unknown[] = [];
+        return Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const home = yield* fileSystem.makeTempDirectoryScoped({
@@ -6328,7 +6329,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             // Its replacement reads again, but must not undo the decision that replaced it.
             if (ordinal === 2) {
               vi.mocked(ClaudeSdk.resolveSettings).mockRejectedValueOnce(
-                new Error("Cannot resolve managed settings"),
+                new Error("Cannot validate launch flag settings"),
               );
             }
             yield* harness.runtime.startTurn(
@@ -6359,6 +6360,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
           }
           assert.equal(harness.offeredMessages.length, 3);
+          assert.includeDeepMembers(errors, [
+            [
+              "Claude's settings could not be resolved.",
+              {
+                phase: "flag-validation",
+                kind: "sdk-error",
+              },
+            ],
+          ]);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -6366,9 +6376,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               McpProviderSessions.layer,
               NodeServices.layer,
               NodeCrypto.layer,
+              Logger.layer([
+                Logger.make(({ message, logLevel }) => {
+                  if (logLevel === "Error") errors.push(message);
+                }),
+              ]),
             ),
           ),
-        ),
+        );
+      },
     );
 
     it.effect.each([

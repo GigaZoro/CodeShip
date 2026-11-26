@@ -1,3 +1,39 @@
+## 2026-11-26 — Claude settings failures in server logs
+
+- When Claude settings resolution fails, the server log records which step failed and the failure category without exposing settings contents or raw SDK errors.
+
+## 2026-11-26 — Delegated reviews stop after three rounds per change
+
+- A chat counts the review tasks it delegates. Each review result says its round, such as "Review round 2 of 3 in this chat", and reviewers started in parallel share a round. A fourth review round of the same change is refused with a reason that quotes the review rule: a third round that still finds blocking defects means the change needs re-planning or splitting. Once it is re-planned or split, the agent passes `newReviewPart` with one line saying how, and that review starts round 1 of a new part. The count lives with the chat, so it survives compaction and restarts.
+
+## 2026-11-26 — Event-log compaction skips unchanged history
+
+- The server’s six-hour event-log compaction revisits older chat state only when a new event can supersede it. On an unchanged database, the pass reads no event payloads. The first upgrade builds the indexes for these lookups once.
+
+## 2026-11-26 — Provider usage shows what was measured
+
+- Usage includes Antigravity conversations from the default managed profile and attributes token counts to the model named in the matching generation record.
+- Antigravity reads remaining subscription quota from the signed-in runtime’s built-in `/usage` command. Older readings from Google's internal endpoints are discarded.
+- Web, desktop, and mobile show **Unpriced** when none of the usage in a total has a known price. A known zero rate still shows $0.00, and mixed totals include the priced records.
+- Android opens the workspace and Usage again with either thread-list density selected.
+
+## 2026-11-26 — Longer server traces and a scheduled launch log
+
+- The local trace retains slow and failed SQLite queries and drops routine successful ones. Larger trace backups make the oldest available span easier to find in `trace summary`.
+- Scheduled tasks record launch steps and skip reasons in `logs/scheduled-task-launches.ndjson`, including chat creation, prompt dispatch, and worktree provisioning.
+
+## 2026-11-26 — Changed-file tests recover from Mac sleep
+
+- When a Mac sleeps during the test step of `vp run check:changed`, failed and unfinished test groups get one more attempt. Completed groups keep their results, and failures while the Mac stays awake still fail the check.
+
+## 2026-11-26 — Fork macOS builds recover when GitHub gives them no runner
+
+- When GitHub gives a fork release no macOS runner, the build now requests another attempt as soon as GitHub reports the failure. Previously, Macs could stay on an older release for hours while the build waited for scheduled recovery.
+
+## 2026-11-26 — Shared client code is checked for untranslated text
+
+- Text that web and mobile both show from the shared client package is now checked by the translation lint, so English that skips the translator is caught before it ships. Two labels it found, the working-agents count read by screen readers and the fallback workflow title, are now translated.
+
 ## 2026-11-26 — Updates from T3 Code
 
 - The Issues page brings issues from configured trackers into one list. You can narrow it by project or status.
@@ -9,6 +45,12 @@
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
+
+## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
+
+- For people who work on T3.CodeShip: the Codex metadata smoke test (`docs/operations/codex-metadata/smoke.py`) now answers the spawned child agent before it sends the parent its last reply. `codex exec` exits when the parent's turn ends and does not wait for the child, so a child reply sent after that hit a closed connection. On Linux, WSL included, the test then printed a `BrokenPipeError` traceback and still passed.
+- The test now fails, with the error, when its stand-in model cannot answer a request or the child reply misses its 15-second deadline. Before, a crashed handler only printed a traceback, and the test could still report that it verified the child's metadata scope.
+- Changing this test invalidates the metadata package cache for each platform. A cold build takes about one to two hours per runner. Later releases can reuse the cached package.
 
 ## 2026-11-25 — Antigravity 1.4.5 is no longer marked incompatible
 
@@ -513,6 +555,10 @@
 - A thread started in a new worktree from a pushed commit that none of the checkout's fetched branches reaches, such as one on a branch a single-branch clone does not fetch, now starts. The launch fetches the commit itself, from the primary remote first and then the project's other remotes. Before, it fetched only the primary remote's branches and refused the commit as missing.
 - `delegate_task` to a linked environment now fails with "Unable to read this thread's project." when your thread's project cannot be read, instead of asking for a `target.projectId` it does not need or starting a worktree helper from that project's default branch.
 
+## 2026-11-21 — Commands stay awake on a Mac
+
+- On macOS, a command an agent starts with `t3_command_run` now keeps the Mac from idle-sleeping while it runs, so long test suites, builds and pushes no longer fail when you step away on battery.
+
 ## 2026-11-21 — Usage scans share one refresh
 
 - The Usage page shares one transcript scan with its slow-source refresh. If a scan runs past the request deadline, the page can show the figures already collected while the scan continues. New transcripts can take up to five seconds to appear.
@@ -707,6 +753,11 @@
 ## 2026-11-21 — Use 1Password tokens for MCP servers
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
+
+## 2026-11-20 — A desktop preview tab's viewers and recordings no longer fight over its screencast
+
+- When a viewer and a recording streamed the same desktop browser tab, each one's screencast settings replaced the other's: a scrolling viewer shrank the recording's frames to half size and lower quality, and a settled viewer's size kept capping the recording. The tab now runs one screencast at the best quality and largest size any streaming session asked for, and re-merges when a session starts, stops or closes.
+- Frames now reach only the sessions that are streaming, so a viewer paused during a screenshot or a recording session no longer receives and acknowledges another session's frames.
 
 ## 2026-11-20 — Stopping a Windows command's process tree always says when its first process started and ended
 

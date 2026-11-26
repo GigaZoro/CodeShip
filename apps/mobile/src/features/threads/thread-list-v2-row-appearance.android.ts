@@ -3,7 +3,6 @@ import type { MobileThemeVariables } from "../../lib/mobileTheme";
 import { t } from "../../lib/i18n";
 
 export const THREAD_LIST_V2_MONO_FONT = "monospace";
-export const THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME = "px-3 py-2.5";
 export const THREAD_LIST_V2_ROW_DIVIDERS = false;
 export const THREAD_LIST_V2_SIDEBAR_ROW_STYLE = {
   borderRadius: 20,

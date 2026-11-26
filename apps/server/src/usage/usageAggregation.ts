@@ -52,6 +52,7 @@ interface MutableBucket {
   totals: { -readonly [K in keyof UsageTokenTotals]: number };
   costUsd: number;
   cacheSavingsUsd: number;
+  pricedCacheReadTokens: number;
   categoryCostUsd: UsageCategoryCost | null;
   fastCostUsd: number;
   ultrafastCostUsd: number;
@@ -341,11 +342,11 @@ export class UsageAggregator {
     if (record.speed === "fast") bucket.fastCostUsd += priced.costUsd;
     if (record.speed === "ultrafast") bucket.ultrafastCostUsd += priced.costUsd;
     bucket.speedPremiumUsd += priced.speedPremiumUsd;
-    bucket.cacheSavingsUsd += cacheSavingsUsd(
-      this.#options.rates,
-      record,
-      this.#options.priceOverrides,
-    );
+    const savings = cacheSavingsUsd(this.#options.rates, record, this.#options.priceOverrides);
+    if (savings !== null) {
+      bucket.cacheSavingsUsd += savings;
+      bucket.pricedCacheReadTokens += record.totals.cachedInputTokens;
+    }
     bucket.records += 1;
     if (priced.costSource === "unpriced") {
       bucket.unpricedRecords += 1;
@@ -398,6 +399,7 @@ export class UsageAggregator {
         totals: { ...EMPTY_TOTALS },
         costUsd: 0,
         cacheSavingsUsd: 0,
+        pricedCacheReadTokens: 0,
         categoryCostUsd: null,
         fastCostUsd: 0,
         ultrafastCostUsd: 0,
@@ -436,6 +438,9 @@ export class UsageAggregator {
         totals: { ...bucket.totals },
         costUsd: bucket.costUsd,
         cacheSavingsUsd: bucket.cacheSavingsUsd,
+        ...(bucket.totals.cachedInputTokens > 0
+          ? { pricedCacheReadTokens: bucket.pricedCacheReadTokens }
+          : {}),
         ...(category === null
           ? {}
           : {

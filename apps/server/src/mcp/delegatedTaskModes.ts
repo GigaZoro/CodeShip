@@ -1,5 +1,8 @@
 import {
+  DELEGATED_REVIEW_ROUND_LIMIT,
   type ModelSelection,
+  type OrchestrationV2DelegatedReviewRequest,
+  type OrchestrationV2SubagentReview,
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpInteractionMode,
@@ -247,4 +250,52 @@ export function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
   return input.role === undefined || input.role === "general"
     ? input.task
     : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
+}
+
+/** What a task asks of its parent's review count: a review task counts, others must not ask. */
+export function reviewRequest(
+  input: OrchestratorMcpDelegateTaskInput,
+): Effect.Effect<OrchestrationV2DelegatedReviewRequest | undefined, OrchestratorMcpFailure> {
+  if (input.role === "review") {
+    return Effect.succeed(
+      input.newReviewPart === undefined ? {} : { newPartReason: input.newReviewPart },
+    );
+  }
+  return input.newReviewPart === undefined
+    ? Effect.undefined
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: 'newReviewPart applies only to role "review".',
+        }),
+      );
+}
+
+/** The refusal of a review round past the limit, quoting the review rule it enforces. */
+export function reviewRoundLimitFailure(refused: {
+  readonly part: number;
+  readonly rounds: number;
+}): OrchestratorMcpFailure {
+  const part = refused.part === 1 ? "this change" : `part ${refused.part} of this change`;
+  return new OrchestratorMcpFailure({
+    code: "review_round_limit",
+    message: [
+      `Review round ${refused.rounds + 1} refused: this chat already ran ${refused.rounds} review rounds of ${part}.`,
+      `Review rule 8 (~/.agents/rules/review.md): "When round 3 still finds a Critical or Major finding, the approach is wrong: stop, start no round 4, re-plan or split the change, and report why."`,
+      "Once the change is re-planned or split, call again with `newReviewPart`: one line saying how. That review starts round 1 of a new part.",
+    ].join("\n"),
+  });
+}
+
+/** How a result reports a review task's round in its parent thread. */
+export function reviewRoundText(
+  review: OrchestrationV2SubagentReview | undefined,
+): string | undefined {
+  if (review === undefined) return undefined;
+  const part = review.part === 1 ? "" : ` (part ${review.part})`;
+  const last =
+    review.round < DELEGATED_REVIEW_ROUND_LIMIT
+      ? ""
+      : " The last one: if it still finds a blocking defect, re-plan or split the change instead of starting another.";
+  return `Review round ${review.round} of ${DELEGATED_REVIEW_ROUND_LIMIT} in this chat${part}.${last}`;
 }

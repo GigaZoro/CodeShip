@@ -86,6 +86,18 @@ describe("orchestrator MCP contracts", () => {
   });
 });
 
+it.each(["First line\nsecond line", "First line second line", "x".repeat(301)])(
+  "refuses a new review part reason that is not one short line: %j",
+  (newReviewPart) => {
+    const input = { task: "Review the diff.", role: "review", newReviewPart };
+    expect(() => decodeDelegateTaskInput(input)).toThrow();
+    expect(decodeDelegateTaskInput({ ...input, newReviewPart: "Split the migration." })).toEqual({
+      ...input,
+      newReviewPart: "Split the migration.",
+    });
+  },
+);
+
 it.each([
   {},
   { modelSelection: { instanceId: "codex", model: "astra" }, followsDefaultModel: false },

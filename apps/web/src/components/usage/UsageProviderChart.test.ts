@@ -10,18 +10,24 @@ describe("buildPeriodColumns", () => {
         day: "2026-08-01",
         costUsd: 42,
         totalTokens: 420,
+        records: 4,
+        unpricedRecords: 0,
         byProvider: new Map([
-          ["codex" as const, { costUsd: 10, totalTokens: 100 }],
-          ["claude" as const, { costUsd: 20, totalTokens: 200 }],
-          ["pi" as const, { costUsd: 5, totalTokens: 50 }],
-          ["muse" as const, { costUsd: 7, totalTokens: 70 }],
+          ["codex" as const, { costUsd: 10, totalTokens: 100, records: 1, unpricedRecords: 0 }],
+          ["claude" as const, { costUsd: 20, totalTokens: 200, records: 1, unpricedRecords: 0 }],
+          ["pi" as const, { costUsd: 5, totalTokens: 50, records: 1, unpricedRecords: 0 }],
+          ["muse" as const, { costUsd: 7, totalTokens: 70, records: 1, unpricedRecords: 0 }],
         ]),
       },
       {
         day: "2026-08-03",
         costUsd: 5,
         totalTokens: 50,
-        byProvider: new Map([["claude" as const, { costUsd: 5, totalTokens: 50 }]]),
+        records: 1,
+        unpricedRecords: 0,
+        byProvider: new Map([
+          ["claude" as const, { costUsd: 5, totalTokens: 50, records: 1, unpricedRecords: 0 }],
+        ]),
       },
     ],
     [],
@@ -67,6 +73,23 @@ describe("buildPeriodColumns", () => {
     expect(filtered.columns[0]?.total).toBe(100);
     expect(filtered.bars).toHaveLength(1);
     expect(filtered.bars[0]).toMatchObject({ provider: "codex", y: 8, height: 252 });
+    const unknown = { records: 1, unpricedRecords: 1, costUsd: 0, totalTokens: 100 };
+    const withGap = new Map(byDay).set(days[1]!, {
+      ...unknown,
+      day: days[1]!,
+      byProvider: new Map([["claude", unknown]]),
+    });
+    const [gapped] = buildChart(days, withGap, "cost", ["claude"], new Set(), "area").paths;
+    expect(gapped?.line.match(/M/g)).toHaveLength(2);
+    expect(gapped?.area.match(/Z/g)).toHaveLength(2);
+    const free = { ...unknown, unpricedRecords: 0 };
+    const withFree = new Map(byDay).set(days[1]!, {
+      ...free,
+      day: days[1]!,
+      byProvider: new Map([["claude", free]]),
+    });
+    const [continuous] = buildChart(days, withFree, "cost", ["claude"], new Set(), "area").paths;
+    expect(continuous?.line.match(/M/g)).toHaveLength(1);
   });
 
   it("handles empty and loading bar charts without invalid geometry", () => {

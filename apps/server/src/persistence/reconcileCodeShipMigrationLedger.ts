@@ -39,6 +39,7 @@ export const legacyCodeShipMigrationNames = [
   "ScheduledTaskLastRunId",
   "UsageStopDecisions",
   "TurnItemMessageIndex",
+  "IncrementalEventStoreCompaction",
 ] as const;
 
 /** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */

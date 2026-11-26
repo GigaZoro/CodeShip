@@ -13,6 +13,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
@@ -31,6 +32,7 @@ import {
   OtlpHeadersFromString,
   truncateTraceAttributes,
   processServiceInstanceId,
+  SLOW_ROUTINE_SPAN_MS,
 } from "./observability.ts";
 
 // Collects each OTLP request body as text; protobuf keeps its strings as UTF-8.
@@ -642,6 +644,41 @@ describe("observability", () => {
           true,
         );
       }),
+    );
+
+    it.effect("records a sqlite span only when the query was slow or failed", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* Effect.forEach(
+                Array.from({ length: 50 }),
+                () => Effect.void.pipe(Effect.withSpan("sqlite")),
+                { discard: true },
+              );
+              yield* Effect.fail("boom").pipe(Effect.withSpan("sqlite"), Effect.ignore);
+              const slow = yield* Effect.sleep(`${SLOW_ROUTINE_SPAN_MS + 10} millis`).pipe(
+                Effect.withSpan("sqlite"),
+                Effect.forkChild,
+              );
+              yield* TestClock.adjust(`${SLOW_ROUTINE_SPAN_MS + 10} millis`);
+              yield* Fiber.join(slow);
+              yield* Effect.void.pipe(Effect.withSpan("other"));
+            }).pipe(Effect.provide(layerTest(tracePath))),
+          );
+
+          const records = yield* readTraceRecords(tracePath);
+          assert.deepEqual(
+            records.map((record) => `${record.name}:${record.exit?._tag}`),
+            ["sqlite:Failure", "sqlite:Success", "other:Success"],
+          );
+        }),
+      ),
     );
 
     it.effect("serializes interrupted spans with an interrupted exit status", () =>

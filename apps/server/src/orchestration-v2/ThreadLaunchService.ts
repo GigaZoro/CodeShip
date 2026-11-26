@@ -62,6 +62,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { LaunchJournal } from "../scheduledTasks/LaunchJournal.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -108,6 +109,10 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly onMilestone?: (
+    milestone: "chat_created" | "prompt_sent",
+    threadId: ThreadId,
+  ) => Effect.Effect<void>;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -329,6 +334,7 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const journal = yield* LaunchJournal;
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -1070,6 +1076,13 @@ const make = Effect.gen(function* () {
           ),
         }));
         yield* setupTracker.stageStatus(threadId, "checkout", "done");
+        if (input.initialMessage?.scheduledTaskId !== undefined) {
+          yield* journal.record({
+            taskId: input.initialMessage.scheduledTaskId,
+            threadId,
+            milestone: "worktree_prepared",
+          });
+        }
       }
 
       // Do not rewrite reused worktrees; that could undo the original branch rename.
@@ -1744,6 +1757,7 @@ const make = Effect.gen(function* () {
         const threadId =
           claimed.storedEvents.find((stored) => stored.event.type.startsWith("thread."))?.event
             .threadId ?? candidateThreadId;
+        if (input.onMilestone) yield* input.onMilestone("chat_created", threadId);
         const committedThread = yield* threads
           .getThreadShell(threadId)
           .pipe(Effect.mapError(mapError(input, "resolve-project", threadId)));
@@ -1786,6 +1800,7 @@ const make = Effect.gen(function* () {
                 Effect.mapError(mapError(input, "dispatch-message", threadId)),
               );
           }
+          if (input.onMilestone) yield* input.onMilestone("prompt_sent", threadId);
           // A concurrent retry can read no receipt and still replay the dispatch.
           messageWasAlreadyAccepted ||= accepted.replayed === true;
           messageSequence = accepted.sequence;
@@ -2000,6 +2015,9 @@ const make = Effect.gen(function* () {
               initialMessage: {
                 text: message.text,
                 attachments: message.attachments,
+                ...(message.scheduledTaskId === undefined
+                  ? {}
+                  : { scheduledTaskId: message.scheduledTaskId }),
                 ...(message.context ? { context: message.context } : {}),
                 ...(run.outputSchema === undefined ? {} : { outputSchema: run.outputSchema }),
               },

@@ -74,6 +74,7 @@ const makeDebuggee = (
   const rejects: Array<() => void> = [];
   const sendWaiters: Array<() => void> = [];
   const focusEmulation: Array<boolean> = [];
+  const screencastCommands: Array<{ method: string; params: unknown }> = [];
   const backgroundThrottling: Array<boolean> = [];
   const debuggee = Object.assign(emitter, {
     sendCommand: (
@@ -95,6 +96,9 @@ const makeDebuggee = (
           if (options.deferFocus) focusChanges.push(() => resolve({}));
           else resolve({});
           return;
+        }
+        if (method === "Page.startScreencast" || method === "Page.stopScreencast") {
+          screencastCommands.push({ method, params });
         }
         const answer = options.answer?.(method, sessionId);
         if (answer !== undefined) {
@@ -150,6 +154,8 @@ const makeDebuggee = (
     /** Refuses the pending command the debugger received with this id. */
     refuse: (id: number) => rejects[sent.indexOf(id)]?.(),
     focusEmulation,
+    /** The physical screencast's start and stop commands, in order. */
+    screencastCommands,
     /** Each `setBackgroundThrottling` call; false keeps a hidden guest drawing frames. */
     backgroundThrottling,
     nativeCaptures: () => nativeCaptures,
@@ -1267,6 +1273,82 @@ describe("DesktopBrowserHost", () => {
       yield* settle;
       expect(debuggee.sessionIds).toEqual(["FRAME-SESSION", undefined]);
     }),
+  );
+
+  it.effect(
+    "runs one screencast at the most demanding parameters and routes frames to streamers",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* makeDrawnHost;
+        const debuggee = makeDebuggee();
+        host.attach(key, debuggee.tab);
+        const frameSessions: Array<string> = [];
+        yield* host.events.pipe(
+          Stream.map((line) => decodeEvent(new TextDecoder().decode(line))),
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              if (event.type !== "cdp") return;
+              const message = JSON.parse(event.message) as { method?: string; sessionId?: string };
+              if (message.method === "Page.screencastFrame") frameSessions.push(message.sessionId!);
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+        const viewer = {
+          format: "jpeg",
+          quality: 40,
+          maxWidth: 500,
+          maxHeight: 300,
+          everyNthFrame: 2,
+        };
+        const recording = { format: "jpeg", quality: 90, maxWidth: 1000, maxHeight: 600 };
+
+        yield* raw({ id: 1, method: "Target.setAutoAttach" });
+        yield* raw({ id: 2, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        yield* raw({ id: 3, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        yield* settle;
+        yield* raw({
+          id: 4,
+          method: "Page.startScreencast",
+          params: viewer,
+          sessionId: "t3-preview-page-1",
+        });
+        yield* raw({
+          id: 5,
+          method: "Page.startScreencast",
+          params: recording,
+          sessionId: "t3-preview-page-2",
+        });
+        yield* settle;
+        expect(debuggee.screencastCommands.at(-1)).toEqual({
+          method: "Page.startScreencast",
+          params: { format: "jpeg", quality: 90, maxWidth: 1000, maxHeight: 600, everyNthFrame: 1 },
+        });
+
+        debuggee.emit("Page.screencastFrame", { sessionId: 7 });
+        yield* settle;
+        expect(frameSessions.toSorted()).toEqual(["t3-preview-page-1", "t3-preview-page-2"]);
+
+        frameSessions.length = 0;
+        yield* raw({
+          id: 6,
+          method: "Page.screencastFrameAck",
+          params: { sessionId: 7 },
+          sessionId: "t3-preview-page-2",
+        });
+        yield* raw({ id: 7, method: "Page.stopScreencast", sessionId: "t3-preview-page-1" });
+        yield* settle;
+        expect(debuggee.screencastCommands.at(-1)).toEqual({
+          method: "Page.startScreencast",
+          params: { ...recording, everyNthFrame: 1 },
+        });
+        debuggee.emit("Page.screencastFrame", { sessionId: 8 });
+        yield* settle;
+        expect(frameSessions).toEqual(["t3-preview-page-2"]);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("paints a hidden guest only while the screenshot it is taking is pending", () =>
