@@ -1552,6 +1552,8 @@ export const make = Effect.gen(function* () {
 
     const startedAtMs = yield* Clock.currentTimeMillis;
     yield* ensureScanCacheLoaded;
+    // A backup restored after deletion retention expired cannot revive the displaced contents.
+    yield* dropExpired();
 
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
