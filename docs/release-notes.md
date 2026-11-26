@@ -1,3 +1,7 @@
+## 2026-11-26 — Restoring a transcript preserves usage history
+
+- When an older Claude, Pi, or Muse transcript replaces a newer copy, Usage keeps identifiable records missing from the restored file for 92 days. Records shared by both copies count once, including after a restart.
+
 ## 2026-11-26 — More precise provider quota readings
 
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
