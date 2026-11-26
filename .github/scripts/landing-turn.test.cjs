@@ -2755,13 +2755,21 @@ test(
       release({ cwd: sibling, remote: origin }, retaken);
 
       // A folder where the record should be leaves the lease to expire, and neither it nor another folder stops a take.
-      const blocked = path.join(records, takeAndExit(checkout, origin));
+      const unreadable = takeAndExit(checkout, origin);
+      const blocked = path.join(records, unreadable);
       fs.rmSync(blocked);
       fs.mkdirSync(blocked);
       fs.mkdirSync(path.join(records, "other"));
       assert.equal(wait(), null);
       const future = Date.parse("2100-01-01T00:00:00Z");
-      const late = tryAcquire({ cwd: sibling, remote: origin, runId: "waiter", now: () => future });
+      const waiter = { cwd: sibling, remote: origin, runId: "waiter", now: () => future };
+      assert.equal(tryAcquire(waiter), null);
+      assert.equal(lease(), unreadable);
+      const late = tryAcquire({
+        ...waiter,
+        watched: (sha) => (sha === unreadable ? LEASE_TTL_MS : 0),
+      });
+      assert.ok(late);
       assert.deepEqual([lease(), fs.readdirSync(records)], [late, [late]]);
       release({ cwd: sibling, remote: origin }, late);
 
