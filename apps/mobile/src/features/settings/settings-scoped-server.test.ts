@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProviderInstanceId,
   type EnvironmentId,
   type ProjectId,
   type ServerSettings,
@@ -248,5 +249,41 @@ describe("mobile settings saved for all machines", () => {
       firstId,
       followerId,
     ]);
+  });
+
+  it("keeps a named machine's prior model for fresh Auto at machine and project scope", () => {
+    const pin = { instanceId: ProviderInstanceId.make("old"), model: "pinned" };
+    const auto = {
+      instanceId: ProviderInstanceId.make("gone"),
+      model: "placeholder",
+      quotaAwareAuto: true,
+    };
+    const legacy = environment(firstId, {
+      ...DEFAULT_SERVER_SETTINGS,
+      defaultModelSelection: pin,
+      projectSettingsOverrides: { [firstProject]: { defaultModelSelection: pin } },
+    });
+    for (const projectSelected of [false, true]) {
+      const targets = resolveMobileSettingsTargets(
+        [legacy],
+        projectSelected ? [{ environmentId: firstId, id: firstProject }] : null,
+      );
+      const planned = planMobileSettingsWrites({
+        machines,
+        targets,
+        allSelected: false,
+        projectSelected,
+        patch: { defaultModelSelection: auto, defaultAutoPull: true },
+      });
+      expect(planned.writes[0]?.patch).toEqual(
+        projectSelected
+          ? {
+              projectSettingsOverrides: {
+                [firstProject]: { defaultModelSelection: pin, defaultAutoPull: true },
+              },
+            }
+          : { defaultAutoPull: true },
+      );
+    }
   });
 });

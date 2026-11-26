@@ -30,6 +30,7 @@ import {
   resolveAutoModelSelection,
   resolveInheritedDefaultModelSelection,
   resolveQuotaAwareAutoProfile,
+  resolveReviewGuideModelSelection,
   resolveSourceControlWriterModelSelection,
   supportsAccountFailover,
 } from "./serverSettings.ts";
@@ -429,6 +430,39 @@ describe("serverSettings helpers", () => {
         { id: "fastMode", value: false },
       ],
     });
+  });
+
+  it("keeps fresh Auto through a text generation option edit and releases it for a manual pick", () => {
+    const pin = createModelSelection(ProviderInstanceId.make("custom"), "local-model");
+    const auto = { ...pin, quotaAwareAuto: true };
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      textGenerationModelSelection: auto,
+    });
+    expect(settings.textGenerationModelSelection).toEqual(auto);
+    expect(
+      applyServerSettingsPatch(settings, { textGenerationModelSelection: { options: [] } })
+        .textGenerationModelSelection,
+    ).toEqual(auto);
+    expect(
+      applyServerSettingsPatch(settings, { textGenerationModelSelection: pin })
+        .textGenerationModelSelection,
+    ).toEqual(pin);
+    const writers = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelection: auto,
+      reviewGuideModelSelection: auto,
+    };
+    expect(resolveSourceControlWriterModelSelection(writers, [], null)).toEqual(auto);
+    expect(resolveReviewGuideModelSelection(writers, [], null)).toEqual(auto);
+    const manual = applyServerSettingsPatch(
+      { ...settings, scheduledTaskModelSelection: auto, finalReviewModelSelections: [auto] },
+      {
+        scheduledTaskModelSelection: pin,
+        finalReviewModelSelections: [pin],
+      },
+    );
+    expect(manual.scheduledTaskModelSelection).toEqual(pin);
+    expect(manual.finalReviewModelSelections).toEqual([pin]);
   });
 
   it("replaces text generation selection across providers without leaking stale options", () => {

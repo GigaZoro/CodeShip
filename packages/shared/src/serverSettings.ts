@@ -443,6 +443,7 @@ export function resolveSourceControlWriterModelSelection(
   projectId: ProjectId | null,
 ): ModelSelection {
   const selection = settings.sourceControlWriterModelSelection;
+  if (selection?.quotaAwareAuto === true) return selection;
   if (
     !selection ||
     !resolveProjectProviderInstanceEnabled(settings, projectId, selection.instanceId)
@@ -467,6 +468,7 @@ export function resolveReviewGuideModelSelection(
   projectId: ProjectId | null,
 ): ModelSelection {
   const selection = settings.reviewGuideModelSelection;
+  if (selection?.quotaAwareAuto === true) return selection;
   if (
     selection &&
     resolveProjectProviderInstanceEnabled(settings, projectId, selection.instanceId)
@@ -892,6 +894,12 @@ export function applyServerSettingsPatch(
     ...(patch.fallbackModelSelection !== undefined
       ? { fallbackModelSelection: patch.fallbackModelSelection }
       : {}),
+    ...(patch.scheduledTaskModelSelection !== undefined
+      ? { scheduledTaskModelSelection: patch.scheduledTaskModelSelection }
+      : {}),
+    ...(patch.finalReviewModelSelections !== undefined
+      ? { finalReviewModelSelections: patch.finalReviewModelSelections }
+      : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
@@ -970,7 +978,8 @@ export function applyServerSettingsPatch(
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
   const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
+  const replace = shouldReplaceTextGenerationModelSelection(selectionPatch);
+  const options = replace
     ? selectionPatch.options
     : mergeModelSelectionOptionsById({
         current: current.textGenerationModelSelection.options,
@@ -979,7 +988,17 @@ export function applyServerSettingsPatch(
 
   return {
     ...nextWithReplacements,
-    textGenerationModelSelection: createModelSelection(instanceId, model, options),
+    textGenerationModelSelection: {
+      ...createModelSelection(instanceId, model, options),
+      ...((selectionPatch.autoAccount ??
+      (!replace && current.textGenerationModelSelection.autoAccount))
+        ? { autoAccount: true }
+        : {}),
+      ...((selectionPatch.quotaAwareAuto ??
+      (!replace && current.textGenerationModelSelection.quotaAwareAuto))
+        ? { quotaAwareAuto: true }
+        : {}),
+    },
   };
 }
 

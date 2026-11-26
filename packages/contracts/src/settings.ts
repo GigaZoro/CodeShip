@@ -1910,6 +1910,8 @@ const ModelSelectionPatch = Schema.Struct({
   instanceId: Schema.optionalKey(ProviderInstanceId),
   model: Schema.optionalKey(TrimmedNonEmptyString),
   options: Schema.optionalKey(ProviderOptionSelections),
+  autoAccount: Schema.optionalKey(Schema.Boolean),
+  quotaAwareAuto: Schema.optionalKey(Schema.Boolean),
 });
 
 export const ServerSettingsPatch = Schema.Struct({

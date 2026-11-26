@@ -48,6 +48,16 @@ const decodeStringOnlyEnvironment = Schema.decodeUnknownSync(
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
+
+it("round trips fresh Auto in the partial text generation model patch", () => {
+  const auto = {
+    instanceId: ProviderInstanceId.make("remote"),
+    model: "placeholder",
+    quotaAwareAuto: true,
+  };
+  const patch = { textGenerationModelSelection: auto };
+  expect(decodeServerSettingsPatch(encodeServerSettingsPatch(patch))).toEqual(patch);
+});
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 describe("storage cleanup settings", () => {

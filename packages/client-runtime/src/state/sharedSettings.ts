@@ -4,6 +4,7 @@ import {
   isMachineSharedSettingKey,
   isSharedQuotaAwareSelection,
   type MachineSharedSettingKey,
+  type ProjectId,
   type ServerSettings,
   type ServerSettingsPatch,
   type ServerShareSettingsResult,
@@ -71,6 +72,7 @@ export function filterSharedServerPatch(
   if (
     !targetIsSource &&
     patch.textGenerationModelSelection &&
+    patch.textGenerationModelSelection.quotaAwareAuto !== true &&
     (!settings ||
       (instanceId !== undefined &&
         (sourceSettings?.providerInstances[instanceId]?.driver ?? instanceId) !==
@@ -114,10 +116,20 @@ function onlySharedSettings(patch: ServerSettingsPatch): ServerSettingsPatch {
   ) as ServerSettingsPatch;
 }
 
-function withoutQuotaAwareSelections(patch: ServerSettingsPatch): ServerSettingsPatch {
-  return Object.fromEntries(
-    Object.entries(patch).filter(([key, value]) => !isSharedQuotaAwareSelection(key, value)),
-  ) as ServerSettingsPatch;
+function withoutQuotaAwareSelections<T extends Readonly<Record<string, unknown>>>(
+  requested: T,
+  previous?: Readonly<Record<string, unknown>>,
+): T {
+  const protectedKeys = Object.entries(requested).filter(([key, value]) =>
+    isSharedQuotaAwareSelection(key, value),
+  );
+  if (protectedKeys.length === 0) return requested;
+  const safe: Record<string, unknown> = { ...requested };
+  for (const [key] of protectedKeys) {
+    if (previous && Object.hasOwn(previous, key)) safe[key] = previous[key];
+    else delete safe[key];
+  }
+  return safe as T;
 }
 
 const setsQuotaAwareSelection = (patch: ServerSettingsPatch) =>
@@ -139,8 +151,8 @@ function servesShareSettings(machine: SharedSettingsMachine): boolean {
   return machine.serverConfig?.environment?.capabilities.shareSettings === true;
 }
 
-const supportsQuotaAwareAuto = (machine: SharedSettingsMachine | undefined) =>
-  machine?.serverConfig?.environment?.capabilities.quotaAwareAuto === true;
+const supportsQuotaAwareAuto = (config: SharedSettingsMachine["serverConfig"] | undefined) =>
+  config?.environment?.capabilities.quotaAwareAuto === true;
 
 /**
  * Each shared setting `patch` sets, as the whole value `base` holds once the patch is applied, for
@@ -221,11 +233,63 @@ function isConnected(machine: SharedSettingsMachine): machine is SharedSettingsM
   return supportsSharedSettingsSync(machine);
 }
 
+export function settingsWriteForDestination<W extends MachineSettingsWrite>(
+  write: W,
+  config: SharedSettingsMachine["serverConfig"] | undefined,
+): W {
+  if (supportsQuotaAwareAuto(config)) return write;
+  const requested = write.patch;
+  const singles = withoutQuotaAwareSelections(requested);
+  const patch = { ...singles };
+  let unavailable = singles !== requested;
+
+  if (requested.finalReviewModelSelections?.some((pick) => pick.quotaAwareAuto === true)) {
+    delete patch.finalReviewModelSelections;
+    unavailable = true;
+  }
+  const roles = Object.entries(requested.delegatedTaskModelSelections ?? {});
+  if (roles.some(([, pick]) => pick?.quotaAwareAuto === true)) {
+    const manual = roles.filter(([, pick]) => pick?.quotaAwareAuto !== true);
+    if (manual.length) patch.delegatedTaskModelSelections = Object.fromEntries(manual);
+    else delete patch.delegatedTaskModelSelections;
+    unavailable = true;
+  }
+  const overrides = { ...requested.projectSettingsOverrides };
+  for (const [id, entry] of Object.entries(requested.projectSettingsOverrides ?? {})) {
+    if (entry === null) continue;
+    const projectId = id as ProjectId;
+    // Project override entries replace the whole entry. Restore the previous selection or its absence.
+    const safe = withoutQuotaAwareSelections(
+      entry,
+      config?.settings.projectSettingsOverrides[projectId],
+    );
+    if (safe === entry) continue;
+    if (Object.entries(safe).some(([key, value]) => isSharedQuotaAwareSelection(key, value)))
+      delete overrides[projectId];
+    else overrides[projectId] = safe;
+    patch.projectSettingsOverrides = overrides;
+    unavailable = true;
+  }
+  return unavailable ? { ...write, patch, quotaAwareAutoUnavailable: true } : write;
+}
+
 /** A plan that saves nothing for the group: each write as it is. */
 export function plainSettingsWrites<W extends MachineSettingsWrite>(
   writes: ReadonlyArray<W>,
+  machines: ReadonlyArray<Pick<SharedSettingsMachine, "environmentId" | "serverConfig">>,
 ): SharedSettingsPlan<W> {
-  return { writes, share: null, offlineFollowers: [], sharedGroup: [], noFollowerConnected: false };
+  return {
+    writes: writes.map((write) =>
+      settingsWriteForDestination(
+        write,
+        machines.find((machine) => machine.environmentId === write.environmentId)?.serverConfig,
+      ),
+    ),
+    share: null,
+    offlineFollowers: [],
+    sharedGroup: [],
+    noFollowerConnected: false,
+  };
 }
 
 /**
@@ -245,27 +309,11 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
   /** A write for a follower the change has none for, so it can carry the shared settings. */
   readonly writeFor: (machine: SharedSettingsGroupMember & { readonly label: string }) => W;
 }): SharedSettingsPlan<W> {
-  const plain = plainSettingsWrites(input.writes);
   if (
     !input.writes.some((write) => patchSetsMachineSharedSetting(write.patch)) ||
     !hasSharedSettingsGroup(input.machines)
   ) {
-    return plainSettingsWrites(
-      input.writes.map((write) => {
-        if (
-          !setsQuotaAwareSelection(write.patch) ||
-          supportsQuotaAwareAuto(
-            input.machines.find((machine) => machine.environmentId === write.environmentId),
-          )
-        )
-          return write;
-        return {
-          ...write,
-          patch: withoutQuotaAwareSelections(write.patch),
-          quotaAwareAutoUnavailable: true,
-        };
-      }),
-    );
+    return plainSettingsWrites(input.writes, input.machines);
   }
   const followers = input.machines.filter(followsSharedSettings);
   const connectedFollowers = followers.filter(isConnected);
@@ -277,21 +325,26 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
   const preferred =
     candidates.find((machine) => machine.environmentId === input.origin) ?? candidates[0];
   if (preferred === undefined) {
-    return { ...plain, writes: [], offlineFollowers, noFollowerConnected: true };
+    return {
+      ...plainSettingsWrites([], input.machines),
+      offlineFollowers,
+      noFollowerConnected: true,
+    };
   }
   const stampedBy = stampers.length > 0 ? "server" : "client";
   const preferredPatch = onlySharedSettings(input.sharedPatch(preferred.serverConfig.settings));
   const sharesAuto = setsQuotaAwareSelection(preferredPatch);
   const authority =
-    sharesAuto && !supportsQuotaAwareAuto(preferred)
-      ? (stampers.find(supportsQuotaAwareAuto) ?? preferred)
+    sharesAuto && !supportsQuotaAwareAuto(preferred.serverConfig)
+      ? (stampers.find((machine) => supportsQuotaAwareAuto(machine.serverConfig)) ?? preferred)
       : preferred;
   const requestedPatch =
     authority === preferred
       ? preferredPatch
       : onlySharedSettings(input.sharedPatch(authority.serverConfig.settings));
   const missingAuthority =
-    sharesAuto && !(supportsQuotaAwareAuto(authority) && servesShareSettings(authority));
+    sharesAuto &&
+    !(supportsQuotaAwareAuto(authority.serverConfig) && servesShareSettings(authority));
   const sharedPatch = missingAuthority
     ? withoutQuotaAwareSelections(requestedPatch)
     : requestedPatch;
@@ -332,13 +385,21 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
         const patch = withoutSharedSettings(write.patch);
         return Object.keys(patch).length === 0 ? [] : [{ ...write, patch }];
       }),
-    ].filter(
-      (write) =>
-        !missingAuthority ||
-        keys.length > 0 ||
-        write.environmentId === authority.environmentId ||
-        Object.keys(write.patch).length > 0,
-    ),
+    ]
+      .filter(
+        (write) =>
+          !missingAuthority ||
+          keys.length > 0 ||
+          write.environmentId === authority.environmentId ||
+          Object.keys(write.patch).length > 0,
+      )
+      .map((write) =>
+        settingsWriteForDestination(
+          write,
+          input.machines.find((machine) => machine.environmentId === write.environmentId)
+            ?.serverConfig,
+        ),
+      ),
     share:
       missingAuthority && keys.length === 0
         ? null
@@ -350,7 +411,7 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
     offlineFollowers,
     sharedGroup: connectedFollowers.map((machine) => ({
       environmentId: machine.environmentId,
-      ...(supportsQuotaAwareAuto(machine) ? { quotaAwareAuto: true as const } : {}),
+      ...(supportsQuotaAwareAuto(machine.serverConfig) ? { quotaAwareAuto: true as const } : {}),
       previous: machine.serverConfig.settings,
       servesShareSettings: servesShareSettings(machine),
     })),

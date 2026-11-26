@@ -384,6 +384,16 @@ describe("saving a change for all machines", () => {
       environmentId: cpc.environmentId,
       input: { patch: { finalReviewByDefault: true, worktreesDirectory: "/work" } },
     });
+    const pin = { ...selection, quotaAwareAuto: false };
+    const rolesAndReview = {
+      delegatedTaskModelSelections: { implementation: selection, review: pin },
+      finalReviewModelSelections: [selection, pin],
+    };
+    expect(plan([cpc], rolesAndReview, cpc).writes[0]?.patch).toEqual({
+      delegatedTaskModelSelections: { review: pin },
+    });
+    const direct = machine("Direct", { quotaAwareAuto: true });
+    expect(plan([direct], rolesAndReview, direct).writes[0]?.patch).toEqual(rolesAndReview);
   });
 
   it("stamps a change itself and sends it to every follower at once", async () => {

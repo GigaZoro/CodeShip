@@ -600,6 +600,7 @@ function resolveTextGenerationProvider(
   isDriverAllowed: DriverAllowed = anyDriver,
 ): ServerSettings {
   const selection = settings.textGenerationModelSelection;
+  if (selection.quotaAwareAuto === true) return settings;
   return isModelSelectionProviderEnabled(settings, selection) &&
     selectionSupportsTextGeneration(settings, selection) &&
     isDriverAllowed(
