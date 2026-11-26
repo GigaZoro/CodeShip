@@ -26,6 +26,7 @@ import {
   AcpRegistryOperationError,
   CommandId,
   ManualStepStartChatError,
+  MonitoringFixChatError,
   authScopeResponse,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
@@ -131,6 +132,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
+import * as MonitoringFixChats from "./monitoring/MonitoringFixChats.ts";
 import * as MonitoringService from "./monitoring/MonitoringService.ts";
 import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1347,6 +1349,7 @@ export const layerWsRpc = (
       const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
       const scheduledTaskStats = yield* ScheduledTaskStats.ScheduledTaskStats;
       const monitoring = yield* MonitoringService.MonitoringService;
+      const monitoringFixChats = yield* MonitoringFixChats.MonitoringFixChats;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2264,6 +2267,28 @@ export const layerWsRpc = (
             .thread(input)
             .pipe(Effect.map((answer) => (input.withRevision ? answer : answer.detail))),
         [WS_METHODS.monitoringSubscribeChanges]: (_input) => monitoring.subscribeChanges,
+        [WS_METHODS.monitoringStartFixChat]: (input) =>
+          startup.enqueueCommand(monitoringFixChats.start(input)).pipe(
+            // A resumed start is a retry of one already counted.
+            Effect.tap((result) =>
+              result.resumed
+                ? Effect.void
+                : analytics
+                    .record("client.thread.started", {
+                      ...originProps,
+                      workspaceStrategy: result.workspaceStrategy,
+                    })
+                    .pipe(
+                      Effect.andThen(analytics.record("client.turn.requested", originProps)),
+                      Effect.ignore,
+                    ),
+            ),
+            Effect.map(({ threadId }) => ({ threadId })),
+            Effect.catchTags({
+              ServerRuntimeStartupError: (cause) =>
+                new MonitoringFixChatError({ reason: "launch-failed", detail: cause.message }),
+            }),
+          ),
         [WS_METHODS.scheduledTasksUpsert]: (input) =>
           scheduledTasks.upsert(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
@@ -2670,7 +2695,10 @@ export const layerWsRpc = (
               result.resumed
                 ? Effect.void
                 : analytics
-                    .record("client.thread.started", { ...originProps, workspaceStrategy: "root" })
+                    .record("client.thread.started", {
+                      ...originProps,
+                      workspaceStrategy: result.workspaceStrategy,
+                    })
                     .pipe(
                       Effect.andThen(analytics.record("client.turn.requested", originProps)),
                       Effect.ignore,
@@ -3505,6 +3533,7 @@ export const layer = Layer.unwrap(
     const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
     const scheduledTaskStats = yield* ScheduledTaskStats.ScheduledTaskStats;
     const monitoring = yield* MonitoringService.MonitoringService;
+    const monitoringFixChats = yield* MonitoringFixChats.MonitoringFixChats;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3602,6 +3631,9 @@ export const layer = Layer.unwrap(
                 Layer.succeed(ScheduledTaskStats.ScheduledTaskStats, scheduledTaskStats),
               ),
               Layer.provide(Layer.succeed(MonitoringService.MonitoringService, monitoring)),
+              Layer.provide(
+                Layer.succeed(MonitoringFixChats.MonitoringFixChats, monitoringFixChats),
+              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import {
+  CommandId,
   ForwardCompatibleArray,
   IsoDateTime,
   NonNegativeInt,
@@ -483,3 +484,70 @@ export const MonitoringChange = Schema.Struct({
   threadIds: Schema.optionalKey(Schema.Array(ThreadId)),
 });
 export type MonitoringChange = typeof MonitoringChange.Type;
+
+/** A fix chat reads at most this many of the chats a weak point hit, most time lost first. */
+export const MONITORING_FIX_CHAT_MAX_CHATS = 20;
+
+/** The period and filters whose matching chats the overview button draws evidence from. */
+export const MonitoringFixChatView = Schema.Struct({
+  since: IsoDateTime,
+  until: IsoDateTime,
+  projectId: Schema.optional(ProjectId),
+  kind: Schema.optional(MonitoringThreadKind),
+  model: Schema.optional(Schema.String),
+});
+export type MonitoringFixChatView = typeof MonitoringFixChatView.Type;
+
+/**
+ * Starts a chat that traces one weak point to its root cause and fixes it. The chats are this
+ * environment's; the server reads their analyses, so the chat sees what Monitoring saw.
+ */
+const fixChatFields = {
+  /** A retry with this id opens the fix chat that the first attempt started. */
+  commandId: CommandId,
+  /** Where the user asked; absent means web. */
+  creationSource: Schema.optional(Schema.Literals(["web", "mobile"])),
+  code: MonitoringFindingCode,
+  /**
+   * The project that lost the most time to the weak point, over every chat that shows it, not
+   * only the ones sent. The chat starts in No project when it no longer exists.
+   */
+  projectId: ProjectId,
+};
+export const MonitoringFixChatInput = Schema.Union([
+  Schema.Struct({
+    ...fixChatFields,
+    threadIds: Schema.Array(ThreadId).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(MONITORING_FIX_CHAT_MAX_CHATS),
+    ),
+  }),
+  Schema.Struct({ ...fixChatFields, view: MonitoringFixChatView }),
+]);
+export type MonitoringFixChatInput = typeof MonitoringFixChatInput.Type;
+
+export const MonitoringFixChatResult = Schema.Struct({ threadId: ThreadId });
+export type MonitoringFixChatResult = typeof MonitoringFixChatResult.Type;
+
+export const MonitoringFixChatFailure = Schema.Literals([
+  /** None of the chats has a current analysis with this weak point. */
+  "no-chats",
+  /** There is no runnable provider selection on this machine. */
+  "no-model",
+  /** The chat could not be created or its first message was not accepted. */
+  "launch-failed",
+]);
+export type MonitoringFixChatFailure = typeof MonitoringFixChatFailure.Type;
+
+export class MonitoringFixChatError extends Schema.TaggedError<MonitoringFixChatError>()(
+  "MonitoringFixChatError",
+  {
+    reason: MonitoringFixChatFailure,
+    detail: Schema.String,
+    quotaAwareAutoUnsupported: Schema.optionalKey(Schema.Literal(true)),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}

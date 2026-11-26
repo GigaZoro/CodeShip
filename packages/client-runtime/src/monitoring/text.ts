@@ -1,16 +1,17 @@
-import type {
-  MonitoringCommandPhase,
-  MonitoringFinding,
-  MonitoringFindingCode,
-  MonitoringFindingSeverity,
-  MonitoringLaneKind,
-  MonitoringMarkerKind,
-  MonitoringSegmentStatus,
-  MonitoringThreadKind,
+import {
+  type MonitoringCommandPhase,
+  type MonitoringFinding,
+  type MonitoringFindingCode,
+  type MonitoringFindingSeverity,
+  type MonitoringLaneKind,
+  type MonitoringMarkerKind,
+  type MonitoringSegmentStatus,
+  type MonitoringThreadKind,
 } from "@t3tools/contracts";
 import { msg, t, type Message } from "@t3tools/shared/i18n";
+import type * as Cause from "effect/Cause";
 
-import type { TimeBucketKey } from "./aggregate.ts";
+import { fixChatFailureReason, type TimeBucketKey } from "./aggregate.ts";
 
 export interface FindingText {
   readonly title: Message;
@@ -30,7 +31,7 @@ export const FINDING_TEXT: Readonly<Record<MonitoringFindingCode, FindingText>> 
   },
   run_failures: {
     title: msg("Runs failed"),
-    explanation: msg("Provider, network or other errors ended runs."),
+    explanation: msg("Runs failed, or hit provider, network or other errors."),
     advice: msg(
       "Recurring network errors point at the connection or the provider; others at the setup.",
     ),
@@ -120,6 +121,26 @@ const FINDING_DETAIL_INLINE: ReadonlySet<MonitoringFindingCode> = new Set([
   "low_cache_reuse",
   "context_pressure",
 ]);
+
+const FIX_CHAT_FAILURE_MESSAGES: Readonly<
+  Record<ReturnType<typeof fixChatFailureReason>, Message>
+> = {
+  "no-chats": msg("Those chats no longer show this weak point. Refresh and try again."),
+  "auto-unsupported": msg(
+    "That machine does not support quota-aware Auto. Choose a provider model in its settings, then try again.",
+  ),
+  "no-model": msg(
+    "No provider account on that machine is signed in. Sign in to one, then try again.",
+  ),
+  "launch-failed": msg("The chat could not be started. Try again."),
+  unauthorized: msg("This connection may not start chats on that machine."),
+  offline: msg("Could not reach the machine that runs the chat."),
+};
+
+/** Why a fix chat did not start, from the failed command's cause. */
+export function monitoringFixChatFailureMessage(cause: Cause.Cause<unknown>): string {
+  return t(FIX_CHAT_FAILURE_MESSAGES[fixChatFailureReason(cause)]);
+}
 
 export const SEVERITY_LABEL: Readonly<Record<MonitoringFindingSeverity, Message>> = {
   high: msg("High"),

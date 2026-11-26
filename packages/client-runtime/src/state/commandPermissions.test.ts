@@ -147,6 +147,7 @@ describe("command permissions", () => {
 
   it.effect.each([
     WS_METHODS.scheduledTasksDelete,
+    WS_METHODS.monitoringStartFixChat,
     ORCHESTRATION_V2_WS_METHODS.stopWorkflow,
     ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
   ])("uses the target grant for both availability and execution of %s", (method) =>

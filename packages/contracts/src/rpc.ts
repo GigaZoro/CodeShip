@@ -409,6 +409,9 @@ import {
   MonitoringChatsInput,
   MonitoringChatsResult,
   MonitoringError,
+  MonitoringFixChatError,
+  MonitoringFixChatInput,
+  MonitoringFixChatResult,
   MonitoringOverviewInput,
   MonitoringOverviewResult,
   MonitoringThreadInput,
@@ -673,6 +676,7 @@ export const WS_METHODS = {
   monitoringChats: "monitoring.chats",
   monitoringThread: "monitoring.thread",
   monitoringSubscribeChanges: "monitoring.subscribeChanges",
+  monitoringStartFixChat: "monitoring.startFixChat",
   scheduledTasksReorderPinned: "scheduledTasks.reorderPinned",
   scheduledTasksSetFollowsDefaultModel: "scheduledTasks.setFollowsDefaultModel",
   scheduledTasksDelete: "scheduledTasks.delete",
@@ -2326,6 +2330,12 @@ const WsMonitoringThreadRpc = Rpc.make(WS_METHODS.monitoringThread, {
   error: Schema.Union([MonitoringError, EnvironmentAuthorizationError]),
 });
 
+const WsMonitoringStartFixChatRpc = Rpc.make(WS_METHODS.monitoringStartFixChat, {
+  payload: MonitoringFixChatInput,
+  success: MonitoringFixChatResult,
+  error: Schema.Union([MonitoringFixChatError, EnvironmentAuthorizationError]),
+});
+
 const WsMonitoringSubscribeChangesRpc = Rpc.make(WS_METHODS.monitoringSubscribeChanges, {
   payload: Schema.Struct({}),
   success: MonitoringChange,
@@ -2538,6 +2548,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsMonitoringChatsRpc,
   WsMonitoringThreadRpc,
   WsMonitoringSubscribeChangesRpc,
+  WsMonitoringStartFixChatRpc,
   WsScheduledTasksReorderPinnedRpc,
   WsScheduledTasksSetFollowsDefaultModelRpc,
   WsScheduledTasksDeleteRpc,

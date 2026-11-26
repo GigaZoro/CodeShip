@@ -1,3 +1,7 @@
+## 2026-11-26 — Start a fix chat from a Monitoring weak point
+
+- Select **Fix root cause** in the Monitoring overview or a chat’s findings on web, desktop, or mobile. The new chat opens in the affected project with the finding and examples. From the overview it uses the current filters, chooses the machine and project with the most time lost, and includes up to 20 affected chats. Retrying after a lost response reopens the same chat.
+
 ## 2026-11-26 — Worktrees use the remote’s default branch
 
 - New worktrees can use the remote’s default branch even in a single-branch clone. With fetching turned off, local repositories with an unconventional default branch can start from their checked-out branch or detached commit. When a remote omits its default, CodeShip uses an advertised main or master branch.

@@ -9,6 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   EventId,
+  MONITORING_FIX_CHAT_MAX_CHATS,
   MonitoringError,
   ProjectId,
   ProviderInstanceId,
@@ -786,6 +787,9 @@ it.effect(
       const detail = (yield* monitoring.thread({ threadId: original.id })).detail;
       expect(detail?.summary.title).toBe("New name");
       expect(detail?.lanes.find((lane) => lane.kind === "chat")?.label).toBe("New name");
+      expect(yield* monitoring.summaries([original.id])).toMatchObject([
+        { title: "New name", projectId: "project-2" },
+      ]);
 
       yield* seedThread("pending-chat");
       const pending = appThread("pending-chat");
@@ -829,11 +833,24 @@ it.effect(
 it.effect("sums every analyzed chat of the window into groups on the days the viewer sent", () =>
   Effect.gen(function* () {
     const { monitoring, seedAnalyzed } = yield* makeHarness();
+    const id = (index: number) => `chat-${String(index).padStart(4, "0")}`;
+    const slow = {
+      code: "slow_command",
+      severity: "medium",
+      count: 1,
+      wastedMs: 1_000,
+      detail: null,
+    } as const;
     // More chats than the overview reads per query, and more than it once returned at most.
     for (let index = 0; index < 2_001; index++) {
       // For a viewer whose days start at 07:00 UTC, 02:00 UTC is still the day before.
-      const settledAt = index % 2 === 0 ? SETTLED_AT : "2026-01-10T23:30:00.000Z";
-      yield* seedAnalyzed(analyzedSummary(`chat-${index}`, settledAt));
+      const early = index % 2 === 0;
+      const settledAt = early ? SETTLED_AT : "2026-01-10T23:30:00.000Z";
+      yield* seedAnalyzed(
+        analyzedSummary(id(index), settledAt, {
+          findings: early ? [{ ...slow, wastedMs: index === 0 ? 5_000 : slow.wastedMs }] : [],
+        }),
+      );
     }
     yield* seedAnalyzed(analyzedSummary("day-start", "2026-01-10T07:00:00.000Z"));
     yield* seedAnalyzed(analyzedSummary("before-window", "2026-01-01T06:59:00.000Z"));
@@ -860,6 +877,14 @@ it.effect("sums every analyzed chat of the window into groups on the days the vi
       ],
       unanalyzed: [{ projectId: "project-1", pending: 1, failed: 0 }],
     });
+    const examples = yield* monitoring.findingExamples({
+      since: SINCE,
+      until: UNTIL,
+      findingCode: "slow_command",
+    });
+    expect(examples.map(({ threadId }) => threadId)).toEqual(
+      Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS }, (_, index) => id(index * 2)),
+    );
   }).pipe(Effect.scoped),
 );
 
@@ -943,6 +968,12 @@ it.effect("splits groups by project, kind and main model and sums each finding o
         phases: [],
       },
     ]);
+    const examples = yield* monitoring.findingExamples({
+      since: SINCE,
+      until: UNTIL,
+      findingCode: "slow_command",
+    });
+    expect(examples.map(({ threadId }) => threadId)).toEqual(["b", "a"]);
   }).pipe(Effect.scoped),
 );
 
@@ -994,7 +1025,7 @@ it.effect(
 
 it.effect("lists the chats that match in the requested order and counts every match", () =>
   Effect.gen(function* () {
-    const { monitoring, seedAnalyzed } = yield* makeHarness();
+    const { monitoring, seedAnalyzed, sql } = yield* makeHarness();
     const slow = {
       code: "slow_command",
       severity: "medium",
@@ -1060,6 +1091,43 @@ it.effect("lists the chats that match in the requested order and counts every ma
       ["a", 1],
       ["d", 0],
     ]);
+    yield* seedAnalyzed(
+      analyzedSummary("scheduled", SETTLED_AT, { kind: "scheduled", models: [], findings: [slow] }),
+    );
+    yield* seedAnalyzed(
+      analyzedSummary("another-project", SETTLED_AT, {
+        projectId: ProjectId.make("project-2"),
+        models: [],
+        findings: [slow],
+      }),
+    );
+    yield* seedAnalyzed(analyzedSummary("after-window", UNTIL, { models: [], findings: [slow] }));
+    yield* seedAnalyzed(analyzedSummary("unreadable", SETTLED_AT, { models: [] }));
+    yield* sql`
+      UPDATE monitoring_thread_analyses SET summary_json = '{' WHERE thread_id = 'unreadable'
+    `;
+    for (let index = 0; index < MONITORING_FIX_CHAT_MAX_CHATS; index++) {
+      yield* seedAnalyzed(
+        analyzedSummary(`unknown-finding-${index}`, SETTLED_AT, {
+          models: [],
+          findings: [{ ...slow, wastedMs: 10_000 }],
+        }),
+      );
+    }
+    yield* sql`
+      UPDATE monitoring_thread_analyses
+      SET summary_json = json_set(summary_json, '$.findings[0].severity', 'future-severity')
+      WHERE thread_id LIKE 'unknown-finding-%'
+    `;
+    const examples = yield* monitoring.findingExamples({
+      since: SINCE,
+      until: UNTIL,
+      findingCode: "slow_command",
+      projectId: ProjectId.make("project-1"),
+      kind: "interactive",
+      model: "",
+    });
+    expect(examples.map(({ threadId }) => threadId)).toEqual(["c"]);
   }).pipe(Effect.scoped),
 );
 
@@ -1117,6 +1185,12 @@ it.effect("counts a stored analysis it cannot read as failed instead of dropping
     yield* breakSummary("broken-before-list");
     yield* seedBadSettle("bad-settle-before-list");
     yield* seedSummarySettle("summary-settle-other", CREATED_AT);
+    yield* seedAnalyzed(analyzedSummary("summary-id-other", SETTLED_AT));
+    yield* sql`
+      UPDATE monitoring_thread_analyses
+      SET summary_json = json_set(summary_json, '$.threadId', 'another-chat')
+      WHERE thread_id = 'summary-id-other'
+    `;
     const listed = yield* listChats(monitoring);
 
     expect({
@@ -1132,7 +1206,7 @@ it.effect("counts a stored analysis it cannot read as failed instead of dropping
       grouped: 2,
       unanalyzed: [{ projectId: "project-1", pending: 0, failed: 3 }],
       listed: { ids: ["readable"], total: 1 },
-      revision: 6,
+      revision: 7,
       rows: [
         {
           thread_id: "bad-settle-before-list",
@@ -1151,6 +1225,11 @@ it.effect("counts a stored analysis it cannot read as failed instead of dropping
         },
         {
           thread_id: "broken-before-overview",
+          summary_json: null,
+          error: "The stored analysis could not be read.",
+        },
+        {
+          thread_id: "summary-id-other",
           summary_json: null,
           error: "The stored analysis could not be read.",
         },

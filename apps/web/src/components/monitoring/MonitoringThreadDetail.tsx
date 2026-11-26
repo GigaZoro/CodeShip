@@ -1,19 +1,29 @@
 import { Link } from "@tanstack/react-router";
-import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  MonitoringFinding,
+  MonitoringThreadDetail,
+  ThreadId,
+} from "@t3tools/contracts";
+import {
+  formatMonitoringTime,
+  threadFixChatTarget,
+  type MonitoringFixChatTarget,
+} from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { formatMonitoringTime } from "@t3tools/client-runtime/monitoring";
 import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { ArrowLeftIcon, CircleAlertIcon, ExternalLinkIcon } from "lucide-react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
-import { useMonitoringThread } from "../../state/monitoring";
-import { RetryButton } from "./MonitoringChatList";
+import { useMonitoringFixChat, useMonitoringThread } from "../../state/monitoring";
 import { resolveHour12 } from "../../timestampFormat";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
+import { RetryButton } from "./MonitoringChatList";
+import { MonitoringFixChatButton, MonitoringFixChatStatus } from "./MonitoringFixChat";
 import { MonitoringGantt } from "./MonitoringGantt";
 import { MonitoringKpi, MonitoringSection, MonitoringTruncated } from "./MonitoringSection";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
@@ -96,6 +106,44 @@ export function MonitoringThreadDeepDive({
   );
 }
 
+function FindingRow({
+  finding,
+  target,
+}: {
+  readonly finding: MonitoringFinding;
+  readonly target: MonitoringFixChatTarget;
+}) {
+  const text = FINDING_TEXT[finding.code];
+  const fixChat = useMonitoringFixChat(target, finding.code);
+  return (
+    <li className="flex flex-col gap-1 px-3 py-2.5">
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-foreground">{t(text.title)}</span>
+        <Badge variant={SEVERITY_BADGE_VARIANT[finding.severity]} size="sm">
+          {t(SEVERITY_LABEL[finding.severity])}
+        </Badge>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {finding.wastedMs > 0
+            ? t("{count} times, {duration} lost", {
+                count: finding.count,
+                duration: formatDuration(finding.wastedMs),
+              })
+            : tn(finding.count, "{count} time", "{count} times")}
+        </span>
+        <span className="ms-auto">
+          <MonitoringFixChatButton fixChat={fixChat} />
+        </span>
+      </span>
+      <span className="text-xs text-muted-foreground">{findingExplanation(finding)}</span>
+      {FINDING_DETAIL_LABELED.has(finding.code) && finding.detail ? (
+        <MonitoringTruncated as="code" text={finding.detail} className="text-xs text-foreground" />
+      ) : null}
+      {text.advice ? <span className="text-xs text-foreground">{t(text.advice)}</span> : null}
+      <MonitoringFixChatStatus fixChat={fixChat} />
+    </li>
+  );
+}
+
 function DeepDiveBody({
   detail,
   environmentId,
@@ -105,6 +153,7 @@ function DeepDiveBody({
 }) {
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const { summary } = detail;
+  const fixTarget = threadFixChatTarget(environmentId, summary);
   const input = summary.tokens.inputTokens;
   const workingMs = summary.time.agentMs + summary.time.commandMs + summary.time.toolMs;
   const helpers =
@@ -223,40 +272,9 @@ function DeepDiveBody({
           <p className="text-sm text-muted-foreground">{t("No weak points found.")}</p>
         ) : (
           <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
-            {summary.findings.map((finding) => {
-              const text = FINDING_TEXT[finding.code];
-              return (
-                <li key={finding.code} className="flex flex-col gap-1 px-3 py-2.5">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-foreground">{t(text.title)}</span>
-                    <Badge variant={SEVERITY_BADGE_VARIANT[finding.severity]} size="sm">
-                      {t(SEVERITY_LABEL[finding.severity])}
-                    </Badge>
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {finding.wastedMs > 0
-                        ? t("{count} times, {duration} lost", {
-                            count: finding.count,
-                            duration: formatDuration(finding.wastedMs),
-                          })
-                        : tn(finding.count, "{count} time", "{count} times")}
-                    </span>
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {findingExplanation(finding)}
-                  </span>
-                  {FINDING_DETAIL_LABELED.has(finding.code) && finding.detail ? (
-                    <MonitoringTruncated
-                      as="code"
-                      text={finding.detail}
-                      className="text-xs text-foreground"
-                    />
-                  ) : null}
-                  {text.advice ? (
-                    <span className="text-xs text-foreground">{t(text.advice)}</span>
-                  ) : null}
-                </li>
-              );
-            })}
+            {summary.findings.map((finding) => (
+              <FindingRow key={finding.code} finding={finding} target={fixTarget} />
+            ))}
           </ul>
         )}
       </MonitoringSection>

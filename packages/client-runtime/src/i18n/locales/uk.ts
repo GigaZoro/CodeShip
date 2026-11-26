@@ -1932,6 +1932,7 @@ const catalog: MessageCatalog = {
   "A bearer token variable requires an HTTPS endpoint.":
     "Для змінної токена доступу потрібна адреса HTTPS.",
   "A chat is carrying out your decision.": "Чат виконує ваше рішення.",
+  "A chat is fixing this weak point.": "Чат усуває це слабке місце.",
   "A comment is anchored to the whole change, so switch to All commits to write one.":
     "Коментар прив’язується до всіх змін, тому перемкніться на «Усі коміти», щоб його написати.",
   "A community color theme for your editor.": "Колірна тема від спільноти для вашого редактора.",
@@ -6117,6 +6118,8 @@ const catalog: MessageCatalog = {
   "Fix findings in this thread": "Виправити знахідки в цьому чаті",
   "Fix in a thread": "Виправити в чаті",
   "Fix in this thread": "Виправити в цьому чаті",
+  "Fix root cause": "Усунути першопричину",
+  "Fix root cause: {weakPoint}": "Усунути першопричину: {weakPoint}",
   "Fix the cause before running it again; run focused checks first.":
     "Усуньте причину, перш ніж запускати знову; спершу запускайте точкові перевірки.",
   "Fix the expression above to continue editing visually.":
@@ -8116,6 +8119,8 @@ const catalog: MessageCatalog = {
   "No projects.": "Немає проєктів.",
   "No provider account on that machine is signed in. Sign in to one, then choose again.":
     "На цьому комп’ютері немає жодного облікового запису провайдера з виконаним входом. Увійдіть в один із них і виберіть ще раз.",
+  "No provider account on that machine is signed in. Sign in to one, then try again.":
+    "На цьому комп’ютері немає жодного облікового запису провайдера з виконаним входом. Увійдіть в один із них і спробуйте ще раз.",
   "No provider available": "Немає доступного провайдера",
   "No provider installs plugins here": "Жоден провайдер тут не встановлює плагіни",
   "No provider manages MCP servers here": "Жоден провайдер тут не керує серверами MCP",
@@ -9329,8 +9334,6 @@ const catalog: MessageCatalog = {
   "Provider-managed agent": "Агент під керуванням провайдера",
   "Provider-managed agent. Its work appears in the transcript.":
     "Агент під керуванням провайдера. Його робота відображається в транскрипті.",
-  "Provider, network or other errors ended runs.":
-    "Помилки провайдера, мережі чи інші завершили запуски.",
   Providers: "Провайдери",
   "Providers & models": "Провайдери й моделі",
   "Providers or models": "Провайдери або моделі",
@@ -10476,6 +10479,8 @@ const catalog: MessageCatalog = {
   "Runs before each scheduled run, in the project folder, as one program with its arguments (no shell; ~/ is your home folder). Exit code 0 starts the chat, 10 skips the run, anything else starts the chat anyway. Run now skips the check.":
     "Виконується перед кожним запланованим запуском у теці проєкту як одна програма з аргументами (без оболонки; ~/ це ваша домашня тека). Код завершення 0 запускає чат, 10 пропускає запуск, будь-який інший усе одно запускає чат. «Запустити зараз» пропускає перевірку.",
   "Runs failed": "Запуски завершились збоєм",
+  "Runs failed, or hit provider, network or other errors.":
+    "Запуски завершилися збоєм або виникли помилки провайдера, мережі чи інші помилки.",
   "Runs in this thread": "Запускається в цьому чаті",
   "Runs on": "Виконується на",
   "Runs on {label}. Connect to it to open the thread there.":
@@ -12094,6 +12099,8 @@ const catalog: MessageCatalog = {
   "That host reaches {machine}, a different machine. Add it as its own environment instead.":
     "Цей хост веде на {machine}, інший комп’ютер. Додайте його як окреме середовище.",
   "that machine": "інший комп’ютер",
+  "That machine does not support quota-aware Auto. Choose a provider model in its settings, then try again.":
+    "Цей комп’ютер не підтримує Auto з урахуванням квот. Виберіть у його налаштуваннях модель провайдера й спробуйте ще раз.",
   "That message already started, so the edit was discarded.":
     "Це повідомлення вже почало виконуватися, тому правку скасовано.",
   "That message already started. Your edit is back in the composer.":
@@ -12943,6 +12950,8 @@ const catalog: MessageCatalog = {
     "Це з’єднання не має дозволу змінювати ці налаштування.",
   "This connection lacks permission to read scheduled task runs on {environment}.":
     "Це з’єднання не має дозволу на перегляд запусків запланованих завдань у середовищі {environment}.",
+  "This connection may not start chats on that machine.":
+    "Це підключення не має дозволу запускати чати на цьому комп’ютері.",
   "This connection needs permission to view and manage T3 Connect settings.":
     "Цьому з’єднанню потрібен дозвіл на перегляд і керування налаштуваннями T3 Connect.",
   "This connection needs permission to write source control and add projects.":
@@ -13403,6 +13412,8 @@ const catalog: MessageCatalog = {
   "this workspace": "цьому робочому просторі",
   "This workspace is not a git repository.": "Цей робочий простір не є git-репозиторієм.",
   "This ZIP is empty": "Цей ZIP порожній",
+  "Those chats no longer show this weak point. Refresh and try again.":
+    "У цих чатах більше немає цього слабкого місця. Оновіть дані та спробуйте ще раз.",
   "Those references are marked unavailable.": "Ці посилання позначено як недоступні.",
   "Those threads and any archived threads are deleted from T3.CodeShip. Provider sessions are kept.":
     "Ці чати та всі архівовані чати буде видалено з T3.CodeShip. Сеанси провайдерів збережуться.",

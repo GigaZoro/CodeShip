@@ -155,7 +155,7 @@ export interface ThreadAnalysisInput {
   readonly reopens: number;
 }
 
-const MINUTE_MS = 60_000;
+export const MINUTE_MS = 60_000;
 const PROMPT_EXCERPT_LENGTH = 160;
 const COMMAND_EXCERPT_LENGTH = 200;
 const LANE_LABEL_LENGTH = 80;
@@ -164,16 +164,16 @@ const MAX_LANE_SEGMENTS = 400;
 const MAX_MARKERS = 500;
 const MAX_STEPS = 500;
 const MAX_COMMAND_RECORDS = 15;
-const SLOW_COMMAND_MS = 10 * MINUTE_MS;
-const REPEATED_COMMAND_MIN_COUNT = 4;
-const FAILING_COMMANDS_MIN_COUNT = 3;
-const LONG_QUEUE_MS = 2 * MINUTE_MS;
-const APPROVAL_WAIT_MS = 2 * MINUTE_MS;
-const DELEGATE_WAIT_MS = 10 * MINUTE_MS;
-const LOW_CACHE_REUSE_RATIO = 0.7;
-const LOW_CACHE_REUSE_MIN_INPUT = 500_000;
-const CONTEXT_PRESSURE_RATIO = 0.9;
-const MANY_PROMPTS = 6;
+export const SLOW_COMMAND_MS = 10 * MINUTE_MS;
+export const REPEATED_COMMAND_MIN_COUNT = 4;
+export const FAILING_COMMANDS_MIN_COUNT = 3;
+export const LONG_QUEUE_MS = 2 * MINUTE_MS;
+export const APPROVAL_WAIT_MS = 2 * MINUTE_MS;
+export const DELEGATE_WAIT_MS = 10 * MINUTE_MS;
+export const LOW_CACHE_REUSE_RATIO = 0.7;
+export const LOW_CACHE_REUSE_MIN_INPUT = 500_000;
+export const CONTEXT_PRESSURE_RATIO = 0.9;
+export const MANY_PROMPTS = 6;
 /** Requests the app answers by itself; only the rest wait on a person. */
 const NON_PERSON_REQUEST_KINDS: ReadonlySet<string> = new Set([
   "dynamic_tool_call",

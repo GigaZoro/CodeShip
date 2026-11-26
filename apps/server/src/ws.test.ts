@@ -89,6 +89,7 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as MonitoringFixChats from "./monitoring/MonitoringFixChats.ts";
 import * as MonitoringService from "./monitoring/MonitoringService.ts";
 import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -609,6 +610,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(ScheduledTaskStats.ScheduledTaskStats)({}),
   Layer.mock(MonitoringService.MonitoringService)({}),
+  Layer.mock(MonitoringFixChats.MonitoringFixChats)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(SecretResolver.SecretResolver)({}),
   Layer.mock(GuestShareService.GuestShareService)({}),

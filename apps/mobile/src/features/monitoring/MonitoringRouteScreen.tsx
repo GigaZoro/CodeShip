@@ -10,6 +10,7 @@ import {
 import {
   failureRetry,
   filterGroups,
+  fixChatTarget,
   formatMonitoringTime,
   mainModel,
   missingEnvironments,
@@ -65,6 +66,7 @@ import {
 } from "../../state/monitoring";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { MonitoringFixChatAction } from "./MonitoringFixChat";
 import { MonitoringKpi } from "./MonitoringKpi";
 import { MonitoringNote } from "./MonitoringNote";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
@@ -107,15 +109,14 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   const [shown, setShown] = useState(PAGE_SIZE);
   const period = monitoringWindow(windowChoice.days, windowChoice.now);
   const overviewInput = { days: period.days, until: period.until };
-  const { view: overview } = useMonitoringOverview(overviewInput);
+  const { view: overview, retained } = useMonitoringOverview(overviewInput);
+  const scopeFilters = useMemo(
+    () => ({ projectKey: scope.project, kind: scope.kind, model: scope.model }),
+    [scope],
+  );
   const chatsRequest: MonitoringChatsRequest = {
     window: { since: period.since, until: period.until },
-    filters: {
-      projectKey: scope.project,
-      kind: scope.kind,
-      model: scope.model,
-      findingCode: finding,
-    },
+    filters: { ...scopeFilters, findingCode: finding },
     order: { sort: "settledAt", direction: "desc", limit: shown },
     pageSize: PAGE_SIZE,
   };
@@ -151,10 +152,8 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
     projectTitleOfKey(projectKey(chat.environmentId, chat.summary.projectId));
 
   const groups = overview.groups;
-  const scoped = useMemo(
-    () => filterGroups(groups, { projectKey: scope.project, kind: scope.kind, model: scope.model }),
-    [groups, scope],
-  );
+  const scoped = useMemo(() => filterGroups(groups, scopeFilters), [groups, scopeFilters]);
+  const fixScope = retained ? null : { window: chatsRequest.window, filters: scopeFilters };
   const totals = useMemo(() => totalsOf(scoped), [scoped]);
   const unanalyzed = unanalyzedCounts(overview.unanalyzed, scope.project);
   const buckets = useMemo(() => sumTimeBuckets(scoped), [scoped]);
@@ -238,7 +237,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   );
 
   // Shown with no analyzed chat too: the pending and failed notes count the chosen project.
-  const scopeFilters = (
+  const scopeControls = (
     <ScopeFilters
       overview={overview}
       scope={scope}
@@ -255,7 +254,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
     body === "ready" ? (
       <View className="gap-5">
         {controls}
-        {scopeFilters}
+        {scopeControls}
         {scoped.length === 0 && overview.complete ? (
           <EmptyState
             variant="plain"
@@ -318,33 +317,41 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
                   : t("No time counted"),
               ].join(" · ");
               return (
-                <Pressable
+                <View
                   key={rank.code}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={`${t(text.title)}, ${t(SEVERITY_LABEL[rank.severity])}, ${stats}`}
-                  accessibilityHint={t("Choose one to list only the chats it hit.")}
-                  className={`min-h-11 gap-1 px-4 py-3 active:opacity-70 ${active ? "bg-secondary" : ""} ${index > 0 ? "border-t border-border-subtle" : ""}`}
-                  onPress={() => {
-                    setFinding(active ? null : rank.code);
-                    setShown(PAGE_SIZE);
-                  }}
+                  className={`px-4 py-3 ${active ? "bg-secondary" : ""} ${index > 0 ? "border-t border-border-subtle" : ""}`}
                 >
-                  <Text className="font-t3-medium text-foreground">
-                    {`${t(text.title)} · ${t(SEVERITY_LABEL[rank.severity])}`}
-                  </Text>
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {t(text.overview ?? text.explanation)}
-                  </Text>
-                  {text.advice ? (
-                    <Text textRole="footnote" className="text-foreground">
-                      {t(text.advice)}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${t(text.title)}, ${t(SEVERITY_LABEL[rank.severity])}, ${stats}`}
+                    accessibilityHint={t("Choose one to list only the chats it hit.")}
+                    className="min-h-11 gap-1 active:opacity-70"
+                    onPress={() => {
+                      setFinding(active ? null : rank.code);
+                      setShown(PAGE_SIZE);
+                    }}
+                  >
+                    <Text className="font-t3-medium text-foreground">
+                      {`${t(text.title)} · ${t(SEVERITY_LABEL[rank.severity])}`}
                     </Text>
-                  ) : null}
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {stats}
-                  </Text>
-                </Pressable>
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {t(text.overview ?? text.explanation)}
+                    </Text>
+                    {text.advice ? (
+                      <Text textRole="footnote" className="text-foreground">
+                        {t(text.advice)}
+                      </Text>
+                    ) : null}
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {stats}
+                    </Text>
+                  </Pressable>
+                  <MonitoringFixChatAction
+                    target={fixScope === null ? null : fixChatTarget(scoped, rank.code, fixScope)}
+                    code={rank.code}
+                  />
+                </View>
               );
             })
           )}
@@ -382,7 +389,7 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
     ) : body === "empty" ? (
       <View className="gap-5">
         {controls}
-        {scopeFilters}
+        {scopeControls}
       </View>
     ) : (
       controls
