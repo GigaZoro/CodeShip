@@ -154,15 +154,13 @@ const encodeRemovalPlan = Schema.encodeEffect(
   ),
 );
 
+const pathEscapes = (rel: string) =>
+  rel === ".." || rel.startsWith(".." + NodePath.sep) || NodePath.isAbsolute(rel);
+
 const pathsOverlap = (left: string, right: string) => {
   const relA = NodePath.relative(left, right);
   const relB = NodePath.relative(right, left);
-  return (
-    relA === "" ||
-    (!relA.startsWith("..") && !NodePath.isAbsolute(relA)) ||
-    relB === "" ||
-    (!relB.startsWith("..") && !NodePath.isAbsolute(relB))
-  );
+  return relA === "" || !pathEscapes(relA) || relB === "" || !pathEscapes(relB);
 };
 
 const isValidSavedRelativePath = (value: unknown): value is string =>
@@ -184,7 +182,7 @@ const verifyBackupPair = async (
   const source = NodePath.join(checkoutRoot, checkoutRelative);
   const backup = NodePath.join(savedRoot, savedRelative);
   const backupRel = NodePath.relative(savedRoot, backup);
-  if (backupRel === "" || backupRel.startsWith("..") || NodePath.isAbsolute(backupRel))
+  if (backupRel === "" || pathEscapes(backupRel))
     throw new Error("Saved backup path escapes backup root");
   const backupParent = NodePath.dirname(backup);
   if (NodePath.relative(backupParent, await NodeFSP.realpath(backupParent)) !== "")
@@ -440,6 +438,7 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
       ...(cause === undefined ? {} : { cause }),
     });
   const notAWorktree = refuse(`'${worktreePath}' is not a working tree`);
+  const windows = yield* HostProcess.isWindows;
   const legacyStage = windowsRemovalStage(worktreePath);
   let stage = legacyStage;
   if (resuming) {
@@ -466,7 +465,7 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
     }
     if (!foundStage) return yield* notAWorktree;
     stage = foundStage;
-  } else if (input.release) {
+  } else if (windows && input.release) {
     const legacyPresent = yield* Effect.tryPromise(async () => {
       const stat = await NodeFSP.lstat(legacyStage).catch(missingSetupPath);
       if (!stat) return "missing" as const;
@@ -488,7 +487,6 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   // Git refuses to remove a worktree with untracked files unless forced, but
   // its check honors `status.showUntrackedFiles=no` and would delete them.
   const statusConfig = ["-c", "status.showUntrackedFiles=normal"];
-  const windows = yield* HostProcess.isWindows;
   const linked =
     windows &&
     (yield* fileSystem.stat(pointer).pipe(

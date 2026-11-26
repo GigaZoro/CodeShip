@@ -4521,6 +4521,148 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect(
+    "replaces an unversioned sourceChildRunId terminalResultObservation while preserving proofVersion 2",
+    () =>
+      Effect.gen(function* () {
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = ThreadId.make("thread:projection-unversioned-observation");
+        const projectId = ProjectId.make("project:projection-unversioned-observation");
+        const runId = RunId.make("run:projection-unversioned-observation");
+        const childRunId = RunId.make("run:projection-unversioned-child");
+        const rootNodeId = NodeId.make("node:projection-unversioned-root");
+        const taskId = NodeId.make("node:projection-unversioned-task");
+        const now = DateTime.makeUnsafe("2026-04-06T00:00:00.000Z");
+        const later = DateTime.makeUnsafe("2026-04-06T00:01:00.000Z");
+        const evenLater = DateTime.makeUnsafe("2026-04-06T00:02:00.000Z");
+        const driver = ProviderDriverKind.make("codex");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const modelSelection = { instanceId: providerInstanceId, model: "gpt-5.4" };
+
+        yield* projectionStore.apply({
+          id: EventId.make("event:projection-unversioned-observation:thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user" as const,
+            creationSource: "web" as const,
+            id: threadId,
+            projectId,
+            title: "Unversioned observation",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access" as const,
+            interactionMode: "default" as const,
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: {
+              parentThreadId: null,
+              relationshipToParent: null,
+              rootThreadId: threadId,
+            },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+
+        const baseTask = {
+          id: taskId,
+          threadId,
+          runId,
+          parentNodeId: rootNodeId,
+          origin: "app_owned" as const,
+          createdBy: "agent" as const,
+          driver,
+          providerInstanceId,
+          providerThreadId: null,
+          childThreadId: null,
+          nativeTaskRef: null,
+          prompt: "Inspect child output.",
+          title: null,
+          model: null,
+          completionWake: "always" as const,
+          status: "completed" as const,
+          result: "child answer",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        };
+
+        // Pre-fix cached observation with sourceChildRunId and no proofVersion.
+        yield* projectionStore.apply({
+          id: EventId.make("event:projection-unversioned-observation:legacy"),
+          type: "subagent.updated",
+          threadId,
+          runId,
+          nodeId: taskId,
+          driver,
+          providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...baseTask,
+            terminalResultObservation: { runId, at: now, sourceChildRunId: childRunId },
+          },
+        });
+
+        // A newly proven observation must overwrite the unversioned legacy one.
+        const proven = {
+          runId,
+          at: later,
+          sourceChildRunId: childRunId,
+          proofVersion: 2 as const,
+        };
+        yield* projectionStore.apply({
+          id: EventId.make("event:projection-unversioned-observation:proven"),
+          type: "subagent.updated",
+          threadId,
+          runId,
+          nodeId: taskId,
+          driver,
+          providerInstanceId,
+          occurredAt: later,
+          payload: {
+            ...baseTask,
+            updatedAt: later,
+            terminalResultObservation: proven,
+          },
+        });
+        assert.deepEqual(
+          (yield* projectionStore.getThreadProjection(threadId)).subagents[0]
+            ?.terminalResultObservation,
+          proven,
+        );
+
+        // A later update omitting terminalResultObservation must preserve the proofVersion: 2 record.
+        yield* projectionStore.apply({
+          id: EventId.make("event:projection-unversioned-observation:preserve"),
+          type: "subagent.updated",
+          threadId,
+          runId,
+          nodeId: taskId,
+          driver,
+          providerInstanceId,
+          occurredAt: evenLater,
+          payload: {
+            ...baseTask,
+            updatedAt: evenLater,
+          },
+        });
+        assert.deepEqual(
+          (yield* projectionStore.getThreadProjection(threadId)).subagents[0]
+            ?.terminalResultObservation,
+          proven,
+        );
+      }),
+  );
+
   it.effect.each([
     ["T3.CodeShip's idle compaction", "agent", "server", undefined, true, "/compact"],
     ["compacting on return", "user", "web", "onReturn", true, "/compact"],

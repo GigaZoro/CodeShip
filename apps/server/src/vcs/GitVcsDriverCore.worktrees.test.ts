@@ -1506,7 +1506,7 @@ it.layer(layerTest)("Git worktree locks and removal", (it) => {
       yield* initRepoWithCommit(cwd);
       const driver = yield* GitVcsDriver.GitVcsDriver;
 
-      for (const branchName of ["(release)", "(detached)"]) {
+      for (const branchName of ["(release)", "(detached)", "(initial)"]) {
         yield* git(cwd, ["checkout", "-b", branchName]);
         const status = yield* driver.statusDetailsLocal(cwd);
         assert.equal(status.branch, branchName);

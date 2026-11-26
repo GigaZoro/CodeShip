@@ -981,19 +981,21 @@ function preserveCompletionDelivery(
   next: OrchestrationV2Subagent,
 ): OrchestrationV2Subagent {
   if (current === undefined) return next;
+  const existingObservation = current.terminalResultObservation;
+  const incomingObservation = next.terminalResultObservation;
+  const existingUnversionedInferred =
+    existingObservation?.sourceChildRunId !== undefined && existingObservation.proofVersion !== 2;
+  const preserveExistingObservation =
+    existingObservation !== undefined &&
+    !(incomingObservation !== undefined && existingUnversionedInferred) &&
+    (incomingObservation?.resultFingerprint === undefined ||
+      existingObservation.resultFingerprint === incomingObservation.resultFingerprint);
   return {
     ...next,
     ...(next.completionDelivery === undefined && current.completionDelivery !== undefined
       ? { completionDelivery: current.completionDelivery }
       : {}),
-    ...(current.terminalResultObservation === undefined ||
-    (next.terminalResultObservation?.resultFingerprint !== undefined &&
-      (current.terminalResultObservation.resultFingerprint !==
-        next.terminalResultObservation.resultFingerprint ||
-        (current.terminalResultObservation.sourceChildRunId !== undefined &&
-          current.terminalResultObservation.proofVersion !== 2)))
-      ? {}
-      : { terminalResultObservation: current.terminalResultObservation }),
+    ...(preserveExistingObservation ? { terminalResultObservation: existingObservation } : {}),
   };
 }
 
@@ -2598,28 +2600,51 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   excluded.completion_delivery_state,
                   orchestration_v2_projection_subagents.completion_delivery_state
                 ),
-                payload_json = json_patch(
-                  CASE
-                  WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
-                    AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
-                  THEN json_set(
-                    excluded.payload_json,
-                    '$.completionDelivery',
-                    json_extract(
-                      orchestration_v2_projection_subagents.payload_json,
-                      '$.completionDelivery'
+                payload_json = CASE
+                  WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation') = 'object'
+                    AND NOT (
+                      json_type(excluded.payload_json, '$.terminalResultObservation') = 'object'
+                      AND json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.sourceChildRunId') IS NOT NULL
+                      AND COALESCE(json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.proofVersion'), 0) != 2
                     )
+                    AND (
+                      json_type(excluded.payload_json, '$.terminalResultObservation.resultFingerprint') IS NOT 'text'
+                      OR json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.resultFingerprint') = json_extract(excluded.payload_json, '$.terminalResultObservation.resultFingerprint')
+                    )
+                  THEN json_set(
+                    CASE
+                      WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
+                        AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
+                      THEN json_set(
+                        excluded.payload_json,
+                        '$.completionDelivery',
+                        json(json_extract(
+                          orchestration_v2_projection_subagents.payload_json,
+                          '$.completionDelivery'
+                        ))
+                      )
+                      ELSE excluded.payload_json
+                    END,
+                    '$.terminalResultObservation',
+                    json(json_extract(
+                      orchestration_v2_projection_subagents.payload_json,
+                      '$.terminalResultObservation'
+                    ))
                   )
-                  ELSE excluded.payload_json
-                END,
-                  CASE WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation') = 'object'
-                    AND (json_type(excluded.payload_json, '$.terminalResultObservation.resultFingerprint') IS NOT 'text'
-                      OR (json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.resultFingerprint') = json_extract(excluded.payload_json, '$.terminalResultObservation.resultFingerprint')
-                        AND (json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.sourceChildRunId') IS NULL
-                          OR json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.proofVersion') = 2)))
-                    THEN json_object('terminalResultObservation', json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation'))
-                    ELSE '{}' END
-                )
+                  ELSE CASE
+                    WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
+                      AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
+                    THEN json_set(
+                      excluded.payload_json,
+                      '$.completionDelivery',
+                      json(json_extract(
+                        orchestration_v2_projection_subagents.payload_json,
+                        '$.completionDelivery'
+                      ))
+                    )
+                    ELSE excluded.payload_json
+                  END
+                END
             `;
               break;
             }

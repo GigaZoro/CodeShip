@@ -886,7 +886,7 @@ const make = Effect.gen(function* () {
     if (head === null) return true;
     const ref = head.exitCode === 0 ? gitOutputLine(head.stdout) : "";
     const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : null;
-    return (name?.startsWith("(") ? null : name) !== branch;
+    return name !== branch;
   });
 
   const localChangesReason = Effect.fn("StorageCleanup.localChangesReason")(function* (

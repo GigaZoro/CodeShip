@@ -633,7 +633,12 @@ const cleanupFixture = (
         openSessionCwd = cwd;
       },
       sqlReads: () => sqlReads,
-      openTerminal: (paths: { cwd: string; worktreePath: string | null }) =>
+      openTerminal: (paths: {
+        threadId?: string;
+        terminalId?: string;
+        cwd: string;
+        worktreePath: string | null;
+      }) =>
         terminalListener?.({
           type: "upsert",
           terminal: {
@@ -648,6 +653,12 @@ const cleanupFixture = (
             updatedAt: "2026-06-10T12:00:00.000Z",
             ...paths,
           },
+        }) ?? Effect.void,
+      closeTerminal: (target: { threadId: string; terminalId: string }) =>
+        terminalListener?.({
+          type: "remove",
+          threadId: target.threadId,
+          terminalId: target.terminalId,
         }) ?? Effect.void,
       fullStatusCalls: () => fullStatusCalls,
       failUnmergedCount: (fail: boolean) => {
@@ -2509,10 +2520,7 @@ it.effect(
         );
         expect(yield* fixture.fs.exists(request + ".released")).toBe(true);
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
-      }).pipe(
-        Effect.provideService(HostProcess.Platform, "win32"),
-        Effect.provide(SqlitePersistence.layerMemory),
-      ),
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
     ),
 );
 
@@ -6177,7 +6185,7 @@ it.live.each(["backup deleted", "legacy plan missing saved", "backup intact"] as
         fixture.setThreads([owner]);
         yield* fs.writeFileString(
           NodePath.join(fixture.repo, ".gitignore"),
-          ".t3/\nnode_modules/\nprivate.txt\n",
+          ".t3/\nnode_modules/\nprivate.txt\n..env\n",
         );
         yield* fixture.command(fixture.repo, ["add", ".gitignore"]);
         yield* fixture.command(fixture.repo, ["commit", "-m", "ignore setup and private"]);
@@ -6215,6 +6223,7 @@ it.live.each(["backup deleted", "legacy plan missing saved", "backup intact"] as
           NodePath.join(fixture.worktree, "private.txt"),
           "irreplaceable user data",
         );
+        yield* fs.writeFileString(NodePath.join(fixture.worktree, "..env"), "SECRET=1");
         const { file, savedFiles } = yield* queueWorktreeRelease({
           stateDir: fixture.config.stateDir,
           threadId: owner.id,
@@ -6267,6 +6276,7 @@ it.live.each(["backup deleted", "legacy plan missing saved", "backup intact"] as
           expect(yield* fs.readFileString(NodePath.join(savedFiles!, "private.txt"))).toBe(
             "irreplaceable user data",
           );
+          expect(yield* fs.readFileString(NodePath.join(savedFiles!, "..env"))).toBe("SECRET=1");
         } else {
           expect(yield* fs.readFileString(NodePath.join(stage, "private.txt"))).toBe(
             "irreplaceable user data",
@@ -6403,8 +6413,12 @@ it.live.each(["terminal", "command", "process start"] as const)(
         yield* Effect.flip(prepared);
         expect(yield* fs.exists(NodePath.join(stage, "node_modules", "installed.js"))).toBe(true);
 
+        let openedTerminal: { threadId: string; terminalId: string } | null = null;
         if (blocker === "terminal") {
+          openedTerminal = { threadId: "other-thread", terminalId: "term-stage" };
           yield* fixture.openTerminal({
+            threadId: openedTerminal.threadId,
+            terminalId: openedTerminal.terminalId,
             cwd: NodePath.join(stage, "node_modules"),
             worktreePath: null,
           });
@@ -6426,7 +6440,7 @@ it.live.each(["terminal", "command", "process start"] as const)(
                   const fiber = yield* withWorkspaceProcessStart(
                     Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(done))),
                     [NodePath.join(stage, "node_modules")],
-                  ).pipe(Effect.provideService(HostProcess.Platform, "win32"), Effect.forkScoped);
+                  ).pipe(Effect.forkScoped);
                   yield* Deferred.await(started);
                   const result = yield* runCleanup;
                   yield* Deferred.succeed(done, undefined);
@@ -6437,9 +6451,30 @@ it.live.each(["terminal", "command", "process start"] as const)(
             : yield* runCleanup;
 
         expect(report.counts.kept).toBe(1);
+        expect(report.entries[0]?.reason).toBe(
+          blocker === "terminal"
+            ? "Open terminal"
+            : blocker === "command"
+              ? "Command or command delivery is pending"
+              : "A workspace process is starting",
+        );
         expect(yield* fs.exists(NodePath.join(stage, "node_modules", "installed.js"))).toBe(true);
         expect(yield* fs.exists(file + ".releasing")).toBe(true);
         expect(yield* fs.exists(file + ".released")).toBe(false);
-      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+
+        // Once the active blocker clears, the next cleanup pass finishes removing the stage.
+        if (openedTerminal) {
+          yield* fixture.closeTerminal(openedTerminal);
+        } else if (blocker === "command") {
+          yield* sql`DELETE FROM command_runs WHERE task_id = 'cmd-stage'`;
+        }
+        const cleared = yield* runCleanup;
+        expect(cleared.entries).toEqual([]);
+        expect(yield* fs.exists(stage)).toBe(false);
+        expect(yield* fs.exists(file + ".released")).toBe(true);
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provide(SqlitePersistence.layerMemory),
+      ),
     ),
 );

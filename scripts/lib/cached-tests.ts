@@ -21,6 +21,7 @@ const vitePlusTestDefaults = {
 export const darwinNativeProcessTests = [
   "apps/server/src/cli/thread.test.ts",
   "apps/server/src/cli/triage.test.ts",
+  "apps/server/src/git/GitManager.test.ts",
   "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
   "apps/server/src/preview/PortScanner.test.ts",
   "apps/server/src/process/WorkerProcessSpawner.test.ts",
