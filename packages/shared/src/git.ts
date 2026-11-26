@@ -10,6 +10,9 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 
 export const WORKTREE_BRANCH_PREFIX = "t3";
+/** Remove the line ending Git emits without changing whitespace in a ref or path. */
+export const gitOutputLine = (stdout: string): string => stdout.replace(/\r?\n$/, "");
+
 const TEMP_WORKTREE_HEX_TOKEN = "[0-9a-f]{8}";
 const TEMP_WORKTREE_UUID_V4_TOKEN =
   "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";

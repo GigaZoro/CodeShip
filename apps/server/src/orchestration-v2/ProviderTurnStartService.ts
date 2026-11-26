@@ -2,6 +2,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { AccountRouting, creditRefusalMessage, runLiftsScope } from "./AccountRouting.ts";
 import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -45,6 +46,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { familyHookOperation } from "../vcs/familyWorktreeCheckout.ts";
+import { windowsRemovalStage } from "../vcs/worktreeRemoval.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   releasedWorktree,
@@ -791,6 +793,14 @@ export const layer: Layer.Layer<
         const restoring = restoringWorktreeFile(directory, canonical);
         if (exists && !released) return;
         if (input.readOnly) return yield* new ReadOnlyWorktreeRecoveryError();
+        // Pruning the registration would strand the staged original before cleanup can restore it.
+        if (
+          !exists &&
+          released?.receipt.endsWith(".releasing") &&
+          (yield* HostProcess.isWindows) &&
+          (yield* fileSystem.exists(windowsRemovalStage(canonical)))
+        )
+          return yield* new WorktreeRecreateBlockedError({ worktreePath, reason: "removal" });
         const setupPending = released !== null && released.receipt === released.setupReceipt;
         if (
           exists &&

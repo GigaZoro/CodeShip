@@ -33,9 +33,14 @@ import {
   ProjectId,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ThreadProjection,
+  OrchestrationV2AppThread,
+  OrchestrationV2Command,
   OrchestrationV2DomainEvent,
+  OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import { AwakeSinceWake } from "@t3tools/shared/AwakeTime";
+import { gitOutputLine } from "@t3tools/shared/git";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -71,6 +76,7 @@ import {
   pendingFamilyCheckoutHook,
   runningFamilyCheckoutHook,
 } from "../vcs/familyWorktreeCheckout.ts";
+import { windowsRemovalStage } from "../vcs/worktreeRemoval.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -106,6 +112,9 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import { sleepingTestClock } from "./testkit/DeterministicRuntime.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
+const decodeCommand = Schema.decodeEffect(OrchestrationV2Command);
+const encodeShellBranch = Schema.encodeEffect(OrchestrationV2ThreadShell.fields.branch);
+const decodeAppBranch = Schema.decodeEffect(OrchestrationV2AppThread.fields.branch);
 
 const managedWorktreesDir = "/tmp/provider-turn-start-worktrees";
 // fs.realpath applies `..` and `.` before following symlinks.
@@ -1659,6 +1668,8 @@ effectIt.live.each([
   "singleton deleted branch",
   "singleton owner recreated the branch",
   "local base ref",
+  "significant Unicode branch suffix",
+  "significant Unicode base suffix",
 ] as const)(
   "preserves the recorded pull request base from CLI release through provider start: %s",
   (scenario) =>
@@ -1677,15 +1688,18 @@ effectIt.live.each([
         undefined,
       );
       const worktreePath = path.join(worktreesDir, "project", "feature-restore");
-      const branch = "feature/restore";
-      const base = "release/1.2";
+      const plainBranch = "feature/restore";
+      const unicode = scenario === "significant Unicode branch suffix";
+      const branch = unicode ? plainBranch + "\u00a0" : plainBranch;
+      const unicodeBase = scenario === "significant Unicode base suffix";
+      const base = unicodeBase ? "release/1.2\u00a0" : "release/1.2";
       const baseRef =
         scenario === "local base ref" ? "refs/heads/" + base : "refs/remotes/upstream/" + base;
       const archive = "refs/archive/pr-base-task";
       const git = (cwd: string, args: string[]) =>
         driver
           .execute({ operation: "test.releasePrBase", cwd, args })
-          .pipe(Effect.map((result) => result.stdout.trim()));
+          .pipe(Effect.map((result) => gitOutputLine(result.stdout)));
       const config = (key: string) => `branch.${branch}.${key}`;
       const readBase = () =>
         Effect.forEach(["t3-merge-base", "t3-merge-base-ref"], (key) =>
@@ -1699,7 +1713,7 @@ effectIt.live.each([
             .pipe(
               Effect.map(({ exitCode, stdout }) => {
                 expect([0, 1]).toContain(exitCode);
-                return exitCode === 1 ? null : stdout.trim();
+                return exitCode === 1 ? null : gitOutputLine(stdout);
               }),
             ),
         );
@@ -1717,6 +1731,11 @@ effectIt.live.each([
       yield* git(workspaceRoot, ["push", "upstream", base]);
       yield* git(workspaceRoot, ["switch", "main"]);
       yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "diverged default"]);
+      const main = yield* git(workspaceRoot, ["rev-parse", "HEAD"]);
+      if (unicode) yield* git(workspaceRoot, ["branch", plainBranch, main]);
+      if (unicodeBase) {
+        yield* git(workspaceRoot, ["push", "upstream", "main:refs/heads/release/1.2"]);
+      }
       yield* gitWorkflow.createWorktree({
         cwd: workspaceRoot,
         refName: baseRef,
@@ -1766,7 +1785,7 @@ effectIt.live.each([
           thread.projectId,
           JSON.stringify({
             worktreePath,
-            branch,
+            branch: unicode ? plainBranch : branch,
             lineage:
               id === thread.id
                 ? thread.lineage
@@ -1782,7 +1801,12 @@ effectIt.live.each([
           id + "-finished",
         );
       }
-      yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+      const file = path.join(
+        stateDir,
+        ServerConfig.WORKTREE_RELEASE_DIRECTORY,
+        worktreeReleaseName(worktreePath),
+      );
+      const queueRelease = Command.runWith(threadCommand, { version: "0.0.0" })([
         "release-worktree",
         thread.id,
         "--run",
@@ -1798,21 +1822,54 @@ effectIt.live.each([
           Layer.merge(NetService.layer, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
         ),
       );
-      const file = path.join(
-        stateDir,
-        ServerConfig.WORKTREE_RELEASE_DIRECTORY,
-        worktreeReleaseName(worktreePath),
-      );
+      if (unicode) {
+        // Both refs exist. An old projection cannot authorize the differently named checkout.
+        const hold = yield* Effect.flip(queueRelease);
+        expect(hold).toMatchObject({
+          detail: "Only the root of the exact checkout family can release its current run.",
+        });
+        expect(yield* fs.exists(file)).toBe(false);
+        const update = yield* decodeCommand({
+          type: "thread.metadata.update",
+          commandId: "save-exact-branch",
+          threadId: thread.id,
+          branch,
+        });
+        if (update.type !== "thread.metadata.update") throw new Error("Expected a branch update");
+        const storedBranch = yield* encodeShellBranch(update.branch ?? null);
+        db.prepare(
+          "UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.branch',?)",
+        ).run(storedBranch);
+        harness.setProjection({
+          ...harness.projection(),
+          thread: {
+            ...thread,
+            branch: yield* decodeAppBranch(storedBranch),
+          },
+        });
+      }
+      yield* queueRelease;
       const request = yield* decodeReleaseRequest(yield* fs.readFileString(file));
+      expect(request.branch).toBe(branch);
       if (singleton) expect(request.family).toBeUndefined();
       else expect(request.family).toHaveLength(2);
       expect(yield* releaseHold(request, workspaceRoot)).toBeNull();
       yield* fs.rename(file, file + ".releasing");
       yield* git(workspaceRoot, ["worktree", "remove", worktreePath]);
       yield* fs.rename(file + ".releasing", file + ".released");
-      yield* git(workspaceRoot, ["branch", "-D", branch]);
-      expect(yield* readBase()).toEqual([null, null]);
-      expect(yield* git(workspaceRoot, ["branch", "--list", branch])).toBe("");
+      if (unicode) {
+        const saved = harness.projection();
+        harness.setProjection({ ...saved, thread: { ...saved.thread, branch: plainBranch } });
+        yield* harness.start;
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(yield* fs.exists(worktreePath)).toBe(false);
+        expect(yield* fs.exists(file + ".released")).toBe(true);
+        harness.setProjection(saved);
+      } else {
+        yield* git(workspaceRoot, ["branch", "-D", branch]);
+        expect(yield* readBase()).toEqual([null, null]);
+        expect(yield* git(workspaceRoot, ["branch", "--list", branch])).toBe("");
+      }
 
       const expectedBase = scenario.endsWith("owner recreated the branch")
         ? (["release/2.0", "refs/remotes/upstream/release/2.0"] as const)
@@ -1827,8 +1884,13 @@ effectIt.live.each([
       expect(harness.open).toHaveBeenCalledOnce();
       expect(harness.startTurn).toHaveBeenCalledOnce();
       expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(tip);
-      expect(yield* git(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(branch);
+      expect(yield* git(worktreePath, ["symbolic-ref", "HEAD"])).toBe("refs/heads/" + branch);
+      if (unicode) {
+        expect(yield* gitWorkflow.currentBranch(worktreePath)).toBe(branch);
+        expect(yield* git(workspaceRoot, ["rev-parse", "refs/heads/" + plainBranch])).toBe(main);
+      }
       expect(yield* readBase()).toEqual(legacy ? [null, null] : expectedBase);
+      if (unicodeBase) expect(yield* driver.readBranchBase(workspaceRoot, branch)).toBe(base);
       expect(yield* driver.readConfigValue(workspaceRoot, config("gh-merge-base"))).toBe(
         legacy ? base : null,
       );
@@ -2335,6 +2397,12 @@ effectIt.effect.each([
     allowsStart: false,
   },
   {
+    name: "holds the claimant while the original Windows checkout is staged",
+    state: "windows staged",
+    owner: true,
+    allowsStart: false,
+  },
+  {
     name: "holds an unrelated chat while removal is claimed",
     state: "intact",
     owner: false,
@@ -2447,12 +2515,15 @@ effectIt.effect.each([
     });
     const contents = yield* fs.readFileString(file);
     expect((yield* decodeReleaseRequest(contents)).family).toBeUndefined();
-    const removing = state === "intact" || state === "partial";
+    const staged = state === "windows staged";
+    const stage = windowsRemovalStage(worktreePath);
+    const removing = state === "intact" || state === "partial" || staged;
     const receipt = file + (removing ? ".releasing" : isSetup ? ".setup" : ".released");
     yield* fs.rename(file, receipt);
     let lock: string | undefined;
     if (removing) {
       if (state === "partial") yield* fs.remove(tracked);
+      if (staged) yield* fs.rename(worktreePath, stage);
     } else {
       yield* git(workspaceRoot, ["worktree", "remove", "--force", worktreePath]);
       if (state !== "missing") {
@@ -2492,14 +2563,15 @@ effectIt.effect.each([
       }
     }
 
-    yield* harness.start;
+    if (staged) yield* harness.start.pipe(Effect.provideService(HostProcess.Platform, "win32"));
+    else yield* harness.start;
 
     expect(harness.open).toHaveBeenCalledTimes(allowsStart ? 1 : 0);
     expect(harness.startTurn).toHaveBeenCalledTimes(allowsStart ? 1 : 0);
     expect(runSetup).toHaveBeenCalledTimes(allowsStart && (state === "missing" || isSetup) ? 1 : 0);
     if (allowsStart && owner) expect(yield* fs.exists(receipt)).toBe(false);
     else expect(yield* fs.readFileString(receipt)).toBe(contents);
-    expect(yield* fs.exists(worktreePath)).toBe(state !== "missing" || allowsStart);
+    expect(yield* fs.exists(worktreePath)).toBe(!staged && (state !== "missing" || allowsStart));
     if (state === "replacement") expect(yield* fs.readFileString(tracked)).toBe("new owner's edit");
     if (
       state === "partial" ||
@@ -2508,7 +2580,14 @@ effectIt.effect.each([
       state === "setup missing file"
     )
       expect(yield* fs.exists(tracked)).toBe(false);
-    if (removing) expect(yield* fs.readFileString(remaining)).toBe("preserved");
+    if (removing)
+      expect(yield* fs.readFileString(staged ? path.join(stage, "remaining") : remaining)).toBe(
+        "preserved",
+      );
+    if (staged)
+      expect((yield* git(workspaceRoot, ["worktree", "list", "--porcelain"])).stdout).toContain(
+        "branch refs/heads/" + oldBranch,
+      );
     if (isSetup) {
       if (savedFiles === undefined) return yield* Effect.die("Expected a private backup.");
       expect(yield* fs.readFileString(path.join(savedFiles, "private.txt"))).toBe(

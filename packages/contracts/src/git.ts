@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   ForwardCompatibleOptional,
+  GitRefName,
   NonNegativeInt,
   PositiveInt,
   ProjectId,
@@ -93,11 +94,11 @@ const GitRunStackedActionToast = Schema.Struct({
 export type GitRunStackedActionToast = typeof GitRunStackedActionToast.Type;
 
 export const VcsRef = Schema.Struct({
-  name: TrimmedNonEmptyStringSchema,
+  name: GitRefName,
   isRemote: Schema.optional(Schema.Boolean),
   remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
   // Full Git ref, for example refs/remotes/origin/feature.
-  upstreamRef: Schema.optional(TrimmedNonEmptyStringSchema),
+  upstreamRef: Schema.optional(GitRefName),
   current: Schema.Boolean,
   isDefault: Schema.Boolean,
   worktreePath: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
@@ -106,7 +107,7 @@ export type VcsRef = typeof VcsRef.Type;
 
 const VcsWorktree = Schema.Struct({
   path: TrimmedNonEmptyStringSchema,
-  refName: TrimmedNonEmptyStringSchema,
+  refName: GitRefName,
 });
 const GitResolvedPullRequest = Schema.Struct({
   number: PositiveInt,
@@ -162,9 +163,9 @@ export type VcsListRefsInput = typeof VcsListRefsInput.Type;
 
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
-  refName: TrimmedNonEmptyStringSchema,
-  newRefName: Schema.optional(TrimmedNonEmptyStringSchema),
-  baseRefName: Schema.optional(TrimmedNonEmptyStringSchema),
+  refName: GitRefName,
+  newRefName: Schema.optional(GitRefName),
+  baseRefName: Schema.optional(GitRefName),
   path: Schema.NullOr(TrimmedNonEmptyStringSchema),
 });
 export type VcsCreateWorktreeInput = typeof VcsCreateWorktreeInput.Type;
@@ -192,19 +193,19 @@ export type VcsRemoveWorktreeInput = typeof VcsRemoveWorktreeInput.Type;
 
 export const VcsCreateRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
-  refName: TrimmedNonEmptyStringSchema,
+  refName: GitRefName,
   switchRef: Schema.optional(Schema.Boolean),
 });
 export type VcsCreateRefInput = typeof VcsCreateRefInput.Type;
 
 export const VcsCreateRefResult = Schema.Struct({
-  refName: TrimmedNonEmptyStringSchema,
+  refName: GitRefName,
 });
 export type VcsCreateRefResult = typeof VcsCreateRefResult.Type;
 
 export const VcsSwitchRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
-  refName: TrimmedNonEmptyStringSchema,
+  refName: GitRefName,
 });
 export type VcsSwitchRefInput = typeof VcsSwitchRefInput.Type;
 
@@ -230,7 +231,7 @@ const VcsStatusLocalShape = {
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
   hasPrimaryRemote: Schema.Boolean,
   isDefaultRef: Schema.Boolean,
-  refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  refName: Schema.NullOr(GitRefName),
   hasWorkingTreeChanges: Schema.Boolean,
   workingTree: Schema.Struct({
     // Absolute worktree root on the environment that every files[].path is
@@ -248,7 +249,7 @@ const VcsStatusLocalShape = {
   }),
   branchChanges: Schema.optional(
     Schema.Struct({
-      baseRef: Schema.NullOr(TrimmedNonEmptyStringSchema),
+      baseRef: Schema.NullOr(GitRefName),
       insertions: NonNegativeInt,
       deletions: NonNegativeInt,
       breakdown: Schema.optional(PullRequestChangeBreakdown),
@@ -278,7 +279,7 @@ export type VcsStatusResult = typeof VcsStatusResult.Type;
 
 /** Work in a checkout that the default branch does not have yet. Zero counts outside a repository. */
 export const VcsUnmergedWorkResult = Schema.Struct({
-  refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  refName: Schema.NullOr(GitRefName),
   /** Uncommitted and untracked files. */
   changedFileCount: NonNegativeInt,
   /** Commits missing from the default branch; zero once the branch's pull request merged. */
@@ -322,7 +323,7 @@ export type GitResolvePullRequestResult = typeof GitResolvePullRequestResult.Typ
 
 export const GitPreparePullRequestThreadResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,
-  branch: TrimmedNonEmptyStringSchema,
+  branch: GitRefName,
   worktreePath: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
   /** False when local commits or edits prevented a reused worktree from reaching the PR head. */
   isOnPullRequestHead: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
@@ -330,7 +331,7 @@ export const GitPreparePullRequestThreadResult = Schema.Struct({
 export type GitPreparePullRequestThreadResult = typeof GitPreparePullRequestThreadResult.Type;
 
 export const VcsSwitchRefResult = Schema.Struct({
-  refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  refName: Schema.NullOr(GitRefName),
 });
 export type VcsSwitchRefResult = typeof VcsSwitchRefResult.Type;
 

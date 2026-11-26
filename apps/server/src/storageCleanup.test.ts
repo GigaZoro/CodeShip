@@ -6,6 +6,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -27,15 +28,17 @@ import {
   type TerminalSummary,
 } from "@t3tools/contracts";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { compactLegacyIdsInJson } from "@t3tools/provider-core/server/compactId";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { withWorkspaceProcessStart } from "./workspace/workspaceLease.ts";
-import { queueWorktreeRelease } from "./workspace/worktreeRelease.ts";
+import { queueWorktreeRelease, recoverInterruptedWorktree } from "./workspace/worktreeRelease.ts";
 import { decodeReleaseRequest, encodeRequest } from "./workspace/worktreeReleaseReceipt.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import { windowsRemovalStage } from "./vcs/worktreeRemoval.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
@@ -60,6 +63,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -824,6 +828,286 @@ it.live.each(["redundant", "unique", "published"] as const)(
         );
       }),
     ),
+);
+
+it.live("preserves a Windows checkout switched during the final removal status", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const git = yield* GitVcsDriver.GitVcsDriver;
+      let switched = false;
+      const fixture = yield* cleanupFixture(undefined, true).pipe(
+        Effect.provideService(GitVcsDriver.GitVcsDriver, {
+          ...git,
+          execute: (input) =>
+            git.execute(input).pipe(
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  if (
+                    switched ||
+                    input.operation !== "StorageCleanup.cleanupGit" ||
+                    !input.args.includes("--porcelain") ||
+                    !input.args.includes("--ignore-submodules=none")
+                  )
+                    return;
+                  yield* git.execute({
+                    operation: "test.switchBranch",
+                    cwd: input.cwd,
+                    args: ["switch", "-c", "replacement"],
+                  });
+                  switched = true;
+                }),
+              ),
+            ),
+        }),
+      );
+      fixture.disable();
+      const runId = RunId.make("finished-windows");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        status: "completed",
+        latestRunId: runId,
+        latestRunCompletedAt: at(0),
+      });
+      fixture.setThreads([owner]);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      const receipt = yield* fixture.fs.readFileString(file);
+      const cleanup = fixture.service.runNow;
+      const entry = (yield* cleanup).entries[0];
+      expect(switched, entry?.reason).toBe(true);
+      expect(entry?.outcome, entry?.reason).toBe("kept");
+      expect(
+        (yield* fixture.command(fixture.worktree, ["symbolic-ref", "HEAD"])).stdout.trim(),
+      ).toBe("refs/heads/replacement");
+      expect(yield* fixture.fs.readFileString(file)).toBe(receipt);
+      expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
+      yield* fixture.command(fixture.worktree, ["switch", "feature"]);
+      expect((yield* cleanup).entries[0]?.outcome).toBe("removed");
+      expect(yield* fixture.fs.exists(file + ".released")).toBe(true);
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  ),
+);
+
+it.live("recovers the original Windows checkout after a file blocks receipt removal", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      let checkout = "";
+      let inject = true;
+      let partial = false;
+      const removeLocked = (target: string, options?: Parameters<typeof fs.remove>[1]) =>
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(
+            Effect.promise(
+              () =>
+                new Promise<NodeChildProcess.ChildProcess>((resolve, reject) => {
+                  const child = NodeChildProcess.spawn(
+                    "powershell.exe",
+                    [
+                      "-NoProfile",
+                      "-NonInteractive",
+                      "-Command",
+                      "$ErrorActionPreference='Stop'; $f=[IO.File]::Open($env:T3_LOCKED_FILE,'Open','Read','Read'); [Console]::Out.WriteLine('locked'); [Console]::In.ReadLine() > $null; $f.Dispose()",
+                    ],
+                    {
+                      env: { ...process.env, T3_LOCKED_FILE: target },
+                      stdio: ["pipe", "pipe", "pipe"],
+                    },
+                  );
+                  child.on("error", reject);
+                  child.once("exit", () =>
+                    reject(new Error("Windows file lock exited before acquisition")),
+                  );
+                  child.stdout.once("data", (data) =>
+                    String(data).includes("locked")
+                      ? resolve(child)
+                      : reject(new Error("Could not acquire Windows file lock")),
+                  );
+                }),
+            ),
+            (child) =>
+              Effect.promise(
+                () =>
+                  new Promise<void>((resolve) => {
+                    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+                    child.once("exit", () => resolve());
+                    child.stdin?.end("\n");
+                  }),
+              ),
+          );
+          yield* fs.remove(target, options);
+        }).pipe(Effect.scoped);
+      const fixture = yield* cleanupFixture(undefined, true).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          remove: (target, options) =>
+            Effect.gen(function* () {
+              const stage = windowsRemovalStage(checkout);
+              if (inject && target === NodePath.join(stage, "tracked.txt")) {
+                partial = !(yield* fs.exists(NodePath.join(stage, ".gitignore")));
+                yield* fs.writeFileString(NodePath.join(stage, "late-note"), "owner data");
+                if (isWindowsHost) return yield* removeLocked(target, options);
+                return yield* fs.remove(NodePath.join(target, "locked"));
+              }
+              return yield* fs.remove(target, options);
+            }),
+        }),
+      );
+      checkout = fixture.worktree;
+      fixture.disable();
+      const runId = RunId.make("locked-windows-release");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: checkout,
+        status: "completed",
+        latestRunId: runId,
+        latestRunCompletedAt: at(0),
+      });
+      fixture.setThreads([owner]);
+      const localSetup = NodePath.join(checkout, ".env");
+      yield* fs.writeFileString(localSetup, "retained setup value");
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: checkout,
+        durableRef: "refs/heads/main",
+        saveIgnored: true,
+      });
+      const contents = yield* fs.readFileString(file);
+      const request = yield* decodeReleaseRequest(contents);
+      const failed = (yield* fixture.service.runNow).entries[0];
+      inject = false;
+      expect(failed?.outcome, failed?.reason).toBe("failed");
+      expect(partial).toBe(true);
+      const pointer = yield* Effect.promise(() =>
+        NodeFSP.lstat(NodePath.join(checkout, ".git"), { bigint: true }),
+      );
+      expect([pointer.dev, pointer.ino, pointer.birthtimeNs, pointer.ctimeNs].join("/")).toBe(
+        request.identity,
+      );
+      expect(yield* fs.readFileString(file + ".releasing")).toBe(contents);
+      expect(yield* fs.readFileString(NodePath.join(checkout, ".gitignore"))).toBe(
+        yield* fs.readFileString(NodePath.join(fixture.repo, ".gitignore")),
+      );
+      expect(yield* fs.readFileString(NodePath.join(checkout, "late-note"))).toBe("owner data");
+      expect(yield* fs.readFileString(localSetup)).toBe("retained setup value");
+      yield* recoverInterruptedWorktree(checkout, fixture.repo, "feature", {
+        original: { ...request, backupDirectory: NodePath.dirname(file) },
+      });
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      yield* fs.remove(NodePath.join(checkout, "late-note"));
+      const retry = (yield* fixture.service.runNow).entries[0];
+      expect(retry?.outcome, retry?.reason).toBe("removed");
+      expect(yield* fs.exists(checkout)).toBe(false);
+      expect(yield* fs.readFileString(file + ".released")).toBe(contents);
+      expect(
+        (yield* fixture.command(fixture.repo, ["worktree", "list", "--porcelain"])).stdout,
+      ).not.toContain("refs/heads/feature");
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  ),
+);
+
+it.live.each([
+  "locked root",
+  "interrupted after the directory rename",
+  "interrupted during file removal",
+  "interrupted after Git unregisters the checkout",
+] as const)("retries the Windows receipt when removal stops at the final directory (%s)", (stop) =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      let checkout = "";
+      let stage = "";
+      let inject = true;
+      const duringRemoval = stop === "interrupted during file removal";
+      const afterUnregister = stop === "interrupted after Git unregisters the checkout";
+      const fixture = yield* cleanupFixture(undefined, true).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          remove: (target, options) =>
+            Effect.gen(function* () {
+              if (inject && afterUnregister && target === NodePath.join(stage, ".git"))
+                return yield* Effect.die("interrupted after unregistering");
+              yield* fs.remove(target, options);
+              if (
+                inject &&
+                duringRemoval &&
+                target === NodePath.join(stage || checkout, ".gitignore")
+              )
+                return yield* Effect.die("interrupted removal");
+            }),
+          rename: (from, to) =>
+            Effect.gen(function* () {
+              if (!inject || from !== checkout) return yield* fs.rename(from, to);
+              stage = to;
+              if (duringRemoval || afterUnregister) return yield* fs.rename(from, to);
+              if (stop === "interrupted after the directory rename") yield* fs.rename(from, to);
+              return yield* fs.remove(NodePath.join(to, "simulated-failure"));
+            }),
+        }),
+      );
+      checkout = fixture.worktree;
+      fixture.disable();
+      const run = RunId.make("blocked-directory");
+      const owner = shell({
+        branch: "feature",
+        worktreePath: checkout,
+        status: "completed",
+        latestRunId: run,
+        latestRunCompletedAt: at(0),
+      });
+      fixture.setThreads([owner]);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId: run,
+        worktreePath: checkout,
+        durableRef: "refs/heads/main",
+      });
+      const contents = yield* fs.readFileString(file);
+      const request = yield* decodeReleaseRequest(contents);
+      if (duringRemoval || afterUnregister)
+        expect(Exit.isFailure(yield* Effect.exit(fixture.service.runNow))).toBe(true);
+      else expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("failed");
+      inject = false;
+      const original = stop === "locked root";
+      expect(yield* fs.exists(checkout)).toBe(original);
+      const pointer = yield* Effect.promise(() =>
+        NodeFSP.lstat(NodePath.join(original ? checkout : stage, ".git"), { bigint: true }),
+      );
+      expect([pointer.dev, pointer.ino, pointer.birthtimeNs, pointer.ctimeNs].join("/")).toBe(
+        request.identity,
+      );
+      expect(yield* fs.readFileString(file + ".releasing")).toBe(contents);
+      if (!original) {
+        const late = NodePath.join(stage, "unexpected");
+        yield* fs.writeFileString(late, "preserve me");
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+        expect(yield* fs.readFileString(late)).toBe("preserve me");
+        yield* fs.remove(late);
+      }
+      const retry = (yield* fixture.service.runNow).entries[0];
+      if (afterUnregister) expect(retry).toBeUndefined();
+      else expect(retry?.outcome, retry?.reason).toBe("removed");
+      expect(yield* fs.exists(stage)).toBe(false);
+      expect(yield* fs.exists(checkout)).toBe(false);
+      expect(yield* fs.readFileString(file + ".released")).toBe(contents);
+      expect(
+        (yield* fixture.command(fixture.repo, [
+          "rev-parse",
+          "--verify",
+          "refs/heads/feature",
+        ])).stdout.trim(),
+      ).toBe(request.head);
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  ),
 );
 
 it.live.each(["direct land", "no change"] as const)(
@@ -2200,6 +2484,256 @@ it.effect("requires the approved child's result and a completed parent run that 
     yield* sql`UPDATE orchestration_v2_projection_runs SET thread_id = 'gone' WHERE run_id = 'spawner'`;
     expect(yield* consumed()).toBe(false);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("binds explicit reads and inline wakes to the saved child's published result", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const parent = ThreadId.make("parent");
+    const task = NodeId.make("node:delegated-task:release-result");
+    const original = RunId.make("original");
+    const continuation = RunId.make("continuation");
+    const reader = RunId.make("reader");
+    const child = shell({
+      id: ThreadId.make("child"),
+      lineage: { rootThreadId: parent, parentThreadId: parent, relationshipToParent: "subagent" },
+      forkedFrom: { type: "node", nodeId: task },
+    });
+    const consumed = (run: RunId) => StorageCleanup.familyDelegateResultConsumed(sql, child, run);
+    const first = DateTime.formatIso(at(-2 * DAY_MS));
+    const published = DateTime.formatIso(at(-DAY_MS - 1000));
+    const observed = DateTime.formatIso(at(-DAY_MS));
+    const recordRead = yield* seedDelegateResult(sql, {
+      childId: child.id,
+      childRunId: original,
+      parentId: parent,
+      observerRunId: reader,
+    });
+    yield* recordRead;
+    // The older transfer lacks timestamps. There is only one possible publisher.
+    expect(yield* consumed(original)).toBe(true);
+    yield* sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+      VALUES (${continuation},${child.id},2,'codex','completed',${first},${published},'{}')`;
+    expect(yield* consumed(original)).toBe(false);
+
+    const result = "A different result from the continuation.";
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET completed_at=${published},
+      payload_json=json_set(payload_json,'$.completedAt',${published},'$.result',${result},
+        '$.completionDelivery.resultFingerprint',${resultFingerprint(result)}) WHERE subagent_id=${task}`;
+    yield* sql`INSERT INTO orchestration_v2_projection_context_transfers
+      (context_transfer_id,source_thread_id,target_thread_id,target_run_id,type,status,updated_at,payload_json)
+      VALUES ('publication',${child.id},${parent},'spawner','subagent_result','consumed',${published},
+        ${JSON.stringify({ sourcePoint: { threadId: child.id, runId: continuation }, createdAt: published, consumedAt: published })})`;
+    expect(yield* consumed(original)).toBe(false);
+    expect(yield* consumed(continuation)).toBe(true);
+
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET completion_delivery_state='delivered',
+      payload_json=json_set(payload_json,'$.completionDelivery',json('{"state":"delivered","observedByRunId":null}'))
+      WHERE subagent_id=${task}`;
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json='{"userMessageId":"wake"}' WHERE run_id=${reader}`;
+    yield* sql`INSERT INTO orchestration_v2_projection_messages
+      (message_id,thread_id,run_id,role,streaming,created_at,updated_at,payload_json)
+      VALUES ('wake',${parent},${reader},'user',0,${first},${first},${JSON.stringify({
+        createdBy: "agent",
+        creationSource: "server",
+        text: `Delegated task ${task} [completed]:\n${result}`,
+        delegatedCompletion: { parentRunId: "spawner", taskIds: [task] },
+      })})`;
+    expect(yield* consumed(continuation)).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_messages SET created_at=${observed}, updated_at=${observed} WHERE message_id='wake'`;
+    expect(yield* consumed(original)).toBe(false);
+    expect(yield* consumed(continuation)).toBe(true);
+    // An independent read cannot identify either publisher when both transfers claim the same instant.
+    yield* sql`UPDATE orchestration_v2_projection_context_transfers SET payload_json=json_set(payload_json,
+      '$.sourcePoint.threadId',${child.id},'$.createdAt',${published},'$.consumedAt',${published}) WHERE context_transfer_id='transfer'`;
+    expect(yield* consumed(original)).toBe(false);
+    expect(yield* consumed(continuation)).toBe(false);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("requires the native delegate response for the exact approved child run", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const taskId = NodeId.make("node:delegated-task:command:native-read");
+    const approved = RunId.make("approved-child-run");
+    const previous = RunId.make("previous-child-run");
+    const child = shell({
+      id: ThreadId.make("child"),
+      lineage: {
+        parentThreadId: ThreadId.make("parent"),
+        rootThreadId: ThreadId.make("parent"),
+        relationshipToParent: "subagent",
+      },
+      forkedFrom: { type: "node", nodeId: taskId },
+      latestRunId: approved,
+      status: "completed",
+      settledAt: at(5000),
+    });
+    const summary = "Finished reviewing the checkout.\nThe files are recoverable.";
+    const started = DateTime.formatIso(at(0));
+    const earlier = DateTime.formatIso(at(1000));
+    const reported = DateTime.formatIso(at(2000));
+    const acknowledged = DateTime.formatIso(at(3000));
+    const returned = DateTime.formatIso(at(4000));
+    const completed = DateTime.formatIso(at(5000));
+    const task: OrchestrationV2Subagent = {
+      id: taskId,
+      threadId: ThreadId.make("parent"),
+      origin: "app_owned",
+      runId: RunId.make("spawner"),
+      parentNodeId: NodeId.make("root"),
+      createdBy: "agent",
+      driver: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      providerThreadId: null,
+      childThreadId: child.id,
+      nativeTaskRef: null,
+      prompt: "Review the checkout",
+      title: null,
+      model: null,
+      status: "completed",
+      startedAt: at(0),
+      completedAt: at(2000),
+      result: summary,
+      updatedAt: at(3000),
+      completionDelivery: { state: "acknowledged", observedByRunId: RunId.make("spawner") },
+    };
+
+    // Historical child runs can identify their task only through the child thread's original fork.
+    yield* sql`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+      VALUES (${child.id}, 'project', 'Child', 'claudeAgent', 'full-access', 'default', ${started}, ${completed}, ${JSON.stringify(child)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('spawner','parent',1,'claudeAgent','provider-thread','completed',${started},${completed},'{}'),
+        (${previous},${child.id},1,'claudeAgent','child-provider','completed',${started},${earlier},'{}'),
+        (${approved},${child.id},2,'claudeAgent','child-provider','completed',${reported},${reported},'{}')`;
+    yield* sql`INSERT INTO orchestration_v2_projection_subagents
+      (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin,
+       status, completed_at, updated_at, payload_json, completion_delivery_state)
+      VALUES (${taskId},'parent','spawner','root','claudeAgent',${child.id},'app_owned',
+        'completed',${reported},${acknowledged},${JSON.stringify(task)},'acknowledged')`;
+    for (const run of [previous, approved]) {
+      const published = run === previous ? earlier : reported;
+      yield* sql`INSERT INTO orchestration_v2_projection_context_transfers
+        (context_transfer_id, source_thread_id, target_thread_id, target_run_id, type, status, updated_at, payload_json)
+        VALUES (${"transfer-" + run},${child.id},'parent','spawner','subagent_result','consumed',${published},
+          ${JSON.stringify({ sourcePoint: { threadId: child.id, runId: run }, createdAt: published, consumedAt: published })})`;
+    }
+    yield* sql`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider, provider_thread_id, provider_turn_id, status, payload_json)
+      VALUES ('attempt','parent','spawner',1,'root','claudeAgent','provider-thread','turn','completed',
+        ${JSON.stringify({ startedAt: started, completedAt: completed })})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_turns
+      (provider_turn_id, thread_id, provider_thread_id, node_id, run_attempt_id, ordinal, status, started_at, completed_at, payload_json)
+      VALUES ('turn','parent','provider-thread','root','attempt',1,'completed',${started},${completed},'{}')`;
+    yield* sql`INSERT INTO orchestration_events(event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+      command_id, actor_kind, payload_json, metadata_json, application_event_version)
+      VALUES ('ack','thread','parent',1,'subagent.updated',${acknowledged},'read-result','server',${JSON.stringify(task)},'{}',2)`;
+    yield* sql`INSERT INTO orchestration_command_receipts(command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status)
+      VALUES ('read-result','thread','parent','delegated_task.completion-delivery.acknowledge',${acknowledged},1,'accepted')`;
+    const consumed = (run: RunId) => StorageCleanup.familyDelegateResultConsumed(sql, child, run);
+    expect(yield* consumed(approved)).toBe(false);
+
+    // readTask returns the original run and its transfer even after a continuation publishes
+    // the same summary. The latest terminal fields identify the continuation's publication.
+    const responseFor = (
+      latestTerminalRunId: RunId,
+      transferIds?: {
+        resultContextTransferId: string;
+        latestTerminalResultContextTransferId: string;
+      },
+    ) => {
+      const response = {
+        taskId,
+        childThreadId: child.id,
+        childRunId: previous,
+        childNodeId: taskId,
+        status: "completed",
+        workState: "result_available",
+        hasPendingChildRuns: false,
+        providerInstanceId: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        options: [],
+        summary,
+        latestTerminalRunId,
+        latestTerminalStatus: "completed",
+        latestTerminalSummary: null,
+        latestTerminalResultContextTransferId: null,
+        hasPendingQuestion: false,
+        pendingApproval: null,
+        waitTimedOut: false,
+        ...transferIds,
+      };
+      return JSON.stringify({
+        nativeItemRef: { driver: "claudeAgent", nativeId: "toolu_delegate", strength: "strong" },
+        toolName: "mcp__t3-code__delegate_task",
+        input: { task: "Review the checkout", mode: "wait" },
+        startedAt: started,
+        completedAt: returned,
+        output: { structuredContent: response, content: JSON.stringify(response) },
+      });
+    };
+    yield* sql`INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id, ordinal, type, status, updated_at, payload_json)
+      VALUES ('call','parent','spawner','root','provider-thread','turn',1,'dynamic_tool','completed',${returned},${responseFor(approved)})`;
+    expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(true);
+
+    const transfers = {
+      resultContextTransferId: "transfer-" + previous,
+      latestTerminalResultContextTransferId: "transfer-" + approved,
+    };
+    const updateResponse = (payload: string) =>
+      sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = ${payload} WHERE turn_item_id = 'call'`;
+    yield* updateResponse(responseFor(previous, transfers));
+    expect(yield* consumed(approved)).toBe(false);
+    yield* updateResponse(
+      responseFor(approved, { ...transfers, latestTerminalResultContextTransferId: "unrelated" }),
+    );
+    expect(yield* consumed(approved)).toBe(false);
+    yield* updateResponse(responseFor(approved, transfers));
+    expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(true);
+
+    // Migration 091 rewrote the structured result while its embedded JSON text retained the original IDs.
+    const migratedCall = compactLegacyIdsInJson(
+      responseFor(approved, transfers).replaceAll(
+        taskId,
+        "node:delegated-task:command%253Anative-read",
+      ),
+    );
+    yield* updateResponse(migratedCall);
+    expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(true);
+
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const historical = yield* store.firstProvenTaskResultRead(task);
+    expect(historical).toMatchObject({
+      runId: "spawner",
+      at: at(4000),
+      sourceChildRunId: approved,
+    });
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json,
+      '$.terminalResultObservation', json(${JSON.stringify({ ...historical, resultFingerprint: resultFingerprint(summary) })}))
+      WHERE subagent_id = ${taskId}`;
+    // Prove the projected read alone still identifies which child's identical summary was returned.
+    yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = json_remove(payload_json, '$.output') WHERE turn_item_id = 'call'`;
+    expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(true);
+
+    // A projected observation inherited from the old original-run inference must not
+    // release that earlier checkout, including after the original tool output was pruned.
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json,
+      '$.terminalResultObservation.sourceChildRunId', ${previous}) WHERE subagent_id = ${taskId}`;
+    expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(false);
+    yield* updateResponse(responseFor(approved, transfers));
+    expect(yield* consumed(approved)).toBe(true);
+  }).pipe(
+    Effect.provide(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))),
+  ),
 );
 
 it.effect.each(["private delegate", "background command", "foreign background command"] as const)(
@@ -4455,6 +4989,7 @@ describe("storage cleanup reports and local file policies", () => {
     "registration remains",
     "branch moved",
     "removed by Git",
+    "empty sibling owned outside cleanup",
     "missing parent",
     "withdrawn before receipt read",
     "withdrawn before receipt rename",
@@ -4495,6 +5030,7 @@ describe("storage cleanup reports and local file policies", () => {
         claimed = file + ".releasing";
         const parent = NodePath.dirname(fixture.worktree);
         const moved = NodePath.join(fixture.repo, "original-checkout");
+        const stage = windowsRemovalStage(fixture.worktree);
         if (state === "replaced parent") {
           yield* fixture.fs.rename(parent, NodePath.join(fixture.repo, "original-checkout-parent"));
           yield* fixture.fs.writeFileString(parent, "replacement");
@@ -4505,12 +5041,18 @@ describe("storage cleanup reports and local file policies", () => {
         } else {
           yield* fixture.command(fixture.repo, ["worktree", "remove", "--", fixture.worktree]);
           if (state === "missing parent") yield* Effect.promise(() => NodeFSP.rmdir(parent));
+          if (state === "empty sibling owned outside cleanup")
+            yield* fixture.fs.makeDirectory(stage);
         }
         if (state === "withdrawn before receipt read")
           fixture.setBeforeRemoval(fs.remove(claimed, { force: true }).pipe(Effect.orDie));
 
-        const report = yield* fixture.service.runNow;
-        if (state === "removed by Git" || state === "missing parent") {
+        const emptySibling = state === "empty sibling owned outside cleanup";
+        const report = yield* emptySibling
+          ? fixture.service.runNow.pipe(Effect.provideService(HostProcess.Platform, "win32"))
+          : fixture.service.runNow;
+        if (state === "removed by Git" || state === "missing parent" || emptySibling) {
+          if (emptySibling) expect(yield* fixture.fs.readDirectory(stage)).toEqual([]);
           expect(yield* fixture.fs.readFileString(file + ".released")).toBe(contents);
           expect(yield* fixture.fs.exists(file + ".releasing")).toBe(false);
           expect(report.entries).toEqual([]);

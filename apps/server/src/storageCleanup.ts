@@ -32,6 +32,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import type { PlatformError } from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
@@ -43,6 +44,7 @@ import * as GitManager from "./git/GitManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import {
   provenTaskResultReadsSql,
+  publicationTransferIdSql,
   recordedTaskReadsSql,
   resultFingerprint,
 } from "./orchestration-v2/taskResultReadEvidence.ts";
@@ -61,12 +63,14 @@ import {
 } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { gitErrorLines, isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
-import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
+import { prepareLinkedWorktreeRemoval } from "./vcs/worktreeRemoval.ts";
+import { gitOutputLine } from "@t3tools/shared/git";
 import {
   checkoutActivityFloor,
   decodeReleaseRequest,
   hasNonDirectoryParent,
-  interruptedRemovalHold,
+  finishInterruptedRemoval,
+  restoreStagedWindowsCheckout,
   observedCheckoutPath,
   worktreeReleaseName,
   worktreeOwner,
@@ -285,6 +289,7 @@ interface TaskResultCandidate {
   readonly threadId: OrchestrationV2ThreadShell["id"];
   readonly spawningRun: string | null;
   readonly delivery: string | null;
+  readonly completedAt: string | null;
   readonly canCheckWake: number | null;
   readonly hasRecordedRead: number;
 }
@@ -308,7 +313,7 @@ const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
 
 const taskResultCandidate = (sql: SqlClient.SqlClient) => sql`
   t.subagent_id AS id, t.thread_id AS threadId, t.run_id AS spawningRun,
-  t.completion_delivery_state AS delivery,
+  t.completion_delivery_state AS delivery, t.completed_at AS completedAt,
   (json_type(t.payload_json, '$.terminalResultObservation.resultFingerprint') IS 'text'
     OR json_type(t.payload_json, '$.completionDelivery.resultFingerprint') IS 'text') AS hasRecordedRead,
   (t.status IN ('completed','failed','cancelled','interrupted')
@@ -333,27 +338,43 @@ export const familyDelegateResultConsumed = Effect.fn(
         ON t.subagent_id = coalesce(json_extract(child_run.payload_json, '$.delegatedTaskId'), ${originalTaskId})
       WHERE child_run.run_id = ${childRunId} AND child_run.thread_id = ${child.id} AND child_run.status = 'completed'
         AND t.thread_id = ${parentId} AND t.child_thread_id = child_run.thread_id
-        AND t.origin = 'app_owned' AND t.status = 'completed'
+        AND t.origin = 'app_owned' AND t.status = 'completed' AND child_run.completed_at <= t.completed_at
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_context_transfers result
           WHERE result.source_thread_id = child_run.thread_id AND result.target_thread_id = t.thread_id
             AND result.type = 'subagent_result' AND result.status = 'consumed'
             AND result.target_run_id = t.run_id
             AND json_extract(result.payload_json, '$.sourcePoint.runId') = child_run.run_id
+            AND (result.context_transfer_id = (${sql.literal(publicationTransferIdSql)})
+              -- Without publication times, the original run and its sole transfer must be the only possible source.
+              OR (json_type(result.payload_json,'$.createdAt') IS NULL AND json_type(result.payload_json,'$.consumedAt') IS NULL
+                AND coalesce(json_extract(result.payload_json,'$.sourcePoint.threadId'), child_run.thread_id)=child_run.thread_id
+                AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs sibling
+                  WHERE sibling.thread_id=child_run.thread_id AND sibling.run_id!=child_run.run_id
+                    AND (json_extract(sibling.payload_json,'$.delegatedTaskId') IS NULL
+                      OR json_extract(sibling.payload_json,'$.delegatedTaskId')=t.subagent_id))
+                AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_context_transfers other
+                  WHERE other.target_run_id=t.run_id AND other.source_thread_id=child_run.thread_id
+                    AND other.target_thread_id=t.thread_id AND other.type='subagent_result'
+                    AND other.context_transfer_id!=result.context_transfer_id)))
         )
     `.pipe(NodeSqliteClient.readOnly);
-  return task !== undefined && (!task.needsReader || (yield* taskWakeConsumed(sql, task)));
+  return (
+    task !== undefined && (!task.needsReader || (yield* taskWakeConsumed(sql, task, childRunId)))
+  );
 });
 
 const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* (
   sql: SqlClient.SqlClient,
   task: TaskResultCandidate,
+  childRunId: ReleaseRequest["runId"] | null = null,
 ) {
   if (task.hasRecordedRead && (task.delivery === "acknowledged" || task.delivery === "disposed")) {
     const reads = yield* sql<{ result_json: string; fingerprint: string }>`
       ${sql.literal(recordedTaskReadsSql)} AND t.subagent_id = ${task.id} AND t.thread_id = ${task.threadId}
         AND t.completion_delivery_state = json_extract(t.payload_json,'$.completionDelivery.state')
         AND observer.status = 'completed'
+        AND (${childRunId} IS NULL OR source_child_run_id IS NULL OR source_child_run_id = ${childRunId})
     `.pipe(NodeSqliteClient.readOnly);
     const first = reads[0];
     if (first) {
@@ -365,7 +386,9 @@ const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* 
     const rows = yield* sql`SELECT 1 FROM orchestration_v2_projection_subagents t
       WHERE t.subagent_id = ${task.id} AND t.thread_id = ${task.threadId}
         AND t.completion_delivery_state = json_extract(t.payload_json,'$.completionDelivery.state')
-        AND EXISTS (SELECT 1 FROM (${sql.literal(provenTaskResultReadsSql)}) WHERE reader_status = 'completed')
+        AND EXISTS (SELECT 1 FROM (${sql.literal(provenTaskResultReadsSql)})
+          WHERE reader_status = 'completed'
+            AND (${childRunId} IS NULL OR source_child_run_id IS NULL OR source_child_run_id = ${childRunId}))
       LIMIT 1`.pipe(NodeSqliteClient.readOnly);
     if (rows.length !== 0) return true;
   }
@@ -380,11 +403,13 @@ const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* 
       taskCount: number;
       status: string;
       primaryInput: number;
+      afterPublication: number;
     }>`
         SELECT m.message_id AS messageId, json_extract(m.payload_json, '$.text') AS text,
           json_extract(m.payload_json, '$.delegatedCompletion.taskIds') AS taskIds,
           json_array_length(m.payload_json, '$.delegatedCompletion.taskIds') AS taskCount,
-          consumer.status, (json_extract(consumer.payload_json, '$.userMessageId') = m.message_id) AS primaryInput
+          consumer.status, (json_extract(consumer.payload_json, '$.userMessageId') = m.message_id) AS primaryInput,
+          (${childRunId} IS NULL OR m.created_at >= ${task.completedAt}) AS afterPublication
         FROM orchestration_v2_projection_messages m
         JOIN orchestration_v2_projection_runs consumer ON consumer.run_id = m.run_id
         WHERE m.thread_id = ${task.threadId} AND m.role = 'user'
@@ -401,6 +426,7 @@ const taskWakeConsumed = Effect.fn("StorageCleanup.taskWakeConsumed")(function* 
       // A live steer is not the run's primary input. Only an accepted steer or a non-cancelled
       // wake run marks the task delivered, so a sole such message identifies its consumer.
       if (
+        !wake.afterPublication ||
         wake.status !== "completed" ||
         (!wake.primaryInput && (task.delivery !== "delivered" || !soleWake))
       )
@@ -847,15 +873,15 @@ const make = Effect.gen(function* () {
     });
     const index = yield* read(["rev-parse", "--git-path", "index"]);
     if (index === null) return true;
-    if (yield* fs.exists(`${path.resolve(cwd, index.stdout.trim())}.lock`))
+    if (yield* fs.exists(`${path.resolve(cwd, gitOutputLine(index.stdout))}.lock`))
       return yield* failure(
         "Git index is locked. Status will resume when the index lock is removed.",
       );
     // Detached HEAD exits 1; full refs avoid shortening when a tag shares the branch name.
     const head = yield* read(["symbolic-ref", "--quiet", "HEAD"], 1);
     if (head === null) return true;
-    const ref = head.exitCode === 0 ? head.stdout.trim() : "";
-    const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length).trim() : null;
+    const ref = head.exitCode === 0 ? gitOutputLine(head.stdout) : "";
+    const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : null;
     return (name?.startsWith("(") ? null : name) !== branch;
   });
 
@@ -1371,16 +1397,21 @@ const make = Effect.gen(function* () {
         return reason;
       };
       yield* Effect.gen(function* () {
-        const exists = yield* fs.exists(worktreePath).pipe(
+        let exists = yield* fs.exists(worktreePath).pipe(
           Effect.catchIf(
             (error) => !release && hasNonDirectoryParent(error),
             () => Effect.succeed(false),
           ),
         );
+        if (!exists && release?.file.endsWith(".releasing") && project) {
+          if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)
+            return keep(withdrawn);
+          exists = yield* restoreStagedWindowsCheckout(project.workspaceRoot, release.request);
+        }
         if (!exists) {
           if (release?.file.endsWith(".releasing")) {
             if (!project) return keep("project is unavailable");
-            const hold = yield* interruptedRemovalHold(project.workspaceRoot, release.request);
+            const hold = yield* finishInterruptedRemoval(project.workspaceRoot, release.request);
             if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)
               return keep(withdrawn);
             if (hold) return keep(hold);
@@ -1817,10 +1848,11 @@ const make = Effect.gen(function* () {
             if (hold !== null) return keep(hold);
           }
         }
-        const remove = removeLinkedWorktree({
+        const prepareRemoval = prepareLinkedWorktreeRemoval({
           operation: "StorageCleanup.cleanupGit",
+          ...(release ? { release: release.request } : {}),
           cwd: project.workspaceRoot,
-          worktreePath,
+          worktreePath: release?.request.worktreePath ?? worktreePath,
           // Git requires force for submodules; recursive checks above cannot make removal atomic.
           force: submodules.force,
           execute: git.execute,
@@ -1828,11 +1860,15 @@ const make = Effect.gen(function* () {
         });
         if (release) {
           const removeApproved = Effect.gen(function* () {
+            const prepared = yield* Effect.result(prepareRemoval);
             const lastHold = yield* blockedSinceCheck();
             if (lastHold !== null) return lastHold;
-            // Verify the receipt's checkout and local data after the family locks and activity checks.
+            // The Windows preflight can walk the index and wait for Git status. Verify the
+            // receipt's checkout and local data after that wait, while the family locks are held.
             const changed = yield* releaseHold(release.request, project.workspaceRoot);
             if (changed !== null) return changed;
+            // Report a receipt hold before a lower-level removal refusal (for example, dirty files).
+            if (Result.isFailure(prepared)) return yield* prepared.failure;
             const admissionHold = yield* beginRemoval;
             if (admissionHold !== null) return admissionHold;
             const base = release.file.replace(/\.releasing$/, "");
@@ -1845,7 +1881,7 @@ const make = Effect.gen(function* () {
               (yield* allowMissingRequest(fs.readFileString(claimed))) !== release.contents
             )
               return withdrawn;
-            yield* remove;
+            yield* prepared.success;
             yield* fs.rename(claimed, base + ".released");
             return null;
           });
@@ -1862,7 +1898,7 @@ const make = Effect.gen(function* () {
             removeApproved,
           );
           if (removed !== null) return keep(removed);
-        } else yield* remove;
+        } else yield* Effect.flatten(prepareRemoval);
         entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.

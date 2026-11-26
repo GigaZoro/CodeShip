@@ -28,6 +28,15 @@ const isNonBlank = Schema.makeFilter((value: string) => value.trim().length > 0,
 });
 export const TrimmedNonEmptyString = TrimmedString.check(isNonBlank);
 
+// Git rejects ASCII whitespace in refs but permits Unicode whitespace, even at either end.
+const trimGitRefInput = (value: string) => value.replace(/^[ \t\r\n\v\f]+|[ \t\r\n\v\f]+$/g, "");
+export const GitRefName = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.NonEmptyString,
+    SchemaTransformation.transform({ decode: trimGitRefInput, encode: trimGitRefInput }),
+  ),
+);
+
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));

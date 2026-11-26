@@ -561,7 +561,7 @@ export interface ProjectionStoreV2Shape {
   readonly firstProvenTaskResultRead: (
     task: OrchestrationV2Subagent,
   ) => Effect.Effect<
-    { readonly runId: RunId; readonly at: DateTime.Utc } | null,
+    { readonly runId: RunId; readonly at: DateTime.Utc; readonly sourceChildRunId?: RunId } | null,
     ProjectionStoreV2Error
   >;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -6403,17 +6403,27 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
     const firstProvenTaskResultRead: ProjectionStoreV2Shape["firstProvenTaskResultRead"] = (task) =>
-      sql<{ runId: RunId; at: string }>`
+      sql<{ runId: RunId; at: string; sourceChildRunId: RunId | null }>`
         WITH first AS MATERIALIZED (
-          SELECT (SELECT json_object('reader',reader,'at',at) FROM (${sql.literal(provenTaskResultReadsSql)})
+          SELECT (SELECT json_object('reader',reader,'at',at,'child',source_child_run_id)
+            FROM (${sql.literal(provenTaskResultReadsSql)})
             ORDER BY at,read_sequence LIMIT 1) AS evidence FROM orchestration_v2_projection_subagents t
           WHERE t.thread_id = ${task.threadId} AND t.subagent_id = ${task.id}
         )
-        SELECT json_extract(evidence,'$.reader') AS runId, json_extract(evidence,'$.at') AS at
+        SELECT json_extract(evidence,'$.reader') AS runId, json_extract(evidence,'$.at') AS at,
+          json_extract(evidence,'$.child') AS sourceChildRunId
         FROM first WHERE evidence IS NOT NULL
       `.pipe(
-        Effect.map((rows) =>
-          rows[0] ? { runId: rows[0].runId, at: DateTime.makeUnsafe(rows[0].at) } : null,
+        Effect.map(([first]) =>
+          first
+            ? {
+                runId: first.runId,
+                at: DateTime.makeUnsafe(first.at),
+                ...(first.sourceChildRunId !== null && {
+                  sourceChildRunId: first.sourceChildRunId,
+                }),
+              }
+            : null,
         ),
         Effect.mapError(controlReadError(task.threadId)),
       );

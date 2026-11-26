@@ -1,12 +1,5 @@
 export function parseRemoteNamesInGitOrder(stdout: string): ReadonlyArray<string> {
-  const remoteNames: Array<string> = [];
-  for (const line of stdout.split("\n")) {
-    const remoteName = line.trim();
-    if (remoteName.length > 0) {
-      remoteNames.push(remoteName);
-    }
-  }
-  return remoteNames;
+  return stdout.split(/\r?\n/).filter((name) => name.length > 0);
 }
 
 export function parseRemoteNames(stdout: string): ReadonlyArray<string> {
@@ -17,22 +10,21 @@ export function parseRemoteRefWithRemoteNames(
   ref: string,
   remoteNames: ReadonlyArray<string>,
 ): { remoteRef: string; remoteName: string; branchName: string } | null {
-  const trimmedRef = ref.trim();
-  if (trimmedRef.length === 0) {
+  if (ref.length === 0) {
     return null;
   }
 
   for (const remoteName of remoteNames) {
     const remotePrefix = `${remoteName}/`;
-    if (!trimmedRef.startsWith(remotePrefix)) {
+    if (!ref.startsWith(remotePrefix)) {
       continue;
     }
-    const branchName = trimmedRef.slice(remotePrefix.length).trim();
+    const branchName = ref.slice(remotePrefix.length);
     if (branchName.length === 0) {
       return null;
     }
     return {
-      remoteRef: trimmedRef,
+      remoteRef: ref,
       remoteName,
       branchName,
     };
@@ -48,24 +40,23 @@ export function extractBranchNameFromRemoteRef(
     remoteNames?: ReadonlyArray<string>;
   },
 ): string {
-  const normalized = ref.trim();
-  if (normalized.length === 0) {
+  if (ref.length === 0) {
     return "";
   }
 
-  if (normalized.startsWith("refs/remotes/")) {
-    return extractBranchNameFromRemoteRef(normalized.slice("refs/remotes/".length), options);
+  if (ref.startsWith("refs/remotes/")) {
+    return extractBranchNameFromRemoteRef(ref.slice("refs/remotes/".length), options);
   }
 
   const remoteNames = options?.remoteName ? [options.remoteName] : (options?.remoteNames ?? []);
-  const parsedRemoteRef = parseRemoteRefWithRemoteNames(normalized, remoteNames);
+  const parsedRemoteRef = parseRemoteRefWithRemoteNames(ref, remoteNames);
   if (parsedRemoteRef) {
     return parsedRemoteRef.branchName;
   }
 
-  const firstSlash = normalized.indexOf("/");
+  const firstSlash = ref.indexOf("/");
   if (firstSlash === -1) {
-    return normalized;
+    return ref;
   }
-  return normalized.slice(firstSlash + 1).trim();
+  return ref.slice(firstSlash + 1);
 }

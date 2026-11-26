@@ -1,3 +1,8 @@
+## 2026-11-26 — Releasing a finished chat’s checkout
+
+- Cleanup checks the branch and commit again before releasing a checkout. Follow-ups preserve the exact branch name and pull-request base, including names with a trailing nonbreaking space.
+- When a delegate runs again, cleanup checks which run produced the result its parent received. Older chats can use the saved tool response to establish delivery.
+
 ## 2026-11-26 — Provider usage shows what was measured
 
 - Usage includes Antigravity conversations from the default managed profile and attributes token counts to the model named in the matching generation record.

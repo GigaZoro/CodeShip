@@ -5,6 +5,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { gitOutputLine } from "@t3tools/shared/git";
 import * as NodePath from "node:path";
 import { GitCommandError, type OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -48,6 +49,11 @@ import {
   WindowsWorktreeInspectionError,
   windowsSetupHost,
 } from "../../../../scripts/lib/windows-worktree-files.ts";
+import {
+  gitFileIdentity,
+  removeEmptyWindowsRemovalStage,
+  windowsRemovalStage,
+} from "../vcs/worktreeRemoval.ts";
 import {
   familyCheckoutHook,
   familyHookUnavailable,
@@ -302,13 +308,6 @@ export const releasedWorktree = Effect.fn("WorktreeRelease.readReceipt")(functio
   return null;
 });
 
-const gitFileIdentity = (file: string) =>
-  Effect.tryPromise(async () => {
-    const stat = await NodeFSP.lstat(file, { bigint: true });
-    if (!stat.isFile() || stat.ino === 0n) throw new Error("Expected a linked worktree");
-    return [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs].join("/");
-  });
-
 // A network volume stamps new files with its server's clock.
 const CHECKOUT_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
 
@@ -457,8 +456,92 @@ export const readReleasedBranchBase = Effect.fn("WorktreeRelease.readBranchBase"
   return { name, ref, ...(legacyName ? { legacyName } : {}) };
 });
 
+// A staged checkout has its original pointer and may be missing tracked files after a process stop.
+export const restoreStagedWindowsCheckout = Effect.fn(
+  "WorktreeRelease.restoreStagedWindowsCheckout",
+)(function* (projectRoot: string, request: ReleaseRequest) {
+  if (!(yield* HostProcess.isWindows)) return false;
+  const fs = yield* FileSystem.FileSystem;
+  const cwd = request.worktreePath;
+  const stage = windowsRemovalStage(cwd);
+  if (!(yield* fs.exists(stage)) || (yield* existingWorkspacePath(stage)) !== stage) return false;
+  const pointer = NodePath.join(stage, ".git");
+  if (!(yield* fs.exists(pointer)) || (yield* gitFileIdentity(pointer)) !== request.identity)
+    return false;
+  const line = gitOutputLine(yield* fs.readFileString(pointer));
+  if (!line.startsWith("gitdir: ")) return false;
+  const registered = NodePath.resolve(cwd, line.slice(8));
+  if (!(yield* fs.exists(registered))) return false;
+  const admin = yield* existingWorkspacePath(registered);
+  const common = yield* existingWorkspacePath(
+    gitOutputLine(
+      yield* readGit(projectRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    ),
+  );
+  if (NodePath.relative(NodePath.dirname(admin), NodePath.join(common, "worktrees")) !== "")
+    return false;
+  const back = gitOutputLine(yield* fs.readFileString(NodePath.join(admin, "gitdir")));
+  if (NodePath.relative(NodePath.resolve(admin, back), NodePath.join(cwd, ".git")) !== "")
+    return false;
+  const stagedGit = (args: string[], options: Parameters<typeof readGit>[2] = {}) =>
+    readGit(stage, ["--git-dir", admin, "--work-tree", stage, ...args], {
+      maxOutputBytes: 64 * 1024 * 1024,
+      ...options,
+    });
+  const branchRef = "refs/heads/" + request.branch;
+  const binding = gitOutputLine(
+    yield* stagedGit(["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"]),
+  ).split(/\r?\n/);
+  const adminFiles = yield* fs.readDirectory(admin);
+  if (
+    adminFiles.some((name) => name === "locked" || name.endsWith(".lock")) ||
+    binding.length !== 2 ||
+    binding[0] !== request.head ||
+    binding[1] !== branchRef ||
+    gitOutputLine(yield* stagedGit(["symbolic-ref", "--no-recurse", "HEAD"])) !== branchRef
+  )
+    return false;
+  const tracked = yield* stagedGit(["ls-files", "-v", "-z"]);
+  if (tracked.split("\0").some((record) => record && !record.startsWith("H "))) return false;
+  const stagedStatus = (untracked: "no" | "normal") =>
+    stagedGit([
+      "status",
+      "--porcelain=v1",
+      "-z",
+      `--untracked-files=${untracked}`,
+      "--ignore-submodules=none",
+      "--no-renames",
+    ]);
+  const changes = yield* stagedStatus("no");
+  if (changes) {
+    if (!changes.endsWith("\0")) return false;
+    const entries = changes.slice(0, -1).split("\0");
+    if (
+      entries.some((entry) => !entry.startsWith(" D ") || entry.includes("\uFFFD")) ||
+      (yield* stagedGit(["ls-files", "--killed", "-z"])) ||
+      (yield* fs.exists(cwd)) ||
+      (yield* gitFileIdentity(pointer)) !== request.identity
+    )
+      return false;
+    yield* stagedGit(["diff-index", "--cached", "--quiet", request.head, "--"]);
+    // Git must leave an entry written by the owner during recovery intact.
+    yield* stagedGit(["checkout-index", "-z", "--stdin"], {
+      stdin: entries.map((entry) => entry.slice(3) + "\0").join(""),
+    });
+  }
+  // Classify untracked files with the tracked ignore rules restored.
+  if (
+    (yield* stagedStatus("normal")) ||
+    (yield* fs.exists(cwd)) ||
+    (yield* gitFileIdentity(pointer)) !== request.identity
+  )
+    return false;
+  yield* fs.rename(stage, cwd);
+  return typeof (yield* registeredReleaseCheckout(request, projectRoot)) !== "string";
+});
+
 // An interrupted Git removal is complete only when both the checkout and its registration are gone.
-export const interruptedRemovalHold = Effect.fn("WorktreeRelease.interruptedRemovalHold")(
+export const finishInterruptedRemoval = Effect.fn("WorktreeRelease.finishInterruptedRemoval")(
   function* (projectRoot: string, request: ReleaseRequest) {
     const cwd = request.worktreePath;
     const resolved = yield* releasePath(cwd);
@@ -476,9 +559,16 @@ export const interruptedRemovalHold = Effect.fn("WorktreeRelease.interruptedRemo
         return "Git still lists the missing checkout path. Inspect its registration with git worktree list --porcelain";
       if (fields.includes("branch refs/heads/" + request.branch)) branchRegistered = true;
     }
-    return branchRegistered
-      ? "Git lists the requested branch under a different path spelling. Check git worktree list --porcelain for a moved checkout or path alias"
-      : null;
+    if (branchRegistered)
+      return "Git lists the requested branch under a different path spelling. Check git worktree list --porcelain for a moved checkout or path alias";
+    const stage = windowsRemovalStage(cwd);
+    if (
+      (yield* HostProcess.isWindows) &&
+      (yield* fs.exists(stage)) &&
+      !(yield* removeEmptyWindowsRemovalStage(stage, request.identity))
+    )
+      return "staged checkout has remaining files that require its owner";
+    return null;
   },
 );
 
@@ -950,7 +1040,7 @@ const setupAdditionsInside = (proof: SetupProof, extras: string) =>
   });
 
 const captureSetupExtras = Effect.fn("WorktreeRelease.captureSetupExtras")(function* (cwd: string) {
-  const admin = (yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"])).trimEnd();
+  const admin = gitOutputLine(yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"]));
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(NodePath.join(admin, setupProofName)))) return null;
   const registrations = yield* readGit(cwd, ["worktree", "list", "--porcelain", "-z"]);
@@ -977,7 +1067,7 @@ export const queueWorktreeRelease = Effect.fn("WorktreeRelease.queue")(function*
   const cwd = yield* releasePath(input.worktreePath);
   const identity = yield* gitFileIdentity(path.join(cwd, ".git"));
   yield* readGit(cwd, ["check-ref-format", input.durableRef]);
-  const branchRef = (yield* readGit(cwd, ["symbolic-ref", "HEAD"])).trim();
+  const branchRef = gitOutputLine(yield* readGit(cwd, ["symbolic-ref", "HEAD"]));
   if (!branchRef.startsWith("refs/heads/") || branchRef === input.durableRef)
     return yield* new GitCommandError({
       operation: "WorktreeRelease.queue",
@@ -1166,16 +1256,14 @@ const worktreeRegistration = Effect.fn("WorktreeRelease.registration")(function*
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const admin = yield* existingWorkspacePath(
-    (yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"])).trim(),
+    gitOutputLine(yield* readGit(cwd, ["rev-parse", "--absolute-git-dir"])),
   );
   const common = yield* existingWorkspacePath(
-    (yield* readGit(projectRoot, [
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-common-dir",
-    ])).trim(),
+    gitOutputLine(
+      yield* readGit(projectRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    ),
   );
-  const backPointer = (yield* fs.readFileString(path.join(admin, "gitdir"))).trimEnd();
+  const backPointer = gitOutputLine(yield* fs.readFileString(path.join(admin, "gitdir")));
   if (
     path.dirname(admin) !== path.join(common, "worktrees") ||
     (yield* existingWorkspacePath(path.resolve(admin, backPointer))) !== path.join(cwd, ".git")
@@ -1201,7 +1289,7 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     });
   if (
     (yield* existingWorkspacePath(
-      (yield* readGit(cwd, ["rev-parse", "--show-toplevel"])).trim(),
+      gitOutputLine(yield* readGit(cwd, ["rev-parse", "--show-toplevel"])),
     )) !== cwd
   )
     return yield* refuse("The restored working directory changed.");
@@ -1221,7 +1309,7 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
   const registration = yield* worktreeRegistration(cwd, projectRoot);
   if (
     !registration ||
-    (yield* readGit(cwd, ["symbolic-ref", "HEAD"])).trim() !== "refs/heads/" + branch
+    gitOutputLine(yield* readGit(cwd, ["symbolic-ref", "HEAD"])) !== "refs/heads/" + branch
   )
     return yield* refuse("The restored checkout belongs to another repository or branch.");
   const { admin } = registration;
@@ -1308,7 +1396,7 @@ export const recoverInterruptedWorktree = Effect.fn("WorktreeRelease.recoverChec
     if (
       files.includes("locked") ||
       files.some((entry) => entry.endsWith(".lock")) ||
-      (yield* readGit(cwd, ["symbolic-ref", "HEAD"])).trim() !== "refs/heads/" + branch ||
+      gitOutputLine(yield* readGit(cwd, ["symbolic-ref", "HEAD"])) !== "refs/heads/" + branch ||
       (yield* readGit(cwd, ["rev-parse", "--verify", "HEAD"])).trim() !== before ||
       (yield* trackedStatus)
     )
@@ -1380,7 +1468,7 @@ const registeredReleaseCheckout = Effect.fn("WorktreeRelease.registeredCheckout"
   const cwd = request.worktreePath;
   if (
     (yield* existingWorkspacePath(
-      (yield* readGit(cwd, ["rev-parse", "--show-toplevel"])).trim(),
+      gitOutputLine(yield* readGit(cwd, ["rev-parse", "--show-toplevel"])),
     )) !== cwd
   )
     return "working directory changed";
@@ -1419,13 +1507,9 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   const anchors: string[] = [];
   for (const ref of new Set([request.durableRef, ...(request.alsoDurable ?? [])])) {
     yield* readGit(cwd, ["check-ref-format", ref]);
-    const anchor = (yield* readGit(cwd, [
-      "for-each-ref",
-      "--format=%(refname)%00%(objectname)%00%(symref)",
-      ref,
-    ]))
-      .trimEnd()
-      .split("\0");
+    const anchor = gitOutputLine(
+      yield* readGit(cwd, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", ref]),
+    ).split("\0");
     if (
       anchor.length !== 3 ||
       anchor[0] !== ref ||
@@ -1610,14 +1694,14 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
   if (finalRegistration.admin !== admin || finalRegistration.common !== common)
     return "checkout registration changed";
   const branchRef = "refs/heads/" + request.branch;
-  const binding = (yield* readGit(cwd, ["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"]))
-    .trimEnd()
-    .split(/\r?\n/);
+  const binding = gitOutputLine(
+    yield* readGit(cwd, ["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"]),
+  ).split(/\r?\n/);
   // A detached HEAD resolves to "HEAD". Also reject a new symbolic alias of the approved branch.
   if (
     binding.length !== 2 ||
     binding[1] !== branchRef ||
-    (yield* readGit(cwd, ["symbolic-ref", "--no-recurse", "HEAD"])).trimEnd() !== branchRef
+    gitOutputLine(yield* readGit(cwd, ["symbolic-ref", "--no-recurse", "HEAD"])) !== branchRef
   )
     return "checkout branch changed since release was queued";
   if (binding[0] !== request.head) return "checkout HEAD changed since release was queued";

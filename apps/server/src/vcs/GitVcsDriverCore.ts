@@ -36,7 +36,7 @@ import {
   type VcsCreateWorktreeInput,
   type VcsRef,
 } from "@t3tools/contracts";
-import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
+import { dedupeRemoteBranchesWithLocalMatches, gitOutputLine } from "@t3tools/shared/git";
 import { summarizeChangedFiles } from "@t3tools/shared/changedFileKind";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
@@ -56,7 +56,7 @@ import { familyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import { countGitSpawn } from "./GitSpawnBudget.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
-import { removeLinkedWorktree } from "./worktreeRemoval.ts";
+import { prepareLinkedWorktreeRemoval } from "./worktreeRemoval.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -427,8 +427,8 @@ function parseUpstreamRefByFirstSeparator(
     return null;
   }
 
-  const remoteName = upstreamRef.slice(0, separatorIndex).trim();
-  const branchName = upstreamRef.slice(separatorIndex + 1).trim();
+  const remoteName = upstreamRef.slice(0, separatorIndex);
+  const branchName = upstreamRef.slice(separatorIndex + 1);
   if (remoteName.length === 0 || branchName.length === 0) {
     return null;
   }
@@ -441,14 +441,8 @@ function parseUpstreamRefByFirstSeparator(
 }
 
 function parseTrackingBranchByUpstreamRef(stdout: string, upstreamRef: string): string | null {
-  for (const line of stdout.split("\n")) {
-    const trimmedLine = line.trim();
-    if (trimmedLine.length === 0) {
-      continue;
-    }
-    const [branchNameRaw, upstreamBranchRaw = ""] = trimmedLine.split("\t");
-    const branchName = branchNameRaw?.trim() ?? "";
-    const candidateUpstreamRef = upstreamBranchRaw.trim();
+  for (const line of stdout.split(/\r?\n/)) {
+    const [branchName = "", candidateUpstreamRef = ""] = line.split("\t");
     if (branchName.length === 0 || candidateUpstreamRef.length === 0) {
       continue;
     }
@@ -465,7 +459,7 @@ function deriveLocalBranchNameFromRemoteRef(branchName: string): string | null {
   if (separatorIndex <= 0 || separatorIndex === branchName.length - 1) {
     return null;
   }
-  const localBranch = branchName.slice(separatorIndex + 1).trim();
+  const localBranch = branchName.slice(separatorIndex + 1);
   return localBranch.length > 0 ? localBranch : null;
 }
 
@@ -573,19 +567,19 @@ function classifyGitFailure(stderr: string): GitCommandFailureReason | null {
 // `--short` and `--abbrev-ref` print `heads/<name>` when a tag shares the branch's name, so
 // branch reads take the full ref and strip the prefix themselves.
 function branchNameFromHeadRef(value: string): string | null {
-  const ref = value.trim();
+  const ref = gitOutputLine(value);
   return ref.startsWith("refs/heads/") && ref.length > "refs/heads/".length
     ? ref.slice("refs/heads/".length)
     : null;
 }
 
 function parseDefaultBranchFromRemoteHeadRef(value: string, remoteName: string): string | null {
-  const trimmed = value.trim();
+  const ref = gitOutputLine(value);
   const prefix = `refs/remotes/${remoteName}/`;
-  if (!trimmed.startsWith(prefix)) {
+  if (!ref.startsWith(prefix)) {
     return null;
   }
-  const refName = trimmed.slice(prefix.length).trim();
+  const refName = ref.slice(prefix.length);
   return refName.length > 0 ? refName : null;
 }
 
@@ -1737,7 +1731,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       cwd,
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       true,
-    ).pipe(Effect.map((stdout) => stdout.trim()));
+    ).pipe(Effect.map(gitOutputLine));
 
     if (upstreamRef.length === 0 || upstreamRef === "@{upstream}") {
       return null;
@@ -2280,7 +2274,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["rev-parse", "--symbolic-full-name", `${refName}@{upstream}`],
       { allowNonZeroExit: true },
     );
-    const comparisonRef = upstream.stdout.trim();
+    const comparisonRef = gitOutputLine(upstream.stdout);
     if (upstream.exitCode !== 0 || !comparisonRef.startsWith("refs/remotes/")) return null;
     return { baseRef: comparisonRef.slice("refs/remotes/".length), comparisonRef };
   });
@@ -2295,7 +2289,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   ) {
     const configuredBaseRef =
-      refName === null ? null : yield* readConfigValue(cwd, `branch.${refName}.t3-merge-base-ref`);
+      refName === null
+        ? null
+        : yield* readConfigString(cwd, `branch.${refName}.t3-merge-base-ref`, gitOutputLine);
     if (
       configuredBaseRef?.startsWith("refs/heads/") ||
       configuredBaseRef?.startsWith("refs/remotes/")
@@ -2684,12 +2680,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     for (let index = 0; index < statusRecords.length; index++) {
       const line = statusRecords[index]!;
       if (line.startsWith("# branch.head ")) {
-        const value = line.slice("# branch.head ".length).trim();
+        const value = line.slice("# branch.head ".length);
         refName = value.startsWith("(") ? null : value;
         continue;
       }
       if (line.startsWith("# branch.upstream ")) {
-        const value = line.slice("# branch.upstream ".length).trim();
+        const value = line.slice("# branch.upstream ".length);
         upstreamRef = value.length > 0 ? value : null;
         continue;
       }
@@ -4131,11 +4127,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return { oldContents, newContents };
   });
 
-  const readConfigValue: GitVcsDriver.GitVcsDriver["Service"]["readConfigValue"] = (cwd, key) =>
+  const readConfigString = (cwd: string, key: string, parse: (value: string) => string) =>
     runGitStdout("GitVcsDriver.readConfigValue", cwd, ["config", "--get", key], true).pipe(
-      Effect.map((stdout) => stdout.trim()),
-      Effect.map((trimmed) => (trimmed.length > 0 ? trimmed : null)),
+      Effect.map((stdout) => parse(stdout) || null),
     );
+
+  const readConfigValue: GitVcsDriver.GitVcsDriver["Service"]["readConfigValue"] = (cwd, key) =>
+    readConfigString(cwd, key, (value) => value.trim());
 
   // Git never waits for .git/config.lock, and git run outside T3, such as an agent's, can hold it.
   // Only writes that are safe to repeat retry.
@@ -4179,7 +4177,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       input.cwd,
       ["rev-parse", "--symbolic-full-name", startPoint],
       { allowNonZeroExit: true },
-    ).pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : "")));
+    ).pipe(Effect.map((result) => (result.exitCode === 0 ? gitOutputLine(result.stdout) : "")));
     if (!startRef.startsWith("refs/remotes/")) return;
     yield* executeGitWithStableDiagnostics(
       `${operation}.track`,
@@ -4204,8 +4202,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const readBranchBase: GitVcsDriver.GitVcsDriver["Service"]["readBranchBase"] = Effect.fn(
     "GitVcsDriver.readBranchBase",
   )(function* (cwd, branch) {
-    const base = yield* readConfigValue(cwd, branchBaseConfigKey(branch));
-    return base ?? (yield* readConfigValue(cwd, legacyBranchBaseConfigKey(branch)));
+    const base = yield* readConfigString(cwd, branchBaseConfigKey(branch), gitOutputLine);
+    return base ?? (yield* readConfigString(cwd, legacyBranchBaseConfigKey(branch), gitOutputLine));
   });
 
   const resolveBranchBase = Effect.fn("GitVcsDriver.resolveBranchBase")(function* (
@@ -4226,7 +4224,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ? { baseRef: `refs/remotes/${remoteName}/${refName}`, branchName: refName }
         : null;
     }
-    const ref = result.stdout.trim();
+    const ref = gitOutputLine(result.stdout);
     if (ref.startsWith("refs/heads/")) {
       const branchName = ref.slice("refs/heads/".length);
       return { baseRef: ref, branchName };
@@ -4301,7 +4299,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
     const defaultBranch =
       defaultRefResult.exitCode === 0
-        ? defaultRefResult.stdout.trim().replace(/^refs\/remotes\/origin\//, "")
+        ? gitOutputLine(defaultRefResult.stdout).replace(/^refs\/remotes\/origin\//, "")
         : null;
     const parsedWorktreeEntries =
       worktreeListResult.exitCode === 0
@@ -4916,7 +4914,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             head,
           );
         }
-        const refName = head.exitCode === 0 ? head.stdout.trim().replace(/^refs\/heads\//, "") : "";
+        const refName =
+          head.exitCode === 0 ? gitOutputLine(head.stdout).replace(/^refs\/heads\//, "") : "";
         const branch = refName === "" ? null : refName;
         base = (yield* resolveBaseBranchForNoUpstream(cwd, branch))?.comparisonRef ?? null;
         // A branch keeps its commits; a detached HEAD's are reachable only from this checkout.
@@ -5469,9 +5468,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   )(function* (input) {
     // Git also matches a worktree by its short name, which can name a different
     // folder than this path. Resolving it once keeps Git, the Windows deletion
-    // in removeLinkedWorktree, and the leftover cleanup below on one directory.
+    // in prepareLinkedWorktreeRemoval, and the leftover cleanup below on one directory.
     const target = path.resolve(input.cwd, input.path);
-    const result = yield* removeLinkedWorktree({
+    const result = yield* prepareLinkedWorktreeRemoval({
       operation: "GitVcsDriver.removeWorktree",
       cwd: input.cwd,
       worktreePath: target,
@@ -5483,6 +5482,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           allowNonZeroExit: true,
         }).pipe(Effect.map((result) => ({ ...result, args }))),
     }).pipe(
+      Effect.flatten,
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
@@ -5659,7 +5659,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const refName = yield* runGitStdout("GitVcsDriver.switchRef.currentBranch", input.cwd, [
         "branch",
         "--show-current",
-      ]).pipe(Effect.map((stdout) => stdout.trim() || null));
+      ]).pipe(Effect.map((stdout) => gitOutputLine(stdout) || null));
 
       return { refName };
     },
@@ -5695,18 +5695,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "--list",
       "--no-column",
       "--format=%(refname:lstrip=2)",
-    ]).pipe(
-      Effect.map((stdout) => {
-        const branchNames: Array<string> = [];
-        for (const line of stdout.split("\n")) {
-          const branchName = line.trim();
-          if (branchName.length > 0) {
-            branchNames.push(branchName);
-          }
-        }
-        return branchNames;
-      }),
-    );
+    ]).pipe(Effect.map((stdout) => stdout.split(/\r?\n/).filter((name) => name.length > 0)));
 
   const listWorktreePaths: GitVcsDriver.GitVcsDriver["Service"]["listWorktreePaths"] = (cwd) =>
     executeWorktreeList("GitVcsDriver.listWorktreePaths", cwd, []).pipe(

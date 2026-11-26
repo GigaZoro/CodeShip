@@ -647,8 +647,10 @@ When a root chat shares the exact checkout and branch with its subagents or side
 the root chat's IDs. The command records each member and its current run. The root must
 settle after the work finishes. A parent must receive each delegate's result in a
 completed run. An unfinished run or an outstanding delivery keeps the checkout.
-If an older acknowledgement cannot establish which result the parent received, read the
-delegate's final result again from an active parent run and let that run finish.
+For an older acknowledgement, CodeShip can verify the full result in the original
+`delegate_task` response. If the available records cannot establish which result the
+parent received, read the delegate's final result again from an active parent run and
+let that run finish.
 If membership or a run changes, issue a new request once the family finishes. A member,
 or a new fork or side chat that inherits its checkout, can start the first follow-up.
 

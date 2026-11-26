@@ -1,22 +1,35 @@
 import {
+  nativeResultCopiesAgreeSql,
   provenTaskResultReadsSql,
   resultFingerprint,
 } from "../apps/server/src/orchestration-v2/taskResultReadEvidence.ts";
+import { compactLegacyIdsInJson } from "../packages/provider-core/src/server/compactId.ts";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "vitest";
 import { decision, wakeReport } from "./wake-usage.mjs";
 
 function createProjectionTables(db) {
   db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,payload_json);
       CREATE TABLE orchestration_v2_projection_runs(run_id TEXT PRIMARY KEY,thread_id TEXT,payload_json,
+        ordinal AS (json_extract(payload_json,'$.ordinal')),
         status AS (json_extract(payload_json,'$.status')), requested_at AS (json_extract(payload_json,'$.requestedAt')),
         completed_at AS (json_extract(payload_json,'$.completedAt')));
       CREATE TABLE orchestration_v2_projection_messages(message_id,run_id,thread_id,role,created_at,payload_json);
-      CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id);
-      CREATE TABLE orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json);
+      CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id TEXT PRIMARY KEY,thread_id,run_id,provider_thread_id,payload_json);
+      CREATE TABLE orchestration_v2_projection_provider_turns(provider_turn_id TEXT PRIMARY KEY,thread_id,run_attempt_id,
+        provider_thread_id,started_at,completed_at,payload_json);
+      CREATE TABLE orchestration_v2_projection_turn_items(turn_item_id TEXT PRIMARY KEY,thread_id,run_id,
+        ordinal,type,status,provider_thread_id,provider_turn_id,payload_json);
+      CREATE INDEX orchestration_v2_projection_turn_items_run_ordinal_idx ON orchestration_v2_projection_turn_items(run_id,ordinal);
       CREATE TABLE orchestration_v2_projection_subagents(subagent_id TEXT PRIMARY KEY,thread_id TEXT,updated_at,payload_json,
         status AS (json_extract(payload_json,'$.status')), completed_at AS (json_extract(payload_json,'$.completedAt')),
+        run_id AS (json_extract(payload_json,'$.runId')), child_thread_id AS (json_extract(payload_json,'$.childThreadId')),
+        origin AS (json_extract(payload_json,'$.origin')),
         completion_delivery_state AS (json_extract(payload_json,'$.completionDelivery.state')));
+      CREATE TABLE orchestration_v2_projection_context_transfers(context_transfer_id TEXT PRIMARY KEY,source_thread_id,
+        target_thread_id,target_run_id,type,status,payload_json);
+      CREATE INDEX orchestration_v2_projection_context_transfers_target_run_idx ON orchestration_v2_projection_context_transfers(target_run_id);
       CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY, command_id, aggregate_kind, stream_id, application_event_version, event_type, occurred_at, payload_json);
       CREATE TABLE orchestration_command_receipts(command_id PRIMARY KEY, aggregate_kind, aggregate_id, command_type, status);
       CREATE INDEX idx_orch_events_stream_sequence ON orchestration_events(aggregate_kind, stream_id, sequence);
@@ -26,6 +39,57 @@ function createProjectionTables(db) {
       CREATE INDEX idx_orch_command_receipts_aggregate ON orchestration_command_receipts(aggregate_kind, aggregate_id);
     `);
 }
+
+it("accepts only migrated ID spellings in the retained native response", () => {
+  using db = new NodeSqlite.DatabaseSync(":memory:");
+  const compare = db.prepare(`
+    WITH call AS (SELECT json_extract(?1,'$.content') AS content_copy,
+      json_extract(?1,'$.structuredContent') AS response, 1 AS has_copy)
+    SELECT (${nativeResultCopiesAgreeSql}) AS agrees FROM call
+  `);
+  const taskId = "node:delegated-task:command%253Aread!'()";
+  const response = {
+    taskId,
+    childNodeId: taskId,
+    childRunId: "run:thread%25253achild:ordinal:1",
+    childThreadId: "thread:child%3Aone",
+    resultContextTransferId: "context-transfer:child%3Aone",
+    latestTerminalRunId: "run:thread%253Achild:ordinal:2",
+    latestTerminalResultContextTransferId: "context-transfer:child%3Atwo",
+    latestTerminalStatus: "completed",
+    latestTerminalSummary: null,
+    status: "completed",
+    workState: "result_available",
+    summary: "Complete 😀\r\nResult %3A\u0000exact",
+  };
+  const original = { structuredContent: response, content: JSON.stringify(response) };
+  const migrated = JSON.parse(compactLegacyIdsInJson(JSON.stringify(original)));
+  const agrees = (envelope) => compare.get({ 1: JSON.stringify(envelope) }).agrees;
+  expect(migrated.structuredContent.taskId).toBe("node:delegated-task:command:read!'()");
+  expect(migrated.structuredContent.childRunId).toBe("run:thread:child:ordinal:1");
+  expect(migrated.structuredContent.latestTerminalRunId).toBe("run:thread:child:ordinal:2");
+  expect(JSON.parse(migrated.content)).toEqual(response);
+  expect(agrees(original)).toBe(1);
+  expect(agrees(migrated)).toBe(1);
+  for (const [field, value] of [
+    ["summary", response.summary.replace("%3A", ":")],
+    ["summary", response.summary.replace("exact", "other")],
+    ["childRunId", "run:thread%253achild:ordinal:1"],
+    ["childRunId", "run:thread:child:ordinal:2"],
+    ["taskId", "node:delegated-task:command:other"],
+    ["childThreadId", "thread:child:one"],
+    ["resultContextTransferId", "context-transfer:child:one"],
+    ["latestTerminalRunId", "run:thread:child:ordinal:3"],
+    ["latestTerminalResultContextTransferId", "context-transfer:child:two"],
+    ["latestTerminalStatus", "failed"],
+    ["latestTerminalSummary", "Different result"],
+  ]) {
+    expect(
+      agrees({ ...migrated, structuredContent: { ...migrated.structuredContent, [field]: value } }),
+      field,
+    ).toBe(0);
+  }
+});
 
 it("probes historical events by receipt command ID when the stream index also exists", () => {
   using db = new NodeSqlite.DatabaseSync(":memory:");
@@ -44,6 +108,209 @@ it("probes historical events by receipt command ID when the stream index also ex
   );
 });
 
+it("credits only exact historically returned native local delegate results", () => {
+  using db = new NodeSqlite.DatabaseSync(":memory:");
+  createProjectionTables(db);
+  const day = "2026-11-22";
+  const at = (hour) => `${day}T${hour}:00:00.000Z`;
+  const requestedAt = at("06");
+  const startedAt = at("07");
+  const completedAt = at("08");
+  const acknowledgedAt = at("09");
+  const returnedAt = at("10");
+  const settledAt = at("11");
+  const wakeAt = at("12");
+  const result = "Complete result 😀\r\nSecond line.";
+  const task = {
+    id: "task",
+    origin: "app_owned",
+    threadId: "chat",
+    runId: "reader",
+    childThreadId: "child",
+    status: "completed",
+    completedAt,
+    updatedAt: acknowledgedAt,
+    result,
+    completionDelivery: { state: "acknowledged", observedByRunId: "reader" },
+  };
+  const reader = { requestedAt, startedAt, completedAt: settledAt, status: "completed" };
+  const insertRun = db.prepare("INSERT INTO orchestration_v2_projection_runs VALUES (?,?,?)");
+  insertRun.run("reader", "chat", JSON.stringify(reader));
+  insertRun.run("wake", "chat", '{"userMessageId":"msg"}');
+  const childRun = {
+    ordinal: 1,
+    status: "completed",
+    requestedAt: startedAt,
+    startedAt,
+    completedAt,
+  };
+  insertRun.run("child-run", "child", JSON.stringify(childRun));
+  insertRun.run("other-child-run", "child", JSON.stringify({ ...childRun, ordinal: 2 }));
+  db.prepare(`
+    INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id,thread_id,run_id,provider_thread_id,payload_json) VALUES ('reader-attempt','chat','reader','provider',?)
+  `).run(JSON.stringify(reader));
+  db.exec(`
+    INSERT INTO orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id) VALUES ('wake-attempt','chat','wake');
+    INSERT INTO orchestration_v2_projection_threads VALUES ('child','{"forkedFrom":{"type":"node","nodeId":"task"}}');
+    INSERT INTO orchestration_command_receipts VALUES
+      ('old-ack','thread','chat','delegated_task.completion-delivery.acknowledge','accepted');
+  `);
+  const publication = {
+    sourcePoint: { threadId: "child", runId: "child-run" },
+    createdAt: completedAt,
+    consumedAt: completedAt,
+  };
+  const insertPublication = db.prepare(`
+    INSERT INTO orchestration_v2_projection_context_transfers VALUES (?,'child','chat','reader',
+      'subagent_result','consumed',?)
+  `);
+  insertPublication.run("transfer", JSON.stringify(publication));
+  db.prepare(`
+    INSERT INTO orchestration_v2_projection_provider_turns
+      (provider_turn_id,thread_id,run_attempt_id,provider_thread_id,started_at,completed_at,payload_json)
+      VALUES ('provider-turn','chat','reader-attempt','provider',?,?,'{}')
+  `).run(startedAt, settledAt);
+  db.prepare(`
+    INSERT INTO orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json)
+      VALUES ('chat','wake-attempt',?,'{"nativeWakeStarted":true}')
+  `).run(wakeAt);
+  db.prepare(
+    "INSERT INTO orchestration_v2_projection_messages VALUES ('msg','wake','chat','user',?,?)",
+  ).run(wakeAt, '{"createdBy":"agent","delegatedCompletion":{"taskIds":["task"]}}');
+  db.prepare("INSERT INTO orchestration_v2_projection_subagents VALUES ('task','chat',?,?)").run(
+    acknowledgedAt,
+    JSON.stringify(task),
+  );
+  db.prepare(
+    "INSERT INTO orchestration_events VALUES (1,'old-ack','thread','chat',2,'subagent.updated',?,?)",
+  ).run(acknowledgedAt, JSON.stringify(task));
+  const response = {
+    taskId: "task",
+    childNodeId: "task",
+    childThreadId: "child",
+    childRunId: "child-run",
+    status: "completed",
+    workState: "result_available",
+    summary: result,
+  };
+  const retainedOutput = (value) => ({ structuredContent: value, content: JSON.stringify(value) });
+  const tool = {
+    toolName: "mcp__t3-code__delegate_task",
+    nativeItemRef: { driver: "claudeAgent", nativeId: "toolu_delegate", strength: "strong" },
+    startedAt,
+    completedAt: returnedAt,
+    input: { task: "Produce two lines", mode: "wait" },
+    output: retainedOutput(response),
+  };
+  db.prepare(`
+    INSERT INTO orchestration_v2_projection_turn_items
+      VALUES ('tool','chat','reader',1,'dynamic_tool','completed','provider','provider-turn',?)
+  `).run(JSON.stringify(tool));
+  const repetitions = () => wakeReport(db, day).all.repeated;
+  expect(repetitions()).toBe(1);
+
+  const changePublication = db.prepare(
+    "UPDATE orchestration_v2_projection_context_transfers SET payload_json=? WHERE context_transfer_id='transfer'",
+  );
+  for (const [label, fields] of [
+    ["transfer created after the call", { createdAt: settledAt }],
+    ["transfer consumed after the acknowledgement", { consumedAt: returnedAt }],
+    ["earlier publication with identical bytes", { createdAt: startedAt, consumedAt: startedAt }],
+  ]) {
+    changePublication.run(JSON.stringify({ ...publication, ...fields }));
+    expect(repetitions(), label).toBe(0);
+  }
+  changePublication.run(JSON.stringify(publication));
+  insertPublication.run(
+    "ambiguous",
+    JSON.stringify({
+      ...publication,
+      sourcePoint: { threadId: "child", runId: "other-child-run" },
+    }),
+  );
+  expect(repetitions(), "two source runs at the same publication time").toBe(0);
+  const updateTask = db.prepare("UPDATE orchestration_v2_projection_subagents SET payload_json=?");
+  updateTask.run(
+    JSON.stringify({
+      ...task,
+      terminalResultObservation: {
+        runId: "reader",
+        at: returnedAt,
+        sourceChildRunId: "child-run",
+        resultFingerprint: resultFingerprint(result),
+      },
+    }),
+  );
+  expect(repetitions(), "promotion cannot disambiguate two publications").toBe(0);
+  db.exec(
+    "DELETE FROM orchestration_v2_projection_context_transfers WHERE context_transfer_id='ambiguous'",
+  );
+  expect(repetitions(), "unambiguous publication").toBe(1);
+  updateTask.run(JSON.stringify(task));
+
+  const updateTool = db.prepare("UPDATE orchestration_v2_projection_turn_items SET payload_json=?");
+  db.exec("UPDATE orchestration_v2_projection_context_transfers SET status='pending'");
+  expect(repetitions(), "omitted transfer ID still requires a consumed transfer").toBe(0);
+  db.exec("UPDATE orchestration_v2_projection_context_transfers SET status='consumed'");
+  updateTool.run(
+    JSON.stringify({
+      ...tool,
+      output: retainedOutput({ ...response, resultContextTransferId: "transfer" }),
+    }),
+  );
+  expect(repetitions(), "matching transfer ID").toBe(1);
+  for (const [label, fields] of [
+    ["different result", { summary: "Different result" }],
+    ["wrong task", { taskId: "other-task" }],
+    ["wrong child", { childThreadId: "other-child" }],
+    ["same summary from another child run", { childRunId: "other-child-run" }],
+    ["wrong transfer", { resultContextTransferId: "other-transfer" }],
+  ]) {
+    updateTool.run(JSON.stringify({ ...tool, output: retainedOutput({ ...response, ...fields }) }));
+    expect(repetitions(), label).toBe(0);
+  }
+  for (const [label, projected] of [
+    ["truncated output", { ...tool, outputOmitted: true }],
+    ["truncated text copy", { ...tool, output: { ...tool.output, content: '{"taskId":' } }],
+    [
+      "different text copy",
+      {
+        ...tool,
+        output: { ...tool.output, content: JSON.stringify({ ...response, summary: "Other" }) },
+      },
+    ],
+    ["tool returned an error", { ...tool, output: { ...tool.output, isError: true } }],
+    [
+      "weak provider observation",
+      { ...tool, nativeItemRef: { ...tool.nativeItemRef, strength: "weak" } },
+    ],
+    ["different native tool", { ...tool, toolName: "delegate_task" }],
+    ["acknowledged before this call", { ...tool, startedAt: returnedAt }],
+    ["returned before publication", { ...tool, completedAt: startedAt }],
+    ["returned after the provider turn", { ...tool, completedAt: wakeAt }],
+  ]) {
+    updateTool.run(JSON.stringify(projected));
+    expect(repetitions(), label).toBe(0);
+  }
+  updateTool.run(JSON.stringify(tool));
+  const updateChildRun = db.prepare(
+    "UPDATE orchestration_v2_projection_runs SET payload_json=? WHERE run_id='child-run'",
+  );
+  updateChildRun.run(JSON.stringify({ ...childRun, completedAt: settledAt }));
+  expect(repetitions(), "child completed after the return").toBe(0);
+  updateChildRun.run(JSON.stringify(childRun));
+  const updateEvent = db.prepare("UPDATE orchestration_events SET payload_json=? WHERE sequence=1");
+  updateEvent.run(JSON.stringify({ ...task, childThreadId: "other-child" }));
+  expect(repetitions(), "acknowledgement belongs to a different child").toBe(0);
+  updateEvent.run(JSON.stringify(task));
+  db.exec("UPDATE orchestration_v2_projection_context_transfers SET status='pending'");
+  expect(repetitions(), "unconsumed transfer").toBe(0);
+  db.exec("UPDATE orchestration_v2_projection_context_transfers SET status='consumed'");
+  db.exec("DELETE FROM orchestration_command_receipts");
+  expect(repetitions(), "missing receipt").toBe(0);
+});
+
 it("measures provider starts and uses only prior same-chat observations of every member", () => {
   const db = new NodeSqlite.DatabaseSync(":memory:");
   try {
@@ -51,10 +318,14 @@ it("measures provider starts and uses only prior same-chat observations of every
     const before = "2026-11-21T23:59:59.000Z";
     const start = "2026-11-22T00:00:00.000Z";
     const end = "2026-11-23T00:00:00.000Z";
+    const columns = {
+      run_attempts: "(attempt_id,thread_id,run_id)",
+      provider_turns: "(thread_id,run_attempt_id,started_at,payload_json)",
+    };
     const insert = (table, ...values) =>
       db
         .prepare(
-          `INSERT INTO orchestration_v2_projection_${table} VALUES (${values.map(() => "?")})`,
+          `INSERT INTO orchestration_v2_projection_${table}${columns[table] ?? ""} VALUES (${values.map(() => "?")})`,
         )
         .run(...values);
     insert(
@@ -303,7 +574,7 @@ it.each(["completionDelivery", "terminalResultObservation"])(
         }),
       );
       db.exec(`
-        INSERT INTO orchestration_v2_projection_run_attempts VALUES ('first','chat','wake'), ('retry','chat','wake');
+        INSERT INTO orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id) VALUES ('first','chat','wake'), ('retry','chat','wake');
       `);
       db.prepare(
         "INSERT INTO orchestration_v2_projection_messages VALUES ('msg','wake','chat','user',?,?)",
@@ -312,7 +583,7 @@ it.each(["completionDelivery", "terminalResultObservation"])(
         JSON.stringify({ createdBy: "agent", delegatedCompletion: { taskIds: ["task"] } }),
       );
       const turn = db.prepare(
-        "INSERT INTO orchestration_v2_projection_provider_turns VALUES ('chat',?,?,?)",
+        "INSERT INTO orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json) VALUES ('chat',?,?,?)",
       );
       turn.run("first", first, JSON.stringify({ completedAt: observedAt }));
       turn.run(
@@ -423,12 +694,12 @@ it.each([
     JSON.stringify(reader),
   );
   db.exec(`INSERT INTO orchestration_v2_projection_runs VALUES ('wake','chat','{"userMessageId":"msg"}');
-      INSERT INTO orchestration_v2_projection_run_attempts VALUES ('first','chat','reader'), ('wake-attempt','chat','wake');`);
+      INSERT INTO orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id) VALUES ('first','chat','reader'), ('wake-attempt','chat','wake');`);
   db.prepare(
     "INSERT INTO orchestration_v2_projection_messages VALUES ('msg','wake','chat','user',?,?)",
   ).run(wakeAt, JSON.stringify({ createdBy: "agent", delegatedCompletion: { taskIds: ["task"] } }));
   db.prepare(
-    "INSERT INTO orchestration_v2_projection_provider_turns VALUES ('chat','wake-attempt',?,?)",
+    "INSERT INTO orchestration_v2_projection_provider_turns(thread_id,run_attempt_id,started_at,payload_json) VALUES ('chat','wake-attempt',?,?)",
   ).run(wakeAt, JSON.stringify({ nativeWakeStarted: true }));
   const repeated = () => wakeReport(db, day).all.repeated;
   const expected = source === "unverified acknowledgement" ? 0 : 1;
@@ -436,7 +707,9 @@ it.each([
   const updateReader = db.prepare(
     "UPDATE orchestration_v2_projection_runs SET payload_json=? WHERE run_id='reader'",
   );
-  db.exec("INSERT INTO orchestration_v2_projection_run_attempts VALUES ('second','chat','reader')");
+  db.exec(
+    "INSERT INTO orchestration_v2_projection_run_attempts(attempt_id,thread_id,run_id) VALUES ('second','chat','reader')",
+  );
   const restarted = { ...reader, startedAt: restartedAt, activeAttemptId: "second" };
   updateReader.run(JSON.stringify(restarted));
   expect(repeated()).toBe(expected);

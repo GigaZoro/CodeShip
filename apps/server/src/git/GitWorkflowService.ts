@@ -33,6 +33,7 @@ import {
   type VcsStatusResult,
   type VcsUnmergedWorkResult,
 } from "@t3tools/contracts";
+import { gitOutputLine } from "@t3tools/shared/git";
 
 import * as GitManager from "./GitManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -487,7 +488,7 @@ export const make = Effect.gen(function* () {
         timeoutMs: 5_000,
       });
       if (result.exitCode === 0) {
-        return result.stdout.trim().replace(/^refs\/heads\//, "") || null;
+        return gitOutputLine(result.stdout).replace(/^refs\/heads\//, "") || null;
       }
       if (result.exitCode === 1) return null;
       return yield* new GitCommandError({

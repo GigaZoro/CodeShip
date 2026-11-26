@@ -429,6 +429,7 @@ it.live.skipIf(isWindowsHost)(
 
 it.live.each([
   "another branch",
+  "a branch with a trailing non-breaking space",
   "a symbolic branch alias",
   "detached HEAD",
   "a different reachable commit",
@@ -455,6 +456,8 @@ it.live.each([
       expect(yield* git(checkout, "rev-parse", "HEAD")).not.toBe(head);
     } else {
       if (change === "another branch") yield* git(checkout, "switch", "-c", "other");
+      else if (change === "a branch with a trailing non-breaking space")
+        yield* git(checkout, "switch", "-c", "feature\u00a0");
       else if (change === "detached HEAD") yield* git(checkout, "switch", "--detach", head);
       else {
         yield* git(checkout, "symbolic-ref", "refs/heads/alias", "refs/heads/feature");
@@ -468,6 +471,13 @@ it.live.each([
         : "checkout branch changed since release was queued",
     );
     expect(yield* fs.exists(file)).toBe(true);
+    if (change === "a branch with a trailing non-breaking space") {
+      yield* fs.remove(file);
+      const next = yield* queueRelease(fixture);
+      const exact = yield* decodeReleaseRequest(yield* fs.readFileString(next.file));
+      expect(exact.branch).toBe("feature\u00a0");
+      expect(yield* releaseHold(exact, project)).toBeNull();
+    }
   }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
