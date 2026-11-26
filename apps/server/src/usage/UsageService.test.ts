@@ -3847,6 +3847,39 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live("migrates snapshots from the v11 directory without modifying them", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* writeTranscriptAtCursorNow(transcript, 5);
+
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        const active = yield* onlySnapshot(stateDir);
+        const oldDir = NodePath.join(stateDir, "usage-scan-cache-v11");
+        const oldName = NodePath.basename(active.path);
+        const oldPath = NodePath.join(oldDir, oldName);
+        const oldContents = encodeUnknownJsonString({ ...active.document, version: 11 });
+        yield* fs.remove(active.path);
+        yield* fs.remove(transcript);
+        yield* fs.makeDirectory(oldDir, { recursive: true });
+        yield* fs.writeFileString(oldPath, oldContents);
+
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        assert.deepStrictEqual(yield* fs.readDirectory(oldDir), [oldName]);
+        assert.strictEqual(yield* fs.readFileString(oldPath), oldContents);
+        const migrated = yield* onlySnapshot(stateDir);
+        assert.strictEqual(migrated.document.version, 12);
+        yield* fs.remove(oldPath);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-v11-migration", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("persists a verified smaller rewrite when its disk base is unchanged", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
@@ -3863,6 +3896,61 @@ describe("UsageService", () => {
         const restarted = yield* UsageService.make;
         assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 5);
       }).pipe(Effect.provide(layerService({ prefix: "usage-cache-three-way", home, settings })));
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("keeps usage from a newer Claude transcript after restoring an older copy", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const shared = claudeLine(1, 5);
+      const olderMtime = CURSOR_NOW - DAY_MS;
+      const sibling = NodePath.join(NodePath.dirname(transcript), "sibling.jsonl");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, shared + claudeLine(2, 12));
+        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+        await NodeFSP.writeFile(sibling, claudeLine(3, 7));
+        await NodeFSP.utimes(sibling, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
+
+      yield* Effect.gen(function* () {
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const writer = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 24);
+        yield* writer.awaitPersisted;
+        const original = yield* onlySnapshot(stateDir);
+
+        yield* TestClock.adjust("5 seconds");
+        const restoredAt = yield* Clock.currentTimeMillis;
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, shared);
+          await NodeFSP.utimes(transcript, olderMtime / 1000, olderMtime / 1000);
+        });
+        assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 24);
+        yield* writer.awaitPersisted;
+        const delta = yield* newestSnapshot(stateDir);
+        assert.deepStrictEqual(Object.keys(delta.document.files), [transcript]);
+        assert.strictEqual(delta.document.files[transcript]?.m, olderMtime);
+        assert.lengthOf(delta.document.files[transcript]!.r, 1);
+
+        // Enough redundant snapshots make the peer compact the delta and original into one.
+        yield* seedSnapshot(stateDir, original.raw);
+        yield* seedSnapshot(stateDir, original.raw);
+        const peer = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* peer.readSummary(WINDOW)), 24);
+        yield* peer.awaitPersisted;
+        const compacted = yield* onlySnapshot(stateDir);
+        assert.sameMembers(Object.keys(compacted.document.files), [transcript, sibling]);
+        assert.lengthOf(compacted.document.files[transcript]!.r, 1);
+
+        const expiresAfter = restoredAt + 92 * DAY_MS;
+        yield* TestClock.setTime(expiresAfter - 1);
+        assert.strictEqual(yield* outputTokensAfterRestart, 24);
+        yield* TestClock.setTime(expiresAfter + 1);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-restored-copy", home, settings })),
+      );
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
