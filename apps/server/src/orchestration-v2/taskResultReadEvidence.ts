@@ -208,7 +208,8 @@ export const recordedTaskReadsSql = `
       AND json_extract(evidence.value,'$.state') = t.completion_delivery_state))
     AND t.status IN ('completed','failed','cancelled','interrupted') AND json_type(t.payload_json,'$.result')='text'
     AND (json_type(evidence.value,'$.sourceChildRunId') IS NULL OR (observer.run_id=t.run_id
-      AND json_extract(evidence.value,'$.sourceChildRunId')=(${publicationSourceSql})))
+      AND json_extract(evidence.value,'$.sourceChildRunId')=(${publicationSourceSql})
+      AND json_extract(evidence.value,'$.proofVersion')=2))
     AND t.completed_at <= at AND observer.requested_at <= at
     AND (observer.completed_at >= at OR observer.status IN ('preparing','starting','running','waiting'))
 `;

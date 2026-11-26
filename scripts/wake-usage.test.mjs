@@ -145,7 +145,6 @@ it("credits only exact historically returned native local delegate results", () 
     completedAt,
   };
   insertRun.run("child-run", "child", JSON.stringify(childRun));
-  insertRun.run("other-child-run", "child", JSON.stringify({ ...childRun, ordinal: 2 }));
   db.prepare(`
     INSERT INTO orchestration_v2_projection_run_attempts
       (attempt_id,thread_id,run_id,provider_thread_id,payload_json) VALUES ('reader-attempt','chat','reader','provider',?)
@@ -208,7 +207,7 @@ it("credits only exact historically returned native local delegate results", () 
       VALUES ('tool','chat','reader',1,'dynamic_tool','completed','provider','provider-turn',?)
   `).run(JSON.stringify(tool));
   const repetitions = () => wakeReport(db, day).all.repeated;
-  expect(repetitions()).toBe(1);
+  expect(repetitions(), "one possible publisher for the partial response").toBe(1);
 
   const changePublication = db.prepare(
     "UPDATE orchestration_v2_projection_context_transfers SET payload_json=? WHERE context_transfer_id='transfer'",
@@ -222,6 +221,11 @@ it("credits only exact historically returned native local delegate results", () 
     expect(repetitions(), label).toBe(0);
   }
   changePublication.run(JSON.stringify(publication));
+  const otherRun = { ...childRun, ordinal: 2 };
+  insertRun.run("other-child-run", "child", JSON.stringify(otherRun));
+  expect(repetitions(), "two possible publishers without a returned transfer or terminal run").toBe(
+    0,
+  );
   insertPublication.run(
     "ambiguous",
     JSON.stringify({
@@ -239,6 +243,7 @@ it("credits only exact historically returned native local delegate results", () 
         at: returnedAt,
         sourceChildRunId: "child-run",
         resultFingerprint: resultFingerprint(result),
+        proofVersion: 2,
       },
     }),
   );
@@ -247,7 +252,49 @@ it("credits only exact historically returned native local delegate results", () 
     "DELETE FROM orchestration_v2_projection_context_transfers WHERE context_transfer_id='ambiguous'",
   );
   expect(repetitions(), "unambiguous publication").toBe(1);
+  // An unversioned cached inferred observation without raw tool proof must not count.
+  const savedTool = db
+    .prepare(
+      "SELECT payload_json FROM orchestration_v2_projection_turn_items WHERE turn_item_id='tool'",
+    )
+    .get().payload_json;
+  db.exec(
+    "UPDATE orchestration_v2_projection_turn_items SET payload_json = json_remove(payload_json, '$.output') WHERE turn_item_id='tool'",
+  );
+  expect(repetitions(), "versioned cached read counts after tool output is pruned").toBe(1);
+  updateTask.run(
+    JSON.stringify({
+      ...task,
+      terminalResultObservation: {
+        runId: "reader",
+        at: returnedAt,
+        sourceChildRunId: "child-run",
+        resultFingerprint: resultFingerprint(result),
+      },
+    }),
+  );
+  expect(
+    repetitions(),
+    "unversioned cached inferred read is ignored after tool output is pruned",
+  ).toBe(0);
+  db.prepare(
+    "UPDATE orchestration_v2_projection_turn_items SET payload_json=? WHERE turn_item_id='tool'",
+  ).run(savedTool);
   updateTask.run(JSON.stringify(task));
+  db.prepare(
+    "UPDATE orchestration_v2_projection_runs SET payload_json=? WHERE run_id='other-child-run'",
+  ).run(
+    JSON.stringify({
+      ...otherRun,
+      requestedAt: returnedAt,
+      startedAt: returnedAt,
+      completedAt: settledAt,
+    }),
+  );
+  expect(
+    repetitions(),
+    "a child run that started after publication cannot change the earlier read",
+  ).toBe(1);
 
   const updateTool = db.prepare("UPDATE orchestration_v2_projection_turn_items SET payload_json=?");
   db.exec("UPDATE orchestration_v2_projection_context_transfers SET status='pending'");

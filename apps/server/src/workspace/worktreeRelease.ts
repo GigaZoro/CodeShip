@@ -58,7 +58,7 @@ import {
   prepareLinkedWorktreeRemoval,
   removeEmptyWindowsRemovalStage,
   windowsRemovalPlanName,
-  windowsRemovalStage,
+  windowsRemovalStages,
 } from "../vcs/worktreeRemoval.ts";
 import {
   familyCheckoutHook,
@@ -473,32 +473,34 @@ const stagedWindowsCheckout = Effect.fn("WorktreeRelease.stagedWindowsCheckout")
 ) {
   const fs = yield* FileSystem.FileSystem;
   const cwd = request.worktreePath;
-  const stage = windowsRemovalStage(cwd);
-  if (!(yield* fs.exists(stage)) || (yield* existingWorkspacePath(stage)) !== stage) return null;
-  if (
-    request.directoryIdentity &&
-    (yield* checkoutDirectoryIdentity(stage)) !== request.directoryIdentity
-  )
-    return null;
-  const pointer = NodePath.join(stage, ".git");
-  if (!(yield* fs.exists(pointer)) || (yield* gitFileIdentity(pointer)) !== request.identity)
-    return null;
-  const line = gitOutputLine(yield* fs.readFileString(pointer));
-  if (!line.startsWith("gitdir: ")) return null;
-  const registered = NodePath.resolve(cwd, line.slice(8));
-  if (!(yield* fs.exists(registered))) return null;
-  const admin = yield* existingWorkspacePath(registered);
-  const common = yield* existingWorkspacePath(
-    gitOutputLine(
-      yield* readGit(projectRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    ),
-  );
-  if (NodePath.relative(NodePath.dirname(admin), NodePath.join(common, "worktrees")) !== "")
-    return null;
-  const back = gitOutputLine(yield* fs.readFileString(NodePath.join(admin, "gitdir")));
-  if (NodePath.relative(NodePath.resolve(admin, back), NodePath.join(cwd, ".git")) !== "")
-    return null;
-  return { stage, pointer, admin, common };
+  for (const stage of windowsRemovalStages(cwd, request.identity)) {
+    if (!(yield* fs.exists(stage)) || (yield* existingWorkspacePath(stage)) !== stage) continue;
+    if (
+      request.directoryIdentity &&
+      (yield* checkoutDirectoryIdentity(stage)) !== request.directoryIdentity
+    )
+      continue;
+    const pointer = NodePath.join(stage, ".git");
+    if (!(yield* fs.exists(pointer)) || (yield* gitFileIdentity(pointer)) !== request.identity)
+      continue;
+    const line = gitOutputLine(yield* fs.readFileString(pointer));
+    if (!line.startsWith("gitdir: ")) continue;
+    const registered = NodePath.resolve(cwd, line.slice(8));
+    if (!(yield* fs.exists(registered))) continue;
+    const admin = yield* existingWorkspacePath(registered);
+    const common = yield* existingWorkspacePath(
+      gitOutputLine(
+        yield* readGit(projectRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      ),
+    );
+    if (NodePath.relative(NodePath.dirname(admin), NodePath.join(common, "worktrees")) !== "")
+      continue;
+    const back = gitOutputLine(yield* fs.readFileString(NodePath.join(admin, "gitdir")));
+    if (NodePath.relative(NodePath.resolve(admin, back), NodePath.join(cwd, ".git")) !== "")
+      continue;
+    return { stage, pointer, admin, common };
+  }
+  return null;
 });
 
 export const finishWindowsSetupRemoval = Effect.fn("WorktreeRelease.finishWindowsSetupRemoval")(
@@ -645,13 +647,19 @@ export const finishInterruptedRemoval = Effect.fn("WorktreeRelease.finishInterru
     }
     if (branchRegistered)
       return "Git lists the requested branch under a different path spelling. Check git worktree list --porcelain for a moved checkout or path alias";
-    const stage = windowsRemovalStage(cwd);
-    if (
-      (yield* HostProcess.isWindows) &&
-      (yield* fs.exists(stage)) &&
-      !(yield* removeEmptyWindowsRemovalStage(stage, request.identity, request.directoryIdentity))
-    )
-      return "staged checkout has remaining files that require its owner";
+    if (yield* HostProcess.isWindows) {
+      for (const stage of windowsRemovalStages(cwd, request.identity)) {
+        if (
+          (yield* fs.exists(stage)) &&
+          !(yield* removeEmptyWindowsRemovalStage(
+            stage,
+            request.identity,
+            request.directoryIdentity,
+          ))
+        )
+          return "staged checkout has remaining files that require its owner";
+      }
+    }
     return null;
   },
 );

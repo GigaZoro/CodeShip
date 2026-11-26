@@ -1458,4 +1458,63 @@ it.layer(layerTest)("Git worktree locks and removal", (it) => {
       assert.notInclude(registered, "stale");
     }),
   );
+
+  it.effect(
+    "prunes an unrelated missing worktree while pinning an unpinned staged sibling on Windows",
+    () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const worktreesRoot = yield* makeTmpDir("git-worktrees-");
+        const missingCheckout = pathService.join(worktreesRoot, "missing-a");
+        const stagedCheckout = pathService.join(worktreesRoot, "staged-b");
+
+        yield* driver.createWorktree({
+          cwd,
+          path: missingCheckout,
+          refName: initialBranch,
+          newRefName: "recover-a",
+        });
+        yield* driver.createWorktree({
+          cwd,
+          path: stagedCheckout,
+          refName: initialBranch,
+          newRefName: "staged-b",
+        });
+        const stagedAdmin = (yield* git(stagedCheckout, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ])).trim();
+        yield* fileSystem.remove(missingCheckout, { recursive: true });
+        yield* fileSystem.rename(stagedCheckout, windowsRemovalStage(stagedCheckout));
+
+        yield* driver.pruneWorktrees({ cwd });
+
+        const registered = yield* git(cwd, ["worktree", "list", "--porcelain"]);
+        assert.notInclude(registered, "branch refs/heads/recover-a");
+        assert.include(registered, "branch refs/heads/staged-b");
+        assert.isTrue(yield* fileSystem.exists(pathService.join(stagedAdmin, "locked")));
+      }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  );
+
+  it.effect("reads localStatus branch names starting with '(' accurately", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+
+      for (const branchName of ["(release)", "(detached)"]) {
+        yield* git(cwd, ["checkout", "-b", branchName]);
+        const status = yield* driver.statusDetailsLocal(cwd);
+        assert.equal(status.branch, branchName);
+      }
+
+      yield* git(cwd, ["checkout", "--detach", "HEAD"]);
+      const detached = yield* driver.statusDetailsLocal(cwd);
+      assert.isNull(detached.branch);
+    }),
+  );
 });

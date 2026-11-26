@@ -47,7 +47,12 @@ import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import { timeoutProcessOption } from "../process/processDeadline.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
-import { existingWorkspacePath, withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import {
+  existingWorkspacePath,
+  foldedWorkspacePath,
+  resolveWorkspacePath,
+  withWorkspaceLease,
+} from "../workspace/workspaceLease.ts";
 import {
   directoryEntryExists,
   releaseReservesWorktree,
@@ -56,7 +61,7 @@ import { familyCheckoutHook } from "./familyWorktreeCheckout.ts";
 import { countGitSpawn } from "./GitSpawnBudget.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
-import { prepareLinkedWorktreeRemoval, windowsRemovalStage } from "./worktreeRemoval.ts";
+import { listWindowsRemovalStages, prepareLinkedWorktreeRemoval } from "./worktreeRemoval.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -2673,12 +2678,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const changedFilesWithoutNumstat = new Set<string>();
     const untrackedRoots: string[] = [];
 
+    let ambiguousHeadValue = false;
     const statusRecords = statusStdout.split("\0");
     for (let index = 0; index < statusRecords.length; index++) {
       const line = statusRecords[index]!;
       if (line.startsWith("# branch.head ")) {
         const value = line.slice("# branch.head ".length);
-        refName = value.startsWith("(") ? null : value;
+        if (value === "(detached)" || value === "(initial)") {
+          refName = null;
+          ambiguousHeadValue = true;
+        } else {
+          refName = value;
+        }
         continue;
       }
       if (line.startsWith("# branch.upstream ")) {
@@ -2707,6 +2718,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           if (originalPath) changedFilesWithoutNumstat.add(originalPath);
         }
       }
+    }
+    if (ambiguousHeadValue) {
+      const headRef = yield* executeGitWithStableDiagnostics(
+        "GitVcsDriver.localStatus.currentBranch",
+        cwd,
+        ["symbolic-ref", "--quiet", "HEAD"],
+        { timeoutMs: 5_000, allowNonZeroExit: true },
+      ).pipe(
+        Effect.map((result) =>
+          result.exitCode === 0 ? branchNameFromHeadRef(result.stdout) : null,
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+      refName = headRef;
     }
 
     const isDefaultBranch =
@@ -5534,20 +5559,67 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   )(function* (input) {
     if (yield* HostProcess.isWindows) {
       // An interrupted release from before staging acquired Git locks may still need its registration.
+      // Pin each surviving staged sibling with our own Git lock so unrelated stale worktrees still prune.
       const listing = yield* executeWorktreeList("GitVcsDriver.pruneWorktrees", input.cwd, []);
       if (listing.stdoutTruncated) return;
+      let commonWorktreesDir: string | undefined;
       for (const record of listing.stdout.split("\0\0")) {
         const [name, ...fields] = record.split("\0");
         if (
           !name?.startsWith("worktree ") ||
-          !fields.some((field) => field === "prunable" || field.startsWith("prunable "))
+          !fields.some((field) => field === "prunable" || field.startsWith("prunable ")) ||
+          fields.some((field) => field === "locked" || field.startsWith("locked "))
         )
           continue;
-        const stage = windowsRemovalStage(name.slice("worktree ".length));
-        if (
-          yield* fileSystem.exists(path.join(stage, ".git")).pipe(Effect.orElseSucceed(() => true))
-        )
-          return;
+        const worktreePath = name.slice("worktree ".length);
+        const stages = yield* listWindowsRemovalStages(worktreePath);
+        if (stages === null) return;
+        for (const stage of stages) {
+          const pointer = path.join(stage, ".git");
+          const hasPointer = yield* fileSystem
+            .exists(pointer)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (hasPointer === null) return;
+          if (!hasPointer) continue;
+          const pinned = yield* Effect.gen(function* () {
+            const line = gitOutputLine(yield* fileSystem.readFileString(pointer));
+            if (!line.startsWith("gitdir: ")) return false;
+            const registered = path.resolve(worktreePath, line.slice(8));
+            const admin = yield* existingWorkspacePath(registered);
+            if (commonWorktreesDir === undefined) {
+              const commonStdout = yield* runGitStdout(
+                "GitVcsDriver.pruneWorktrees.commonDir",
+                input.cwd,
+                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+              );
+              const common = yield* existingWorkspacePath(gitOutputLine(commonStdout));
+              commonWorktreesDir = path.join(common, "worktrees");
+            }
+            if (path.relative(path.dirname(admin), commonWorktreesDir) !== "") return false;
+            const backlinkFile = path.join(admin, "gitdir");
+            const back = gitOutputLine(yield* fileSystem.readFileString(backlinkFile));
+            const [resolvedBack, resolvedPointer] = yield* Effect.all([
+              resolveWorkspacePath(path.resolve(admin, back)),
+              resolveWorkspacePath(path.join(worktreePath, ".git")),
+            ]);
+            if (
+              foldedWorkspacePath(resolvedBack.toLowerCase()) !==
+              foldedWorkspacePath(resolvedPointer.toLowerCase())
+            )
+              return false;
+            const lockFile = path.join(admin, "locked");
+            if (!(yield* fileSystem.exists(lockFile))) {
+              yield* fileSystem.link(backlinkFile, lockFile).pipe(
+                Effect.catchIf(
+                  (error) => error.reason._tag === "AlreadyExists",
+                  () => Effect.void,
+                ),
+              );
+            }
+            return yield* fileSystem.exists(lockFile);
+          }).pipe(Effect.orElseSucceed(() => false));
+          if (!pinned) return;
+        }
       }
     }
     yield* executeGit("GitVcsDriver.pruneWorktrees", input.cwd, ["worktree", "prune"], {

@@ -173,6 +173,9 @@ export class TerminalManager extends Context.Service<
     /** The thread's terminals with their retained raw output, for agents to read. */
     readonly readThread: (threadId: string) => Effect.Effect<ReadonlyArray<TerminalThreadRead>>;
 
+    /** Active terminal working directories (starting or running), for workspace removal admission. */
+    readonly activeWorkspaces: Effect.Effect<ReadonlyArray<string>>;
+
     /**
      * Attached viewers share one PTY sized to the smallest of them, so a narrow client
      * still sees the whole TUI. Streams and resizes with the same `viewerId` (one client
@@ -3733,11 +3736,24 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       ),
     );
 
+  const activeWorkspaces: TerminalManager["Service"]["activeWorkspaces"] = readManagerState.pipe(
+    Effect.map((state) => {
+      const paths: string[] = [];
+      for (const session of state.sessions.values()) {
+        if (session.status !== "starting" && session.status !== "running") continue;
+        paths.push(session.cwd);
+        if (session.worktreePath !== null) paths.push(session.worktreePath);
+      }
+      return paths;
+    }),
+  );
+
   return TerminalManager.of({
     open,
     getShell,
     commandRunning,
     readThread,
+    activeWorkspaces,
     attachStream,
     attachOutputStream,
     observeStream,

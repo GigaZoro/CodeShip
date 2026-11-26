@@ -1,5 +1,6 @@
 import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "../../project/WorktreeSetupTracker.ts";
+import * as TerminalManager from "../../terminal/Manager.ts";
 import * as ProviderSkillsTestkit from "../../provider/ProviderSkills.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
@@ -339,6 +340,9 @@ export function layerWithRegistry<Error>(
       Layer.mergeAll(
         WorktreeSetupTracker.layer,
         Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+        Layer.mock(TerminalManager.TerminalManager)({
+          activeWorkspaces: Effect.succeed([]),
+        }),
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,

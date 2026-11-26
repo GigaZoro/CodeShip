@@ -3039,7 +3039,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const fingerprint = terminalTaskResultFingerprint(task);
       if (fingerprint === null) return undefined;
       const first = task.terminalResultObservation;
-      if (first?.resultFingerprint === fingerprint) return first;
+      if (
+        first?.resultFingerprint === fingerprint &&
+        (first.sourceChildRunId === undefined || first.proofVersion === 2)
+      )
+        return first;
       const state = task.completionDelivery?.state;
       if (state === "acknowledged" || state === "disposed") {
         const prior = yield* projectionStore

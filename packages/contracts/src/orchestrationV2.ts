@@ -1137,6 +1137,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
       at: Schema.DateTimeUtc,
       resultFingerprint: Schema.optional(Schema.String),
       sourceChildRunId: Schema.optional(RunId),
+      proofVersion: Schema.optional(Schema.Literal(2)),
     }),
   ),
   status: Schema.Literals([
@@ -2660,6 +2661,7 @@ export const OrchestrationV2SubagentJson = OrchestrationV2Subagent.mapFields((fi
       at: Schema.DateTimeUtcFromString,
       resultFingerprint: Schema.optional(Schema.String),
       sourceChildRunId: Schema.optional(RunId),
+      proofVersion: Schema.optional(Schema.Literal(2)),
     }),
   ),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),

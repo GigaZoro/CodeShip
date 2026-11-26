@@ -85,7 +85,9 @@ import {
   pendingFamilyCheckoutHook,
   runningFamilyCheckoutHook,
 } from "../vcs/familyWorktreeCheckout.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import { prepareLinkedWorktreeRemoval, windowsRemovalStage } from "../vcs/worktreeRemoval.ts";
+import { withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -271,6 +273,7 @@ function startWithMissingWorktree(
             Effect.succeedSome({ workspaceRoot: "/tmp/provider-turn-start-project" } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          listActiveCommandCwds: () => Effect.succeed([]),
           getThreadRecords: () => {
             projectionReadCount += 1;
             return Effect.succeed(projection);
@@ -296,7 +299,12 @@ function startWithMissingWorktree(
             );
           },
         }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          occupiedWorkspaces: Effect.succeed([]),
+        }),
+        Layer.mock(TerminalManager.TerminalManager)({
+          activeWorkspaces: Effect.succeed([]),
+        }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
@@ -441,6 +449,9 @@ function makeLocalCommandHarness(input: {
   readonly sessionLive?: boolean;
   /** Account routing says this turn would spend prepaid credits the user did not allow it. */
   readonly creditRefusal?: AccountRouting.CreditRefusal;
+  readonly activeTerminalWorkspaces?: ReadonlyArray<string>;
+  readonly activeCommandCwds?: ReadonlyArray<string>;
+  readonly occupiedWorkspaces?: ReadonlyArray<string>;
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -1235,6 +1246,7 @@ function makeLocalCommandHarness(input: {
                   }),
                 )
               : Effect.succeed(new Map()),
+          listActiveCommandCwds: () => Effect.succeed(input.activeCommandCwds ?? []),
           getThreadRecords,
           getTurnStartContext,
           getRuntimeRecoveryProjection: () =>
@@ -1256,7 +1268,11 @@ function makeLocalCommandHarness(input: {
                   }),
                 ),
         }),
+        Layer.mock(TerminalManager.TerminalManager)({
+          activeWorkspaces: Effect.succeed(input.activeTerminalWorkspaces ?? []),
+        }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          occupiedWorkspaces: Effect.succeed(input.occupiedWorkspaces ?? []),
           open,
           releaseIfSilent,
           isLive: () => Effect.succeed(input.sessionLive === true),
@@ -4471,4 +4487,260 @@ effectIt.effect.each([undefined, "2099-01-01T00:00:00.000Z"])(
         },
       ]);
     }),
+);
+
+effectIt.effect.each(["terminal", "command", "process start"] as const)(
+  "blocks Windows staged setup deletion during turn start when %s is active inside the stage",
+  (blocker) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-turn-stage-admit-" });
+      const workspaceRoot = path.join(root, "repo");
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "restore");
+      const oldBranch = "feature/restore";
+      const git = (cwd: string, args: string[]) =>
+        driver.execute({ operation: "test.stageAdmit", cwd, args });
+      yield* fs.makeDirectory(workspaceRoot);
+      yield* git(workspaceRoot, ["init", "-b", "main"]);
+      yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+      yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+      yield* fs.writeFileString(path.join(workspaceRoot, "tracked"), "original");
+      yield* fs.writeFileString(path.join(workspaceRoot, ".gitignore"), ".t3/\nnode_modules/\n");
+      yield* git(workspaceRoot, ["add", "."]);
+      yield* git(workspaceRoot, ["commit", "-m", "base"]);
+      yield* git(workspaceRoot, ["worktree", "add", "-b", oldBranch, worktreePath]);
+      const marker = "83c3b572-0640-4e21-bdc7-c24f84a7830c\n";
+      yield* fs.makeDirectory(path.join(worktreePath, ".t3"));
+      yield* fs.writeFileString(path.join(worktreePath, ".t3", "setup-done"), marker);
+      yield* fs.makeDirectory(path.join(worktreePath, "node_modules"));
+      yield* fs.writeFileString(path.join(worktreePath, "node_modules", "installed.js"), "module");
+      const admin = gitOutputLine(
+        (yield* git(worktreePath, ["rev-parse", "--absolute-git-dir"])).stdout,
+      );
+      const head = gitOutputLine((yield* git(worktreePath, ["rev-parse", "HEAD"])).stdout);
+      yield* Effect.tryPromise(async (signal) =>
+        writeSetupProof(admin, path.join(admin, "pending-setup"), {
+          root: await NodeFSP.realpath(workspaceRoot),
+          checkout: setupFileStamp(
+            await NodeFSP.lstat(path.join(worktreePath, ".git"), { bigint: true }),
+          ),
+          head,
+          marker,
+          ...(await sealSetupTrees(worktreePath, ["node_modules"], signal)),
+          markerMetadataV1: await sealSetupMarkers(worktreePath, "setup-done", signal),
+          links: [],
+        }),
+      );
+      const stage = windowsRemovalStage(worktreePath);
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        nativeTurn: true,
+        workspaceRoot,
+        worktreesDir,
+        worktreePath,
+        fileSystem: fs,
+        gitWorkflow,
+        ...(blocker === "terminal"
+          ? { activeTerminalWorkspaces: [path.join(stage, "node_modules")] }
+          : {}),
+        ...(blocker === "command" ? { activeCommandCwds: [path.join(stage, "node_modules")] } : {}),
+      });
+      const { file } = yield* queueWorktreeRelease({
+        threadId: harness.projection().thread.id,
+        runId: "finished",
+        worktreePath,
+        durableRef: "refs/heads/main",
+        stateDir: path.join(root, "state"),
+      });
+      const contents = yield* fs.readFileString(file);
+      const release = yield* decodeReleaseRequest(contents);
+      const receipt = file + ".releasing";
+      yield* fs.rename(file, receipt);
+      const operation = "test.stageAdmit.prepare";
+      const prepared = yield* prepareLinkedWorktreeRemoval({
+        operation,
+        cwd: workspaceRoot,
+        worktreePath,
+        force: false,
+        release: { ...release, setupReceiptHash: releaseDigest(contents) },
+        execute: driver.execute,
+        run: (args) => driver.execute({ operation, cwd: workspaceRoot, args }),
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          remove: (target, options) =>
+            target === path.join(stage, "node_modules", "installed.js")
+              ? fs.remove(path.join(target, "locked"))
+              : fs.remove(target, options),
+        }),
+      );
+      yield* Effect.flip(prepared);
+      expect(yield* fs.exists(path.join(stage, "node_modules", "installed.js"))).toBe(true);
+
+      const startTurnOnWin = harness.start.pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+      );
+      if (blocker === "process start") {
+        const started = yield* Deferred.make<void>();
+        const done = yield* Deferred.make<void>();
+        const fiber = yield* withWorkspaceProcessStart(
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(done))),
+          [path.join(stage, "node_modules")],
+        ).pipe(Effect.provideService(HostProcess.Platform, "win32"), Effect.forkScoped);
+        yield* Deferred.await(started);
+        yield* startTurnOnWin;
+        yield* Deferred.succeed(done, undefined);
+        yield* Fiber.join(fiber);
+      } else {
+        yield* startTurnOnWin;
+      }
+
+      expect(harness.open).toHaveBeenCalledTimes(0);
+      expect(harness.startTurn).toHaveBeenCalledTimes(0);
+      expect(yield* fs.exists(path.join(stage, "node_modules", "installed.js"))).toBe(true);
+      expect(yield* fs.readFileString(receipt)).toBe(contents);
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.scoped,
+      Effect.provide(layerRealGit),
+    ),
+);
+
+effectIt.effect(
+  "recovers a missing registered checkout while a different sibling is staged unpinned on Windows",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-turn-prune-pin-" });
+      const workspaceRoot = path.join(root, "repo");
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "restore");
+      const sibling = path.join(worktreesDir, "project", "sibling");
+      const git = (cwd: string, args: string[]) =>
+        driver.execute({ operation: "test.prunePin", cwd, args });
+      yield* fs.makeDirectory(workspaceRoot);
+      yield* git(workspaceRoot, ["init", "-b", "main"]);
+      yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+      yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+      yield* fs.writeFileString(path.join(workspaceRoot, "tracked"), "original");
+      yield* git(workspaceRoot, ["add", "."]);
+      yield* git(workspaceRoot, ["commit", "-m", "base"]);
+      yield* git(workspaceRoot, ["worktree", "add", "-b", "feature/restore", worktreePath]);
+      yield* git(workspaceRoot, ["worktree", "add", "-b", "sibling", sibling]);
+
+      // Delete A on disk while still registered; stage B unpinned.
+      yield* fs.remove(worktreePath, { recursive: true });
+      yield* fs.rename(sibling, windowsRemovalStage(sibling));
+
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        nativeTurn: true,
+        workspaceRoot,
+        worktreesDir,
+        worktreePath,
+        fileSystem: fs,
+        gitWorkflow,
+      });
+      yield* harness.start.pipe(Effect.provideService(HostProcess.Platform, "win32"));
+
+      expect(harness.open).toHaveBeenCalledTimes(1);
+      expect(harness.startTurn).toHaveBeenCalledTimes(1);
+      expect(yield* fs.exists(worktreePath)).toBe(true);
+      const registered = (yield* git(workspaceRoot, ["worktree", "list", "--porcelain"])).stdout;
+      expect(registered).toContain("branch refs/heads/feature/restore");
+      expect(registered).toContain("branch refs/heads/sibling");
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.scoped,
+      Effect.provide(layerRealGit),
+    ),
+);
+
+effectIt.effect(
+  "restores a released checkout from a checked-out project branch starting with '(' instead of origin/HEAD",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-turn-paren-branch-" });
+      const remoteRoot = path.join(root, "remote.git");
+      const workspaceRoot = path.join(root, "repo");
+      const worktreesDir = path.join(root, "worktrees");
+      const worktreePath = path.join(worktreesDir, "project", "restore");
+      const oldBranch = "feature/restore";
+      const git = (cwd: string, args: string[]) =>
+        driver.execute({ operation: "test.parenBranch", cwd, args });
+
+      yield* fs.makeDirectory(remoteRoot);
+      yield* git(remoteRoot, ["init", "--bare", "-b", "main"]);
+      yield* fs.makeDirectory(workspaceRoot);
+      yield* git(workspaceRoot, ["init", "-b", "main"]);
+      yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+      yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+      yield* fs.writeFileString(path.join(workspaceRoot, "base.txt"), "delivered\n");
+      yield* git(workspaceRoot, ["add", "."]);
+      yield* git(workspaceRoot, ["commit", "-m", "delivered"]);
+      yield* git(workspaceRoot, ["remote", "add", "origin", remoteRoot]);
+      yield* git(workspaceRoot, ["push", "-u", "origin", "main"]);
+      yield* git(workspaceRoot, ["remote", "set-head", "origin", "main"]);
+
+      // Create worktree at delivered commit, then advance origin/main and local (release) differently.
+      yield* git(workspaceRoot, ["worktree", "add", "-b", oldBranch, worktreePath]);
+      yield* git(workspaceRoot, ["checkout", "-b", "(release)"]);
+      yield* fs.writeFileString(path.join(workspaceRoot, "tip.txt"), "from local (release)\n");
+      yield* git(workspaceRoot, ["add", "tip.txt"]);
+      yield* git(workspaceRoot, ["commit", "-m", "local paren branch tip"]);
+      const localParenTip = gitOutputLine(
+        (yield* git(workspaceRoot, ["rev-parse", "HEAD"])).stdout,
+      );
+
+      // Advance origin/main to a distinct commit that also contains the delivered commit.
+      yield* git(workspaceRoot, ["checkout", "main"]);
+      yield* fs.writeFileString(path.join(workspaceRoot, "tip.txt"), "from origin main\n");
+      yield* git(workspaceRoot, ["add", "tip.txt"]);
+      yield* git(workspaceRoot, ["commit", "-m", "origin main tip"]);
+      yield* git(workspaceRoot, ["push", "origin", "main"]);
+      yield* git(workspaceRoot, ["checkout", "(release)"]);
+
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        nativeTurn: true,
+        workspaceRoot,
+        worktreesDir,
+        worktreePath,
+        fileSystem: fs,
+        gitWorkflow,
+        runSetup: vi.fn(() => Effect.succeed({ status: "no-script" as const })),
+      });
+      const { file } = yield* queueWorktreeRelease({
+        threadId: harness.projection().thread.id,
+        runId: "finished",
+        worktreePath,
+        durableRef: "refs/heads/(release)",
+        stateDir: path.join(root, "state"),
+      });
+      yield* fs.rename(file, file + ".released");
+      yield* git(workspaceRoot, ["worktree", "remove", "--force", worktreePath]);
+
+      yield* harness.start;
+
+      expect(harness.open).toHaveBeenCalledTimes(1);
+      expect(harness.startTurn).toHaveBeenCalledTimes(1);
+      expect(gitOutputLine((yield* git(worktreePath, ["rev-parse", "HEAD"])).stdout)).toBe(
+        localParenTip,
+      );
+      expect(yield* fs.readFileString(path.join(worktreePath, "tip.txt"))).toBe(
+        "from local (release)\n",
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );

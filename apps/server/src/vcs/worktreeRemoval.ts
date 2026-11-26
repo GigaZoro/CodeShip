@@ -33,7 +33,49 @@ const INDEX_LIST_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_REMOVAL_ENTRIES = 2_000_000;
 const MAX_REMOVAL_PLAN_BYTES = 256 * 1024 * 1024;
 export const windowsRemovalPlanName = "t3-removal-plan-v1";
-export const windowsRemovalStage = (worktreePath: string) => worktreePath + ".t3-removing";
+const WINDOWS_REMOVAL_STAGE_SUFFIX = ".t3-removing";
+
+export const windowsRemovalStage = (worktreePath: string, identity?: string) =>
+  identity === undefined
+    ? worktreePath + WINDOWS_REMOVAL_STAGE_SUFFIX
+    : `${worktreePath}${WINDOWS_REMOVAL_STAGE_SUFFIX}-${NodeCrypto.createHash("sha256").update(identity).digest("hex").slice(0, 12)}`;
+
+export const windowsRemovalStages = (
+  worktreePath: string,
+  identity?: string,
+): ReadonlyArray<string> =>
+  identity === undefined
+    ? [windowsRemovalStage(worktreePath)]
+    : [windowsRemovalStage(worktreePath, identity), windowsRemovalStage(worktreePath)];
+
+export const listWindowsRemovalStages = Effect.fn("WorktreeRemoval.listStages")(function* (
+  worktreePath: string,
+) {
+  const parent = NodePath.dirname(worktreePath);
+  const base = NodePath.basename(worktreePath);
+  const legacy = (base + WINDOWS_REMOVAL_STAGE_SUFFIX).toLowerCase();
+  const scopedPrefix = (base + WINDOWS_REMOVAL_STAGE_SUFFIX + "-").toLowerCase();
+  const entries = yield* Effect.tryPromise(async () => {
+    try {
+      return await NodeFSP.readdir(parent);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }).pipe(Effect.orElseSucceed(() => null));
+  if (entries === null) return null;
+  const matches: string[] = [];
+  for (const entry of entries) {
+    const lower = entry.toLowerCase();
+    if (
+      lower === legacy ||
+      (lower.startsWith(scopedPrefix) && /^[0-9a-f]{12}$/.test(lower.slice(scopedPrefix.length)))
+    ) {
+      matches.push(NodePath.join(parent, entry));
+    }
+  }
+  return matches;
+});
 
 export const gitFileIdentity = (file: string) =>
   Effect.tryPromise(async () => {
@@ -107,9 +149,100 @@ const encodeRemovalPlan = Schema.encodeEffect(
       root: Schema.String,
       checkout: RemovalIdentities,
       admin: RemovalIdentities,
+      saved: Schema.optional(Schema.Array(Schema.String)),
     }),
   ),
 );
+
+const pathsOverlap = (left: string, right: string) => {
+  const relA = NodePath.relative(left, right);
+  const relB = NodePath.relative(right, left);
+  return (
+    relA === "" ||
+    (!relA.startsWith("..") && !NodePath.isAbsolute(relA)) ||
+    relB === "" ||
+    (!relB.startsWith("..") && !NodePath.isAbsolute(relB))
+  );
+};
+
+const isValidSavedRelativePath = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  !value.startsWith("/") &&
+  !value.includes("\\") &&
+  !value.split("/").some((segment) => segment === "" || segment === "." || segment === "..");
+
+const verifyBackupPair = async (
+  checkoutRoot: string,
+  savedRoot: string,
+  checkoutRelative: string,
+  savedRelative: string,
+) => {
+  if (NodePath.relative(await NodeFSP.realpath(savedRoot), savedRoot) !== "")
+    throw new Error("Saved backup root changed during removal");
+  if (pathsOverlap(checkoutRoot, savedRoot)) throw new Error("Saved backup root overlaps checkout");
+  const source = NodePath.join(checkoutRoot, checkoutRelative);
+  const backup = NodePath.join(savedRoot, savedRelative);
+  const backupRel = NodePath.relative(savedRoot, backup);
+  if (backupRel === "" || backupRel.startsWith("..") || NodePath.isAbsolute(backupRel))
+    throw new Error("Saved backup path escapes backup root");
+  const backupParent = NodePath.dirname(backup);
+  if (NodePath.relative(backupParent, await NodeFSP.realpath(backupParent)) !== "")
+    throw new Error("Saved backup directory changed during removal");
+  const [original, copy] = await Promise.all([
+    NodeFSP.lstat(source, { bigint: true }),
+    NodeFSP.lstat(backup, { bigint: true }),
+  ]);
+  if (
+    !(
+      (original.isFile() && copy.isFile()) ||
+      (original.isSymbolicLink() && copy.isSymbolicLink())
+    ) ||
+    original.ino === 0n ||
+    original.ino !== copy.ino ||
+    original.dev !== copy.dev ||
+    original.nlink < 2n ||
+    copy.nlink < 2n
+  )
+    throw new Error(`Saved file backup link is missing or changed: ${checkoutRelative}`);
+};
+
+const collectSavedFiles = async (
+  savedRoot: string,
+  checkoutRoot: string,
+  stageRoot: string,
+  signal: AbortSignal,
+): Promise<string[]> => {
+  if (NodePath.relative(await NodeFSP.realpath(savedRoot), savedRoot) !== "")
+    throw new Error("Saved backup root is not a canonical directory");
+  const rootStat = await NodeFSP.lstat(savedRoot, { bigint: true });
+  if (!rootStat.isDirectory() || rootStat.ino === 0n)
+    throw new Error("Saved backup root is not a directory");
+  if (pathsOverlap(savedRoot, checkoutRoot) || pathsOverlap(savedRoot, stageRoot))
+    throw new Error("Saved backup root overlaps checkout or stage");
+  const saved: string[] = [];
+  let count = 0;
+  const visit = async (directory: string, parent: string, depth: number) => {
+    for (const name of (await NodeFSP.readdir(directory)).sort()) {
+      signal.throwIfAborted();
+      if (++count > MAX_REMOVAL_ENTRIES || depth > 128)
+        throw new Error("Saved backup exceeds removal inspection limit");
+      const target = NodePath.join(directory, name);
+      const relative = parent ? parent + "/" + name : name;
+      const stat = await NodeFSP.lstat(target, { bigint: true });
+      if (stat.isDirectory()) {
+        await visit(target, relative, depth + 1);
+      } else if (stat.isFile() || stat.isSymbolicLink()) {
+        await verifyBackupPair(checkoutRoot, savedRoot, relative, relative);
+        saved.push(relative);
+      } else {
+        throw new Error(`Unsupported entry in saved backup: ${relative}`);
+      }
+    }
+  };
+  await visit(savedRoot, "", 1);
+  return saved;
+};
 const checkoutIgnored = new Set([".git"]);
 const adminIgnored = new Set(["gitdir", "locked", windowsRemovalPlanName]);
 
@@ -212,7 +345,11 @@ const listRemovalEntries = async (
 const identities = (entries: readonly RemovalEntry[]): RemovalPlan =>
   Object.fromEntries(entries.map(({ relative, identity }) => [relative, identity]));
 
-const readRemovalPlan = async (file: string, expectedReceiptHash: string | undefined) => {
+const readRemovalPlan = async (
+  file: string,
+  expectedReceiptHash: string | undefined,
+  requiresSaved: boolean,
+) => {
   const before = await NodeFSP.lstat(file, { bigint: true }).catch(missingSetupPath);
   if (!before?.isFile() || before.ino === 0n || before.size > MAX_REMOVAL_PLAN_BYTES)
     throw new Error("Unrecognized Windows removal plan");
@@ -243,10 +380,19 @@ const readRemovalPlan = async (file: string, expectedReceiptHash: string | undef
       Array.isArray(plan.checkout) ||
       !plan.admin ||
       typeof plan.admin !== "object" ||
-      Array.isArray(plan.admin)
+      Array.isArray(plan.admin) ||
+      (requiresSaved && !Array.isArray(plan.saved)) ||
+      (!requiresSaved && plan.saved !== undefined) ||
+      (plan.saved !== undefined &&
+        (!Array.isArray(plan.saved) || !plan.saved.every(isValidSavedRelativePath)))
     )
       throw new Error("Unrecognized Windows removal plan");
-    return plan as { root: string; checkout: RemovalPlan; admin: RemovalPlan };
+    return plan as {
+      root: string;
+      checkout: RemovalPlan;
+      admin: RemovalPlan;
+      saved?: ReadonlyArray<string>;
+    };
   } finally {
     await handle.close();
   }
@@ -265,7 +411,10 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   readonly cwd: string;
   readonly worktreePath: string;
   readonly force: boolean;
-  readonly release?: Pick<ReleaseRequest, "identity" | "head" | "branch" | "directoryIdentity"> & {
+  readonly release?: Pick<
+    ReleaseRequest,
+    "identity" | "head" | "branch" | "directoryIdentity" | "savedFiles" | "savedSetupExtras"
+  > & {
     readonly setupReceiptHash?: string;
   };
   readonly resume?: boolean;
@@ -280,11 +429,7 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   const path = yield* Path.Path;
   const worktreePath = input.worktreePath;
   const gitFile = path.join(worktreePath, ".git");
-  const stage = windowsRemovalStage(worktreePath);
-  const stagedPointer = path.join(stage, ".git");
   const resuming = input.resume === true;
-  const checkout = resuming ? stage : worktreePath;
-  const pointer = resuming ? stagedPointer : gitFile;
   // Git's own refusals, worded the way it prints them.
   const refuse = (message: string, cause?: unknown) =>
     new GitCommandError({
@@ -295,13 +440,51 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
       ...(cause === undefined ? {} : { cause }),
     });
   const notAWorktree = refuse(`'${worktreePath}' is not a working tree`);
-  if (
-    resuming &&
-    (!input.release ||
-      input.force ||
-      (yield* existingWorkspacePath(stage).pipe(Effect.mapError(() => notAWorktree))) !== stage)
-  )
-    return yield* notAWorktree;
+  const legacyStage = windowsRemovalStage(worktreePath);
+  let stage = legacyStage;
+  if (resuming) {
+    if (!input.release || input.force) return yield* notAWorktree;
+    let foundStage: string | undefined;
+    for (const candidate of windowsRemovalStages(worktreePath, input.release.identity)) {
+      const canonicalCandidate = yield* existingWorkspacePath(candidate).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (canonicalCandidate !== candidate) continue;
+      const candidatePointer = path.join(candidate, ".git");
+      const isPointerFile = yield* fileSystem.stat(candidatePointer).pipe(
+        Effect.map((info) => info.type === "File"),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!isPointerFile) continue;
+      if (
+        (yield* gitFileIdentity(candidatePointer).pipe(Effect.orElseSucceed(() => undefined))) ===
+        input.release.identity
+      ) {
+        foundStage = candidate;
+        break;
+      }
+    }
+    if (!foundStage) return yield* notAWorktree;
+    stage = foundStage;
+  } else if (input.release) {
+    const legacyPresent = yield* Effect.tryPromise(async () => {
+      const stat = await NodeFSP.lstat(legacyStage).catch(missingSetupPath);
+      if (!stat) return "missing" as const;
+      if (
+        stat.isDirectory() &&
+        NodePath.relative(await NodeFSP.realpath(legacyStage), legacyStage) === "" &&
+        (await NodeFSP.readdir(legacyStage)).length === 0
+      )
+        return "empty-dir" as const;
+      return "occupied" as const;
+    }).pipe(Effect.mapError((cause) => refuse(`cannot inspect '${worktreePath}'`, cause)));
+    if (legacyPresent === "empty-dir") {
+      stage = windowsRemovalStage(worktreePath, input.release.identity);
+    }
+  }
+  const stagedPointer = path.join(stage, ".git");
+  const checkout = resuming ? stage : worktreePath;
+  const pointer = resuming ? stagedPointer : gitFile;
   // Git refuses to remove a worktree with untracked files unless forced, but
   // its check honors `status.showUntrackedFiles=no` and would delete them.
   const statusConfig = ["-c", "status.showUntrackedFiles=normal"];
@@ -464,9 +647,18 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
   const planFile = path.join(adminDir, windowsRemovalPlanName);
   const inspect = <B>(read: (signal: AbortSignal) => Promise<B>) =>
     Effect.tryPromise(read).pipe(Effect.timeout("10 minutes"), Effect.mapError(inspectError));
+  const savedRoot = approved.savedFiles;
   const plan = resuming
-    ? yield* inspect(() => readRemovalPlan(planFile, setupReceiptHash))
+    ? yield* inspect(() => readRemovalPlan(planFile, setupReceiptHash, savedRoot !== undefined))
     : undefined;
+  const savedList = resuming
+    ? plan?.saved
+    : savedRoot !== undefined
+      ? yield* inspect((signal) => collectSavedFiles(savedRoot, worktreePath, stage, signal))
+      : undefined;
+  const savedMap = new Map<string, string>(
+    (savedList ?? []).map((relative) => [windows ? relative.toLowerCase() : relative, relative]),
+  );
   const root = yield* checkoutDirectoryIdentity(checkout).pipe(Effect.mapError(inspectError));
   if (
     plan &&
@@ -559,6 +751,7 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
           root,
           checkout: identities(entries),
           admin,
+          ...(savedList !== undefined ? { saved: savedList } : {}),
         });
         const contents = Buffer.from(encoded);
         if (contents.length > MAX_REMOVAL_PLAN_BYTES) return yield* changed;
@@ -595,6 +788,15 @@ export const prepareLinkedWorktreeRemoval = Effect.fn(
       if (entry.directory) {
         if (!(yield* removeEmptyDirectory(target))) return yield* changed;
       } else {
+        const savedRelative =
+          savedRoot !== undefined
+            ? savedMap.get(windows ? entry.relative.toLowerCase() : entry.relative)
+            : undefined;
+        if (savedRoot !== undefined && savedRelative !== undefined) {
+          yield* Effect.tryPromise(() =>
+            verifyBackupPair(stage, savedRoot, entry.relative, savedRelative),
+          ).pipe(Effect.mapError(() => changed));
+        }
         yield* fileSystem.remove(target);
       }
       if (tracked.has(entry.relative)) removedTracked.push(entry.relative);

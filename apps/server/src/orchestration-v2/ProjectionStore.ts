@@ -558,10 +558,17 @@ export interface ProjectionStoreV2Shape {
     runIds: ReadonlyArray<RunId>,
   ) => Effect.Effect<ReadonlyArray<MessageId>, ProjectionStoreV2Error>;
   readonly getMessageCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
-  readonly firstProvenTaskResultRead: (
-    task: OrchestrationV2Subagent,
-  ) => Effect.Effect<
-    { readonly runId: RunId; readonly at: DateTime.Utc; readonly sourceChildRunId?: RunId } | null,
+  readonly firstProvenTaskResultRead: (task: OrchestrationV2Subagent) => Effect.Effect<
+    {
+      readonly runId: RunId;
+      readonly at: DateTime.Utc;
+      readonly sourceChildRunId?: RunId;
+      readonly proofVersion?: 2;
+    } | null,
+    ProjectionStoreV2Error
+  >;
+  readonly listActiveCommandCwds: () => Effect.Effect<
+    ReadonlyArray<string>,
     ProjectionStoreV2Error
   >;
   readonly getSubagentCount: (threadId: ThreadId) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -981,8 +988,10 @@ function preserveCompletionDelivery(
       : {}),
     ...(current.terminalResultObservation === undefined ||
     (next.terminalResultObservation?.resultFingerprint !== undefined &&
-      current.terminalResultObservation.resultFingerprint !==
-        next.terminalResultObservation.resultFingerprint)
+      (current.terminalResultObservation.resultFingerprint !==
+        next.terminalResultObservation.resultFingerprint ||
+        (current.terminalResultObservation.sourceChildRunId !== undefined &&
+          current.terminalResultObservation.proofVersion !== 2)))
       ? {}
       : { terminalResultObservation: current.terminalResultObservation }),
   };
@@ -2605,7 +2614,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 END,
                   CASE WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation') = 'object'
                     AND (json_type(excluded.payload_json, '$.terminalResultObservation.resultFingerprint') IS NOT 'text'
-                      OR json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.resultFingerprint') = json_extract(excluded.payload_json, '$.terminalResultObservation.resultFingerprint'))
+                      OR (json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.resultFingerprint') = json_extract(excluded.payload_json, '$.terminalResultObservation.resultFingerprint')
+                        AND (json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.sourceChildRunId') IS NULL
+                          OR json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation.proofVersion') = 2)))
                     THEN json_object('terminalResultObservation', json_extract(orchestration_v2_projection_subagents.payload_json, '$.terminalResultObservation'))
                     ELSE '{}' END
                 )
@@ -6421,11 +6432,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 at: DateTime.makeUnsafe(first.at),
                 ...(first.sourceChildRunId !== null && {
                   sourceChildRunId: first.sourceChildRunId,
+                  proofVersion: 2 as const,
                 }),
               }
             : null,
         ),
         Effect.mapError(controlReadError(task.threadId)),
+      );
+    const listActiveCommandCwds: ProjectionStoreV2Shape["listActiveCommandCwds"] = () =>
+      sql<{ readonly cwd: string }>`
+        SELECT DISTINCT cwd
+        FROM command_runs
+        WHERE status IN ('queued', 'running') OR delivered_at IS NULL
+      `.pipe(
+        Effect.map((rows) => rows.map((row) => row.cwd)),
+        Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
       );
     const getSubagentCount: ProjectionStoreV2Shape["getSubagentCount"] = (threadId) =>
       sql<{
@@ -8469,6 +8490,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getMessageCount: readOnReader(getMessageCount),
       getSubagentCount: readOnReader(getSubagentCount),
       firstProvenTaskResultRead: readOnReader(firstProvenTaskResultRead),
+      listActiveCommandCwds: readOnReader(listActiveCommandCwds),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getThreadRecords: (threadId, fields, filter) =>

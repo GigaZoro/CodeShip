@@ -143,6 +143,10 @@ const layerPlatformTest = Layer.mergeAll(
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
+  Layer.mock(TerminalManager.TerminalManager)({
+    close: () => Effect.void,
+    activeWorkspaces: Effect.succeed([]),
+  }),
 );
 
 const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
@@ -387,7 +391,10 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void }),
-      Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+      Layer.mock(TerminalManager.TerminalManager)({
+        close: () => Effect.void,
+        activeWorkspaces: Effect.succeed([]),
+      }),
     ),
   ),
 );
@@ -11859,7 +11866,10 @@ const layerProductionBrowserAccessTest = RuntimeLayer.layerProduction.pipe(
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void }),
-      Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+      Layer.mock(TerminalManager.TerminalManager)({
+        close: () => Effect.void,
+        activeWorkspaces: Effect.succeed([]),
+      }),
     ),
   ),
   Layer.provide(

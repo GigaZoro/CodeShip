@@ -116,9 +116,41 @@ const canonicalPaths = Effect.fn("WorkspaceLease.canonicalPaths")(function* (pat
     Effect.orElseSucceed(() => [null]),
   );
 });
-const conflicts = (root: string, paths: StartPaths) =>
-  paths.length === 0 ||
-  paths.some((cwd) => cwd === null || cwd === root || cwd.startsWith(root + NodePath.sep));
+const conflicts = (root: string, paths: StartPaths, isWindows: boolean) => {
+  const sep = isWindows ? "\\" : NodePath.sep;
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return (
+    paths.length === 0 ||
+    paths.some((cwd) => cwd === null || cwd === root || cwd.startsWith(prefix))
+  );
+};
+
+export const workspacePathOverlaps = Effect.fn("WorkspaceLease.pathOverlaps")(function* (
+  root: string,
+  candidate: string,
+) {
+  const isWindows = yield* HostProcess.isWindows;
+  const rootCanonical = yield* resolveWorkspacePath(root).pipe(
+    Effect.map((resolved) => pathKey(resolved, isWindows)),
+    Effect.orElseSucceed(() => null),
+  );
+  if (rootCanonical === null) return true;
+  if (!candidate || !NodePath.isAbsolute(candidate)) return true;
+  const sep = isWindows ? "\\" : NodePath.sep;
+  const prefix = rootCanonical.endsWith(sep) ? rootCanonical : rootCanonical + sep;
+  const matches = (target: string) => {
+    const key = pathKey(target, isWindows);
+    return key === rootCanonical || key.startsWith(prefix);
+  };
+  const resolved = NodePath.resolve(candidate);
+  if (matches(resolved)) return true;
+  const real = yield* existingWorkspacePath(resolved).pipe(Effect.orElseSucceed(() => null));
+  if (real !== null && matches(real)) return true;
+  const ancestorResolved = yield* resolveWorkspacePath(resolved).pipe(
+    Effect.orElseSucceed(() => null),
+  );
+  return ancestorResolved !== null && matches(ancestorResolved);
+});
 
 export const admitWorkspaceProcess = Effect.fn("WorkspaceLease.admitProcess")(function* (
   paths: StartPaths,
@@ -130,9 +162,12 @@ export const admitWorkspaceProcess = Effect.fn("WorkspaceLease.admitProcess")(fu
       starts.delete(start);
     }),
   );
+  const isWindows = yield* HostProcess.isWindows;
   while (releases.size) {
     const resolved = yield* canonicalPaths(paths);
-    const overlapping = [...releases].filter((release) => conflicts(release.root, resolved));
+    const overlapping = [...releases].filter((release) =>
+      conflicts(release.root, resolved, isWindows),
+    );
     const removing = overlapping.find((release) => release.removing);
     if (removing) {
       yield* Deferred.await(removing.done);
@@ -173,8 +208,9 @@ export const observeWorkspaceStarts = Effect.fn("WorkspaceLease.observeStarts")(
         Deferred.doneUnsafe(release.done, Effect.void);
       }),
   );
+  const isWindows = yield* HostProcess.isWindows;
   for (const start of existing) {
-    if (conflicts(release.root, yield* canonicalPaths(start.paths))) {
+    if (conflicts(release.root, yield* canonicalPaths(start.paths), isWindows)) {
       release.hold = "a workspace process is starting";
       break;
     }

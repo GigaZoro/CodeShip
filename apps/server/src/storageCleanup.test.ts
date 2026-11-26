@@ -35,10 +35,24 @@ import * as ServerConfig from "./config.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { withWorkspaceProcessStart } from "./workspace/workspaceLease.ts";
 import { queueWorktreeRelease, recoverInterruptedWorktree } from "./workspace/worktreeRelease.ts";
-import { decodeReleaseRequest, encodeRequest } from "./workspace/worktreeReleaseReceipt.ts";
+import {
+  decodeReleaseRequest,
+  encodeRequest,
+  releaseDigest,
+} from "./workspace/worktreeReleaseReceipt.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import { windowsRemovalStage } from "./vcs/worktreeRemoval.ts";
+import {
+  prepareLinkedWorktreeRemoval,
+  windowsRemovalPlanName,
+  windowsRemovalStage,
+} from "./vcs/worktreeRemoval.ts";
+import {
+  sealSetupMarkers,
+  sealSetupTrees,
+  setupFileStamp,
+  writeSetupProof,
+} from "../../../scripts/lib/worktree-setup-proof.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
@@ -2495,7 +2509,10 @@ it.effect(
         );
         expect(yield* fixture.fs.exists(request + ".released")).toBe(true);
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
-      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provide(SqlitePersistence.layerMemory),
+      ),
     ),
 );
 
@@ -2907,13 +2924,24 @@ it.effect("requires the native delegate response for the exact approved child ru
       runId: "spawner",
       at: at(4000),
       sourceChildRunId: approved,
+      proofVersion: 2,
     });
     yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json,
       '$.terminalResultObservation', json(${JSON.stringify({ ...historical, resultFingerprint: resultFingerprint(summary) })}))
       WHERE subagent_id = ${taskId}`;
-    // Prove the projected read alone still identifies which child's identical summary was returned.
+    // Prove the versioned projected read alone still identifies which child's identical summary was returned.
     yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = json_remove(payload_json, '$.output') WHERE turn_item_id = 'call'`;
     expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(true);
+
+    // An unversioned cached inferred observation (from the parent revision's looser SQL) must not
+    // authorize release once raw tool output is gone.
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_remove(payload_json,
+      '$.terminalResultObservation.proofVersion') WHERE subagent_id = ${taskId}`;
+    expect(yield* consumed(previous)).toBe(false);
+    expect(yield* consumed(approved)).toBe(false);
+    yield* sql`UPDATE orchestration_v2_projection_subagents SET payload_json = json_set(payload_json,
+      '$.terminalResultObservation.proofVersion', 2) WHERE subagent_id = ${taskId}`;
     expect(yield* consumed(approved)).toBe(true);
 
     // A projected observation inherited from the old original-run inference must not
@@ -6127,4 +6155,291 @@ it.live("keeps saved usage data when removing a settled checkout", () =>
       expect(yield* fixture.fs.readFileString(cachePath)).toBe(savedUsage);
     }),
   ),
+);
+
+it.live.each(["backup deleted", "legacy plan missing saved", "backup intact"] as const)(
+  "verifies saved user file backup links before unlinking during interrupted Windows setup removal (%s)",
+  (mode) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const fixture = yield* cleanupFixture(undefined, true);
+        fixture.disable();
+        const runId = RunId.make("saved-setup-resume");
+        const owner = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(-DAY_MS),
+          settledAt: at(-DAY_MS),
+        });
+        fixture.setThreads([owner]);
+        yield* fs.writeFileString(
+          NodePath.join(fixture.repo, ".gitignore"),
+          ".t3/\nnode_modules/\nprivate.txt\n",
+        );
+        yield* fixture.command(fixture.repo, ["add", ".gitignore"]);
+        yield* fixture.command(fixture.repo, ["commit", "-m", "ignore setup and private"]);
+        yield* fixture.command(fixture.worktree, ["merge", "--ff-only", "main"]);
+        const marker = "83c3b572-0640-4e21-bdc7-c24f84a7830c\n";
+        yield* fs.makeDirectory(NodePath.join(fixture.worktree, ".t3"));
+        yield* fs.writeFileString(NodePath.join(fixture.worktree, ".t3", "setup-done"), marker);
+        yield* fs.makeDirectory(NodePath.join(fixture.worktree, "node_modules"));
+        yield* fs.writeFileString(
+          NodePath.join(fixture.worktree, "node_modules", "installed.js"),
+          "module",
+        );
+        const admin = (yield* fixture.command(fixture.worktree, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ])).stdout.trim();
+        const head = (yield* fixture.command(fixture.worktree, [
+          "rev-parse",
+          "HEAD",
+        ])).stdout.trim();
+        yield* Effect.tryPromise(async (signal) =>
+          writeSetupProof(admin, NodePath.join(admin, "pending-setup"), {
+            root: await NodeFSP.realpath(fixture.repo),
+            checkout: setupFileStamp(
+              await NodeFSP.lstat(NodePath.join(fixture.worktree, ".git"), { bigint: true }),
+            ),
+            head,
+            marker,
+            ...(await sealSetupTrees(fixture.worktree, ["node_modules"], signal)),
+            markerMetadataV1: await sealSetupMarkers(fixture.worktree, "setup-done", signal),
+            links: [],
+          }),
+        );
+        yield* fs.writeFileString(
+          NodePath.join(fixture.worktree, "private.txt"),
+          "irreplaceable user data",
+        );
+        const { file, savedFiles } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        expect(savedFiles).toBeDefined();
+        const contents = yield* fs.readFileString(file);
+        const request = yield* decodeReleaseRequest(contents);
+        expect(request.savedSetupExtras).toBe(true);
+        yield* fs.rename(file, file + ".releasing");
+        const stage = windowsRemovalStage(fixture.worktree);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const operation = "test.savedSetupInterrupted";
+        const prepared = yield* prepareLinkedWorktreeRemoval({
+          operation,
+          cwd: fixture.repo,
+          worktreePath: fixture.worktree,
+          force: false,
+          release: { ...request, setupReceiptHash: releaseDigest(contents) },
+          execute: driver.execute,
+          run: (args) => driver.execute({ operation, cwd: fixture.repo, args }),
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            remove: (target, options) =>
+              target === NodePath.join(stage, "private.txt")
+                ? fs.remove(NodePath.join(target, "locked"))
+                : fs.remove(target, options),
+          }),
+        );
+        yield* Effect.flip(prepared);
+        expect(yield* fs.exists(NodePath.join(stage, "private.txt"))).toBe(true);
+        if (mode === "backup deleted") {
+          yield* fs.remove(NodePath.join(savedFiles!, "private.txt"));
+        } else if (mode === "legacy plan missing saved") {
+          const planPath = NodePath.join(admin, windowsRemovalPlanName);
+          const parsed = JSON.parse(yield* fs.readFileString(planPath));
+          delete parsed.saved;
+          yield* fs.writeFileString(planPath, JSON.stringify(parsed));
+        }
+
+        const report = yield* fixture.service.runNow;
+        if (mode === "backup intact") {
+          expect(report.entries).toEqual([]);
+          expect(yield* fs.exists(stage)).toBe(false);
+          expect(yield* fs.exists(file + ".released")).toBe(true);
+          expect(yield* fs.readFileString(NodePath.join(savedFiles!, "private.txt"))).toBe(
+            "irreplaceable user data",
+          );
+        } else {
+          expect(yield* fs.readFileString(NodePath.join(stage, "private.txt"))).toBe(
+            "irreplaceable user data",
+          );
+          expect(yield* fs.exists(file + ".releasing")).toBe(true);
+          expect(yield* fs.exists(file + ".released")).toBe(false);
+          expect(report.entries[0]?.outcome).toBe("failed");
+        }
+      }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+    ),
+);
+
+it.live("releases a second checkout past an unidentified empty legacy Windows stage", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const fixture = yield* cleanupFixture(undefined, true);
+      fixture.disable();
+      const runId = RunId.make("second-release");
+      const owner = shell({
+        status: "completed",
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        latestRunId: runId,
+        latestRunCompletedAt: at(-DAY_MS),
+        settledAt: at(-DAY_MS),
+      });
+      fixture.setThreads([owner]);
+      const legacyStage = windowsRemovalStage(fixture.worktree);
+      yield* fs.makeDirectory(legacyStage);
+      const { file } = yield* queueWorktreeRelease({
+        stateDir: fixture.config.stateDir,
+        threadId: owner.id,
+        runId,
+        worktreePath: fixture.worktree,
+        durableRef: "refs/heads/main",
+      });
+      const report = yield* fixture.service.runNow;
+      expect(report.counts.removed).toBe(1);
+      expect(yield* fs.exists(fixture.worktree)).toBe(false);
+      expect(yield* fs.exists(file + ".released")).toBe(true);
+      // The unidentified empty legacy stage directory must remain untouched.
+      expect(yield* fs.readDirectory(legacyStage)).toEqual([]);
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  ),
+);
+
+it.live.each(["terminal", "command", "process start"] as const)(
+  "blocks interrupted Windows staged deletion when %s is active inside the stage",
+  (blocker) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const sql = yield* SqlClient.SqlClient;
+        const fixture = yield* cleanupFixture(undefined, true, sql);
+        fixture.disable();
+        const runId = RunId.make("staged-admission");
+        const owner = shell({
+          status: "completed",
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          latestRunId: runId,
+          latestRunCompletedAt: at(-DAY_MS),
+          settledAt: at(-DAY_MS),
+        });
+        fixture.setThreads([owner]);
+        yield* fs.writeFileString(
+          NodePath.join(fixture.repo, ".gitignore"),
+          ".t3/\nnode_modules/\n",
+        );
+        yield* fixture.command(fixture.repo, ["add", ".gitignore"]);
+        yield* fixture.command(fixture.repo, ["commit", "-m", "ignore setup"]);
+        yield* fixture.command(fixture.worktree, ["merge", "--ff-only", "main"]);
+        const marker = "83c3b572-0640-4e21-bdc7-c24f84a7830c\n";
+        yield* fs.makeDirectory(NodePath.join(fixture.worktree, ".t3"));
+        yield* fs.writeFileString(NodePath.join(fixture.worktree, ".t3", "setup-done"), marker);
+        yield* fs.makeDirectory(NodePath.join(fixture.worktree, "node_modules"));
+        yield* fs.writeFileString(
+          NodePath.join(fixture.worktree, "node_modules", "installed.js"),
+          "module",
+        );
+        const admin = (yield* fixture.command(fixture.worktree, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ])).stdout.trim();
+        const head = (yield* fixture.command(fixture.worktree, [
+          "rev-parse",
+          "HEAD",
+        ])).stdout.trim();
+        yield* Effect.tryPromise(async (signal) =>
+          writeSetupProof(admin, NodePath.join(admin, "pending-setup"), {
+            root: await NodeFSP.realpath(fixture.repo),
+            checkout: setupFileStamp(
+              await NodeFSP.lstat(NodePath.join(fixture.worktree, ".git"), { bigint: true }),
+            ),
+            head,
+            marker,
+            ...(await sealSetupTrees(fixture.worktree, ["node_modules"], signal)),
+            markerMetadataV1: await sealSetupMarkers(fixture.worktree, "setup-done", signal),
+            links: [],
+          }),
+        );
+        const { file } = yield* queueWorktreeRelease({
+          stateDir: fixture.config.stateDir,
+          threadId: owner.id,
+          runId,
+          worktreePath: fixture.worktree,
+          durableRef: "refs/heads/main",
+        });
+        const contents = yield* fs.readFileString(file);
+        const request = yield* decodeReleaseRequest(contents);
+        yield* fs.rename(file, file + ".releasing");
+        const stage = windowsRemovalStage(fixture.worktree);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const operation = "test.stagedAdmission";
+        const prepared = yield* prepareLinkedWorktreeRemoval({
+          operation,
+          cwd: fixture.repo,
+          worktreePath: fixture.worktree,
+          force: false,
+          release: { ...request, setupReceiptHash: releaseDigest(contents) },
+          execute: driver.execute,
+          run: (args) => driver.execute({ operation, cwd: fixture.repo, args }),
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            remove: (target, options) =>
+              target === NodePath.join(stage, "node_modules", "installed.js")
+                ? fs.remove(NodePath.join(target, "locked"))
+                : fs.remove(target, options),
+          }),
+        );
+        yield* Effect.flip(prepared);
+        expect(yield* fs.exists(NodePath.join(stage, "node_modules", "installed.js"))).toBe(true);
+
+        if (blocker === "terminal") {
+          yield* fixture.openTerminal({
+            cwd: NodePath.join(stage, "node_modules"),
+            worktreePath: null,
+          });
+        } else if (blocker === "command") {
+          yield* sql`
+            INSERT INTO command_runs
+              (task_id, thread_id, run_id, command, cwd, directory, status, exit_code, started_at, deadline_at, ended_at, delivered_at)
+            VALUES ('cmd-stage', 'other-thread', 'other-run', 'echo hi', ${NodePath.join(stage, "node_modules")}, ${fixture.config.stateDir}, 'running', NULL, ${DateTime.formatIso(at(0))}, ${DateTime.formatIso(at(DAY_MS))}, NULL, NULL)
+          `;
+        }
+
+        const runCleanup = fixture.service.runNow;
+        const report =
+          blocker === "process start"
+            ? yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const started = yield* Deferred.make<void>();
+                  const done = yield* Deferred.make<void>();
+                  const fiber = yield* withWorkspaceProcessStart(
+                    Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(done))),
+                    [NodePath.join(stage, "node_modules")],
+                  ).pipe(Effect.provideService(HostProcess.Platform, "win32"), Effect.forkScoped);
+                  yield* Deferred.await(started);
+                  const result = yield* runCleanup;
+                  yield* Deferred.succeed(done, undefined);
+                  yield* Fiber.join(fiber);
+                  return result;
+                }),
+              )
+            : yield* runCleanup;
+
+        expect(report.counts.kept).toBe(1);
+        expect(yield* fs.exists(NodePath.join(stage, "node_modules", "installed.js"))).toBe(true);
+        expect(yield* fs.exists(file + ".releasing")).toBe(true);
+        expect(yield* fs.exists(file + ".released")).toBe(false);
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+    ),
 );

@@ -495,7 +495,10 @@ export const make = Effect.gen(function* () {
         timeoutMs: 5_000,
       });
       if (result.exitCode === 0) {
-        return gitOutputLine(result.stdout).replace(/^refs\/heads\//, "") || null;
+        const ref = gitOutputLine(result.stdout);
+        return ref.startsWith("refs/heads/") && ref.length > "refs/heads/".length
+          ? ref.slice("refs/heads/".length)
+          : null;
       }
       if (result.exitCode === 1) return null;
       return yield* new GitCommandError({

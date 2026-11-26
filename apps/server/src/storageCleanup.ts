@@ -63,7 +63,7 @@ import {
 } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { gitErrorLines, isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
-import { prepareLinkedWorktreeRemoval } from "./vcs/worktreeRemoval.ts";
+import { prepareLinkedWorktreeRemoval, windowsRemovalStages } from "./vcs/worktreeRemoval.ts";
 import { gitOutputLine } from "@t3tools/shared/git";
 import {
   checkoutActivityFloor,
@@ -316,7 +316,9 @@ const taskRequiresResultCheck = (sql: SqlClient.SqlClient) => sql`
 const taskResultCandidate = (sql: SqlClient.SqlClient) => sql`
   t.subagent_id AS id, t.thread_id AS threadId, t.run_id AS spawningRun,
   t.completion_delivery_state AS delivery, t.completed_at AS completedAt,
-  (json_type(t.payload_json, '$.terminalResultObservation.resultFingerprint') IS 'text'
+  ((json_type(t.payload_json, '$.terminalResultObservation.resultFingerprint') IS 'text'
+    AND (json_type(t.payload_json, '$.terminalResultObservation.sourceChildRunId') IS NULL
+      OR json_extract(t.payload_json, '$.terminalResultObservation.proofVersion') = 2))
     OR json_type(t.payload_json, '$.completionDelivery.resultFingerprint') IS 'text') AS hasRecordedRead,
   (t.status IN ('completed','failed','cancelled','interrupted')
     AND t.completion_delivery_state IN ('acknowledged','delivered')
@@ -1405,22 +1407,81 @@ const make = Effect.gen(function* () {
             () => Effect.succeed(false),
           ),
         );
-        if (
-          release?.file.endsWith(".releasing") &&
-          project &&
-          (!exists || (yield* HostProcess.isWindows))
-        ) {
+        const isWindowsHost = yield* HostProcess.isWindows;
+        if (release?.file.endsWith(".releasing") && project && (!exists || isWindowsHost)) {
           if ((yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents)
             return keep(withdrawn);
-          const finishedSetupRemoval =
-            !exists &&
-            (yield* finishWindowsSetupRemoval(
-              project.workspaceRoot,
-              release.request,
-              release.contents,
-            ));
-          if (!finishedSetupRemoval)
-            exists = yield* restoreStagedWindowsCheckout(project.workspaceRoot, release.request);
+          if (!exists && isWindowsHost) {
+            const stages: string[] = [];
+            for (const candidate of windowsRemovalStages(
+              release.request.worktreePath,
+              release.request.identity,
+            )) {
+              if (yield* fs.exists(candidate)) stages.push(candidate);
+            }
+            const stageResult = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const begins: Array<Effect.Effect<string | null>> = [];
+                for (const stage of stages) {
+                  begins.push(yield* observeWorkspaceStarts(stage));
+                }
+                for (const stage of stages) {
+                  const activityHold = yield* workspaceActivityHold(stage, new Set(), null);
+                  if (activityHold !== null) return { done: true as const, hold: activityHold };
+                }
+                for (const begin of begins) {
+                  const admissionHold = yield* begin;
+                  if (admissionHold !== null) return { done: true as const, hold: admissionHold };
+                }
+                if (
+                  (yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents
+                )
+                  return { done: true as const, hold: withdrawn };
+                const finishedSetupRemoval = yield* finishWindowsSetupRemoval(
+                  project.workspaceRoot,
+                  release.request,
+                  release.contents,
+                );
+                if (!finishedSetupRemoval) {
+                  exists = yield* restoreStagedWindowsCheckout(
+                    project.workspaceRoot,
+                    release.request,
+                  );
+                }
+                if (exists) return { done: false as const };
+                const hold = yield* finishInterruptedRemoval(
+                  project.workspaceRoot,
+                  release.request,
+                );
+                if (
+                  (yield* allowMissingRequest(fs.readFileString(release.file))) !== release.contents
+                )
+                  return { done: true as const, hold: withdrawn };
+                if (hold) return { done: true as const, hold };
+                if (
+                  (yield* allowMissingRequest(
+                    fs.rename(release.file, release.file.replace(/\.releasing$/, ".released")),
+                  )) === null
+                )
+                  return { done: true as const, hold: withdrawn };
+                return { done: true as const, hold: null };
+              }),
+            );
+            if (stageResult.done) {
+              if (stageResult.hold !== null) return keep(stageResult.hold);
+              return;
+            }
+          } else {
+            const finishedSetupRemoval =
+              !exists &&
+              (yield* finishWindowsSetupRemoval(
+                project.workspaceRoot,
+                release.request,
+                release.contents,
+              ));
+            if (!finishedSetupRemoval)
+              exists = yield* restoreStagedWindowsCheckout(project.workspaceRoot, release.request);
+          }
         }
         if (!exists) {
           if (release?.file.endsWith(".releasing")) {

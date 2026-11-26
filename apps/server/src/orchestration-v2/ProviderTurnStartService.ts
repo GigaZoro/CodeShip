@@ -46,8 +46,13 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { familyHookOperation } from "../vcs/familyWorktreeCheckout.ts";
-import { windowsRemovalStage } from "../vcs/worktreeRemoval.ts";
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import { windowsRemovalStages } from "../vcs/worktreeRemoval.ts";
+import {
+  observeWorkspaceStarts,
+  withWorkspaceLease,
+  workspacePathOverlaps,
+} from "../workspace/workspaceLease.ts";
 import {
   releasedWorktree,
   releaseReceiptPath,
@@ -386,6 +391,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | TerminalManager.TerminalManager
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -407,6 +413,7 @@ export const layer: Layer.Layer<
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const terminals = yield* TerminalManager.TerminalManager;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
@@ -596,12 +603,12 @@ export const layer: Layer.Layer<
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
       function* (cwd: string) {
-        // Recovery can follow an external checkout, before the status cache expires.
-        yield* gitWorkflow.invalidateLocalStatus(cwd);
-        const { refName: currentBranch } = yield* gitWorkflow.localStatus({ cwd });
+        const currentBranch = yield* gitWorkflow.currentBranch(cwd);
         if (currentBranch !== null) {
           const refName = `refs/heads/${currentBranch}`;
-          return { refName, baseRefName: refName };
+          if (yield* gitWorkflow.hasCommit({ cwd, refName })) {
+            return { refName, baseRefName: refName };
+          }
         }
         if (yield* gitWorkflow.hasCommit({ cwd, refName: "refs/remotes/origin/HEAD" })) {
           const { commitSha } = yield* gitWorkflow.resolveRemoteTrackingCommit({
@@ -794,24 +801,58 @@ export const layer: Layer.Layer<
         if (exists && !released) return;
         if (input.readOnly) return yield* new ReadOnlyWorktreeRecoveryError();
         // Recover a verified setup plan or finish a stage Git has already unregistered.
-        if (
-          !exists &&
-          released?.receipt.endsWith(".releasing") &&
-          (yield* HostProcess.isWindows) &&
-          (yield* fileSystem.exists(windowsRemovalStage(canonical)))
-        ) {
-          const blocked = new WorktreeRecreateBlockedError({ worktreePath, reason: "removal" });
-          const project = yield* lookup;
-          if (!project) return yield* blocked;
-          const finished = yield* gitWorkflow
-            .finishStagedWindowsRemoval(project.workspaceRoot, released.request, released.contents)
-            .pipe(Effect.mapError(() => blocked));
-          if (!finished) return yield* blocked;
-          const current = yield* readReleaseFile(released.receipt, canonical);
-          if (current?.contents !== released.contents) return yield* blocked;
-          const completed = released.receipt.replace(/\.releasing$/, ".released");
-          yield* fileSystem.rename(released.receipt, completed);
-          released = { ...released, receipt: completed };
+        if (!exists && released?.receipt.endsWith(".releasing") && (yield* HostProcess.isWindows)) {
+          const stages: string[] = [];
+          for (const candidate of windowsRemovalStages(canonical, released.request.identity)) {
+            if (yield* fileSystem.exists(candidate)) stages.push(candidate);
+          }
+          if (stages.length > 0) {
+            const blocked = new WorktreeRecreateBlockedError({ worktreePath, reason: "removal" });
+            const project = yield* lookup;
+            if (!project) return yield* blocked;
+            const releasing = released;
+            const finished = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const begins: Array<Effect.Effect<string | null>> = [];
+                for (const stage of stages) {
+                  begins.push(yield* observeWorkspaceStarts(stage));
+                }
+                const activePaths = [
+                  ...(yield* terminals.activeWorkspaces),
+                  ...(yield* providerSessions.occupiedWorkspaces),
+                  ...(yield* projectionStore
+                    .listActiveCommandCwds()
+                    .pipe(Effect.mapError(() => blocked))),
+                ];
+                for (const stage of stages) {
+                  for (const activePath of activePaths) {
+                    if (yield* workspacePathOverlaps(stage, activePath)) {
+                      return yield* blocked;
+                    }
+                  }
+                }
+                for (const begin of begins) {
+                  const admissionHold = yield* begin;
+                  if (admissionHold !== null) return yield* blocked;
+                }
+                const currentBefore = yield* readReleaseFile(releasing.receipt, canonical);
+                if (currentBefore?.contents !== releasing.contents) return yield* blocked;
+                return yield* gitWorkflow
+                  .finishStagedWindowsRemoval(
+                    project.workspaceRoot,
+                    releasing.request,
+                    releasing.contents,
+                  )
+                  .pipe(Effect.mapError(() => blocked));
+              }),
+            );
+            if (!finished) return yield* blocked;
+            const current = yield* readReleaseFile(released.receipt, canonical);
+            if (current?.contents !== released.contents) return yield* blocked;
+            const completed = released.receipt.replace(/\.releasing$/, ".released");
+            yield* fileSystem.rename(released.receipt, completed);
+            released = { ...released, receipt: completed };
+          }
         }
         if (
           exists &&

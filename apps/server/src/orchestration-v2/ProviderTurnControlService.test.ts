@@ -256,6 +256,7 @@ it.effect(
           getMemoryAdmissionQueue: () => Effect.die("unused getMemoryAdmissionQueue"),
           getSubagentCount: () => Effect.die("unused subagent count"),
           firstProvenTaskResultRead: () => Effect.die("unused legacy task read"),
+          listActiveCommandCwds: () => Effect.succeed([]),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
           getTurnItem: () => Effect.die("unused turn item read"),
           getThreadRecords: () => Effect.die("unused record read"),

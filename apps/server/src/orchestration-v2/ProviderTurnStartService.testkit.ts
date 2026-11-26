@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 
 export const layer = Layer.mergeAll(
   WorktreeSetupTracker.layer,
@@ -29,6 +30,9 @@ export const layer = Layer.mergeAll(
   }),
   Layer.mock(ProjectService.ProjectService)({
     getById: () => Effect.succeedNone,
+  }),
+  Layer.mock(TerminalManager.TerminalManager)({
+    activeWorkspaces: Effect.succeed([]),
   }),
 );
 
