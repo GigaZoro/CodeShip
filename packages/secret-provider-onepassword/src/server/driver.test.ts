@@ -42,7 +42,7 @@ function fakeOp(answer: (args: ReadonlyArray<string>) => OpResult) {
       ChildProcessSpawner.make((command) =>
         Effect.sync(() => {
           if (!ChildProcess.isStandardCommand(command)) throw new Error("Unexpected pipeline");
-          const { args } = command;
+          const args = command.args.map(String);
           invocations.push(args);
           commands.push(command);
           Deferred.doneUnsafe(spawned, Effect.void);

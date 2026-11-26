@@ -653,7 +653,7 @@ export const withWorkspaceModels = (
 const withV = (version: string) => (version.startsWith("v") ? version : `v${version}`);
 
 /** A provider that lists no models accepts any slug. */
-export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
+const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
   if (provider.models.length === 0 || findAdvertisedModel(provider, model) !== undefined) {
     return Effect.succeed(findAdvertisedModel(provider, model));
   }
@@ -831,17 +831,6 @@ export const requireModelPreferences = Effect.fn("OrchestratorMcpService.require
     }
   },
 );
-
-/** Validate and normalize requested options against the model's advertised option descriptors. */
-export const validateModelOptions = (
-  provider: ServerProvider,
-  model: string,
-  options: ModelSelection["options"],
-) =>
-  requireOfferedOptions(
-    { instanceId: provider.instanceId, model, options },
-    findAdvertisedModel(provider, model)?.capabilities?.optionDescriptors,
-  );
 
 function taskStatusForRun(
   run: Pick<OrchestrationV2Run, "status" | "restartCancelledBackgroundWork"> | undefined,

@@ -178,17 +178,15 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
       for (const profile of missingProfiles) {
         const onDisk = yield* fs.exists(profile.path).pipe(Effect.orElseSucceed(() => false));
         if (!onDisk)
-          yield* fs
-            .writeFileString(profile.path, profile.text)
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new BrowserSetupStepError({
-                    step: `write ${profile.path}`,
-                    detail: cause.message,
-                  }),
-              ),
-            );
+          yield* fs.writeFileString(profile.path, profile.text).pipe(
+            Effect.mapError(
+              (cause) =>
+                new BrowserSetupStepError({
+                  step: `write ${profile.path}`,
+                  detail: cause.message,
+                }),
+            ),
+          );
         yield* runStep("load the AppArmor profile", "apparmor_parser", ["-r", profile.path]);
         yield* Console.log(
           `${onDisk ? "Reloaded the AppArmor profile" : "Wrote and loaded the AppArmor profile"} at ${profile.path} for ${profile.subject}.`,

@@ -164,7 +164,10 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
   const live = catalog.source === LIVE_CATALOG_SOURCE;
   const observation =
     live && !environment?.META_API_KEY
-      ? yield* Effect.tryPromise(() => host.connection.request("usage/read", {})).pipe(
+      ? yield* Effect.tryPromise({
+          try: () => host.connection.request("usage/read", {}),
+          catch: () => "usage-read-failed" as const,
+        }).pipe(
           Effect.flatMap(decodeUsage),
           Effect.map((read) => read.usage),
           Effect.timeout("500 millis"),

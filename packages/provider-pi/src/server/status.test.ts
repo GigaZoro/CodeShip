@@ -184,7 +184,7 @@ const BROKEN_ADVISORY = {
 describe("PiProvider", () => {
   it.effect("reports a version the policy rates broken as an error", () =>
     Effect.gen(function* () {
-      const snapshot = yield* checkPiProviderStatus(settings, undefined, undefined, () =>
+      const snapshot = yield* checkPiProviderStatus(settings, undefined, undefined, null, () =>
         Effect.succeed(BROKEN_ADVISORY),
       ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("0.84.2")),

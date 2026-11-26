@@ -218,7 +218,6 @@ export function connectionRouteLabel(route: ConnectionRoute, resolve: typeof t =
 }
 
 /** @public */
-export const connectionRouteLabelText = connectionRouteLabel;
 
 export function connectionRouteAddress(route: ConnectionRoute): string | null {
   if (route.target._tag === "SshConnectionTarget") {

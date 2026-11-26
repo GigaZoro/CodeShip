@@ -107,7 +107,10 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
       (yield* Effect.promise(async () =>
         resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd),
       )) ?? options.settings.commandPath;
-    const path = yield* Effect.tryPromise(() => NodeFSP.realpath(executable)).pipe(
+    const path = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(executable),
+      catch: () => "realpath-failed" as const,
+    }).pipe(
       Effect.orElseSucceed(() => (platform === "win32" ? executable.toLowerCase() : executable)),
     );
     // Local launcher arguments can identify different agents and can contain secrets.

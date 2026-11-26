@@ -46,7 +46,7 @@ export function getProviderStatusKey(provider: ServerProvider | undefined): Prov
   return provider?.status ?? "warning";
 }
 
-export function providerAuthLabel(
+function providerAuthLabel(
   auth: Pick<ServerProvider["auth"], "label" | "type">,
 ): string | undefined {
   if (auth.type === "customEndpoint") return t("Custom API endpoint");

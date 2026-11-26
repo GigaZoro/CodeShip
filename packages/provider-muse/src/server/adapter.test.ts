@@ -214,7 +214,7 @@ const makeHarness = Effect.fnUntraced(function* (
     | "nativeEventLogger"
     | "modelCatalog"
     | "continuationRequests"
-    | "onUsageLimits"
+    | "bindUsageLimits"
     | "login"
   > = {},
 ) {
@@ -635,7 +635,9 @@ describe("MuseAdapterV2", () => {
         undefined,
         undefined,
         runtimePolicy,
-        { onUsageLimits: (report) => Effect.sync(() => void reports.push(report)) },
+        {
+          bindUsageLimits: Effect.succeed((report) => Effect.sync(() => void reports.push(report))),
+        },
       );
       yield* fake.emitHostWide("usage/changed", {
         ...SUBSCRIPTION_USAGE,
@@ -735,7 +737,9 @@ describe("MuseAdapterV2", () => {
         undefined,
         undefined,
         runtimePolicy,
-        { onUsageLimits: (report) => Effect.sync(() => void reports.push(report)) },
+        {
+          bindUsageLimits: Effect.succeed((report) => Effect.sync(() => void reports.push(report))),
+        },
       );
       yield* fake.emitHostWide("usage/changed", { window: "not usage" });
       yield* fake.emitHostWide("usage/changed", {

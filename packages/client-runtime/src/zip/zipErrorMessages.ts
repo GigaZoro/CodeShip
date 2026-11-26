@@ -1,4 +1,4 @@
-import { msg, t, type Message } from "@t3tools/shared/i18n";
+import { msg, type Message } from "@t3tools/shared/i18n";
 
 import type { ZipErrorCode } from "./zipError.ts";
 
@@ -15,7 +15,3 @@ export const ZIP_ERROR_MESSAGES: Record<ZipErrorCode, Message> = {
   "zip64-damaged": msg("This ZIP64 directory is too large or damaged."),
   "zip-directory-damaged": msg("This ZIP directory is damaged."),
 };
-
-export function zipErrorText(code: ZipErrorCode, resolve: typeof t = t): string {
-  return resolve(ZIP_ERROR_MESSAGES[code]);
-}

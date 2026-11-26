@@ -34,11 +34,6 @@ export function dpopFailureText(
   return [message, dpopFailureHint(reason)];
 }
 
-/** Render a DPoP failure for code that needs its display text immediately. */
-export function dpopFailureMessage(message: string, reason: DpopFailureReason | undefined): string {
-  return resolveMarkedText(dpopFailureText(message, reason));
-}
-
 /** The relay's refusal as marked sentences, for errors that carry `i18nMessage`. */
 export function relayProtectedErrorText(error: RelayProtectedError): MarkedText {
   switch (error._tag) {

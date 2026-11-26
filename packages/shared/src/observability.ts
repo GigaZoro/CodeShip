@@ -670,7 +670,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
 });
 
 // Effect's HTTP errors, including failed upgrades, put the request URL in their message.
-export function redactCauseCredentials(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
+function redactCauseCredentials(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
   if (cause.reasons.length === 0 || Cause.hasInterruptsOnly(cause)) {
     return cause;
   }

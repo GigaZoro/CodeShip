@@ -72,6 +72,14 @@ function compareVersions(left: ReadonlyArray<number>, right: ReadonlyArray<numbe
 
 // `agy acp` 1.5.1 offers every model to every ACP client; older runtimes allowlist editors.
 export const OPEN_MODEL_ACCESS_RELEASE = [1, 5, 1] as const;
+// `agy acp` 1.4.5+ supports the built-in `/usage` quota command.
+const QUOTA_COMMAND_RELEASE = [1, 4, 5] as const;
+
+export function isQualifiedAntigravityRelease(version: string | null | undefined): boolean {
+  const parsed = parseAntigravityVersion(version ?? undefined);
+  return parsed !== undefined && compareVersions(parsed, QUOTA_COMMAND_RELEASE) >= 0;
+}
+
 // `agy acp` 1.5.0 steers a running turn with the next prompt; the 1.4 harness queues it.
 const PROMPT_STEERING_RELEASE = [1, 5, 0] as const;
 

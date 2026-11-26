@@ -104,7 +104,7 @@ export const MarkdownLinkContext = createContext(false);
 /** The thread's workspace mutation id, so a host image the agent rewrites gets a fresh URL. */
 export const WorkspaceMutationIdContext = createContext<string | null | undefined>(undefined);
 
-export function markdownMediaName(alt: string, kind: "image" | "video"): string {
+function markdownMediaName(alt: string, kind: "image" | "video"): string {
   return alt.trim() || (kind === "video" ? t("Video") : t("Image"));
 }
 

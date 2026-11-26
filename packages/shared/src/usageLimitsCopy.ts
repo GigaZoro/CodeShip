@@ -3,9 +3,7 @@ import { msg, t } from "./i18n.ts";
 import { formatDuration, resetCountdown } from "./usageLimits.ts";
 
 export {
-  collectExternalUsageLinks,
   collectLimitNotices,
-  cursorUsageWindowDetails,
   formatDuration,
   limitsNotice,
   resetCreditChoices,

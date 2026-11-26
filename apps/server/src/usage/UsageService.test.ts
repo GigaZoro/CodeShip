@@ -3110,7 +3110,7 @@ describe("UsageService", () => {
       const { profile } = yield* resolveAntigravityInstanceDirectories(
         NodePath.join(home, prefix, "userdata"),
         ProviderInstanceId.make("antigravity"),
-      ).pipe(Effect.provide(NodeServices.layer));
+      ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
       const histories = [
         [first, 7],
         [second, 11],

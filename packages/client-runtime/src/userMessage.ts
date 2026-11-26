@@ -40,15 +40,6 @@ export const IDLE_COMPACTING_LABELS = {
   },
 };
 
-export const IDLE_COMPACTION_TITLES = {
-  get beforeCacheExpires() {
-    return t(IDLE_COMPACTION_TITLE_MESSAGES.beforeCacheExpires);
-  },
-  get onReturn() {
-    return t(IDLE_COMPACTION_TITLE_MESSAGES.onReturn);
-  },
-};
-
 const LEGACY_AUTOMATION_PREFIX = /^\[Triggered by schedule task: [^\r\n]+\]\r?\n\r?\n/;
 const LEGACY_AUTOMATION_MESSAGE_ID = /^scheduled-task-message:(.+):\d+:(?:scheduled|manual)$/;
 

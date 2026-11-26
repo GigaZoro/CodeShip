@@ -21,5 +21,3 @@ export function resolveVisibleWorktreeSetup(input: {
 export function worktreeSetupAgentStarted(snapshot: WorktreeSetupSnapshot): boolean {
   return snapshot.stages.some((stage) => stage.id === "agent" && stage.status === "done");
 }
-
-export { worktreeSetupStageLabel } from "./contractLabels.ts";

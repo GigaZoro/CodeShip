@@ -4,7 +4,7 @@ import {
   type ConnectionRouteKind,
   connectionRouteId,
   connectionRouteKind,
-  connectionRouteLabelText,
+  connectionRouteLabel,
   connectionRoutes,
   routeHttpBaseUrl,
 } from "@t3tools/client-runtime/connection";
@@ -315,7 +315,7 @@ function useFleetGraph() {
         kind: connectionRouteKind(route),
         ...(connectionRouteKind(route) === "tailnet" &&
         routeHttpBaseUrl(route)?.startsWith("https:") === true
-          ? { label: connectionRouteLabelText(route, t) }
+          ? { label: connectionRouteLabel(route, t) }
           : {}),
       })),
       activeRouteId: active === null ? null : connectionRouteId(active.target),

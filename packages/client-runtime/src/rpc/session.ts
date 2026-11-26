@@ -318,6 +318,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     const serverConfigUpdates = yield* PubSub.sliding<BufferedServerConfigEvent>(64);
     const configSubscriptionEndedError = new ConnectionTransientErrorClass({
       reason: "remote-unavailable",
+      // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
       detail: `${connection.label} config subscription ended.`,
     });
     // An interrupt while the session is not closing came from the server; it ends the subscription.
@@ -491,6 +492,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         return Stream.fail(
           new RpcClientError.RpcClientError({
             reason: new RpcClientError.RpcClientDefect({
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `${connection.label} config subscription failed.`,
               cause,
             }),
@@ -503,6 +505,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         (cause) =>
           new RpcClientError.RpcClientError({
             reason: new RpcClientError.RpcClientDefect({
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `${connection.label} config subscription failed.`,
               cause,
             }),

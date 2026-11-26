@@ -14,15 +14,11 @@ const catalog: MessageCatalog = {
     other: " до {count} чату",
   },
   "_No description provided._": "_Опису немає._",
-  ", done": ", завершено",
-  ", failed": ", невдача",
   ", in {project}": ", у проєкті {project}",
-  ", needs you": ", потребує вашої уваги",
   ", on {machine}": ", на {machine}",
   ", runs on every machine": ", запускається на кожному комп’ютері",
   ", runs on one machine": ", запускається на одному комп’ютері",
   ", runs the default model here": ", тут використовує модель за замовчуванням",
-  ", working": ", працює",
   "… {count} characters in the middle are not shown. The text ends with:": {
     one: "… Посередині пропущено {count} символ. Текст закінчується так:",
     few: "… Посередині пропущено {count} символи. Текст закінчується так:",
@@ -1804,8 +1800,6 @@ const catalog: MessageCatalog = {
   "{option} On": "{option} увімкнено",
   "{organization} limits threads to {mode}.": "{organization} обмежує чати режимом: {mode}.",
   "{organization} manages T3.CodeShip updates.": "{organization} керує оновленнями T3.CodeShip.",
-  "{organization} manages T3.CodeShip updates. Only stable releases can be installed.":
-    "{organization} керує оновленнями T3.CodeShip. Можна встановлювати лише стабільні випуски.",
   "{organization} turned off anonymous usage data.":
     "Організація {organization} вимкнула анонімні дані про використання.",
   "{organization}'s policy does not allow {capability}.":

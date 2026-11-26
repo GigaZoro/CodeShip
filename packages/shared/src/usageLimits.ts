@@ -478,9 +478,7 @@ function cursorUsageWindowRank(id: string): number {
   return rank < 0 ? CURSOR_USAGE_WINDOWS.length : rank;
 }
 
-export function providersWithLimits(
-  providers: readonly ServerProvider[],
-): readonly ServerProvider[] {
+function providersWithLimits(providers: readonly ServerProvider[]): readonly ServerProvider[] {
   return providers.filter(
     (provider) =>
       provider.enabled &&
@@ -962,7 +960,7 @@ export function limitsFreshness(accounts: readonly LimitAccount[]): {
 }
 
 /** Hub accounts whose read failed and that no other report shows as a row, with their names. */
-export function unshownFailedHubAccounts(
+function unshownFailedHubAccounts(
   presentations: LimitPresentations,
 ): ReadonlyMap<UsageLimitSourceAccount, string> {
   const resolveKey = accountKeyResolver(limitAccountWorkspaces(presentations).byLogin);

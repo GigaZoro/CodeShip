@@ -52,7 +52,7 @@ export type DynamicToolTitle =
   | { readonly kind: "run-javascript" }
   | { readonly kind: "skill"; readonly name: string };
 
-export function describeDynamicToolTitle(
+function describeDynamicToolTitle(
   toolName: string | null | undefined,
   input: unknown,
   retainedTitle?: string | null,

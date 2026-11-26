@@ -33,7 +33,7 @@ export const secretRequestPrivacyNote = (
       : resolve(
           msg("Kept out of chat, in private files this agent's commands can read for 24 hours"),
         );
-export const SECRET_REQUEST_DEFAULT_PLACEHOLDER = msg("Paste the secret");
+const SECRET_REQUEST_DEFAULT_PLACEHOLDER = msg("Paste the secret");
 
 export interface SecretRequestInput {
   /** Key in the card's values: the field name, or "" for a request without fields. */
@@ -172,7 +172,7 @@ export interface SecretRequestSource {
 const NO_SOURCES: ReadonlyArray<SecretRequestSource> = [];
 
 // Secret provider packages author this text in English; the same English, translatable here.
-export function invalidSecretReferenceText(message: string, resolve: typeof t = t): string {
+function invalidSecretReferenceText(message: string, resolve: typeof t = t): string {
   return message === "Use a 1Password reference like op://vault/item/field."
     ? resolve(msg("Use a 1Password reference like {example}."), {
         example: "op://vault/item/field",

@@ -508,7 +508,7 @@ export function serverUpdateStateForServerVersion(
     : IDLE_SERVER_UPDATE_STATE;
 }
 
-export function serverUpdateFailureMessage(error: unknown, resolve: typeof t = t): string {
+function serverUpdateFailureMessage(error: unknown, resolve: typeof t = t): string {
   return error instanceof Error
     ? (thrownErrorMessage(error, resolve) ?? error.message)
     : resolve(msg("Server update failed."));

@@ -3,7 +3,6 @@ import { useLocation, useNavigate, useRouter, type AnyRouter } from "@tanstack/r
 
 import { GUEST_PAGE_PATH } from "../../guestPage";
 import { withoutAssistantCitationHash } from "../../lib/assistantCitationNavigation";
-import { resolveThreadRouteTarget, type ThreadRouteTarget } from "../../threadRoutes";
 
 export function isSettingsPage(pathname: string) {
   return pathname === "/settings" || pathname.startsWith("/settings/");
@@ -51,7 +50,7 @@ export function isAppModalPage(pathname: string) {
   return pathname === "/settings" || pathname.startsWith("/settings/") || pathname === "/usage";
 }
 
-export function isSidebarUtilityPage(pathname: string) {
+function isSidebarUtilityPage(pathname: string) {
   return (
     pathname.startsWith("/projects/") ||
     pathname === "/pull-requests" ||
@@ -68,7 +67,6 @@ const SHELL_LESS_PATHS = new Set(["/pair", "/connect", "/connect-agent", GUEST_P
 let mainAppHref: string | null = null;
 let appModalReturnHref: string | null = null;
 let appModalReturnHistoryIndex: number | null = null;
-let appModalReturnThreadTarget: ThreadRouteTarget | null = null;
 let initialHistoryIndex = 0;
 
 /** Remembers where Settings, Usage, and the utility pages lead back to. */
@@ -82,18 +80,10 @@ export function startMainAppLocationTracking(router: AnyRouter): () => void {
     // Only an entry that is exactly the return location can be stepped back to.
     appModalReturnHistoryIndex =
       href === router.state.location.href ? router.state.location.state.__TSR_index : null;
-    appModalReturnThreadTarget = resolveThreadRouteTarget(
-      router.state.matches.at(-1)?.params ?? {},
-    );
     if (!isSidebarSectionPage(pathname)) mainAppHref = href;
   };
   record();
   return router.subscribe("onResolved", record);
-}
-
-/** The thread Settings or Usage opened over, for views mounted while the modal is open. */
-export function getAppModalReturnThreadTarget() {
-  return appModalReturnThreadTarget;
 }
 
 export function readMainAppHref() {

@@ -102,31 +102,24 @@ export function formatUsd(value: number, locale?: string): string {
 
 export function formatUsageCost(
   usage: Pick<MergedUsage, "costUsd" | "records" | "unpricedRecords"> | undefined,
-  locale?: string,
 ): string {
-  return usage && isUsageCostUnknown(usage)
-    ? t("Unpriced")
-    : formatUsd(usage?.costUsd ?? 0, locale);
+  return usage && isUsageCostUnknown(usage) ? t("Unpriced") : formatUsd(usage?.costUsd ?? 0);
 }
 
 export function formatProviderUsageDetail(
   usage: ProviderTotals,
   metric: "cost" | "tokens",
-  locale?: string,
 ): string {
   if (metric === "tokens") {
     return t("{share} of tokens · {cost}", {
-      share: formatPercent(usage.tokenShare, locale),
-      cost: formatUsageCost(usage, locale),
+      share: formatPercent(usage.tokenShare),
+      cost: formatUsageCost(usage),
     });
   }
-  const tokens = formatTokens(usage.totalTokens, locale);
+  const tokens = formatTokens(usage.totalTokens);
   return isUsageCostUnknown(usage)
     ? t("{tokens} tokens", { tokens })
-    : t("{share} of cost · {tokens} tokens", {
-        share: formatPercent(usage.costShare, locale),
-        tokens,
-      });
+    : t("{share} of cost · {tokens} tokens", { share: formatPercent(usage.costShare), tokens });
 }
 
 export function formatCount(value: number, locale?: string): string {

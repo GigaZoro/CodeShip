@@ -1415,12 +1415,13 @@ describe("OpenCodeAdapterV2", () => {
         // Its ancestry will only resolve after the parent advances.
         yield* ask("delayed-child", "child");
         yield* push({ type: "session.idle", properties: { sessionID: "root" } });
+        const firstTurns = yield* harness.awaitTurns((turns) => turns.length >= 1);
         const afterFirst = yield* snapshot();
         {
           const first = afterFirst.runtimeRequests.find(
             (row) => row.nativeRequestRef?.nativeId === "first",
           );
-          assert.equal(first?.providerTurnId, afterFirst.providerTurns[0]?.id);
+          assert.equal(first?.providerTurnId, firstTurns[0]?.id);
           assert.equal(first?.status, "cancelled");
         }
         yield* harness.startTurn(
@@ -1456,15 +1457,14 @@ describe("OpenCodeAdapterV2", () => {
         yield* ask("lookup-B", "root", "lookup-B");
         yield* assistant("root", "assistant-B", prompts[1]!);
         yield* TestClock.adjust("8 seconds");
+        const secondTurns = yield* harness.awaitTurns((turns) => turns.length >= 2);
         const afterSecond = yield* snapshot();
         const asked = afterSecond.runtimeRequests.filter((row) => row.status === "pending");
         assert.sameMembers(
           asked.map((row) => row.nativeRequestRef?.nativeId),
           ["valid-B", "lookup-B"],
         );
-        assert.isTrue(
-          asked.every((row) => row.providerTurnId === afterSecond.providerTurns.at(-1)?.id),
-        );
+        assert.isTrue(asked.every((row) => row.providerTurnId === secondTurns.at(-1)?.id));
         assert.sameMembers(denied, ["late", "ambiguous", "delayed-child"]);
 
         const settle = (requestID: string, method = kind + ".replied") =>

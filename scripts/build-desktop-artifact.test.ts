@@ -2374,10 +2374,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.include(inventoryText, `${kind} ${NodeCrypto.hash("sha256", "codex")} bin/codex\n`);
       assert.include(inventoryText, `${NodeCrypto.hash("sha256", "{}")} codex-package.json\n`);
       const expected = NodeCrypto.hash("sha256", inventoryText);
+      class CodexMetadataVerifyError extends Schema.TaggedError<CodexMetadataVerifyError>()(
+        "CodexMetadataVerifyError",
+        { cause: Schema.Defect() },
+      ) {}
       const verify = () =>
         Effect.tryPromise({
           try: () => verifyCodexMetadataInstallation(stage, expected),
-          catch: (cause) => new Error("Could not verify the staged Codex metadata", { cause }),
+          catch: (cause) => new CodexMetadataVerifyError({ cause }),
         });
       yield* verify();
       yield* fs.remove(inventory);

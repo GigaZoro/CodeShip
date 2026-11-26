@@ -490,7 +490,7 @@ export function UsageProviderChart({
 
   const periods = resolution === "hour" ? hours : days;
   const byPeriod = usageChartPeriodIndex(daily, hourly, resolution);
-  const { scale, paths, stepX, offsetX, bars } = buildChart(
+  const { scale, paths, stepX, offsetX, bars, columns } = buildChart(
     periods,
     byPeriod,
     metric,

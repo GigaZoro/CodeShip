@@ -936,7 +936,7 @@ export const linkClaudeSharedSkills = Effect.fn("linkClaudeSharedSkills")(functi
 });
 
 // The Claude CLI takes the next token as this flag's value even when it starts with `--`.
-export const claudeLaunchArgParseOptions = { valueFlags: ["append-system-prompt"] };
+const claudeLaunchArgParseOptions = { valueFlags: ["append-system-prompt"] };
 
 // Claude's --plugin-dir is repeatable; parseCliArgs keeps only the last one.
 export function claudeLaunchArgPluginDirectories(launchArgs?: string): ReadonlyArray<string> {

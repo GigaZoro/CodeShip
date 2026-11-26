@@ -30,13 +30,6 @@ export function managedUpdatesMessage(organization: string): string {
   return t("{organization} manages T3.CodeShip updates.", { organization });
 }
 
-/** The message when the policy allows only stable releases. */
-export function managedNightlyDeniedMessage(organization: string): string {
-  return t("{organization} manages T3.CodeShip updates. Only stable releases can be installed.", {
-    organization,
-  });
-}
-
 /** Why updates are unavailable on an environment with `summary`, or undefined when allowed. */
 export function managedUpdatesDenial(summary: ManagedPolicySummary | undefined) {
   return summary?.limits?.updates?.mode === "off"
@@ -49,7 +42,7 @@ export function managedPolicyDeniedMessage(organization: string, capability: str
   return t("{organization}'s policy does not allow {capability}.", { organization, capability });
 }
 
-export function managedRuntimeModeCeilingMessage(organization: string, ceiling: RuntimeMode) {
+function managedRuntimeModeCeilingMessage(organization: string, ceiling: RuntimeMode) {
   return t("{organization} limits threads to {mode}.", {
     organization,
     mode: t(RUNTIME_MODE_LABELS[ceiling]),

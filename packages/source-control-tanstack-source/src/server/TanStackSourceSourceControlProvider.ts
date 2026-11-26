@@ -590,6 +590,7 @@ export const make = Effect.gen(function* () {
           // A fork's head, or one synced from GitHub, is only reachable through its pull ref.
           const localBranch = `pr-${pull.number}`;
           const tracking = `refs/remotes/${remoteName}/pull/${pull.number}`;
+          // oxlint-disable-next-line t3code/no-remote-git-through-execute -- SourceControlHost.git exposes execute rather than executeRemote for custom pull refspecs
           yield* git.execute({
             operation,
             cwd: input.cwd,
