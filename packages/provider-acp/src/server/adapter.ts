@@ -817,6 +817,8 @@ export const AcpProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "client-boundary",
+    // The client policy denies every non-read tool call and terminal.
+    readOnlySandbox: true,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
@@ -1541,6 +1543,8 @@ interface ActiveAcpTurn {
   /** Clock millis of the prompt's last progress, for `promptInactivityTimeout`. */
   lastProgressAt: number;
   inactivityWatchdog: Fiber.Fiber<void> | undefined;
+  // Set only on a native wake turn: whether the provider produced output for it.
+  nativeWakeStarted: boolean | undefined;
 }
 
 type AcpRuntimeTeardownState =
@@ -1654,10 +1658,12 @@ function acpIsProviderContinuationMessage(message: {
   return message.createdBy === "agent" && message.creationSource === "provider";
 }
 
+const encodeWakeEventId = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 const sessionScopedId = (sessionId: string, nativeId: string): string =>
   JSON.stringify([sessionId, nativeId]);
 
-type WakeEvidence = { sourceRunId: RunId | null; report?: BackgroundWorkReport };
+type WakeEvidence = { eventKey?: string; sourceRunId: RunId | null; report?: BackgroundWorkReport };
 type WakeTask = WakeEvidence & {
   phase: "running" | "pending";
   hasSource: boolean;
@@ -1693,6 +1699,7 @@ export class AcpWakeEvidence {
     const task = this.tasks.get(key) ?? this.begin(key, this.consumed.has(key));
     // Multiple distinct producers can use the same native task ID. Its bare terminal cannot identify one of them.
     if (task.hasSource && task.sourceRunId !== source) task.reused = true;
+    task.eventKey = identity;
     task.hasSource = true;
     task.sourceRunId = task.reused ? null : source;
     if (task.reused) delete task.report;
@@ -1726,6 +1733,7 @@ export class AcpWakeEvidence {
 
   private detachTerminal(key: string, task: WakeTask) {
     this.pending.push({
+      ...(task.reused || task.eventKey === undefined ? {} : { eventKey: task.eventKey }),
       sourceRunId: task.sourceRunId,
       ...(task.report && { report: task.report }),
     });
@@ -2480,18 +2488,31 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             readonly threadId: ThreadId;
             readonly runtimeGeneration: number;
             readonly offerGeneration: number;
+            readonly promptIds: Set<string>;
             readonly frames: ReadonlyArray<EffectAcpSchema.SessionNotification>;
           }
         >();
-        const takeWakeFrames = (sessionId: string) =>
-          Ref.modify(
-            wakeBuffer,
-            (frames) =>
-              [
-                frames.filter((frame) => frame.sessionId === sessionId),
-                frames.filter((frame) => frame.sessionId !== sessionId),
-              ] as const,
-          );
+        const wakePromptId = (frame: EffectAcpSchema.SessionNotification) =>
+          flavor.isProviderWakeNotification?.(frame) &&
+          typeof frame._meta?.promptId === "string" &&
+          frame._meta.promptId.trim()
+            ? frame._meta.promptId
+            : undefined;
+        const takeWakeFrames = (sessionId: string, promptIds: Set<string>) =>
+          Ref.modify(wakeBuffer, (frames) => {
+            const boundary = frames.findIndex((frame) => {
+              const id = wakePromptId(frame);
+              if (frame.sessionId !== sessionId || id === undefined) return false;
+              // A terminal report can offer the wake before its first native prompt frame arrives.
+              if (promptIds.size === 0) promptIds.add(id);
+              return !promptIds.has(id);
+            });
+            const cutoff = boundary < 0 ? frames.length : boundary;
+            return [
+              frames.slice(0, cutoff).filter((frame) => frame.sessionId === sessionId),
+              frames.filter((frame, i) => i >= cutoff || frame.sessionId !== sessionId),
+            ] as const;
+          });
         const continuationGeneration = yield* Ref.make(0);
         const continuationPermit = yield* Semaphore.make(1);
         const continuationClosed = yield* Ref.make(false);
@@ -5059,6 +5080,23 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               )
             : null;
           const source = commonSource(reports.map((item) => item.sourceRunId));
+
+          const wakeEventIds = new Set(
+            reports.flatMap(({ eventKey }) =>
+              eventKey === undefined
+                ? []
+                : [encodeWakeEventId([driver, sessionId, "task", eventKey])],
+            ),
+          );
+          const promptIds = new Set<string>();
+          for (const entry of yield* Ref.get(wakeBuffer)) {
+            if (entry.sessionId !== sessionId) continue;
+            const id = wakePromptId(entry);
+            if (id === undefined) continue;
+            promptIds.add(id);
+            wakeEventIds.add(encodeWakeEventId([driver, sessionId, "prompt", id]));
+          }
+          const eventIdentity = wakeEventIds.size ? { wakeEventIds: [...wakeEventIds] } : {};
           yield* Effect.logInfo("orchestration-v2.acp-wake-turn-detected", {
             driver,
             providerSessionId: input.providerSessionId,
@@ -5072,7 +5110,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             detail: null,
             ...(source === undefined ? {} : { demandSourceRunId: source }),
-            ...(notification === null ? {} : { notification }),
+            ...(notification !== null
+              ? { notification: { ...notification, ...eventIdentity } }
+              : wakeEventIds.size > 0
+                ? {
+                    notification: {
+                      source: { kind: "background_task" },
+                      outcome: "updated",
+                      summary: "Background activity updated",
+                      ...eventIdentity,
+                    },
+                  }
+                : {}),
             clearIfCurrent: () =>
               continuationPermit.withPermit(
                 Effect.gen(function* () {
@@ -5112,7 +5161,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     sessionId,
                     runtimeGeneration,
                     offerGeneration: generation,
-                    frames: yield* takeWakeFrames(sessionId),
+                    promptIds,
+                    frames: yield* takeWakeFrames(sessionId, promptIds),
                   });
                   return Option.some(exit.value);
                 }),
@@ -5530,6 +5580,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             (yield* Ref.get(stoppedRunQuarantine))
           )
             return;
+          if (
+            context?.nativeWakeStarted === false &&
+            !context.finalized &&
+            notification.sessionId === context.nativeThreadId &&
+            acpRootSessionUpdateIngestsOutput(notification)
+          ) {
+            context.nativeWakeStarted = true;
+            const runningTurn = providerTurnPayload(context, "running", null);
+            yield* Ref.update(providerTurns, (current) =>
+              new Map(current).set(String(runningTurn.id), runningTurn),
+            );
+            yield* emitProviderEvent({
+              type: "provider_turn.updated",
+              driver,
+              threadId: context.input.threadId,
+              providerTurn: runningTurn,
+            });
+          }
           if (yield* projectAgentTerminalUpdate(notification, context)) return;
           if (yield* projectDetachedBackgroundCommand(notification, context)) return;
           if (
@@ -8122,6 +8190,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           status,
           startedAt: context.startedAt,
           completedAt,
+          ...(context.nativeWakeStarted === undefined ||
+          (completedAt === null && !context.nativeWakeStarted)
+            ? {}
+            : { nativeWakeStarted: context.nativeWakeStarted }),
           ...(status === "running" || status === "pending"
             ? {}
             : {
@@ -8808,7 +8880,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     let frames = wake.frames;
                     const ownsOffer = wake.offerGeneration === generation;
                     if (ownsOffer) {
-                      frames = frames.concat(yield* takeWakeFrames(requestedSessionId));
+                      frames = frames.concat(
+                        yield* takeWakeFrames(requestedSessionId, wake.promptIds),
+                      );
                       yield* Ref.update(continuationGeneration, (value) => value + 1);
                       yield* Ref.set(continuationRequested, false);
                     }
@@ -8909,6 +8983,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               nativePromptId: undefined,
               lastProgressAt: 0,
               inactivityWatchdog: undefined,
+              nativeWakeStarted: frames === null ? undefined : false,
             };
             const carryover = yield* Ref.getAndSet(carryoverSubagents, null);
             let rehydratedCarryoverSubagents: ReadonlyArray<ActiveAcpSubagent> = [];

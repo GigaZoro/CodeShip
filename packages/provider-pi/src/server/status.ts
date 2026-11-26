@@ -31,11 +31,12 @@ import {
   piRecordString as recordString,
 } from "./rpc.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   buildServerProvider,
   DEFAULT_TIMEOUT_MS,
   isCommandMissingCause,
-  parseCliVersionResult,
+  parseGenericCliVersion,
   providerModelsFromSettings,
   providerProbeEnvironment,
   spawnAndCollect,
@@ -438,6 +439,8 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   piSettings: PiSettings,
   environment: NodeJS.ProcessEnv = process.env,
   cwd?: string,
+  /** The version this instance last reported, used when `--version` misses its deadline. */
+  lastKnownVersion: string | null = null,
 ): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const fallbackModels = piModelsFromSettings(piSettings.customModels);
@@ -486,7 +489,13 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
-  if (Option.isNone(versionResult.success)) {
+  const resolvedVersion = yield* resolveCliVersion({
+    cli: "Pi CLI",
+    output: versionResult.success,
+    lastKnownVersion,
+    parse: parseGenericCliVersion,
+  });
+  if (resolvedVersion === null) {
     return buildServerProvider({
       presentation: PI_PRESENTATION,
       enabled: piSettings.enabled,
@@ -502,9 +511,8 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
-  const versionOutput = versionResult.success.value;
-  const version = parseCliVersionResult(versionOutput);
-  if (versionOutput.code !== 0) {
+  const { output: versionOutput, version } = resolvedVersion;
+  if (versionOutput !== undefined && versionOutput.code !== 0) {
     return buildServerProvider({
       presentation: PI_PRESENTATION,
       enabled: piSettings.enabled,
@@ -583,6 +591,12 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     ),
     Effect.exit,
   );
+  // When the version was remembered, nothing in this check saw Pi run, so the status says so.
+  const unconfirmedMessage =
+    versionOutput === undefined
+      ? (discoveryOutcome: string) =>
+          `Pi did not answer \`pi --version\` within ${VERSION_PROBE_TIMEOUT_MS / 1_000}s and ${discoveryOutcome}. T3.CodeShip is using Pi ${version}, the version it last reported; the live session will retry startup.`
+      : undefined;
   if (Exit.isFailure(discoveryExit)) {
     const failure = Cause.findErrorOption(discoveryExit.cause);
     yield* Effect.logWarning("Pi RPC discovery failed.", {
@@ -599,9 +613,10 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       probe: {
         installed: true,
         version,
-        status: "ready",
+        status: unconfirmedMessage === undefined ? "ready" : "warning",
         auth: { status: "unknown" },
         message:
+          unconfirmedMessage?.("RPC discovery failed") ??
           "Pi is available, but T3.CodeShip could not refresh its models and commands. The live session will retry startup.",
       },
     });
@@ -615,9 +630,12 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       probe: {
         installed: true,
         version,
-        status: "ready",
+        status: unconfirmedMessage === undefined ? "ready" : "warning",
         auth: { status: "unknown" },
         message:
+          unconfirmedMessage?.(
+            `RPC discovery did not finish within ${PI_RPC_DISCOVERY_TIMEOUT_MS / 1_000}s`,
+          ) ??
           "Pi is available, but model and command discovery needs interactive input. The live session will handle it.",
       },
     });

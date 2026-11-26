@@ -132,6 +132,7 @@ describe("claudeUsageResponseToLimits", () => {
   };
   const monthlyWindow = {
     id: "monthly_spend",
+    scope: "spending-cap",
     kind: "monthly",
     label: "Monthly spend",
     usedPercent: expect.closeTo(9.262, 10),

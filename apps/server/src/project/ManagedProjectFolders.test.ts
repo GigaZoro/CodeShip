@@ -394,6 +394,7 @@ const GIT_IDENTITY_KEYS = [
   "GIT_AUTHOR_EMAIL",
   "GIT_COMMITTER_NAME",
   "GIT_COMMITTER_EMAIL",
+  "GIT_AUTHOR_DATE",
   "EMAIL",
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_NOSYSTEM",
@@ -573,6 +574,35 @@ it.effect("says Git is not installed when a named project cannot start Git", () 
         ),
       ),
     },
+  ),
+);
+
+const FIXTURE_EMAIL = "review-fixture@example.invalid";
+
+it.effect.each([
+  {
+    name: "an empty name",
+    env: { ...TEST_IDENTITY, GIT_AUTHOR_NAME: "", GIT_AUTHOR_EMAIL: FIXTURE_EMAIL },
+    commitError:
+      "Git has no name or email on this machine. Set user.name and user.email, then commit.",
+  },
+  {
+    name: "an author date it cannot read",
+    env: { ...TEST_IDENTITY, GIT_AUTHOR_DATE: FIXTURE_EMAIL },
+    commitError: "Git could not make the first commit. Git said: fatal: (message withheld)",
+  },
+])("reports a failed first commit for $name without what Git printed", ({ env, commitError }) =>
+  withScratch(() =>
+    withGitEnv(
+      env,
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+
+        const result = yield* folders.createNamedProject({ name: "Withheld" });
+
+        assert.equal(result.commitError, commitError);
+      }),
+    ),
   ),
 );
 

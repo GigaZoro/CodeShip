@@ -9,6 +9,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 
 import {
   makeAcpClientTerminals,
@@ -133,7 +134,10 @@ describe("AcpClientTerminals", () => {
       yield* Effect.addFinalizer(() => terminals.disposeAll);
       const terminal = yield* terminals.create({
         sessionId: "devin",
-        command: 'printf "%s\\n" "$T3_ACP_MCP_NODE" | tr a-z A-Z',
+        // Shell source runs in the host's shell: cmd.exe on Windows, sh elsewhere.
+        command: isWindowsHost
+          ? `echo %T3_ACP_MCP_NODE%| "${process.execPath}" -e "process.stdin.on('data', (data) => process.stdout.write(String(data).toUpperCase()))"`
+          : 'printf "%s\\n" "$T3_ACP_MCP_NODE" | tr a-z A-Z',
       });
       const exit = yield* terminals.waitForExit({ sessionId: "devin", ...terminal });
       const output = yield* terminals.output({ sessionId: "devin", ...terminal });
@@ -181,13 +185,12 @@ describe("AcpClientTerminals", () => {
           sessionId: "session",
           terminalId: created.terminalId,
         });
-        expect(exit.exitCode === 0 ? null : exit.exitCode).not.toBe(0);
-        // Windows has no signals: a killed process only reports an exit code.
-        if (yield* HostProcess.isWindows) {
-          expect(exit.signal).toBeNull();
-        } else {
-          expect(exit.signal).toBe("SIGTERM");
-        }
+        // Windows too: Effect's patched kill goes through Node's own handle, which reports the signal
+        // in place of an exit code.
+        expect({ exitCode: exit.exitCode, signal: exit.signal }).toEqual({
+          exitCode: null,
+          signal: "SIGTERM",
+        });
 
         yield* terminals.release({ sessionId: "session", terminalId: created.terminalId });
         const rejected = yield* Effect.flip(

@@ -207,12 +207,18 @@ it.effect.each([
               routedIn.push(input.projectId);
               return input.selection;
             }),
-          limits: Effect.succeed({
-            accounts: new Map(),
-            estimated: new Set<never>(),
-            models: new Map(),
-          }),
-          retryAccount: () => Effect.void,
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
+          creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+          creditOverruns: Effect.succeed([]),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
@@ -334,17 +340,29 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
               routeInputs.push(input);
               return { ...input.selection, instanceId: routed };
             }),
-          limits: Effect.succeed({
-            accounts: new Map(),
-            estimated: new Set<never>(),
-            models: new Map(),
-          }),
-          retryAccount: () => Effect.void,
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
+          creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+          creditOverruns: Effect.succeed([]),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) =>
             Effect.sync(() => {
               firstLaunchChecks.push(input);
+              if (input.selection.quotaAwareAuto === true) {
+                return {
+                  selection: { instanceId: routed, model: "fallback" },
+                  failover: { reason: "usageLimit" as const, crossProviderFrom: limited },
+                };
+              }
               return { selection: input.selection, failover: null };
             }),
         }),
@@ -379,12 +397,31 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
           currentInstanceId: null,
           started: false,
           scheduled,
+          requesterThreadId: threadId,
         },
       ]);
       expect(firstLaunchChecks).toHaveLength(scheduled ? 0 : 1);
       expect(dispatched).toMatchObject([
         { type: "message.dispatch", modelSelection: { instanceId: routed, autoAccount: true } },
       ]);
+      const unresolved = { instanceId: routed, model: "placeholder", quotaAwareAuto: true };
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:thread-management:fresh-quota"),
+        threadId,
+        messageId: MessageId.make("message:thread-management:fresh-quota"),
+        text: "First Auto message",
+        attachments: [],
+        modelSelection: unresolved,
+        ...(scheduled
+          ? { scheduledTaskId: ScheduledTaskId.make("scheduled-task:fresh-quota") }
+          : {}),
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      expect(dispatched.at(-1)).toMatchObject({ modelSelection: unresolved });
+      expect(firstLaunchChecks).toHaveLength(scheduled ? 0 : 1);
     }).pipe(Effect.provide(layerTest));
   },
 );
@@ -413,12 +450,18 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
             routeInputs.push(input);
             return { ...input.selection, instanceId: routed };
           }),
-        limits: Effect.succeed({
-          accounts: new Map(),
-          estimated: new Set<never>(),
-          models: new Map(),
-        }),
-        retryAccount: () => Effect.void,
+        limits: () =>
+          Effect.succeed({
+            accounts: new Map(),
+            estimated: new Set<never>(),
+            models: new Map(),
+            credits: new Map(),
+            grants: new Map(),
+          }),
+        retryAccount: () => Effect.succeed({}),
+        creditRefusal: () => Effect.succeed(null),
+        creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+        creditOverruns: Effect.succeed([]),
         holds: Effect.succeed([]),
         launchLimit: () => Effect.succeed(null),
         failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),

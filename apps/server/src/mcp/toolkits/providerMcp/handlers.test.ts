@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   type ProviderMcpSetEnabledInput,
+  type ProviderRetryUsageLimitResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -90,6 +91,7 @@ it.effect("a read-only client lists provider MCP servers but cannot turn one off
 it.effect("only a full-access client releases a usage-limited account", () =>
   Effect.gen(function* () {
     const released = yield* Ref.make<ReadonlyArray<ProviderInstanceId>>([]);
+    const admission = yield* Ref.make<ProviderRetryUsageLimitResult>({});
     const retry = (access: McpInvocationContext.McpClientCaller["access"]) =>
       Effect.gen(function* () {
         const toolkit = yield* ProviderMcpToolkit;
@@ -106,7 +108,10 @@ it.effect("only a full-access client releases a usage-limited account", () =>
                 Layer.mock(ThreadManagement.ThreadManagementService)({}),
                 Layer.mock(ProviderMcp.ProviderMcp)({}),
                 Layer.mock(AccountRouting.AccountRouting)({
-                  retryAccount: (id) => Ref.update(released, (all) => [...all, id]),
+                  retryAccount: (id) =>
+                    Ref.update(released, (all) => [...all, id]).pipe(
+                      Effect.andThen(Ref.get(admission)),
+                    ),
                 }),
               ),
             ),
@@ -117,8 +122,20 @@ it.effect("only a full-access client releases a usage-limited account", () =>
     expect(yield* retry("read-only")).toMatchObject({ code: "capability_denied" });
     expect(yield* Ref.get(released)).toEqual([]);
     expect(yield* retry("full-access")).toEqual({
-      message: "Released codex; its next turn tries it again.",
+      message: "Released codex. New work can start on it now.",
     });
     expect(yield* Ref.get(released)).toEqual([instanceId]);
+
+    yield* Ref.set(admission, { credits: "spending" });
+    expect(yield* retry("full-access")).toEqual({
+      message:
+        "Released codex. New work can start on it now. It runs on the prepaid credits the user allowed for this work.",
+    });
+
+    yield* Ref.set(admission, { limitedUntil: "2026-11-06T00:00:00.000Z", credits: "not_enabled" });
+    expect(yield* retry("full-access")).toEqual({
+      message:
+        "Released codex's recorded refusals, but new work still cannot start on it until 2026-11-06T00:00:00.000Z: a usage limit holds it, and spending its prepaid credits is off. That is the user's money: only the user turns it on, with Spend prepaid credits in Settings > Providers.",
+    });
   }),
 );

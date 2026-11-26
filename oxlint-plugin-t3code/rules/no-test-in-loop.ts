@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 // node:test has no `.each`, so files written against it keep their loops.
@@ -11,7 +11,7 @@ const EACH_CAPABLE_MODIFIERS = new Set(["effect", "live"]);
 const LOOPS = new Set(["ForStatement", "ForInStatement", "ForOfStatement"]);
 const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration"]);
 
-const testCallName = (callee: unknown): Option.Option<string> => {
+const testCallName = (sourceCode: SourceCode, callee: unknown): Option.Option<string> => {
   const expression = unwrapExpression(callee);
   if (Option.isNone(expression)) return Option.none();
 
@@ -23,7 +23,7 @@ const testCallName = (callee: unknown): Option.Option<string> => {
 
   if (expression.value.type !== "MemberExpression") return Option.none();
   const object = unwrapExpression(expression.value.object);
-  const property = getPropertyName(expression.value.property);
+  const property = resolvePropertyName(sourceCode, expression.value.property);
   if (Option.isNone(object) || Option.isNone(property)) return Option.none();
   if (!EACH_CAPABLE_MODIFIERS.has(property.value)) return Option.none();
   if (object.value.type !== "Identifier" || !TEST_FUNCTIONS.has(object.value.name)) {
@@ -51,12 +51,13 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
     if (NODE_TEST_IMPORT_PATTERN.test(context.sourceCode.text)) return {};
 
     return {
       CallExpression(node) {
-        const name = testCallName(node.callee);
+        const name = testCallName(sourceCode, node.callee);
         if (Option.isNone(name)) return;
         if (!isInsideLoop(node)) return;
 

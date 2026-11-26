@@ -7,6 +7,7 @@ import type {
   DesktopSshEnvironmentTarget,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
@@ -484,41 +485,26 @@ fi
 # Unpacked into the pinned-runtime layout so \`t3 service install\` reuses it.
 T3_RELEASE_BASE_URL=@@T3_RELEASE_BASE_URL@@
 T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
-t3_runtime_ready() {
-  [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ]
-}
-if ! t3_runtime_ready; then
-  mkdir -p "$HOME/.t3/runtime/versions"
-  T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"
-  # uutils mkdir can report success on EEXIST, so use shell noclobber.
-  # An empty lock gets a short grace period for its owner to publish a PID.
-  T3_LOCK_WAITED=0
-  T3_LOCK_UNOWNED=0
-  while ! (set -C; printf '%s\\n' "$$" > "$T3_LOCK") 2>/dev/null; do
-    T3_LOCK_OWNER="$(cat "$T3_LOCK" 2>/dev/null || true)"
-    if [ -n "$T3_LOCK_OWNER" ]; then
-      T3_LOCK_UNOWNED=0
-      if ! kill -0 "$T3_LOCK_OWNER" 2>/dev/null; then
-        rm -rf "$T3_LOCK"
-        continue
-      fi
-    else
-      T3_LOCK_UNOWNED=$((T3_LOCK_UNOWNED + 1))
-      if [ "$T3_LOCK_UNOWNED" -ge 5 ]; then
-        rm -rf "$T3_LOCK"
-        continue
-      fi
-    fi
-    if [ "$T3_LOCK_WAITED" -ge @@T3_ARCHIVE_LOCK_WAIT_SECONDS@@ ]; then
-      printf 'Another t3 %s installation has held %s for too long.\\n' "$T3_ARCHIVE_VERSION" "$T3_LOCK" >&2
-      exit 1
-    fi
-    sleep 1
-    T3_LOCK_WAITED=$((T3_LOCK_WAITED + 1))
-  done
-  trap 'rm -rf "$T3_LOCK"' EXIT
+${runtimePromotion}
+if t3_runtime_ready "$T3_RUNTIME_DIR" "$T3_ARCHIVE_VERSION"; then
+  exec "$T3_RUNTIME_DIR/t3" "$@"
 fi
-if ! t3_runtime_ready; then
+mkdir -p "$HOME/.t3/runtime/versions"
+t3_claim_dir=
+t3_contender=
+T3_STAGING=
+t3_finish_install() {
+  t3_release_lock
+  if [ -n "$T3_STAGING" ]; then rm -rf "$T3_STAGING"; fi
+}
+trap t3_finish_install EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+if ! t3_acquire_lock "$HOME/.t3/runtime/versions" "$T3_ARCHIVE_VERSION" @@T3_ARCHIVE_LOCK_WAIT_SECONDS@@; then
+  printf 'Another installer holds the runtime lock for %s.\\n' "$T3_ARCHIVE_VERSION" >&2
+  exit 1
+fi
+if ! t3_runtime_ready "$T3_RUNTIME_DIR" "$T3_ARCHIVE_VERSION"; then
   # Keep aligned with CLI_ARCHIVE_PLATFORM_KEYS in packages/shared/src/cliRelease.ts.
   case "$(uname -s) $(uname -m)" in
     "Darwin arm64") T3_PLATFORM_KEY="darwin-arm64" ;;
@@ -528,7 +514,6 @@ if ! t3_runtime_ready; then
   esac
   T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM_KEY.tar.gz"
   T3_STAGING="$(mktemp -d "$HOME/.t3/runtime/versions/.staging-XXXXXX")"
-  trap 'rm -rf "$T3_STAGING" "$T3_LOCK"' EXIT
   t3_fetch() {
     if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 30 --max-time "$3" "$1" -o "$2"
     elif command -v wget >/dev/null 2>&1; then wget -q --timeout=30 --tries=1 "$1" -O "$2"
@@ -559,17 +544,14 @@ if ! t3_runtime_ready; then
   rm -f "$T3_STAGING/$T3_ARCHIVE" "$T3_STAGING/SHA256SUMS"
   # Prove the binary runs here (libc, arch) before marking it ready, or every
   # later launch would exec a broken install instead of retrying.
-  if ! "$T3_STAGING/t3" --version >/dev/null 2>&1; then
-    printf 'The t3 %s executable does not run on this host.\\n' "$T3_ARCHIVE_VERSION" >&2; exit 1
+  if ! t3_verify_version "$T3_STAGING" "$T3_ARCHIVE_VERSION"; then
+    printf 'The t3 %s runtime failed verification on this host.\\n' "$T3_ARCHIVE_VERSION" >&2; exit 1
   fi
   printf '%s\\n' "$T3_ARCHIVE_VERSION" > "$T3_STAGING/.install-complete"
-  rm -rf "$T3_RUNTIME_DIR"
-  mv "$T3_STAGING" "$T3_RUNTIME_DIR"
+  t3_promote_runtime "$T3_STAGING" || exit 1
 fi
-if [ -n "\${T3_LOCK:-}" ]; then
-  rm -rf "$T3_LOCK"
-  trap - EXIT
-fi
+t3_finish_install
+trap - EXIT
 exec "$T3_RUNTIME_DIR/t3" "$@"
 `;
 

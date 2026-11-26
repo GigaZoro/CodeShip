@@ -1814,7 +1814,6 @@ const catalog: MessageCatalog = {
   "{singular} reference": "Посилання: {singular}",
   "{size} · Use {shortcut} to keep a large paste inline.":
     "{size} · Натисніть {shortcut}, щоб вставити великий фрагмент як текст.",
-  "{size} ({reclaimable} can be reclaimed)": "{size} ({reclaimable} можна повернути)",
   "{size} {term} chained by base branch.": "{size} {term}, з’єднані за базовою гілкою.",
   "{size} can be reclaimed": "{size} можна повернути",
   "{size} combined process peaks": "{size} сумарних піків процесів",
@@ -1990,6 +1989,8 @@ const catalog: MessageCatalog = {
   "$0 cap": "Ліміт $0",
   "0 bytes": "0 байт",
   "0 rows": "0 рядків",
+  "1 day": "1 день",
+  "1 hour": "1 година",
   "12-hour": "12-годинний",
   "15m": "15 хв",
   "1h": "1 год",
@@ -2153,6 +2154,7 @@ const catalog: MessageCatalog = {
   "Account order": "Порядок облікових записів",
   "Account released": "Обліковий запис розблоковано",
   "Account removed": "Обліковий запис видалено",
+  "Account still limited": "Обліковий запис усе ще обмежено",
   "Account-specific home sharing the Codex state above.":
     "Домашня папка облікового запису, що ділить стан Codex зверху.",
   "Accounts are tried from the top, and a limited thread continues on the highest one with usage left.":
@@ -2639,6 +2641,7 @@ const catalog: MessageCatalog = {
   "Any local files": "Будь-які локальні файли",
   "Any new activity un-settles a thread automatically.":
     "Будь-яка нова активність автоматично повертає чат зі стану завершеного.",
+  "Any thread may spend them": "Витрачати їх може будь-який чат",
   Anyone: "Будь-хто",
   "Anyone on the web": "Будь-хто в інтернеті",
   "Anyone with dictation access to {environment} can bill this key.":
@@ -3303,6 +3306,8 @@ const catalog: MessageCatalog = {
   "Change the capture binding in your Hyprland config, then save it.":
     "Змініть прив’язку захоплення в конфігурації Hyprland, потім збережіть її.",
   "Change theme": "Змінити тему",
+  "Change thread color": "Змінити колір чату",
+  "Change thread notifications": "Змінити сповіщення чату",
   Changed: "Змінено",
   "Changed {count} files": {
     one: "Змінено {count} файл",
@@ -3951,6 +3956,7 @@ const catalog: MessageCatalog = {
     "Колір кнопок, виділення та контурів фокуса. «Тема» залишає власний колір теми.",
   "Color filter": "Колірний фільтр",
   "Color scheme": "Колірна схема",
+  "Color: {value}": "Колір: {value}",
   colors: "кольори",
   Colors: "Кольори",
   "Colors & themes": "Кольори й теми",
@@ -4441,6 +4447,7 @@ const catalog: MessageCatalog = {
   "Could not change limit recovery.": "Не вдалося змінити відновлення після ліміту.",
   "Could not change Open at login": "Не вдалося змінити «Відкривати під час входу»",
   "Could not change project": "Не вдалося змінити проєкт",
+  "Could not change the message star.": "Не вдалося змінити позначку повідомлення.",
   "Could not change the viewport": "Не вдалося змінити область перегляду",
   "Could not change this browser tab": "Не вдалося змінити цю вкладку браузера",
   "Could not change transcription hardware": "Не вдалося змінити обладнання для транскрипції",
@@ -5726,6 +5733,8 @@ const catalog: MessageCatalog = {
     "Кожен ключ дедуплікації має містити коректний заповнювач запиту. Вікно об’єднання має бути цілим числом секунд від 10 до 3600 або порожнім.",
   "Each machine runs it at this time by its own clock.":
     "Кожен комп’ютер запускає його в цей час за власним годинником.",
+  "Each message the guest sends waits for you. It works once and expires {date}.":
+    "Кожне повідомлення гостя чекає на вас. Працює один раз і діє до {date}.",
   "Each model starts in its own worktree.": "Кожна модель починає у власному worktree.",
   "Each paragraph or code block appears as soon as it is complete.":
     "Кожен абзац або блок коду з’являється, щойно він готовий.",
@@ -6285,6 +6294,7 @@ const catalog: MessageCatalog = {
   "Failed to update network exposure.": "Не вдалося оновити мережевий доступ.",
   "Failed to update project": "Не вдалося оновити проєкт",
   "Failed to update project icon": "Не вдалося оновити значок проєкту",
+  "Failed to update thread preferences": "Не вдалося оновити налаштування чату",
   "Failed to update thread tags": "Не вдалося оновити теги чату",
   "Failed to update WSL backend.": "Не вдалося оновити бекенд WSL.",
   "Failed to wake thread": "Не вдалося повернути чат",
@@ -6486,6 +6496,7 @@ const catalog: MessageCatalog = {
   Folders: "Папки",
   "Folders can only be referenced on a server running on this computer":
     "Посилатися на папки можна лише на сервері, що працює на цьому комп’ютері",
+  Follow: "Стежити",
   "Follow pull request templates": "Дотримуватися шаблонів пул-реквестів",
   "Follow settings": "За налаштуваннями",
   "Follow shared settings": "Приймати спільні налаштування",
@@ -6495,6 +6506,7 @@ const catalog: MessageCatalog = {
   "Follow-up behavior": "Поведінка наступних повідомлень",
   "follow-ups": "наступні повідомлення",
   "Follow-ups": "Наступні повідомлення",
+  "Following thread": "Ви стежите за чатом",
   "Follows the text generation model": "Використовує модель генерування тексту",
   "Font previews are limited to 10 MB.": "Перегляд шрифтів обмежено 10 МБ.",
   "font size": "розмір шрифту",
@@ -6675,12 +6687,14 @@ const catalog: MessageCatalog = {
   "Grouping rule decides how each checkout joins project groups in the sidebar. Changing it can move a checkout to a different project.":
     "Правило групування визначає, як кожна робоча копія потрапляє до груп проєктів у бічній панелі. Його зміна може перемістити робочу копію до іншого проєкту.",
   "Grouping rule for {path} on {environment}": "Правило групування для {path} у {environment}",
+  "Grows {size} a day": "Зростає на {size} за день",
   Guest: "Гість",
   "guest link": "гостьове посилання",
   "Guest link": "Гостьове посилання",
   "Guest link active": "Гостьове посилання активне",
   "Guest link expired": "Гостьове посилання втратило чинність",
   "Guest links": "Гостьові посилання",
+  "Guest messages": "Повідомлення гостя",
   "Guest request": "Запит гостя",
   "Guest sharing": "Гостьовий доступ",
   Guide: "Посібник",
@@ -7271,6 +7285,11 @@ const catalog: MessageCatalog = {
   "Its own folder and thread. Nothing you have open moves.":
     "Власна тека й чат. Те, що у вас відкрито, не зміниться.",
   "Its plugins are listed under Available.": "Його плагіни перелічено в розділі «Доступні».",
+  "Its prepaid credits are allowed only for other threads' work.":
+    "Його передплачені кредити дозволено лише для роботи інших чатів.",
+  "Its prepaid credits are not used: Spend prepaid credits is off in Settings → Providers & models.":
+    "Його передплачені кредити не використовуються: «Витрачати передплачені кредити» вимкнено в «Налаштування → Провайдери й моделі».",
+  "Its prepaid credits are used up too.": "Його передплачені кредити теж вичерпано.",
   "Its saved settings, including any custom binary path, will be removed.":
     "Його збережені налаштування, зокрема власний шлях до виконуваного файлу, буде видалено.",
   "its server is not connected, so its database cannot be checked":
@@ -7284,6 +7303,10 @@ const catalog: MessageCatalog = {
   "Its thread data did not reach this client. Reconnect and try opening it from the thread list.":
     "Дані його чату не дійшли до цього клієнта. Перепідключіться й спробуйте відкрити його зі списку чатів.",
   "Its thread is not available yet": "Його чат ще недоступний",
+  "Its usage limit still holds it until {time}.":
+    "Ліміт використання все ще блокує його до {time}.",
+  "Its usage limit still holds it until about {time}.":
+    "Ліміт використання все ще блокує його приблизно до {time}.",
   "Its worktree could not be checked for changes that are not merged yet.":
     "Не вдалося перевірити його worktree на ще не злиті зміни.",
   "Its worktree has changes that are not merged yet: {summary}.":
@@ -7293,6 +7316,7 @@ const catalog: MessageCatalog = {
   "Jump to latest": "Перейти до останнього",
   "Jump to message: {text}": "Перейти до повідомлення: {text}",
   "Jump to next prompt": "Перейти до наступного запиту",
+  "Jump to next starred message": "До наступного позначеного повідомлення",
   "Jump to previous prompt": "Перейти до попереднього запиту",
   "just now": "щойно",
   Kagi: "Kagi",
@@ -7426,10 +7450,10 @@ const catalog: MessageCatalog = {
   legal: "юридичне",
   Legal: "Правова інформація",
   "Less often": "Рідше",
-  "Let a guest watch a shared thread live and send messages you approve; turning it off ends every guest link.":
-    "Дозвольте гостю наживо стежити за спільним чатом і надсилати повідомлення, які ви схвалюєте; вимкнення завершує всі гостьові посилання.",
-  "Let a guest watch a shared thread live and send messages you approve. Sign in to T3 Connect to use it.":
-    "Дозвольте гостю наживо стежити за спільним чатом і надсилати повідомлення, які ви схвалюєте. Щоб користуватися цим, увійдіть у T3 Connect.",
+  "Let a guest watch a shared thread live and send it messages; turning it off ends every guest link.":
+    "Дозвольте гостю наживо стежити за спільним чатом і надсилати йому повідомлення; вимкнення завершує всі гостьові посилання.",
+  "Let a guest watch a shared thread live and send it messages. Sign in to T3 Connect to use it.":
+    "Дозвольте гостю наживо стежити за спільним чатом і надсилати йому повідомлення. Щоб користуватися цим, увійдіть у T3 Connect.",
   "Let agents here work on your other machines, and theirs here.":
     "Дозвольте агентам тут працювати на ваших інших комп’ютерах, а їм там – на цьому.",
   "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While off, nothing new starts over a link; running tasks finish.":
@@ -7503,6 +7527,8 @@ const catalog: MessageCatalog = {
   "Link created at {time}": "Посилання створено {time}",
   "Link date unavailable": "Дата зв’язування недоступна",
   "link environment": "пов’язати середовище",
+  "Link expires after": "Посилання діє",
+  "Link expires after {lifetime}": "Термін дії посилання: {lifetime}",
   "link machine": "пов’язати комп’ютер",
   "Link opening is unavailable.": "Відкриття посилань недоступне.",
   "Link pull request": "Прив’язати пул-реквест",
@@ -8152,6 +8178,7 @@ const catalog: MessageCatalog = {
   Music: "Музика",
   "Must be a coding agent: it reads the pull request over many steps. Off uses the writer model, or Codex or Claude if that model is a text generator.":
     "Має бути агент для кодування: він читає пул-реквест за багато кроків. Якщо вимкнено, використовується модель-автор або Codex чи Claude, якщо ця модель лише генерує текст.",
+  Mute: "Вимкнути сповіщення",
   "Mute {title}": "Вимкнути звук: {title}",
   "Mute tab": "Вимкнути звук вкладки",
   "Muted text": "Приглушений текст",
@@ -8353,9 +8380,9 @@ const catalog: MessageCatalog = {
   "No agents are available.": "Немає доступних агентів.",
   "No agents in this turn.": "У цьому ході немає агентів.",
   "No agents yet": "Агентів поки немає",
+  "No analyzed chats in this period": "За цей період немає проаналізованих чатів",
   "No Android devices were listed because device discovery reported a problem.":
     "Пристроїв Android немає в списку, бо пошук пристроїв повідомив про проблему.",
-  "No analyzed chats in this period": "За цей період немає проаналізованих чатів",
   "No Android virtual devices found. Create one in Android Studio's Device Manager, then refresh.":
     "Віртуальних пристроїв Android не знайдено. Створіть один у Device Manager в Android Studio, а потім оновіть.",
   "no answer in time": "немає відповіді вчасно",
@@ -8638,6 +8665,7 @@ const catalog: MessageCatalog = {
   "No speech was detected. Speak again and retry dictation.":
     "Мовлення не виявлено. Скажіть ще раз і повторіть диктування.",
   "No SSH route to {machine}": "Немає SSH-маршруту до {machine}",
+  "No starred messages": "Немає позначених повідомлень",
   "No startup crashes": "Збоїв під час запуску немає",
   "No suggestions": "Немає пропозицій",
   "No supported browsers found": "Підтримуваних браузерів не знайдено",
@@ -8794,6 +8822,7 @@ const catalog: MessageCatalog = {
     "Сповіщення для цього застосунку заборонено. Відкрийте налаштування, щоб увімкнути їх.",
   "Notifications were not enabled.": "Сповіщення не ввімкнено.",
   "Notifications with sound": "Сповіщення зі звуком",
+  "Notifications: {value}": "Сповіщення: {value}",
   "Notify me": "Сповіщати мене",
   now: "зараз",
   "Now runs in another thread": "Тепер запускається в іншому чаті",
@@ -9593,6 +9622,9 @@ const catalog: MessageCatalog = {
     other: "Premier · до {count} тунеля",
   },
   "Premium {amount}": "Преміум {amount}",
+  "Prepaid credits {name} may spend": "Передплачені кредити, які може витратити {name}",
+  "Prepaid credits left: {remaining} of {cap}":
+    "Залишок передплачених кредитів: {remaining} з {cap}",
   prepare: "підготувати",
   Prepared: "Підготовлено",
   Preparing: "Підготовка",
@@ -10040,6 +10072,9 @@ const catalog: MessageCatalog = {
   "Read-only access": "Доступ лише для читання",
   "Read-only connection. Unsaved edits are kept until write access returns.":
     "З’єднання лише для читання. Незбережені зміни зберігаються, доки не повернеться доступ на запис.",
+  "Read-only: the agent cannot change files": "Лише читання: агент не може змінювати файли",
+  "Read-only: the agent cannot change files. It works once and expires {date}.":
+    "Лише читання: агент не може змінювати файли. Працює один раз і діє до {date}.",
   "Read-only: the tasks it last reported to {machine}.":
     "Лише читання: завдання, які він востаннє передав на {machine}.",
   "Read-only. Up to 50 columns and 1,024 characters per cell. Blob contents are omitted.":
@@ -11440,6 +11475,8 @@ const catalog: MessageCatalog = {
   "Send a message to start the conversation.": "Надішліть повідомлення, щоб почати розмову.",
   "Send a message to try the account again.":
     "Надішліть повідомлення, щоб спробувати обліковий запис знову.",
+  "Send a message to try the account again. It runs on its prepaid credits.":
+    "Надішліть повідомлення, щоб спробувати обліковий запис знову. Він працюватиме за рахунок передплачених кредитів.",
   "Send activity from this environment to your mobile clients for push notifications and Live Activities.":
     "Надсилайте активність із цього середовища на мобільні клієнти для push-сповіщень і Live Activities.",
   "Send activity to mobile notifications and Live Activities without T3 Connect.":
@@ -11454,8 +11491,7 @@ const catalog: MessageCatalog = {
   "Send feedback to decline this request": "Надішліть відгук, щоб відхилити цей запит",
   "Send finished recordings to this environment.": "Надсилати завершені записи в це середовище.",
   "Send into the current turn": "Надіслати в поточний хід",
-  "Send it to one person. It works once and expires in 24 hours.":
-    "Надішліть одній людині. Працює один раз і спливає за 24 години.",
+  "Send it to one person.": "Надішліть його одній людині.",
   "Send it to your workspace admin.": "Надішліть його адміністратору вашого робочого простору.",
   "Send it when the current turn ends": "Надіслати, коли поточний хід завершиться",
   "send message": "надіслати повідомлення",
@@ -11868,6 +11904,7 @@ const catalog: MessageCatalog = {
   "Shows the full Pi status": "Показує повний статус Pi",
   "Shows words in your draft as you speak, before the recording finishes.":
     "Показує слова в чернетці, поки ви говорите, до завершення запису.",
+  "Shrinks {size} a day": "Зменшується на {size} за день",
   "Shut down device": "Вимкнути пристрій",
   "Shutting down…": "Вимкнення…",
   "Side by side": "Поруч",
@@ -11998,6 +12035,7 @@ const catalog: MessageCatalog = {
   "Site data": "Дані сайтів",
   "Site template": "Шаблон сайту",
   Size: "Розмір",
+  "Size unchanged": "Розмір не змінюється",
   Skill: "Навичка",
   "Skill {name}": "Навичка {name}",
   "skill availability": "доступність навичок",
@@ -12148,6 +12186,7 @@ const catalog: MessageCatalog = {
   "Speed: {seconds} / 30 s": "Швидкість: {seconds} / 30 с",
   "Speed: not benchmarked": "Швидкість: не оцінено",
   "Speed: update server": "Швидкість: оновіть сервер",
+  "Spend prepaid credits": "Витрачати передплачені кредити",
   Split: "Розділений",
   "Split diff view": "Розділений вигляд змін",
   "Split long work into new chats or hand it off.":
@@ -12200,7 +12239,11 @@ const catalog: MessageCatalog = {
   "Standard Android navigation bar and side rail.":
     "Стандартна панель навігації Android і бічна панель.",
   "Standard Webhooks": "Standard Webhooks",
+  "Star message": "Позначити повідомлення зірочкою",
   "Star on GitHub": "Зірка на GitHub",
+  Starred: "Позначені зірочкою",
+  "Starred message {number}": "Позначене повідомлення {number}",
+  "Starred messages": "Позначені зірочкою повідомлення",
   "Starring…": "Додавання зірки…",
   start: "запустити",
   Start: "Запустити",
@@ -12935,6 +12978,8 @@ const catalog: MessageCatalog = {
     "Не вдалося зберегти захоплене вікно в чернетку.",
   "The captured window is too large to attach.": "Захоплене вікно завелике для додавання.",
   "The car’s microphone": "Мікрофон автомобіля",
+  "The chat continues on it within a minute, on its prepaid credits.":
+    "Чат продовжиться на ньому протягом хвилини, за рахунок його передплачених кредитів.",
   "The chat continues on it within a minute.": "Чат продовжиться на ньому протягом хвилини.",
   "The chat could not be started. Try again.": "Не вдалося запустити чат. Спробуйте ще раз.",
   "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.":
@@ -13110,8 +13155,10 @@ const catalog: MessageCatalog = {
   "The Free plan allows one custom connector.": "У плані Free доступний один власний конектор.",
   "The guest loses access and the link stops working.":
     "Гість втрачає доступ, а посилання перестає працювати.",
-  "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.":
-    "Гість бачить чат так само, як і ви, зокрема вивід команд і міркування агента. Кожне його повідомлення чекає на ваше схвалення.",
+  "The guest sees the thread as you do, including command output and the agent's reasoning.":
+    "Гість бачить чат так само, як і ви, зокрема вивід команд і міркування агента.",
+  "The guest's messages run right away, and the agent cannot change files. Every turn on this thread stays read-only until you stop sharing.":
+    "Повідомлення гостя виконуються одразу, а агент не може змінювати файли. Кожен хід у цьому чаті лишається лише для читання, доки ви не припините спільний доступ.",
   "The host didn't answer. Try again in a moment.": "Хост не відповів. Спробуйте ще раз за мить.",
   "The host refused it. A rebase stops at the first commit that does not apply cleanly; updating with a merge commit may still work.":
     "Хост відхилив дію. Rebase зупиняється на першому коміті, який не застосовується чисто; оновлення через коміт злиття все ще може спрацювати.",
@@ -13187,8 +13234,7 @@ const catalog: MessageCatalog = {
     "У посиланні немає запиту на авторизацію. Знову виконайте `t3 connect` у терміналі та відкрийте нову надруковану URL-адресу.",
   "The link lets agents work there. Adding it here also shows the machine in the machine list and lets you open its threads.":
     "Зв’язок дозволяє агентам працювати там. Додавання тут також показує комп’ютер у списку комп’ютерів і дає відкривати його чати.",
-  "The link works once and expires in 24 hours.":
-    "Посилання працює один раз і втрачає чинність через 24 години.",
+  "The link works once.": "Посилання працює один раз.",
   "The linked item is not in the loaded activity.":
     "Пов’язаного елемента немає в завантаженій активності.",
   "The local attachment file is missing.": "Локальний файл вкладення відсутній.",
@@ -13233,8 +13279,8 @@ const catalog: MessageCatalog = {
   "the other machine": "інший комп’ютер",
   "the overview": "огляд",
   "The owner approves each message": "Власник схвалює кожне повідомлення",
-  "The owner sees your name and approves each message before the agent gets it.":
-    "Власник бачить ваше ім’я та схвалює кожне повідомлення, перш ніж агент його отримає.",
+  "The owner sees your name and every message you send.":
+    "Власник бачить ваше ім’я та кожне повідомлення, яке ви надсилаєте.",
   "The owner stopped sharing this thread.": "Власник припинив спільний доступ до цього чату.",
   "The page asks for a file.": "Сторінка запитує файл.",
   "The page asks for files.": "Сторінка запитує файли.",
@@ -13256,6 +13302,7 @@ const catalog: MessageCatalog = {
     "Фраза, якою ви виправляєте помилку, наприклад «забудь це».",
   "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.":
     "У тарифі ще є запас, а жоден параметр ChatGPT цей ліміт не знімає. Спробуйте ще раз або увійдіть в обліковий запис через власний вхід Codex. CodeShip сам пробує знову щогодини.",
+  "The prepaid credits you allowed it are spent.": "Дозволені вами передплачені кредити витрачено.",
   "The previous request may already be running. Check its thread first. Allow another send that could create a duplicate thread?":
     "Попередній запит, можливо, уже виконується. Спершу перевірте його чат. Дозволити ще одну відправку, яка може створити дубльований чат?",
   "the primary environment": "основне середовище",
@@ -13614,6 +13661,8 @@ const catalog: MessageCatalog = {
   "This change has more files than the host will report ticks for in one read, so the count is short and some boxes below start empty.":
     "У цій зміні більше файлів, ніж хост повертає позначок за одне читання, тому підрахунок неповний, а деякі прапорці нижче спочатку порожні.",
   "This change has no files to tour.": "У цій зміні немає файлів для туру.",
+  "This chat has reached the limit of {limit} starred messages.":
+    "У цьому чаті досягнуто ліміту позначених зірочкою повідомлень ({limit}).",
   "This chat is not settled, not analyzed, or no longer exists.":
     "Цей чат не завершено, не проаналізовано або його більше не існує.",
   "This checkout could not be confirmed at the {term}'s latest commit, so its code may differ. Local commits or uncommitted work keep a checkout where it is.":
@@ -13967,6 +14016,7 @@ const catalog: MessageCatalog = {
     "До цього повідомлення вже додано максимальну кількість вкладень.",
   "This message has an attachment that cannot be restored.":
     "У цьому повідомленні є вкладення, яке неможливо відновити.",
+  "This message is no longer in the conversation.": "Цього повідомлення вже немає в чаті.",
   "This model already has a row. Edit its prices there.":
     "Для цієї моделі вже є рядок. Змініть її ціни там.",
   "This model is unavailable on {environment}. Select that environment to choose its model separately.":
@@ -14216,6 +14266,7 @@ const catalog: MessageCatalog = {
   "Thread archived, but navigation failed": "Чат архівовано, але перехід не вдався",
   "thread behavior": "поведінка чатів",
   "Thread breadcrumb": "Навігація чату",
+  "Thread color: {color}": "Колір чату: {color}",
   "Thread completed": "Чат завершено",
   "thread configuration {times}": "конфігурація чату {times}",
   "Thread copied": "Чат скопійовано",
@@ -14234,8 +14285,10 @@ const catalog: MessageCatalog = {
   "thread model {times}": "модель чату {times}",
   "Thread no longer available": "Чат більше недоступний",
   "Thread notifications": "Сповіщення про чати",
+  "Thread notifications muted": "Сповіщення чату вимкнено",
   "Thread on {machine}": "Чат на {machine}",
   "Thread on another machine": "Чат на іншому комп’ютері",
+  "Thread preferences": "Налаштування чату",
   "Thread search is unavailable on this server.": "Пошук чатів недоступний на цьому сервері.",
   "Thread search results": "Результати пошуку чатів",
   "Thread settings": "Налаштування чату",
@@ -14266,6 +14319,7 @@ const catalog: MessageCatalog = {
   "ThreadPage token on {machine}": "Токен ThreadPage на {machine}",
   Threads: "Чати",
   "threads {times}": "чати {times}",
+  "Threads allowed: {count}": "Дозволено чатів: {count}",
   "Threads needing you": "Чати, що потребують вас",
   "Threads you archive will appear here.": "Тут з’являться чати, які ви архівуєте.",
   "Threads you archived, with restore and delete.":
@@ -14717,6 +14771,8 @@ const catalog: MessageCatalog = {
   "Unsent draft": "Ненадіслана чернетка",
   Unsettle: "Скасувати завершення",
   Unsnooze: "Повернути",
+  "Unstar {label}": "Зняти зірочку з «{label}»",
+  "Unstar message": "Зняти зірочку з повідомлення",
   Unsupported: "Не підтримується",
   "Unsupported diff format. Showing raw patch.":
     "Непідтримуваний формат змін. Показано необроблений патч.",
@@ -14985,6 +15041,7 @@ const catalog: MessageCatalog = {
   "Usage breakdown": "Розбивка використання",
   "Usage breakdown by time": "Розбивка використання за часом",
   "Usage chart style": "Стиль діаграми використання",
+  "Usage figures may be incomplete": "Дані про використання можуть бути неповними",
   "Usage limit": "Ліміт використання",
   "Usage limit reached": "Досягнуто ліміту використання",
   "Usage limit reached after {progress} retries": {
@@ -15371,6 +15428,7 @@ const catalog: MessageCatalog = {
   "Wait for file uploads before stashing this prompt":
     "Дочекайтеся завантаження файлів, перш ніж зберігати цей запит",
   "Wait for it to finish before the agent starts": "Дочекатися завершення перед стартом агента",
+  "Wait for me": "Чекати на мене",
   "Wait for memory before automated starts": "Чекати на пам’ять перед автоматичними запусками",
   "Wait for shared content to finish importing.":
     "Дочекайтеся завершення імпорту спільного вмісту.",
@@ -15537,6 +15595,10 @@ const catalog: MessageCatalog = {
     "Коли застосунок збоїть або натрапляє на помилку, він надсилає команді T3.CodeShip повідомлення про помилку, трасування стека, версію застосунку, модель пристрою та версію ОС. Кожен запуск також надсилає часові показники запуску. Звіти містять випадковий ID для цього встановлення.",
   "When the sidebar groups threads into folders, show them on two lines: the title, then the branch, pull request, and agent.":
     "Коли бічна панель групує чати в папки, показувати їх у два рядки: заголовок, потім гілка, пул-реквест і агент.",
+  "When this account's plan usage is used up, new work can still start on it and spend its prepaid credits, up to the cap you set. Leave the cap empty to keep them unspent.":
+    "Коли ліміт плану цього облікового запису вичерпано, нова робота все одно може запускатися на ньому й витрачати його передплачені кредити в межах установленого вами ліміту. Залиште ліміт порожнім, щоб кредити не витрачалися.",
+  "When this account's plan usage is used up, work of the threads you allowed and their delegates can spend its prepaid credits, up to the cap you set. Threads allowed: {count}. Leave the cap empty to keep them unspent.":
+    "Коли ліміт плану цього облікового запису вичерпано, робота дозволених вами чатів і їхніх делегатів може витрачати його передплачені кредити в межах установленого вами ліміту. Дозволено чатів: {count}. Залиште ліміт порожнім, щоб кредити не витрачалися.",
   "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this.":
     "Коли стискати неактивний чат Claude понад 200 000 токенів: після вашого повернення, безпосередньо перед закінченням строку дії кешу запиту або ніколи. Кожен провайдер Claude може це перевизначити.",
   "When you return": "Коли ви повернетеся",
@@ -15732,6 +15794,8 @@ const catalog: MessageCatalog = {
   "You have control": "Ви керуєте",
   "You have uncommitted changes. They'll carry over to the other branch, or block the switch if they conflict.":
     "У вас є незакомічені зміни. Вони перенесуться на іншу гілку або заблокують перехід, якщо виникне конфлікт.",
+  "You send or dismiss each message the guest writes.":
+    "Ви надсилаєте або відхиляєте кожне повідомлення гостя.",
   "You stopped after {duration}": "Ви зупинили через {duration}",
   "You stopped this response": "Ви зупинили цю відповідь",
   "You:": "Ви:",

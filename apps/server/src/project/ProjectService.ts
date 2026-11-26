@@ -38,6 +38,7 @@ import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import { makeIsWorktreeContainer } from "./worktreeContainer.ts";
+import type * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
@@ -120,6 +121,11 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
   }
 }
 
+/** A project read that resolves its repository, which Git may fail to give. */
+export type ProjectRepositoryReadError =
+  | ProjectOperationError
+  | RepositoryIdentityResolver.RepositoryIdentityLookupError;
+
 export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
@@ -154,6 +160,13 @@ export class ProjectService extends Context.Service<
     readonly workspaceScanDirectory: (cwd: string) => Effect.Effect<string>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
     /**
+     * One active project with its repository identity resolved, as `listPage` gives each. Git
+     * giving no answer fails it: a `null` identity would read as a project with no repository.
+     */
+    readonly getWithRepositoryIdentity: (
+      projectId: ProjectId,
+    ) => Effect.Effect<Option.Option<Project>, ProjectRepositoryReadError>;
+    /**
      * A page of active projects in creation order, each with its repository
      * identity resolved, so a caller can match projects by repository.
      */
@@ -162,7 +175,7 @@ export class ProjectService extends Context.Service<
       readonly limit: number;
     }) => Effect.Effect<
       { readonly projects: ReadonlyArray<Project>; readonly nextCursor: number | null },
-      ProjectOperationError
+      ProjectRepositoryReadError
     >;
     readonly getShell: (
       projectId: ProjectId,
@@ -641,21 +654,30 @@ export const make = Effect.gen(function* () {
     } satisfies ProjectSnapshot;
   });
 
+  // Hydration reads the enrichment cache, which is blank until it warms.
+  const withRepositoryIdentity = (
+    project: Project,
+  ): Effect.Effect<Project, RepositoryIdentityResolver.RepositoryIdentityLookupError> =>
+    project.repositoryIdentity != null
+      ? Effect.succeed(project)
+      : projectEnrichment
+          .readRepositoryIdentity(project.workspaceRoot)
+          .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity })));
+
+  const getWithRepositoryIdentity: ProjectService["Service"]["getWithRepositoryIdentity"] =
+    Effect.fn("ProjectService.getWithRepositoryIdentity")(function* (projectId) {
+      const project = yield* getById(projectId);
+      return Option.isNone(project)
+        ? project
+        : Option.some(yield* withRepositoryIdentity(project.value));
+    });
+
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
     function* ({ cursor, limit }) {
       const rows = (yield* listRows).filter((project) => project.deletedAt === null);
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
-        (row) =>
-          hydrate(row).pipe(
-            Effect.filterOrElse(
-              (project) => project.repositoryIdentity !== null,
-              (project) =>
-                projectEnrichment
-                  .readRepositoryIdentity(project.workspaceRoot)
-                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
-            ),
-          ),
+        (row) => hydrate(row).pipe(Effect.flatMap(withRepositoryIdentity)),
         { concurrency: 8 },
       );
       return { projects, nextCursor: cursor + limit < rows.length ? cursor + limit : null };
@@ -671,6 +693,7 @@ export const make = Effect.gen(function* () {
     getByWorkspaceRoot,
     workspaceScanDirectory,
     snapshot,
+    getWithRepositoryIdentity,
     listPage,
     getShell,
     listShells,

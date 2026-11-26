@@ -31,9 +31,11 @@
 // to main without one.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeURL from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -64,7 +66,7 @@ import {
   recordPass,
   workingTree,
 } from "../.github/scripts/check-changed-receipt.cjs";
-import { REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
+import { GIT_CALL_TIMEOUT_MS, REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
@@ -253,6 +255,16 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
 
 export type Outcome = "pass" | "FAIL" | "TIMEOUT";
 
+// Not traced: it only waits. On macOS a timer counts the time asleep, so one long timer would end on
+// the first wake past it. Each tick counts as a second however late it fires: a sleep costs one.
+const awakeSeconds = Effect.fnUntraced(function* (seconds: number) {
+  for (let second = 0; second < seconds; second++) yield* Effect.sleep("1 second");
+});
+
+/** `None` once `effect` has run for `seconds` of the machine's time awake, and is interrupted. */
+const awakeTimeoutOption = <A, E, R>(effect: Effect.Effect<A, E, R>, seconds: number) =>
+  Effect.raceFirst(Effect.asSome(effect), Effect.as(awakeSeconds(seconds), Option.none<A>()));
+
 export interface Step<R> {
   readonly name: string;
   // Gets the number of budget slots the step holds, which is how many workers it may run.
@@ -260,7 +272,11 @@ export interface Step<R> {
   readonly run: (
     slots: number,
     collect: (chunk: string) => void,
-  ) => Effect.Effect<{ readonly ok: boolean; readonly output: string }, never, R>;
+  ) => Effect.Effect<
+    { readonly ok: boolean; readonly output: string; readonly note?: ReadonlyArray<string> },
+    never,
+    R
+  >;
   // The most workers the step can run in parallel. It starts once one slot is
   // free and takes as many free ones as it can use, so other runs never wait on it.
   readonly workers?: number;
@@ -296,11 +312,11 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
         let collected = "";
-        const result = yield* Effect.timeoutOption(
+        const result = yield* awakeTimeoutOption(
           step.run(slots, (chunk) => {
             collected += chunk;
           }),
-          `${timeoutSeconds} seconds`,
+          timeoutSeconds,
         );
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
@@ -312,7 +328,8 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         yield* Console.log(`\n> vp ${step.name}  ${outcome}  ${time}`);
         const output = Option.isSome(result) ? result.value.output.trimEnd() : collected.trimEnd();
         if (output) yield* Console.log(output);
-        return { name: step.name, outcome, time };
+        const note = Option.isSome(result) ? (result.value.note ?? []) : [];
+        return { name: step.name, outcome, time, note };
       });
       const limited = Effect.scoped(
         admission
@@ -371,86 +388,70 @@ const decodeRootPackageJson = Schema.decodeEffect(
 const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
   Stream.runCollect(stream).pipe(Effect.map((chunks) => Buffer.concat(chunks)));
 
-// Fails on a nonzero exit: an empty file list from a broken index would
-// otherwise pass as "no changes". quotePath=false keeps non-ASCII paths as real
-// paths instead of quoted escapes.
-export const git = Effect.fn("checkChanged.git")(function* (
+// The landing's limit for one git call (git-history.cjs): past it the call fails the run.
+export const GIT_TIMEOUT = `${GIT_CALL_TIMEOUT_MS / 60_000} minutes` as const;
+
+// Reports git's exit code; a call past GIT_TIMEOUT fails. Without forceKillAfter the spawner sends
+// only SIGTERM and then waits for the exit, so a git that ignores it would hold the run forever.
+// quotePath=false keeps non-ASCII paths as real paths instead of quoted escapes.
+const gitRun = Effect.fn("checkChanged.gitRun")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
   env: Record<string, string> = {},
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  return yield* Effect.scoped(
+  const run = Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
         ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
           cwd,
           env: { ...REAL_HISTORY_ENV, ...env },
           extendEnv: true,
+          forceKillAfter: "5 seconds",
         }),
       );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [collectBytes(handle.stdout), collectBytes(handle.stderr), handle.exitCode],
         { concurrency: "unbounded" },
       );
-      if (exitCode !== 0) {
-        return yield* Effect.fail(
-          `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
-        );
-      }
-      return stdout;
+      return { stdout, stderr, exitCode };
     }),
   );
+  const result = yield* awakeTimeoutOption(run, GIT_CALL_TIMEOUT_MS / 1000);
+  if (Option.isNone(result)) {
+    return yield* Effect.fail(
+      `check:changed: git ${args.join(" ")} did not finish within ${GIT_TIMEOUT}`,
+    );
+  }
+  return result.value;
+});
+
+// Fails on an exit `allowed` does not name, with git's message: an empty file list from a broken
+// index would otherwise pass as "no changes".
+const gitAllowing = Effect.fn("checkChanged.gitAllowing")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  allowed: ReadonlyArray<number>,
+  env: Record<string, string> = {},
+) {
+  const { stdout, stderr, exitCode } = yield* gitRun(cwd, args, env);
+  if (!allowed.includes(exitCode)) {
+    return yield* Effect.fail(
+      `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
+    );
+  }
+  return { stdout, exitCode };
+});
+
+export const git = Effect.fn("checkChanged.git")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  env: Record<string, string> = {},
+) {
+  return (yield* gitAllowing(cwd, args, [0], env)).stdout;
 });
 export const gitLines = (cwd: string, args: ReadonlyArray<string>) =>
   git(cwd, args).pipe(Effect.map((stdout) => stdout.toString().split("\n").filter(Boolean)));
-
-// Ignored files that checks read: generated sources, declarations, and env files.
-const checkInput = (file: string) =>
-  /(^|\/)\.(generated|astro)\/|\.d\.ts$|(^|\/)\.env[^/]*$/.test(file);
-// Ignored files that change a test's result without a diff: env files and generated sources.
-const testInput = (file: string) =>
-  /(^|\/)\.generated\/|(^|\/)\.env[^/]*$/.test(file) && !file.endsWith(".d.ts");
-const inNodeModules = /(^|\/)node_modules\//;
-
-// Pathspecs don't stop git from walking an ignored directory, and on Windows it follows pnpm's
-// junctions in node_modules until MAX_PATH. `--directory` lists one without entering it.
-export const ignoredCheckInputs = Effect.fn("checkChanged.ignoredCheckInputs")(function* (
-  root: string,
-  wanted: (file: string) => boolean = checkInput,
-) {
-  const list = (args: ReadonlyArray<string>) =>
-    git(root, ["ls-files", "-z", ...args]).pipe(
-      Effect.flatMap((stdout) => Effect.try({ try: () => gitPaths(stdout), catch: String })),
-      Effect.map((listed) => listed.filter(Boolean)),
-    );
-  const ignored = ["--others", "--ignored", "--exclude-standard"];
-  // `--directory` hides a directory where the index has a file; `-k` lists those.
-  const [listed, replaced] = yield* Effect.all(
-    [list([...ignored, "--directory"]), list(["-k", "--directory"])],
-    { concurrency: 2 },
-  );
-  const entries = [...new Set([...listed, ...replaced])].sort();
-  // git lists an untracked directory whose contents are all ignored together with them;
-  // listing it again would walk its node_modules.
-  const directories = entries.filter(
-    (entry, index) =>
-      entry.endsWith("/") && !inNodeModules.test(entry) && !entries[index + 1]?.startsWith(entry),
-  );
-  const files = entries.filter((entry) => !entry.endsWith("/"));
-  // Calls fit Windows' 32,767-character command line: 16 covers `:(literal)`, quotes, a space.
-  // `.git/` matches nothing; it stops git starting its walk inside a nested repository.
-  const longest = directories.reduce((max, dir) => Math.max(max, dir.length), 0);
-  const size = Math.max(1, Math.floor(30_000 / (longest + 16)));
-  for (let start = 0; start < directories.length; start += size) {
-    const batch = directories.slice(start, start + size).map((dir) => `:(literal)${dir}`);
-    files.push(...(yield* list([...ignored, "--", ":(literal).git/", ...batch])));
-  }
-  // A nested repository is listed by its directory, as the old pathspecs listed it.
-  return files
-    .filter((file) => !inNodeModules.test(file) && (file.endsWith("/") || wanted(file)))
-    .sort();
-});
 
 const gitCommit = (root: string, ref: string) =>
   git(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]).pipe(
@@ -470,11 +471,19 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
       }));
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
-    const base = yield* git(root, ["merge-base", head, rev]).pipe(
-      Effect.map((stdout) => stdout.toString().trim()),
-      Effect.orElseSucceed(() => undefined),
+    // A ref that does not exist (rev-parse exits 1) or shares no history with HEAD (merge-base exits
+    // 1) rules the candidate out. Any other failure fails the run with git's message: merge-base
+    // exits 128 for a missing ref too, but also for a ref to a commit this clone lacks, which
+    // `git fetch` repairs and skipping would hide.
+    const named = yield* gitAllowing(
+      root,
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", rev],
+      [0, 1],
     );
-    if (!base) continue;
+    if (named.exitCode !== 0) continue;
+    const found = yield* gitAllowing(root, ["merge-base", head, rev], [0, 1]);
+    if (found.exitCode !== 0) continue;
+    const base = found.stdout.toString().trim();
     const ahead = Number(
       (yield* git(root, ["rev-list", "--count", base + ".." + head])).toString(),
     );
@@ -491,6 +500,182 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 
 // CI's lint and knip also read Astro components' frontmatter.
 const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
+
+// Nothing of the kind read is at the path: it was removed since Git listed it, a path it runs
+// through is a file, it is a folder where a file was read, or it is a link that leads back to
+// itself, which Git cannot read either.
+const ABSENT = new Set(["ENOENT", "ENOTDIR", "EISDIR", "ELOOP"]);
+const unlessAbsentAsync = <A>(read: Promise<A>) =>
+  read.catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== undefined && ABSENT.has(error.code)) return undefined;
+    throw error;
+  });
+
+// HEAD, commondir and a .git file each hold one line, which this much of the file covers.
+const GIT_FILE_BYTES = 64 * 1024;
+// Windows defines no O_NONBLOCK, and its folders hold no FIFO.
+const OPEN_WITHOUT_WAITING = NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NONBLOCK ?? 0);
+
+// The start of the regular file at `path`, or undefined when there is none. A FIFO or a device
+// there would hold a read until something writes to it, which may be never, so the open does not
+// wait and only a regular file is read.
+const readGitFile = async (path: string) => {
+  const file = await unlessAbsentAsync(NodeFSP.open(path, OPEN_WITHOUT_WAITING));
+  if (file === undefined) return undefined;
+  try {
+    if (!(await file.stat()).isFile()) return undefined;
+    const { buffer, bytesRead } = await file.read({
+      buffer: Buffer.alloc(GIT_FILE_BYTES),
+      position: 0,
+    });
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    await file.close();
+  }
+};
+
+// The HEAD of a git directory: a ref, or the commit a detached HEAD holds.
+const GIT_HEAD = /^(?:ref:\s*refs\/|[0-9a-fA-F]{40})/;
+
+// Git takes a HEAD that links to a path under refs/ without following it, as an older Git wrote
+// one, so it holds even for a branch with no commit yet; it takes a link anywhere else for no HEAD.
+const isGitHead = async (path: string) => {
+  const info = await unlessAbsentAsync(NodeFSP.lstat(path));
+  if (info?.isSymbolicLink()) {
+    return (await unlessAbsentAsync(NodeFSP.readlink(path)))?.startsWith("refs/") === true;
+  }
+  const head = await readGitFile(path);
+  return head !== undefined && GIT_HEAD.test(head);
+};
+
+// What Git reads as a git directory: a HEAD it can read, and objects and refs folders in the
+// directory or, for a linked worktree's, in the one its commondir file names.
+const isGitDirectory = async (directory: string) => {
+  if (!(await isGitHead(NodePath.join(directory, "HEAD")))) return false;
+  const common = await readGitFile(NodePath.join(directory, "commondir"));
+  const shared =
+    common === undefined ? directory : NodePath.resolve(directory, common.replace(/[\r\n]+$/, ""));
+  const folders = await Promise.all(
+    ["objects", "refs"].map((name) => unlessAbsentAsync(NodeFSP.stat(NodePath.join(shared, name)))),
+  );
+  return folders.every((info) => info?.isDirectory() === true);
+};
+
+// Git stops at a nested repository and lists its folder: one whose .git is a git directory, or a
+// file `gitdir: <path>` naming one, as a submodule's or a linked worktree's is. Any other .git, such
+// as a marker file a tool leaves, is no repository, and Git lists what is beside it.
+const isNestedRepository = async (folder: string) => {
+  const dotGit = NodePath.join(folder, ".git");
+  const info = await unlessAbsentAsync(NodeFSP.stat(dotGit));
+  if (info?.isDirectory()) return isGitDirectory(dotGit);
+  if (!info?.isFile()) return false;
+  const text = await readGitFile(dotGit);
+  if (!text?.startsWith("gitdir: ")) return false;
+  return isGitDirectory(
+    NodePath.resolve(folder, text.slice("gitdir: ".length).replace(/[\r\n]+$/, "")),
+  );
+};
+
+const GENERATED_INPUT = /(?:^|\/)\.generated\//;
+const ENV_INPUT = /(?:^|\/)\.env[^/]*$/;
+// Of the ignored inputs, tests read env files and the generated sources that are not declarations.
+export const isTestInput = (file: string) =>
+  !file.endsWith(".d.ts") && (GENERATED_INPUT.test(file) || ENV_INPUT.test(file));
+
+// The ignored files checks read: generated sources, Astro's generated types, declarations and env
+// files.
+export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (root: string) {
+  // Pathspec exclusions filter output, but do not prune Git for Windows' junction traversal.
+  // A tracked path replaced by a directory is listed only with --killed.
+  const listings = yield* Effect.all(
+    [
+      git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]),
+      git(root, ["ls-files", "--killed", "--directory", "-z"]),
+    ],
+    { concurrency: 2 },
+  );
+  // With core.ignorecase set, Git passes over .git in any case. Whether a folder holds a nested
+  // repository is the file system's answer for .git, which one that folds case gives for .GIT as
+  // well, so a name in any case is checked. Exit 1: the setting is not set.
+  const ignoreCase = yield* gitAllowing(
+    root,
+    ["config", "--type=bool", "--get", "core.ignorecase"],
+    [0, 1],
+  ).pipe(Effect.map(({ stdout }) => stdout.toString().trim() === "true"));
+  const isDotGit = (name: string) => (ignoreCase ? name.toLowerCase() : name) === ".git";
+  // Node looks for dependencies in the folder lowercase node_modules opens, through a link too: on a
+  // file system that folds case one named in any case, on one that keeps it any folder such a link
+  // leads to, whatever core.ignorecase says. The walk enters folders only, never a link.
+  const isNodeModules = async (parent: string, name: string) => {
+    if (name === "node_modules") return true;
+    if (name.toLowerCase() !== "node_modules") return false;
+    const [named, lowercase] = await Promise.all([
+      unlessAbsentAsync(NodeFSP.lstat(NodePath.join(root, parent, name), { bigint: true })),
+      unlessAbsentAsync(
+        NodeFSP.stat(NodePath.join(root, parent, "node_modules"), { bigint: true }),
+      ),
+    ]);
+    return named !== undefined && named.ino === lowercase?.ino && named.dev === lowercase.dev;
+  };
+  const inNodeModules = async (file: string) => {
+    const parts = file.split("/");
+    for (const [index, part] of parts.entries()) {
+      if (await isNodeModules(parts.slice(0, index).join("/"), part)) return true;
+    }
+    return false;
+  };
+  return yield* Effect.tryPromise(async () => {
+    const files = new Set<string>();
+    const matches = (file: string) =>
+      GENERATED_INPUT.test(file) ||
+      ENV_INPUT.test(file) ||
+      /(?:^|\/)\.astro\//.test(file) ||
+      file.endsWith(".d.ts");
+    // Git can list a folder together with folders inside it; each is read once. A path removed since
+    // Git listed it is no input, as for `add` in checkChanged.
+    const seen = new Set<string>();
+    const walk = async (file: string): Promise<void> => {
+      if (seen.has(file) || (await inNodeModules(file))) return;
+      seen.add(file);
+      const absolute = NodePath.join(root, file);
+      const info = await unlessAbsentAsync(NodeFSP.lstat(absolute));
+      if (info === undefined) return;
+      if (info.isDirectory() && !info.isSymbolicLink()) {
+        const entries =
+          (await unlessAbsentAsync(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
+        const hasDotGit = entries.some((entry) => entry.name.toLowerCase() === ".git");
+        if (hasDotGit && (await isNestedRepository(absolute))) {
+          if (matches(`${file}/`)) files.add(`${file}/`);
+          return;
+        }
+        for (const entry of entries) {
+          // Git never lists a .git entry, whatever it holds.
+          if (isDotGit(entry.name)) continue;
+          const child = `${file}/${entry.name}`;
+          if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(child);
+          else if (matches(child)) files.add(child);
+        }
+      } else if (matches(file)) files.add(file);
+    };
+    // Git for Windows lists what is in the folder a junction leads to, where Git elsewhere lists the
+    // link alone, which the walk never enters; so a path under a link is no input either.
+    const underLink = async (file: string) => {
+      const parts = file.split("/");
+      for (let end = 1; end < parts.length; end++) {
+        const info = await unlessAbsentAsync(
+          NodeFSP.lstat(NodePath.join(root, ...parts.slice(0, end))),
+        );
+        if (info?.isSymbolicLink()) return true;
+      }
+      return false;
+    };
+    for (const entry of listings.flatMap((output) => gitPaths(output)).filter(Boolean)) {
+      const file = entry.replace(/\/$/, "");
+      if (!(await underLink(file))) await walk(file);
+    }
+    return [...files].sort();
+  });
+});
 // Directories `scripts/i18n-catalog.ts` reads messages from.
 const TRANSLATED_SOURCE = /^(apps\/(web|mobile|desktop)|packages\/(client-runtime|shared))\/src\//;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
@@ -803,6 +988,7 @@ export const uncachedTests = [
   // On macOS the file tracker runs every bash and sh as Vite+'s bundled Oils osh,
   // which refuses bash's own flags such as --noprofile.
   "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "packages/ssh/src/tunnel.test.ts",
   "scripts/release-desktop-workflow.test.ts",
   // These skip cases without a cgroup this process may join or delegate.
   "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
@@ -813,7 +999,7 @@ export const uncachedTests = [
 ];
 
 // Output is piped, so keep the colors a terminal would get.
-const spawnVp = (
+export const spawnVp = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   platform: NodeJS.Platform,
   args: ReadonlyArray<string>,
@@ -824,7 +1010,9 @@ const spawnVp = (
   Effect.scoped(
     Effect.gen(function* () {
       const [command, commandArgs] = vitePlusCommand(args, platform);
-      const handle = yield* spawner.spawn(
+      // A step's tools start workers and servers, which end with the step, also after it exited, as
+      // its process group does on POSIX.
+      const handle = yield* endingWindowsTrees(spawner, platform, "always").spawn(
         ChildProcess.make(command, commandArgs, {
           cwd,
           env: { ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}), ...extraEnv },
@@ -1073,6 +1261,96 @@ export const changedWhileCheckingMessage = (paths: ReadonlyArray<string>) =>
       : []),
   ].join("\n");
 
+// What the test step's results depend on beyond its test files: the bytes of the changed files, the
+// ignored files tests read, the install, the checkout's modes and names, and Git's environment.
+interface TestInputs {
+  readonly source: string;
+  readonly sources: ReadonlyMap<string, string>;
+  readonly ignored: ReadonlyMap<string, string>;
+  readonly install: string;
+  readonly state: string;
+  readonly git: string;
+}
+
+const differingFiles = (before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>) =>
+  [...new Set([...before.keys(), ...after.keys()])]
+    .filter((file) => before.get(file) !== after.get(file))
+    .sort();
+
+const testInputChanges = (before: TestInputs, after: TestInputs) => {
+  const sources = differingFiles(before.sources, after.sources);
+  return [
+    ...sources,
+    ...(sources.length === 0 && before.source !== after.source ? ["the checked tree"] : []),
+    ...differingFiles(before.ignored, after.ignored).map((file) => `${file} (ignored input)`),
+    ...(before.install !== after.install ? ["the installed dependencies"] : []),
+    ...(before.state !== after.state ? ["the checkout's file modes or untracked names"] : []),
+    ...(before.git !== after.git ? ["the Git environment"] : []),
+  ];
+};
+
+const discardedTestsNote = (changes: ReadonlyArray<string>) => [
+  "test results discarded, whatever the tests reported: these inputs changed while they ran or could",
+  "not be compared.",
+  "A path nobody edited is one a step or tool wrote. Run again. Changed:",
+  ...changes.slice(0, CHANGED_PATHS_SHOWN).map((change) => `  ${change}`),
+  ...(changes.length > CHANGED_PATHS_SHOWN
+    ? [`  and ${changes.length - CHANGED_PATHS_SHOWN} more`]
+    : []),
+];
+
+// Loading Metro's config writes the mobile app's generated modules, ignored files the test step reads
+// as inputs. knip and a mobile test load it while the tests run, so check:changed loads it before it
+// fingerprints the inputs, and those later loads find every module current.
+const INPUT_WRITING_CONFIGS = ["apps/mobile/metro.config.js"];
+const CONFIG_LOAD_SECONDS = 300;
+
+// A config that fails to load here fails again where knip or a test loads it, which reports why.
+const loadConfig = Effect.fn("checkChanged.loadConfig")(function* (
+  root: string,
+  platform: NodeJS.Platform,
+  file: string,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const started = yield* Clock.currentTimeMillis;
+  const run = Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* endingWindowsTrees(spawner, platform, "always").spawn(
+        ChildProcess.make(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            "await (await import(process.env.CHECK_CHANGED_CONFIG)).default",
+          ],
+          {
+            cwd: root,
+            extendEnv: true,
+            env: { CHECK_CHANGED_CONFIG: NodeURL.pathToFileURL(NodePath.join(root, file)).href },
+            forceKillAfter: "5 seconds",
+          },
+        ),
+      );
+      const [output, exitCode] = yield* Effect.all([collectBytes(handle.all), handle.exitCode], {
+        concurrency: "unbounded",
+      });
+      return exitCode === 0 ? "" : `exited with ${exitCode}:\n${output.toString().trimEnd()}`;
+    }),
+  ).pipe(Effect.catch((error) => Effect.succeed(error.message)));
+  const failure = yield* awakeTimeoutOption(run, CONFIG_LOAD_SECONDS);
+  const seconds = (((yield* Clock.currentTimeMillis) - started) / 1000).toFixed(1);
+  if (Option.isNone(failure) || failure.value !== "") {
+    const reason = Option.isNone(failure)
+      ? `did not finish within ${CONFIG_LOAD_SECONDS}s`
+      : failure.value;
+    yield* Console.warn(
+      `check:changed: loading ${file} ${reason}\nknip or a mobile test may write its generated files while the tests run.`,
+    );
+    return;
+  }
+  yield* Console.log(`check:changed: loaded ${file} in ${seconds}s`);
+});
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -1248,6 +1526,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return yield* Effect.fail(`check:changed could not install pnpm-lock.yaml:\n${install.output}`);
   }
 
+  for (const config of INPUT_WRITING_CONFIGS) {
+    if (yield* fs.exists(inRoot(config))) yield* loadConfig(root, platform, config);
+  }
+
   const hostCapabilities = yield* Effect.promise(probeHostCapabilities);
   const testGit = gitEnvironment();
   const testRuntime = changedTestRuntime(
@@ -1303,21 +1585,35 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return { hash, tree: current, bytes };
   });
   const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
-  const testFingerprint = Effect.fn("checkChanged.testFingerprint")(function* (
-    head: string,
-    install: string,
-  ) {
-    const { hash } = yield* sourceFingerprint(head);
-    yield* addFiles(hash, yield* ignoredCheckInputs(root, testInput));
-    return hash.update(install).digest("hex");
+  const testInputs = Effect.fn("checkChanged.testInputs")(function* (head: string, git: string) {
+    const install = yield* installed();
+    const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+    const { hash, bytes: sources } = yield* sourceFingerprint(head);
+    const ignored = yield* addFiles(
+      NodeCrypto.createHash("sha256"),
+      (yield* ignoredInputs(root)).filter(isTestInput),
+    );
+    const inputs: TestInputs = {
+      source: hash.digest("hex"),
+      sources,
+      ignored,
+      install,
+      state,
+      git,
+    };
+    return inputs;
   });
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
     const { hash, tree: checked, bytes } = yield* sourceFingerprint(against);
     const source = hash.copy().digest("hex");
-    yield* addFiles(hash, yield* ignoredCheckInputs(root));
+    yield* addFiles(hash, yield* ignoredInputs(root));
     return { source, tree: checked, bytes, inputs: hash.update(yield* installed()).digest("hex") };
   });
+  const fingerprintStarted = yield* Clock.currentTimeMillis;
   const before = yield* fingerprints(base);
+  yield* Console.log(
+    `check:changed: fingerprinted inputs in ${(((yield* Clock.currentTimeMillis) - fingerprintStarted) / 1000).toFixed(1)}s`,
+  );
   const key = before.inputs;
   const cachePath = inRoot("node_modules/.cache/check-changed.json");
   // A missing or unreadable cache is a miss, never a failure.
@@ -1572,19 +1868,19 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         Effect.gen(function* () {
           const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-tests-" });
           const head = yield* gitCommit(root, "HEAD");
-          const install = yield* installed();
-          const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+          const started = yield* testInputs(head, testGit);
+          const { install, state } = started;
           const cache = path.join(temp, "cache");
           const { finish } = yield* stageTestCache(
             yield* testCachePartition(path.join(slotDirectory, "tests"), head),
             cache,
-            `${yield* testFingerprint(head, install)}\0${state}\0${testGit}`,
             Effect.gen(function* () {
-              if ((yield* gitCommit(root, "HEAD")) !== head) return "";
-              const fingerprint = yield* testFingerprint(head, yield* installed());
+              const current = yield* gitCommit(root, "HEAD");
+              if (current !== head) {
+                return [`HEAD, which moved from ${head.slice(0, 12)} to ${current.slice(0, 12)}`];
+              }
               const git = yield* Effect.try({ try: () => gitEnvironment(), catch: String });
-              const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
-              return `${fingerprint}\0${state}\0${git}`;
+              return testInputChanges(started, yield* testInputs(head, git));
             }),
           );
           const request = path.join(temp, "tests.json");
@@ -1622,7 +1918,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
                 collect,
               ),
           );
-          return (yield* finish) ? result : { ...result, ok: false };
+          const changed = yield* finish;
+          return changed.length === 0
+            ? result
+            : { ...result, ok: false, note: discardedTestsNote(changed) };
         }),
       ).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
@@ -1705,6 +2004,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const summary = ["check:changed summary"];
   for (const result of results) {
     summary.push(`  ${result.outcome}  ${result.name}  ${result.time}`);
+    for (const line of result.note) summary.push(`        ${line}`);
   }
   if (results.some((result) => result.outcome === "TIMEOUT")) {
     summary.push(
@@ -1782,7 +2082,7 @@ export const checkChangedCommand = Command.make(
     ),
     timeout: Flag.Int("timeout").pipe(
       Flag.withDescription(
-        "Seconds before a step is killed; also CHECK_CHANGED_TIMEOUT. Defaults to 900.",
+        "Seconds awake before a step is killed; also CHECK_CHANGED_TIMEOUT. Defaults to 900.",
       ),
       Flag.optional,
     ),
@@ -1806,12 +2106,20 @@ export const checkChangedCommand = Command.make(
     ),
 ).pipe(Command.withDescription("Run CI's fast checks for this branch's changes."));
 
-// Every process ends with what it started, also after it exited, as its process group does on POSIX.
+// A walk of a Windows process tree starts PowerShell, which takes seconds on a loaded machine, so a git
+// call's tree is walked only when it is killed or a process it started still holds its output. What git
+// leaves once it exited with its output closed, such as its fsmonitor or credential-cache daemon, is
+// meant to outlive it, as it does on POSIX. Each step's tree is walked (spawnVp).
+export const runSpawner = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+) => endingWindowsTrees(spawner, platform, "leftBehind");
+
 const spawnerLayer = Layer.effect(
   ChildProcessSpawner.ChildProcessSpawner,
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    return endingWindowsTrees(spawner, yield* HostProcess.Platform);
+    return runSpawner(spawner, yield* HostProcess.Platform);
   }),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 

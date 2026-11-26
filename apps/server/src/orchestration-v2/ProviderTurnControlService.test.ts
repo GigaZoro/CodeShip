@@ -296,12 +296,15 @@ it.effect(
           isNodeStored: () => Effect.die("not used"),
           canStartQueuedRun: () => Effect.die("not used"),
           getHeldQueuedRuns: () => Effect.die("not used"),
+          getRunsUnderwayOn: () => Effect.die("not used"),
           getRecoveryThreadIds: () => Effect.die("unused getRecoveryThreadIds"),
           getUnreadableThreadIds: () => Effect.die("unused getUnreadableThreadIds"),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
           getThreadSnapshotWindow: () => Effect.die("unused getThreadSnapshotWindow"),
           getPullRequestSnapshot: () => Effect.die("unused getPullRequestSnapshot"),
           hasUserWrittenMessage: () => Effect.die("unused hasUserWrittenMessage"),
+          hasStarableMessage: () => Effect.die("unused hasStarableMessage"),
+          getMessageIdsInRuns: () => Effect.die("unused getMessageIdsInRuns"),
         }),
       );
       const layerSessionManager = Layer.succeed(

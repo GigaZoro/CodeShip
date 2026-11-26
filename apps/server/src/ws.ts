@@ -419,7 +419,7 @@ export const withLateConfigDiscovery = <E, R>(
           case "providerStatuses":
             return [{ ...current, providers: event.payload.providers }, [event]];
           case "settingsUpdated":
-            return [{ ...current, settings: event.payload.settings }, [event]];
+            return [{ ...current, ...event.payload }, [event]];
           // Themes and usage-limit sources survive snapshots because snapshots never include them.
           default:
             return [current, [event]];
@@ -1088,9 +1088,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           ),
         );
       // Bound stored and projected payload bytes separately; neither bounds process memory.
+      // Clients place an entity where they first see it, so a replay with gaps reorders them.
       if (
         stats.eventCount > THREAD_RESUME_MAX_REPLAY_EVENTS ||
-        !isThreadReplayRawPayloadSafe(stats.rawPayloadBytes)
+        !isThreadReplayRawPayloadSafe(stats.rawPayloadBytes) ||
+        stats.historyCompacted
       ) {
         return yield* snapshotThenLive();
       }
@@ -1543,6 +1545,15 @@ export const layerWsRpc = (
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      // A refresh only drops a stale identity: a failed lookup is not kept, so the next read asks
+      // Git again, and the clone or publish it follows still stands.
+      const refreshRepositoryIdentity = (cwd: string) =>
+        repositoryIdentityResolver.resolve(cwd, { refresh: true }).pipe(
+          Effect.asVoid,
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not refresh a repository identity", { cwd, cause }),
+          ),
+        );
       const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const agentSessionImporter = yield* AgentSessionImporter.AgentSessionImporter;
@@ -1860,10 +1871,7 @@ export const layerWsRpc = (
               options.catalogDigests,
             )
           : commandProviders;
-        const settings = ServerSettings.redactServerSettingsForClient(
-          yield* serverSettings.getSettings,
-          settingsClient,
-        );
+        const currentSettings = yield* serverSettings.getSettings;
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
@@ -1916,7 +1924,8 @@ export const layerWsRpc = (
               : {}),
             otlpLogsEnabled: config.otlpLogsUrl !== undefined,
           },
-          settings,
+          settings: ServerSettings.redactServerSettingsForClient(currentSettings, settingsClient),
+          usageSettingsKey: usage.clientSettingsKey(currentSettings),
           ...(serverSettings.managedPolicy === undefined
             ? {}
             : { managedPolicy: serverSettings.managedPolicy }),
@@ -2018,6 +2027,9 @@ export const layerWsRpc = (
                       message: detail ?? "Failed to dispatch orchestration V2 command",
                       ...(detail === undefined ? {} : { detail }),
                       ...(Orchestrator.isStaleDispatchError(cause) ? { stale: true } : {}),
+                      ...(cause._tag === "OrchestratorMessageStarError"
+                        ? { messageStarReason: cause.reason }
+                        : {}),
                       cause,
                     });
                   }),
@@ -2662,8 +2674,7 @@ export const layerWsRpc = (
             );
           }),
         [WS_METHODS.providerRetryUsageLimit]: (input) =>
-          accountRouting.retryAccount(input.instanceId).pipe(
-            Effect.as({}),
+          accountRouting.retryAccount(input.instanceId, { requesterThreadId: input.threadId }).pipe(
             Effect.mapError(
               (error) =>
                 new ProviderSetupError({
@@ -2676,6 +2687,12 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.providerUsageHolds]: () =>
           accountRouting.holds.pipe(Effect.map((holds) => ({ holds }))),
+        [WS_METHODS.providerCreditGrants]: () =>
+          accountRouting.limits().pipe(
+            Effect.map(({ grants }) => ({
+              grants: [...grants].map(([instanceId, grant]) => ({ instanceId, ...grant })),
+            })),
+          ),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(
@@ -2993,7 +3010,7 @@ export const layerWsRpc = (
                   ),
                 ),
             onCloned: (project) =>
-              repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
+              refreshRepositoryIdentity(project.workspaceRoot).pipe(
                 Effect.andThen(
                   projectService.update({
                     commandId: CommandId.make(`project-clone-done:${project.projectId}`),
@@ -3039,9 +3056,9 @@ export const layerWsRpc = (
           sourceControlRepositories.publishRepository(input).pipe(
             // A failed push still leaves the new remote added.
             Effect.ensuring(
-              repositoryIdentityResolver
-                .resolve(input.cwd, { refresh: true })
-                .pipe(Effect.andThen(refreshGitStatus(input.cwd))),
+              refreshRepositoryIdentity(input.cwd).pipe(
+                Effect.andThen(refreshGitStatus(input.cwd)),
+              ),
             ),
           ),
         [WS_METHODS.projectsSearchEntries]: (input) =>
@@ -3544,13 +3561,16 @@ export const layerWsRpc = (
                     )
                   : Stream.empty;
               const settingsUpdates = settingsChanges.pipe(
-                Stream.map((settings) =>
-                  ServerSettings.redactServerSettingsForClient(settings, settingsClient),
-                ),
                 Stream.map((settings) => ({
                   version: 1 as const,
                   type: "settingsUpdated" as const,
-                  payload: { settings },
+                  payload: {
+                    settings: ServerSettings.redactServerSettingsForClient(
+                      settings,
+                      settingsClient,
+                    ),
+                    usageSettingsKey: usage.clientSettingsKey(settings),
+                  },
                 })),
               );
 

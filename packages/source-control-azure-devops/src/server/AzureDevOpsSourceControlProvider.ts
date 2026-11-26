@@ -51,6 +51,7 @@ export const discovery = {
   authArgs: ["account", "show", "--query", "user.name", "-o", "tsv"],
   // `az --version` starts Python and takes ~6s on Windows, exceeding the default probe timeout.
   probeTimeoutMs: 20_000,
+  concurrency: AzureDevOpsCli.AZ_PROCESS_CONCURRENCY,
   parseAuth: parseAzureAuth,
   installHint:
     "Install the Azure command-line tools (`az`), then enable Azure DevOps support with `az extension add --name azure-devops`.",

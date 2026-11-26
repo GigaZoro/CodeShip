@@ -811,6 +811,10 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
 
+// Built from fields the config test changes, so a stale key in a snapshot or update shows.
+const usageSettingsKeyOf: UsageService.UsageService["Service"]["clientSettingsKey"] = (settings) =>
+  `${settings.defaultAutoPull}/${settings.enableProviderUpdateChecks}`;
+
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(DocumentText.DocumentText)({}),
@@ -896,7 +900,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(HtmlRenderLibrary.HtmlRenderLibrary)({}),
-  Layer.mock(UsageService.UsageService)({}),
+  Layer.mock(UsageService.UsageService)({ clientSettingsKey: usageSettingsKeyOf }),
   Layer.mock(VcsProvisioningService.VcsProvisioningService)({}),
   Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
   Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),
@@ -1096,6 +1100,7 @@ it.effect.each([
         discovery === "direct-cached" ? endpoints : bound,
       );
       assert.isFalse(snapshot.config.settings.defaultAutoPull);
+      assert.equal(snapshot.config.usageSettingsKey, usageSettingsKeyOf(snapshot.config.settings));
       assert.deepEqual(snapshot.config.keybindings, initialKeybindings);
       const duringAck = yield* keybindings.upsertKeybindingRule({
         key: "mod+alt+y",
@@ -1111,15 +1116,16 @@ it.effect.each([
         key: "mod+alt+z",
         command: "terminal.split",
       });
-      const expectedSettings = [duringDiscovery, latestSettings].map((value) =>
-        ServerSettings.redactServerSettingsForClient(value, { secretReferences: true }),
-      );
+      const expectedSettings = [duringDiscovery, latestSettings].map((current) => ({
+        settings: ServerSettings.redactServerSettingsForClient(current, { secretReferences: true }),
+        usageSettingsKey: usageSettingsKeyOf(current, { secretReferences: true }),
+      }));
       const expectedKeybindings = [duringAck.keybindings, latestKeybindings.keybindings];
       // The two sources can interleave, but each must retain its own publication order.
       for (let i = 0; i < 4; i++) {
         const event = yield* Queue.take(responses);
         if (event.type === "settingsUpdated") {
-          assert.deepEqual(event.payload.settings, expectedSettings.shift());
+          assert.deepEqual(event.payload, expectedSettings.shift());
         } else {
           assert.equal(event.type, "keybindingsUpdated");
           if (event.type !== "keybindingsUpdated")
@@ -1142,6 +1148,7 @@ it.effect.each([
           resolved.config.settings,
           ServerSettings.redactServerSettingsForClient(latestSettings, { secretReferences: true }),
         );
+        assert.equal(resolved.config.usageSettingsKey, usageSettingsKeyOf(latestSettings));
         assert.deepEqual(resolved.config.keybindings, latestKeybindings.keybindings);
         yield* acknowledge;
       }
@@ -1659,6 +1666,69 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       ),
     ),
   ),
+);
+
+it.effect("thread resume selects a snapshot for a cursor behind cold-history compaction", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const now = "2026-10-13T00:00:00.000Z";
+    const threadId = ThreadId.make("thread:compacted");
+    const insertMessage = (version: number, id: string, text: string) => sql<{
+      sequence: number;
+    }>`
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type,
+        occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+      ) VALUES (
+        ${`compacted:${version}`}, 'thread', ${threadId}, ${version}, 'message.updated',
+        ${now}, 'server', ${JSON.stringify({
+          createdBy: "user",
+          creationSource: "web",
+          id,
+          threadId,
+          runId: null,
+          nodeId: null,
+          role: "user",
+          text,
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        })}, '{}', 2
+      ) RETURNING sequence
+    `;
+    const [first] = yield* insertMessage(0, "message:a", "a created");
+    const [head] = yield* insertMessage(1, "message:a", "a final");
+    // Cold-history compaction keeps only the newest event per message, so the same cursor
+    // now gets a snapshot; a cursor at the mark still replays.
+    yield* sql`
+      INSERT INTO orchestration_v2_thread_history_compaction (thread_id, compacted_through_sequence)
+      VALUES (${threadId}, ${head!.sequence})
+    `;
+    const firstItem = (afterSequence: number) =>
+      subscribeOrchestrationV2Thread({
+        threadId,
+        afterSequence,
+        requestCompletionMarker: true,
+      }).pipe(
+        Effect.flatMap((stream) => stream.pipe(Stream.take(1), Stream.runCollect)),
+        Effect.map(([item]) => item?.kind),
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ensureLegacyTranscript: () => Effect.void,
+          streamStoredEventsFrom: () => Stream.never,
+          getThreadSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: head!.sequence,
+              projection: ProjectionStore.emptyProjection({
+                payload: { id: threadId },
+                occurredAt: now,
+              } as never),
+            }),
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+      );
+    assert.equal(yield* firstItem(first!.sequence - 1), "snapshot");
+    assert.equal(yield* firstItem(head!.sequence), "synchronized");
+  }).pipe(Effect.provide(ReplayTestLayer)),
 );
 
 it.effect("a missing thread worktree gets its project's skills in the cwd snapshot", () =>

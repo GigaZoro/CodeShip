@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // GitHub archives avoid npm scanning delays; output <output-dir>/t3/ and publishable t3.tgz.
+import * as NodeModule from "node:module";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -12,6 +13,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
@@ -84,7 +86,32 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
     )}\n`,
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
+  // The published launcher supports Node 20, so remove the types at build time.
+  for (const name of ["cliVersionProbe", "runtimeDirectoryIdentity"]) {
+    const source = yield* path.fromFileUrl(
+      new URL(`../packages/shared/src/${name}.ts`, import.meta.url),
+    );
+    yield* fs.writeFileString(
+      path.join(stageDir, `bin/${name}.mjs`),
+      NodeModule.stripTypeScriptTypes(yield* fs.readFileString(source)),
+    );
+  }
   yield* fs.chmod(path.join(stageDir, "bin/t3.mjs"), 0o755);
+  yield* fs.writeFileString(
+    path.join(stageDir, "bin/promote-runtime.sh"),
+    `set -eu
+${runtimePromotion}
+t3_claim_dir=
+t3_contender=
+trap t3_release_lock EXIT
+trap 'exit 143' HUP INT TERM
+t3_acquire_lock "$1" "$2" 360
+if [ "$#" -eq 3 ]; then
+  t3_promote_runtime "$3" 0
+  printf '%s\\n' "$t3_reused"
+fi
+`,
+  );
   yield* fs.copyFile(path.join(sourceDir, "bin.mjs"), path.join(stageDir, "dist/bin.mjs"));
   const readme = yield* path.fromFileUrl(new URL("../apps/server/README.md", import.meta.url));
   if (yield* fs.exists(readme)) {

@@ -183,6 +183,7 @@ describe("Antigravity subscription limits", () => {
       const byId = new Map(limits.windows.map((window) => [window.id, window]));
       expect(byId.get("3p-5h")).toEqual({
         id: "3p-5h",
+        scope: "third-party",
         label: "Claude & GPT (shared) · 5-hour",
         kind: "session",
         usedPercent: 0,
@@ -190,6 +191,7 @@ describe("Antigravity subscription limits", () => {
       });
       expect(byId.get("3p-weekly")).toEqual({
         id: "3p-weekly",
+        scope: "third-party",
         label: "Claude & GPT (shared) · Weekly",
         kind: "weekly",
         usedPercent: 0,
@@ -374,6 +376,7 @@ describe("Antigravity subscription limits", () => {
       expect((yield* probe).windows).toEqual([
         {
           id: "3p-5h",
+          scope: "third-party",
           label: "Claude & GPT (shared) · 5-hour",
           kind: "session",
           usedPercent: 50,
@@ -382,6 +385,7 @@ describe("Antigravity subscription limits", () => {
         },
         {
           id: "3p-weekly",
+          scope: "third-party",
           label: "Claude & GPT (shared) · Weekly",
           kind: "weekly",
           usedPercent: 0,
@@ -545,6 +549,9 @@ describe("Antigravity subscription limits", () => {
       expect(byId.get("gemini-argon-wtu-weekly")?.label).toBe("Gemini 4 Argon · Weekly");
       expect(byId.get("gemini-carbon-wtu-weekly")?.label).toBe("Gemini 4 Carbon · Weekly");
       expect(byId.get("gemini-carbon-5h")?.label).toBe("Gemini Carbon · 5-hour");
+      expect(byId.get("gemini-weekly")?.scope).toBe("gemini-default");
+      expect(byId.get("gemini-argon-wtu-weekly")?.scope).toBe("gemini-argon");
+      expect(byId.get("3p-weekly")?.scope).toBe("third-party");
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
@@ -613,6 +620,7 @@ describe("Antigravity subscription limits", () => {
       const limits = yield* probe;
       expect(limits.windows).toHaveLength(2);
       expect(limits.windows.find((window) => window.id === "gemini-quota")?.usedPercent).toBe(40);
+      expect(limits.windows.map((window) => window.scope)).toEqual(["unknown", "unknown"]);
       expect(
         limits.windows.every(
           (window) => window.kind === "other" && window.windowDurationMins === undefined,
@@ -635,6 +643,7 @@ describe("Antigravity subscription limits", () => {
       expect((yield* probe).windows).toEqual([
         {
           id: "gemini-5h",
+          scope: "gemini-default",
           kind: "session",
           label: "Gemini · 5-hour",
           usedPercent: 0,

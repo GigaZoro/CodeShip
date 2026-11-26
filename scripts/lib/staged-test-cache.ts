@@ -190,28 +190,30 @@ export const testCachePartition = Effect.fn("checkChanged.testCachePartition")(
     ),
 );
 
+/**
+ * `changes` names what changed among the test step's inputs since it started; any change keeps the
+ * run's results out of the shared cache. `finish` answers with those names, none when it published.
+ */
 export const stageTestCache = Effect.fn("checkChanged.stageTestCache")(function* <E, R>(
   shared: string | undefined,
   cache: string,
-  snapshot: string,
-  fingerprint: Effect.Effect<string, E, R>,
+  changes: Effect.Effect<ReadonlyArray<string>, E, R>,
 ) {
   const seed = `${cache}.seed`;
   if (shared !== undefined) yield* transferCache(shared, cache, seed, seedVersion, "seed");
   const finish = yield* Effect.cached(
-    fingerprint.pipe(
-      Effect.flatMap((after) =>
-        after === snapshot
-          ? (shared === undefined
-              ? Effect.void
-              : transferCache(cache, shared, seed, publishVersion, "publish")
-            ).pipe(Effect.as(true))
-          : Console.warn(
-              "Test results discarded: runtime inputs or HEAD changed during the test step. Run again.",
-            ).pipe(Effect.as(false)),
-      ),
+    (shared === undefined
+      ? changes
+      : changes.pipe(
+          Effect.tap((changed) =>
+            changed.length === 0
+              ? transferCache(cache, shared, seed, publishVersion, "publish")
+              : Effect.void,
+          ),
+        )
+    ).pipe(
       Effect.catch((error) =>
-        Console.warn(`Could not validate test cache: ${String(error)}`).pipe(Effect.as(false)),
+        Effect.succeed([`the test inputs, which could not be compared: ${String(error)}`]),
       ),
       Effect.uninterruptible,
     ),

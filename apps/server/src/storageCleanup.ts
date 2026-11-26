@@ -62,7 +62,7 @@ import {
   makeIsManagedWorktreePath,
 } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import { isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
+import { gitErrorLines, isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
 import { isLinkedWorktree, removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import {
   decodeReleaseRequest,
@@ -730,9 +730,7 @@ const make = Effect.gen(function* () {
       if (result === null) return null;
       if (result.exitCode === 0 || result.exitCode === allowedExitCode) return result;
       if (isNonRepositoryGitStderr(result.stderr)) return null;
-      return yield* failure(
-        result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
-      );
+      return yield* failure(gitErrorLines(result.stderr) || "command failed");
     });
     const index = yield* read(["rev-parse", "--git-path", "index"]);
     if (index === null) return true;
@@ -1050,7 +1048,7 @@ const make = Effect.gen(function* () {
         operation: "StorageCleanup.cleanupGit",
         command,
         cwd,
-        detail: result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
+        detail: gitErrorLines(result.stderr) || "command failed",
       });
   });
 

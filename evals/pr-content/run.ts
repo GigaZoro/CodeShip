@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -11,7 +11,7 @@ import * as CodexTextGeneration from "../../apps/server/src/textGeneration/Codex
 import * as ServerConfig from "../../apps/server/src/config.ts";
 import { gradePrContent } from "./grade.ts";
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: {
     model: { type: "string" },
     out: { type: "string" },

@@ -1225,7 +1225,10 @@ it.effect("admits provider and OAuth client credentials and points only clients 
           success: Schema.Struct({ ok: Schema.Boolean }),
           failure: OrchestratorMcpFailure,
           failureMode: "return",
-          dependencies: [McpInvocationContext.McpInvocationContext],
+          dependencies: [
+            McpInvocationContext.McpInvocationContext,
+            ThreadManagementService.ThreadManagementService,
+          ],
         }),
       );
       const serverLayer = McpHttpServer.layerMcpTransport(
@@ -1242,6 +1245,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         ),
       ).pipe(
         Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) =>
@@ -1599,6 +1603,10 @@ it.effect("hides tools for links and refuses another environment while the beta 
           success: Schema.Struct({ links: Schema.Number }),
           failure: OrchestratorMcpFailure,
           failureMode: "return",
+          dependencies: [
+            McpInvocationContext.McpInvocationContext,
+            ThreadManagementService.ThreadManagementService,
+          ],
         }).annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWhileLinksOff),
         Tool.make("where", {
           description: "Says where it ran.",
@@ -1606,6 +1614,10 @@ it.effect("hides tools for links and refuses another environment while the beta 
           success: Schema.Struct({ ranIn: Schema.String }),
           failure: OrchestratorMcpFailure,
           failureMode: "return",
+          dependencies: [
+            McpInvocationContext.McpInvocationContext,
+            ThreadManagementService.ThreadManagementService,
+          ],
         }),
       );
       const settingsContext = yield* Layer.build(ServerSettings.layerTest());

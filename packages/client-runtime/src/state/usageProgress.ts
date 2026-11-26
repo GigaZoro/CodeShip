@@ -29,6 +29,19 @@ interface UsageProgressEnvironment {
   readonly summary: UsageSummary | null;
 }
 
+/** The server is still working on these figures, so asking again with awaitRefresh can finish them. */
+export function usageSummaryAwaitsRefresh(summary: UsageSummary): boolean {
+  return summary.partialReason !== undefined || summary.sources.some((source) => source.refreshing);
+}
+
+/** A source that could not be read in full is settled: asking again would not complete it. */
+function isUsageSummaryIncomplete(summary: UsageSummary): boolean {
+  return (
+    usageSummaryAwaitsRefresh(summary) ||
+    summary.sources.some((source) => source.status === "partial" || source.status === "failed")
+  );
+}
+
 export function usageEnvironmentProgress(
   environment: UsageProgressEnvironment,
   refreshing = false,
@@ -37,7 +50,8 @@ export function usageEnvironmentProgress(
   if (!environment.isConnected || environment.error !== null) return { phase: "inactive" } as const;
   if (summary === null) return { phase: "loading" } as const;
   if (refreshing) return { phase: "stale" } as const;
-  if (!environment.isPending) return { phase: "ready" } as const;
+  if (!environment.isPending)
+    return { phase: isUsageSummaryIncomplete(summary) ? "incomplete" : "ready" } as const;
   const providers = [
     ...new Set(
       summary.sources.flatMap((source) => (source.refreshing ? [source.fingerprint.provider] : [])),
@@ -100,6 +114,8 @@ export function usageProgress(
 export interface EnvironmentUsageStatus extends UsageProgressEnvironment {
   readonly canReadDiagnostics: boolean;
   readonly modelFilter?: UsageModelFilter | undefined;
+  /** Key of the settings this environment reads usage with (`ServerConfig.usageSettingsKey`); it includes the model filter. */
+  readonly usageSettingsKey: string;
 }
 
 export function equalUsageStatuses(
@@ -118,7 +134,7 @@ export function equalUsageStatuses(
         env.isConnected === other.isConnected &&
         env.error === other.error &&
         env.canReadDiagnostics === other.canReadDiagnostics &&
-        JSON.stringify(env.modelFilter) === JSON.stringify(other.modelFilter)
+        env.usageSettingsKey === other.usageSettingsKey
       );
     })
   );

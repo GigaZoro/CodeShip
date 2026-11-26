@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -14,9 +15,14 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import { FetchHttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+import * as AzureDevOpsDriver from "@t3tools/source-control-azure-devops/server/driver";
+import { probeSourceControlProvider } from "@t3tools/source-control-core/server/discovery";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
 import * as ProcessRunner from "../processRunner.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -51,6 +57,43 @@ const captureProcessResult = (
     Effect.flatMap((service) => service.run(baseInput)),
     Effect.flip,
   );
+
+/** A process runner whose runs hold until `gate` opens, counting how many are alive at once. */
+const gatedRunner = Effect.gen(function* () {
+  const gate = yield* Deferred.make<void>();
+  const starts = yield* Queue.unbounded<number>();
+  const active = yield* Ref.make(0);
+  const peak = yield* Ref.make(0);
+  const total = yield* Ref.make(0);
+  const runner = ProcessRunner.ProcessRunner.of({
+    run: () =>
+      Effect.gen(function* () {
+        const count = yield* Ref.updateAndGet(active, (held) => held + 1);
+        yield* Ref.update(peak, (held) => Math.max(held, count));
+        yield* Ref.update(total, (held) => held + 1);
+        yield* Queue.offer(starts, count);
+        yield* Deferred.await(gate);
+        return {
+          stdout: "",
+          stderr: "",
+          code: ChildProcessSpawner.ExitCode(0),
+          timedOut: false,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdoutInvalidUtf8: false,
+          stderrInvalidUtf8: false,
+        };
+      }).pipe(Effect.ensuring(Ref.update(active, (count) => count - 1))),
+  });
+  /** Waits for `limit` runs to start, then checks that no other run started beside them. */
+  const settle = (limit: number) =>
+    Effect.gen(function* () {
+      yield* Effect.all(Array.from({ length: limit }, () => Queue.take(starts)));
+      yield* Effect.yieldNow;
+      expect(yield* Queue.size(starts)).toBe(0);
+    });
+  return { runner, gate, peak, total, settle };
+});
 
 describe("VcsProcess.run", () => {
   it.effect("explains a locked Git index and allows restore after the lock is released", () =>
@@ -311,35 +354,9 @@ describe("VcsProcess.run", () => {
 
   it.effect("bounds a burst of processes that share a concurrency key", () =>
     Effect.gen(function* () {
-      const gate = yield* Deferred.make<void>();
-      const starts = yield* Queue.unbounded<number>();
-      const active = yield* Ref.make(0);
-      const peak = yield* Ref.make(0);
-      const total = yield* Ref.make(0);
+      const runner = yield* gatedRunner;
       const service = yield* VcsProcess.make.pipe(
-        Effect.provideService(
-          ProcessRunner.ProcessRunner,
-          ProcessRunner.ProcessRunner.of({
-            run: () =>
-              Effect.gen(function* () {
-                const count = yield* Ref.updateAndGet(active, (held) => held + 1);
-                yield* Ref.update(peak, (held) => Math.max(held, count));
-                yield* Ref.update(total, (held) => held + 1);
-                yield* Queue.offer(starts, count);
-                yield* Deferred.await(gate);
-                return {
-                  stdout: "",
-                  stderr: "",
-                  code: ChildProcessSpawner.ExitCode(0),
-                  timedOut: false,
-                  stdoutTruncated: false,
-                  stderrTruncated: false,
-                  stdoutInvalidUtf8: false,
-                  stderrInvalidUtf8: false,
-                };
-              }).pipe(Effect.ensuring(Ref.update(active, (count) => count - 1))),
-          }),
-        ),
+        Effect.provideService(ProcessRunner.ProcessRunner, runner.runner),
       );
 
       const burst = yield* Effect.all(
@@ -355,15 +372,57 @@ describe("VcsProcess.run", () => {
         { concurrency: "unbounded" },
       ).pipe(Effect.forkChild);
 
-      yield* Effect.all(Array.from({ length: 4 }, () => Queue.take(starts)));
-      yield* Effect.yieldNow;
-      expect(yield* Queue.size(starts)).toBe(0);
-      expect(yield* Ref.get(peak)).toBe(4);
+      yield* runner.settle(4);
+      expect(yield* Ref.get(runner.peak)).toBe(4);
 
-      yield* Deferred.succeed(gate, undefined);
+      yield* Deferred.succeed(runner.gate, undefined);
       yield* Fiber.join(burst);
-      expect(yield* Ref.get(total)).toBe(32);
-      expect(yield* Ref.get(peak)).toBe(4);
+      expect(yield* Ref.get(runner.total)).toBe(32);
+      expect(yield* Ref.get(runner.peak)).toBe(4);
+    }),
+  );
+
+  it.effect("keeps every az run the server starts to two at a time, discovery included", () =>
+    Effect.gen(function* () {
+      const runner = yield* gatedRunner;
+      const service = yield* VcsProcess.make.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, runner.runner),
+      );
+      const process = { run: service.run };
+      const azure = yield* AzureDevOpsDriver.driver.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            TestSourceControlHost.layer({ process }),
+            SourceControlRateLimit.layer,
+            FetchHttpClient.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      );
+
+      const lookups = Array.from({ length: 24 }, (_, index) =>
+        azure.sourceControl.listChangeRequests({
+          cwd: "/workspace",
+          headSelector: `cs/run-${index}`,
+          state: "all",
+          limit: 20,
+        }),
+      );
+      const probes = Array.from({ length: 4 }, () =>
+        probeSourceControlProvider({ spec: azure.discovery, process, cwd: "/workspace" }),
+      );
+      const burst = yield* Effect.all([...lookups, ...probes], { concurrency: "unbounded" }).pipe(
+        Effect.forkChild,
+      );
+
+      yield* runner.settle(2);
+      expect(yield* Ref.get(runner.peak)).toBe(2);
+
+      yield* Deferred.succeed(runner.gate, undefined);
+      yield* Fiber.join(burst);
+      expect(yield* Ref.get(runner.total)).toBe(24 + 4 * 2);
+      expect(yield* Ref.get(runner.peak)).toBe(2);
     }),
   );
 

@@ -102,11 +102,12 @@ import {
   PlugIcon,
   SquarePenIcon,
   DownloadIcon,
+  StarIcon,
   TextSearchIcon,
   UserPlusIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
-import { stepTimelinePrompt } from "./chat/timelineOutlineStore";
+import { stepTimelinePrompt, stepTimelineStarredMessage } from "./chat/timelineOutlineStore";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { previewBridge } from "./preview/previewBridge";
 import {
@@ -146,7 +147,11 @@ import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesys
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { environmentThreadShells, threadEnvironment } from "../state/threads";
+import {
+  environmentThreadDetails,
+  environmentThreadShells,
+  threadEnvironment,
+} from "../state/threads";
 import { useReopenLastArchivedThread } from "../hooks/useReopenLastArchivedThread";
 import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { anyEnvironmentSupportsThreadFolders } from "@t3tools/client-runtime/thread-folders";
@@ -805,14 +810,18 @@ function OpenCommandPaletteDialog(props: {
 
   const { projectByKey } = useProjectLookups();
 
-  const activeThreadKey = activeThread
-    ? scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id))
-    : null;
-  const previewPanelThreadRef = activeThread
+  const activeThreadRef = activeThread
     ? scopeThreadRef(activeThread.environmentId, activeThread.id)
-    : activeDraftThread
+    : null;
+  const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const starredMessageIds = useAtomValue(
+    environmentThreadDetails.starredMessageIdsAtom(activeThreadRef),
+  );
+  const previewPanelThreadRef =
+    activeThreadRef ??
+    (activeDraftThread
       ? scopeThreadRef(activeDraftThread.environmentId, activeDraftThread.threadId)
-      : null;
+      : null);
   const activeThreadPreviewOpen = useRightPanelStore(
     (state) => selectActiveRightPanel(state.byThreadKey, previewPanelThreadRef) === "preview",
   );
@@ -1567,6 +1576,17 @@ function OpenCommandPaletteDialog(props: {
         },
       },
     );
+  }
+
+  if (activeThreadKey !== null && starredMessageIds.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:next-starred-message",
+      title: t("Jump to next starred message"),
+      searchTerms: ["star", "bookmark", "favorite", "next", "jump", "message"],
+      icon: <StarIcon className={ITEM_ICON_CLASS} />,
+      run: async () => stepTimelineStarredMessage(activeThreadKey),
+    });
   }
 
   if (nextNeedsYou !== null) {
@@ -3112,6 +3132,17 @@ function OpenCommandPaletteDialog(props: {
       event.stopPropagation();
       setHighlightedItemValue(null);
       setQuery(">Snooze");
+      return;
+    }
+    if (
+      (command === "thread.notifications" || command === "thread.color") &&
+      !event.nativeEvent.isComposing &&
+      activeThreadLifecycleItems.some((item) => item.shortcutCommand === command)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setHighlightedItemValue(null);
+      setQuery(command === "thread.notifications" ? ">notifications" : ">color");
       return;
     }
     if (command === "thread.pin") {

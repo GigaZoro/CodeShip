@@ -7,6 +7,17 @@ const rule = createOxlintRuleHarness("t3code/no-manual-memo", {
 });
 
 describe("t3code/no-manual-memo", () => {
+  rule.invalid(
+    "reports a React hook a const key names",
+    `const hook = "useMemo";
+const total = React[hook](() => items.length, [items]);`,
+  );
+
+  rule.invalid(
+    "reports a React hook a bracketed string names",
+    `const save = React["useCallback"](() => {}, []);`,
+  );
+
   rule.valid("allows plain derived values", `const total = items.length * 2;`);
 
   rule.valid("allows useStableCallback", `const onClick = useStableCallback(() => save());`);

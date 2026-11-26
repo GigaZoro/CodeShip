@@ -185,7 +185,9 @@ function UsageModelDialogHost({
     selectUsageModel(null);
     if (document.activeElement === document.body) {
       const page = pageRef.current;
-      const nextModel = page?.querySelector<HTMLButtonElement>("[data-usage-model]:enabled");
+      const nextModel = page?.querySelector<HTMLButtonElement>(
+        '[data-usage-model]:not([aria-disabled="true"])',
+      );
       (nextModel ?? page)?.focus();
     }
   }, [lost, pageRef]);
@@ -252,6 +254,8 @@ export function UsagePage() {
   });
   const shown = usage.view.kind === "figures" ? usage.view : null;
   const showingKept = shown?.kept === true;
+  // A kept view also stays after every environment has answered, when the new period failed.
+  const updatingKept = showingKept && shown?.settled !== true;
   const merged = shown?.merged ?? EMPTY_USAGE;
   const shownEnvironments: readonly Pick<UsageViewEnvironment, "environmentId" | "label">[] =
     shown?.environments ?? selectedEnvironments;
@@ -411,6 +415,7 @@ export function UsagePage() {
   }, []);
 
   const refreshWindow = () => {
+    // The Refresh buttons stay focusable while a refresh runs, so a press then ends here.
     if (refreshingRef.current) return;
 
     if (showingLimits) {
@@ -431,6 +436,19 @@ export function UsagePage() {
       setIsRefreshing(false);
     });
   };
+  const refreshButton = (
+    <Button
+      onClick={refreshWindow}
+      aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
+      aria-busy={isRefreshing}
+      aria-disabled={isRefreshing}
+      disabled={!showingLimits && !canRefreshUsage}
+      size="icon-sm"
+      variant="ghost"
+    >
+      <RefreshIcon size="sm" refreshing={isRefreshing} />
+    </Button>
+  );
   const connectedLimitsEnvironments = [...presentations]
     .filter(
       ([environmentId, presentation]) =>
@@ -537,16 +555,7 @@ export function UsagePage() {
             </Toggle>
           ))}
         </ToggleGroup>
-        <Button
-          onClick={refreshWindow}
-          aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
-          aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canRefreshUsage)}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <RefreshIcon size="sm" refreshing={isRefreshing} />
-        </Button>
+        {refreshButton}
       </div>
       <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
         {showingLimits ? null : (
@@ -598,16 +607,7 @@ export function UsagePage() {
             ))}
           </SelectPopup>
         </Select>
-        <Button
-          onClick={refreshWindow}
-          aria-label={showingLimits ? t("Refresh limits") : t("Refresh usage")}
-          aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canRefreshUsage)}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <RefreshIcon size="sm" refreshing={isRefreshing} />
-        </Button>
+        {refreshButton}
       </div>
     </div>
   );
@@ -703,10 +703,11 @@ export function UsagePage() {
                   days={days}
                   hours={hours}
                   showingKept={showingKept}
+                  updating={updatingKept}
                   progressLabel={
                     rollingRefresh && !refreshingUsage
                       ? null
-                      : (progress.label ?? (showingKept ? t("Updating…") : null))
+                      : (progress.label ?? (updatingKept ? t("Updating…") : null))
                   }
                   metric={metric === "tokens" ? "tokens" : "cost"}
                   sourceMessages={formatUsageSourceNotices(sourceMessages, providerLabel)}
@@ -775,6 +776,7 @@ function UsageOverview({
   days,
   hours,
   showingKept,
+  updating,
   progressLabel,
   chartType,
   chartControls,
@@ -796,6 +798,7 @@ function UsageOverview({
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
+  readonly updating: boolean;
   readonly progressLabel: string | null;
   readonly metric: "tokens" | "cost";
   readonly sourceMessages: ReturnType<typeof formatUsageSourceNotices>;
@@ -824,7 +827,7 @@ function UsageOverview({
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
 
   return (
-    <div aria-busy={loadingPartial} className="flex flex-col gap-6">
+    <div aria-busy={updating} className="flex flex-col gap-6">
       {sourceMessages.map(({ key, text }) => (
         <p key={key} role="status" className="mb-4 text-sm text-muted-foreground">
           {text}
@@ -873,7 +876,7 @@ function UsageOverview({
           {showChatGptSharing ? (
             <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>{t("ChatGPT shared usage")}</span>
-              <ChatGptUsageButton size="xs" disabled={showingKept} />
+              <ChatGptUsageButton size="xs" />
             </div>
           ) : null}
 
@@ -1042,13 +1045,14 @@ function UsageOverview({
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-medium text-foreground">{t("Breakdown")}</h2>
           <ToggleGroup
-            disabled={showingKept}
             aria-label={t("Usage breakdown")}
             variant="segmented"
             value={[breakdown]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value === "model" || value === "time") onBreakdownChange(value);
+              if (!showingKept && (value === "model" || value === "time")) {
+                onBreakdownChange(value);
+              }
             }}
           >
             {(
@@ -1057,7 +1061,7 @@ function UsageOverview({
                 { value: "time", label: shownHourly ? t("Hour") : t("Day") },
               ] as const
             ).map((option) => (
-              <Toggle key={option.value} value={option.value}>
+              <Toggle key={option.value} value={option.value} aria-disabled={showingKept}>
                 {option.label}
               </Toggle>
             ))}
@@ -1098,9 +1102,11 @@ function UsageOverview({
                       <td className="py-2.5 text-left whitespace-normal">
                         <button
                           type="button"
-                          disabled={showingKept}
+                          aria-disabled={showingKept}
                           data-usage-model
-                          onClick={() => onSelectModel(key)}
+                          onClick={() => {
+                            if (!showingKept) onSelectModel(key);
+                          }}
                           className={cn(
                             // The ring sits on the overlay that spans the row, so focus shows on the whole row.
                             "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset",
@@ -1301,7 +1307,7 @@ function UsageCoverageNotice({
   );
 }
 
-function UsageEnvironmentFilter({
+export function UsageEnvironmentFilter({
   environments,
   selectedEnvironments,
   selectedEnvironmentIds,
@@ -1387,7 +1393,9 @@ function UsageEnvironmentFilter({
                       ? t("Refreshing…")
                       : progress.phase === "partway"
                         ? updatingProvidersLabel(progress.providers, providerLabel)
-                        : t("Ready");
+                        : progress.phase === "incomplete"
+                          ? t("Usage figures may be incomplete")
+                          : t("Ready");
           return (
             <MenuCheckboxItem
               key={environment.environmentId}

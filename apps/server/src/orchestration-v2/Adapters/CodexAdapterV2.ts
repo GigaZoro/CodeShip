@@ -364,6 +364,8 @@ export const CodexProviderCapabilitiesV2 = {
   },
   runtimePolicy: {
     enforcement: "native",
+    // The OS sandbox refuses writes when approvals are off.
+    readOnlySandbox: true,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
@@ -1683,9 +1685,11 @@ export const makeCodexAppServerSpawnCommand = Effect.fn(
     name: "codex",
     threadId: input.threadId,
     env: input.env,
+    cwd: input.cwd,
     shared: true,
   });
   const spawnCommand = yield* resolveSpawnCommand(launch.command, launch.args, {
+    cwd: input.cwd,
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
   });
@@ -1933,7 +1937,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
   hooks: Pick<
     CodexAdapterV2Options,
-    | "onUsageLimits"
+    | "bindUsageLimits"
     | "resolveRuntime"
     | "resolveBinaryPath"
     | "compatibility"
@@ -1993,7 +1997,7 @@ export interface CodexAdapterV2Options {
   readonly settings: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
-  readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  readonly bindUsageLimits?: ManagedServerProvider["bindUsageLimits"];
   /** When a ChatGPT-shared account hits its usage limit: its reset, read now, or null if unknown. */
   readonly chatGptSharingLimitReading?: Effect.Effect<ChatGptSharingLimitReading | null>;
   /** A run stopped because this account's sign-in was rejected; re-check the account so routing skips it. */
@@ -2128,6 +2132,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     }),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
+        const onUsageLimits = adapterOptions.bindUsageLimits
+          ? yield* adapterOptions.bindUsageLimits
+          : undefined;
         const scope = yield* Scope.Scope;
         const resolvedRuntime =
           adapterOptions.resolveRuntime === undefined
@@ -5159,9 +5166,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
             }
             const update = codexRateLimitsToUpdate(payload.rateLimits, previous);
-            if (update && adapterOptions.onUsageLimits) {
+            if (update && onUsageLimits) {
               const checkedAt = DateTime.formatIso(yield* DateTime.now);
-              yield* adapterOptions.onUsageLimits({ ...update, checkedAt });
+              yield* onUsageLimits({ ...update, checkedAt });
             }
           }).pipe(Effect.orDie),
         );

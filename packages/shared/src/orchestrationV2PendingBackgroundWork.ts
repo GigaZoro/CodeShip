@@ -147,6 +147,7 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
 
 const PULL_REQUEST_WATCH_TASK_ID = "pull-request-watch:";
 
+/** A watched pull request survives provider session restarts. */
 export const isPullRequestWatchTask = (task: Pick<PendingBackgroundWorkTask, "taskId">) =>
   task.taskId.startsWith(PULL_REQUEST_WATCH_TASK_ID);
 

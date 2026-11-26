@@ -31,7 +31,13 @@ export const GUEST_FAILURE = {
   used: "This guest link was already used.",
   busy: "Wait for the owner to answer your earlier messages.",
   filesBusy: "Wait for the owner to answer your earlier messages before you attach more files.",
+  running: "Wait for the agent to finish its answer.",
 } as const;
+
+/** Why a read-only link cannot open. The link service tells the owner from these. */
+export const READ_ONLY_SHARE_RUN_ACTIVE =
+  "A run or its background work owns the thread's provider session.";
+export const READ_ONLY_SHARE_UNSUPPORTED = "The thread's provider cannot run read-only.";
 
 const isExpired = (share: ThreadGuestShare, now: DateTime.Utc) =>
   DateTime.toEpochMillis(now) >= Date.parse(share.expiresAt);
@@ -104,6 +110,8 @@ export function decideGuestShareCommand(input: {
   readonly thread: OrchestrationV2AppThread;
   readonly command: GuestShareCommand;
   readonly now: DateTime.Utc;
+  /** Whether a run on the thread has yet to end; read-only guests wait for it. */
+  readonly runInProgress?: boolean;
 }): Result.Result<OrchestrationV2AppThread, string> {
   const { thread, command, now } = input;
   const share = thread.guestShare ?? null;
@@ -120,6 +128,7 @@ export function decideGuestShareCommand(input: {
         expiresAt: command.expiresAt,
         guestName: null,
         messages: [],
+        access: command.access,
       });
     }
     case "thread.guest-share.close":
@@ -139,6 +148,14 @@ export function decideGuestShareCommand(input: {
         isExpired(share, now)
       ) {
         return Result.fail(GUEST_FAILURE.inactive);
+      }
+      // Nobody reviews a read-only guest's messages, so one runs at a time.
+      if (
+        share.access === "read-only" &&
+        (input.runInProgress === true ||
+          share.messages.some((message) => message.status === "pending"))
+      ) {
+        return Result.fail(GUEST_FAILURE.running);
       }
       if (
         share.messages.filter((message) => message.status === "pending").length >=
@@ -191,9 +208,9 @@ export function decideGuestShareCommand(input: {
 }
 
 /**
- * Marks a guest message sent. `text` is what the agent receives: it names the guest so the agent
- * does not mistake it for the owner's words, and so a guest cannot start a slash command.
- * `guest` lets clients show the guest's own text with their name beside it.
+ * Marks a guest message sent. `text` is what the agent receives: it names the guest and how the
+ * message came, so the agent does not mistake it for the owner's words, and so a guest cannot
+ * start a slash command. `guest` lets clients show the guest's own text with their name beside it.
  */
 export function decideGuestMessageSend(input: {
   readonly thread: OrchestrationV2AppThread;
@@ -214,7 +231,10 @@ export function decideGuestMessageSend(input: {
   const guestText = message?.text ?? "";
   return Result.map(resolveMessage(share, input.guestMessageId, "sent"), (next) => ({
     thread: { ...input.thread, guestShare: next, updatedAt: input.now },
-    text: `Message from guest ${name}, sent by the owner:\n\n${guestText}`,
+    text:
+      share.access === "read-only"
+        ? `Message from guest ${name}, through a read-only guest link:\n\n${guestText}`
+        : `Message from guest ${name}, sent by the owner:\n\n${guestText}`,
     guest: { guestMessageId: input.guestMessageId, name, text: guestText, shareId: share.id },
   }));
 }

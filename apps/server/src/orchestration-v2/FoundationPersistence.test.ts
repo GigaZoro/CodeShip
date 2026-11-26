@@ -255,6 +255,11 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
     let eventPages = 0;
     const pauses: number[] = [];
     const compactionSpans: Tracer.Span[] = [];
+    // The scheduled pass runs other paced maintenance before the event store; count only its pages.
+    const inEventStoreCompaction = (span: Tracer.AnySpan): boolean =>
+      span._tag === "Span" &&
+      (span.name === "ProjectionMaintenance.compactEventStore" ||
+        (Option.isSome(span.parent) && inEventStoreCompaction(span.parent.value)));
     const tracer = Tracer.make({
       span(options) {
         const span = new Tracer.NativeSpan(options);
@@ -264,6 +269,7 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
           end(time, exit);
           const query = span.attributes.get("db.query.text");
           if (typeof query !== "string" || !query.includes("LIMIT")) return;
+          if (!inEventStoreCompaction(span)) return;
           if (query.includes("FROM orchestration_events AS event")) {
             eventPages++;
           } else if (!query.includes("FROM orchestration_command_receipts AS receipt")) return;

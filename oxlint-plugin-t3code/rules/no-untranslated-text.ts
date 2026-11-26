@@ -1,4 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 // Two letters in a row make a word; glyphs, numbers, and punctuation need no translation.
 const WORD = /\p{L}{2}/u;
@@ -108,27 +111,13 @@ const PHRASE = /\s|^\p{Lu}\p{Ll}/u;
 const MESSAGE =
   'Translate UI text with t() from the app\'s i18n module, or msg() in a module-level table. Text that stays as written (a brand, code, a command) goes in a JSX expression: {"GitHub"}.';
 
-function calleeName(callee: ESTree.Node): string | undefined {
+function calleeName(sourceCode: SourceCode, callee: ESTree.Node): string | undefined {
   if (callee.type === "Identifier") return callee.name;
-  if (
-    callee.type === "MemberExpression" &&
-    !callee.computed &&
-    callee.object.type === "Identifier" &&
-    callee.property.type === "Identifier"
-  ) {
-    return `${callee.object.name}.${callee.property.name}`;
-  }
-  return undefined;
-}
-
-function propertyKey(node: {
-  readonly computed: boolean;
-  readonly key: ESTree.PropertyKey;
-}): string | undefined {
-  if (node.computed) return undefined;
-  if (node.key.type === "Identifier") return node.key.name;
-  if (node.key.type === "Literal" && typeof node.key.value === "string") return node.key.value;
-  return undefined;
+  if (callee.type !== "MemberExpression" || callee.object.type !== "Identifier") return undefined;
+  const object = callee.object.name;
+  return Option.getOrUndefined(
+    Option.map(resolvePropertyName(sourceCode, callee.property), (name) => `${object}.${name}`),
+  );
 }
 
 export default defineRule({
@@ -194,13 +183,13 @@ export default defineRule({
       },
       Property(node) {
         if (node.parent.type !== "ObjectExpression") return;
-        const key = propertyKey(node);
+        const key = Option.getOrUndefined(resolvePropertyName(context.sourceCode, node.key));
         if (key === undefined || !OBJECT_TEXT_KEYS.has(key)) return;
         const call = node.parent.parent;
         if (
           key === "label" &&
           call.type === "CallExpression" &&
-          LOGGED_LABEL_CALLS.has(calleeName(call.callee) ?? "")
+          LOGGED_LABEL_CALLS.has(calleeName(context.sourceCode, call.callee) ?? "")
         ) {
           return;
         }
@@ -212,7 +201,7 @@ export default defineRule({
         }
       },
       CallExpression(node) {
-        const name = calleeName(node.callee);
+        const name = calleeName(context.sourceCode, node.callee);
         if (name === undefined || !TEXT_CALLS.has(name)) return;
         const [first, second] = node.arguments;
         if (first) checkBranch(first, true);

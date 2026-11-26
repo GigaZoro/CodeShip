@@ -22,6 +22,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderModel,
   ServerSettings,
   type ServerSettingsPatch,
   withIdleCompaction,
@@ -33,6 +34,7 @@ import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import {
   acceptedOptionSelections,
+  antigravityModelFamily,
   createModelSelection,
   readCustomModelEntries,
   resolveSelectableModel,
@@ -223,6 +225,87 @@ export function autoModeModelFor(
   return model === undefined ? null : typeof model === "string" ? { model } : model;
 }
 
+const NATIVE_AUTO_PROFILES = new Map([
+  [
+    "antigravity",
+    {
+      family: /^gemini-(?:(\d+(?:[.-]\d+)*)-)?neon\b(?:[.-]+(\d+(?:[.-]\d+)*))?/i,
+      optionId: "thinking_level",
+    },
+  ],
+  [
+    "claudeAgent",
+    { family: /^(?:claude[ -])?opus\b(?:[ .-]+(\d+(?:[.-]\d+)*))?/i, optionId: "effort" },
+  ],
+  [
+    "codex",
+    { family: /^(?:openai\.)?gpt[ -](\d+(?:\.\d+)*)[ -]astra\b/i, optionId: "reasoningEffort" },
+  ],
+]);
+
+type AutoProfileModel = Pick<
+  ServerProviderModel,
+  "slug" | "nativeModelFamily" | "isDefault" | "capabilities"
+> &
+  Partial<Pick<ServerProviderModel, "isCustom" | "isLegacy">>;
+
+/**
+ * Profile advertised by one account for fresh Auto work. The caller decides which accounts
+ * may run and verifies required options at dispatch.
+ */
+export function resolveQuotaAwareAutoProfile(
+  account: {
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly models: ReadonlyArray<AutoProfileModel>;
+  },
+  acceptsModel: (slug: string) => boolean = () => true,
+): ModelSelection | null {
+  const native = NATIVE_AUTO_PROFILES.get(account.driver);
+  if (native === undefined) {
+    const model =
+      account.models.find((model) => model.isDefault && acceptsModel(model.slug)) ??
+      account.models.find(
+        (model) => !model.isDefault && !model.isLegacy && acceptsModel(model.slug),
+      ) ??
+      account.models.find(
+        (model) => !model.isDefault && model.isLegacy && acceptsModel(model.slug),
+      );
+    return model === undefined ? null : createModelSelection(account.instanceId, model.slug);
+  }
+
+  const eligible = account.models.flatMap((model) => {
+    if (model.isCustom) return [];
+    const identity =
+      account.driver === "antigravity"
+        ? (antigravityModelFamily(model.slug) ?? model.nativeModelFamily)
+        : model.slug;
+    const match = identity === undefined ? null : native.family.exec(identity);
+    if (match === null) return [];
+    const version = match[1] ?? match[2];
+    const option = model.capabilities?.optionDescriptors?.find(
+      (option) => option.id === native.optionId,
+    );
+    return option?.type === "select" &&
+      option.options.some((choice) => choice.id === "xhigh") &&
+      !option.promptInjectedValues?.includes("xhigh")
+      ? [{ model, version: version?.replaceAll("-", ".") ?? "" }]
+      : [];
+  });
+  const preferred = eligible
+    .sort(
+      (left, right) =>
+        right.version.localeCompare(left.version, "en", { numeric: true }) ||
+        Number(right.model.isDefault === true) - Number(left.model.isDefault === true),
+    )
+    .find(({ model }) => acceptsModel(model.slug));
+  return preferred === undefined
+    ? null
+    : createModelSelection(account.instanceId, preferred.model.slug, [
+        { id: native.optionId, value: "xhigh" },
+      ]);
+}
+
 interface AutoModeInput {
   readonly settings: AutoModeSettings;
   readonly accounts: ReadonlyArray<AutoModeAccount>;
@@ -311,7 +394,9 @@ export function autoModeTarget(
 export function resolveAutoModelSelection(
   input: AutoModeInput & { readonly selection: ModelSelection; readonly started: boolean },
 ): ModelSelection {
-  if (input.selection.autoAccount !== true) return input.selection;
+  if (input.selection.quotaAwareAuto === true || input.selection.autoAccount !== true) {
+    return input.selection;
+  }
   return autoModeTarget(input) ?? input.selection;
 }
 
@@ -322,7 +407,11 @@ export function resolveAutoModelSelection(
 export function resolveInheritedDefaultModelSelection(input: {
   readonly configs: ReadonlyMap<
     EnvironmentId,
-    { readonly settings: ServerSettings; readonly providers: ReadonlyArray<ServerProvider> }
+    {
+      readonly settings: ServerSettings;
+      readonly providers: ReadonlyArray<ServerProvider>;
+      readonly environment?: { readonly capabilities: { readonly quotaAwareAuto?: boolean } };
+    }
   >;
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId | null;
@@ -340,6 +429,10 @@ export function resolveInheritedDefaultModelSelection(input: {
   for (const [, source] of sources) {
     const selection = source.settings.defaultModelSelection;
     if (selection === null) continue;
+    if (selection.quotaAwareAuto === true) {
+      if (target.environment?.capabilities.quotaAwareAuto === true) return selection;
+      continue;
+    }
     const driver = source.providers.find(
       (provider) => provider.instanceId === selection.instanceId,
     )?.driver;
@@ -380,6 +473,7 @@ export function resolveSourceControlWriterModelSelection(
   projectId: ProjectId | null,
 ): ModelSelection {
   const selection = settings.sourceControlWriterModelSelection;
+  if (selection?.quotaAwareAuto === true) return selection;
   return selection &&
     resolveTextGenerationSelectionEnabled(settings, projectId, selection.instanceId) &&
     isTextGenerationTargetUsable(settings, providers, selection.instanceId)
@@ -393,6 +487,7 @@ export function resolveReviewGuideModelSelection(
   projectId: ProjectId | null,
 ): ModelSelection {
   const selection = settings.reviewGuideModelSelection;
+  if (selection?.quotaAwareAuto === true) return selection;
   // Text generators cannot investigate a checkout, so they never write review guides.
   return selection &&
     textGeneratorForSelection(settings, selection.instanceId) === undefined &&
@@ -852,6 +947,12 @@ export function applyServerSettingsPatch(
     ...(patch.speechPostProcessingModelSelection !== undefined
       ? { speechPostProcessingModelSelection: patch.speechPostProcessingModelSelection }
       : {}),
+    ...(patch.scheduledTaskModelSelection !== undefined
+      ? { scheduledTaskModelSelection: patch.scheduledTaskModelSelection }
+      : {}),
+    ...(patch.finalReviewModelSelections !== undefined
+      ? { finalReviewModelSelections: patch.finalReviewModelSelections }
+      : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
@@ -933,7 +1034,8 @@ export function applyServerSettingsPatch(
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
   const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
+  const replace = shouldReplaceTextGenerationModelSelection(selectionPatch);
+  const options = replace
     ? selectionPatch.options
     : mergeModelSelectionOptionsById({
         current: current.textGenerationModelSelection.options,
@@ -942,7 +1044,17 @@ export function applyServerSettingsPatch(
 
   return {
     ...nextWithReplacements,
-    textGenerationModelSelection: createModelSelection(instanceId, model, options),
+    textGenerationModelSelection: {
+      ...createModelSelection(instanceId, model, options),
+      ...((selectionPatch.autoAccount ??
+      (!replace && current.textGenerationModelSelection.autoAccount))
+        ? { autoAccount: true }
+        : {}),
+      ...((selectionPatch.quotaAwareAuto ??
+      (!replace && current.textGenerationModelSelection.quotaAwareAuto))
+        ? { quotaAwareAuto: true }
+        : {}),
+    },
   };
 }
 

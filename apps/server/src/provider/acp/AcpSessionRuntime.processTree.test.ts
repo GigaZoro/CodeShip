@@ -2,10 +2,11 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { describe, expect, it, vi } from "@effect/vitest";
-import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
@@ -133,6 +134,36 @@ describe("terminatePosixOwnedProcessTree", () => {
         NodeFS.rmSync(parent, { recursive: true, force: true });
       }
     }),
+  );
+
+  it.skipIf(isWindowsHost)(
+    "resolves a contained command through the operating system’s directory traversal",
+    () => {
+      const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "acp-cgroup-target-"));
+      try {
+        NodeFS.mkdirSync(NodePath.join(cwd, "selected", "child"), { recursive: true });
+        NodeFS.symlinkSync("selected/child", NodePath.join(cwd, "linked"));
+        NodeFS.writeFileSync(NodePath.join(cwd, "probe"), "#!/bin/sh\nprintf lexical", {
+          mode: 0o700,
+        });
+        NodeFS.writeFileSync(
+          NodePath.join(cwd, "selected", "probe"),
+          "#!/bin/sh\nprintf physical",
+          { mode: 0o700 },
+        );
+        for (const command of ["./linked/../probe", "probe"]) {
+          const target = AcpSessionRuntime.resolveLinuxCgroupTargetCommand(command, cwd, {
+            PATH: "linked/..",
+          });
+          expect(target).toBeDefined();
+          expect(NodeChildProcess.execFileSync(target!, [], { cwd, encoding: "utf8" })).toBe(
+            "physical",
+          );
+        }
+      } finally {
+        NodeFS.rmSync(cwd, { recursive: true, force: true });
+      }
+    },
   );
 
   it.live.skipIf(!isLinuxHost)(

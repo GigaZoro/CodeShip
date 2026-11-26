@@ -161,6 +161,7 @@ import { useThreadServerBrowserTabs } from "../../state/preview";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
+  canJumpToThreadMessage,
   finishThreadMessageJump,
   pendingThreadMessageJump,
   subscribeThreadMessageJump,
@@ -959,26 +960,49 @@ function ThreadDetailBody(
       (entry) => "acknowledged" in entry && entry.acknowledged === true,
     );
   const selectedThreadFeed = props.selectedThreadFeed;
-  // A palette message result opens the thread at that message: earlier
-  // history loads until the message is in the feed, which then scrolls to it.
-  const jumpMessageId = useSyncExternalStore(subscribeThreadMessageJump, () =>
+  const messageJump = useSyncExternalStore(subscribeThreadMessageJump, () =>
     pendingThreadMessageJump(selectedThreadKey),
   );
+  const jumpStarIdsAtom = environmentThreadDetails.starredMessageIdsAtom(
+    messageJump?.starred ? props.selectedThreadDetailRef : null,
+  );
+  const jumpStarIds = useAtomValue(jumpStarIdsAtom);
+  const jumpAllowed = messageJump !== null && canJumpToThreadMessage(messageJump, jumpStarIds);
+  const jumpMessageId = jumpAllowed ? messageJump.messageId : null;
   const jumpMessageLoaded =
     jumpMessageId !== null &&
     selectedThreadFeed.some((entry) => entry.type === "message" && entry.id === jumpMessageId);
   const historyForJump = props.historyControls;
-  // History down to the message in one request; another page if it is not
-  // there yet.
+  const isCurrentMessageJumpAllowed = () =>
+    messageJump !== null &&
+    pendingThreadMessageJump(selectedThreadKey) === messageJump &&
+    canJumpToThreadMessage(messageJump, appAtomRegistry.get(jumpStarIdsAtom));
+  const finishMessageJump = () => {
+    if (pendingThreadMessageJump(selectedThreadKey) !== messageJump) return false;
+    const allowed = isCurrentMessageJumpAllowed();
+    finishThreadMessageJump(selectedThreadKey);
+    return allowed;
+  };
   const loadEarlierForJump = useEffectEvent(() => {
+    if (!isCurrentMessageJumpAllowed()) {
+      finishMessageJump();
+      return;
+    }
     if (jumpMessageId !== null) historyForJump?.onLoadThrough(jumpMessageId);
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- requests earlier history from the server until the jump target message loads, or ends the jump
+  const cancelMessageJump = useEffectEvent(() => finishMessageJump());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- requests earlier history until the jump target loads or the request ends
   useEffect(() => {
-    if (jumpMessageId === null || jumpMessageLoaded || contentPresentationKind !== "ready") return;
-    if (historyForJump?.loading) return;
+    if (messageJump === null) return;
+    if (!jumpAllowed) {
+      cancelMessageJump();
+      return;
+    }
+    if (jumpMessageLoaded || contentPresentationKind !== "ready" || historyForJump?.loading) {
+      return;
+    }
     if (!historyForJump?.hasMoreHistory || historyForJump.error !== null) {
-      finishThreadMessageJump(selectedThreadKey);
+      cancelMessageJump();
       return;
     }
     loadEarlierForJump();
@@ -987,9 +1011,9 @@ function ThreadDetailBody(
     historyForJump?.error,
     historyForJump?.hasMoreHistory,
     historyForJump?.loading,
-    jumpMessageId,
+    jumpAllowed,
     jumpMessageLoaded,
-    selectedThreadKey,
+    messageJump,
   ]);
   // A queued-run edit, question or approval owns the composer, and its send carries no fresh session.
   const freshSessionAvailable =
@@ -1619,7 +1643,8 @@ function ThreadDetailBody(
                   freeze={freeze}
                   anchorMessageId={anchorMessageId}
                   jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
-                  onJumpedToMessage={() => finishThreadMessageJump(selectedThreadKey)}
+                  canLandMessageJump={isCurrentMessageJumpAllowed}
+                  onFinishMessageJump={finishMessageJump}
                   contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
                   keyboardOffset={composerKeyboardOffset}
                   sendingWithKeyboard={sendingWithKeyboard}

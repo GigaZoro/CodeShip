@@ -5,6 +5,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { matchesCliVersion } from "./cliVersionProbe.mjs";
+import { trackRuntimeDirectory } from "./runtimeDirectoryIdentity.mjs";
 
 const { version } = JSON.parse(
   fs.readFileSync(path.join(import.meta.dirname, "../package.json"), "utf8"),
@@ -75,7 +77,7 @@ async function download(url, file) {
   return hash.digest("hex");
 }
 
-async function install(dir, key) {
+async function install(dir, key, repairMarkedRuntime) {
   const archive = `t3-${version}-${key}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
   const base = (
     process.env.T3CODE_RELEASE_BASE_URL || "https://github.com/pingdotgg/t3code/releases/download"
@@ -104,47 +106,75 @@ async function install(dir, key) {
     });
     if (extract.status !== 0) throw new Error(`could not extract ${archive}`);
     fs.rmSync(file);
-    const validate = spawnSync(
-      path.join(staging, process.platform === "win32" ? "t3.exe" : "t3"),
-      ["--version"],
-      {
-        stdio: ["ignore", "ignore", "pipe"],
-        encoding: "utf8",
-        timeout: 30_000,
-        killSignal: "SIGKILL",
-      },
-    );
-    if (validate.status !== 0) {
+    const failure = versionProbeFailure(staging);
+    if (failure)
       throw executableError(
         key,
-        validate.error?.message ||
-          validate.stderr?.trim() ||
-          `--version exited with ${validate.signal || validate.status}`,
+        `the downloaded t3 ${version} runtime failed verification: ${failure}`,
       );
-    }
     fs.writeFileSync(path.join(staging, ".install-complete"), `${version}\n`);
-    publish(staging, dir);
+    publish(staging, dir, repairMarkedRuntime);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
 }
 
-const isComplete = (dir) => {
+const hasVersionMarker = (dir) => {
+  let marker;
   try {
-    return fs.readFileSync(path.join(dir, ".install-complete"), "utf8").trim() === version;
+    const { O_RDONLY, O_NONBLOCK } = fs.constants;
+    marker = fs.openSync(path.join(dir, ".install-complete"), O_RDONLY | (O_NONBLOCK ?? 0));
+    return fs.fstatSync(marker).isFile() && fs.readFileSync(marker, "utf8").trim() === version;
   } catch {
     return false;
+  } finally {
+    if (marker !== undefined) fs.closeSync(marker);
   }
 };
 
-/** Preserve concurrently published complete installs; replace only incomplete folders without the completion marker. */
-function publish(staging, dir) {
+// POSIX repairs and recovery share the shell, SSH and service installers' claim.
+function promotePosixRuntime(dir, staging) {
+  const args = [path.join(import.meta.dirname, "promote-runtime.sh"), path.dirname(dir), version];
+  if (staging !== undefined) args.push(staging);
+  const result = spawnSync("/bin/sh", args, {
+    stdio: ["ignore", "pipe", "inherit"],
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`could not install the local t3 ${version} runtime`);
+  return result.stdout.trim() === "0";
+}
+
+function recheckRuntime(dir) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = trackRuntimeDirectory(dir);
+    const verified = hasVersionMarker(dir) && verifiesVersion(dir);
+    if (current()) return verified;
+  }
+  throw new Error(`the local t3 ${version} installation changed repeatedly during verification`);
+}
+
+function verifiedPeer(dir, repairMarkedRuntime = false) {
+  if (!hasVersionMarker(dir)) return false;
+  if (recheckRuntime(dir)) return true;
+  if (repairMarkedRuntime) return false;
+  throw new Error(`the concurrently installed t3 ${version} runtime failed verification`);
+}
+
+/** Preserve a verified concurrent publication and repair an incomplete installation. */
+function publish(staging, dir, repairMarkedRuntime) {
   try {
     fs.renameSync(staging, dir);
     return;
   } catch (error) {
-    if (isComplete(dir)) return;
+    if (verifiedPeer(dir, repairMarkedRuntime)) return;
     if (!fs.existsSync(dir)) throw error;
+  }
+  if (process.platform !== "win32") {
+    const publishedStaging = promotePosixRuntime(dir, staging);
+    if (!publishedStaging && !verifiedPeer(dir))
+      throw new Error(`the installed t3 ${version} runtime failed verification`);
+    return;
   }
   const lock = `${dir}.lock`;
   try {
@@ -159,18 +189,59 @@ function publish(staging, dir) {
   const stale = `${staging}.stale`;
   try {
     // A peer may have published between our marker check and taking the lock.
-    if (isComplete(dir)) return;
+    if (verifiedPeer(dir, repairMarkedRuntime)) return;
     // Move it aside rather than deleting in place: once the folder is empty, a
     // peer's first rename can land in it.
     fs.renameSync(dir, stale);
     try {
       fs.renameSync(staging, dir);
     } catch (error) {
-      if (!isComplete(dir)) throw error;
+      if (!fs.existsSync(dir)) {
+        fs.renameSync(stale, dir);
+        throw error;
+      }
+      if (!verifiedPeer(dir)) throw error;
     }
+    fs.rmSync(stale, { recursive: true, force: true });
   } finally {
     fs.rmSync(lock, { recursive: true, force: true });
-    fs.rmSync(stale, { recursive: true, force: true });
+  }
+}
+
+const entryName = process.platform === "win32" ? "t3.exe" : "t3";
+
+function versionProbeFailure(dir) {
+  const probe = spawnSync(path.join(dir, entryName), ["--version"], {
+    env: { ...process.env, T3CODE_VERIFY_INSTALL: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    timeout: 30_000,
+    killSignal: "SIGKILL",
+  });
+  if (!probe.error && matchesCliVersion(probe.status, probe.stdout, version)) return undefined;
+  return (
+    probe.error?.message ||
+    probe.stderr?.trim() ||
+    `failed verification for t3 ${version}: ${probe.stdout?.trim() || probe.signal || probe.status}`
+  );
+}
+
+function verifiesVersion(dir) {
+  return versionProbeFailure(dir) === undefined;
+}
+
+function recoverPrevious(dir) {
+  const parent = path.dirname(dir);
+  const previous = path.join(parent, `.${version}.previous`);
+  if (!hasVersionMarker(previous) || !recheckRuntime(previous)) return;
+  if (process.platform === "win32") {
+    try {
+      fs.renameSync(previous, dir);
+    } catch (error) {
+      if (!fs.existsSync(dir)) throw error;
+    }
+  } else {
+    promotePosixRuntime(dir);
   }
 }
 
@@ -183,19 +254,23 @@ async function main() {
     );
   }
   const dir = path.join(t3Home(), "runtime", "versions", version);
-  if (!isComplete(dir)) await install(dir, key);
+  const cached = hasVersionMarker(dir);
+  if (!cached) recoverPrevious(dir);
+  // A peer can restore a marked tree while recovery is reading the rollback.
+  const marked = cached || hasVersionMarker(dir);
+  if (!marked) {
+    await install(dir, key, false);
+  } else if (!recheckRuntime(dir)) {
+    await install(dir, key, true);
+  }
 
   // Service IPC and signals must reach the child; terminal Ctrl-C already does, so do not forward SIGINT twice.
   const ipc = process.send !== undefined;
-  const child = spawn(
-    path.join(dir, process.platform === "win32" ? "t3.exe" : "t3"),
-    process.argv.slice(2),
-    {
-      stdio: ipc ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
-      // The executable lives in the T3 home, so this is how it knows npm launched it.
-      env: { ...process.env, T3CODE_NPM_LAUNCHER_PATH: import.meta.filename },
-    },
-  );
+  const child = spawn(path.join(dir, entryName), process.argv.slice(2), {
+    stdio: ipc ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
+    // The executable lives in the T3 home, so this is how it knows npm launched it.
+    env: { ...process.env, T3CODE_NPM_LAUNCHER_PATH: import.meta.filename },
+  });
   if (ipc) {
     process.on("message", (message) => child.connected && child.send(message));
     child.on("message", (message) => process.connected && process.send(message));

@@ -271,7 +271,7 @@ it.effect.each([
     const cwd = yield* makeTmpDir();
     const error = yield* driver.fetchRemote({ cwd, remoteName: "origin" }).pipe(Effect.flip);
     assert.include(error.detail, scenario.expected);
-    assert.include(error.message, "error: unable to access 'https://example.com/private': stalled");
+    assert.include(error.message, "error: unable to access '…': …");
     assert.equal(error.exitCode, 128);
     assert.equal(error.stderrLength, stderr.length);
     assert.equal(error.stdoutLength, secret.length);

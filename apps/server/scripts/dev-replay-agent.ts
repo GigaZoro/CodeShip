@@ -304,6 +304,7 @@ function runAgent(): void {
             availableModels: SCENARIOS.map((scenario) => ({
               modelId: scenario.id,
               name: scenario.name,
+              _meta: { "t3.codes/funding": "included" },
             })),
           },
         };

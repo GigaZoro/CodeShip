@@ -6,7 +6,9 @@ import {
   SourceControlProviderKind,
   orchestrationV2RunAwaitsMemory,
 } from "@t3tools/contracts";
-import { runLiftsScope } from "./AccountRouting.ts";
+import { evidenceKey, makeDispatchRecorder } from "./StopDecisionEvidence.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { AccountRouting, routeAutoAccount, runLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
@@ -26,6 +28,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
+  MAX_THREAD_STARRED_MESSAGES,
   MessageId,
   NodeId,
   RuntimeRequestId,
@@ -104,6 +107,7 @@ import * as EventSink from "./EventSink.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as PullRequestWatchReactor from "./PullRequestWatchReactor.ts";
 import { PULL_REQUEST_WATCH_WAKE_LIMIT } from "./pullRequestWatch.ts";
@@ -147,6 +151,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 const layerPlatformTest = Layer.mergeAll(
   ProviderSkillsTestkit.layer,
   Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+  Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -3711,6 +3716,199 @@ const restartHeldQueue = (threadId: ThreadId) =>
   });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
+  it.effect("persists the bounded set of starred messages without changing thread activity", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("message-stars");
+      const projectId = ProjectId.make("message-stars-project");
+      yield* seedProject({
+        projectId,
+        title: "Message stars",
+        workspaceRoot: "/workspace/project",
+        defaultModelSelection: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+      });
+      const createThread = (threadId: ThreadId) =>
+        orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`message-stars-create:${threadId}`),
+          threadId,
+          projectId,
+          title: "Message stars",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+      const foreignThreadId = ThreadId.make("message-stars-other-thread");
+      const foreignId = MessageId.make("message-stars-foreign");
+      yield* createThread(threadId);
+      yield* createThread(foreignThreadId);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds ?? [],
+        [],
+      );
+      const now = yield* DateTime.now;
+      const ids = Array.from({ length: MAX_THREAD_STARRED_MESSAGES + 1 }, (_, index) =>
+        MessageId.make(`message-stars-${index}`),
+      );
+      yield* eventSink.write({
+        events: [...ids, foreignId].map((id) => ({
+          id: EventId.make(id),
+          type: "message.updated" as const,
+          threadId: id === foreignId ? foreignThreadId : threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "agent" as const,
+            creationSource: "provider" as const,
+            id,
+            threadId: id === foreignId ? foreignThreadId : threadId,
+            runId: null,
+            nodeId: null,
+            role: "assistant" as const,
+            text: "Bookmark this",
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        })),
+      });
+      const setStar = (messageId: MessageId, starred: boolean, step = `star:set:${messageId}`) =>
+        orchestrator.dispatch({
+          type: "thread.message.star",
+          commandId: CommandId.make(step),
+          threadId,
+          messageId,
+          starred,
+        });
+      for (const id of [MessageId.make("message-stars-missing"), foreignId]) {
+        const rejected = yield* setStar(id, true).pipe(Effect.flip);
+        assert.instanceOf(rejected, Orchestrator.OrchestratorMessageStarError);
+        assert.equal(
+          (rejected as Orchestrator.OrchestratorMessageStarError).reason,
+          "message-not-found",
+        );
+      }
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds ?? [],
+        [],
+      );
+      const before = (yield* orchestrator.getThreadProjection(threadId)).thread.updatedAt;
+      yield* TestClock.adjust("1 minute");
+      const beforeLimit = ids.slice(0, MAX_THREAD_STARRED_MESSAGES - 1);
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("message-stars-near-limit"),
+            type: "thread.message-stars-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: beforeLimit,
+          },
+        ],
+      });
+      const maximum = ids.slice(0, MAX_THREAD_STARRED_MESSAGES);
+      yield* setStar(maximum.at(-1)!, true);
+      const last = ids[MAX_THREAD_STARRED_MESSAGES]!;
+      const rejectedId = `star:set:${last}`;
+      const expectLimitRejection = (error: Orchestrator.OrchestratorV2Error) => {
+        assert.instanceOf(error, Orchestrator.OrchestratorMessageStarError);
+        assert.equal((error as Orchestrator.OrchestratorMessageStarError).reason, "limit-reached");
+      };
+      expectLimitRejection(yield* setStar(last, true, rejectedId).pipe(Effect.flip));
+      const first = maximum[0]!;
+      const same = yield* setStar(first, true, "already-starred");
+      assert.deepEqual(same.storedEvents, []);
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(projection.thread.starredMessageIds, maximum);
+      assert.equal(
+        DateTime.toEpochMillis(projection.thread.updatedAt),
+        DateTime.toEpochMillis(before),
+      );
+      yield* setStar(first, false, "remove");
+      expectLimitRejection(yield* setStar(last, true, rejectedId).pipe(Effect.flip));
+      const added = yield* setStar(last, true, `star:add-after-removal:${last}`);
+      for (const mismatch of [setStar(first, true, rejectedId), setStar(last, false, rejectedId)]) {
+        const error = yield* mismatch.pipe(Effect.flip);
+        assert.instanceOf(error, Orchestrator.OrchestratorCommandPreviouslyRejectedError);
+      }
+      const expected = ids.slice(1);
+      const stored = Array.from(
+        yield* eventSink
+          .readByCommandId({ commandId: CommandId.make(`star:add-after-removal:${last}`) })
+          .pipe(Stream.runCollect),
+      );
+      assert.deepEqual(
+        stored.map(({ event }) => [event.type, event.payload]),
+        [["thread.message-stars-updated", expected]],
+      );
+      assert.equal(added.storedEvents[0]?.sequence, stored[0]?.sequence);
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("message-stars-rename"),
+        threadId,
+        title: "Renamed",
+      });
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds,
+        expected,
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const visitId = CommandId.make("message-stars-visit");
+      const visit = yield* orchestrator.dispatch({
+        type: "thread.visit",
+        commandId: visitId,
+        threadId,
+        visitedAt: DateTime.formatIso(yield* DateTime.now),
+      });
+      assert.equal(visit.storedEvents[0]?.event.type, "thread.visited");
+      assert.notProperty(visit.storedEvents[0]!.event.payload, "starredMessageIds");
+      const rows = yield* sql<{ payload_json: string }>`
+        SELECT payload_json FROM orchestration_events WHERE command_id = ${visitId}
+      `;
+      assert.lengthOf(rows, 1);
+      assert.notProperty(JSON.parse(rows[0]!.payload_json), "starredMessageIds");
+      const sent = yield* eventSink
+        .stream({ threadId, eventType: "thread.visited", bounded: true })
+        .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      assert.equal(sent.sequence, visit.storedEvents[0]?.sequence);
+      assert.notProperty(sent.event.payload, "starredMessageIds");
+      assert.deepEqual(
+        (yield* orchestrator.getThreadSnapshotWindow(threadId, { rowLimit: 10 })).projection.thread
+          .starredMessageIds,
+        expected,
+      );
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      assert.isTrue((yield* maintenance.rebuild).valid);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds,
+        expected,
+      );
+      const gone = MessageId.make("message-stars-gone");
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("message-stars-dangling"),
+            type: "thread.message-stars-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: [...expected.slice(1), gone],
+          },
+        ],
+      });
+      yield* setStar(gone, false, "remove-dangling");
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.starredMessageIds,
+        expected.slice(1),
+      );
+    }),
+  );
+
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -3917,6 +4115,32 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           expected,
           step,
         );
+      }
+      for (const notificationLevel of ["muted", "following", "default"] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.notification-level.set",
+          commandId: CommandId.make(`runtime-layer-lifecycle-notifications-${notificationLevel}`),
+          threadId,
+          notificationLevel,
+        });
+        assert.equal(
+          shellOf(yield* orchestrator.getShellSnapshot()).notificationLevel,
+          notificationLevel,
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.notificationLevel,
+          notificationLevel,
+        );
+      }
+      for (const color of ["blue", "purple", null] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.color.set",
+          commandId: CommandId.make(`runtime-layer-lifecycle-color-${color}`),
+          threadId,
+          color,
+        });
+        assert.equal(shellOf(yield* orchestrator.getShellSnapshot()).color, color);
+        assert.equal((yield* orchestrator.getThreadProjection(threadId)).thread.color, color);
       }
       const taggedShell = shellOf(yield* orchestrator.getShellSnapshot());
       // Tags are not activity, so the thread keeps its place in thread lists.
@@ -14501,7 +14725,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         threadId,
         projectId,
         title: "Limited thread",
-        modelSelection,
+        modelSelection:
+          scenario === "resume" ? { ...modelSelection, autoAccount: true } : modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
@@ -15174,6 +15399,110 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
       }
       const before = yield* orchestrator.getThreadProjection(threadId);
+      if (scenario === "resume" && resume?.type === "message.dispatch") {
+        assert.isUndefined(resume.modelSelection);
+        const sql = yield* SqlClient.SqlClient;
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        for (const enabled of [false, true]) {
+          const instances = [
+            modelSelection.instanceId,
+            alternateInstanceId,
+            ...(enabled ? [ProviderInstanceId.make("third")] : []),
+          ];
+          const providers = instances.map((instanceId): ServerProvider => ({
+            instanceId,
+            driver,
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: DateTime.formatIso(now),
+            models: [
+              { slug: modelSelection.model, name: "GPT", isCustom: false, capabilities: null },
+            ],
+            slashCommands: [],
+            skills: [],
+          }));
+          const settings = {
+            ...DEFAULT_SERVER_SETTINGS,
+            failoverLimitedThreads: true,
+            autoModeProvider: driver,
+            autoModeModels: { codex: { model: modelSelection.model } },
+            providerInstances: Object.fromEntries(instances.map((id) => [id, { driver }])),
+            providerInstanceFailoverOrder: [alternateInstanceId],
+          };
+          const dispatchLayer = ThreadManagementService.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                CommandReceiptStore.layer,
+                Layer.mock(AccountRouting)({
+                  route: (input) =>
+                    Effect.succeed(
+                      routeAutoAccount({
+                        ...input,
+                        settings,
+                        providers,
+                        nowMs,
+                        mcpSignInsNeeded: new Map(),
+                        recordedLimits: new Map([
+                          [
+                            modelSelection.instanceId,
+                            [
+                              {
+                                refusedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+                                resetAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs + 60000)),
+                              },
+                            ],
+                          ],
+                        ]),
+                      }),
+                    ),
+                }),
+                ServerSettings.layerTest({
+                  providerInstances: { [alternateInstanceId]: { driver, enabled } },
+                }),
+              ),
+            ),
+          );
+          const recorder = makeDispatchRecorder(
+            {
+              source: run.id,
+              heldAttempt: undefined,
+              command: resume,
+              nowMs,
+              evidence: { reason: "reset_elapsed", candidates: [], omitted: 0, selected: null },
+            },
+            sql,
+          );
+          yield* Effect.gen(function* () {
+            const threads = yield* ThreadManagementService.ThreadManagementService;
+            if (enabled) yield* threads.dispatch(resume, recorder);
+            else {
+              const error = yield* Effect.flip(threads.dispatch(resume, recorder));
+              assert.equal(error._tag, "ThreadManagementProviderInstanceDisabledError");
+            }
+          }).pipe(Effect.provide(dispatchLayer));
+        }
+        assert.deepEqual(
+          yield* sql`SELECT selected_key, outcome, attempt_sequence IS NOT NULL AS started, json_array_length(snapshot,'$.dispatch.candidates') AS candidates FROM usage_stop_decisions WHERE source_key = ${evidenceKey(run.id)} ORDER BY rowid`,
+          [
+            // The route is recorded before the guard refuses it; the worker marks the refusal.
+            {
+              selected_key: evidenceKey(alternateInstanceId),
+              outcome: "planned",
+              started: 0,
+              candidates: 2,
+            },
+            {
+              selected_key: evidenceKey(alternateInstanceId),
+              outcome: "accepted",
+              started: 1,
+              candidates: 3,
+            },
+          ],
+        );
+      }
       if (resume !== null) {
         yield* orchestrator.dispatch(resume);
         yield* orchestrator.dispatch(resume);

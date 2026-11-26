@@ -54,11 +54,19 @@ export const ProviderCompatibilityPolicy = Policy.pipe(
 );
 export type ProviderCompatibilityPolicy = typeof ProviderCompatibilityPolicy.Type;
 
+export function resolveT3CodeVersion(manifest: {
+  readonly version: string;
+  readonly t3CodeVersion?: string | undefined;
+}): string {
+  const baseVersion = manifest.t3CodeVersion?.trim();
+  return baseVersion ? baseVersion : manifest.version;
+}
+
 export function resolveProviderCompatibility(
   policies: ReadonlyArray<ProviderCompatibilityPolicy> | undefined,
   driver: ProviderDriverKind,
   version: string | null,
-  t3CodeVersion = packageJson.version,
+  t3CodeVersion = resolveT3CodeVersion(packageJson),
 ): ServerProviderCompatibilityAdvisory | undefined {
   const policy = policies?.find(
     (entry) => entry.driver === driver && satisfiesSemverRange(t3CodeVersion, entry.t3CodeRange),

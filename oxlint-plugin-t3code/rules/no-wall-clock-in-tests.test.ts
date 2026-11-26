@@ -8,15 +8,29 @@ const rule = createOxlintRuleHarness("t3code/no-wall-clock-in-tests", {
 
 describe("t3code/no-wall-clock-in-tests", () => {
   rule.valid(
-    "ignores a computed member with a variable key",
+    "ignores a computed member whose key names no clock or cannot be read",
     `
       import { it } from "vitest";
       it("parses", () => {
         const now = "parse";
         const parsed = Date[now]("2026-01-01");
         const literal = Date["parse"]("2026-01-01");
+        const unknown = Date[methodName()]();
       });
     `,
+  );
+
+  rule.invalid(
+    "reports a wall-clock member a const key names",
+    `
+      const read = "now";
+      export const started = Date[read]();
+      const clock = "hrtime";
+      export const precise = process[clock].bigint();
+    `,
+    (output) => {
+      assert.equal(output.match(/no-wall-clock-in-tests/g)?.length, 2);
+    },
   );
 
   rule.valid(

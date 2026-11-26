@@ -1,3 +1,4 @@
+import { shouldNotifyThread } from "@t3tools/shared/threadNotifications";
 import { t } from "~/i18n";
 import {
   type EnvironmentThreadShell,
@@ -161,6 +162,8 @@ export function startThreadNotifications(
     kind: ThreadNotificationKind,
   ) => {
     const { thread, status } = state;
+    const level = thread.notificationLevel;
+    if (!shouldNotifyThread(true, level, kind)) return;
     if (
       registry
         .get(environmentThreadShells.hiddenThreadKeysAtom)
@@ -181,12 +184,19 @@ export function startThreadNotifications(
     );
     const place = notificationPlace(environmentId, thread.projectId);
     if (hasNotificationSound(mode)) {
-      void playNotificationSound(kind, () =>
-        hasNotificationSound(getClientSettings().notificationMode),
+      void playNotificationSound(
+        kind,
+        () =>
+          hasNotificationSound(getClientSettings().notificationMode) &&
+          shouldNotifyThread(
+            true,
+            watched.get(environmentId)?.previous.get(thread.id)?.thread.notificationLevel,
+            kind,
+          ),
       );
     }
     if (
-      inAppNotificationsEnabled &&
+      shouldNotifyThread(inAppNotificationsEnabled, level, kind) &&
       document.visibilityState === "visible" &&
       document.hasFocus() &&
       (active.environmentId !== environmentId || active.threadId !== thread.id)
@@ -235,7 +245,7 @@ export function startThreadNotifications(
       return;
     }
     if (
-      !hasDesktopNotifications(mode) ||
+      !shouldNotifyThread(hasDesktopNotifications(mode), level, kind) ||
       (document.visibilityState === "visible" && document.hasFocus()) ||
       typeof Notification === "undefined" ||
       Notification.permission !== "granted"
@@ -336,7 +346,14 @@ export function startThreadNotifications(
     entry.gate.retain(new Set(next.keys()));
     const now = Date.now();
     for (const [prior, state] of changed) {
-      const { settledOverride, settledAt } = state.thread;
+      const { settledOverride, settledAt, notificationLevel } = state.thread;
+      if (notificationLevel === "muted" && prior?.thread.notificationLevel !== "muted") {
+        const key = threadKey({ environmentId, threadId: state.thread.id });
+        closeToasts((toastKey) => toastKey === key);
+        const tag = threadNotificationTag(environmentId, state.thread.id);
+        pending.get(tag)?.notification.close();
+        pending.delete(tag);
+      }
       // Auto and agent settles stamp the run's own completion; a later stamp is the user dismissing it.
       const userSettled =
         settledOverride === "settled" &&
@@ -345,8 +362,11 @@ export function startThreadNotifications(
       entry.gate.observe(state.thread.id, prior, state, {
         archived: state.thread.archivedAt !== null,
         // A request or failure wakes a snoozed thread, so only its completions stay quiet.
-        quiet: state.raw.latestRunStopRequested === true || userSettled,
-        snoozed: isSnoozedForNotification(state.thread, state.completedAt, now),
+        quiet:
+          state.raw.latestRunStopRequested === true || userSettled || notificationLevel === "muted",
+        snoozed:
+          notificationLevel !== "following" &&
+          isSnoozedForNotification(state.thread, state.completedAt, now),
       });
     }
   };
@@ -401,10 +421,7 @@ export function startThreadNotifications(
   };
 
   const syncEnvironments = () => {
-    const { notificationMode, inAppNotificationsEnabled } = getClientSettings();
-    const enabled = notificationMode !== "off" || inAppNotificationsEnabled;
-    if (!enabled) closeToasts(() => true);
-    const environmentIds = enabled ? registry.get(environmentSummaries.environmentIdsAtom) : [];
+    const environmentIds = registry.get(environmentSummaries.environmentIdsAtom);
     const activeIds = new Set(environmentIds);
     for (const [environmentId, entry] of watched) {
       if (activeIds.has(environmentId)) continue;
@@ -437,24 +454,23 @@ export function startThreadNotifications(
     clearPending();
     const stops: Array<() => void> = [];
     if (hasDesktopNotifications(nextMode)) {
-      const unsubscribeWindowFocus = window.desktopBridge?.onWindowFocus(clearPending);
-      window.addEventListener("focus", clearPending);
       // The badge counts what needs the user, not what was announced, so focus leaves it.
       let badgeCount = -1;
       const unsubscribeBadge = registry.subscribe(
         environmentThreadShells.needsYouThreadsAtom,
         (needsYou) => {
-          if (needsYou.threads.length === badgeCount) return;
-          badgeCount = needsYou.threads.length;
+          const nextCount = needsYou.threads.filter((thread) =>
+            shouldNotifyThread(true, thread.notificationLevel, "input"),
+          ).length;
+          if (nextCount === badgeCount) return;
+          badgeCount = nextCount;
           setNotificationBadge(badgeCount);
         },
         { immediate: true },
       );
       stops.push(() => {
-        unsubscribeWindowFocus?.();
         unsubscribeBadge();
         setNotificationBadge(0);
-        window.removeEventListener("focus", clearPending);
         clearPending();
       });
     }
@@ -472,9 +488,20 @@ export function startThreadNotifications(
   };
 
   const onSettings = () => {
+    if (!getClientSettings().inAppNotificationsEnabled) {
+      closeToasts((key) => {
+        const { environmentId, threadId } = parseThreadKey(key);
+        return (
+          watched.get(environmentId)?.previous.get(threadId)?.thread.notificationLevel !==
+          "following"
+        );
+      });
+    }
     applyMode();
     syncEnvironments();
   };
+  const unsubscribeWindowFocus = window.desktopBridge?.onWindowFocus(clearPending);
+  window.addEventListener("focus", clearPending);
   const unsubscribeSettings = subscribeClientSettings(onSettings);
   const unsubscribeEnvironmentIds = registry.subscribe(
     environmentSummaries.environmentIdsAtom,
@@ -492,6 +519,8 @@ export function startThreadNotifications(
   onSettings();
 
   return () => {
+    unsubscribeWindowFocus?.();
+    window.removeEventListener("focus", clearPending);
     unsubscribeSettings();
     unsubscribeEnvironmentIds();
     for (const unsubscribe of unsubscribeHidden) unsubscribe();
@@ -500,5 +529,6 @@ export function startThreadNotifications(
     watched.clear();
     stopModeListeners();
     closeToasts(() => true);
+    clearPending();
   };
 }

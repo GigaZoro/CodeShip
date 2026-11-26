@@ -24,7 +24,7 @@ import {
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ManagedPolicySummary } from "./managedPolicy.ts";
-import { ModelCapabilities, ProviderOptionDescriptor } from "./model.ts";
+import { ModelCapabilities, ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
@@ -70,6 +70,10 @@ export const ServerProviderAuth = Schema.Struct({
   subscriptionSharing: Schema.optional(Schema.Boolean),
   profileId: Schema.optional(TrimmedNonEmptyString),
   workspaceId: Schema.optional(TrimmedNonEmptyString),
+  /** Published by the adapter when it can identify the payer independently of usage metrics. */
+  funding: Schema.optionalKey(ServerProviderFunding),
+  /** Funding must be checked at the destination before an automatic start. */
+  fundingScope: Schema.optionalKey(Schema.Literal("workspace")),
   /**
    * When the saved login stops renewing and needs signing in again. Absent when the provider has
    * no such date or the server could not read it; a date in the past means the login has lapsed.
@@ -83,8 +87,12 @@ export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  /** Provider-reported model family when the executable slug is opaque. */
+  nativeModelFamily: Schema.optionalKey(TrimmedNonEmptyString),
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
+  /** Overrides the account funding when the adapter can identify this model's payer separately. */
+  funding: Schema.optionalKey(ServerProviderFunding),
   aliases: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   badge: Schema.optional(Schema.Literal("new")),
   isCustom: Schema.Boolean,
@@ -708,6 +716,11 @@ export const ServerConfig = Schema.Struct({
   directEndpoints: Schema.optionalKey(ForwardCompatibleArray(ServerDirectEndpoint)),
   observability: ServerObservability,
   settings: ServerSettings,
+  /**
+   * Opaque key of the settings this environment reads usage with. It changes when a secret
+   * environment value does, which the redacted settings cannot show. Older servers omit it.
+   */
+  usageSettingsKey: Schema.optionalKey(Schema.String),
   /** Present when an administrator's policy file manages this environment. */
   managedPolicy: Schema.optionalKey(ManagedPolicySummary),
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
@@ -827,6 +840,8 @@ export type ServerConfigProviderStatusDeltasPayload =
 
 export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
   settings: ServerSettings,
+  /** See `ServerConfig.usageSettingsKey`. */
+  usageSettingsKey: Schema.optionalKey(Schema.String),
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
 

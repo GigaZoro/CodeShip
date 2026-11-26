@@ -28,6 +28,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { MessageId, RunId } from "@t3tools/contracts";
 import {
   computeStableMessagesTimelineRows,
+  nextStarredMessage,
+  resolveStarJump,
   deriveMessagesTimelineRows,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
@@ -39,6 +41,75 @@ import {
   threadReadLabelPrefix,
 } from "./MessagesTimeline.logic";
 import { workEntryIconName } from "./TimelineWorkEntryRow.logic";
+
+describe("nextStarredMessage", () => {
+  const first = MessageId.make("first");
+  const second = MessageId.make("second");
+  const third = MessageId.make("third");
+  const earlier = MessageId.make("earlier");
+  const earliest = MessageId.make("earliest");
+  const entries = [
+    { messageId: first, top: 30 },
+    { messageId: second, top: 60 },
+    { messageId: third, top: 90 },
+  ];
+  const input = {
+    entries,
+    starredIds: [earlier, earliest, third, first, second],
+    hasMoreHistory: false,
+    scrollOffset: 0,
+    landingLine: 20,
+    lastLanded: null,
+  };
+
+  it("cycles through all three stars when every jump lands at the same scroll offset", () => {
+    const visited = [];
+    let lastLanded = null;
+    for (let index = 0; index <= entries.length; index++) {
+      const target = nextStarredMessage({ ...input, lastLanded });
+      if (target?.kind !== "message") throw new Error("Expected a loaded star");
+      visited.push(target.messageId);
+      lastLanded = { messageId: target.messageId, scrollOffset: input.scrollOffset };
+    }
+    expect(visited).toEqual([first, second, third, first]);
+  });
+
+  it("wraps to the earliest star in timeline order after paging in both earlier bookmarks", () => {
+    const lastLanded = { messageId: third, scrollOffset: 0 };
+    const target = nextStarredMessage({ ...input, lastLanded, hasMoreHistory: true });
+    expect(target).toEqual({ kind: "earliest" });
+    if (target === undefined) throw new Error("Expected a star jump");
+    expect(
+      resolveStarJump(target, input.starredIds, [earlier, first, second, third], true),
+    ).toEqual({ kind: "load" });
+    expect(
+      resolveStarJump(target, input.starredIds, [earliest, earlier, first, second, third], true),
+    ).toEqual({ kind: "land", messageId: earliest });
+    expect(
+      resolveStarJump(target, input.starredIds, [earlier, first, second, third], false),
+    ).toEqual({ kind: "land", messageId: earlier });
+    expect(nextStarredMessage({ ...input, lastLanded, scrollOffset: 25, landingLine: 45 })).toEqual(
+      { kind: "message", messageId: second },
+    );
+  });
+
+  it("cancels a removed target and resolves a wrapped jump against the remaining stars", () => {
+    const target = { kind: "message", messageId: earliest } as const;
+    expect(resolveStarJump(target, input.starredIds, [first], true)).toEqual({
+      kind: "load",
+      throughEntryId: earliest,
+    });
+    const remaining = [earlier, first];
+    expect(resolveStarJump(target, remaining, [first], true)).toEqual({ kind: "cancel" });
+    expect(resolveStarJump(target, remaining, [earliest, first], true)).toEqual({ kind: "cancel" });
+    expect(
+      resolveStarJump({ kind: "earliest" }, remaining, [earliest, earlier, first], true),
+    ).toEqual({ kind: "land", messageId: earlier });
+    expect(resolveStarJump({ kind: "earliest" }, [], [earliest, first], true)).toEqual({
+      kind: "cancel",
+    });
+  });
+});
 
 describe("threadReadLabelPrefix", () => {
   it("keeps thread links available for current and stored legacy read labels", () => {

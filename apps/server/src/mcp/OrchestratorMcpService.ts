@@ -41,6 +41,8 @@ import {
   type OrchestratorMcpSharedScheduledTasksResult,
   type OrchestratorMcpClaimScheduledTaskOccurrenceInput,
   type OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+  type OrchestratorMcpReportScheduledRunInput,
+  type OrchestratorMcpReportScheduledRunResult,
   type OrchestratorMcpScheduledTask,
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
@@ -51,6 +53,8 @@ import {
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
+  type ProviderCreditGrant,
+  type ProviderCreditUse,
   type ProviderInstanceId,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadInterruptInput,
@@ -98,7 +102,7 @@ import {
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
-import { autoModePick } from "@t3tools/shared/serverSettings";
+import { autoModePick, canAccountRun } from "@t3tools/shared/serverSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
 import {
@@ -109,6 +113,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -116,7 +121,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
@@ -174,10 +178,16 @@ import {
   taskPrompt,
 } from "./delegatedTaskModes.ts";
 import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
-import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
+import {
+  providerUsageFields,
+  publishesUsage,
+  usageLimitReason,
+  staleUsageObservations,
+} from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 // Return recoverable handles before common MCP client timeouts expire.
@@ -203,6 +213,13 @@ const THREAD_PULL_REQUEST_PREVIEW_LIMIT = 5;
 const THREAD_READ_RESULT_MAX_BYTES = 30_000;
 // Bounds re-checks when agents ask repeatedly; PATH lookups stay cached this long anyway.
 const UNUSABLE_PROVIDER_RECHECK_AFTER_MS = 30_000;
+/**
+ * The longest provider re-checks hold a request. A linked machine's request comes through
+ * T3 Connect, which drops one idle for about 100 s, and a provider's probe can outlast that,
+ * so a request waits at most one forwarded wait piece and a slower check finishes on its own.
+ */
+const PROVIDER_RECHECK_WAIT = Duration.millis(PeerMcpClient.FORWARDED_WAIT_CHUNK_MS);
+const STILL_CHECKING = "A new check of this provider is still running; ask again for its result.";
 
 /** An enabled instance its last check found unusable; a new check may find it installed or signed in. */
 const isRecheckable = (provider: ServerProvider) =>
@@ -257,6 +274,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpClaimScheduledTaskOccurrenceInput,
   ) => Effect.Effect<OrchestratorMcpClaimScheduledTaskOccurrenceResult, OrchestratorMcpFailure>;
+  readonly reportScheduledRun: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpReportScheduledRunInput,
+  ) => Effect.Effect<OrchestratorMcpReportScheduledRunResult, OrchestratorMcpFailure>;
   readonly updateScheduledTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpUpdateScheduledTaskInput,
@@ -623,6 +644,8 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
       readonly allowFailover?: boolean;
+      /** The thread a delegate is for, whose allowance of prepaid credits then applies. */
+      readonly requesterThreadId?: ThreadId;
     },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
@@ -630,11 +653,15 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
     const until = ` until ${limit.limitedUntil}`;
+    const reason =
+      limit.credits === undefined || limit.credits === "spending" || limit.credits === "standby"
+        ? ""
+        : ` (${usageLimitReason(limit.credits)})`;
     return yield* failure(
       "provider_unavailable",
       input.selection.autoAccount === true
-        ? `Auto would start on account ${limit.instanceId}, usage-limited${until}: no other account has room, or account switching is off in Settings. The thread was not created. Retry when usage is available, or name another provider's model.`
-        : `Account ${limit.instanceId} is usage-limited${until}, so the thread was not created. Pick an account without usageLimited or limitedUntil in orchestrator_capabilities, or retry when usage is available.`,
+        ? `Auto would start on account ${limit.instanceId}, usage-limited${until}${reason}: no other account has room, or account switching is off in Settings. The thread was not created. Retry when usage is available, or name another provider's model.`
+        : `Account ${limit.instanceId} is usage-limited${until}${reason}, so the thread was not created. Pick an account without usageLimited or limitedUntil in orchestrator_capabilities, or retry when usage is available.`,
     );
   },
 );
@@ -1787,34 +1814,89 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(threadManagementFailure));
 
-  const recheckLocks = new Map<ProviderInstanceId, Semaphore.Semaphore>();
+  // The check running for each instance, which every request arriving meanwhile awaits.
+  const checksInFlight = new Map<ProviderInstanceId, Deferred.Deferred<void>>();
   const checkedAtOf = (providers: ReadonlyArray<ServerProvider>, instanceId: ProviderInstanceId) =>
     providers.find((provider) => provider.instanceId === instanceId)?.checkedAt;
 
-  /** Concurrent callers share one check: an instance checked since `seen` was read is not checked again. */
-  const recheckInstances = (
-    instanceIds: ReadonlyArray<ProviderInstanceId>,
-    seen: ReadonlyArray<ServerProvider>,
-  ) =>
-    Effect.forEach(
-      instanceIds,
-      (instanceId) => {
-        const lock = recheckLocks.get(instanceId) ?? Semaphore.makeUnsafe(1);
-        recheckLocks.set(instanceId, lock);
-        return lock.withPermits(1)(
-          loadProviders.pipe(
-            Effect.flatMap((current) =>
-              checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
-                ? providerRegistry.refreshInstance(instanceId)
-                : Effect.void,
+  /** When a request's provider re-checks stop holding it: one wait for all of them. */
+  const recheckDeadline = Clock.currentTimeMillis.pipe(
+    Effect.map((nowMs) => nowMs + Duration.toMillis(PROVIDER_RECHECK_WAIT)),
+  );
+
+  /**
+   * The instance's running check, else a new one unless the registry checked it since `seen` was
+   * read. It runs detached, so one that outlasts every caller's wait still updates the registry.
+   * Claim and fork are one step, or an interrupted caller would leave a claim nothing completes.
+   */
+  const sharedCheck = (instanceId: ProviderInstanceId, seen: ReadonlyArray<ServerProvider>) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.suspend(() => {
+        const running = checksInFlight.get(instanceId);
+        if (running !== undefined) return Effect.succeed(running);
+        const done = Deferred.makeUnsafe<void>();
+        checksInFlight.set(instanceId, done);
+        const check = loadProviders.pipe(
+          Effect.flatMap((current) =>
+            checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
+              ? providerRegistry.refreshInstance(instanceId)
+              : Effect.void,
+          ),
+          Effect.asVoid,
+        );
+        return restore(check).pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => checksInFlight.delete(instanceId)).pipe(
+              Effect.andThen(Deferred.done(done, exit)),
             ),
           ),
+          Effect.forkDetach,
+          Effect.as(done),
         );
-      },
-      { concurrency: "unbounded", discard: true },
-    ).pipe(Effect.andThen(loadProviders));
+      }),
+    );
 
-  const resolveTargetRechecking = (input: Parameters<typeof resolveTarget>[0]) => {
+  /** Whether `check` ended by `deadline`. */
+  const endedBy = (check: Deferred.Deferred<void>, deadline: number) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((nowMs) =>
+        nowMs >= deadline
+          ? Deferred.isDone(check)
+          : Deferred.await(check).pipe(
+              Effect.timeoutOption(Duration.millis(deadline - nowMs)),
+              Effect.map(Option.isSome),
+            ),
+      ),
+    );
+
+  /**
+   * Re-checks `instanceIds` until `deadline` at most; `checking` names those whose check still
+   * runs then, which finishes on its own.
+   */
+  const recheckInstances = Effect.fn("OrchestratorMcpService.recheckInstances")(function* (
+    instanceIds: ReadonlyArray<ProviderInstanceId>,
+    seen: ReadonlyArray<ServerProvider>,
+    deadline: number,
+  ) {
+    if (instanceIds.length === 0) {
+      return { providers: seen, checking: new Set<ProviderInstanceId>() };
+    }
+    const outlasted = yield* Effect.forEach(
+      instanceIds,
+      (instanceId) =>
+        sharedCheck(instanceId, seen).pipe(
+          Effect.flatMap((check) => endedBy(check, deadline)),
+          Effect.map((ended) => (ended ? [] : [instanceId])),
+        ),
+      { concurrency: "unbounded" },
+    );
+    return { providers: yield* loadProviders, checking: new Set(outlasted.flat()) };
+  });
+
+  const resolveTargetRechecking = (
+    input: Parameters<typeof resolveTarget>[0],
+    recheckBy: number,
+  ) => {
     const requestedDriver =
       input.target?.providerInstanceId === undefined ? input.target?.driverKind : undefined;
     const instanceIds =
@@ -1827,29 +1909,63 @@ const make = Effect.gen(function* () {
       Effect.catchIf(
         (error) => error.code === "provider_unavailable" || error.code === "model_unavailable",
         () =>
-          recheckInstances(instanceIds, input.providers).pipe(
-            Effect.flatMap((providers) => resolveTarget({ ...input, providers })),
+          recheckInstances(instanceIds, input.providers, recheckBy).pipe(
+            Effect.flatMap(({ providers, checking }) =>
+              resolveTarget({ ...input, providers }).pipe(
+                Effect.mapError((error) =>
+                  error.code === "provider_unavailable" &&
+                  instanceIds.some((instanceId) => checking.has(instanceId))
+                    ? failure("provider_unavailable", `${error.message} ${STILL_CHECKING}`)
+                    : error,
+                ),
+              ),
+            ),
           ),
       ),
     );
   };
 
-  /** Re-checks providers last seen unusable, so a since-installed or signed-in one is reported usable. */
+  /**
+   * Re-checks providers last seen unusable, so a since-installed or signed-in one is reported
+   * usable, and with `usage`, those whose usage reading is stale.
+   */
   const loadProvidersRechecked = Effect.fn("OrchestratorMcpService.loadProvidersRechecked")(
-    function* () {
+    function* (includeUsage?: (provider: ServerProvider) => boolean) {
       const providers = yield* loadProviders;
       const nowMs = yield* Clock.currentTimeMillis;
-      const stale = providers.filter(
-        (provider) =>
-          isRecheckable(provider) &&
-          nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS,
+      const recheckBy = yield* recheckDeadline;
+      const readiness = recheckInstances(
+        providers
+          .filter(
+            (provider) =>
+              isRecheckable(provider) &&
+              nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS,
+          )
+          .map((provider) => provider.instanceId),
+        providers,
+        recheckBy,
       );
-      return stale.length === 0
-        ? providers
-        : yield* recheckInstances(
-            stale.map((provider) => provider.instanceId),
-            providers,
-          );
+      if (!includeUsage) return yield* readiness;
+      const staleObservations = (provider: ServerProvider) =>
+        includeUsage(provider) && provider.usageLimits?.unavailable?.reason !== "unsupported"
+          ? staleUsageObservations(provider, nowMs)
+          : [];
+      const instanceIds = providers
+        .filter((provider) => staleObservations(provider).length > 0)
+        .map((provider) => provider.instanceId);
+      if (instanceIds.length === 0) return yield* readiness;
+      const [health] = yield* Effect.all(
+        [
+          readiness,
+          providerRegistry.refreshUsageIfStale({
+            instanceIds,
+            staleObservations,
+            waitMs: recheckBy - nowMs,
+          }),
+        ],
+        { concurrency: 2 },
+      );
+      return { providers: yield* loadProviders, checking: health.checking };
     },
   );
 
@@ -1940,20 +2056,24 @@ const make = Effect.gen(function* () {
           (yield* accountRouting.value.launchLimit({
             projectId: input.parent.thread.projectId,
             selection: { instanceId, model: driverModel },
+            requesterThreadId: input.parent.thread.id,
           })) === null;
         const withRoom = yield* accountRouting.value.accountsWithRoom({
           driver: requestedDriver,
           projectId: input.parent.thread.projectId,
           model: driverModel,
+          requesterThreadId: input.parent.thread.id,
         });
-        // A parent account that must sign in to an MCP server again would start the child without
-        // that server's tools, so it is left for an account with room and no sign-in to redo.
-        const parentSignIns =
-          withRoom.find((candidate) => candidate.instanceId === inherited.instanceId)
-            ?.mcpSignInsNeeded ?? [];
-        if (!parentCanRun || parentSignIns.length > 0) {
+        // A parent account that would spend prepaid credits, or must sign in to an MCP server again
+        // and so start the child without its tools, is left for an account that ranks above it:
+        // plan usage before credits, which cost money, then no sign-in to redo.
+        const rank = (candidate: (typeof withRoom)[number]) =>
+          (candidate.onCredits ? 2 : 0) + (candidate.mcpSignInsNeeded.length > 0 ? 1 : 0);
+        const parent = withRoom.find((candidate) => candidate.instanceId === inherited.instanceId);
+        const parentRank = parent === undefined ? 0 : rank(parent);
+        if (!parentCanRun || parentRank > 0) {
           for (const candidate of withRoom) {
-            if (parentCanRun && candidate.mcpSignInsNeeded.length > 0) continue;
+            if (parentCanRun && rank(candidate) >= parentRank) continue;
             if (!healthyCandidates.some((provider) => provider.instanceId === candidate.instanceId))
               continue;
             if (
@@ -3125,6 +3245,24 @@ const make = Effect.gen(function* () {
         return { holder };
       },
     ),
+    reportScheduledRun: Effect.fn("OrchestratorMcpService.reportScheduledRun")(
+      function* (scope, input) {
+        if (scope.thread === undefined) {
+          return yield* failure(
+            "capability_denied",
+            "Only the chat of a scheduled run can report its result.",
+          );
+        }
+        const scheduledTaskId = yield* scheduledTasks
+          .reportRunResult({ threadId: scope.thread.threadId, ...input })
+          .pipe(
+            Effect.mapError((error) =>
+              failure("invalid_request", `Could not report the run: ${error.message}`),
+            ),
+          );
+        return { scheduledTaskId, outcome: input.outcome };
+      },
+    ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
       function* (scope, input) {
         if (input.modelSelection !== undefined && input.followsDefaultModel === true) {
@@ -3500,30 +3638,24 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope, []);
-      const checkedProviders = yield* loadProvidersRechecked();
-      const nowMs = yield* Clock.currentTimeMillis;
-      const staleUsage =
-        input.usage === true
-          ? checkedProviders.filter(
-              (provider) => publishesUsage(provider) && usageReadingStale(provider, nowMs),
-            )
-          : [];
-      const providers =
-        staleUsage.length === 0
-          ? checkedProviders
-          : yield* recheckInstances(
-              staleUsage.map((provider) => provider.instanceId),
-              checkedProviders,
-            );
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
+      const { providers, checking } = yield* loadProvidersRechecked(
+        input.usage
+          ? (provider) =>
+              orchestrationCapableInstanceIds.has(provider.instanceId) &&
+              canAccountRun(provider, settings, parent?.thread.projectId ?? null)
+          : undefined,
+      );
       const availability = Option.isNone(accountRouting)
         ? {
             accounts: new Map<ProviderInstanceId, string>(),
             estimated: new Set<ProviderInstanceId>(),
             models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
+            credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
+            grants: new Map<ProviderInstanceId, ProviderCreditGrant>(),
           }
-        : yield* accountRouting.value.limits;
+        : yield* accountRouting.value.limits({ requesterThreadId: parent?.thread.id });
       const redemptions =
         input.usage === true && Option.isSome(usageResetRedeemer)
           ? yield* usageResetRedeemer.value.lastRedemptions
@@ -3563,7 +3695,13 @@ const make = Effect.gen(function* () {
           ) {
             constraints.push("Disabled for this project.");
           }
+          // A usable provider whose usage reading is still being taken stays usable.
+          if (constraints.length > 0 && checking.has(provider.instanceId)) {
+            constraints.push(STILL_CHECKING);
+          }
           const limitedUntil = availability.accounts.get(provider.instanceId);
+          const prepaidCredits = availability.credits.get(provider.instanceId);
+          const prepaidCreditGrant = availability.grants.get(provider.instanceId);
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -3607,8 +3745,15 @@ const make = Effect.gen(function* () {
             ...(limitedUntil != null && availability.estimated.has(provider.instanceId)
               ? { limitedUntilEstimated: true as const }
               : {}),
+            ...(prepaidCredits === undefined ? {} : { prepaidCredits }),
+            ...(prepaidCreditGrant === undefined ? {} : { prepaidCreditGrant }),
             ...(input.usage === true && publishesUsage(provider)
-              ? providerUsageFields(provider, limitedUntil !== undefined, redemptions)
+              ? providerUsageFields(
+                  provider,
+                  limitedUntil !== undefined,
+                  redemptions,
+                  prepaidCredits ?? null,
+                )
               : {}),
           };
         }),
@@ -3733,14 +3878,19 @@ const make = Effect.gen(function* () {
         : null;
       // The child runs in its own project, so that project's accounts and Auto settings apply.
       const projectId = foreignProjectId ?? parent.thread.projectId;
+      // The role's provider and the parent's, its fallback, share the request's one wait.
+      const recheckBy = yield* recheckDeadline;
       // Auto's pick, or the role's model, stands in for the parent's, so the child inherits it the
       // same way.
       const resolveDelegateTarget = (modelSelection: ModelSelection) =>
-        resolveTargetRechecking({
-          parent: { thread: { ...parent.thread, projectId, modelSelection } },
-          target: input.target,
-          providers,
-        });
+        resolveTargetRechecking(
+          {
+            parent: { thread: { ...parent.thread, projectId, modelSelection } },
+            target: input.target,
+            providers,
+          },
+          recheckBy,
+        );
       // A stand-in model replaces an inherited one, which resolution does not check against the
       // account's models, so one the account no longer offers is caught here, in the snapshot
       // after any recheck of the account.
@@ -3810,6 +3960,7 @@ const make = Effect.gen(function* () {
               selection: primaryTarget.modelSelection,
               projectId,
               discoverMcpSignIns: false,
+              requesterThreadId: parent.thread.id,
             })
           : null;
       const crossProviderFailoverFrom =
@@ -3828,6 +3979,7 @@ const make = Effect.gen(function* () {
           {
             selection: target.modelSelection,
             projectId,
+            requesterThreadId: parent.thread.id,
           },
           accountRouting,
         );
@@ -4203,6 +4355,8 @@ const make = Effect.gen(function* () {
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
         const key = yield* requestKey(input.clientRequestId);
+        // Every thread's provider re-check shares the request's one wait.
+        const recheckBy = yield* recheckDeadline;
         const created = yield* Effect.forEach(
           input.threads,
           (request, index) =>
@@ -4248,14 +4402,17 @@ const make = Effect.gen(function* () {
                           provider.instanceId === committedThread.modelSelection.instanceId,
                       )?.supportedRuntimeModes,
                     }
-                  : yield* resolveTargetRechecking({
-                      parent,
-                      target:
-                        autoPick !== undefined
-                          ? { providerInstanceId: autoPick.instanceId }
-                          : request.target,
-                      providers,
-                    });
+                  : yield* resolveTargetRechecking(
+                      {
+                        parent,
+                        target:
+                          autoPick !== undefined
+                            ? { providerInstanceId: autoPick.instanceId }
+                            : request.target,
+                        providers,
+                      },
+                      recheckBy,
+                    );
               const target =
                 autoPick !== undefined
                   ? { ...resolved, modelSelection: autoPick }

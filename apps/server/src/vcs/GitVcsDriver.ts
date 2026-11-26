@@ -239,6 +239,12 @@ export interface GitFetchRefInput {
   ref: string;
 }
 
+/** Which remote gave a commit, and which remotes were asked: the primary first, none without one. */
+export interface GitFetchCommitResult {
+  readonly fetchedFrom: string | null;
+  readonly remoteNames: ReadonlyArray<string>;
+}
+
 export interface GitResolveCommitInput {
   cwd: string;
   revision: string;
@@ -435,6 +441,15 @@ export class GitVcsDriver extends Context.Service<
     readonly fetchRefCommit: (
       input: GitFetchRefInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
+    /**
+     * Fetches the commit from each remote in turn, the primary first, until one gives it: the
+     * branches a checkout fetches, as in a single-branch clone, need not reach it. A remote that
+     * fails is passed over; its error is the result only when no remote gives the commit.
+     */
+    readonly fetchCommit: (input: {
+      readonly cwd: string;
+      readonly commitSha: string;
+    }) => Effect.Effect<GitFetchCommitResult, GitCommandError>;
     readonly resolveCommit: (
       input: GitResolveCommitInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
@@ -788,7 +803,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                 command: "git ls-files",
                 cwd,
                 exitCode: result.exitCode,
-                detail: result.stderr.trim() || "git ls-files failed",
+                detail: gitErrorLines(result.stderr) || "git ls-files failed",
               }),
             ),
       ),
@@ -814,7 +829,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           command: "git remote -v",
           cwd,
           exitCode: result.exitCode,
-          detail: result.stderr.trim() || "git remote -v failed",
+          detail: gitErrorLines(result.stderr) || "git remote -v failed",
         });
       }
 
@@ -871,7 +886,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           command: "git check-ignore",
           cwd,
           exitCode: result.exitCode,
-          detail: result.stderr.trim() || "git check-ignore failed",
+          detail: gitErrorLines(result.stderr) || "git check-ignore failed",
         });
       }
 
@@ -1997,7 +2012,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             command: "git clean",
             cwd: input.cwd,
             exitCode: cleaned.exitCode,
-            detail: cleaned.stderr.trim() || "Could not clean the checkpoint workspace.",
+            detail: gitErrorLines(cleaned.stderr) || "Could not clean the checkpoint workspace.",
           });
         }
       }
@@ -2100,7 +2115,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           command: "git diff",
           cwd: input.cwd,
           exitCode: result.exitCode,
-          detail: result.stderr.trim() || "Checkpoint ref is unavailable for diff operation.",
+          detail:
+            gitErrorLines(result.stderr) || "Checkpoint ref is unavailable for diff operation.",
         });
       }
 

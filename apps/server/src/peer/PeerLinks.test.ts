@@ -36,6 +36,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -59,13 +60,20 @@ const ProbeToolkit = Toolkit.make(
     success: Probe,
     failure: OrchestratorMcpFailure,
     failureMode: "return",
-    dependencies: [McpInvocationContext.McpInvocationContext],
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
   }),
   Tool.make("refuse", {
     description: "Always refuses.",
     success: Probe,
     failure: OrchestratorMcpFailure,
     failureMode: "return",
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
   }),
 );
 

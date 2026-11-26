@@ -153,11 +153,19 @@ export function applyServerConfigProjection(
     case "settingsUpdated":
       return Option.map(current, (projection) => {
         const settings = reuseUnchanged(projection.config.settings, event.payload.settings);
+        const { usageSettingsKey } = event.payload;
+        // Without a key the settings stand in for it, never a key left from an earlier event.
+        const { usageSettingsKey: _previous, ...rest } = projection.config;
         return {
           config:
-            settings === projection.config.settings
+            settings === projection.config.settings &&
+            usageSettingsKey === projection.config.usageSettingsKey
               ? projection.config
-              : { ...projection.config, settings },
+              : {
+                  ...rest,
+                  settings,
+                  ...(usageSettingsKey === undefined ? {} : { usageSettingsKey }),
+                },
           latestEvent: event,
           source: "live",
         };

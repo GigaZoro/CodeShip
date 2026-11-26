@@ -14,7 +14,6 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
@@ -943,7 +942,6 @@ const forget = (child: RemoteChild) => {
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
 
   // Each spawn already sits inside the caller's git or process span.
@@ -963,10 +961,9 @@ const make = Effect.gen(function* () {
       0,
       ...additionalFds.flatMap((entry) => (entry.config.type === "input" ? [entry.fd] : [])),
     ].filter((fd) => isPipe(stdio[fd]));
-    const cwd =
-      options.cwd === undefined
-        ? undefined
-        : yield* fs.access(options.cwd).pipe(Effect.as(path.resolve(options.cwd)));
+    // Pass the same cwd used for executable lookup. The OS follows directory links before "..".
+    const cwd = options.cwd;
+    if (cwd !== undefined) yield* fs.access(cwd);
     const detached = options.detached ?? platform !== "win32";
     const killSignal = options.killSignal ?? "SIGTERM";
     const forceKillAfterMs = forceKillMillis(options.forceKillAfter);
@@ -1230,5 +1227,5 @@ export const __testing = {
 export const layer: Layer.Layer<
   ChildProcessSpawner.ChildProcessSpawner,
   never,
-  FileSystem.FileSystem | Path.Path
+  FileSystem.FileSystem
 > = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, make);

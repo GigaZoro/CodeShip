@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { resolvePropertyName, resolveStringValue, unwrapExpression } from "../utils.ts";
 
 const BROWSER_TEST_FILE = /\.browser\.test\.[cm]?[jt]sx?$/u;
 const LIFECYCLE_HOOKS = new Set(["afterAll", "afterEach", "beforeAll", "beforeEach"]);
@@ -37,9 +37,6 @@ const MESSAGES = {
     "Browser tests acquire what they need with `using`/`await using` instead of lifecycle hooks, so nothing outlives the test that created it.",
 };
 
-const stringValue = (node: ESTree.Node | null | undefined) =>
-  node?.type === "Literal" && typeof node.value === "string" ? node.value : undefined;
-
 const importedName = (specifier: ESTree.ImportSpecifier) =>
   specifier.imported.type === "Identifier" ? specifier.imported.name : specifier.imported.value;
 
@@ -50,7 +47,7 @@ const isFunction = (node: ESTree.Node) =>
 
 // Walks a.b().c().d back to its root, reporting whether a getBy* query built a locator on the way
 // without leaving it through element()/query().
-const isLocatorChain = (node: ESTree.Node): boolean => {
+const isLocatorChain = (sourceCode: SourceCode, node: ESTree.Node): boolean => {
   let sawQuery = false;
   for (let current: ESTree.Node | undefined = node; current;) {
     if (current.type === "CallExpression") {
@@ -58,7 +55,7 @@ const isLocatorChain = (node: ESTree.Node): boolean => {
       continue;
     }
     if (current.type !== "MemberExpression") break;
-    const name = Option.getOrUndefined(getPropertyName(current.property));
+    const name = Option.getOrUndefined(resolvePropertyName(sourceCode, current.property));
     if (name !== undefined && LOCATOR_EXITS.has(name)) return false;
     if (name !== undefined && LOCATOR_QUERY.test(name)) sawQuery = true;
     current = current.object;
@@ -66,15 +63,12 @@ const isLocatorChain = (node: ESTree.Node): boolean => {
   return sawQuery;
 };
 
-const namesActEnvironment = (node: unknown) => {
+const namesActEnvironment = (sourceCode: SourceCode, node: unknown) => {
   const target = unwrapExpression(node);
   if (Option.isNone(target)) return false;
   if (target.value.type === "Identifier") return target.value.name === ACT_ENVIRONMENT;
   if (target.value.type !== "MemberExpression") return false;
-  const property = target.value.computed
-    ? Option.fromNullishOr(stringValue(target.value.property))
-    : getPropertyName(target.value.property);
-  return Option.getOrUndefined(property) === ACT_ENVIRONMENT;
+  return Option.contains(resolvePropertyName(sourceCode, target.value.property), ACT_ENVIRONMENT);
 };
 
 export default defineRule({
@@ -86,6 +80,7 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     const isBrowserTest = BROWSER_TEST_FILE.test(context.filename);
     // Local names bound to React's act or the render helper's act.
     const actNames = new Set<string>();
@@ -97,7 +92,7 @@ export default defineRule({
       node.type === "MemberExpression" &&
       node.object.type === "Identifier" &&
       namespaces.has(node.object.name)
-        ? Option.getOrUndefined(getPropertyName(node.property))
+        ? Option.getOrUndefined(resolvePropertyName(sourceCode, node.property))
         : undefined;
 
     const isReactNamespaceAct = (callee: ESTree.Node) => {
@@ -131,8 +126,12 @@ export default defineRule({
       if (callee.object.type === "Identifier" && userEventNames.has(callee.object.name)) {
         return true;
       }
-      const method = Option.getOrUndefined(getPropertyName(callee.property));
-      return method !== undefined && LOCATOR_INPUT.has(method) && isLocatorChain(callee.object);
+      const method = Option.getOrUndefined(resolvePropertyName(sourceCode, callee.property));
+      return (
+        method !== undefined &&
+        LOCATOR_INPUT.has(method) &&
+        isLocatorChain(sourceCode, callee.object)
+      );
     };
 
     return {
@@ -180,7 +179,7 @@ export default defineRule({
         }
       },
       AssignmentExpression(node) {
-        if (namesActEnvironment(node.left)) {
+        if (namesActEnvironment(sourceCode, node.left)) {
           context.report({ node: node.left, message: MESSAGES.actEnvironment });
         }
       },
@@ -189,7 +188,7 @@ export default defineRule({
         if (Option.isNone(callee)) return;
         if (callee.value.type === "MemberExpression") {
           // vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true) leaves the flag on for the whole test.
-          const method = getPropertyName(callee.value.property);
+          const method = resolvePropertyName(sourceCode, callee.value.property);
           if (isReactNamespaceAct(callee.value)) {
             context.report({ node: node.callee, message: MESSAGES.reactAct });
             return;
@@ -206,8 +205,8 @@ export default defineRule({
             return;
           }
           if (
-            Option.getOrUndefined(method) === "stubGlobal" &&
-            stringValue(node.arguments[0] as ESTree.Node | undefined) === ACT_ENVIRONMENT
+            Option.contains(method, "stubGlobal") &&
+            Option.contains(resolveStringValue(sourceCode, node.arguments[0]), ACT_ENVIRONMENT)
           ) {
             context.report({ node, message: MESSAGES.actEnvironment });
           }

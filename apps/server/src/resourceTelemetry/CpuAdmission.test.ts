@@ -4,9 +4,10 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
+import { HeldNiceTimeUnreadable } from "./HeldNiceTime.ts";
 import {
   CPU_BUSY_SHARE_LIMIT,
-  cpuBusyShare,
+  cpuShares,
   cpuTimesOf,
   describeCpuSaturation,
   make,
@@ -19,7 +20,7 @@ const core = (times: Partial<NodeOS.CpuInfo["times"]>): NodeOS.CpuInfo => ({
   times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0, ...times },
 });
 
-describe("cpuBusyShare", () => {
+describe("cpuShares", () => {
   it("is the busy share of the time that passed between two os.cpus() samples", () => {
     const before = cpuTimesOf([
       core({ user: 100, sys: 50, idle: 850 }),
@@ -30,20 +31,20 @@ describe("cpuBusyShare", () => {
       core({ user: 150, sys: 90, idle: 860 }),
       core({ user: 230, nice: 10, sys: 30, idle: 830, irq: 0 }),
     ]);
-    assert.strictEqual(cpuBusyShare(before, after), 1 - 50 / 200);
+    assert.strictEqual(cpuShares(before, after)?.busy, 1 - 50 / 200);
   });
 
   it("counts only the time since the first sample, however much the cores had idled before", () => {
     const before = cpuTimesOf([core({ idle: 1_000_000 })]);
     const after = cpuTimesOf([core({ idle: 1_000_000, user: 100 })]);
-    assert.strictEqual(cpuBusyShare(before, after), 1);
+    assert.strictEqual(cpuShares(before, after)?.busy, 1);
   });
 
   it("cannot compare samples of no cores, of other core counts or of no elapsed time", () => {
     const one = cpuTimesOf([core({ idle: 1 })]);
-    assert.isNull(cpuBusyShare([], []));
-    assert.isNull(cpuBusyShare(one, [...one, ...one]));
-    assert.isNull(cpuBusyShare(one, one));
+    assert.isNull(cpuShares([], []));
+    assert.isNull(cpuShares(one, [...one, ...one]));
+    assert.isNull(cpuShares(one, one));
   });
 });
 
@@ -55,9 +56,9 @@ const sampler = (samples: ReadonlyArray<ReadonlyArray<CpuTimes>>) => {
   };
 };
 
-const BUSY = [{ idle: 0, total: 100 }];
-const AFTER_BUSY = [{ idle: 2, total: 200 }];
-const AFTER_IDLE = [{ idle: 60, total: 200 }];
+const BUSY = [{ idle: 0, nice: 0, total: 100 }];
+const AFTER_BUSY = [{ idle: 2, nice: 0, total: 200 }];
+const AFTER_IDLE = [{ idle: 60, nice: 0, total: 200 }];
 
 describe("CpuAdmission", () => {
   it.effect("reports a saturation at the limit over its sample window, and none below it", () =>
@@ -69,6 +70,7 @@ describe("CpuAdmission", () => {
       const saturation = yield* Fiber.join(read);
       assert.deepStrictEqual(saturation, {
         busyShare: 0.98,
+        nicedShare: 0,
         limit: CPU_BUSY_SHARE_LIMIT,
         cores: 1,
       });
@@ -103,4 +105,92 @@ describe("CpuAdmission", () => {
       assert.strictEqual(samples.reads(), 4);
     }),
   );
+
+  describe("niced time", () => {
+    // Four cores watched for 500 ms each: 2000 ticks pass in all.
+    const cores = (times: Partial<NodeOS.CpuInfo["times"]>) =>
+      cpuTimesOf(Array.from({ length: 4 }, () => core(times)));
+    const IDLE_CORES = cores({});
+    const sequence = <A>(values: ReadonlyArray<A>) => {
+      let next = 0;
+      return Effect.sync(() => values[Math.min(next++, values.length - 1)]!);
+    };
+    const reading = (
+      before: ReadonlyArray<CpuTimes>,
+      after: ReadonlyArray<CpuTimes>,
+      heldNice: Effect.Effect<Map<string, number>, HeldNiceTimeUnreadable> = sequence([
+        new Map(),
+        new Map(),
+      ]),
+    ) =>
+      Effect.gen(function* () {
+        const admission = yield* make(sequence([before, after]), { heldNice });
+        const read = yield* admission.saturation.pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust("500 millis");
+        return yield* Fiber.join(read);
+      });
+
+    it.effect("admits a command while low-priority work fills the CPUs", () =>
+      Effect.gen(function* () {
+        // A niced soak: 490 of every 500 ticks are nice time.
+        const saturation = yield* reading(IDLE_CORES, cores({ user: 10, nice: 490 }));
+        assert.isNull(saturation);
+      }),
+    );
+
+    it.effect("holds a command while normal-priority work fills the CPUs", () =>
+      Effect.gen(function* () {
+        const saturation = yield* reading(IDLE_CORES, cores({ user: 400, sys: 90, nice: 10 }));
+        assert.strictEqual(saturation?.busyShare, 0.98);
+        assert.strictEqual(saturation?.nicedShare, 0.02);
+      }),
+    );
+
+    it.effect("keeps counting the niced work of processes that do not give way", () =>
+      Effect.gen(function* () {
+        // CodeShip runs its own commands niced: 1900 of the 1960 nice ticks are theirs.
+        const saturation = yield* reading(
+          IDLE_CORES,
+          cores({ user: 10, nice: 490 }),
+          sequence([
+            new Map([["10:1", 100]]),
+            new Map([
+              ["10:1", 1000],
+              ["11:2", 1000],
+            ]),
+          ]),
+        );
+        assert.strictEqual(saturation?.busyShare, 0.97);
+        assert.strictEqual(saturation?.nicedShare, 0.03);
+      }),
+    );
+
+    it.effect("counts all niced time as busy when the niced processes cannot be read", () =>
+      Effect.gen(function* () {
+        const saturation = yield* reading(
+          IDLE_CORES,
+          cores({ user: 10, nice: 490 }),
+          Effect.fail(new HeldNiceTimeUnreadable({ cause: "no /proc" })),
+        );
+        assert.strictEqual(saturation?.busyShare, 1);
+      }),
+    );
+
+    it.effect("says how much of the load is low-priority work that gives way", () =>
+      Effect.gen(function* () {
+        const saturation = yield* reading(IDLE_CORES, cores({ user: 400, sys: 90, nice: 10 }));
+        const noNice = describeCpuSaturation({
+          busyShare: 0.98,
+          nicedShare: 0,
+          limit: 0.95,
+          cores: 4,
+        });
+        assert.notMatch(noNice, /low-priority/);
+        assert.match(
+          describeCpuSaturation({ ...saturation!, nicedShare: 0.4 }),
+          /another 0\.40 of the CPUs run low-priority work, which gives way to a command and is not counted/,
+        );
+      }),
+    );
+  });
 });

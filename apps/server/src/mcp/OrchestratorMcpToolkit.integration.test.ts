@@ -201,6 +201,7 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
     claimOccurrence: () => Effect.die("unused in this test"),
     sharedCopies: () => Effect.die("unused in this test"),
     deleteForThread: () => Effect.die("unused in this test"),
+    reportRunResult: () => Effect.die("unused in this test"),
     moveThreadTasks: () => Effect.die("unused in this test"),
     runNow: () => Effect.die("ScheduledTaskService.runNow is unused in this test"),
     liveRuns: () => Effect.die("unused in this test"),

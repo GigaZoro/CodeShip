@@ -44,10 +44,18 @@ index 213be4f..935e469 100644
   * Result of flattening a pipeline of commands.
   *
 diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
-index 08d50b1..d101241 100644
+index 08d50b1..6cf1f27 100644
 --- a/dist/NodeChildProcessSpawner.js
 +++ b/dist/NodeChildProcessSpawner.js
-@@ -81,16 +81,20 @@ const isProcessAlive = (command, childProcess) => {
+@@ -14,6 +14,7 @@ import * as Redacted from "effect/Redacted";
+ import * as Sink from "effect/Sink";
+ import * as Stream from "effect/Stream";
+ import * as NodeChildProcess from "node:child_process";
++import { Socket } from "node:net";
+ import { PassThrough } from "node:stream";
+ import { buildSpawnOptions } from "./internal/nodeChildProcessSpawner.js";
+ import { handleErrnoException } from "./internal/utils.js";
+@@ -81,16 +82,20 @@ const isProcessAlive = (command, childProcess) => {
      return isUnsignallableProcessGroup(error);
    }
  };
@@ -73,7 +81,39 @@ index 08d50b1..d101241 100644
    const fs = yield* FileSystem.FileSystem;
    const path = yield* Path.Path;
    const resolveWorkingDirectory = Effect.fnUntraced(function* (options) {
-@@ -335,7 +339,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -200,6 +205,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+   // Runs a user-provided input stream into its sink, recording a failure of
+   // the source stream so that it can be surfaced by the process exit code
+   const runInputStream = (stream, sink, inputFailure) => Effect.forkScoped(Stream.run(Stream.tapError(stream, error => Deferred.fail(inputFailure, error)), sink));
++  const readers = new WeakMap();
+   const setupAdditionalFds = Effect.fnUntraced(function* (command, childProcess, additionalFds, inputFailure) {
+     if (additionalFds.length === 0) {
+       return {
+@@ -238,6 +244,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+         });
+         nodeStream.on("error", cause => passThrough.destroy(cause));
+         nodeStream.pipe(passThrough);
++        readers.set(nodeStream, passThrough);
+         const onError = cause => toPlatformError(`fromReadable(fd${fd})`, toError(cause), command);
+         stream = Stream.suspend(() => error === undefined ? NodeStream.fromReadable({
+           evaluate: () => passThrough,
+@@ -306,6 +313,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+       const passThrough = new PassThrough();
+       childProcess.stdout.on("error", error => passThrough.destroy(error));
+       childProcess.stdout.pipe(passThrough);
++      readers.set(childProcess.stdout, passThrough);
+       return NodeStream.fromReadable({
+         evaluate: () => passThrough,
+         onError: error => toPlatformError("fromReadable(stdout)", toError(error), command)
+@@ -315,6 +323,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+       const passThrough = new PassThrough();
+       childProcess.stderr.on("error", error => passThrough.destroy(error));
+       childProcess.stderr.pipe(passThrough);
++      readers.set(childProcess.stderr, passThrough);
+       return NodeStream.fromReadable({
+         evaluate: () => passThrough,
+         onError: error => toPlatformError("fromReadable(stderr)", toError(error), command)
+@@ -335,7 +344,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
    };
    const spawn = (command, spawnOptions) => Effect.callback(resume => {
      const deferred = Deferred.makeUnsafe();
@@ -82,7 +122,7 @@ index 08d50b1..d101241 100644
      handle.on("error", error => {
        // Node copies the arguments into `spawnargs`.
        if (command.args.some(Redacted.isRedacted)) {
-@@ -358,7 +362,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -358,7 +367,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
    const killProcessGroup = (command, childProcess, signal) => {
      if (globalThis.process.platform === "win32") {
        return Effect.callback(resume => {
@@ -91,7 +131,36 @@ index 08d50b1..d101241 100644
            if (error) {
              resume(Effect.fail(toPlatformError("kill", toError(error), command)));
            } else {
-@@ -377,7 +381,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -374,10 +383,36 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+       catch: error => toPlatformError("kill", toError(error), command)
+     });
+   };
++  // A process that outlives the one spawned holds the pipes it inherited until it ends, so they reach
++  // EOF only then. Once the spawned process's scope closes, a pipe keeps this process's event loop
++  // running only while a reader reads what it feeds: a reader that outlives the scope still gets all
++  // of that output, and a pipe nobody reads no longer keeps this process from exiting.
++  const releaseStdio = childProcess => {
++    for (const stream of childProcess.stdio) {
++      if (!(stream instanceof Socket)) continue;
++      const reader = readers.get(stream);
++      const hold = reading => {
++        if (stream.destroyed) return;
++        if (reading) stream.ref();else stream.unref();
++      };
++      if (reader === undefined) {
++        hold(false);
++        continue;
++      }
++      // A reader reads through a "readable" listener, which it removes when it stops.
++      reader.on("newListener", event => {
++        if (event === "readable") hold(true);
++      });
++      reader.on("removeListener", event => {
++        if (event === "readable") hold(reader.listenerCount("readable") > 0);
++      });
++      hold(reader.listenerCount("readable") > 0);
++    }
++  };
    const killProcessGroupOnExit = (childProcess, signal) => {
      if (globalThis.process.platform === "win32") {
        // ignore errors during best-effort cleanup
@@ -100,7 +169,23 @@ index 08d50b1..d101241 100644
        return;
      }
      try {
-@@ -665,7 +669,8 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -497,12 +532,15 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+               } else if (isReferenced && process.platform !== "win32" && cmd.options.detached !== false) {
+                 yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options));
+               }
++              releaseStdio(childProcess);
+               return;
+             }
+             if (!isReferenced) {
++              releaseStdio(childProcess);
+               return;
+             }
+             yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options));
++            releaseStdio(childProcess);
+           }));
+           const pid = ProcessId(childProcess.pid);
+           // A non-detached child leaves no process group of its own to clean up.
+@@ -665,7 +703,8 @@ const make = /*#__PURE__*/Effect.gen(function* () {
   * @category layers
   * @since 4.0.0
   */

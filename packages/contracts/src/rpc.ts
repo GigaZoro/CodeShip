@@ -75,7 +75,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -404,6 +404,8 @@ import {
   UsageLimitSourceError,
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
+  ProviderCreditGrantsResult,
+  ProviderRetryUsageLimitResult,
   ProviderUsageHoldsResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
@@ -539,6 +541,7 @@ export const WS_METHODS = {
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerRetryUsageLimit: "provider.retryUsageLimit",
   providerUsageHolds: "provider.usageHolds",
+  providerCreditGrants: "provider.creditGrants",
   providerAuthComplete: "provider.auth.complete",
   chatGptReconnectProfile: "provider.chatgpt.reconnect-profile",
   chatGptImportProfile: "provider.chatgpt.import-profile",
@@ -844,14 +847,24 @@ const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeReset
 });
 
 const WsProviderRetryUsageLimitRpc = Rpc.make(WS_METHODS.providerRetryUsageLimit, {
-  payload: Schema.Struct({ instanceId: ProviderInstanceId }),
-  success: Schema.Struct({}),
+  payload: Schema.Struct({
+    instanceId: ProviderInstanceId,
+    /** The chat Try again was chosen in; the report judges prepaid credits for its work. */
+    threadId: Schema.optional(ThreadId),
+  }),
+  success: ProviderRetryUsageLimitResult,
   error: Schema.Union([ProviderSetupError, EnvironmentAuthorizationError]),
 });
 
 const WsProviderUsageHoldsRpc = Rpc.make(WS_METHODS.providerUsageHolds, {
   payload: Schema.Struct({}),
   success: ProviderUsageHoldsResult,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsProviderCreditGrantsRpc = Rpc.make(WS_METHODS.providerCreditGrants, {
+  payload: Schema.Struct({}),
+  success: ProviderCreditGrantsResult,
   error: EnvironmentAuthorizationError,
 });
 
@@ -2568,6 +2581,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderConsumeResetCreditRpc,
   WsProviderRetryUsageLimitRpc,
   WsProviderUsageHoldsRpc,
+  WsProviderCreditGrantsRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthCompleteRpc,
   WsChatGptReconnectProfileRpc,

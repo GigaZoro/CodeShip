@@ -60,7 +60,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as CpuAdmission from "../resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as CommandRunner from "./CommandRunner.ts";
-import { ENDED_IDENTITY, identityWindow } from "./processIdentity.ts";
+import { ENDED_IDENTITY, identityWindow, windowsStopRoot } from "./processIdentity.ts";
 
 class ProcessCleanupError extends Schema.TaggedError<ProcessCleanupError>()("ProcessCleanupError", {
   cause: Schema.Defect(),
@@ -519,22 +519,41 @@ const liveChat = (name: string) =>
     const parent = yield* seedLiveParent({ name, driver, modelSelection, worktreePath: workspace });
     const sql = yield* SqlClient.SqlClient;
     yield* Effect.addFinalizer(() =>
-      sql<{ readonly pid: number | null; readonly directory: string }>`
-        SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
+      sql<{
+        readonly pid: number | null;
+        readonly directory: string;
+        readonly started_at: string;
+        readonly ended_at: string | null;
+        readonly process_identity: string | null;
+      }>`
+        SELECT pid, directory, started_at, ended_at, process_identity FROM command_runs
+        WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
             Effect.try({
-              try: () =>
-                signalProcessGroup(
-                  // A failed test can leave a row without its pid; the wrapper's pid file still names it.
-                  row.pid ??
-                    Number.parseInt(
-                      NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
-                      10,
+              try: () => {
+                const pidFile = NodePath.join(row.directory, "pid");
+                // A failed test can leave a row without its pid; the wrapper's pid file still names it.
+                const pid = row.pid ?? Number.parseInt(NodeFS.readFileSync(pidFile, "utf8"), 10);
+                // Windows has no process groups, so what descends from a wrapper still running stops,
+                // from the root the server's own stop takes: a later holder of its pid is spared.
+                if (!isWindowsHost) signalProcessGroup(pid, "SIGKILL");
+                else if (row.ended_at === null)
+                  NodeChildProcess.execFileSync(
+                    "powershell.exe",
+                    windowsStopTreeArgs(
+                      windowsStopRoot({
+                        pid,
+                        identity: row.process_identity,
+                        recordedAt: Date.parse(row.started_at),
+                        namedAt: NodeFS.statSync(pidFile, { throwIfNoEntry: false })?.mtimeMs,
+                        ended: "running",
+                      }),
                     ),
-                  "SIGKILL",
-                ),
+                    { timeout: 30_000, stdio: "ignore" },
+                  );
+              },
               catch: (cause) => new ProcessCleanupError({ cause }),
             }).pipe(Effect.ignore),
           ),
@@ -793,63 +812,70 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         }),
     );
-
-    it.effect.each([
-      ["/t3-agent-tools", true, "command-agent-shell"],
-      ["", true, "command-agent-shell-empty-path"],
-      ["/t3-agent-tools", false, "command-agent-shell-no-host-path"],
-      ["", false, "command-agent-shell-empty-path-no-host-path"],
-    ] as const)(
-      "gives a command what its agent's own shell commands get, shell options only to the command, PATH %j, host PATH %s",
-      ([PATH, hostHasPath, name]) =>
-        Effect.gen(function* () {
-          const { PATH: _hostPath, ...hostWithoutPath } = process.env;
-          const chat = yield* liveChat(name);
-          NodeFS.mkdirSync(NodePath.join(chat.workspace, "sub"));
-          const started = yield* withServer((runner) =>
-            runner
-              .run(callerOf(chat.threadId), {
-                command:
-                  'printf "%s %s %s %s\\n%s\\n%s\\n" "$AGENT_SETTING" "$T3CODE_THREAD_ID" "$HOST_KEPT" "${HOST_REMOVED-removed}" "$PATH" "$SHELLOPTS"; exit 7',
-                cwd: "sub",
-              })
-              .pipe(Effect.tap(() => nextWake(chat.threadId))),
-          ).pipe(
-            Effect.provide(
-              providerShell((cwd, { HOST_REMOVED: _removed, ...inherited }) =>
-                // A PATH without the wrapper's own tools, which it still needs to record the end.
-                // sh reads no startup files that could add to it.
-                Effect.succeed({
-                  ...inherited,
-                  AGENT_SETTING: `set for ${cwd}`,
-                  PATH,
-                  SHELL: "/bin/sh",
-                  // bash as /bin/sh takes this as its own option; dash ignores it.
-                  SHELLOPTS: "errexit",
-                }),
-              ),
-            ),
-            Effect.provideService(HostProcess.Environment, {
-              ...(hostHasPath ? process.env : hostWithoutPath),
-              HOST_KEPT: "kept",
-              HOST_REMOVED: "host",
-            }),
-          );
-          const [seen, commandPath, shellOptions] = NodeFS.readFileSync(
-            started.logPath,
-            "utf8",
-          ).split("\n");
-          // Read for the chat's folder, as the agent's own settings were, though it ran below it.
-          assert.equal(started.shell, "sh");
-          assert.equal(seen, `set for ${chat.workspace} ${chat.threadId} kept removed`);
-          assert.equal(commandPath, PATH);
-          assert.match(shellOptions ?? "", /errexit/);
-          const task = yield* taskOf(chat.threadId, started.taskId);
-          assert.equal(task?.status, "failed");
-          assert.match(task?.result ?? "", /^Exited with code 7 after /);
-        }),
-    );
   });
+
+  it.effect.each([
+    ["/t3-agent-tools", true, "command-agent-shell"],
+    ["", true, "command-agent-shell-empty-path"],
+    ["/t3-agent-tools", false, "command-agent-shell-no-host-path"],
+    ["", false, "command-agent-shell-empty-path-no-host-path"],
+  ] as const)(
+    "gives a command what its agent's own shell commands get, shell options only to the command, PATH %j, host PATH %s",
+    ([PATH, hostHasPath, name]) =>
+      Effect.gen(function* () {
+        // Windows names ignore case, so its host PATH may be spelled Path.
+        const hostWithoutPath = Object.fromEntries(
+          Object.entries(process.env).filter(([key]) =>
+            isWindowsHost ? key.toLowerCase() !== "path" : key !== "PATH",
+          ),
+        );
+        const chat = yield* liveChat(name);
+        NodeFS.mkdirSync(NodePath.join(chat.workspace, "sub"));
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), {
+              // The command runs in the host's shell: PowerShell on Windows, sh elsewhere.
+              command: isWindowsHost
+                ? '$removed = if (Test-Path Env:HOST_REMOVED) { $env:HOST_REMOVED } else { "removed" }; [Console]::WriteLine(($env:AGENT_SETTING, $env:T3CODE_THREAD_ID, $env:HOST_KEPT, $removed -join " ")); [Console]::WriteLine($env:PATH); [Console]::WriteLine($env:SHELLOPTS); exit 7'
+                : 'printf "%s %s %s %s\\n%s\\n%s\\n" "$AGENT_SETTING" "$T3CODE_THREAD_ID" "$HOST_KEPT" "${HOST_REMOVED-removed}" "$PATH" "$SHELLOPTS"; exit 7',
+              cwd: "sub",
+            })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        ).pipe(
+          Effect.provide(
+            providerShell((cwd, { HOST_REMOVED: _removed, ...inherited }) =>
+              // A PATH without the wrapper's own tools, which it still needs to record the end.
+              // Neither sh nor PowerShell (-NoProfile) reads startup files that could add to it.
+              Effect.succeed({
+                ...inherited,
+                AGENT_SETTING: `set for ${cwd}`,
+                PATH,
+                SHELL: "/bin/sh",
+                // bash as /bin/sh takes this as its own option; dash ignores it.
+                SHELLOPTS: "errexit",
+              }),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, {
+            ...(hostHasPath ? process.env : hostWithoutPath),
+            HOST_KEPT: "kept",
+            HOST_REMOVED: "host",
+          }),
+        );
+        const [seen, commandPath, shellOptions] = NodeFS.readFileSync(
+          started.logPath,
+          "utf8",
+        ).split(/\r?\n/);
+        // Read for the chat's folder, as the agent's own settings were, though it ran below it.
+        assert.equal(started.shell, isWindowsHost ? "powershell" : "sh");
+        assert.equal(seen, `set for ${chat.workspace} ${chat.threadId} kept removed`);
+        assert.equal(commandPath, PATH);
+        assert.match(shellOptions ?? "", /errexit/);
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "failed");
+        assert.match(task?.result ?? "", /^Exited with code 7 after /);
+      }),
+  );
 
   it.effect(
     "starts a Windows command from a hidden wrapper, with the host environment under its agent's in Unicode, each name once, writing no value and reading none to start",
@@ -916,6 +942,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const runPath = /-File "(.+run\.ps1)"/.exec(launcherScript)?.[1] ?? "";
         // The wrapper reads no variable, so no setting can move the cmd or PowerShell it starts.
         assert.notMatch(NodeFS.readFileSync(runPath, "utf8"), /\$env:/i);
+        // It works in its own folder and gives the command its cwd ("a Windows command's folder").
+        assert.include(launcherScript, `CurrentDirectory = '${NodePath.dirname(runPath)}'`);
+        assert.include(
+          NodeFS.readFileSync(runPath, "utf8"),
+          `$start.WorkingDirectory = '${chat.workspace}'`,
+        );
         const scriptPath = NodePath.join(NodePath.dirname(runPath), "command.ps1");
         for (const file of [runPath, scriptPath]) {
           assert.notInclude(NodeFS.readFileSync(file, "utf8"), "from settings");
@@ -2279,6 +2311,30 @@ describe.runIf(isWindowsHost)("Windows only", () => {
     );
   });
 
+  it.layer(layerTest, { excludeTestServices: true })("a Windows command's folder", (it) => {
+    // An agent may remove a worktree as soon as its command ends, and Windows refuses to remove a
+    // folder some process works in, as the wrapper did while it outlived the command.
+    it.effect("can be removed as soon as the command's end is delivered", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-win-folder-freed");
+        // The wrapper names the folder, which Windows PowerShell must not read in the ANSI code page.
+        const name = "sub-café-日本";
+        const folder = NodePath.join(chat.workspace, name);
+        NodeFS.mkdirSync(folder);
+        yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), {
+              command: "Set-Content -LiteralPath ran -Value ok",
+              cwd: name,
+            })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        );
+        assert.strictEqual(NodeFS.readFileSync(NodePath.join(folder, "ran"), "utf8").trim(), "ok");
+        NodeFS.rmSync(folder, { recursive: true });
+      }),
+    );
+  });
+
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's bash", (it) => {
     const system = NodePath.join(process.env.SystemRoot ?? "C:\\Windows", "System32");
     const powershellFolder = NodePath.join(system, "WindowsPowerShell", "v1.0");
@@ -3082,7 +3138,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command waiting for memory
   );
 });
 
-const SATURATION: CpuAdmission.CpuSaturation = { busyShare: 0.99, limit: 0.95, cores: 12 };
+const SATURATION: CpuAdmission.CpuSaturation = {
+  busyShare: 0.99,
+  nicedShare: 0,
+  limit: 0.95,
+  cores: 12,
+};
 
 /** CPUs saturated until `clear`; each read is offered to `reads`. */
 const busyCpu = Effect.gen(function* () {

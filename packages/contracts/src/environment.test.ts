@@ -14,6 +14,15 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("advertises quota-aware Auto independently of legacy Auto support", () => {
+    const capabilities = { ...descriptor.capabilities, autoMode: true };
+    expect(decodeDescriptor({ ...descriptor, capabilities }).capabilities).toEqual(capabilities);
+    expect(
+      decodeDescriptor({ ...descriptor, capabilities: { ...capabilities, quotaAwareAuto: true } })
+        .capabilities,
+    ).toEqual({ ...capabilities, quotaAwareAuto: true });
+  });
+
   it("decodes old, recognized and future manual installation descriptors", () => {
     expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
     for (const installation of [

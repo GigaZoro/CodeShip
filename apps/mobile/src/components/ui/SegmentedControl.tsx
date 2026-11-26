@@ -17,6 +17,7 @@ const NativeSegmentedControl = requireNativeView<
     textColor: string;
     mutedColor: string;
     appearance: string;
+    enabled: boolean;
     onSelectionChange: (event: NativeSyntheticEvent<{ index: number }>) => void;
   }
 >("T3NativeControls", "SegmentedControl");
@@ -44,6 +45,7 @@ export function SegmentedControl<Value extends string | number>(
         textColor={selectedTextColor}
         mutedColor={mutedColor}
         appearance={colorScheme}
+        enabled={props.disabled !== true}
         onSelectionChange={({ nativeEvent }) => {
           const option = props.options[nativeEvent.index];
           if (option) props.onSelect(option.value);

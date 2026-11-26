@@ -265,6 +265,7 @@ export const CursorDriver: ProviderDriver<
 
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CursorSettings>>({
+      readsUsageOnRefresh: true,
       resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
       getSettings: snapshotSettings.getSettings,
       streamSettings: snapshotSettings.streamSettings,

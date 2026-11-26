@@ -13,8 +13,11 @@ import {
 } from "./ThreadGitControls";
 import type { ThreadPinAction } from "./useThreadPinAction";
 import { t } from "../../lib/i18n";
+import { useThreadPreferenceMenu } from "./useThreadPreferenceMenu";
 
 export function ThreadHeader(props: {
+  readonly thread?: Parameters<typeof useThreadPreferenceMenu>[0];
+  readonly onOpenStarred?: () => void;
   readonly title: string;
   readonly subtitle: string;
   readonly gitControls: ThreadGitControlsProps;
@@ -50,7 +53,33 @@ export function ThreadHeader(props: {
       onPress: props.pin.onToggle,
     });
   }
+  if (props.onOpenStarred) {
+    actions.push({
+      accessibilityLabel: t("Starred messages"),
+      icon: "star.fill",
+      onPress: props.onOpenStarred,
+    });
+  }
+  const preferences = useThreadPreferenceMenu(props.thread);
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
+  if (preferences.items.length > 0) {
+    menus.push({
+      title: t("Thread preferences"),
+      icon: "ellipsis.circle",
+      items: preferences.items.map((item) => ({
+        id: item.id,
+        title: item.label,
+        items: item.children.map((child) => ({
+          id: child.id,
+          title: child.label,
+          selected: child.checked,
+          onPress: () => {
+            preferences.select(child.id);
+          },
+        })),
+      })),
+    });
+  }
 
   return (
     <AppBar

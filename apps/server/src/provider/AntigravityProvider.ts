@@ -9,11 +9,12 @@ import {
   type ServerProviderSlashCommand,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
+import { antigravityModelFamily, createModelCapabilities } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FiberHandle from "effect/FiberHandle";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -60,14 +61,13 @@ type ThinkingConfig = NonNullable<ReturnType<typeof antigravityThinkingConfig>>;
 /** Thinking options each model reported when selected; `null` means it has none. */
 export type AntigravityThinkingLevels = ReadonlyMap<string, ThinkingConfig | null>;
 
-function thinkingCapabilities(config: ThinkingConfig | null | undefined, observed: boolean) {
+function thinkingCapabilities(config: ThinkingConfig | null | undefined) {
+  if (config === undefined) return null;
   const descriptor = config
     ? acpProviderOptionDescriptors({ configOptions: [config], modeState: undefined })[0]
     : undefined;
   if (descriptor?.type !== "select") return EMPTY_MODEL_CAPABILITIES;
-  // Another model's selected level is not this model's default.
-  const { currentValue: _currentValue, ...unobserved } = descriptor;
-  return createModelCapabilities({ optionDescriptors: [observed ? descriptor : unobserved] });
+  return createModelCapabilities({ optionDescriptors: [descriptor] });
 }
 
 export function buildAntigravityModelsFromSession(
@@ -96,6 +96,10 @@ export function buildAntigravityModelsFromSession(
     if (!entry.value.trim() || seen.has(entry.value)) return [];
     seen.add(entry.value);
     const baseName = entry.name.trim() ? entry.name : entry.value;
+    const nativeModelFamily =
+      antigravityModelFamily(entry.value) === undefined
+        ? antigravityModelFamily(baseName)
+        : undefined;
     const name = names.has(baseName) ? `${baseName} (${entry.value})` : baseName;
     names.add(baseName);
     const observed =
@@ -104,14 +108,12 @@ export function buildAntigravityModelsFromSession(
       {
         slug: entry.value,
         name,
+        ...(nativeModelFamily === undefined ? {} : { nativeModelFamily }),
         isCustom: false,
         ...(entry.value === currentValue
           ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] }
           : {}),
-        capabilities:
-          observed === undefined
-            ? thinkingCapabilities(currentThinking, false)
-            : thinkingCapabilities(observed, true),
+        capabilities: thinkingCapabilities(observed),
       },
     ];
   });
@@ -175,6 +177,13 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
 ) {
   const usesCredentials =
     options.auth?.type === "gemini-api-key" || options.auth?.type === "agent-platform";
+  const authType = options.auth?.type ?? "oauth-personal";
+  const funding =
+    authType === "oauth-personal" || authType === "oauth-business"
+      ? "included"
+      : usesCredentials
+        ? "metered"
+        : "unknown";
   const signInMessage = usesCredentials
     ? `Connect with ${options.auth.label} to use Antigravity and load models.`
     : SIGN_IN_MESSAGE;
@@ -234,37 +243,40 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   const usageRead = yield* FiberHandle.make();
   const republish = yield* Deferred.make<Effect.Effect<ServerProvider>>();
   const scope = yield* Effect.scope;
-  const refreshUsage = Effect.fn("AntigravityProvider.refreshUsage")(function* () {
+  const startUsageRead = Effect.fn("AntigravityProvider.startUsageRead")(function* () {
     if (!options.probeUsage || (yield* PublishingUsage)) return;
-    yield* FiberHandle.run(
-      usageRead,
-      options.probeUsage.pipe(
-        Effect.flatMap((probed) =>
-          SubscriptionRef.update(metadata, (state) => ({
-            ...state,
-            draft: {
-              ...state.draft,
-              usageLimits: resolveUsageLimitsAfterProbe({
-                published: state.draft.usageLimits,
-                probed,
-              }),
-            },
-          })),
-        ),
-        // Enrichment cannot change published limits; a health check publishes them.
-        Effect.andThen(
-          Deferred.await(republish).pipe(
-            Effect.flatten,
-            Effect.provideService(PublishingUsage, true),
-            Effect.ignoreCause({ log: true }),
-            Effect.forkIn(scope),
-          ),
+    const probe = options.probeUsage.pipe(
+      Effect.flatMap((probed) =>
+        SubscriptionRef.update(metadata, (state) => ({
+          ...state,
+          draft: {
+            ...state.draft,
+            usageLimits: resolveUsageLimitsAfterProbe({
+              published: state.draft.usageLimits,
+              probed,
+            }),
+          },
+        })),
+      ),
+      // Enrichment cannot change published limits; a health check publishes them.
+      Effect.andThen(
+        Deferred.await(republish).pipe(
+          Effect.flatten,
+          Effect.provideService(PublishingUsage, true),
+          Effect.ignoreCause({ log: true }),
+          Effect.forkIn(scope),
         ),
       ),
-      // Store the fiber before it runs, so a sign-out during the read can interrupt it.
-      { onlyIfMissing: true, startImmediately: false },
+    );
+    return yield* Effect.suspend(() =>
+      Option.match(FiberHandle.getUnsafe(usageRead), {
+        onSome: Effect.succeed,
+        // Store the fiber before it runs, so a sign-out during the read can interrupt it.
+        onNone: () => FiberHandle.run(usageRead, probe, { startImmediately: false }),
+      }),
     );
   });
+  const refreshUsage = startUsageRead().pipe(Effect.asVoid);
   const resetUsage = Effect.gen(function* () {
     yield* FiberHandle.clear(usageRead);
     if (options.clearUsage) yield* options.clearUsage;
@@ -337,7 +349,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         },
       } satisfies AntigravityProviderState;
     });
-    if (initialized !== undefined) yield* refreshUsage();
+    if (initialized !== undefined) yield* refreshUsage;
     return yield* options.stampIdentity(next.draft);
   });
 
@@ -391,8 +403,9 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           version: started.initializeResult.agentInfo?.version || draft.version,
           auth: {
             status: "authenticated",
-            type: options.auth?.type ?? "oauth-personal",
+            type: authType,
             label: options.auth?.label ?? "Google account",
+            funding,
           },
           checkedAt: updatedAt,
           models: buildAntigravityModelsFromSession(started.sessionSetupResult, thinkingLevels),
@@ -413,7 +426,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         },
       } satisfies AntigravityProviderState;
     });
-    if (!before.draft.usageLimits || before.draft.usageLimits.unavailable) yield* refreshUsage();
+    if (!before.draft.usageLimits || before.draft.usageLimits.unavailable) yield* refreshUsage;
   });
 
   const onConfigOptionsUpdated = Effect.fn("AntigravityProvider.onConfigOptionsUpdated")(function* (
@@ -522,7 +535,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   });
 
   return {
-    snapshot: { ...managed, getSnapshot },
+    snapshot: {
+      ...managed,
+      getSnapshot,
+      refreshUsage: startUsageRead().pipe(
+        Effect.flatMap((fiber) => (fiber ? Fiber.await(fiber) : Effect.void)),
+        Effect.asVoid,
+      ),
+    },
     onSessionStarted,
     onConfigOptionsUpdated,
     onAvailableCommands,

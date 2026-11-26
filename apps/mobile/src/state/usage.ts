@@ -36,6 +36,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
 
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
+      const usageSettingsKey = get(serverEnvironment.usageScanSettingsKeyAtom(environmentId));
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
       const session = AsyncResult.getOrElse(sessionResult, () => null);
       const access = resolveUsageAccess({
@@ -53,6 +54,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
           ...access,
           modelFilter,
           summary: null,
+          usageSettingsKey,
         });
         continue;
       }
@@ -72,6 +74,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
         canReadDiagnostics: true,
         error: result._tag === "Failure" ? t("This environment could not report usage.") : null,
         summary,
+        usageSettingsKey,
       });
     }
     return statuses;

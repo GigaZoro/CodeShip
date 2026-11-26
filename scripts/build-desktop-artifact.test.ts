@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
+import { verifyCodexMetadataInstallation } from "@t3tools/shared/codexMetadataInventory";
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
@@ -55,6 +56,7 @@ import {
   resolveMergedStageDependencies,
   resolveBuildOptions,
   stageWslRuntimeArchive,
+  stageCodexMetadata,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
   LinuxBrowserSecretHostError,
@@ -2306,6 +2308,66 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ["t3-1.2.3-linux-x64/t3", "t3-1.2.3-linux-x64/client"],
     );
   });
+
+  it.effect("records the metadata package separately so a damaged install can be repaired", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const stage = path.join(root, "resources");
+      const source = path.join(root, "runtime");
+      yield* fs.makeDirectory(stage);
+      yield* fs.makeDirectory(path.join(source, "bin"), { recursive: true });
+      const cli = path.join(source, "bin", "codex");
+      yield* fs.writeFileString(cli, "codex");
+      yield* fs.chmod(cli, 0o755);
+      yield* fs.writeFileString(path.join(source, "codex-package.json"), "{}");
+      const inventory = path.join(stage, "codex-metadata.files");
+      yield* stageCodexMetadata(stage).pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      assert.isFalse(yield* fs.exists(inventory));
+      yield* stageCodexMetadata(stage).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { T3CODE_BUILD_CODEX_METADATA_DIR: source } }),
+          ),
+        ),
+      );
+      const inventoryText = yield* fs.readFileString(inventory);
+      const kind =
+        (yield* fs.stat(path.join(stage, "codex-metadata/bin/codex"))).mode & 0o111 ? "x" : "f";
+      assert.include(inventoryText, `${kind} ${NodeCrypto.hash("sha256", "codex")} bin/codex\n`);
+      assert.include(inventoryText, `${NodeCrypto.hash("sha256", "{}")} codex-package.json\n`);
+      const expected = NodeCrypto.hash("sha256", inventoryText);
+      const verify = () =>
+        Effect.tryPromise(() => verifyCodexMetadataInstallation(stage, expected));
+      yield* verify();
+      yield* fs.remove(inventory);
+      assert.isTrue(yield* verify().pipe(Effect.isFailure), "required inventory is missing");
+      yield* fs.makeDirectory(inventory);
+      assert.isTrue(yield* verify().pipe(Effect.isFailure), "required inventory is not a file");
+      yield* fs.remove(inventory, { recursive: true });
+      yield* fs.writeFileString(inventory, inventoryText);
+      yield* verify();
+      const stagedCli = path.join(stage, "codex-metadata/bin/codex");
+      const owner = Option.getOrUndefined((yield* fs.stat(stagedCli)).uid);
+      if ((yield* HostProcess.Platform) !== "win32" && owner !== undefined && owner !== 0) {
+        yield* fs.chmod(stagedCli, 0o655);
+        assert.isTrue(
+          yield* verify().pipe(Effect.isFailure),
+          "the owner cannot execute the helper",
+        );
+        yield* fs.chmod(stagedCli, 0o755);
+        yield* verify();
+      }
+      yield* fs.writeFileString(stagedCli, "bad!!");
+      assert.isTrue(yield* verify().pipe(Effect.isFailure));
+      yield* fs.remove(path.join(stage, "codex-metadata"), { recursive: true });
+      yield* fs.remove(inventory);
+      assert.isTrue(yield* verify().pipe(Effect.isFailure));
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("stages the Linux CLI archive verbatim with its SHA-256 sidecar", () =>
     Effect.scoped(

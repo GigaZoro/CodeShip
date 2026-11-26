@@ -40,6 +40,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
       const isConnected = presentation.connection.phase === "connected";
+      const usageSettingsKey = get(serverEnvironment.usageScanSettingsKeyAtom(environmentId));
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
       const session = AsyncResult.getOrElse(sessionResult, () => null);
       const access = resolveUsageAccess({
@@ -57,6 +58,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
           ...access,
           modelFilter,
           summary: null,
+          usageSettingsKey,
         });
         continue;
       }
@@ -81,6 +83,7 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
               })
             : null,
         summary,
+        usageSettingsKey,
       });
     }
     return statuses;

@@ -8,6 +8,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isDarwinHost, isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import * as NetService from "@t3tools/shared/Net";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -28,6 +29,7 @@ import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { captureLauncher, captureLauncherFor, runLauncher } from "./launcherTestHarness.ts";
+import { verifyBundledRuntimeRepair } from "../../../scripts/install.testkit.ts";
 import * as SshAuth from "./auth.ts";
 import { remoteStateKey } from "./command.ts";
 import { SshCommandError, SshPasswordPromptError, SshReadinessError } from "./errors.ts";
@@ -275,6 +277,13 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
+  it.runIf(isDarwinHost || isLinuxHost)(
+    "repairs a damaged same-version SSH runtime from the verified archive",
+    () =>
+      verifyBundledRuntimeRepair((archiveVersion, releaseBaseUrl) =>
+        SshTunnel.buildRemoteT3RunnerScript({ archiveVersion, releaseBaseUrl }),
+      ),
+  );
   it("rejects archive versions that are not a single exact version segment", () => {
     for (const archiveVersion of [
       "../other",

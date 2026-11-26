@@ -291,7 +291,7 @@ const capabilities: OrchestrationV2ProviderCapabilities = {
     nativeItemIds: "strong",
     nativeRequestIds: "strong",
   },
-  runtimePolicy: { enforcement: "client-boundary" },
+  runtimePolicy: { enforcement: "client-boundary", readOnlySandbox: false },
 };
 
 const session = {

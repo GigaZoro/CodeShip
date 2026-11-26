@@ -228,8 +228,13 @@ const make = Effect.gen(function* () {
         yield* lockExclusively(databasePath);
         const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
         yield* onStep("prune-events");
+        const history = yield* ProjectionMaintenance.compactIdleThreadHistory();
         yield* ProjectionMaintenance.pruneToolOutputAfterDays(toolOutputAfterDays);
-        const summary = yield* maintenance.pruneEventStore();
+        const store = yield* maintenance.pruneEventStore();
+        const summary = {
+          ...store,
+          deletedEventCount: store.deletedEventCount + history.deletedEventCount,
+        };
         yield* onStep("vacuum");
         // VACUUM is required to enable incremental auto_vacuum on existing databases.
         yield* sql`PRAGMA auto_vacuum = INCREMENTAL`;

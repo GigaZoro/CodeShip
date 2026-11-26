@@ -12,6 +12,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -110,6 +111,11 @@ export function projectWorkspaceMatchesSnapshot(
 }
 
 const BACKFILL_ATTEMPTS = 5;
+/**
+ * Each restart asks the host about every thread in this window that settled with no pull request.
+ * Older threads keep the answer they got; viewing or linking one asks again.
+ */
+const BACKFILL_WINDOW = Duration.days(1);
 
 interface RefreshRequest {
   readonly threadId: ThreadId | null;
@@ -164,10 +170,12 @@ export const make = Effect.gen(function* () {
     const projects = new Map(projectShells.map((project) => [project.id, project]));
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     if (request.backfill) {
+      const backfillSince = DateTime.subtractDuration(yield* DateTime.now, BACKFILL_WINDOW);
       for (const thread of snapshotThreads) {
         if (
           (thread.settledOverride === "settled" || thread.settledAt !== null) &&
-          thread.branchPullRequest == null
+          thread.branchPullRequest == null &&
+          DateTime.isGreaterThanOrEqualTo(thread.settledAt ?? thread.updatedAt, backfillSince)
         ) {
           pendingBackfill.set(thread.id, BACKFILL_ATTEMPTS);
         }

@@ -111,6 +111,10 @@
       "types": "./src/scheduledTaskDescription.ts",
       "default": "./src/scheduledTaskDescription.ts"
     },
+    "./guest-share-options": {
+      "types": "./src/guestShareOptions.ts",
+      "default": "./src/guestShareOptions.ts"
+    },
     "./scheduled-task-pins": {
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"
@@ -130,6 +134,10 @@
     "./scheduled-task-groups": {
       "types": "./src/scheduledTaskGroups.ts",
       "default": "./src/scheduledTaskGroups.ts"
+    },
+    "./thread-preferences": {
+      "types": "./src/threadPreferences.ts",
+      "default": "./src/threadPreferences.ts"
     },
     "./thread-folders": {
       "types": "./src/threadFolders.ts",

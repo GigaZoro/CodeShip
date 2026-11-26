@@ -62,6 +62,7 @@ vi.mock("./server", async () => {
     serverEnvironment: {
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
+      usageScanSettingsKeyAtom: () => Atom.make("settings"),
     },
   };
 });
@@ -140,6 +141,7 @@ function setup() {
     canReadDiagnostics: true,
     error: null,
     summary,
+    usageSettingsKey: "prices-a",
   };
   state.environments = [answered];
   return { window, answered, summary };
@@ -468,3 +470,22 @@ it("renders web Usage with a single failed or offline environment", async () => 
   await expect.element(offline.getByText("This environment is not connected.")).toBeVisible();
   await expect.element(offline.getByText("0 tokens", { exact: true })).not.toBeInTheDocument();
 });
+
+it.each([
+  ["complete", {}],
+  ["partial", { partialReason: "scanTimedOut" as const }],
+])(
+  "drops %s figures read under other usage settings while the new ones load",
+  async (_kind, figures) => {
+    const { window, answered } = setup();
+    state.environments = [{ ...answered, summary: { ...answered.summary!, ...figures } }];
+    await using screen = await render(<UsageProbe window={window} />);
+    await expect.element(screen.getByText("day usage: ready")).toBeVisible();
+
+    state.environments = [
+      { ...answered, summary: null, isPending: true, usageSettingsKey: "prices-b" },
+    ];
+    await screen.rerender(<UsageProbe window={window} />);
+    await expect.element(screen.getByText("Loading usage")).toBeVisible();
+  },
+);

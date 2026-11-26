@@ -47,7 +47,9 @@ export const makeCodexLimitsLogin = Effect.fn("makeCodexLimitsLogin")(function* 
   readonly binaryPath: Effect.Effect<string, ProviderSetupError>;
   readonly environment: NodeJS.ProcessEnv;
   /** The ChatGPT account this instance is connected to. */
-  readonly accountEmail: Effect.Effect<string | undefined>;
+  readonly account: Effect.Effect<
+    { readonly email: string | null; readonly workspaceId: string | undefined } | undefined
+  >;
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -101,9 +103,14 @@ export const makeCodexLimitsLogin = Effect.fn("makeCodexLimitsLogin")(function* 
       Effect.gen(function* () {
         const client = yield* openClient;
         const email = yield* chatGptEmail(client);
-        if (!sameCodexAccountEmail(email, yield* options.accountEmail)) return undefined;
+        const expected = yield* options.account;
+        if (!sameCodexAccountEmail(email, expected?.email)) return undefined;
         return yield* client.request("account/rateLimits/read", null).pipe(
-          Effect.map((response) => codexRateLimitsToLimits({ read: response, checkedAt })),
+          Effect.map((response) =>
+            expected?.workspaceId && response.accountId?.trim() === expected.workspaceId
+              ? codexRateLimitsToLimits({ read: response, checkedAt })
+              : undefined,
+          ),
           Effect.catch((error) =>
             Effect.succeed(probeFailed(codexRateLimitsFailureMessage(error))),
           ),
@@ -126,7 +133,7 @@ export const makeCodexLimitsLogin = Effect.fn("makeCodexLimitsLogin")(function* 
     authenticate: Effect.fn("CodexLimitsLogin.authenticate")(function* (_methodId, context) {
       yield* login.authenticate(context);
       // The browser may still be signed in to another ChatGPT account.
-      const expected = yield* options.accountEmail;
+      const expected = (yield* options.account)?.email;
       const email = yield* loginEmail.pipe(
         Effect.mapError((cause) =>
           failure("verify", "Codex could not check which account signed in. Try again.", cause),

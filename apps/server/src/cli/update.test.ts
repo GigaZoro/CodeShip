@@ -35,19 +35,20 @@ import {
   runUpdate,
 } from "./update.ts";
 
-// lsof listing one process, so prune sees a process list in which no runtime is running.
+const processOutput = (code: number, stdout: string): ProcessRunner.ProcessRunOutput => ({
+  code: ChildProcessSpawner.ExitCode(code),
+  stdout,
+  stderr: "",
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+
+// lsof shows one process outside the runtime tree.
 const unrelatedLsof = ProcessRunner.ProcessRunner.of({
-  run: () =>
-    Effect.succeed({
-      stdout: "p1\nftxt\nn/usr/bin/true\n",
-      stderr: "",
-      code: ChildProcessSpawner.ExitCode(0),
-      timedOut: false,
-      stdoutTruncated: false,
-      stderrTruncated: false,
-      stdoutInvalidUtf8: false,
-      stderrInvalidUtf8: false,
-    }),
+  run: () => Effect.succeed(processOutput(0, "p1\nftxt\nn/usr/bin/true\n")),
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -200,6 +201,90 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
 });
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
+  it.effect.each([
+    { code: 0, previous: false },
+    { code: 78, previous: false },
+    { code: 0, previous: true },
+    { code: 78, previous: true },
+  ])(
+    "checks an explicitly requested current CLI (probe exit $code, rollback copy $previous)",
+    ({ code, previous }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        const version = packageJson.version;
+        const target = path.join(baseDir, "runtime", "versions", version);
+        const previousDir = path.join(path.dirname(target), `.${version}.previous`);
+        const initialDir = previous ? previousDir : target;
+        const platform = (yield* HostProcess.Platform) === "win32" ? "win32" : "linux";
+        const entryName = platform === "win32" ? "t3.exe" : "t3";
+        yield* fs.makeDirectory(initialDir, { recursive: true });
+        yield* fs.writeFileString(path.join(initialDir, ".install-complete"), version);
+        yield* fs.writeFileString(path.join(initialDir, entryName), "fixture");
+        const hostRunner = yield* ProcessRunner.make();
+        const probes: string[] = [];
+        const downloads: string[] = [];
+        const runner = ProcessRunner.ProcessRunner.of({
+          run: (command) => {
+            if (command.command === "sh") return hostRunner.run(command);
+            assert.deepStrictEqual(command.args, ["--version"]);
+            assert.equal(command.env?.T3CODE_VERIFY_INSTALL, "1");
+            probes.push(command.command);
+            return Effect.succeed(processOutput(code, `t3 v${version}\n`));
+          },
+        });
+        const result = yield* runUpdate({
+          baseDir,
+          logsDir: baseDir,
+          serverRuntimeStatePath: path.join(baseDir, "state"),
+          channel: undefined,
+          requestedVersion: version,
+          allowDowngrade: false,
+          assumeYes: false,
+        }).pipe(
+          Effect.result,
+          Effect.provide(
+            Layer.mergeAll(
+              ManagedPolicy.layerTest(),
+              Layer.mock(BootService.BootService, {
+                status: Effect.succeed({
+                  supported: true,
+                  installed: false,
+                  current: false,
+                  unitPath: "",
+                  logPath: "",
+                }),
+              }),
+              Layer.succeed(ProcessRunner.ProcessRunner, runner),
+              Layer.succeed(HostProcess.Platform, platform),
+              Layer.succeed(HostProcess.Architecture, "x64"),
+              Layer.succeed(
+                HttpClient.HttpClient,
+                HttpClient.make((request) => {
+                  downloads.push(request.url);
+                  return Effect.succeed(
+                    HttpClientResponse.fromWeb(request, new Response(null, { status: 404 })),
+                  );
+                }),
+              ),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(probes, [path.join(target, entryName)]);
+        assert.isFalse(yield* fs.exists(previousDir));
+        assert.equal(yield* fs.readFileString(path.join(target, entryName)), "fixture");
+        if (code === 78) {
+          assert.lengthOf(downloads, 1);
+          assert.match(downloads[0]!, /SHA256SUMS$/);
+          assert.equal(result._tag, "Failure");
+        } else {
+          assert.deepStrictEqual(downloads, []);
+          assert.equal(result._tag, "Success");
+        }
+      }).pipe(Effect.scoped),
+  );
+
   const fileSymlinkTest = it.effect.skipIf(!symlinksSupported);
 
   fileSymlinkTest("replaces a legacy symlink with a script that execs the new version", () =>

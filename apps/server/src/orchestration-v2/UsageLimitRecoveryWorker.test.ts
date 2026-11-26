@@ -1,3 +1,4 @@
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
@@ -20,17 +21,26 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { NO_CREDIT_ACCESS } from "./PrepaidCreditSpend.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import {
+  evidenceKey,
+  makeDispatchRecorder,
+  recordDispatchFailure,
+  recordStopDecision,
+} from "./StopDecisionEvidence.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import {
   limitFailoverCommand,
@@ -227,6 +237,37 @@ const autoMovedOffFable = {
 };
 
 describe("limitFailoverCommand", () => {
+  it("captures the eligible accounts and exclusions at the stop without account labels", () => {
+    const { evidence, command } = UsageLimitRecoveryWorker.limitFailoverDecision({
+      settings,
+      thread,
+      providers: [
+        ...Array.from({ length: 65 }, (_, i) => provider("off-" + i, { enabled: false })),
+        ...providers,
+      ],
+      recordedLimits: new Map([
+        [
+          ProviderInstanceId.make("claude_limited"),
+          [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }],
+        ],
+      ]),
+      mcpSignInsNeeded: new Map(),
+      nowMs: now,
+    });
+    assert.equal(command?.modelSelection?.instanceId, "claude_first");
+    assert.isTrue(evidence.candidates.some((candidate) => candidate.reason === "eligible"));
+    assert.isTrue(
+      evidence.candidates.some((candidate) => candidate.reason === "account_unavailable"),
+    );
+    assert.isAbove(evidence.omitted, 0);
+    assert.isTrue(
+      evidence.candidates.some(
+        (candidate) => candidate.id === evidence.selected && candidate.reason === "eligible",
+      ),
+    );
+    assert.notInclude(JSON.stringify(evidence), "claude");
+  });
+
   it("continues on the first account of the same driver that can still run", () => {
     assert.deepEqual(failover(), {
       type: "message.dispatch",
@@ -353,6 +394,7 @@ describe("limitRecoveryTarget", () => {
     limitRecovery: { runId, resetAt, autoResume: true },
   };
   const fableHold = { resetAt, refusedAt: "2026-10-29T11:00:00Z", modelScope: "fable" };
+  const autoRouted = ProviderInstanceId.make("claude_b");
   const named: ProjectionStore.ProjectionLimitRecoveryCandidate = {
     ...stopped,
     modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-2" },
@@ -497,6 +539,7 @@ describe("limitRecoveryTarget", () => {
   });
 
   const sweepLayer = (input: {
+    readonly credit?: boolean;
     readonly candidate: ProjectionStore.ProjectionLimitRecoveryCandidate;
     readonly limits: () => ReadonlyMap<
       ProviderInstanceId,
@@ -505,10 +548,16 @@ describe("limitRecoveryTarget", () => {
     readonly dispatched: Queue.Queue<OrchestrationV2ServerCommand>;
     readonly sweeps?: Queue.Queue<number>;
     readonly signedOut?: ReadonlyArray<ProjectionStore.ProjectionSignedOutCandidate>;
+    readonly settings?: Partial<typeof DEFAULT_SERVER_SETTINGS>;
+    readonly providers?: ReadonlyArray<ServerProvider>;
+    readonly creditAccess?: AccountRouting.AccountRouting["Service"]["creditAccess"];
+    /** Thread management refuses the routed account as disabled after recording its route. */
+    readonly refuse?: boolean;
   }) =>
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          SqlitePersistence.layerMemory,
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getSignedOutCandidates: () => Effect.succeed(input.signedOut ?? []),
@@ -523,8 +572,33 @@ describe("limitRecoveryTarget", () => {
             getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
-            dispatch: (command) =>
-              Queue.offer(input.dispatched, command).pipe(Effect.as({} as never)),
+            // Auto routing moves every continuation that names no account to `autoRouted`.
+            dispatch: (command, recorder) => {
+              const routed =
+                command.type === "message.dispatch"
+                  ? (command.modelSelection?.instanceId ?? autoRouted)
+                  : autoRouted;
+              return (
+                recorder === undefined
+                  ? Effect.void
+                  : recorder.route(evidenceKey(routed), {
+                      candidates: [{ id: evidenceKey(routed), reason: "eligible" }],
+                      omitted: 0,
+                    })
+              ).pipe(
+                Effect.andThen(Queue.offer(input.dispatched, command)),
+                Effect.andThen(
+                  input.refuse === true
+                    ? Effect.fail(
+                        new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
+                          projectId: stopped.projectId,
+                          instanceId: routed,
+                        }),
+                      )
+                    : Effect.succeed({} as never),
+                ),
+              );
+            },
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
           Layer.mock(ServerSettings.ServerSettingsService)({
@@ -532,27 +606,125 @@ describe("limitRecoveryTarget", () => {
               ...DEFAULT_SERVER_SETTINGS,
               autoModeProvider: claude,
               autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+              redeemUsageResets: input.credit ?? false,
               autoResumeLimitedThreads: true,
               failoverLimitedThreads: false,
+              ...input.settings,
             }),
             streamChanges: Stream.never,
           }),
           Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([
-              provider("claudeAgent", {
-                models: [
-                  model("claude-fable-5-2", "Claude Fable 5.2"),
-                  model("claude-opus-5-5", "Claude Opus 5.5"),
-                ],
-              }),
-            ]),
+            getProviders: Effect.succeed(
+              input.providers ?? [
+                provider("claudeAgent", {
+                  models: [
+                    model("claude-fable-5-2", "Claude Fable 5.2"),
+                    model("claude-opus-5-5", "Claude Opus 5.5"),
+                  ],
+                }),
+              ],
+            ),
             streamChanges: Stream.never,
           }),
-          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
+          Layer.mock(AccountRouting.AccountRouting)({
+            releaseAllowedHolds: Effect.succeed(false),
+            creditAccess: input.creditAccess ?? (() => Effect.succeed(NO_CREDIT_ACCESS)),
+          }),
         ),
       ),
     );
+
+  it.effect.each(["reset_credit_room", "reset_elapsed", "early_resume_room"] as const)(
+    "records the account and qualification at the %s decision",
+    (reason) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(reason === "reset_elapsed" ? Date.parse(resetAt) : now);
+        const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const layer = sweepLayer({
+          candidate: stopped,
+          dispatched,
+          limits: () => new Map(),
+          credit: reason === "reset_credit_room",
+        });
+        yield* Effect.gen(function* () {
+          yield* Queue.take(dispatched);
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(
+            yield* sql`SELECT snapshot ->> 'reason' AS reason, snapshot ->> 'selected' AS planned,
+            selected_key = snapshot ->> '$.dispatch.selected' AS dispatched, selected_key, outcome
+            FROM usage_stop_decisions WHERE request_key IS NOT NULL`,
+            [
+              {
+                reason,
+                // An elapsed reset cannot know its account until Auto routing picks one.
+                planned: reason === "reset_elapsed" ? null : evidenceKey(claudeAgent),
+                dispatched: 1,
+                // The record holds where the dispatch ran, not where the worker planned it.
+                selected_key: evidenceKey(
+                  reason === "early_resume_room" ? claudeAgent : autoRouted,
+                ),
+                outcome: "planned",
+              },
+            ],
+          );
+        }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
+      }),
+  );
+
+  it.effect("a failed evidence write never fails the continuation it describes", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const input = {
+        source: runId,
+        heldAttempt: undefined,
+        command: null,
+        nowMs: now,
+        evidence: { reason: "reset_elapsed" as const, candidates: [], omitted: 0, selected: null },
+      };
+      const command = limitRecoveryCommand(stopped, true, Date.parse(resetAt));
+      assert(command?.type === "message.dispatch");
+      const routed = makeDispatchRecorder({ ...input, command }, sql);
+      yield* routed.route(null, { candidates: [], omitted: 0 });
+      assert.isDefined(routed.decisionKey());
+      yield* sql`DROP TABLE usage_stop_decisions`;
+      // The continuation already committed; its outcome update must not fail it.
+      yield* routed.committed([]);
+      assert.isUndefined(yield* recordStopDecision(input));
+      yield* recordDispatchFailure("missing", "refused");
+      const unrecorded = makeDispatchRecorder({ ...input, command }, sql);
+      yield* unrecorded.route(null, { candidates: [], omitted: 0 });
+      assert.isUndefined(unrecorded.decisionKey());
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect("records a routed elapsed reset that thread management refuses as refused", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(resetAt));
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const sweeps = yield* Queue.unbounded<number>();
+      const layer = sweepLayer({
+        candidate: stopped,
+        dispatched,
+        sweeps,
+        limits: () => new Map(),
+        refuse: true,
+      });
+      yield* Effect.gen(function* () {
+        yield* Queue.take(sweeps);
+        yield* Queue.take(dispatched);
+        // The next sweep starts only after this one has recorded its outcome.
+        yield* TestClock.adjust("1 minute");
+        yield* Queue.take(sweeps);
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          yield* sql`SELECT selected_key, outcome FROM usage_stop_decisions
+            WHERE snapshot ->> 'reason' = 'reset_elapsed'`,
+          [{ selected_key: evidenceKey(autoRouted), outcome: "refused" }],
+        );
+      }).pipe(Effect.provide(Layer.merge(layer, SqlitePersistence.layerMemory)));
+    }),
+  );
 
   it.effect("a sweep resumes it early with account switching off", () =>
     Effect.gen(function* () {
@@ -613,6 +785,107 @@ describe("limitRecoveryTarget", () => {
     }),
   );
 
+  describe("a thread the user allowed prepaid credits", () => {
+    const codexDriver = ProviderDriverKind.make("codex");
+    const paid = ProviderInstanceId.make("codex_paid");
+    const spare = ProviderInstanceId.make("codex_spare");
+    const gpt = "gpt-5.5";
+    // Codex stopped it mid-turn when the plan ran out; Try again has since lifted that hold.
+    const onPaid: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+      ...named,
+      providerInstanceId: paid,
+      latestRunProviderInstanceId: paid,
+      modelSelection: { instanceId: paid, model: gpt },
+      latestRunModel: gpt,
+    };
+    const planUsedUp = (instanceId: ProviderInstanceId) =>
+      provider(instanceId, {
+        driver: codexDriver,
+        models: [model(gpt, "GPT-5.5")],
+        usageLimits: codexRateLimitsToLimits({
+          checkedAt: "2026-10-29T11:59:00.000Z",
+          read: {
+            rateLimits: {
+              planType: "plus",
+              primary: { usedPercent: 10, windowDurationMins: 300 },
+              secondary: {
+                usedPercent: 100,
+                windowDurationMins: 10_080,
+                resetsAt: Date.parse(resetAt) / 1000,
+              },
+              credits: { balance: "25.00", hasCredits: true, unlimited: false },
+            },
+            ordinaryUsageAllowed: false,
+          },
+        }),
+      });
+    const allowedOnBoth = (failoverLimitedThreads: boolean) => ({
+      failoverLimitedThreads,
+      providerInstanceFailoverOrder: [paid, spare],
+      providerInstances: Object.fromEntries(
+        [paid, spare].map((id) => [
+          id,
+          {
+            driver: codexDriver,
+            config: { spendCredits: { capCredits: 3000, threadIds: [onPaid.id] } },
+          },
+        ]),
+      ),
+    });
+
+    it.effect.each([
+      {
+        name: "resumes it on them where it stopped, before the plan resets",
+        switching: false,
+        providers: [planUsedUp(paid)],
+        limits: new Map(),
+        expected: {
+          commandId: `limit-resume:${onPaid.id}:${runId}:${Date.parse(resetAt)}:legacy:${paid}:${gpt}`,
+          instanceId: paid,
+        },
+      },
+      {
+        name: "moves it to another account it may spend them on while its own stays held",
+        switching: true,
+        providers: [planUsedUp(paid), planUsedUp(spare)],
+        limits: new Map([[paid, [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }]]]),
+        expected: {
+          commandId: `limit-failover:${onPaid.id}:${runId}:${spare}`,
+          instanceId: spare,
+        },
+      },
+    ] as const)("a sweep $name", ({ switching, providers, limits, expected }) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(now);
+        const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const layer = sweepLayer({
+          candidate: onPaid,
+          limits: () => limits,
+          dispatched,
+          settings: allowedOnBoth(switching),
+          providers,
+          // As the ledger reads it: nothing spent yet, and the asking thread is the requester.
+          creditAccess: (requesterThreadId) =>
+            Effect.succeed({
+              spent: new Map([
+                [paid, 0],
+                [spare, 0],
+              ]),
+              requesters: [requesterThreadId],
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const command = yield* Queue.take(dispatched);
+          assert(command.type === "message.dispatch");
+          assert.deepEqual<{ readonly commandId: string; readonly instanceId: string | undefined }>(
+            { commandId: command.commandId, instanceId: command.modelSelection?.instanceId },
+            expected,
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+    );
+  });
+
   it("never resumes a thread moved to another account since its stop", () => {
     const moved = { ...stopped, providerInstanceId: ProviderInstanceId.make("claude_first") };
     assert.isNull(limitRecoveryCommand(moved, true, now, false, recoveryTarget()));
@@ -630,6 +903,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
     const layer = UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          SqlitePersistence.layerMemory,
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getSignedOutCandidates: () => Effect.succeed([]),
@@ -742,6 +1016,7 @@ it.effect.each([
     const layer = UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          SqlitePersistence.layerMemory,
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getSignedOutCandidates: () => Effect.succeed(signedOut ? [signedOutThread] : []),
@@ -831,7 +1106,10 @@ it.effect.each([
             ]),
             streamChanges: Stream.never,
           }),
-          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
+          Layer.mock(AccountRouting.AccountRouting)({
+            releaseAllowedHolds: Effect.succeed(false),
+            creditAccess: () => Effect.succeed(NO_CREDIT_ACCESS),
+          }),
         ),
       ),
     );

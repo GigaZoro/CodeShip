@@ -1095,6 +1095,10 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
         ) {
           return yield* Effect.die(new Error("Acknowledge events missing."));
         }
+        assert.deepEqual(firstAckTask.event.payload.terminalResultObservation, {
+          runId,
+          at: firstAckTask.event.payload.updatedAt,
+        });
         assert.equal(firstAckTask.event.payload.completionDelivery?.state, "acknowledged");
         assert.equal(secondAckTask.event.payload.completionDelivery?.state, "acknowledged");
         assert.deepEqual(

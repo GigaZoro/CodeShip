@@ -16,6 +16,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -41,13 +42,21 @@ const runExecutable = Effect.fn("runExecutable")(function* (
   executable: string,
   args: ReadonlyArray<string>,
   cwd: string,
+  verifyInstall = false,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(
     ChildProcess.make(executable, args, {
       cwd,
       // Isolate system Node and inherited launcher context from the archive smoke check.
-      env: { PATH: "", HOME: cwd, USERPROFILE: cwd, TMPDIR: cwd, TEMP: cwd },
+      env: {
+        PATH: "",
+        HOME: cwd,
+        USERPROFILE: cwd,
+        TMPDIR: cwd,
+        TEMP: cwd,
+        ...(verifyInstall ? { T3CODE_VERIFY_INSTALL: "1" } : {}),
+      },
       extendEnv: false,
     }),
   );
@@ -61,6 +70,7 @@ const runExecutable = Effect.fn("runExecutable")(function* (
 const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   readonly archive: string;
   readonly expectVersion: string;
+  readonly expectCodexMetadata: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -101,6 +111,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   for (const required of [
     executable,
     path.join(contentDir, "client/index.html"),
+    ...(input.expectCodexMetadata ? [path.join(contentDir, CODEX_METADATA_INVENTORY)] : []),
     ...(platform === "linux" ? [bundledLibatomic, `${bundledLibatomic}.LICENSE`] : []),
   ]) {
     if (!(yield* fs.exists(required))) {
@@ -127,7 +138,40 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     }
   }
 
-  const version = yield* runExecutable(executable, ["--version"], contentDir);
+  if (input.expectCodexMetadata) {
+    const cli = path.join(
+      contentDir,
+      "codex-metadata",
+      "bin",
+      platform === "win32" ? "codex.exe" : "codex",
+    );
+    const help = yield* runExecutable(cli, ["exec", "--help"], scratch);
+    if (help.exitCode !== 0 || !/^\s*--codeship-metadata-no-mcp(?:\s|$)/m.test(help.stdout)) {
+      return yield* new CliArchiveSmokeError({
+        step: "running the bundled Codex metadata program",
+        detail: `exit ${String(help.exitCode)}\n${help.stderr}`,
+      });
+    }
+  }
+
+  if (input.expectCodexMetadata) {
+    // A required SEA must still reject the install when both external indicators disappear.
+    const packagePath = path.join(contentDir, "codex-metadata");
+    const inventory = path.join(contentDir, CODEX_METADATA_INVENTORY);
+    yield* fs.rename(packagePath, packagePath + ".test");
+    yield* fs.rename(inventory, inventory + ".test");
+    const damaged = yield* runExecutable(executable, ["--version"], contentDir, true);
+    if (damaged.exitCode !== 78) {
+      return yield* new CliArchiveSmokeError({
+        step: "rejecting a missing required Codex package",
+        detail: `unexpected exit ${damaged.exitCode}`,
+      });
+    }
+    yield* fs.rename(inventory + ".test", inventory);
+    yield* fs.rename(packagePath + ".test", packagePath);
+  }
+
+  const version = yield* runExecutable(executable, ["--version"], contentDir, true);
   if (version.exitCode !== 0 || !version.stdout.includes(input.expectVersion)) {
     return yield* new CliArchiveSmokeError({
       step: "running --version",
@@ -210,6 +254,7 @@ const command = Command.make(
   {
     archive: Flag.String("archive"),
     expectVersion: Flag.String("expect-version"),
+    expectCodexMetadata: Flag.Boolean("expect-codex-metadata"),
   },
   (input) => smokeCliArchive(input).pipe(Effect.scoped),
 ).pipe(Command.withDescription("Extract a CLI archive and run its executable."));

@@ -46,6 +46,8 @@ function canExecuteFile(filePath: string): boolean {
 export interface CommandAvailabilityOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly extendEnv?: boolean;
+  /** Working directory of the child when resolving relative executables and PATH entries. */
+  readonly cwd?: string | undefined;
 }
 
 export type CommandAvailabilityChecker = (
@@ -74,12 +76,14 @@ export type SpawnExecutableResolver = (
   command: string,
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ) => string | undefined;
 
-function resolveSpawnExecutableWithNode(
+export function resolveSpawnExecutableWithNode(
   command: string,
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ): string | undefined {
   const path = platform === "win32" ? NodePath.win32 : NodePath.posix;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
@@ -101,15 +105,20 @@ function resolveSpawnExecutableWithNode(
     }
   };
 
-  if (command.includes("/") || command.includes("\\")) {
-    return candidates.find(isExecutable);
+  if (isCommandPath(command, platform)) {
+    return candidates
+      .map((candidate) => childPath(cwd, candidate, platform, path))
+      .find(isExecutable);
   }
 
-  for (const pathEntry of (readEnvPath(env) ?? "").split(pathDelimiterForPlatform(platform))) {
-    const normalizedPathEntry = stripWrappingQuotes(trimPathEntry(pathEntry, platform));
-    if (normalizedPathEntry.length === 0) continue;
+  for (const directory of commandSearchDirectories(
+    commandSearchPath(env, platform, cwd),
+    platform,
+    cwd,
+    path,
+  )) {
     for (const candidate of candidates) {
-      const candidatePath = path.join(normalizedPathEntry, candidate);
+      const candidatePath = appendCommandName(directory, candidate, platform, path);
       if (isExecutable(candidatePath)) return candidatePath;
     }
   }
@@ -491,6 +500,60 @@ function readEnvPath(env: NodeJS.ProcessEnv): string | undefined {
   return env.PATH ?? env.Path ?? env.path;
 }
 
+function isCommandPath(command: string, platform: NodeJS.Platform): boolean {
+  return command.includes("/") || (platform === "win32" && command.includes("\\"));
+}
+
+function commandSearchPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  cwd?: string,
+): string {
+  return cwd !== undefined && platform !== "win32"
+    ? (env.PATH ?? "/usr/bin:/bin")
+    : (readEnvPath(env) ?? "");
+}
+
+// POSIX traverses symlinks before "..". path.join and path.resolve would change the file opened.
+function appendCommandName(
+  directory: string,
+  name: string,
+  platform: NodeJS.Platform,
+  path: Pick<Path.Path, "join">,
+): string {
+  if (platform === "win32") return path.join(directory, name);
+  return directory.endsWith("/") ? directory + name : directory + "/" + name;
+}
+
+function childPath(
+  directory: string | undefined,
+  name: string,
+  platform: NodeJS.Platform,
+  path: Pick<Path.Path, "resolve" | "join" | "isAbsolute">,
+): string {
+  if (!directory) return name;
+  if (platform === "win32") return path.resolve(directory, name);
+  if (path.isAbsolute(name)) return name;
+  const base = path.isAbsolute(directory) ? directory : process.cwd() + "/" + directory;
+  return name ? appendCommandName(base, name, platform, path) : base;
+}
+
+// With a child cwd, POSIX PATH entries are literal and an empty entry denotes that directory.
+function commandSearchDirectories(
+  value: string,
+  platform: NodeJS.Platform,
+  cwd: string | undefined,
+  path: Pick<Path.Path, "resolve" | "join" | "isAbsolute">,
+): Set<string> {
+  const directories = new Set<string>();
+  const literal = cwd !== undefined && platform !== "win32";
+  for (const raw of value.split(pathDelimiterForPlatform(platform))) {
+    const entry = literal ? raw : stripWrappingQuotes(trimPathEntry(raw, platform));
+    if (entry || literal) directories.add(childPath(cwd, entry, platform, path));
+  }
+  return directories;
+}
+
 function resolvePathEnvironmentVariable(env: NodeJS.ProcessEnv): string {
   return readEnvPath(env) ?? "";
 }
@@ -669,18 +732,10 @@ const findOnPath = Effect.fnUntraced(function* (
   platform: NodeJS.Platform,
   windowsPathExtensions: ReadonlyArray<string>,
   isLast: (match: string) => boolean,
+  cwd?: string,
 ): Effect.fn.Return<ReadonlyArray<string>, never, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
-  // Keep case variants: Windows can make PATH directories case-sensitive.
-  const pathEntries: string[] = [];
-  const seenPathEntries = new Set<string>();
-  for (const entry of pathValue.split(pathDelimiterForPlatform(platform))) {
-    const pathEntry = stripWrappingQuotes(trimPathEntry(entry, platform));
-    if (pathEntry.length === 0 || seenPathEntries.has(pathEntry)) continue;
-
-    seenPathEntries.add(pathEntry);
-    pathEntries.push(pathEntry);
-  }
+  const pathEntries = commandSearchDirectories(pathValue, platform, cwd, path);
 
   const listings = yield* PathDirectoryListings;
   const matches: string[] = [];
@@ -692,7 +747,7 @@ const findOnPath = Effect.fnUntraced(function* (
     }
     for (const candidate of commandCandidates) {
       if (listing?.names && !listing.names.has(candidate.toLowerCase())) continue;
-      const candidatePath = path.join(pathEntry, candidate);
+      const candidatePath = appendCommandName(pathEntry, candidate, platform, path);
       if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
         matches.push(candidatePath);
         if (isLast(candidatePath)) return matches;
@@ -718,23 +773,25 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     path.extname,
   );
 
-  if (command.includes("/") || command.includes("\\")) {
+  if (isCommandPath(command, platform)) {
     for (const candidate of commandCandidates) {
-      if (yield* isExecutableFile(candidate, platform, windowsPathExtensions)) {
-        return candidate;
+      const file = childPath(options.cwd, candidate, platform, path);
+      if (yield* isExecutableFile(file, platform, windowsPathExtensions)) {
+        return file;
       }
     }
     return null;
   }
 
-  const pathValue = resolvePathEnvironmentVariable(env);
-  if (pathValue.length === 0) {
-    return null;
-  }
+  const pathValue = commandSearchPath(env, platform, options.cwd);
 
-  const cacheKey = [platform, pathValue, windowsPathExtensions.join(";"), command].join(
-    COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR,
-  );
+  const cacheKey = [
+    platform,
+    pathValue,
+    windowsPathExtensions.join(";"),
+    options.cwd ?? "",
+    command,
+  ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const cache = yield* CommandResolutionCache;
   const nowNanos = yield* Clock.monotonicTimeNanos;
   const cached = cache.get(cacheKey);
@@ -756,6 +813,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
     platform,
     windowsPathExtensions,
     () => true,
+    options.cwd,
   );
   return remember(resolvedPath);
 });
@@ -765,6 +823,7 @@ export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function
   options: CommandAvailabilityOptions = {},
 ) {
   return yield* resolveCommandPathForPlatform(command, {
+    ...options,
     env: options.env ?? (yield* HostProcess.Environment),
     platform: yield* HostProcess.Platform,
   });
@@ -780,12 +839,53 @@ export const resolveCommandPaths = Effect.fn("shell.resolveCommandPaths")(functi
   const env = options.env ?? (yield* HostProcess.Environment);
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   return yield* findOnPath(
-    resolvePathEnvironmentVariable(env),
+    commandSearchPath(env, platform, options.cwd),
     resolveCommandCandidates(command, platform, windowsPathExtensions, path.extname),
     platform,
     windowsPathExtensions,
     options.until,
+    options.cwd,
   );
+});
+
+/** Resolve directories natively while retaining the account launcher's final name for argv[0]. */
+export const resolveMatchingLauncher = Effect.fn("shell.resolveMatchingLauncher")(function* (
+  selected: string,
+  configured: string,
+) {
+  const path = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  const name = path.basename(selected);
+  const configuredName = path.basename(configured);
+  if (
+    name !== configuredName &&
+    (platform !== "win32" || name.toLowerCase() !== configuredName.toLowerCase())
+  ) {
+    return null;
+  }
+  return yield* Effect.tryPromise(async () => {
+    // fs.promises.realpath uses native traversal; callback fs.realpath normalizes ".." first.
+    const [parent, configuredParent] = await Promise.all([
+      NodeFS.promises.realpath(path.dirname(selected)),
+      NodeFS.promises.realpath(path.dirname(configured)),
+    ]);
+    if (parent !== configuredParent) return null;
+    const launcher = path.join(parent, name);
+    if (name === configuredName) return launcher;
+    // Case-sensitive Windows directories can contain two hard-link names with identical file IDs.
+    const [entries, selectedInfo, configuredInfo] = await Promise.all([
+      NodeFS.promises.readdir(parent),
+      NodeFS.promises.lstat(launcher, { bigint: true }),
+      NodeFS.promises.lstat(path.join(configuredParent, configuredName), { bigint: true }),
+    ]);
+    const foldedName = name.toLowerCase();
+    return entries.filter((entry) => entry.toLowerCase() === foldedName).length === 1 &&
+      selectedInfo.dev === configuredInfo.dev &&
+      selectedInfo.ino !== 0n &&
+      selectedInfo.ino === configuredInfo.ino
+      ? launcher
+      : null;
+  }).pipe(Effect.orElseSucceed(() => null));
 });
 
 // Git 2.56 x64 uses ucrt64; ARM64 uses clangarm64; older x64/32-bit builds use mingw64/mingw32.
@@ -862,12 +962,13 @@ export function npmShimExecutable(
   return isFile(executable) ? executable : undefined;
 }
 
-export type XcodeGitLocator = (env: NodeJS.ProcessEnv) => string | undefined;
+export type XcodeGitLocator = (env: NodeJS.ProcessEnv, cwd?: string) => string | undefined;
 
 // xcrun honors DEVELOPER_DIR and the `xcode-select` choice, as the shim does.
-function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
+function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv, cwd?: string): string | undefined {
   try {
     const located = NodeChildProcess.execFileSync("/usr/bin/xcrun", ["--find", "git"], {
+      cwd,
       encoding: "utf8",
       env,
       timeout: 5_000,
@@ -893,15 +994,21 @@ const MACOS_GIT_SHIM = "/usr/bin/git";
 const resolveMacosGit = Effect.fnUntraced(function* (
   env: NodeJS.ProcessEnv,
   resolveExecutable: SpawnExecutableResolver,
+  cwd: string | undefined,
 ) {
   const locateXcodeGit = yield* XcodeGitLocation;
   const cache = yield* CommandResolutionCache;
+  const childCwd = cwd ?? (yield* HostProcess.WorkingDirectory);
+  const searchPath = commandSearchPath(env, "darwin", childCwd);
+  const relativeSearch = searchPath.split(":").some((entry) => !NodePath.posix.isAbsolute(entry));
+  const developerDir = env.DEVELOPER_DIR ?? "";
   const cacheKey = [
     "xcode-git",
     String(spawnResolverCacheId(resolveExecutable)),
     String(spawnResolverCacheId(locateXcodeGit)),
-    resolvePathEnvironmentVariable(env),
-    env.DEVELOPER_DIR ?? "",
+    searchPath,
+    developerDir,
+    relativeSearch || (developerDir && !NodePath.posix.isAbsolute(developerDir)) ? childCwd : "",
   ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const nowNanos = yield* Clock.currentTimeNanos;
   const cached = cache.get(cacheKey);
@@ -910,14 +1017,16 @@ const resolveMacosGit = Effect.fnUntraced(function* (
     cached !== undefined &&
     cached.expiresAtNanos > nowNanos &&
     (cached.resolvedPath === null ||
-      resolveExecutable(cached.resolvedPath, "darwin", env) !== undefined)
+      resolveExecutable(cached.resolvedPath, "darwin", env, childCwd) !== undefined)
   ) {
     return cached.resolvedPath ?? "git";
   }
   const located =
-    resolveExecutable("git", "darwin", env) === MACOS_GIT_SHIM ? locateXcodeGit(env) : undefined;
+    resolveExecutable("git", "darwin", env, childCwd) === MACOS_GIT_SHIM
+      ? locateXcodeGit(env, childCwd)
+      : undefined;
   const realGit =
-    located !== undefined && resolveExecutable(located, "darwin", env) !== undefined
+    located !== undefined && resolveExecutable(located, "darwin", env, childCwd) !== undefined
       ? located
       : null;
   cacheCommandResolution(cache, cacheKey, realGit, nowNanos);
@@ -990,7 +1099,7 @@ export const resolveSpawnCommand = Effect.fnUntraced(function* (
   const resolveExecutable = yield* SpawnExecutableResolution;
   if (isMacosGit) {
     return {
-      command: yield* resolveMacosGit(env, resolveExecutable),
+      command: yield* resolveMacosGit(env, resolveExecutable, options.cwd),
       args: [...args],
       shell: false,
     };
@@ -1008,6 +1117,7 @@ export const resolveSpawnCommand = Effect.fnUntraced(function* (
     resolvePathEnvironmentVariable(env),
     resolveWindowsPathExtensions(env).join(";"),
     env.MSYSTEM ? "msystem" : "",
+    options.cwd ?? "",
     command,
   ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
   const nowNanos = yield* Clock.currentTimeNanos;
@@ -1016,7 +1126,7 @@ export const resolveSpawnCommand = Effect.fnUntraced(function* (
   if (cached !== undefined && cached.expiresAtNanos > nowNanos) {
     resolvedExecutable = cached.resolvedPath;
   } else {
-    const found = resolveExecutable(command, platform, env);
+    const found = resolveExecutable(command, platform, env, options.cwd);
     resolvedExecutable = found === undefined ? null : preferGitForWindowsBinary(found, env);
     if (!explicitPath && resolvedExecutable !== null) {
       cacheCommandResolution(cache, cacheKey, resolvedExecutable, nowNanos);

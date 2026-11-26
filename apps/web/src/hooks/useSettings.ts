@@ -34,6 +34,7 @@ import {
   type MachineSettingsWrite,
   persistSharedSettingsWrites,
   planSharedSettingsWrites,
+  settingsWriteForDestination,
   settleSharedSettingsWrite,
   splitSharedServerPatch,
   supportsSharedSettingsSync,
@@ -719,12 +720,24 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
       };
       if (Object.keys(localPatch).length > 0) {
         if (environmentId) {
-          void persistServerSettings(
-            { environmentId, input: { patch: localPatch } },
-            options?.onFailed,
-          ).then((result) => {
-            if (result._tag === "Success") options?.onSaved?.();
-          });
+          const target = environments.find(
+            (candidate) => candidate.environmentId === environmentId,
+          );
+          const write = settingsWriteForDestination<MachineSettingsWrite>(
+            { environmentId, label: target?.label ?? environmentId, patch: localPatch },
+            target?.serverConfig,
+          );
+          if (write.quotaAwareAutoUnavailable)
+            warnUnsaved(t("Update older servers to save this setting."));
+          if (Object.keys(write.patch).length > 0) {
+            void persistServerSettings(
+              { environmentId, input: { patch: write.patch } },
+              options?.onFailed,
+            ).then((result) => {
+              if (result._tag === "Success" && !write.quotaAwareAutoUnavailable)
+                options?.onSaved?.();
+            });
+          }
         } else {
           warnUnsaved();
         }

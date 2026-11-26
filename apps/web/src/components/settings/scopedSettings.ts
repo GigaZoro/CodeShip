@@ -18,6 +18,7 @@ import {
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   persistSharedSettingsWrites,
+  plainSettingsWrites,
   planSharedSettingsWrites,
   type SharedSettingsGroupMember,
   type SharedSettingsMachine,
@@ -351,7 +352,11 @@ function shareWrites(
   readonly noFollowerConnected: boolean;
 } {
   if (scope.kind !== "all") {
-    return { serverWrites: writes, ...NOT_SHARED, noFollowerConnected: false };
+    return {
+      serverWrites: [...plainSettingsWrites(writes, environments).writes],
+      ...NOT_SHARED,
+      noFollowerConnected: false,
+    };
   }
   const planned = planSharedSettingsWrites({
     machines: selectScopedSettingsEnvironments(scope, environments, null).environments,
@@ -580,6 +585,7 @@ function heldValue(settings: ServerSettings, key: string): unknown {
 export function planScopedSettingsUndo(
   plan: ScopedSettingsPlan,
   previousClient: Partial<Record<string, unknown>>,
+  environments: readonly ScopedSettingsEnvironment[] = [],
 ): ScopedSettingsPlan {
   const clientPatch = Object.fromEntries(
     Object.keys(plan.clientPatch).map((key) => [key, previousClient[key]]),
@@ -628,7 +634,7 @@ export function planScopedSettingsUndo(
   return {
     clientPatch,
     hasClientWrite: plan.hasClientWrite,
-    serverWrites,
+    serverWrites: [...plainSettingsWrites(serverWrites, environments).writes],
     unavailableReason: null,
     share,
     offlineFollowers: share === null ? [] : plan.offlineFollowers,
@@ -650,7 +656,7 @@ export function planScopedSettingsClear(
   return {
     clientPatch: {} as ClientSettingsPatch,
     hasClientWrite: false,
-    serverWrites,
+    serverWrites: [...plainSettingsWrites(serverWrites, environments).writes],
     unavailableReason:
       serverWrites.length > 0
         ? null
@@ -711,7 +717,7 @@ export function planProjectOverridesClear(
   return {
     clientPatch: {} as ClientSettingsPatch,
     hasClientWrite: false,
-    serverWrites,
+    serverWrites: [...plainSettingsWrites(serverWrites, environments).writes],
     unavailableReason:
       serverWrites.length > 0 ? null : t("Connect the environments to reset these overrides."),
     ...NOT_SHARED,

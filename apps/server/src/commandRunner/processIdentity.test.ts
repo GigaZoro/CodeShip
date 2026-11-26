@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   compareIdentity,
+  ENDED_IDENTITY,
   identityTime,
   identityWindow,
   launchIdentity,
@@ -9,6 +10,7 @@ import {
   recordedIdentity,
   timeIdentity,
   windowIdentity,
+  windowsStopRoot,
 } from "./processIdentity.ts";
 
 describe("processIdentity", () => {
@@ -98,6 +100,29 @@ describe("processIdentity", () => {
         recordedIdentity("darwin", "not a date\n"),
       ],
       ["boot:boot-1:987654", undefined, timeIdentity(946_684_800_000), undefined, undefined],
+    );
+  });
+
+  // The pid file was written at 15 s, after the record at 10 s, and the runner saw it exit at 20 s.
+  it.each([
+    [
+      "a start it read",
+      timeIdentity(11_000),
+      { since: 11_000, created: { from: 11_000, to: 11_000 } },
+    ],
+    [
+      // Whatever holds the pid now and started outside the window is another process, not the root.
+      "the window its start fell in",
+      windowIdentity(10_000, 12_000),
+      { since: 15_000, created: { from: 10_000, to: 12_000 } },
+    ],
+    ["an ended wrapper", ENDED_IDENTITY, { since: 15_000, created: { from: 0, to: 0 } }],
+    // With no window, `since` places the root, which started before it wrote its pid.
+    ["nothing", null, { since: 10_000, created: "unknown" }],
+  ] as const)("roots a Windows stop of a wrapper recorded with %s", (_, identity, root) => {
+    assert.deepStrictEqual(
+      windowsStopRoot({ pid: 42, identity, recordedAt: 10_000, namedAt: 15_000, ended: 20_000 }),
+      { pid: 42, ...root, ended: 20_000 },
     );
   });
 });

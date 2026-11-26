@@ -24,6 +24,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
+import { isAccountReady } from "@t3tools/shared/serverSettings";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -57,6 +58,7 @@ export class ProviderRegistry extends Context.Service<
   ProviderRegistry,
   {
     readonly getProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
+    readonly fundingForWorkspace?: NonNullable<ProviderInstance["fundingForWorkspace"]>;
 
     readonly refresh: (
       provider?: ProviderDriverKind,
@@ -66,6 +68,14 @@ export class ProviderRegistry extends Context.Service<
     readonly refreshInstance: (
       instanceId: ProviderInstanceId,
     ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+    /** Reads only requested, runnable accounts that still need a decisive quota observation. */
+    readonly refreshUsageIfStale: (input: {
+      readonly instanceIds: ReadonlyArray<ProviderInstanceId>;
+      /** Stable keys for the stale account fields or meters that would affect this decision. */
+      readonly staleObservations: (provider: ServerProvider) => ReadonlyArray<string>;
+      readonly waitMs: number;
+    }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
     /** Re-reads secret-backed environments first, so a fixed secret applies without a restart. */
     readonly reloadSecretsAndRefresh: (
@@ -249,16 +259,33 @@ const shouldRetainMissingOpenCodeMetadata = (provider: ServerProvider): boolean 
   provider.driver === ProviderDriverKind.make("opencode") &&
   shouldRetainMissingProviderModels(provider);
 
+const usageAccountIdentity = (provider: ServerProvider) => [
+  provider.auth.profileId,
+  provider.auth.workspaceId,
+  provider.auth.email,
+  provider.auth.type,
+  provider.usageLimits?.accountKey,
+  provider.usageLimits?.credentialFingerprint,
+  provider.usageLimits?.plan,
+];
+
 const mergeProviderModels = (
   provider: ServerProvider,
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
+  sameAccount: boolean,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   const shouldRetainMissingModels = shouldRetainMissingProviderModels(provider);
   const updateRequiredSlugs = new Set(provider.updateRequiredModels?.map((model) => model.slug));
-  const retainablePreviousModels = previousModels.filter(
-    (model) => !model.isCustom && !updateRequiredSlugs.has(model.slug),
-  );
+  const retainablePreviousModels = previousModels
+    .filter((model) => !model.isCustom && !updateRequiredSlugs.has(model.slug))
+    .map((model) =>
+      model.funding !== undefined ||
+      provider.auth.funding === "included" ||
+      provider.auth.fundingScope === "workspace"
+        ? { ...model, funding: "unknown" as const }
+        : model,
+    );
 
   if (shouldRetainMissingModels && nextModels.length === 0 && retainablePreviousModels.length > 0) {
     return retainablePreviousModels;
@@ -267,7 +294,14 @@ const mergeProviderModels = (
   const previousBySlug = new Map(previousModels.map((model) => [model.slug, model] as const));
   const mergedModels = nextModels.map((model) => {
     const previousModel = previousBySlug.get(model.slug);
-    if (!previousModel || hasModelCapabilities(model) || !hasModelCapabilities(previousModel)) {
+    if (
+      !sameAccount ||
+      !previousModel ||
+      // Antigravity returns null for an unobserved model and an empty set after observing no options.
+      (provider.driver === "antigravity" && model.capabilities !== null) ||
+      hasModelCapabilities(model) ||
+      !hasModelCapabilities(previousModel)
+    ) {
       return model;
     }
     return {
@@ -301,7 +335,8 @@ const carrySavedAntigravityAccount = (
   }
   const status =
     nextProvider.installed && nextProvider.status === "warning" ? "ready" : nextProvider.status;
-  return { auth: previousProvider.auth, status };
+  const { funding: _funding, fundingScope: _scope, ...auth } = previousProvider.auth;
+  return { auth, status };
 };
 
 export const mergeProviderSnapshot = (
@@ -312,8 +347,17 @@ export const mergeProviderSnapshot = (
     return nextProvider;
   }
   const savedAccount = carrySavedAntigravityAccount(previousProvider, nextProvider);
+  const sameAccount = Equal.equals(
+    usageAccountIdentity(previousProvider),
+    usageAccountIdentity(nextProvider),
+  );
   const { message: _uncheckedMessage, ...nextWithoutMessage } = nextProvider;
-  const models = mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models);
+  const models = mergeProviderModels(
+    nextProvider,
+    previousProvider.models,
+    nextProvider.models,
+    sameAccount,
+  );
   // Folder catalogs were compared with the old machine catalog, so every folder rescans.
   const previousWorkspaceSnapshots = Equal.equals(models, previousProvider.models)
     ? previousProvider.workspaceSnapshots
@@ -327,7 +371,7 @@ export const mergeProviderSnapshot = (
     models,
     ...(nextProvider.workspaceSnapshots !== undefined
       ? { workspaceSnapshots: nextProvider.workspaceSnapshots }
-      : previousWorkspaceSnapshots !== undefined
+      : sameAccount && previousWorkspaceSnapshots !== undefined
         ? { workspaceSnapshots: previousWorkspaceSnapshots }
         : {}),
     ...(shouldRetainMissingOpenCodeMetadata(nextProvider)
@@ -1051,6 +1095,122 @@ export const layer = Layer.effect(
       return yield* Ref.get(providersRef);
     });
 
+    type UsageInquiry = {
+      keys: ReadonlyArray<string>;
+      staleObservations: (provider: ServerProvider) => ReadonlyArray<string>;
+    };
+    type UsageRead = {
+      account: ReadonlyArray<string | undefined>;
+      done: Deferred.Deferred<void>;
+      inquiries: UsageInquiry[];
+    };
+    const usageReads = new Map<ProviderInstance, UsageRead>();
+    const unresolvedUsageReads = new WeakMap<
+      ProviderInstance,
+      { account: ReadonlyArray<string | undefined>; attempts: Map<string, number> }
+    >();
+    const usageRetryDelayMs = 10 * 60_000;
+    const sharedUsageRead = Effect.fn("ProviderRegistry.sharedUsageRead")(function* (
+      instance: ProviderInstance,
+      staleObservations: (provider: ServerProvider) => ReadonlyArray<string>,
+    ) {
+      const providers = yield* Ref.get(providersRef);
+      const provider = providers.find((entry) => entry.instanceId === instance.instanceId);
+      if (provider === undefined || !isAccountReady(provider)) {
+        return Option.none();
+      }
+      const stale = staleObservations(provider);
+      if (stale.length === 0) return Option.none();
+      const limits = provider.usageLimits;
+      // Unsupported limits may be external; they have no local meter to re-read.
+      if (limits?.unavailable?.reason === "unsupported") return Option.none();
+      const source = buildSnapshotSource(instance);
+      const dedicatedRead = instance.snapshot.refreshUsage;
+      if (dedicatedRead === undefined && limits === undefined) return Option.none();
+
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const account = usageAccountIdentity(provider);
+      const running = usageReads.get(instance);
+      const inquiry = { keys: stale, staleObservations };
+      if (running && Equal.equals(running.account, account)) {
+        running.inquiries.push(inquiry);
+        return Option.some(running.done);
+      }
+      const last = unresolvedUsageReads.get(instance);
+      const attempts =
+        last && Equal.equals(last.account, account) ? last.attempts : new Map<string, number>();
+      for (const [key, at] of attempts) {
+        if (now - at >= usageRetryDelayMs) attempts.delete(key);
+      }
+      if (stale.every((key) => attempts.has(key))) return Option.none();
+      const done = Deferred.makeUnsafe<void>();
+      const inquiries = [inquiry];
+      usageReads.set(instance, { account, done, inquiries });
+      unresolvedUsageReads.set(instance, { account, attempts });
+      let updated: ServerProvider | undefined;
+      const read = dedicatedRead
+        ? dedicatedRead.pipe(Effect.andThen(source.getSnapshot))
+        : source.refresh;
+      yield* Effect.gen(function* () {
+        const next = yield* read.pipe(Effect.timeoutOption("60 seconds"));
+        if (Option.isNone(next) || usageReads.get(instance)?.done !== done) return;
+        if ((yield* instanceRegistry.getInstance(instance.instanceId)) !== instance) return;
+        const current = (yield* Ref.get(providersRef)).find(
+          (row) => row.instanceId === instance.instanceId,
+        );
+        if (!current || !isAccountReady(current)) return;
+        const currentAccount = usageAccountIdentity(current);
+        if (
+          !Equal.equals(currentAccount, account) &&
+          !Equal.equals(currentAccount, usageAccountIdentity(next.value))
+        )
+          return;
+        const snapshots = yield* syncProvider(
+          yield* correlateSnapshotWithSource(source, next.value),
+        );
+        updated = snapshots.find((row) => row.instanceId === instance.instanceId);
+      }).pipe(
+        Effect.catchCause(recoverRefreshFailure),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (usageReads.get(instance)?.done !== done) return;
+            usageReads.delete(instance);
+            const unresolved = new Set<string>();
+            for (const { keys, staleObservations } of inquiries) {
+              const after = updated && new Set(staleObservations(updated));
+              for (const key of keys) {
+                attempts.delete(key);
+                if (!after || after.has(key)) unresolved.add(key);
+              }
+            }
+            for (const key of unresolved) attempts.set(key, now);
+          }).pipe(Effect.ensuring(Deferred.succeed(done, undefined))),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(serviceScope),
+      );
+      return Option.some(done);
+    }, Effect.uninterruptible);
+
+    const refreshUsageIfStale = Effect.fn("ProviderRegistry.refreshUsageIfStale")(function* ({
+      instanceIds,
+      staleObservations,
+      waitMs,
+    }: Parameters<ProviderRegistry["Service"]["refreshUsageIfStale"]>[0]) {
+      yield* Effect.forEach(
+        new Set(instanceIds),
+        (instanceId) =>
+          instanceRegistry.getInstance(instanceId).pipe(
+            Effect.flatMap((instance) =>
+              instance?.enabled ? sharedUsageRead(instance, staleObservations) : Effect.succeedNone,
+            ),
+            Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: Deferred.await })),
+          ),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.timeoutOption(Math.max(0, waitMs)));
+      return yield* Ref.get(providersRef);
+    });
+
     const updateProviders = (
       update: (providers: ReadonlyArray<ServerProvider>) => ReadonlyArray<ServerProvider>,
     ) =>
@@ -1228,10 +1388,33 @@ export const layer = Layer.effect(
 
     return {
       getProviders: Ref.get(providersRef),
+      fundingForWorkspace: Effect.fn("ProviderRegistry.fundingForWorkspace")(function* (input) {
+        const instance = yield* instanceRegistry.getInstance(input.provider.instanceId);
+        if (!instance?.enabled || !instance.fundingForWorkspace) return "unknown";
+        const funding = yield* instance.fundingForWorkspace(input).pipe(
+          Effect.timeout("8 seconds"),
+          Effect.catchCause(() => Effect.succeed("unknown" as const)),
+        );
+        const current = (yield* Ref.get(providersRef)).find(
+          (row) => row.instanceId === input.provider.instanceId,
+        );
+        return instance === (yield* instanceRegistry.getInstance(input.provider.instanceId)) &&
+          current?.enabled &&
+          current.status === "ready" &&
+          Equal.equals(current.auth, input.provider.auth) &&
+          Equal.equals(usageAccountIdentity(current), usageAccountIdentity(input.provider)) &&
+          Equal.equals(
+            current.models.find((model) => model.slug === input.model),
+            input.provider.models.find((model) => model.slug === input.model),
+          )
+          ? funding
+          : "unknown";
+      }),
       refresh: (provider?: ProviderDriverKind) =>
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      refreshUsageIfStale,
       reloadSecretsAndRefresh: (instanceId?: ProviderInstanceId) =>
         reloadSecretsAndRefresh(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       applySecretAndRefresh: (reference: SecretReference, value: string) =>

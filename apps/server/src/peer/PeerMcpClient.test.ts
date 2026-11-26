@@ -18,13 +18,14 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientResponse } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
@@ -34,12 +35,20 @@ const toolkit = Toolkit.make(
   Tool.make("probe", {
     description: "Returns this request's mode limits.",
     success: Result,
-    dependencies: [McpInvocationContext.McpInvocationContext],
+    failure: OrchestratorMcpFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
   }),
   Tool.make("hold", {
     description: "Holds a tool request open.",
     success: Result,
-    dependencies: [McpInvocationContext.McpInvocationContext],
+    failure: OrchestratorMcpFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
   }),
   Tool.make("refuse", {
     description: "Refuses the call.",
@@ -147,6 +156,52 @@ it.effect("tells the peer which thread a call is made for", () =>
       // A title holding an unpaired surrogate still lets the call through.
       const broken = yield* call({ sender: { ...sender, title: "Review \ud800" } });
       expect(broken.senderThread?.title).toBe("Review \ufffd");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("times out a peer that accepts a request and records the transport failure", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const received = yield* Deferred.make<void>();
+      const handlers = McpToolAccess.toLayer(toolkit, {
+        probe: McpToolAccess.reads(() => Effect.succeed({ modes: "probe" })),
+        hold: McpToolAccess.reads(() =>
+          Deferred.succeed(received, undefined).pipe(Effect.andThen(Effect.never)),
+        ),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      yield* linkTo(links, b);
+      const held = yield* client
+        .call({
+          environmentId: box.environmentId,
+          tool: "hold",
+          arguments: {},
+          limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+          success: Result,
+        })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Deferred.await(received);
+      yield* TestClock.adjust(74_999);
+      expect(held.pollUnsafe()).toBeUndefined();
+
+      const failure = yield* Fiber.join(held).pipe(Effect.timeoutOption(2), Effect.forkScoped);
+      yield* TestClock.adjust(2);
+      expect(yield* Fiber.join(failure)).toMatchObject(
+        Option.some({
+          code: "no_answer",
+          message: "The linked environment stopped answering.",
+        }),
+      );
+      expect(Option.getOrThrow(yield* links.get(box.environmentId)).lastError).toContain(
+        "Peer MCP request deadline exceeded",
+      );
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -347,7 +402,11 @@ it.effect("refuses arguments the peer's version does not take, listing its tools
             workspace: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
           }),
           success: Result,
-          dependencies: [McpInvocationContext.McpInvocationContext],
+          failure: OrchestratorMcpFailure,
+          dependencies: [
+            McpInvocationContext.McpInvocationContext,
+            ThreadManagement.ThreadManagementService,
+          ],
         }),
       );
       const handlers = McpToolAccess.toLayer(older, {
@@ -441,6 +500,12 @@ it.effect("refuses an answer larger than the call takes", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+/** A tools/call answer held after its start; `signal` is its request's, to see it aborted. */
+interface StalledCall {
+  readonly received: Deferred.Deferred<void>;
+  signal: AbortSignal | undefined;
+}
+
 /**
  * A peer whose `probe` takes `properties`. It keeps sessions in memory, as the real one does, so
  * `restart` forgets them.
@@ -450,12 +515,15 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
   let live = new Set<string>();
   let started = 0;
   let listError: string | undefined;
+  let dropCall = false;
+  let callStatus: number | undefined;
   let heldList:
     | { readonly received: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
     | undefined;
+  let stalledCall: StalledCall | undefined;
   const requests: Array<string> = [];
   const ran: Array<unknown> = [];
-  const http = HttpClient.make((request) =>
+  const http = HttpClient.make((request, _url, signal) =>
     Effect.gen(function* () {
       const body = JSON.parse(
         request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "{}",
@@ -492,6 +560,37 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
         return answer(200, { result: { tools } });
       }
       ran.push(body.params?.arguments);
+      if (callStatus !== undefined) {
+        const status = callStatus;
+        callStatus = undefined;
+        return answer(status);
+      }
+      if (dropCall) {
+        dropCall = false;
+        return yield* new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({
+            request,
+            cause: new TypeError("fetch failed"),
+          }),
+        });
+      }
+      const stall = stalledCall;
+      stalledCall = undefined;
+      if (stall !== undefined) {
+        stall.signal = signal;
+        yield* Deferred.succeed(stall.received, undefined);
+        // The status and the start of the answer arrive, then nothing more.
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response(
+            new ReadableStream({
+              start: (controller) =>
+                controller.enqueue(new TextEncoder().encode('{"result":{"content":[')),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
       return answer(200, { result: { content: [{ type: "text", text: '{"modes":"ran"}' }] } });
     }),
   );
@@ -544,6 +643,14 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
     failList: (message: string) => {
       listError = message;
     },
+    /** The next call runs there, and its answer never arrives. */
+    dropNextCall: () => {
+      dropCall = true;
+    },
+    /** The next call runs there, and what answers it is only this HTTP status. */
+    answerNextCallWith: (status: number) => {
+      callStatus = status;
+    },
     /** Holds the next tools/list answer, as listed when it arrived, until `release`. */
     holdNextList: Effect.gen(function* () {
       const held = {
@@ -553,8 +660,35 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
       heldList = held;
       return held;
     }),
+    /** Stalls the next tools/call answer after its status and part of its body. */
+    stallNextCall: Effect.gen(function* () {
+      const stall: StalledCall = { received: yield* Deferred.make<void>(), signal: undefined };
+      stalledCall = stall;
+      return stall;
+    }),
   };
 });
+
+it.effect("times out a peer that stops partway through its answer and aborts the request", () =>
+  Effect.gen(function* () {
+    const peer = yield* fakePeerClient({});
+    const stall = yield* peer.stallNextCall;
+    const call = yield* peer.call({}).pipe(Effect.flip, Effect.forkChild);
+    yield* Deferred.await(stall.received);
+    yield* TestClock.adjust(74_999);
+    expect(call.pollUnsafe()).toBeUndefined();
+
+    const failure = yield* Fiber.join(call).pipe(Effect.timeoutOption(2), Effect.forkChild);
+    yield* TestClock.adjust(2);
+    expect(yield* Fiber.join(failure)).toMatchObject(
+      Option.some({
+        code: "no_answer",
+        message: "The linked environment stopped answering.",
+      }),
+    );
+    expect(stall.signal?.aborted).toBe(true);
+  }).pipe(Effect.scoped),
+);
 
 it.effect("renews a session the peer lost once, checks the call again in it, and reuses it", () =>
   Effect.gen(function* () {
@@ -582,6 +716,68 @@ it.effect("renews a session the peer lost once, checks the call again in it, and
       "tools/call session-2",
     ]);
   }).pipe(Effect.scoped),
+);
+
+it.effect("a call whose answer never arrives fails as no answer, not as a refusal", () =>
+  Effect.gen(function* () {
+    const peer = yield* fakePeerClient({});
+    peer.dropNextCall();
+    expect(yield* Effect.flip(peer.call({}))).toMatchObject({
+      code: "no_answer",
+      message: "The linked environment stopped answering.",
+    });
+    expect(peer.ran).toEqual([{}]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a call a gateway answers with a server error fails as no answer, since it may have run",
+  () =>
+    Effect.gen(function* () {
+      const peer = yield* fakePeerClient({});
+      peer.answerNextCallWith(502);
+      expect(yield* Effect.flip(peer.call({}))).toMatchObject({
+        code: "no_answer",
+        message:
+          "The linked environment's address answered HTTP 502, so whether it acted is unknown.",
+      });
+      expect(peer.ran).toEqual([{}]);
+      // A refusal by status alone is still the machine's answer.
+      peer.answerNextCallWith(429);
+      expect(yield* Effect.flip(peer.call({}))).toMatchObject({ code: "orchestration_error" });
+    }).pipe(Effect.scoped),
+);
+
+it.effect("a call to a linked environment no address answers as fails as unreachable", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const handlers = McpToolAccess.toLayer(toolkit, {
+        probe: McpToolAccess.reads(() => Effect.succeed({ modes: "probe" })),
+        hold: McpToolAccess.reads(() => Effect.never),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      yield* linkTo(links, b);
+      // Its address now answers as another environment, so the link's token is not sent there.
+      yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+      const failure = yield* client
+        .call({
+          environmentId: box.environmentId,
+          tool: "probe",
+          arguments: {},
+          limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+          success: Result,
+        })
+        .pipe(Effect.flip);
+      expect(failure.code).toBe("unreachable");
+      expect(failure.message).toContain("Box did not answer");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a peer whose tool list errors fails the call with its error, not as unreadable", () =>

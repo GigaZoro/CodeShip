@@ -1,0 +1,23 @@
+name: Cache fork Codex for macOS
+
+# Tag builds can read the default branch's package cache. Keep its producer
+# independent of release-fork so a queued Mac cannot hold Windows or Linux.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-fork-codex-macos
+  cancel-in-progress: false
+
+jobs:
+  metadata_mac:
+    if: github.repository != 'pingdotgg/t3code' && github.ref_name == github.event.repository.default_branch
+    uses: ./.github/workflows/release-codex-metadata.yml
+    with:
+      ref: ${{ github.sha }}
+      target: aarch64-apple-darwin
+      runner: macos-26

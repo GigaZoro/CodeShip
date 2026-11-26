@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { getPropertyName, isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec|testkit)\.[cm]?[jt]sx?$/u;
 
@@ -13,23 +13,23 @@ const MAX_ALIAS_DEPTH = 4;
 
 const ABSOLUTE_PATH = /^(?:[/\\]|[A-Za-z]:[/\\])/u;
 
-const calleeName = (callee: unknown) =>
+const calleeName = (sourceCode: SourceCode, callee: unknown) =>
   Option.flatMap(unwrapExpression(callee), (expression) =>
     expression.type === "MemberExpression"
-      ? getPropertyName(expression.property)
+      ? resolvePropertyName(sourceCode, expression.property)
       : getPropertyName(expression),
   );
 
-const isImportMetaDirname = (node: ESTree.Node) =>
+const isImportMetaDirname = (sourceCode: SourceCode, node: ESTree.Node) =>
   node.type === "MemberExpression" &&
   node.object.type === "MetaProperty" &&
-  Option.contains(getPropertyName(node.property), "dirname");
+  Option.contains(resolvePropertyName(sourceCode, node.property), "dirname");
 
-const isProcessCwd = (node: ESTree.Node) =>
+const isProcessCwd = (sourceCode: SourceCode, node: ESTree.Node) =>
   node.type === "CallExpression" &&
   node.callee.type === "MemberExpression" &&
   isIdentifier(unwrapExpression(node.callee.object), "process") &&
-  Option.contains(getPropertyName(node.callee.property), "cwd");
+  Option.contains(resolvePropertyName(sourceCode, node.callee.property), "cwd");
 
 export default defineRule({
   meta: {
@@ -80,11 +80,11 @@ export default defineRule({
               Option.exists(constInitializer(expression), (init) => inCheckout(init, depth + 1))
             );
           case "MemberExpression":
-            return isImportMetaDirname(expression);
+            return isImportMetaDirname(context.sourceCode, expression);
           case "CallExpression":
-            if (isProcessCwd(expression)) return true;
+            if (isProcessCwd(context.sourceCode, expression)) return true;
             return (
-              Option.exists(calleeName(expression.callee), (name) =>
+              Option.exists(calleeName(context.sourceCode, expression.callee), (name) =>
                 ["join", "resolve"].includes(name),
               ) && inCheckout(expression.arguments[0], depth)
             );
@@ -99,7 +99,7 @@ export default defineRule({
         for (const property of expression.properties) {
           if (
             property.type === "Property" &&
-            Option.contains(getPropertyName(property.key), "directory")
+            Option.contains(resolvePropertyName(context.sourceCode, property.key), "directory")
           ) {
             return Option.some(property.value);
           }
@@ -109,7 +109,7 @@ export default defineRule({
 
     return {
       CallExpression(node) {
-        const name = calleeName(node.callee);
+        const name = calleeName(context.sourceCode, node.callee);
         const reported =
           ((Option.contains(name, "mkdtemp") || Option.contains(name, "mkdtempSync")) &&
             inCheckout(node.arguments[0])) ||

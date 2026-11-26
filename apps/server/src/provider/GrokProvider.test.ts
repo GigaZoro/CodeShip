@@ -240,13 +240,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("checkGrokProvide
       version: "1.0.52",
       message: "Grok CLI is installed but ACP initialize failed. Model options may be incomplete.",
       probesAfterVersion: true,
+      lastKnownVersion: null,
     },
     {
-      label: "never answers",
+      label: "never answers after a version was known",
+      versionDelay: "Infinity",
+      version: "1.0.52",
+      message: "Grok CLI is installed but ACP initialize failed. Model options may be incomplete.",
+      probesAfterVersion: true,
+      lastKnownVersion: "1.0.52",
+    },
+    {
+      label: "never answers and no version is known",
       versionDelay: "Infinity",
       version: null,
       message: "Grok CLI is installed but timed out while running `grok --version`.",
       probesAfterVersion: false,
+      lastKnownVersion: null,
     },
   ] as const)("gives `grok --version` 10 s when it $label", (row) =>
     Effect.gen(function* () {
@@ -282,7 +292,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("checkGrokProvide
         });
         return Effect.succeed(handle);
       });
-      const fiber = yield* checkGrokProviderStatus(decodeGrokSettings({ enabled: true }), {}).pipe(
+      const fiber = yield* checkGrokProviderStatus(
+        decodeGrokSettings({ enabled: true }),
+        {},
+        undefined,
+        row.lastKnownVersion,
+      ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.forkChild,
       );
@@ -466,6 +481,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("checkGrokProvide
         status: "authenticated",
         type: "api_key",
         label: "xAI API key",
+        funding: "metered",
       });
       expect(snapshot.status).toBe("warning");
     }),
@@ -614,6 +630,36 @@ describe("Grok usage limits", () => {
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("readGrokAccount", (it) => {
+  it.effect("identifies subscription funding only with a confirmed zero extra spending cap", () =>
+    Effect.gen(function* () {
+      const currentPeriod = { type: "USAGE_PERIOD_TYPE_WEEKLY" };
+      for (const [config, expected] of [
+        [{ currentPeriod, onDemandCap: {} }, "included"],
+        [{ currentPeriod, onDemandCap: { val: 0 } }, "included"],
+        [{ currentPeriod, onDemandCap: { val: 500 } }, undefined],
+        [{ currentPeriod, onDemandCap: { amount: 500 } }, undefined],
+        [{ currentPeriod }, undefined],
+        [{ onDemandCap: {} }, undefined],
+      ] as const) {
+        const account = yield* readGrokAccount({
+          GROK_AUTH: '{"https://accounts.x.ai/sign-in":{"key":"session-token"}}',
+        }).pipe(
+          Effect.provideService(
+            FileSystem.FileSystem,
+            FileSystem.makeNoop({ readFileString: () => Effect.succeed("") }),
+          ),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ config }))),
+            ),
+          ),
+        );
+        expect(account.funding).toBe(expected);
+      }
+    }),
+  );
+
   it.effect("reads the configured Grok home and prefers the current login scope to legacy", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -1,5 +1,5 @@
 name: Release (fork) macOS
-run-name: Release (fork) macOS v${{ inputs.version }}
+run-name: Release (fork) macOS v${{ inputs.version }}${{ github.ref_type == 'branch' && ' (branch dispatch)' || '' }}
 
 # Builds the macOS arm64 app for a release that release-fork.yml published, and
 # attaches it with its update feed. It runs apart from that workflow because
@@ -17,8 +17,8 @@ on:
         required: true
         type: string
       bundle_run:
-        description: "The Release (fork) run that built its JS bundle."
-        required: true
+        description: "Accepted for compatibility with older dispatchers. The release identifies its publishing run."
+        required: false
         type: string
 
 # A newer pending run replaces an older pending one: Macs only need the newest
@@ -59,21 +59,19 @@ jobs:
           fi
 
       - id: release
-        name: Find the release and its JS bundle
+        name: Identify the published tag
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-          BUNDLE_RUN: ${{ inputs.bundle_run }}
         run: |
           set -euo pipefail
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$BUNDLE_RUN" =~ ^[0-9]+$ ]]; then
-            echo "::error::Pass a version such as 2026.1113.13 and the numeric id of its Release (fork) run."
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Pass a published version such as 2026.1113.13."
             exit 1
           fi
           sha="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" --jq .target_commitish)"
-          bundle_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUNDLE_RUN" --jq .head_sha)"
-          if [[ "$sha" != "$bundle_sha" ]]; then
-            echo "::error::v$VERSION was built from $sha, but run $BUNDLE_RUN built $bundle_sha."
+          if [[ "$GITHUB_REF" != "refs/tags/v$VERSION" || "$GITHUB_SHA" != "$sha" ]]; then
+            echo "::error::Dispatch this workflow from the published tag v$VERSION at $sha."
             exit 1
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -87,6 +85,18 @@ jobs:
             /.github/scripts/fork-release.cjs
           sparse-checkout-cone-mode: false
 
+      - id: bundle
+        name: Find the publishing run's JS bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: v${{ inputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          run_id="$(node .github/scripts/fork-release.cjs macos-bundle "$TAG" "$SHA")"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
       - id: public_config
         name: Read public T3 Connect configuration
         run: |
@@ -95,12 +105,12 @@ jobs:
           cat "$RUNNER_TEMP/public-config" >> "$GITHUB_OUTPUT"
 
       # release-desktop.yml reads the bundle from its own run.
-      - name: Download the release's JS bundle
+      - name: Download JS bundle from publisher ${{ steps.bundle.outputs.run_id }}
         uses: actions/download-artifact@v8
         with:
           name: js-bundle
           path: js-bundle
-          run-id: ${{ inputs.bundle_run }}
+          run-id: ${{ steps.bundle.outputs.run_id }}
           github-token: ${{ github.token }}
 
       - name: Upload JS bundle
@@ -111,9 +121,17 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  metadata_mac:
+    needs: preflight
+    uses: ./.github/workflows/release-codex-metadata.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+      target: aarch64-apple-darwin
+      runner: macos-26
+
   desktop_mac_arm64:
     name: Desktop macOS arm64
-    needs: [preflight]
+    needs: [preflight, metadata_mac]
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -125,6 +143,7 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
+      codex_metadata_key: ${{ needs.metadata_mac.outputs.cache_key }}
       label: macOS arm64
       # The macOS version upstream's release.yml builds on.
       runner: macos-26

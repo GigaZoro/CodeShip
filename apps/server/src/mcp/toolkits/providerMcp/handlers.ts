@@ -8,7 +8,9 @@ import * as Schema from "effect/Schema";
 
 import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as ProviderMcp from "../../../provider/ProviderMcp.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { releaseReport } from "../../orchestratorUsage.ts";
 import { readCaller } from "../../threadAccess.ts";
 import { ProviderMcpToolkit } from "./tools.ts";
 
@@ -94,14 +96,16 @@ export const layer = McpToolAccess.toLayer(ProviderMcpToolkit, {
   t3_provider_retry_usage_limit: McpToolAccess.writesEnvironment(({ instanceId }) =>
     Effect.gen(function* () {
       const routing = yield* AccountRouting.AccountRouting;
-      yield* routing
-        .retryAccount(instanceId)
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      // Judged for the caller's own work, which decides whether credits the user allowed apply.
+      const admission = yield* routing
+        .retryAccount(instanceId, { requesterThreadId: scope.thread?.threadId })
         .pipe(
           Effect.mapError(() =>
             invalid(`No provider account ${instanceId} on this machine; list accounts first.`),
           ),
         );
-      return { message: `Released ${instanceId}; its next turn tries it again.` };
+      return releaseReport(instanceId, admission);
     }),
   ),
 });

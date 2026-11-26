@@ -551,6 +551,7 @@ export function shouldPublishShellApplicationEvent(
 ): boolean {
   if ("aggregateKind" in stored) return true;
   const { event } = stored;
+  if (event.type === "thread.message-stars-updated") return false;
   if (event.type === "thread.created") {
     if (event.payload.lineage.relationshipToParent === "subagent") {
       subagentThreadIds.add(event.threadId);

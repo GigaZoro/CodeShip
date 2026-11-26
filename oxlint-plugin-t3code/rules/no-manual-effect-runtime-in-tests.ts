@@ -1,7 +1,7 @@
-import { defineRule } from "@oxlint/plugins";
+import { defineRule, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const EFFECT_RUNTIME_METHODS = new Set([
@@ -29,14 +29,14 @@ const readMaxOccurrences = (options: ReadonlyArray<unknown>): number => {
     : 0;
 };
 
-const manualRunnerName = (callee: unknown): Option.Option<string> => {
+const manualRunnerName = (sourceCode: SourceCode, callee: unknown): Option.Option<string> => {
   const expression = unwrapExpression(callee);
   if (Option.isNone(expression) || expression.value.type !== "MemberExpression") {
     return Option.none();
   }
 
   const object = unwrapExpression(expression.value.object);
-  const property = getPropertyName(expression.value.property);
+  const property = resolvePropertyName(sourceCode, expression.value.property);
   if (Option.isNone(property)) return Option.none();
 
   if (isIdentifier(object, "Effect") && EFFECT_RUNTIME_METHODS.has(property.value)) {
@@ -74,6 +74,7 @@ export default defineRule({
     defaultOptions: [{ maxOccurrences: 0 }],
   },
   create(context) {
+    const { sourceCode } = context;
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
 
     const allowedCount = readMaxOccurrences(context.options);
@@ -81,7 +82,7 @@ export default defineRule({
 
     return {
       CallExpression(node) {
-        const runner = manualRunnerName(node.callee);
+        const runner = manualRunnerName(sourceCode, node.callee);
         if (Option.isNone(runner)) return;
 
         occurrenceCount++;

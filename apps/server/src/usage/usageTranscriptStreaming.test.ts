@@ -102,9 +102,7 @@ async function scan(
 ) {
   const path = NodePath.join(dir, `${name}.jsonl`);
   await NodeFSP.writeFile(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
-  const result = await readTranscriptRecords(path, provider);
-  expect(result).not.toBeNull();
-  return result!;
+  return readTranscriptRecords(path, provider);
 }
 
 describe("large usage records", () => {
@@ -146,10 +144,10 @@ describe("large usage records", () => {
       payload: { ...entry.payload, source_run_record_id: "inference-2" },
     });
     await NodeFSP.appendFile(path, appended.slice(0, -7));
-    const partial = await readTranscriptRecords(path, "muse", large!.position);
+    const partial = await readTranscriptRecords(path, "muse", large.position);
     expect(partial?.records).toEqual([]);
     await NodeFSP.appendFile(path, appended.slice(-7) + "\n");
-    const completed = await readTranscriptRecords(path, "muse", partial!.position);
+    const completed = await readTranscriptRecords(path, "muse", partial.position);
     expect(completed?.records).toHaveLength(1);
     expect(completed?.records[0]?.dedupeKey).not.toBe(large?.records[0]?.dedupeKey);
     expect(completed?.records[0]?.totals).toEqual(small.records[0]?.totals);
@@ -282,18 +280,18 @@ describe("large usage records", () => {
     expect(partial?.tailRecords).toEqual([]);
     expect(partial?.position.resumeOffset).toBe(Buffer.byteLength(first));
     await NodeFSP.appendFile(path, second.subarray(split));
-    const complete = await readTranscriptRecords(path, "claude", partial!.position);
+    const complete = await readTranscriptRecords(path, "claude", partial.position);
     expect(complete?.resumed).toBe(true);
     expect(complete?.records).toEqual([]);
     expect(complete?.tailRecords.map((r) => r.totals.outputTokens)).toEqual([7]);
     expect(complete?.position.resumeOffset).toBe(Buffer.byteLength(first));
     await NodeFSP.appendFile(path, "\r\n" + JSON.stringify(claude("third", 11)) + "\n");
-    const appended = await readTranscriptRecords(path, "claude", complete!.position);
+    const appended = await readTranscriptRecords(path, "claude", complete.position);
     expect(appended?.records.map((r) => r.totals.outputTokens)).toEqual([7, 11]);
     expect(appended?.tailRecords).toEqual([]);
     expect(appended?.position.resumeOffset).toBe((await NodeFSP.stat(path)).size);
     const full = await readTranscriptRecords(path, "claude");
-    expect([...partial!.records, ...appended!.records]).toEqual(full?.records);
+    expect([...partial.records, ...appended.records]).toEqual(full.records);
   });
 
   it("preserves Codex model switches and duplicate suppression across streaming resumes", async () => {
@@ -335,7 +333,7 @@ describe("large usage records", () => {
     });
     expect(result?.records[0]).not.toHaveProperty("unresolvedServiceTierTurnId");
     const full = await readTranscriptRecords(path, "codex");
-    expect([...first.records, ...result!.records]).toEqual(full?.records);
+    expect([...first.records, ...result.records]).toEqual(full.records);
   });
 
   it.each(["forked_from_id", "source"])(

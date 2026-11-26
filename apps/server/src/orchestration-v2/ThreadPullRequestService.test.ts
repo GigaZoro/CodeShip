@@ -88,6 +88,51 @@ describe("ThreadPullRequestServiceV2 reads", () => {
     };
   };
 
+  const project: OrchestrationProjectShell = {
+    id: ProjectId.make("project-1"),
+    title: "Project",
+    workspaceRoot: "/workspace/project",
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  const turnEnded = (threadId: ThreadId) =>
+    ({
+      type: "run.updated",
+      threadId,
+      payload: { status: "completed" },
+    }) as OrchestrationV2DomainEvent;
+  /** The project, its repository and the host services every test here shares. */
+  const hostLayers = (activation: Deferred.Deferred<void>) =>
+    Layer.mergeAll(
+      Layer.mock(ProjectStore.ProjectStoreV2)({
+        listShells: () => Effect.succeed([project]),
+        getShell: () => Effect.succeedSome(project),
+      }),
+      Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+        resolve: () =>
+          Effect.succeed({
+            canonicalKey: "github.com/acme/project",
+            locator: {
+              source: "git-remote" as const,
+              remoteName: "origin",
+              remoteUrl: "git@github.com:acme/project.git",
+            },
+            provider: SourceControlProviderKind.make("github"),
+            owner: "acme",
+            name: "project",
+          }),
+      }),
+      Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
+      Layer.succeed(
+        SecureRandom.SecureRandom,
+        SecureRandom.make((size) => new Uint8Array(size).fill(1)),
+      ),
+      Path.layer,
+      FileSystem.layerNoop({}),
+    );
+
   it.effect("does not sweep branch pull requests while no client is connected", () =>
     Effect.gen(function* () {
       // Polling active branches without a connected client wastes GitHub requests.
@@ -169,8 +214,10 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           type: "checkpoint.captured",
           threadId: thread.id,
         } as OrchestrationV2DomainEvent);
+        yield* Queue.offer(domainEvents, turnEnded(thread.id));
         yield* Deferred.await(turnLookup);
         yield* service.drain;
+        expect(lookups.filter(({ refresh }) => refresh)).toHaveLength(1);
         const lookupsBeforeIdle = lookups.length;
 
         yield* TestClock.adjust("10 minutes");
@@ -1155,5 +1202,61 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           : [],
       );
     }),
+  );
+  it.effect("asks at startup only about threads that settled within the last day", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const settledThread = (id: string, branch: string, settledAt: DateTime.Utc) => ({
+          ...threadShell(id),
+          branch,
+          settledAt,
+          updatedAt: settledAt,
+        });
+        const recent = settledThread(
+          "recent",
+          "cs/recent-run",
+          DateTime.subtract(NOW, { hours: 3 }),
+        );
+        const old = settledThread("old", "cs/old-run", DateTime.subtract(NOW, { days: 2 }));
+        yield* TestClock.setTime(DateTime.toEpochMillis(NOW));
+        const activation = yield* Deferred.make<void>();
+        const backfillRead = yield* Deferred.make<void>();
+        const lookedUp: Array<string> = [];
+        const dependencies = Layer.mergeAll(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            streamDomainEvents: Stream.never,
+            getShellSnapshot: () =>
+              Deferred.succeed(backfillRead, undefined).pipe(
+                Effect.as({
+                  schemaVersion: 2,
+                  snapshotSequence: 1,
+                  threads: [recent, old],
+                  archivedThreads: [],
+                }),
+              ),
+          }),
+          Layer.mock(GitManager.GitManager)({
+            branchPullRequest: (input) =>
+              Effect.sync(() => lookedUp.push(input.branch)).pipe(Effect.as(null)),
+          }),
+          Layer.mock(PullRequestService.PullRequestService)({
+            notifyLinkedThreadsChanged: Effect.void,
+          }),
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            shouldRunOpportunisticWork: Effect.succeed(false),
+          }),
+          hostLayers(activation),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadPullRequestService.make;
+          yield* service.start();
+          yield* Deferred.succeed(activation, undefined);
+          yield* Deferred.await(backfillRead);
+          yield* service.drain;
+        }).pipe(Effect.provide(dependencies));
+
+        expect(lookedUp).toEqual([recent.branch]);
+      }),
+    ),
   );
 });

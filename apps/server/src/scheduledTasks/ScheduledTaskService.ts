@@ -110,6 +110,7 @@ import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorke
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 import * as PromptFileReader from "./PromptFileReader.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -419,7 +420,57 @@ function resolveThreadMode(
   return stored === "new_thread" && input.threadId != null ? "continue" : stored;
 }
 
+const FixedTimeOrigin = Schema.Struct({
+  at: Schema.String,
+  timeZone: Schema.String,
+  schedule: ScheduledTask.fields.schedule,
+});
+type FixedTimeOrigin = typeof FixedTimeOrigin.Type;
+const UsageHoldJson = Schema.fromJsonString(
+  Schema.Struct({
+    until: Schema.String,
+    heldOccurrence: Schema.NullOr(FixedTimeOrigin),
+    dispatchAt: Schema.optional(Schema.String),
+  }),
+);
+const encodeUsageHold = Schema.encodeSync(UsageHoldJson);
+const decodeUsageHold = Schema.decodeUnknownOption(UsageHoldJson);
+
+interface DueTask extends ScheduledTask {
+  readonly incarnation: string;
+  readonly usageHold: string | null;
+}
+
+function currentUsageHold(task: DueTask) {
+  if (task.usageHold === null) return null;
+  const hold = Option.getOrNull(decodeUsageHold(task.usageHold));
+  return hold?.until === task.nextRunAt ? hold : null;
+}
+
+function fixedTimeOrigin(task: DueTask): FixedTimeOrigin | null {
+  const due = task.nextRunAt;
+  if (due === null || task.schedule.type !== "fixed_time") return null;
+  const origin =
+    task.usageHold === null
+      ? { at: due, timeZone: DateTime.zoneMakeLocal().id, schedule: task.schedule }
+      : currentUsageHold(task)?.heldOccurrence;
+  if (!origin || !isSameSchedule(task.schedule, origin.schedule)) return null;
+  const at = Date.parse(origin.at);
+  if (!(Date.parse(task.createdAt) <= at && at <= Date.parse(due))) return null;
+  const zone = Option.getOrNull(DateTime.zoneMakeNamed(origin.timeZone));
+  if (zone === null) return null;
+  const slot = latestMissedFixedTimeRun(
+    task.schedule,
+    DateTime.setZone(DateTime.makeUnsafe(at), zone),
+  );
+  return slot !== null && iso(slot.at) === origin.at ? origin : null;
+}
+
 interface ScheduledTaskRow {
+  readonly incarnation_id?: string | null;
+  /** The run the task is on; null before its first run since run ids were stored. */
+  readonly last_run_id?: string | null;
+  readonly usage_hold_json?: string | null;
   readonly task_id: string;
   readonly title: string;
   readonly description_json: string | null;
@@ -510,6 +561,11 @@ interface RunRecordRow {
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
 interface ScheduledFire {
+  readonly localFixedTime?: {
+    readonly incarnation: string;
+    readonly origin: FixedTimeOrigin | null;
+    readonly dispatchAt: string;
+  };
   readonly scheduledFor: string | null;
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
@@ -636,6 +692,16 @@ export class ScheduledTaskService extends Context.Service<
     readonly applyShared: (
       input: ScheduledTaskApplySharedInput,
     ) => Effect.Effect<ScheduledTaskApplySharedResult, ScheduledTaskError>;
+    /**
+     * The agent of a scheduled run reports how that occurrence ended. The occurrence is the thread's
+     * latest run; its report is final, so a later turn or chat cannot change it. `incomplete` makes
+     * the occurrence failed, and the task's last run too while it is still the latest.
+     */
+    readonly reportRunResult: (input: {
+      readonly threadId: ThreadId;
+      readonly outcome: "completed" | "incomplete";
+      readonly summary: string;
+    }) => Effect.Effect<ScheduledTaskId, ScheduledTaskError>;
     /** Deletes only tasks that still target this thread, including their webhook deliveries. */
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
     /** Points tasks bound to these threads at the project the threads moved to. */
@@ -1010,14 +1076,18 @@ export const listDueTasks = Effect.fn("ScheduledTaskService.listDueTasks")(funct
       AND next_run_at <= ${iso(now)} AND last_run_status <> 'running'
     ORDER BY next_run_at ASC, task_id ASC
   `.pipe(NodeSqliteClient.readOnly);
-  const tasks: ScheduledTask[] = [];
+  const tasks: DueTask[] = [];
   for (const row of rows) {
     const decoded = yield* Effect.result(decodeRow(row));
     if (Result.isSuccess(decoded)) {
       const task = decoded.success;
       // next_run_at is freeform; skip unparseable values before they defect the poll.
       if (task.nextRunAt === null || Option.isSome(DateTime.make(task.nextRunAt))) {
-        tasks.push(task);
+        tasks.push({
+          ...task,
+          incarnation: row.incarnation_id ?? task.createdAt,
+          usageHold: row.usage_hold_json ?? null,
+        });
       } else {
         yield* Effect.logWarning("Skipping schedule task row with invalid next_run_at", {
           taskId: row.task_id,
@@ -1314,6 +1384,19 @@ export const layer = Layer.effect(
     if (!taskColumns.some((column) => column.name === "fallback_model_selections_json")) {
       yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN fallback_model_selections_json TEXT`;
     }
+    if (!taskColumns.some((column) => column.name === "incarnation_id")) {
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN incarnation_id TEXT`;
+    }
+    if (!taskColumns.some((column) => column.name === "usage_hold_json")) {
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN usage_hold_json TEXT`;
+    }
+    // A hold only belongs to the cursor that installed it. Clear it when any writer advances.
+    yield* sql`CREATE TRIGGER IF NOT EXISTS scheduled_task_clear_usage_hold
+      AFTER UPDATE OF next_run_at ON scheduled_tasks
+      WHEN NEW.usage_hold_json IS NOT NULL AND NEW.next_run_at IS NOT OLD.next_run_at
+        AND NEW.next_run_at IS NOT (CASE WHEN json_valid(NEW.usage_hold_json)
+          THEN json_extract(NEW.usage_hold_json, '$.until') END)
+      BEGIN UPDATE scheduled_tasks SET usage_hold_json = NULL WHERE task_id = NEW.task_id; END`;
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
@@ -1470,6 +1553,7 @@ export const layer = Layer.effect(
       sql<ScheduledTaskRow>`
       SELECT
         task_id,
+        last_run_id,
         title,
         description_json,
         prompt,
@@ -1723,6 +1807,7 @@ export const layer = Layer.effect(
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
+          incarnation_id,
           task_id,
           title,
           description_json,
@@ -1750,6 +1835,7 @@ export const layer = Layer.effect(
           webhook_secret
         )
         SELECT
+          lower(hex(randomblob(16))),
           ${task.id},
           ${task.title},
           ${task.description === undefined ? null : encodeDescriptionJson(task.description)},
@@ -1784,6 +1870,19 @@ export const layer = Layer.effect(
           prompt = excluded.prompt,
           enabled = excluded.enabled,
           schedule_json = excluded.schedule_json,
+          usage_hold_json = CASE WHEN ${keptSchedule !== null ? 1 : 0} THEN scheduled_tasks.usage_hold_json
+            ELSE ${
+              task.schedule.type === "fixed_time" && task.nextRunAt !== null
+                ? encodeUsageHold({
+                    until: task.nextRunAt,
+                    heldOccurrence: {
+                      at: task.nextRunAt,
+                      schedule: task.schedule,
+                      timeZone: DateTime.zoneMakeLocal().id,
+                    },
+                  })
+                : null
+            } END,
           project_id = excluded.project_id,
           -- A first run may bind the thread while this save is in flight; only a
           -- switch to new threads unbinds.
@@ -2086,25 +2185,28 @@ export const layer = Layer.effect(
       readonly trigger: ScheduledTaskRunTrigger;
       readonly scheduledFor: string | null;
       readonly webhookDeliveryId: string | null;
+      /** The run the task is then on: a report from its chat and restart recovery find it by id. */
+      readonly runId: string;
     }) =>
-      sql<{ task_id: string }>`
+      sql<{ incarnation: string }>`
         UPDATE scheduled_tasks
         SET updated_at = ${input.startedAtIso},
             last_run_at = ${input.startedAtIso},
+            last_run_id = ${input.runId},
             last_run_trigger = ${input.trigger},
             last_run_scheduled_for = ${input.scheduledFor},
             last_run_webhook_delivery_id = ${input.webhookDeliveryId},
             last_run_status = 'running',
             last_run_error = NULL
         WHERE task_id = ${input.id}
-        RETURNING task_id
+        RETURNING COALESCE(incarnation_id, created_at) AS incarnation
       `.pipe(
         Effect.mapError((cause) =>
           taskError("Could not mark schedule task as running.", { taskId: input.id, cause }),
         ),
         Effect.flatMap((rows) =>
-          rows.length > 0
-            ? Effect.void
+          rows[0] !== undefined
+            ? Effect.succeed(rows[0].incarnation)
             : taskError("Schedule task not found.", { taskId: input.id }),
         ),
       );
@@ -2205,7 +2307,13 @@ export const layer = Layer.effect(
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
           ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
-        ON CONFLICT (run_id) DO NOTHING
+        -- A retry reopens only an attempt that kept no chat. A failed run keeps its chat only once its
+        -- prompt arrived (its chat reported it incomplete, or it stalled), and that result stays.
+        ON CONFLICT (run_id) DO UPDATE SET
+          outcome = 'running', started_at = excluded.started_at, completed_at = NULL,
+          error = NULL, chat_folder = NULL, check_json = excluded.check_json
+        WHERE scheduled_task_runs.outcome = 'failed' AND scheduled_task_runs.thread_id IS NULL
+          AND excluded.outcome = 'running'
       `.pipe(
         Effect.andThen(sql`
           DELETE FROM scheduled_task_runs WHERE run_id IN (
@@ -2262,6 +2370,22 @@ export const layer = Layer.effect(
           WHERE run_id = ${id} AND outcome = 'running'
         `,
         taskId,
+      );
+
+    // The result of a run whose prompt reached its chat, a reported `incomplete` included. A run
+    // without a chat is one the next attempt reopens, so its result is not kept.
+    // Run history is bookkeeping: when it cannot be read, the attempt's own result stands.
+    const settledRunResult = (taskId: ScheduledTaskId, id: string) =>
+      sql<{ readonly outcome: "succeeded" | "failed"; readonly error: string | null }>`
+        SELECT outcome, error FROM scheduled_task_runs
+        WHERE run_id = ${id} AND outcome IN ('succeeded', 'failed') AND thread_id IS NOT NULL
+      `.pipe(
+        Effect.map(([run]) => run ?? null),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not read schedule task run history", { taskId, cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
       );
 
     // Before the launch, so startup still finds the chat when a restart cuts the run after it.
@@ -2543,7 +2667,7 @@ export const layer = Layer.effect(
       const startedAtIso = iso(startedAt);
       const recordTrigger: ScheduledTaskRunTrigger =
         trigger === "scheduled" && fire?.catchUp === true ? "catch_up" : trigger;
-      const runRecordId = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
+      let runRecordId = `${task.id}:${DateTime.toEpochMillis(startedAt)}:${recordTrigger}`;
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
@@ -2621,23 +2745,87 @@ export const layer = Layer.effect(
           trigger: recordTrigger,
           scheduledFor,
           webhookDeliveryId: webhook?.deliveryId ?? null,
+          runId: runRecordId,
         };
-        if (webhook === undefined) yield* markRunning(started);
-        else
-          yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* markRunning(started);
-                // Recovery must distinguish this delivery from other windows waiting on the same task.
-                yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
-              }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                taskError("Could not start webhook run.", { taskId: task.id, cause }),
-              ),
-            );
-
+        const fixedTime = fire?.localFixedTime;
+        const begun =
+          webhook !== undefined
+            ? yield* sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    yield* markRunning(started);
+                    // Recovery must distinguish this delivery from other windows waiting on the same task.
+                    yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
+                  }),
+                )
+                .pipe(
+                  Effect.as({ demand: {}, runId: runRecordId }),
+                  Effect.mapError((cause) =>
+                    taskError("Could not start webhook run.", { taskId: task.id, cause }),
+                  ),
+                )
+            : fixedTime === undefined
+              ? yield* markRunning(started).pipe(Effect.as({ demand: {}, runId: runRecordId }))
+              : yield* sql
+                  .withTransaction(
+                    Effect.gen(function* () {
+                      const incarnation = yield* markRunning(started);
+                      const demand = {
+                        demandId:
+                          fixedTime.origin !== null &&
+                          fixedTime.incarnation === incarnation &&
+                          active.nextRunAt === task.nextRunAt &&
+                          active.shared?.runOn !== "one" &&
+                          isSameSchedule(fixedTime.origin.schedule, active.schedule)
+                            ? originalDemandId(
+                                "scheduled-task",
+                                hereEnvironmentId,
+                                active.id,
+                                incarnation,
+                                "scheduled",
+                                fixedTime.origin.at,
+                              )
+                            : null,
+                      };
+                      if (scheduledFor === null) return { demand, runId: runRecordId };
+                      // Deletion clears this incarnation's history. Older commands used dispatch time, so
+                      // match their projected demand or, for unknown attribution, the persisted cursor.
+                      const prior = (yield* sql<{ run_id: string }>`
+                        SELECT h.run_id FROM scheduled_task_runs h
+                        JOIN orchestration_v2_projection_runs r ON r.thread_id = h.thread_id
+                        WHERE h.task_id = ${active.id} AND h.trigger IN ('scheduled', 'catch_up')
+                          AND substr(h.run_id, length(h.task_id) + 1, 7) <> ':fixed:'
+                          AND json_extract(r.payload_json, '$.demandId') IS ${demand.demandId ?? null}
+                          AND (${demand.demandId ?? null} IS NOT NULL OR h.scheduled_for = ${fixedTime.dispatchAt})
+                          AND json_extract(r.payload_json, '$.userMessageId') = 'scheduled-task-message:' ||
+                            CASE WHEN h.trigger = 'catch_up' AND substr(h.run_id, -9) = ':catch_up'
+                              THEN substr(h.run_id, 1, length(h.run_id) - 9) || ':scheduled' ELSE h.run_id END
+                        LIMIT 1
+                      `.pipe(NodeSqliteClient.readOnly))[0];
+                      const runId =
+                        prior?.run_id ??
+                        `${active.id}:fixed:${incarnation}:${demand.demandId ?? fixedTime.dispatchAt}:scheduled`;
+                      // A replay takes the run it delivered, which only this lookup finds. Naming it in
+                      // the marking transaction means a restart never leaves the task naming an id no
+                      // run record has, which recovery would settle as cut and drop the delivered result.
+                      yield* sql`UPDATE scheduled_tasks SET last_run_id = ${runId} WHERE task_id = ${active.id}`;
+                      return { demand, runId };
+                    }),
+                  )
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      isScheduledTaskError(cause)
+                        ? cause
+                        : taskError("Could not mark schedule task as running.", {
+                            taskId: task.id,
+                            cause,
+                          }),
+                    ),
+                  );
+        const demand: { readonly demandId?: string | null } = begun.demand;
+        // Set only once the mark committed, so a rolled-back attempt's error path cannot finish a
+        // delivered run it never took over.
+        runRecordId = begun.runId;
         yield* insertRunRecord({
           id: runRecordId,
           taskId: active.id,
@@ -2707,6 +2895,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
+              ...demand,
               text,
               attachments: [],
               mode: "queue",
@@ -2742,10 +2931,20 @@ export const layer = Layer.effect(
                 Effect.gen(function* () {
                   // A webhook delivery cut by a restart is replayed under its command id, and its
                   // launch finds the chat it started then.
+                  const [receipt] =
+                    fixedTime === undefined
+                      ? []
+                      : yield* sql<{ thread_id: string }>`
+                    SELECT aggregate_id AS thread_id FROM orchestration_command_receipts
+                    WHERE command_id = ${commandId} AND command_type = 'thread.create'
+                      AND aggregate_kind = 'thread' AND status = 'accepted'
+                  `.pipe(NodeSqliteClient.readOnly);
                   const threadId =
-                    webhook === undefined
-                      ? yield* ids.allocate.thread({ projectId: active.projectId })
-                      : undefined;
+                    receipt !== undefined
+                      ? ThreadId.make(receipt.thread_id)
+                      : webhook === undefined
+                        ? yield* ids.allocate.thread({ projectId: active.projectId })
+                        : undefined;
                   if (threadId !== undefined) {
                     yield* nameRunChat(task.id, runRecordId, threadId, active.group ?? null);
                   }
@@ -2761,6 +2960,7 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      ...demand,
                       ...(target.crossProviderFailoverFrom === undefined
                         ? {}
                         : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
@@ -2801,6 +3001,11 @@ export const layer = Layer.effect(
           const [row] = yield* getRows(task.id);
           const current = row === undefined ? null : yield* decodeRow(row, origin);
           const scheduleSource = current ?? task;
+          // A replay of an occurrence whose prompt already arrived finds its run settled, which
+          // finishRunRecord leaves as it is: that result, a reported `incomplete` included, is the task's.
+          const settled = yield* settledRunResult(task.id, runRecordId);
+          const status = settled?.outcome ?? lastRunStatus;
+          const error = settled === null ? lastRunError : settled.error;
           const completed: ScheduledTask = {
             ...scheduleSource,
             updatedAt: iso(completedAt),
@@ -2810,8 +3015,8 @@ export const layer = Layer.effect(
               scheduleSource,
               scheduleSource.schedule.type === "once" ? startedAt : completedAt,
             ),
-            lastRunStatus,
-            lastRunError,
+            lastRunStatus: status,
+            lastRunError: error,
             runCount: scheduleSource.runCount + 1,
             ...(threadId === null ? {} : { lastRunThreadId: threadId }),
           };
@@ -2838,8 +3043,8 @@ export const layer = Layer.effect(
             id: task.id,
             completedAtIso: completed.updatedAt,
             nextRunAtIso: completed.nextRunAt,
-            status: lastRunStatus,
-            error: lastRunError,
+            status,
+            error,
             startedAtIso,
           });
           let written = false;
@@ -3037,6 +3242,7 @@ export const layer = Layer.effect(
       unmoved: ReturnType<typeof occurrenceUnmoved>,
       skip: {
         readonly reason: (typeof QUIET_SKIP_REASONS)[number];
+        readonly usageHold?: string;
         readonly next: string | null;
         readonly now: DateTime.DateTime;
         /** When judging the occurrence began, if before `now`. */
@@ -3047,12 +3253,12 @@ export const layer = Layer.effect(
         readonly memory?: MemoryShortage;
       },
     ) {
-      const { reason, next, now, startedAt = now, ...details } = skip;
+      const { reason, next, now, startedAt = now, usageHold, ...details } = skip;
       const scheduledFor = fire.scheduledFor ?? task.nextRunAt;
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const moved = yield* sql`
-            UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
+            UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}, usage_hold_json = ${usageHold ?? null}
             WHERE ${unmoved}
             RETURNING task_id
           `;
@@ -3181,8 +3387,28 @@ export const layer = Layer.effect(
           (current.schedule.type === "fixed_time" &&
             (current.catchUpMissedRun ?? defaultCatchUpMissedRun(current.schedule)) &&
             (following === null || Date.parse(block.until) < Date.parse(following)));
-        const skipped = yield* recordQuietSkip(task, fire, occurrenceUnmoved(task), {
+        const unmoved = fire.localFixedTime
+          ? sql`${occurrenceUnmoved(task)}
+          AND COALESCE(incarnation_id, created_at) = ${fire.localFixedTime.incarnation}
+          AND updated_at = ${current.updatedAt}`
+          : occurrenceUnmoved(task);
+        const skipped = yield* recordQuietSkip(task, fire, unmoved, {
           reason: "usage_limited",
+          ...(fire.localFixedTime && (waitsForRoom || following === block.until)
+            ? {
+                usageHold: encodeUsageHold({
+                  until: block.until,
+                  dispatchAt: waitsForRoom ? fire.localFixedTime.dispatchAt : block.until,
+                  heldOccurrence: waitsForRoom
+                    ? fire.localFixedTime.origin
+                    : {
+                        at: block.until,
+                        schedule: current.schedule,
+                        timeZone: DateTime.zoneMakeLocal().id,
+                      },
+                }),
+              }
+            : {}),
           next: waitsForRoom ? block.until : following,
           now,
           usageLimit: { driver: block.driver, until: block.until },
@@ -4238,16 +4464,25 @@ export const layer = Layer.effect(
 
     // Due rows come without sharing, so look it up only for tasks that are shared to run on one machine.
     const runDueOccurrence = Effect.fn("ScheduledTaskService.runDueOccurrence")(function* (
-      task: ScheduledTask,
+      task: DueTask & { readonly oneMachine: boolean },
       now: DateTime.DateTime,
       catchUp = false,
     ) {
-      const [runOn] = yield* sql<{ run_on: string }>`
-        SELECT run_on FROM scheduled_task_shared WHERE task_id = ${task.id}
-      `.pipe(NodeSqliteClient.readOnly);
-      const sharing = runOn?.run_on === "one" ? (yield* findTask(task.id))?.shared : null;
+      const sharing = task.oneMachine ? (yield* findTask(task.id))?.shared : null;
       if (sharing != null) return yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
-      const fire = { scheduledFor: task.nextRunAt, catchUp };
+      const fire = {
+        scheduledFor: task.nextRunAt,
+        catchUp,
+        ...(task.schedule.type === "fixed_time" && task.nextRunAt !== null
+          ? {
+              localFixedTime: {
+                incarnation: task.incarnation,
+                origin: fixedTimeOrigin(task),
+                dispatchAt: currentUsageHold(task)?.dispatchAt ?? task.nextRunAt,
+              },
+            }
+          : {}),
+      };
       if (yield* skippedAtLiveRunLimit(task, fire, [])) return;
       if (yield* skippedForMemory(task, fire)) return;
       if (yield* skippedForUsage(task, fire)) return;
@@ -4256,7 +4491,7 @@ export const layer = Layer.effect(
 
     // A fixed-time run the server reached too late, because the app was off or the machine asleep.
     const settleMissedRun = Effect.fn("ScheduledTaskService.settleMissedRun")(function* (
-      task: ScheduledTask,
+      task: DueTask & { readonly oneMachine: boolean },
       now: DateTime.DateTime,
     ) {
       // Due rows come without the choice; a missed run is rare enough to look it up.
@@ -4280,6 +4515,29 @@ export const layer = Layer.effect(
         ),
       );
       const missed = latestMissedFixedTimeRun(task.schedule, now);
+      const origin = task.oneMachine ? null : fixedTimeOrigin(task);
+      // A slot already past when the retry became eligible cannot supersede its admitted occurrence.
+      if (
+        catchUp &&
+        task.usageHold !== null &&
+        origin &&
+        missed &&
+        task.nextRunAt !== null &&
+        Date.parse(task.nextRunAt) >= DateTime.toEpochMillis(missed.at)
+      ) {
+        const next = nextScheduledRunAt(task.schedule, now);
+        const nowMs = DateTime.toEpochMillis(now);
+        if (next && nowMs - Date.parse(origin.at) >= DateTime.toEpochMillis(next) - nowMs)
+          return yield* rescheduleMissedRun(
+            task,
+            now,
+            origin.at,
+            "next_run_sooner",
+            stored?.enabled ?? null,
+            held?.held_at ?? null,
+          );
+        return yield* runDueOccurrence(task, now, true);
+      }
       const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
       // An update held it, not the app being off, so the task's catch-up choice does not apply. It
       // still gives way to a nearer next time, and to a later time that passed too, the next day's
@@ -4317,14 +4575,35 @@ export const layer = Layer.effect(
           );
         }
       }
-      // Several missed times run once, for the latest; the one-machine check judges that one. A
-      // held one takes its hold along, so a check a restart cuts still runs it.
+      // Repointing history to a local clock time cannot prove an older off-schedule cursor.
+      // Persist that distinction in the same write, including when startup cuts admission.
+      const newer =
+        missedAt !== null &&
+        task.nextRunAt !== null &&
+        Date.parse(missedAt) > Date.parse(origin?.at ?? task.nextRunAt);
+      const caughtOrigin =
+        !task.oneMachine && newer
+          ? fixedTimeOrigin({ ...task, nextRunAt: missedAt, usageHold: null })
+          : origin?.at === missedAt
+            ? origin
+            : null;
+      const usageHold =
+        task.oneMachine || missedAt === null
+          ? null
+          : encodeUsageHold({
+              until: missedAt,
+              heldOccurrence: caughtOrigin,
+              dispatchAt: newer
+                ? missedAt
+                : (currentUsageHold(task)?.dispatchAt ?? task.nextRunAt ?? missedAt),
+            });
       const pointed = yield* sql
         .withTransaction(
           Effect.gen(function* () {
             const moved = yield* sql`
-              UPDATE scheduled_tasks SET next_run_at = ${missedAt}, updated_at = ${iso(now)}
-              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+              UPDATE scheduled_tasks SET next_run_at = ${missedAt}, updated_at = ${iso(now)}, usage_hold_json = ${usageHold}
+              WHERE ${occurrenceUnmoved(task)} AND COALESCE(incarnation_id, created_at) = ${task.incarnation}
+                AND updated_at = ${task.updatedAt}
               RETURNING task_id
             `;
             if (heldByUpdate && moved.length > 0) {
@@ -4349,7 +4628,7 @@ export const layer = Layer.effect(
         taskId: task.id,
         missedRunAt: missedAt,
       });
-      yield* runDueOccurrence({ ...task, nextRunAt: missedAt }, now, true);
+      yield* runDueOccurrence({ ...task, nextRunAt: missedAt, usageHold }, now, true);
     });
 
     const holdForUpdate = Effect.fn("ScheduledTaskService.holdForUpdate")(function* (
@@ -4429,11 +4708,39 @@ export const layer = Layer.effect(
       yield* Effect.forEach(
         due,
         ({ task, dueAt }) =>
-          Effect.suspend(() =>
-            isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? settleMissedRun(task, now)
-              : runDueOccurrence(task, now),
-          ).pipe(
+          Effect.gen(function* () {
+            const [context] = yield* sql<{ one_machine: number; legacy_reset: number | null }>`
+              SELECT EXISTS(SELECT 1 FROM scheduled_task_shared
+                WHERE task_id = ${task.id} AND run_on = 'one') AS one_machine,
+                CASE WHEN ${task.schedule.type === "fixed_time" && task.usageHold === null ? 1 : 0} THEN (
+                  SELECT skip_reason = 'usage_limited' AND CASE WHEN json_valid(usage_limit_json)
+                    THEN json_extract(usage_limit_json, '$.until') = ${task.nextRunAt} END
+                  FROM scheduled_task_runs WHERE task_id = ${task.id}
+                    AND started_at >= ${task.createdAt}
+                  ORDER BY started_at DESC, rowid DESC LIMIT 1
+                ) END AS legacy_reset
+            `.pipe(NodeSqliteClient.readOnly);
+            const dueTask = {
+              ...task,
+              oneMachine: context?.one_machine === 1,
+              usageHold:
+                context?.legacy_reset === 1 && task.nextRunAt !== null
+                  ? encodeUsageHold({ until: task.nextRunAt, heldOccurrence: null })
+                  : task.usageHold,
+            };
+            const following =
+              dueTask.usageHold !== null && !dueTask.oneMachine
+                ? nextScheduledRunAt(
+                    task.schedule,
+                    DateTime.setZone(dueAt, DateTime.zoneMakeLocal()),
+                  )
+                : null;
+            return isMissedFixedTimeRun(task.schedule, dueAt, now) ||
+              (following !== null &&
+                DateTime.toEpochMillis(following) <= DateTime.toEpochMillis(now))
+              ? yield* settleMissedRun(dueTask, now)
+              : yield* runDueOccurrence(dueTask, now);
+          }).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
             ),
@@ -4527,7 +4834,7 @@ export const layer = Layer.effect(
                     UPDATE scheduled_tasks
                     SET last_run_status = 'succeeded', last_run_error = NULL,
                         updated_at = ${completedAt}
-                    WHERE task_id = ${run.task_id} AND last_run_at = ${run.started_at}
+                    WHERE task_id = ${run.task_id} AND last_run_id = ${run.run_id}
                       AND last_run_status = 'failed' AND last_run_error = ${INTERRUPTED_BY_RESTART}
                     RETURNING task_id
                   `;
@@ -4559,16 +4866,14 @@ export const layer = Layer.effect(
         stuck,
         (row) =>
           Effect.gen(function* () {
-            // From the stored run, so a run kept by a startup that a restart then cut still counts.
-            const kept = yield* sql`
-              SELECT 1 FROM scheduled_task_runs
-              WHERE task_id = ${row.task_id} AND started_at = ${row.last_run_at}
-                AND outcome = 'succeeded'
-              LIMIT 1
-            `;
-            const started = kept.length > 0;
-            const status = started ? "succeeded" : "failed";
-            const error = started ? null : INTERRUPTED_BY_RESTART;
+            // From the stored run, so a run kept by a startup that a restart then cut still counts,
+            // as does the delivered run of an occurrence whose replay the restart cut.
+            const kept =
+              row.last_run_id == null
+                ? null
+                : yield* settledRunResult(ScheduledTaskId.make(row.task_id), row.last_run_id);
+            const status = kept?.outcome ?? "failed";
+            const error = kept === null ? INTERRUPTED_BY_RESTART : kept.error;
             const decoded = yield* Effect.result(decodeRow(row));
             if (Result.isSuccess(decoded)) {
               yield* sql`
@@ -4799,7 +5104,16 @@ export const layer = Layer.effect(
         ),
       );
       const identity =
-        project === undefined ? null : yield* repositoryIdentities.resolve(project.workspaceRoot);
+        project === undefined
+          ? null
+          : yield* repositoryIdentities.resolve(project.workspaceRoot).pipe(
+              Effect.mapError((cause) =>
+                taskError(`Could not read the task's project repository: ${cause.message}`, {
+                  taskId,
+                  cause,
+                }),
+              ),
+            );
       if (project === undefined || identity === null) {
         return yield* taskError(
           "To share a task, pick No project or a project with a git remote, so each machine can find its copy.",
@@ -4856,7 +5170,17 @@ export const layer = Layer.effect(
             ),
           );
         for (const candidate of page.projects) {
-          const identity = yield* repositoryIdentities.resolve(candidate.workspaceRoot);
+          // A project whose repository Git did not give may be the match, so no answer is sure.
+          const identity = yield* repositoryIdentities
+            .resolve(candidate.workspaceRoot)
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError(
+                  `Could not read the repository of project ${candidate.title} on this machine: ${cause.message}`,
+                  { taskId, cause },
+                ),
+              ),
+            );
           const rank = repositoryMatchRank(project, identity);
           if (rank === -1 || rank > bestRank) continue;
           if (rank < bestRank) matches = [];
@@ -5876,6 +6200,68 @@ export const layer = Layer.effect(
         Effect.andThen(notifyChanged),
         Effect.as({ id: input.id }),
       );
+
+    const reportRunResult: ScheduledTaskService["Service"]["reportRunResult"] = Effect.fn(
+      "ScheduledTaskService.reportRunResult",
+    )(function* (input) {
+      const taskId = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const [run] = yield* sql<{
+              readonly run_id: string;
+              readonly task_id: ScheduledTaskId;
+              readonly outcome: string;
+              readonly reported_outcome: string | null;
+            }>`
+              SELECT run_id, task_id, outcome, reported_outcome
+              FROM scheduled_task_runs
+              WHERE thread_id = ${input.threadId} AND outcome <> 'skipped'
+              ORDER BY started_at DESC
+              LIMIT 1
+            `;
+            if (run === undefined) {
+              return yield* taskError("This chat is not a scheduled task run.", {});
+            }
+            if (run.reported_outcome !== null) {
+              return yield* taskError("This run already reported its result.", {
+                taskId: run.task_id,
+              });
+            }
+            if (run.outcome === "running") {
+              return yield* taskError("The run is still being recorded. Report again shortly.", {
+                taskId: run.task_id,
+              });
+            }
+            const failed = input.outcome === "incomplete";
+            yield* sql`
+              UPDATE scheduled_task_runs
+              SET reported_outcome = ${input.outcome},
+                  reported_summary = ${input.summary},
+                  outcome = ${failed ? "failed" : run.outcome},
+                  error = CASE WHEN ${failed ? 1 : 0} = 1 THEN ${input.summary} ELSE error END
+              WHERE run_id = ${run.run_id}
+            `;
+            if (failed) {
+              yield* sql`
+                UPDATE scheduled_tasks
+                SET last_run_status = 'failed', last_run_error = ${input.summary}
+                WHERE task_id = ${run.task_id} AND last_run_id = ${run.run_id}
+                  AND last_run_status = 'succeeded'
+              `;
+            }
+            return run.task_id;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not record the run's reported result.", { cause }),
+          ),
+        );
+      yield* notifyChanged;
+      return taskId;
+    });
 
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
       threadId: ThreadId,
@@ -6990,6 +7376,7 @@ export const layer = Layer.effect(
       knownMachineIds,
       claimOccurrence,
       deleteForThread,
+      reportRunResult,
       moveThreadTasks,
       runNow,
       liveRuns,

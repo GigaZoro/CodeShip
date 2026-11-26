@@ -3,6 +3,7 @@ import {
   type ProviderInstanceId,
   type OrchestrationV2LimitRecovery,
   type OrchestrationV2LimitRecoveryUpdate,
+  type ProviderRetryUsageLimitResult,
   type RunId,
 } from "@t3tools/contracts";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
@@ -39,7 +40,7 @@ type RecoveryProps = {
   timestampFormat: TimestampFormat;
   onChange: (recovery: OrchestrationV2LimitRecoveryUpdate) => Promise<void>;
   /** Ends the account's hold so its next turn tries it again; absent when the account is unknown. */
-  onRetryAccount?: () => Promise<void>;
+  onRetryAccount?: () => Promise<ProviderRetryUsageLimitResult>;
   /** The account's provider settings, where its sign-in can be switched. */
   signInSettings?: { environmentId: EnvironmentId; instanceId: ProviderInstanceId };
 };
@@ -100,6 +101,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
           {props.onRetryAccount ? (
             <RetryAccountButton
               onRetry={props.onRetryAccount}
+              formatTime={(isoDate) => formatUpcomingTimestamp(isoDate, timestampFormat)}
               resumes={resumeScheduled(props) && !snoozedUntilReset(props)}
             />
           ) : null}

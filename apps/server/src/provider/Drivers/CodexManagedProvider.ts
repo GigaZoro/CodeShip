@@ -14,7 +14,11 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import { CHATGPT_SHARING_SCOPE, type CodexChatGptCredentials } from "../CodexChatGptAuth.ts";
+import {
+  CHATGPT_SHARING_SCOPE,
+  codexSharingWorkspaceId,
+  type CodexChatGptCredentials,
+} from "../CodexChatGptAuth.ts";
 import { chatGptModels, withChatGptToken } from "../CodexChatGptModels.ts";
 import { CHATGPT_TOKEN_REVOKED_DETAIL, isChatGptTokenRevoked } from "../CodexLoginRejected.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
@@ -23,6 +27,7 @@ import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapt
 import {
   makeCodexSetSkillEnabled,
   checkCodexProviderStatus,
+  codexPlanFunding,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
   readCodexStoredChatGptLogin,
@@ -39,6 +44,7 @@ import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexMcpManagement } from "../CodexMcp.ts";
 import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
+import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
   type ProviderDriverCreateInput,
@@ -58,11 +64,16 @@ const readable = (limits: ServerProviderUsageLimits | undefined) =>
  * keeping the notice of a login that could not read.
  */
 const limitsToShow = (
+  workspaceId: string | undefined,
   ownLogin: ServerProviderUsageLimits | undefined,
   machineLogin: ServerProviderUsageLimits | undefined,
   chatGptUsage: ServerProviderUsageLimits,
 ): ServerProviderUsageLimits => {
-  const shown = [ownLogin, machineLogin].find(readable);
+  if (!workspaceId) return chatGptUsage;
+  const accountKey = usageAccountKey(workspaceId);
+  const shown = [ownLogin, machineLogin].find(
+    (reading) => readable(reading) && reading?.accountKey === accountKey,
+  );
   if (shown) return shown;
   const failed = ownLogin ?? machineLogin;
   return failed?.unavailable
@@ -109,8 +120,12 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       ),
     ),
     environment: limitsEnvironment,
-    accountEmail: runtime.auth.read.pipe(
-      Effect.map((saved) => (Option.isSome(saved) ? saved.value.email?.trim() : undefined)),
+    account: runtime.auth.read.pipe(
+      Effect.map((saved) =>
+        Option.isSome(saved)
+          ? { email: saved.value.email, workspaceId: codexSharingWorkspaceId(saved.value) }
+          : undefined,
+      ),
       Effect.orElseSucceed(() => undefined),
     ),
   });
@@ -185,11 +200,14 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
       limitsSignIn: true,
     } satisfies ServerProviderUsageLimits;
+    const workspaceId = codexSharingWorkspaceId(saved.value);
     const managedAuth = {
       subscriptionSharing: true,
       profileId: saved.value.clientId,
       status: "authenticated" as const,
       type: "chatgpt",
+      funding: "unknown" as const,
+      ...(workspaceId ? { workspaceId, fundingScope: "workspace" as const } : {}),
       label: "ChatGPT",
       ...(saved.value.email?.trim() ? { email: saved.value.email.trim() } : {}),
     };
@@ -215,7 +233,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           // Never send that account's token with the launch profile's catalog labels.
           if (!(yield* isLaunchProfile(credentials)) || !(yield* isLaunchProfile(saved.value)))
             return yield* connectionChanged();
-          const { value: models } = yield* withChatGptToken(
+          const { credentials: catalogLogin, value: models } = yield* withChatGptToken(
             runtime.auth,
             instanceId,
             credentials,
@@ -229,17 +247,30 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           // refused it or another server replaced it, and the models answer may be for a token
           // renewed away.
           const current = Option.filter(yield* runtime.auth.read, canRun);
-          if (Option.isNone(current) || !(yield* isLaunchProfile(current.value)))
+          if (
+            Option.isNone(current) ||
+            !(yield* isLaunchProfile(current.value)) ||
+            !(yield* isLaunchProfile(catalogLogin))
+          )
             return yield* connectionChanged();
           return [{ ...draft, models }, ownLimits] as const;
         }),
       ),
-      Effect.map(([draft, ownLimits]) =>
-        stamp({
+      Effect.map(([draft, ownLimits]) => {
+        const usageLimits = limitsToShow(
+          workspaceId,
+          ownLimits,
+          draft.usageLimits,
+          chatGptUsageLimits,
+        );
+        return stamp({
           ...draft,
-          auth: managedAuth,
+          auth: {
+            ...managedAuth,
+            funding: codexPlanFunding(usageLimits.plan),
+          },
           version: draft.version ?? executable.value.version,
-          usageLimits: limitsToShow(ownLimits, draft.usageLimits, chatGptUsageLimits),
+          usageLimits,
           models: draft.models.map((model) => ({
             ...model,
             ...(model.capabilities
@@ -260,8 +291,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 slashCommands: draft.slashCommands.filter((command) => command.name !== "feedback"),
               }
             : {}),
-        }),
-      ),
+        });
+      }),
       Effect.catch((error) =>
         Effect.gen(function* () {
           const ownLimits = yield* limits.read;
@@ -269,6 +300,9 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           // have replaced the refused one, or ChatGPT may have refused it meanwhile.
           const current = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
           const connected = Option.filter(current, canRun);
+          const workspaceId = Option.isSome(connected)
+            ? codexSharingWorkspaceId(connected.value)
+            : undefined;
           const refused = Option.exists(current, (saved) => saved.refused === true);
           return {
             ...base,
@@ -280,6 +314,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 ? ("authenticated" as const)
                 : ("unauthenticated" as const),
               label: "ChatGPT",
+              ...(workspaceId ? { workspaceId } : {}),
               ...(Option.isSome(connected)
                 ? { subscriptionSharing: true, profileId: connected.value.clientId }
                 : {}),
@@ -288,7 +323,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 : {}),
             },
             ...(Option.isSome(connected)
-              ? { usageLimits: limitsToShow(ownLimits, undefined, chatGptUsageLimits) }
+              ? { usageLimits: limitsToShow(workspaceId, ownLimits, undefined, chatGptUsageLimits) }
               : {}),
             message:
               Option.isNone(connected) && (refused || isChatGptTokenRevoked(error))
@@ -305,6 +340,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.provideService(Path.Path, path),
   );
   const snapshot = yield* makeManagedServerProvider({
+    readsUsageOnRefresh: true,
     resolveMaintenance: () => Effect.succeed({ provider: DRIVER, packageName: null, update: null }),
     getSettings: host.settings.get,
     streamSettings: host.settings.changes,
@@ -351,29 +387,39 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.map(({ client }) => client),
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
   );
-  // Limits come from the home's own Codex login, so its credits are spent through it, but only
-  // while it is still signed in as this account. A sharing launch reports no account, so the
-  // saved login names it.
+  // Either Codex login can hold another workspace belonging to the same person.
+  const checkResetAccount = Effect.fn("CodexManagedProvider.checkResetAccount")(
+    function* (home: string, accountId: string | null | undefined) {
+      const saved = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
+      const login = yield* readCodexStoredChatGptLogin(home);
+      if (
+        !login ||
+        login.accountId !== accountId?.trim() ||
+        !Option.exists(
+          saved,
+          (current) =>
+            canRun(current) &&
+            sameCodexAccountEmail(login.email, current.email) &&
+            codexSharingWorkspaceId(current) === login.accountId,
+        )
+      )
+        return yield* new ProviderDriverError({
+          driver: DRIVER,
+          instanceId,
+          detail:
+            "The Codex login could not confirm this workspace, so its reset credit was not used.",
+        });
+    },
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.provideService(Path.Path, path),
+  );
   const accountHome = runtime.homeLayout.effectiveHomePath ?? runtime.homeLayout.sharedHomePath;
   const consumeThroughOwnHome = makeCodexConsumeResetCredit({
     instanceId,
     accountHome,
     coordinator: resetCreditCoordinator,
     openClient: openAppServerClient,
-    checkAccount: Effect.gen(function* () {
-      const saved = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
-      const login = yield* readCodexStoredChatGptLogin(accountHome);
-      if (Option.isNone(saved) || !sameCodexAccountEmail(login?.email, saved.value.email))
-        return yield* new ProviderDriverError({
-          driver: DRIVER,
-          instanceId,
-          detail:
-            "This machine's Codex login is no longer this account, so its reset credits can't be used here.",
-        });
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    ),
+    checkAccount: (id) => checkResetAccount(accountHome, id),
     snapshot,
   });
   const consumeThroughLimitsLogin = makeCodexConsumeResetCredit({
@@ -381,6 +427,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     accountHome: limits.home,
     coordinator: resetCreditCoordinator,
     openClient: limits.openClient,
+    checkAccount: (id) => checkResetAccount(limits.home, id),
     snapshot,
   });
   const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (request) =>
@@ -421,7 +468,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const models = snapshot.getSnapshot.pipe(Effect.map((value) => value.models));
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
-    onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    bindUsageLimits: Effect.suspend(() => snapshot.bindUsageLimits),
     // The check renews a rejected token once and signs the account out when ChatGPT refuses.
     onAuthenticationFailed: snapshot.refresh.pipe(Effect.ignoreCause({ log: true })),
     readSignedOut: runtime.auth.read.pipe(
@@ -500,6 +547,23 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     enabled,
     snapshot,
     consumeResetCredit,
+    fundingForWorkspace: ({ provider }) =>
+      runtime.auth.access.pipe(
+        Effect.map((current) => {
+          const workspaceId = codexSharingWorkspaceId(current);
+          const funding = codexPlanFunding(provider.usageLimits?.plan);
+          return canRun(current) &&
+            current.clientId === provider.auth.profileId &&
+            sameCodexAccountEmail(current.email, provider.auth.email) &&
+            workspaceId &&
+            workspaceId === provider.auth.workspaceId &&
+            provider.usageLimits?.accountKey === usageAccountKey(workspaceId) &&
+            provider.auth.funding === funding
+            ? funding
+            : ("unknown" as const);
+        }),
+        Effect.orElseSucceed(() => "unknown" as const),
+      ),
     orchestrationAdapter,
     textGeneration,
     // Disconnecting the account also removes the login kept for its limits.

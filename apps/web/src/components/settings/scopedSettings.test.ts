@@ -163,6 +163,35 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it("keeps a named legacy machine's model while saving other edits beside fresh Auto", async () => {
+    const previous = { instanceId: ProviderInstanceId.make("old-account"), model: "pinned" };
+    const legacy = environment("Server", { settings: { defaultModelSelection: previous } });
+    const auto = {
+      instanceId: ProviderInstanceId.make("elsewhere"),
+      model: "placeholder",
+      quotaAwareAuto: true,
+    };
+    const plan = planScopedSettingsPatch(named, [legacy], {
+      defaultModelSelection: auto,
+      finalReviewByDefault: true,
+    });
+    let held = legacy.serverConfig!.settings;
+    await persistScopedSettingsPatch(
+      plan,
+      plainly(async ({ input }: { input: { patch: ServerSettingsPatch } }) => {
+        const olderPatch: ServerSettingsPatch = JSON.parse(
+          JSON.stringify(input.patch, (key, value: unknown) =>
+            key === "quotaAwareAuto" ? undefined : value,
+          ),
+        );
+        held = applyServerSettingsPatch(held, olderPatch);
+        return { _tag: "Success" as const, value: held };
+      }),
+      () => {},
+    );
+    expect(held.defaultModelSelection).toEqual(previous);
+    expect(held.finalReviewByDefault).toBe(true);
+  });
   it("edits the effective machine policy without changing other machines' rules", () => {
     const custom = environment("Laptop", {
       settings: {

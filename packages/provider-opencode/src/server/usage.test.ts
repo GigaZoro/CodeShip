@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { usageScanSettings } from "@t3tools/shared/usageScanSettings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -756,7 +757,7 @@ describe("openCodeUsageReader", () => {
             environment,
             configured,
           })),
-          settings: DEFAULT_SERVER_SETTINGS,
+          settings: usageScanSettings(DEFAULT_SERVER_SETTINGS),
           windowStartMs: 0,
           retentionCutoffMs: 0,
           awaitRefresh: true,

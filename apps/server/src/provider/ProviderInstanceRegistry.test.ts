@@ -26,6 +26,7 @@ import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderL
 import { OpenCodeSettings } from "@t3tools/provider-opencode/settings";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -77,9 +78,6 @@ const layerTestHttpClient = Layer.succeed(
     Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }))),
   ),
 );
-
-// The mock CLIs from makeTildeProviderFixtures are scripts Windows cannot execute.
-const windowsHost = HostProcess.Platform.defaultValue() === "win32";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
@@ -402,91 +400,92 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  it.live("runs Codex and Claude readiness probes from configured tilde paths", () =>
-    Effect.gen(function* () {
-      if (yield* HostProcess.isWindows) return;
+  // The mock CLIs from makeTildeProviderFixtures are scripts Windows cannot execute.
+  it.live.skipIf(isWindowsHost)(
+    "runs Codex and Claude readiness probes from configured tilde paths",
+    () =>
+      Effect.gen(function* () {
+        const fixtures = yield* makeTildeProviderFixtures();
 
-      const fixtures = yield* makeTildeProviderFixtures();
-
-      const codexId = ProviderInstanceId.make("codex_tilde");
-      const claudeId = ProviderInstanceId.make("claude_tilde");
-      const configMap: ProviderInstanceConfigMap = {
-        [codexId]: {
-          driver: ProviderDriverKind.make("codex"),
-          enabled: true,
-          environment: [
-            {
-              name: "T3_CODEX_COLLAB_SCRIPT",
-              value: fixtures.codexScriptPath,
-              sensitive: false,
-            },
-          ],
-          config: makeCodexConfig({ enabled: true, binaryPath: fixtures.codexBinaryPath }),
-        },
-        [claudeId]: {
-          driver: ProviderDriverKind.make("claudeAgent"),
-          enabled: true,
-          config: makeClaudeConfig({
+        const codexId = ProviderInstanceId.make("codex_tilde");
+        const claudeId = ProviderInstanceId.make("claude_tilde");
+        const configMap: ProviderInstanceConfigMap = {
+          [codexId]: {
+            driver: ProviderDriverKind.make("codex"),
             enabled: true,
-            binaryPath: fixtures.claudeBinaryPath,
-            homePath: fixtures.claudeHomePath,
-          }),
-        },
-      };
-
-      const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv | ClaudeDriverEnv>({
-        drivers: [CodexDriver, ClaudeDriver],
-        configMap,
-      });
-      const codex = yield* registry.getInstance(codexId);
-      const claude = yield* registry.getInstance(claudeId);
-      expect(codex).toBeDefined();
-      expect(claude).toBeDefined();
-
-      const [codexSnapshot, claudeSnapshot] = yield* Effect.all(
-        [codex!.snapshot.refresh, claude!.snapshot.refresh],
-        { concurrency: "unbounded" },
-      );
-      expect(codexSnapshot).toMatchObject({ status: "ready", installed: true, version: "0.0.0" });
-      expect(claudeSnapshot).toMatchObject({
-        status: "ready",
-        installed: true,
-        version: "2.1.219",
-      });
-    }).pipe(Effect.provide(layerTest)),
-  );
-
-  it.live("runs Claude instance probes in the server state dir, not the server cwd", () =>
-    Effect.gen(function* () {
-      if (yield* HostProcess.isWindows) return;
-
-      const fixtures = yield* makeTildeProviderFixtures();
-      const { stateDir } = yield* ServerConfig.ServerConfig;
-      const claudeId = ProviderInstanceId.make("claude_state_dir");
-      const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
-        drivers: [ClaudeDriver],
-        configMap: {
+            environment: [
+              {
+                name: "T3_CODEX_COLLAB_SCRIPT",
+                value: fixtures.codexScriptPath,
+                sensitive: false,
+              },
+            ],
+            config: makeCodexConfig({ enabled: true, binaryPath: fixtures.codexBinaryPath }),
+          },
           [claudeId]: {
             driver: ProviderDriverKind.make("claudeAgent"),
             enabled: true,
-            // Packaged desktop starts in $HOME, where some claude wrappers refuse to run.
-            environment: [{ name: "T3_CLAUDE_REQUIRED_CWD", value: stateDir, sensitive: false }],
             config: makeClaudeConfig({
               enabled: true,
               binaryPath: fixtures.claudeBinaryPath,
               homePath: fixtures.claudeHomePath,
             }),
           },
-        },
-      });
-      const claude = yield* registry.getInstance(claudeId);
+        };
 
-      expect(yield* claude!.snapshot.refresh).toMatchObject({
-        status: "ready",
-        version: "2.1.219",
-        auth: { status: "authenticated" },
-      });
-    }).pipe(Effect.provide(layerTest)),
+        const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv | ClaudeDriverEnv>({
+          drivers: [CodexDriver, ClaudeDriver],
+          configMap,
+        });
+        const codex = yield* registry.getInstance(codexId);
+        const claude = yield* registry.getInstance(claudeId);
+        expect(codex).toBeDefined();
+        expect(claude).toBeDefined();
+
+        const [codexSnapshot, claudeSnapshot] = yield* Effect.all(
+          [codex!.snapshot.refresh, claude!.snapshot.refresh],
+          { concurrency: "unbounded" },
+        );
+        expect(codexSnapshot).toMatchObject({ status: "ready", installed: true, version: "0.0.0" });
+        expect(claudeSnapshot).toMatchObject({
+          status: "ready",
+          installed: true,
+          version: "2.1.219",
+        });
+      }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live.skipIf(isWindowsHost)(
+    "runs Claude instance probes in the server state dir, not the server cwd",
+    () =>
+      Effect.gen(function* () {
+        const fixtures = yield* makeTildeProviderFixtures();
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const claudeId = ProviderInstanceId.make("claude_state_dir");
+        const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [claudeId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              enabled: true,
+              // Packaged desktop starts in $HOME, where some claude wrappers refuse to run.
+              environment: [{ name: "T3_CLAUDE_REQUIRED_CWD", value: stateDir, sensitive: false }],
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
+          },
+        });
+        const claude = yield* registry.getInstance(claudeId);
+
+        expect(yield* claude!.snapshot.refresh).toMatchObject({
+          status: "ready",
+          version: "2.1.219",
+          auth: { status: "authenticated" },
+        });
+      }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect.each([
@@ -660,7 +659,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
           ],
         });
         expect(contents).not.toContain("/vault/claude-folder");
-        if (!windowsHost) {
+        if (!isWindowsHost) {
           const info = yield* fileSystem.stat(
             ClaudeAccountFolders.claudeAccountFoldersPath(path, stateDir),
           );
@@ -669,226 +668,230 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
-  it.live("applies the lowest maxEffortLevel across Claude's settings sources", () =>
-    Effect.gen(function* () {
-      if (yield* HostProcess.isWindows) return;
-
-      const fixtures = yield* makeTildeProviderFixtures();
-      const claudeId = ProviderInstanceId.make("claude_source_effort_cap");
-      const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
-        drivers: [ClaudeDriver],
-        configMap: {
-          [claudeId]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            enabled: true,
-            environment: [
-              {
-                name: "T3_CLAUDE_SETTINGS_SOURCES",
-                // The merged `effective` settings read as exempting Opus 5; the flag tier's
-                // top-level cap still applies to it.
-                value: JSON.stringify([
-                  {
-                    source: "userSettings",
-                    settings: { modelSettings: { "claude-opus-5": { maxEffortLevel: "max" } } },
-                  },
-                  { source: "flagSettings", settings: { maxEffortLevel: "high" } },
-                ]),
-                sensitive: false,
-              },
-            ],
-            config: makeClaudeConfig({
+  it.live.skipIf(isWindowsHost)(
+    "applies the lowest maxEffortLevel across Claude's settings sources",
+    () =>
+      Effect.gen(function* () {
+        const fixtures = yield* makeTildeProviderFixtures();
+        const claudeId = ProviderInstanceId.make("claude_source_effort_cap");
+        const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [claudeId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
               enabled: true,
-              binaryPath: fixtures.claudeBinaryPath,
-              homePath: fixtures.claudeHomePath,
-            }),
-          },
-        },
-      });
-      const claude = yield* registry.getInstance(claudeId);
-
-      const snapshot = yield* claude!.snapshot.refresh;
-      const maxLabel = snapshot.models
-        .find((model) => model.slug === "claude-opus-5")
-        ?.capabilities?.optionDescriptors?.flatMap((descriptor) =>
-          descriptor.id === "effort" && descriptor.type === "select"
-            ? descriptor.options.filter((option) => option.id === "max")
-            : [],
-        )[0]?.label;
-      expect(maxLabel).toBe("Max (capped to High)");
-    }).pipe(Effect.provide(layerTest)),
-  );
-
-  it.live("keeps usage and uncapped efforts when the CLI rejects get_settings", () =>
-    Effect.gen(function* () {
-      if (yield* HostProcess.isWindows) return;
-
-      const fixtures = yield* makeTildeProviderFixtures();
-      const claudeId = ProviderInstanceId.make("claude_settings_unsupported");
-      const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
-        drivers: [ClaudeDriver],
-        configMap: {
-          [claudeId]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            enabled: true,
-            environment: [{ name: "T3_CLAUDE_SETTINGS_UNSUPPORTED", value: "1", sensitive: false }],
-            config: makeClaudeConfig({
-              enabled: true,
-              binaryPath: fixtures.claudeBinaryPath,
-              homePath: fixtures.claudeHomePath,
-            }),
-          },
-        },
-      });
-      const claude = yield* registry.getInstance(claudeId);
-
-      const snapshot = yield* claude!.snapshot.refresh;
-      const effortLabels = snapshot.models.flatMap((model) =>
-        (model.capabilities?.optionDescriptors ?? []).flatMap((descriptor) =>
-          descriptor.id === "effort" && descriptor.type === "select"
-            ? descriptor.options.map((option) => option.label)
-            : [],
-        ),
-      );
-      expect(effortLabels).toContain("Max");
-      expect(effortLabels.some((label) => label.includes("capped"))).toBe(false);
-      expect(snapshot.auth).toMatchObject({ status: "authenticated", email: "test@example.com" });
-      expect(snapshot.usageLimits?.windows[0]?.usedPercent).toBe(100);
-    }).pipe(Effect.provide(layerTest)),
-  );
-
-  it.effect("scopes Claude's one-probe fallback to the logged-in organization", () =>
-    Effect.gen(function* () {
-      if (yield* HostProcess.isWindows) return;
-
-      const fixtures = yield* makeTildeProviderFixtures();
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const accountConfigPath = path.join(fixtures.claudeHomePath, ".claude.json");
-      yield* fs.writeFileString(
-        accountConfigPath,
-        JSON.stringify({ oauthAccount: { organizationUuid: "org-a" } }),
-      );
-      const claudeId = ProviderInstanceId.make("claude_probe_recovery");
-      let probeCount = 0;
-      let successfulProbeCount = 0;
-      let failProbe = false;
-      const query = vi.spyOn(ClaudeSdk, "query").mockImplementation(
-        () =>
-          ({
-            initializationResult: () => {
-              probeCount++;
-              if (failProbe) return Promise.reject(new Error("initialization failed"));
-              successfulProbeCount++;
-              return Promise.resolve({
-                commands: [
-                  {
-                    name: successfulProbeCount === 1 ? "last-good" : "recovered",
-                    description: "",
-                    argumentHint: "",
-                  },
-                ],
-                account: {
-                  email:
-                    successfulProbeCount === 1 ? "account-a@example.com" : "account-b@example.com",
-                  subscriptionType: "pro",
-                  tokenSource: "oauth",
+              environment: [
+                {
+                  name: "T3_CLAUDE_SETTINGS_SOURCES",
+                  // The merged `effective` settings read as exempting Opus 5; the flag tier's
+                  // top-level cap still applies to it.
+                  value: JSON.stringify([
+                    {
+                      source: "userSettings",
+                      settings: { modelSettings: { "claude-opus-5": { maxEffortLevel: "max" } } },
+                    },
+                    { source: "flagSettings", settings: { maxEffortLevel: "high" } },
+                  ]),
+                  sensitive: false,
                 },
-              });
+              ],
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
             },
-            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({
-              rate_limits_available: true,
-              rate_limits: {
-                five_hour: { utilization: 12, resets_at: "2026-07-18T14:39:00Z" },
-              },
-            }),
-          }) as ReturnType<typeof ClaudeSdk.query>,
-      );
-      yield* Effect.addFinalizer(() => Effect.sync(() => query.mockRestore()));
-
-      const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
-        drivers: [ClaudeDriver],
-        configMap: {
-          [claudeId]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            enabled: true,
-            config: makeClaudeConfig({
-              enabled: true,
-              binaryPath: fixtures.claudeBinaryPath,
-              homePath: fixtures.claudeHomePath,
-            }),
           },
-        },
-      });
-      const claude = yield* registry.getInstance(claudeId);
-      expect(claude).toBeDefined();
+        });
+        const claude = yield* registry.getInstance(claudeId);
 
-      const first = yield* claude!.snapshot.refresh;
-      expect(first).toMatchObject({
-        status: "ready",
-        auth: { status: "authenticated", email: "account-a@example.com", workspaceId: "org-a" },
-        slashCommands: expect.arrayContaining([expect.objectContaining({ name: "last-good" })]),
-      });
-      expect(first.usageLimits?.unavailable).toBeUndefined();
-      expect(probeCount).toBe(1);
+        const snapshot = yield* claude!.snapshot.refresh;
+        const maxLabel = snapshot.models
+          .find((model) => model.slug === "claude-opus-5")
+          ?.capabilities?.optionDescriptors?.flatMap((descriptor) =>
+            descriptor.id === "effort" && descriptor.type === "select"
+              ? descriptor.options.filter((option) => option.id === "max")
+              : [],
+          )[0]?.label;
+        expect(maxLabel).toBe("Max (capped to High)");
+      }).pipe(Effect.provide(layerTest)),
+  );
 
-      yield* TestClock.adjust("1 second");
-      yield* fs.writeFileString(
-        accountConfigPath,
-        JSON.stringify({ oauthAccount: { organizationUuid: "org-b" } }),
-      );
-      yield* claude!.invalidateCaches ?? Effect.void;
-      failProbe = true;
-      const accountChangedFailure = yield* claude!.snapshot.refresh;
+  it.live.skipIf(isWindowsHost)(
+    "keeps usage and uncapped efforts when the CLI rejects get_settings",
+    () =>
+      Effect.gen(function* () {
+        const fixtures = yield* makeTildeProviderFixtures();
+        const claudeId = ProviderInstanceId.make("claude_settings_unsupported");
+        const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [claudeId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              enabled: true,
+              environment: [
+                { name: "T3_CLAUDE_SETTINGS_UNSUPPORTED", value: "1", sensitive: false },
+              ],
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
+          },
+        });
+        const claude = yield* registry.getInstance(claudeId);
 
-      expect(accountChangedFailure).toMatchObject({
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "Claude Agent CLI failed while checking account status: initialization failed",
-      });
-      expect(accountChangedFailure.checkedAt).not.toBe(first.checkedAt);
-      expect(accountChangedFailure.usageLimits).toBeUndefined();
-      expect(accountChangedFailure.slashCommands).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: "last-good" })]),
-      );
-      const failedProbeCount = probeCount;
-      expect(failedProbeCount).toBeGreaterThan(1);
+        const snapshot = yield* claude!.snapshot.refresh;
+        const effortLabels = snapshot.models.flatMap((model) =>
+          (model.capabilities?.optionDescriptors ?? []).flatMap((descriptor) =>
+            descriptor.id === "effort" && descriptor.type === "select"
+              ? descriptor.options.map((option) => option.label)
+              : [],
+          ),
+        );
+        expect(effortLabels).toContain("Max");
+        expect(effortLabels.some((label) => label.includes("capped"))).toBe(false);
+        expect(snapshot.auth).toMatchObject({ status: "authenticated", email: "test@example.com" });
+        expect(snapshot.usageLimits?.windows[0]?.usedPercent).toBe(100);
+      }).pipe(Effect.provide(layerTest)),
+  );
 
-      failProbe = false;
-      const recovered = yield* claude!.snapshot.refresh;
-      expect(recovered).toMatchObject({
-        status: "ready",
-        auth: { status: "authenticated", email: "account-b@example.com", workspaceId: "org-b" },
-        slashCommands: expect.arrayContaining([expect.objectContaining({ name: "recovered" })]),
-      });
-      expect(recovered.usageLimits?.unavailable).toBeUndefined();
-      const recoveredProbeCount = probeCount;
-      expect(recoveredProbeCount).toBeGreaterThan(failedProbeCount);
+  it.effect.skipIf(isWindowsHost)(
+    "scopes Claude's one-probe fallback to the logged-in organization",
+    () =>
+      Effect.gen(function* () {
+        const fixtures = yield* makeTildeProviderFixtures();
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const accountConfigPath = path.join(fixtures.claudeHomePath, ".claude.json");
+        yield* fs.writeFileString(
+          accountConfigPath,
+          JSON.stringify({ oauthAccount: { organizationUuid: "org-a" } }),
+        );
+        const claudeId = ProviderInstanceId.make("claude_probe_recovery");
+        let probeCount = 0;
+        let successfulProbeCount = 0;
+        let failProbe = false;
+        const query = vi.spyOn(ClaudeSdk, "query").mockImplementation(
+          () =>
+            ({
+              initializationResult: () => {
+                probeCount++;
+                if (failProbe) return Promise.reject(new Error("initialization failed"));
+                successfulProbeCount++;
+                return Promise.resolve({
+                  commands: [
+                    {
+                      name: successfulProbeCount === 1 ? "last-good" : "recovered",
+                      description: "",
+                      argumentHint: "",
+                    },
+                  ],
+                  account: {
+                    email:
+                      successfulProbeCount === 1
+                        ? "account-a@example.com"
+                        : "account-b@example.com",
+                    subscriptionType: "pro",
+                    tokenSource: "oauth",
+                  },
+                });
+              },
+              usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({
+                rate_limits_available: true,
+                rate_limits: {
+                  five_hour: { utilization: 12, resets_at: "2026-07-18T14:39:00Z" },
+                },
+              }),
+            }) as ReturnType<typeof ClaudeSdk.query>,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => query.mockRestore()));
 
-      yield* TestClock.adjust("1 second");
-      yield* claude!.invalidateCaches ?? Effect.void;
-      failProbe = true;
-      const sameAccountFailure = yield* claude!.snapshot.refresh;
-      expect(sameAccountFailure).toMatchObject({
-        status: "ready",
-        auth: { status: "authenticated", email: "account-b@example.com", workspaceId: "org-b" },
-        slashCommands: expect.arrayContaining([expect.objectContaining({ name: "recovered" })]),
-      });
-      expect(sameAccountFailure.usageLimits?.checkedAt).toBe(recovered.usageLimits?.checkedAt);
-      expect(sameAccountFailure.usageLimits?.windows).toEqual(recovered.usageLimits?.windows);
-      const sameAccountFailureProbeCount = probeCount;
-      expect(sameAccountFailureProbeCount).toBeGreaterThan(recoveredProbeCount);
+        const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [claudeId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              enabled: true,
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
+          },
+        });
+        const claude = yield* registry.getInstance(claudeId);
+        expect(claude).toBeDefined();
 
-      const repeatedFailure = yield* claude!.snapshot.refresh;
-      expect(repeatedFailure).toMatchObject({
-        status: "warning",
-        auth: { status: "unknown" },
-        message: "Claude Agent CLI failed while checking account status: initialization failed",
-      });
-      expect(repeatedFailure.slashCommands).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: "recovered" })]),
-      );
-      expect(probeCount).toBeGreaterThan(sameAccountFailureProbeCount);
-    }).pipe(Effect.provide(layerTest)),
+        const first = yield* claude!.snapshot.refresh;
+        expect(first).toMatchObject({
+          status: "ready",
+          auth: { status: "authenticated", email: "account-a@example.com", workspaceId: "org-a" },
+          slashCommands: expect.arrayContaining([expect.objectContaining({ name: "last-good" })]),
+        });
+        expect(first.usageLimits?.unavailable).toBeUndefined();
+        expect(probeCount).toBe(1);
+
+        yield* TestClock.adjust("1 second");
+        yield* fs.writeFileString(
+          accountConfigPath,
+          JSON.stringify({ oauthAccount: { organizationUuid: "org-b" } }),
+        );
+        yield* claude!.invalidateCaches ?? Effect.void;
+        failProbe = true;
+        const accountChangedFailure = yield* claude!.snapshot.refresh;
+
+        expect(accountChangedFailure).toMatchObject({
+          status: "warning",
+          auth: { status: "unknown" },
+          message: "Claude Agent CLI failed while checking account status: initialization failed",
+        });
+        expect(accountChangedFailure.checkedAt).not.toBe(first.checkedAt);
+        expect(accountChangedFailure.usageLimits).toBeUndefined();
+        expect(accountChangedFailure.slashCommands).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: "last-good" })]),
+        );
+        const failedProbeCount = probeCount;
+        expect(failedProbeCount).toBeGreaterThan(1);
+
+        failProbe = false;
+        const recovered = yield* claude!.snapshot.refresh;
+        expect(recovered).toMatchObject({
+          status: "ready",
+          auth: { status: "authenticated", email: "account-b@example.com", workspaceId: "org-b" },
+          slashCommands: expect.arrayContaining([expect.objectContaining({ name: "recovered" })]),
+        });
+        expect(recovered.usageLimits?.unavailable).toBeUndefined();
+        const recoveredProbeCount = probeCount;
+        expect(recoveredProbeCount).toBeGreaterThan(failedProbeCount);
+
+        yield* TestClock.adjust("1 second");
+        yield* claude!.invalidateCaches ?? Effect.void;
+        failProbe = true;
+        const sameAccountFailure = yield* claude!.snapshot.refresh;
+        expect(sameAccountFailure).toMatchObject({
+          status: "ready",
+          auth: { status: "authenticated", email: "account-b@example.com", workspaceId: "org-b" },
+          slashCommands: expect.arrayContaining([expect.objectContaining({ name: "recovered" })]),
+        });
+        expect(sameAccountFailure.usageLimits?.checkedAt).toBe(recovered.usageLimits?.checkedAt);
+        expect(sameAccountFailure.usageLimits?.windows).toEqual(recovered.usageLimits?.windows);
+        const sameAccountFailureProbeCount = probeCount;
+        expect(sameAccountFailureProbeCount).toBeGreaterThan(recoveredProbeCount);
+
+        const repeatedFailure = yield* claude!.snapshot.refresh;
+        expect(repeatedFailure).toMatchObject({
+          status: "warning",
+          auth: { status: "unknown" },
+          message: "Claude Agent CLI failed while checking account status: initialization failed",
+        });
+        expect(repeatedFailure.slashCommands).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: "recovered" })]),
+        );
+        expect(probeCount).toBeGreaterThan(sameAccountFailureProbeCount);
+      }).pipe(Effect.provide(layerTest)),
   );
 
   const redeemClaudeReset = (claim: { answer?: string; usageFailsAfterClaim: boolean }) =>
@@ -953,7 +956,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       return { outcome, after: yield* instance!.snapshot.getSnapshot };
     }).pipe(Effect.provide(layerTest));
 
-  it.live.skipIf(windowsHost)("refreshes Claude usage after redeeming a reset", () =>
+  it.live.skipIf(isWindowsHost)("refreshes Claude usage after redeeming a reset", () =>
     Effect.gen(function* () {
       const { outcome, after } = yield* redeemClaudeReset({ usageFailsAfterClaim: false });
       expect(outcome).toMatchObject({ _tag: "Success", success: { outcome: "reset" } });
@@ -961,7 +964,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }),
   );
 
-  it.live.skipIf(windowsHost)(
+  it.live.skipIf(isWindowsHost)(
     "reports Claude's answer when a claim changed nothing and the re-probe fails",
     () =>
       Effect.gen(function* () {
@@ -976,7 +979,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       }),
   );
 
-  it.live.skipIf(windowsHost)(
+  it.live.skipIf(isWindowsHost)(
     "refreshes Claude usage after a claim that pressed Yes but got no answer it knows",
     () =>
       Effect.gen(function* () {
@@ -989,7 +992,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       }),
   );
 
-  it.live.skipIf(windowsHost)(
+  it.live.skipIf(isWindowsHost)(
     "a Claude reset whose re-probe fails still succeeds, saying it was not confirmed",
     () =>
       Effect.gen(function* () {
@@ -1053,7 +1056,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
   });
 
   for (const state of ["signed-out", "usage-failed"] as const) {
-    it.effect.skipIf(windowsHost)(
+    it.effect.skipIf(isWindowsHost)(
       state === "signed-out"
         ? "shows Claude usage on the first refresh after signing back in"
         : "retries Claude usage on the first refresh after a failed usage read",

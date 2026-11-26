@@ -277,6 +277,9 @@ describe("ACP Registry probe", () => {
       const models = Array.from({ length: 257 }, (_, index) => ({
         modelId: `model-${index}`,
         name: `Model ${index}`,
+        _meta: {
+          "t3.codes/funding": index === 256 ? "included" : index === 0 ? "metered" : "invalid",
+        },
       }));
       const result = acpRegistryProbeResult(instanceId, {
         sessionId: "probe-session",
@@ -292,7 +295,11 @@ describe("ACP Registry probe", () => {
                     category: "model",
                     type: "select",
                     currentValue: "model-256",
-                    options: models.map(({ modelId, name }) => ({ value: modelId, name })),
+                    options: models.map(({ modelId, name, _meta }) => ({
+                      value: modelId,
+                      name,
+                      _meta,
+                    })),
                   },
                 ],
               }
@@ -302,8 +309,9 @@ describe("ACP Registry probe", () => {
       } satisfies AcpSessionRuntime.AcpSessionRuntimeStartResult);
 
       expect(result.models).toHaveLength(256);
-      expect(result.models[0]?.id).toBe("model-0");
-      expect(result.models.at(-1)?.id).toBe("model-256");
+      expect(result.models[0]).toMatchObject({ id: "model-0", funding: "metered" });
+      expect(result.models[1]).not.toHaveProperty("funding");
+      expect(result.models.at(-1)).toMatchObject({ id: "model-256", funding: "included" });
       expect(result.currentModelId).toBe("model-256");
     },
   );

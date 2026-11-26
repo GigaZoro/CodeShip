@@ -1900,6 +1900,113 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
+  it.effect(
+    "a branch with no pull request asks its host again only after a push or a backoff",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        yield* runGit(repoDir, ["checkout", "-b", "feature/no-pr"]);
+        yield* runGit(repoDir, ["push", "-u", "origin", "feature/no-pr"]);
+        const { manager, providerCalls } = yield* makeManager();
+        const hostLookupsDuring = (
+          branch: string,
+          options?: { readonly freshGitState?: true; readonly refresh?: true },
+        ) =>
+          Effect.gen(function* () {
+            const before = listed(providerCalls).length;
+            const pullRequest = yield* manager.branchPullRequest({ cwd: repoDir, branch }, options);
+            expect(pullRequest).toBeNull();
+            return listed(providerCalls).length - before;
+          });
+
+        const perLookup = yield* hostLookupsDuring("feature/no-pr");
+        expect(perLookup).toBeGreaterThan(0);
+        expect(yield* hostLookupsDuring("feature/no-pr", { freshGitState: true })).toBe(0);
+        yield* TestClock.adjust("5 minutes");
+        expect(yield* hostLookupsDuring("feature/no-pr")).toBe(perLookup);
+        yield* TestClock.adjust("5 minutes");
+        expect(yield* hostLookupsDuring("feature/no-pr")).toBe(0);
+        yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Second change"]);
+        yield* runGit(repoDir, ["push"]);
+        expect(yield* hostLookupsDuring("feature/no-pr", { freshGitState: true })).toBe(perLookup);
+        // A refresh asks at once and keeps the backoff's step.
+        for (let refresh = 0; refresh < 3; refresh++) {
+          expect(yield* hostLookupsDuring("feature/no-pr", { refresh: true })).toBe(perLookup);
+        }
+        yield* TestClock.adjust("5 minutes");
+        expect(yield* hostLookupsDuring("feature/no-pr")).toBe(perLookup);
+
+        // A worktree branch tracks origin/main, which moves without a push of the branch.
+        yield* runGit(repoDir, ["push", "origin", "main"]);
+        yield* runGit(repoDir, ["checkout", "--track", "-b", "cs/from-main", "origin/main"]);
+        yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Worktree change"]);
+        yield* runGit(repoDir, ["push", "origin", "cs/from-main"]);
+        const fromMain = yield* hostLookupsDuring("cs/from-main", { freshGitState: true });
+        expect(fromMain).toBeGreaterThan(0);
+        yield* runGit(repoDir, ["push", "origin", "feature/no-pr:main"]);
+        expect(yield* hostLookupsDuring("cs/from-main", { freshGitState: true })).toBe(0);
+        yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Worktree follow-up"]);
+        yield* runGit(repoDir, ["push", "origin", "cs/from-main"]);
+        expect(yield* hostLookupsDuring("cs/from-main", { freshGitState: true })).toBe(fromMain);
+
+        // Only the head a lookup asks about counts: the branch's name on another repository does
+        // not, and a fork's branch named after the default branch does.
+        const forkDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "fork-seed", forkDir]);
+        yield* configureVisibleRemoteUrlWithLocalRewrite(
+          repoDir,
+          "fork-seed",
+          "git@github.com:contributor/codething-mvp.git",
+          forkDir,
+        );
+        yield* runGit(repoDir, ["push", "fork-seed", "feature/no-pr"]);
+        expect(yield* hostLookupsDuring("feature/no-pr", { freshGitState: true })).toBe(0);
+        yield* runGit(repoDir, ["push", "fork-seed", "HEAD:main"]);
+        yield* runGit(repoDir, [
+          "checkout",
+          "--track",
+          "-b",
+          "t3code/pr-777/main",
+          "fork-seed/main",
+        ]);
+        const fromFork = yield* hostLookupsDuring("t3code/pr-777/main", { freshGitState: true });
+        expect(fromFork).toBeGreaterThan(0);
+        yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Fork change"]);
+        yield* runGit(repoDir, ["push", "fork-seed", "HEAD:main"]);
+        expect(yield* hostLookupsDuring("t3code/pr-777/main", { freshGitState: true })).toBe(
+          fromFork,
+        );
+
+        // A branch with no upstream is published, and moved, by a push to any remote.
+        yield* runGit(repoDir, ["checkout", "-b", "feature/fork-only"]);
+        expect(yield* hostLookupsDuring("feature/fork-only", { freshGitState: true })).toBe(0);
+        yield* runGit(repoDir, ["push", "fork-seed", "feature/fork-only"]);
+        expect(
+          yield* hostLookupsDuring("feature/fork-only", { freshGitState: true }),
+        ).toBeGreaterThan(0);
+        yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Fork-only change"]);
+        yield* runGit(repoDir, ["push", "origin", "feature/fork-only"]);
+        expect(
+          yield* hostLookupsDuring("feature/fork-only", { freshGitState: true }),
+        ).toBeGreaterThan(0);
+
+        // A status read answers for the same branch, so a push after it still asks again.
+        yield* runGit(repoDir, ["checkout", "-b", "feature/status-first"]);
+        yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-first"]);
+        const beforeStatus = listed(providerCalls).length;
+        yield* manager.status({ cwd: repoDir });
+        expect(listed(providerCalls).length).toBeGreaterThan(beforeStatus);
+        yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Status-first change"]);
+        yield* runGit(repoDir, ["push"]);
+        expect(
+          yield* hostLookupsDuring("feature/status-first", { freshGitState: true }),
+        ).toBeGreaterThan(0);
+      }),
+  );
+
   // Each git spawn blocks a Windows server's event loop for ~130 ms, so a sweep over many
   // worktrees must read what they share (configuration, remotes, refs) once per repository.
   it.effect("branch PR lookups of a repository's worktrees share one read of its git state", () =>

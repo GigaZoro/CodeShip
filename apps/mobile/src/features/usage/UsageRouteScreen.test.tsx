@@ -193,6 +193,7 @@ vi.mock("../../state/server", async () => {
   return {
     serverEnvironment: {
       usageModelFilterAtom: () => Atom.make(undefined),
+      usageScanSettingsKeyAtom: () => Atom.make("settings"),
       usageSummary: ({
         environmentId,
         input,
@@ -348,6 +349,7 @@ it("keeps the mobile compatibility explanation in coverage and the short status 
     isPending: true,
     isConnected: true,
     canReadDiagnostics: true,
+    usageSettingsKey: "settings",
     error: null,
     summary: null,
   };
@@ -428,6 +430,7 @@ function liveEnvironment(id: string, label: string): EnvironmentUsageStatus {
     isPending: false,
     isConnected: true,
     canReadDiagnostics: true,
+    usageSettingsKey: "settings",
     error: null,
     summary: null,
   };

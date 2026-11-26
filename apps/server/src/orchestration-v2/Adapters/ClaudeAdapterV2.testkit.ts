@@ -1503,14 +1503,14 @@ async function recordMessagesUntilToolUse(input: {
 // The SDK may lack a platform executable. Prefer installed Claude only when directly spawnable,
 // including Windows shims resolved to package entries.
 const resolveClaudeRecordingExecutablePath = Effect.fn("resolveClaudeRecordingExecutablePath")(
-  function* (environment: NodeJS.ProcessEnv) {
+  function* (environment: NodeJS.ProcessEnv, cwd: string | undefined) {
     const resolveExecutable = yield* SpawnExecutableResolution;
     const platform = yield* HostProcess.Platform;
-    const resolved = resolveExecutable("claude", platform, environment);
+    const resolved = resolveExecutable("claude", platform, environment, cwd);
     if (resolved === undefined) {
       return undefined;
     }
-    const executablePath = yield* resolveClaudeSdkExecutablePath(resolved, environment);
+    const executablePath = yield* resolveClaudeSdkExecutablePath(resolved, environment, cwd);
     if (platform === "win32" && isWindowsClaudeLauncherShimPath(executablePath)) {
       return undefined;
     }
@@ -1519,7 +1519,9 @@ const resolveClaudeRecordingExecutablePath = Effect.fn("resolveClaudeRecordingEx
 );
 
 async function openRecordingQuery(input: Parameters<typeof query>[0]) {
-  const executablePath = await Effect.runPromise(resolveClaudeRecordingExecutablePath(process.env));
+  const executablePath = await Effect.runPromise(
+    resolveClaudeRecordingExecutablePath(input.options?.env ?? process.env, input.options?.cwd),
+  );
   return query({
     ...input,
     options: {

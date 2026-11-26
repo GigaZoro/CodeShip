@@ -52,11 +52,13 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
+  claudeWorkspaceFunding,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
   type ClaudeCapabilitiesProbe,
 } from "../ClaudeProvider.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { resolveClaudeModelCatalog } from "../ClaudeModelCatalog.ts";
@@ -469,16 +471,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       {
         scopedLimitNames,
         // A newly reached limit is when Claude's resets matter, so it starts a read of them.
-        onUsageLimits: (update) =>
-          snapshot.applyUsageLimits(update).pipe(
-            Effect.andThen(snapshot.getSnapshot),
-            Effect.flatMap(({ usageLimits }) =>
-              usageLimits && !usageLimits.unavailable
-                ? limitResets.current(usageLimits)
-                : Effect.void,
-            ),
-            Effect.asVoid,
+        bindUsageLimits: Effect.suspend(() => snapshot.bindUsageLimits).pipe(
+          Effect.map(
+            (publish) => (update) =>
+              publish(update).pipe(
+                Effect.andThen(snapshot.getSnapshot),
+                Effect.flatMap(({ usageLimits }) =>
+                  usageLimits && !usageLimits.unavailable
+                    ? limitResets.current(usageLimits)
+                    : Effect.void,
+                ),
+                Effect.asVoid,
+              ),
           ),
+        ),
         onAuthenticationFailed: authenticationFailure.record.pipe(Effect.andThen(republishAuth)),
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
@@ -573,19 +579,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       Effect.map((result) => result.capabilities),
     );
 
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
     const checkProvider = catalogService.refreshInBackground.pipe(
       Effect.andThen(
         modelCatalog.pipe(
           Effect.flatMap((catalog) =>
-            checkClaudeProviderStatus(
-              effectiveConfig,
-              () => resolveCapabilities,
-              processEnv,
-              stateDir,
-              catalog,
-              scopedLimitNames,
-              limitResets.current,
-              readLoginExpiry,
+            versionMemory.check((lastKnownVersion) =>
+              checkClaudeProviderStatus(
+                effectiveConfig,
+                () => resolveCapabilities,
+                processEnv,
+                stateDir,
+                catalog,
+                scopedLimitNames,
+                limitResets.current,
+                readLoginExpiry,
+                lastKnownVersion,
+              ),
             ),
           ),
           Effect.tap((provider) =>
@@ -780,6 +790,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ),
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
+      fundingForWorkspace: Effect.fn("ClaudeDriver.fundingForWorkspace")(
+        function* (input) {
+          const readIdentity = ClaudeResetCredits.readClaudeAccountIdentity(accountConfigPath);
+          const identity = yield* readIdentity;
+          if (
+            identity.workspaceId !== input.provider.auth.workspaceId ||
+            identity.accountKey !== input.provider.usageLimits?.accountKey
+          )
+            return "unknown" as const;
+          const funding = yield* claudeWorkspaceFunding(effectiveConfig, processEnv, input);
+          const after = yield* readIdentity;
+          return after.workspaceId === identity.workspaceId &&
+            after.accountKey === identity.accountKey
+            ? funding
+            : ("unknown" as const);
+        },
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
       snapshotForCwd: (cwd: string) =>
         snapshot.getSnapshot.pipe(
           Effect.flatMap((machineSnapshot) =>

@@ -113,6 +113,8 @@ import {
   threadRouteOpensDraft,
 } from "./thread-route-hydration";
 import { ThreadHeader } from "./ThreadHeader";
+import { ThreadStarredMessagesSheet } from "./ThreadStarredMessagesSheet";
+import { requestThreadMessageJump } from "./threadMessageJump";
 import { resumeThread } from "./resume-thread";
 import {
   useAndroidWorkspaceBack,
@@ -379,6 +381,7 @@ function ThreadRouteContent(
   );
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const [starredSheetKey, setStarredSheetKey] = useState<string | null>(null);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const startSideChat = useStartSideChat();
   const composer = useThreadComposerState({ startSideChat });
@@ -1035,8 +1038,20 @@ function ThreadRouteContent(
           connectionState: routeConnectionState,
         });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
+  const starredThread = scopeThreadRef(selectedThread.environmentId, selectedThread.id);
+  const threadKey = scopedThreadKey(starredThread.environmentId, starredThread.threadId);
   const renderThreadRouteBody = () => (
     <>
+      {starredSheetKey === threadKey ? (
+        <ThreadStarredMessagesSheet
+          thread={starredThread}
+          onClose={() => setStarredSheetKey(null)}
+          onSelect={(messageId) => {
+            setStarredSheetKey(null);
+            requestThreadMessageJump(threadKey, messageId, { starred: true });
+          }}
+        />
+      ) : null}
       <GitActionProgressOverlay
         progress={gitActionProgress}
         onDismiss={() => dismissGitActionResult(gitActionProgressTarget)}
@@ -1048,6 +1063,7 @@ function ThreadRouteContent(
           header={
             props.inspectorPresentation ? null : (
               <ThreadHeader
+                thread={selectedThread}
                 title={selectedThread.title}
                 subtitle={headerSubtitle}
                 gitControls={threadGitControlProps}
@@ -1056,6 +1072,9 @@ function ThreadRouteContent(
                 onOpenFilesInspector={handleOpenFilesInspector}
                 onReturnToThread={props.onReturnToThread}
                 pin={threadPin}
+                {...((selectedThreadDetail?.thread.starredMessageIds?.length ?? 0) > 0
+                  ? { onOpenStarred: () => setStarredSheetKey(threadKey) }
+                  : {})}
               />
             )
           }

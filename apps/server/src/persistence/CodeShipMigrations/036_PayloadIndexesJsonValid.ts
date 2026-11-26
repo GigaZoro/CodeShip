@@ -4,6 +4,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  // Upstream migration 94 covers the fork message index and includes the ordinal.
+  yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_message_idx`;
+
   // Migrations 3, 10 and 13 indexed json_extract without json_valid, so writing a malformed
   // payload failed. ProjectionStore and ProjectionMaintenance repeat each guarded expression.
   // Upstream's threads_root_thread_idx (migration 89) is the guarded copy of the root index.

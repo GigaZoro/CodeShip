@@ -50,6 +50,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import {
   checkCodexProviderStatus,
+  codexWorkspaceFunding,
   mapCodexModelCapabilities,
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
@@ -224,11 +225,13 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
 }
 
 function layerMockSpawner(
-  handler: (args: ReadonlyArray<string>) => {
-    stdout: string;
-    stderr: string;
-    code: number;
-  },
+  handler: (args: ReadonlyArray<string>) =>
+    | {
+        stdout: string;
+        stderr: string;
+        code: number;
+      }
+    | ChildProcessSpawner.ChildProcessHandle,
 ) {
   // Claude's settings worker reads another account's settings files, so it runs for real.
   return Layer.effect(
@@ -236,9 +239,11 @@ function layerMockSpawner(
     Effect.map(ChildProcessSpawner.ChildProcessSpawner, (real) =>
       ChildProcessSpawner.make((command) => {
         const cmd = command as unknown as { args: ReadonlyArray<string> };
-        return cmd.args.some((arg) => arg.endsWith("claude-history-worker.ts"))
-          ? real.spawn(command)
-          : Effect.succeed(mockHandle(handler(cmd.args)));
+        if (cmd.args.some((arg) => arg.endsWith("claude-history-worker.ts"))) {
+          return real.spawn(command);
+        }
+        const result = handler(cmd.args);
+        return Effect.succeed("exitCode" in result ? result : mockHandle(result));
       }),
     ),
   ).pipe(Layer.provide(NodeServices.layer));
@@ -499,6 +504,56 @@ const layerTestNodeServices = Layer.mergeAll(
   ).pipe(Layer.provide(NodeServices.layer)),
 );
 
+// The mock app-server launches through a Bash wrapper.
+it.live.skipIf(isWindowsHost)(
+  "names a proxied login by its saved ChatGPT email only when Codex reads that file",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const codexHome = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-codex-home-" });
+      const claims = {
+        email: "same@example.com",
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      };
+      const idToken = `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+      yield* fileSystem.writeFileString(
+        path.join(codexHome, "auth.json"),
+        JSON.stringify({ tokens: { id_token: idToken } }),
+      );
+      const scriptPath = path.join(codexHome, "script.json");
+      const binaryPath = path.join(import.meta.dirname, "testFixtures", "codexCollabMockPeer.sh");
+      // A model provider that skips OpenAI auth hides the account, yet usage still names one.
+      const proxied = Effect.fn(function* (accountId: string, store: string) {
+        yield* fileSystem.writeFileString(
+          scriptPath,
+          JSON.stringify({
+            codexHome,
+            account: null,
+            config: { cli_auth_credentials_store: store },
+            rateLimits: { accountId, rateLimits: { primary: { usedPercent: 7 } } },
+          }),
+        );
+        return yield* checkCodexProviderStatus({ ...defaultCodexSettings, binaryPath }, undefined, {
+          ...process.env,
+          T3_CODEX_COLLAB_SCRIPT: scriptPath,
+        });
+      });
+      const matching = yield* proxied("acct-1", "file");
+      assert.strictEqual(matching.auth.email, "same@example.com");
+      assert.strictEqual(matching.auth.workspaceId, "acct-1");
+      // A teammate signed in through the keyring can leave another seat's auth.json behind.
+      const keyring = yield* proxied("acct-1", "keyring");
+      assert.strictEqual(keyring.auth.email, undefined);
+      const otherAccount = yield* proxied("acct-2", "file");
+      assert.strictEqual(otherAccount.auth.email, undefined);
+      assert.strictEqual(otherAccount.auth.workspaceId, "acct-2");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(layerTestNodeServices, ServerSettingsModule.layerTest())),
+    ),
+);
+
 it.layer(
   Layer.mergeAll(layerTestNodeServices, ServerSettingsModule.layerTest(), layerTestHttpClient),
 )("ProviderRegistry", (it) => {
@@ -596,6 +651,87 @@ it.layer(
       }),
     );
 
+    it.effect(
+      "requires destination funding for standard ChatGPT and excludes usage-based entitlements",
+      () =>
+        Effect.gen(function* () {
+          for (const [planType, funding] of [
+            ["pro", "unknown"],
+            ["enterprise_cbp_usage_based", "metered"],
+            ["self_serve_business_usage_based", "metered"],
+          ] as const) {
+            const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+              Effect.succeed(
+                makeCodexProbeSnapshot({
+                  account: {
+                    account: { type: "chatgpt", email: "member@example.test", planType: "pro" },
+                    requiresOpenaiAuth: true,
+                  },
+                  usesNativeOpenAiBackend: true,
+                  rateLimits: { accountId: "workspace", rateLimits: { planType } },
+                }),
+              ),
+            );
+            assert.equal(status.auth.funding, funding);
+            if (planType === "pro") assert.equal(status.auth.fundingScope, "workspace");
+          }
+        }),
+    );
+
+    it.effect(
+      "reads the backend in the destination working directory and binds the active entitlement",
+      () =>
+        Effect.gen(function* () {
+          const provider = {
+            checkedAt: "2026-11-26T12:00:00Z",
+            auth: {
+              status: "authenticated" as const,
+              type: "chatgpt",
+              workspaceId: "acct-live",
+              email: "member@example.test",
+            },
+          };
+          const read = (cwd: string, planType = "plus", accountId = "acct-live") => {
+            const client = {
+              request: (method: string, params: { cwd?: string } | null) => {
+                if (method === "config/read") {
+                  assert.equal(params?.cwd, cwd);
+                  if (cwd === "/redirected")
+                    return Effect.succeed({ config: { model_provider: "paid" } });
+                  if (cwd === "/shadowed")
+                    return Effect.succeed({
+                      config: {
+                        model_providers: { openai: { base_url: "https://metered.example" } },
+                      },
+                    });
+                  return Effect.succeed({ config: {} });
+                }
+                if (method === "account/read")
+                  return Effect.succeed({
+                    requiresOpenaiAuth: true,
+                    account: { type: "chatgpt", email: provider.auth.email, planType: "pro" },
+                  });
+                assert.equal(method, "account/rateLimits/read");
+                return Effect.succeed({
+                  accountId,
+                  rateLimits: { planType, primary: { usedPercent: 10, windowDurationMins: 300 } },
+                });
+              },
+            } as unknown as Parameters<typeof codexWorkspaceFunding>[0];
+            return codexWorkspaceFunding(client, { cwd, provider }, {});
+          };
+          assert.equal(yield* read("/subscription"), "included");
+          assert.equal(yield* read("/redirected"), "unknown");
+          assert.equal(yield* read("/shadowed"), "unknown");
+          assert.equal(yield* read("/subscription", "enterprise_cbp_usage_based"), "metered");
+          assert.equal(yield* read("/subscription", "plus", "other-workspace"), "unknown");
+          assert.equal(yield* read("/subscription", "enterprise"), "unknown");
+          assert.equal(yield* read("/subscription", "edu"), "unknown");
+          assert.equal(yield* read("/subscription", "self_serve_business_prolite"), "included");
+          assert.equal(yield* read("/subscription", "future-plan"), "unknown");
+        }),
+    );
+
     it.effect("reads a ChatGPT-shared account's limits only through its own Codex login", () =>
       Effect.gen(function* () {
         // A sharing launch reports no account; the saved login names it once the backend agrees.
@@ -603,8 +739,12 @@ it.layer(
           email: string,
           rateLimits: CodexAppServerProviderSnapshot["rateLimits"] = {
             accountId: "workspace-1",
-            rateLimits: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
+            rateLimits: {
+              planType: "plus",
+              primary: { usedPercent: 78, windowDurationMins: 10080 },
+            },
           },
+          workspaceId: string | null = "workspace-1",
         ) =>
           checkCodexProviderStatus(
             defaultCodexSettings,
@@ -617,7 +757,13 @@ it.layer(
                 }),
               ),
             undefined,
-            { status: "authenticated", subscriptionSharing: true, label: "ChatGPT", email },
+            {
+              status: "authenticated",
+              subscriptionSharing: true,
+              label: "ChatGPT",
+              email,
+              ...(workspaceId ? { workspaceId } : {}),
+            },
           );
 
         const same = yield* statusFor("Test@Example.com");
@@ -627,6 +773,11 @@ it.layer(
           [["weekly", 78]],
         );
         assert.strictEqual((yield* statusFor("other@example.com")).usageLimits, undefined);
+        for (const workspaceId of ["workspace-2", null]) {
+          const otherPayer = yield* statusFor("test@example.com", undefined, workspaceId);
+          assert.strictEqual(otherPayer.auth.status, "authenticated");
+          assert.strictEqual(otherPayer.usageLimits, undefined);
+        }
         const unconfirmed = yield* statusFor("test@example.com", {
           accountId: "workspace-2",
           rateLimits: { primary: { usedPercent: 10 } },
@@ -1634,7 +1785,7 @@ it.layer(
                   Effect.tap((provider) => Ref.set(currentProvider, provider)),
                 ),
                 streamChanges: Stream.empty,
-                applyUsageLimits: () => Effect.void,
+                bindUsageLimits: Effect.succeed(() => Effect.void),
                 refreshAfterRedemption: Effect.die("unused"),
               },
               orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -1777,7 +1928,7 @@ it.layer(
                 Effect.tap((provider) => Ref.set(currentProvider, provider)),
               ),
               streamChanges: Stream.empty,
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -1965,6 +2116,28 @@ it.layer(
         skills: [],
       } as const satisfies ServerProvider;
 
+      it("replaces cached thinking levels when the same model reports no options", () => {
+        const neon = {
+          slug: "gemini-neon",
+          name: "Neon",
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("thinking", "Thinking", [{ id: "xhigh", label: "Extra high" }]),
+            ],
+          }),
+        };
+        const cached = { ...previousProvider, models: [neon] };
+        const refreshed = (capabilities: ServerProvider["models"][number]["capabilities"]) =>
+          ProviderRegistry.mergeProviderSnapshot(cached, {
+            ...previousProvider,
+            models: [{ ...neon, capabilities }],
+          }).models[0]?.capabilities;
+        assert.deepStrictEqual(refreshed(null), neon.capabilities);
+        const noThinking = createModelCapabilities({ optionDescriptors: [] });
+        assert.deepStrictEqual(refreshed(noThinking), noThinking);
+      });
+
       it("clears models after sign-out, disable, uninstall, or an empty successful refresh", () => {
         const emptyProvider = {
           ...previousProvider,
@@ -2040,6 +2213,24 @@ it.layer(
           ProviderRegistry.mergeProviderSnapshot(merged, restartProbe),
           merged,
         );
+      });
+
+      it("retains catalog descriptions without admitting an earlier login or an unreported model", () => {
+        const previouslyFunded = {
+          ...signedIn,
+          auth: { ...signedIn.auth, funding: "included" as const },
+          models: signedIn.models.map((model) => ({ ...model, funding: "included" as const })),
+        };
+        const restored = ProviderRegistry.mergeProviderSnapshot(previouslyFunded, restartProbe);
+        assert.notEqual(restored.auth.funding, "included");
+        assert.notEqual(restored.models[0]?.funding, "included");
+        const changedLogin = ProviderRegistry.mergeProviderSnapshot(previouslyFunded, {
+          ...restartProbe,
+          status: "error",
+          auth: { ...signedIn.auth, email: "new@example.test", funding: "included" },
+        });
+        assert.equal(changedLogin.models[0]?.slug, signedIn.models[0].slug);
+        assert.equal(changedLogin.models[0]?.funding, "unknown");
       });
 
       it("does not invent an account after sign-out, disable, uninstall, or for other providers", () => {
@@ -2127,6 +2318,14 @@ it.layer(
       assert.deepStrictEqual(
         ProviderRegistry.mergeProviderSnapshot(previousProvider, refreshedProvider).models,
         [...previousProvider.models],
+      );
+      const differentLogin = {
+        ...refreshedProvider,
+        auth: { ...refreshedProvider.auth, profileId: "second-login" },
+      };
+      assert.deepStrictEqual(
+        ProviderRegistry.mergeProviderSnapshot(previousProvider, differentLogin).models,
+        differentLogin.models,
       );
     });
 
@@ -2369,7 +2568,7 @@ it.layer(
               getSnapshot: Effect.succeed(provider),
               refresh: Effect.succeed(provider),
               streamChanges: Stream.empty,
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             snapshotForCwd: () =>
@@ -2563,7 +2762,7 @@ it.layer(
             getSnapshot: Effect.succeed(unhealthyProvider),
             refresh: Effect.succeed(unhealthyProvider),
             streamChanges: Stream.empty,
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           snapshotForCwd: () => Ref.get(scanResult),
@@ -2803,7 +3002,7 @@ it.layer(
                 return provider;
               }),
               streamChanges: Stream.empty,
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2987,7 +3186,6 @@ it.layer(
         }
       }),
     );
-
     it.effect("keeps an enriched snapshot that streams in before a manual refresh returns", () =>
       Effect.gen(function* () {
         const driver = ProviderDriverKind.make("acpRegistry");
@@ -3115,6 +3313,149 @@ it.layer(
         }).pipe(Effect.provide(runtimeServices));
       }),
     );
+    it.effect("shares a custom adapter's stale quota refresh across bounded waits", () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("custom-quota");
+        const instanceId = ProviderInstanceId.make("custom-quota");
+        const old = decodeServerProvider({
+          instanceId,
+          driver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-06-10T00:00:00.000Z",
+          version: "1.0.0",
+          models: [{ slug: "default", name: "Default", isCustom: false, capabilities: null }],
+        });
+        const fresh = {
+          ...old,
+          usageLimits: {
+            checkedAt: old.checkedAt,
+            windows: [{ id: "quota", kind: "other", label: "Quota", usedPercent: 40 }],
+          },
+        } as const satisfies ServerProvider;
+        const snapshot = yield* Ref.make(old);
+        const reads = yield* Ref.make(0);
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const instance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: "custom-quota" },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            resolveMaintenance: () => Effect.die("usage refresh does not need maintenance"),
+            getSnapshot: Ref.get(snapshot),
+            refresh: Effect.die("usage refresh should use the dedicated quota reader"),
+            refreshUsage: Effect.gen(function* () {
+              yield* Ref.update(reads, (count) => count + 1);
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              yield* Ref.set(snapshot, fresh);
+            }),
+            streamChanges: Stream.empty,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
+            refreshAfterRedemption: Effect.die("unused"),
+          },
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        } satisfies ProviderInstance;
+        const withoutLocalMeter: ServerProvider = {
+          ...old,
+          instanceId: ProviderInstanceId.make("custom-unmetered"),
+          usageLimits: {
+            checkedAt: old.checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" },
+          },
+        };
+        const signedOut: ServerProvider = {
+          ...old,
+          instanceId: ProviderInstanceId.make("custom-signed-out"),
+          auth: { status: "unauthenticated" },
+        };
+        const instances = [
+          instance,
+          ...[withoutLocalMeter, signedOut].map((provider) => ({
+            ...instance,
+            instanceId: provider.instanceId,
+            snapshot: { ...instance.snapshot, getSnapshot: Effect.succeed(provider) },
+          })),
+        ];
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const read = (waitMs: number) =>
+            registry.refreshUsageIfStale({
+              instanceIds: instances.map((entry) => entry.instanceId),
+              staleObservations: (provider) =>
+                provider.usageLimits?.windows.length ? [] : ["account"],
+              waitMs,
+            });
+          const first = yield* read(1_000).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          const second = yield* read(2_000).pipe(Effect.forkChild({ startImmediately: true }));
+          const readMeter = (id: string, since = old.checkedAt) =>
+            registry.refreshUsageIfStale({
+              instanceIds: [instanceId],
+              staleObservations: ({ usageLimits }) => {
+                const fresh = usageLimits?.windows.some(
+                  (window) =>
+                    window.id === id && (window.observedAt ?? usageLimits.checkedAt) >= since,
+                );
+                return fresh ? [] : [id];
+              },
+              waitMs: 2_000,
+            });
+          const weekly = yield* readMeter("weekly").pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const quota = yield* readMeter("quota").pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* TestClock.adjust("1 second");
+          expect(yield* Fiber.join(first)).toContainEqual(expect.objectContaining(old));
+
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(second)).toContainEqual(expect.objectContaining(fresh));
+          yield* Fiber.join(weekly);
+          yield* Fiber.join(quota);
+          expect(yield* read(1_000)).toContainEqual(expect.objectContaining(fresh));
+          yield* readMeter("weekly");
+          expect(yield* Ref.get(reads)).toBe(1);
+          yield* readMeter("quota", "2026-06-10T01:00:00.000Z");
+          expect(yield* Ref.get(reads)).toBe(2);
+          yield* readMeter("session");
+          yield* readMeter("weekly");
+          yield* readMeter("session");
+          expect(yield* Ref.get(reads)).toBe(3);
+          yield* TestClock.adjust("10 minutes");
+          yield* readMeter("weekly");
+          expect(yield* Ref.get(reads)).toBe(4);
+        }).pipe(
+          Effect.provide(
+            ProviderRegistry.layer.pipe(
+              Layer.provide(layerUnusedMutator),
+              Layer.provide(
+                Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+                  getInstance: (id) =>
+                    Effect.succeed(instances.find((entry) => entry.instanceId === id)),
+                  listInstances: Effect.succeed(instances),
+                  listUnavailable: Effect.succeed([]),
+                  streamChanges: Stream.empty,
+                  subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+                }),
+              ),
+              Layer.provide(
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-quota-" }),
+              ),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+        );
+      }),
+    );
 
     it.effect("persists the merged snapshot when a live update has empty models", () =>
       Effect.gen(function* () {
@@ -3173,7 +3514,7 @@ it.layer(
             getSnapshot: Effect.succeed(initialProvider),
             refresh: Effect.succeed(refreshedProvider),
             streamChanges: Stream.fromPubSub(changes),
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -3275,7 +3616,7 @@ it.layer(
             getSnapshot: Effect.succeed(initialProvider),
             refresh: Effect.succeed(initialProvider),
             streamChanges: Stream.fromPubSub(changes),
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -3465,7 +3806,7 @@ it.layer(
               getSnapshot: Effect.succeed(initialProvider),
               refresh: Effect.succeed(authoritativeProvider),
               streamChanges: Stream.fromPubSub(changes),
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -3570,7 +3911,7 @@ it.layer(
             getSnapshot: Effect.succeed(cachedProvider),
             refresh: Effect.die(new Error("simulated refresh failure")),
             streamChanges: Stream.empty,
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -4099,6 +4440,7 @@ it.layer(
             status.usageLimits?.unavailable?.reason,
             account.usageMissing ? "probeFailed" : account.expected,
           );
+          assert.notEqual(status.auth.funding, "included");
           if (account.usageMissing) {
             const published = {
               checkedAt: "2026-10-23T12:00:00.000Z",
@@ -4415,6 +4757,80 @@ it.layer(
     );
 
     it.effect.each([
+      {
+        scenario: "goes on with the version it last reported",
+        lastKnownVersion: "1.1.0",
+        expected: { status: "ready", version: "1.1.0", gatedModelOffered: true },
+      },
+      {
+        scenario: "reports the timeout when no version was ever known",
+        lastKnownVersion: null,
+        expected: {
+          status: "error",
+          version: null,
+          message: "Claude Agent CLI did not answer `claude --version` within 20s.",
+        },
+      },
+    ] as const)(
+      "an account whose --version times out $scenario",
+      ({ lastKnownVersion, expected }) =>
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>();
+          const fiber = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              tokenSource: "claude.ai",
+              subscriptionType: "max",
+              email: "a@example.com",
+              apiKeySource: "none",
+              apiProvider: "firstParty",
+            }),
+            { ANTHROPIC_BASE_URL: "" },
+            undefined,
+            {
+              models: [
+                {
+                  model: { slug: "claude-next", name: "Next", isCustom: false, capabilities: null },
+                  runtime: {},
+                  compatibility: { minVersion: "1.1.0" },
+                },
+              ],
+            },
+            undefined,
+            undefined,
+            undefined,
+            lastKnownVersion,
+          ).pipe(
+            Effect.provide(
+              layerMockSpawner((args) => {
+                if (args.join(" ") !== "--version") {
+                  throw new Error(`Unexpected args: ${args.join(" ")}`);
+                }
+                return ChildProcessSpawner.makeHandle({
+                  ...mockHandle({ stdout: "", stderr: "", code: 0 }),
+                  exitCode: Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+                });
+              }),
+            ),
+            Effect.forkChild,
+          );
+          yield* Deferred.await(started);
+          yield* TestClock.adjust("20 seconds");
+          const status = yield* Fiber.join(fiber);
+          assert.deepInclude(
+            {
+              status: status.status,
+              version: status.version,
+              message: status.message,
+              gatedModelOffered: status.models.some((model) => model.slug === "claude-next"),
+            },
+            expected,
+          );
+          assert.isTrue(status.installed);
+        }),
+    );
+
+    it.effect.each([
       { source: "inherited HTTPS endpoint", baseUrl: "https://proxy.example/api", overrides: [] },
       {
         source: "instance HTTP endpoint overriding Anthropic",
@@ -4572,6 +4988,16 @@ it.layer(
         );
         assert.strictEqual(status.status, "warning");
         assert.strictEqual(status.auth.status, "unknown");
+        const signedIn = yield* checkClaudeProviderStatus(
+          { ...defaultClaudeSettings, homePath: configDir },
+          claudeCapabilities({
+            tokenSource: "oauth",
+            apiKeySource: "none",
+            apiProvider: "firstParty",
+          }),
+          {},
+        );
+        assert.strictEqual(signedIn.auth.funding, "unknown");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {
@@ -4596,6 +5022,7 @@ it.layer(
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.auth.status, "authenticated");
         assert.strictEqual(status.auth.label, "Claude API Key");
+        assert.strictEqual(status.auth.funding, "metered");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {

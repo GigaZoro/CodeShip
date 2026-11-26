@@ -32,6 +32,13 @@ export const legacyCodeShipMigrationNames = [
   "MonitoringAnalysesWithoutProject",
   "MonitoringAnalysesSettleStamp",
   "MonitoringStoredDetailsAndRetries",
+  "ColdThreadHistoryCompaction",
+  "DatabaseSizeSamples",
+  "ScheduledTaskRunReportedResult",
+  "ThreadPreferences",
+  "ScheduledTaskLastRunId",
+  "UsageStopDecisions",
+  "TurnItemMessageIndex",
 ] as const;
 
 /** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */

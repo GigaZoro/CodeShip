@@ -321,6 +321,7 @@ export function claudeUsageResponseToLimits(input: {
   if (spendPercent !== undefined) {
     windows.push({
       id: "monthly_spend",
+      scope: "spending-cap",
       kind: "monthly",
       label: "Monthly spend",
       usedPercent: spendPercent,

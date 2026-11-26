@@ -13,6 +13,7 @@ const {
   TURN_ENV,
   checkBudgetSeconds,
   acquire,
+  keepAwake,
   land,
   macAwakeMs,
   overlappingWorktrees,
@@ -44,7 +45,8 @@ Object.assign(process.env, {
 });
 
 function setup() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-")));
+  // `.native` also writes out a Windows short name (RUNNER~1), as git does in the paths it prints.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-")));
   const git = (cwd, ...args) =>
     execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
   const origin = path.join(root, "origin.git");
@@ -468,6 +470,53 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
   }
 });
 
+test("a lander adds its tool text bytes to the ones main gained meanwhile, with no merge config set up", () => {
+  const { root, git, clone } = setup();
+  try {
+    const file = "apps/server/src/provider/agentContextBudget.json";
+    const ship = (dir, claude, mcp) => {
+      fs.mkdirSync(path.join(dir, path.dirname(file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), `${JSON.stringify({ claude, mcp }, null, 2)}\n`);
+      git(dir, "add", ".");
+      git(dir, "commit", "-qm", "budget");
+    };
+    const seed = path.join(root, "seed");
+    // The whole folder, so the copied lander finds every script it comes to require.
+    fs.cpSync(__dirname, path.join(seed, ".github/scripts"), { recursive: true });
+    fs.copyFileSync(
+      path.join(__dirname, "../../.gitattributes"),
+      path.join(seed, ".gitattributes"),
+    );
+    ship(seed, 100, 1000);
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    const lander = clone("lander");
+    ship(lander, 100, 1430);
+    const mover = clone("mover");
+    ship(mover, 105, 1050);
+    git(mover, "push", "-q", "origin", "HEAD:main");
+
+    const remote = git(lander, "remote", "get-url", "origin");
+    assert.equal(land({ cwd: lander, remote, check: () => true }).status, "rebased");
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(lander, file), "utf8")), {
+      claude: 105,
+      mcp: 1480,
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing keeps a Mac awake until it exits, and starts nothing elsewhere", () => {
+  const started = [];
+  const run = (command, args) => {
+    started.push([command, ...args]);
+    return { on: () => {}, unref: () => {} };
+  };
+  for (const platform of ["linux", "win32", "darwin"]) keepAwake({ platform, pid: 42, run });
+  assert.deepEqual(started, [["/usr/bin/caffeinate", "-i", "-w", "42"]]);
+});
+
 test("a lander with uncommitted files, failing checks or a conflict with main does not push and holds no turn afterwards", () => {
   const { root, origin, git, clone, commit } = setup();
   try {
@@ -556,6 +605,7 @@ test("the CLI continues with main's copy of the script after it rebases before t
     fs.mkdirSync(scripts, { recursive: true });
     for (const file of [
       "landing-turn.cjs",
+      "bounded-git.cjs",
       "lease-queue.cjs",
       "git-history.cjs",
       "release-notes.cjs",
@@ -1794,6 +1844,40 @@ test("a lander whose main stays still checks once, before its wait, and holds th
   }
 });
 
+test("the checks read a private checkout of the landed commit, not the lander's worktree", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    const landed = git(dir, "rev-parse", "HEAD");
+    let seen;
+    let checkout;
+
+    const result = land({
+      cwd: dir,
+      remote: origin,
+      check: (_turn, _base, _budget, directory) => {
+        checkout = directory;
+        // An edit made and undone while the checks run leaves the worktree clean again.
+        fs.writeFileSync(path.join(dir, "base.txt"), "transient\n");
+        seen = fs.readFileSync(path.join(directory, "base.txt"), "utf8");
+        fs.writeFileSync(path.join(dir, "base.txt"), "base\n");
+        assert.equal(git(directory, "rev-parse", "HEAD"), landed);
+        assert.notEqual(path.resolve(directory), path.resolve(dir));
+        return true;
+      },
+    });
+
+    assert.equal(seen, "base\n");
+    assert.equal(result.status, "landed");
+    assert.equal(git(origin, "rev-parse", "main"), landed);
+    assert.equal(fs.existsSync(checkout), false);
+    assert.equal(git(dir, "worktree", "list", "--porcelain").includes(checkout), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a landing continued after its rebase checks against the main it rebased onto, and stops if its branch left it", () => {
   const { root, origin, git, clone, commit } = setup();
   try {
@@ -1979,24 +2063,78 @@ test("a push of a commit checked elsewhere lands that commit while its record sh
   }
 });
 
-test("a lander gives up on a fetch of main that stops answering", () => {
+/** Whether `pid` still runs; a POSIX process that ended but is not yet reaped does not. */
+function running(pid) {
+  try {
+    // oxlint-disable-next-line t3code/no-raw-process-probe -- a CommonJS test that loads no package
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- a plain node test, with no Effect runtime
+  if (process.platform === "win32") return true;
+  const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+  return !/^\s*(Z|$)/.test(state);
+}
+
+test("a lander gives up on a fetch of main that stops answering, and stops its transport", () => {
   const { root, git, clone, commit } = setup();
   try {
     const lander = clone("lander");
     commit(lander, "mine.txt");
-    // A remote that never answers: git waits for the transport's first line.
+    // A remote that never answers: git waits for the transport's first line. The transport ends by itself only
+    // long after the call's limit, which leaves its start a wide margin.
+    const pidFile = path.join(root, "transport.pid");
+    fs.writeFileSync(
+      path.join(root, "transport.cjs"),
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => {}, 60_000);
+`,
+    );
     git(lander, "config", "protocol.ext.allow", "always");
-    git(lander, "remote", "add", "stalled", "ext::sleep 5");
+    git(lander, "remote", "add", "stalled", "ext::node ../transport.cjs");
     assert.throws(
       () =>
         land({
           cwd: lander,
           remote: "stalled",
-          mainCallMs: 100,
+          mainCallMs: 5000,
           check: () => assert.fail("checked"),
         }),
-      /git fetch failed: did not finish within 0\.1 seconds/,
+      /git fetch failed: did not finish within 5 seconds/,
     );
+    assert.equal(running(Number(fs.readFileSync(pidFile, "utf8"))), false, "transport still runs");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander runs a fetch of main again when a Mac's sleep used up its time limit", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const lander = clone("lander");
+    commit(lander, "mine.txt");
+    // The first connection never answers, as one the Mac slept under; later ones reach origin.
+    const slept = path.join(root, "slept").replaceAll("\\", "/");
+    git(lander, "config", "protocol.ext.allow", "always");
+    git(
+      lander,
+      "remote",
+      "add",
+      "sleepy",
+      `ext::sh -c if% test% -e% '${slept}';% then% exec% %S% '${origin.replaceAll("\\", "/")}';% fi;% touch% '${slept}';% exec% sleep% 30`,
+    );
+    const result = land({
+      cwd: lander,
+      remote: "sleepy",
+      mainCallMs: 5000,
+      // No time awake passes, so every limit that runs out here ran out asleep.
+      awakeClock: () => 0,
+      check: () => true,
+      report: () => {},
+    });
+    assert.equal(result.status, "landed");
+    assert.equal(git(origin, "rev-parse", "main"), result.commit);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -2056,7 +2194,7 @@ test("a command given an argument it does not take is refused before it takes th
     assert.deepEqual(
       errors,
       Array(8).fill(
-        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>",
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs>",
       ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);
@@ -2154,7 +2292,8 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
       found.map(({ branch, files }) => ({ branch, files })),
       [{ branch: "overlapping", files: ["shared.txt"] }],
     );
-    assert.equal(path.normalize(found[0].worktree), path.join(root, "overlapping"));
+    // Git for Windows lists `C:/…`; the landing names the path as the system writes it.
+    assert.equal(found[0].worktree, path.join(root, "overlapping"));
 
     // Main moved, so the landing rebases and lands from a relaunch, which does not list the overlaps again.
     const mover = clone("mover");

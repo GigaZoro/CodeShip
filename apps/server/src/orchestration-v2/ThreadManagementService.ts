@@ -66,6 +66,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { boundedCandidates, type DispatchRecorder, evidenceKey } from "./StopDecisionEvidence.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -153,7 +154,7 @@ function existingThreadIdsForCommand(
 }
 
 export interface ThreadManagementSendInput {
-  readonly demandId?: string;
+  readonly demandId?: string | null;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -394,6 +395,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    recorder?: DispatchRecorder,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -957,6 +959,7 @@ const make = Effect.gen(function* () {
   /** Routes the first turn or an Auto turn before anything checks its target. */
   const routeDispatchAccount = (
     command: OrchestrationV2ServerCommand,
+    observe?: AccountRouting.ObserveAccount,
   ): Effect.Effect<OrchestrationV2ServerCommand, Orchestrator.OrchestratorV2Error> => {
     if (Option.isNone(accountRouting)) return Effect.succeed(command);
     const routing = accountRouting.value;
@@ -980,6 +983,7 @@ const make = Effect.gen(function* () {
       const thread = yield* orchestrator.getThreadShell(input.threadId);
       if (thread === null) return command;
       const selection = input.selection ?? thread.modelSelection;
+      if (selection.quotaAwareAuto === true) return command;
       const fresh =
         !input.newThread &&
         command.launchAlreadyRouted !== true &&
@@ -999,6 +1003,8 @@ const make = Effect.gen(function* () {
           projectId,
           scheduled: input.scheduled,
           discoverMcpSignIns: false,
+          // The thread itself, or the parent a delegated task is for.
+          requesterThreadId: input.threadId,
         });
         if (launch.failover?.reason === "usageLimit") {
           const from = launch.failover.crossProviderFrom;
@@ -1018,6 +1024,7 @@ const make = Effect.gen(function* () {
       }
       if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
+        ...(observe && { observe }),
         selection,
         projectId,
         // A thread that never ran starts on the highest account in the order.
@@ -1027,8 +1034,12 @@ const make = Effect.gen(function* () {
             : thread.providerInstanceId,
         started: !input.newThread && thread.latestRunId !== null,
         scheduled: input.scheduled,
+        requesterThreadId: input.threadId,
       });
-      return routed === selection ? command : { ...command, modelSelection: routed };
+      // A recorded continuation pins the account it was routed to, so the evidence names where it ran.
+      return routed === selection && !(observe && input.selection === undefined)
+        ? command
+        : { ...command, modelSelection: routed };
     });
     switch (command.type) {
       case "message.dispatch":
@@ -1054,15 +1065,26 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (sent) =>
-    routeDispatchAccount(sent).pipe(
-      Effect.flatMap((command) =>
-        ensureCommandTranscripts(command).pipe(
-          Effect.andThen(assertDispatchTargetEnabled(command)),
-          Effect.andThen(orchestrator.dispatch(command)),
-        ),
-      ),
-    );
+  const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn(
+    "ThreadManagementService.dispatch",
+  )(function* (sent, recorder) {
+    const observations: Parameters<typeof boundedCandidates>[0] = [];
+    const observe: AccountRouting.ObserveAccount = (instance, reason) => {
+      observations.push({ id: evidenceKey(instance), reason });
+    };
+    const command = yield* routeDispatchAccount(sent, recorder ? observe : undefined);
+    if (recorder) {
+      const instance =
+        command.type === "message.dispatch" ? command.modelSelection?.instanceId : undefined;
+      const selected = instance ? evidenceKey(instance) : null;
+      yield* recorder.route(selected, boundedCandidates(observations, selected));
+    }
+    yield* ensureCommandTranscripts(command);
+    yield* assertDispatchTargetEnabled(command);
+    const result = yield* orchestrator.dispatch(command);
+    if (recorder && result.replayed !== true) yield* recorder.committed(result.storedEvents);
+    return result;
+  });
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
     input,

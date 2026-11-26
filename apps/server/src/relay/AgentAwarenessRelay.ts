@@ -95,6 +95,7 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.unarchived":
     case "thread.deleted":
     case "thread.metadata-updated":
+    case "thread.notification-level-updated":
     case "thread.pull-request-link-updated":
     case "thread.pull-request-synced":
     case "thread.settled":
@@ -117,9 +118,11 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.unpinned":
     case "thread.pin-reordered":
     case "thread.active-reordered":
+    case "thread.color-updated":
     case "thread.tags-updated":
     case "thread.folder-updated":
     case "thread.artifacts-updated":
+    case "thread.message-stars-updated":
     case "thread.visited":
     case "thread.visit-recorded":
     case "thread.marked-unread":
@@ -176,7 +179,7 @@ function agentAwarenessPublishIdentity(
   if (state === null) {
     return "null";
   }
-  const { updatedAt: _updatedAt, ...meaningfulState } = state;
+  const { updatedAt: _updatedAt, notificationLevel: _level, ...meaningfulState } = state;
   // A child's next request reads the same as its last one, but it is a new
   // wait and must reach the phone.
   return JSON.stringify(
@@ -188,10 +191,10 @@ const CLEARED_PUBLISH_IDENTITY = agentAwarenessPublishIdentity(null);
 
 // A published tombstone stays recorded so repeats are skipped, but it is not live state.
 function hasLivePublishedState(
-  publishedStateByThread: ReadonlyMap<ThreadId, string>,
+  publishedStateByThread: ReadonlyMap<ThreadId, { readonly identity: string }>,
   threadId: ThreadId,
 ): boolean {
-  const identity = publishedStateByThread.get(threadId);
+  const identity = publishedStateByThread.get(threadId)?.identity;
   return identity !== undefined && identity !== CLEARED_PUBLISH_IDENTITY;
 }
 
@@ -438,7 +441,16 @@ export const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const startedAt = (yield* DateTime.now).epochMilliseconds;
   const catchUpRequests = yield* Queue.dropping<void>(1);
-  const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  const publishedStateByThreadRef = yield* Ref.make(
+    new Map<
+      ThreadId,
+      {
+        readonly identity: string;
+        readonly notificationLevel: RelayAgentActivityState["notificationLevel"];
+        readonly updatedAt: string;
+      }
+    >(),
+  );
   // Android keys alerts by phase and time, so a child's unchanged request keeps
   // its first alert time through parent renames, relinks and the parent's own requests.
   const childAlertByThread = new Map<ThreadId, SubagentAlert>();
@@ -507,7 +519,13 @@ export const make = Effect.gen(function* () {
     yield* Ref.set(publishedStateByThreadRef, new Map());
   });
 
-  const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
+  const notificationLevelPublishes = new Map<ThreadId, OrchestrationV2DomainEvent["id"]>();
+  const activityPublishes = new Map<ThreadId, object>();
+
+  const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (
+    threadId: ThreadId,
+    notificationLevelOnly: boolean,
+  ) {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled;
     if (!publishAgentActivity) {
       yield* cancelPublishRetries;
@@ -610,16 +628,52 @@ export const make = Effect.gen(function* () {
       pendingSubagentRequest: yield* currentSubagentRequestFor(threadId),
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
-    const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
+    const previous = (yield* Ref.get(publishedStateByThreadRef)).get(threadId);
+    if (notificationLevelOnly) {
+      if (!threadShell || !isListedThreadLineage(threadShell.lineage)) return;
+      const level = threadShell.notificationLevel;
+      const notificationLevel = level === "default" ? undefined : level;
+      const state = snapshot.state ?? {
+        environmentId,
+        threadId,
+        projectTitle: Option.isSome(project) ? project.value.title : "Project",
+        threadTitle: threadShell.title,
+        modelTitle: threadShell.modelSelection.model,
+        phase: "stale" as const,
+        headline: "Waiting",
+        updatedAt: DateTime.formatIso(threadShell.updatedAt),
+        deepLink: "/",
+      };
+      yield* publishState({
+        projectId: threadShell.projectId,
+        state: {
+          ...state,
+          ...(notificationLevel === undefined ? {} : { notificationLevel }),
+          updatedAt: previous?.updatedAt ?? state.updatedAt,
+          silent: true,
+        },
+        reason: "notification-level",
+      }).pipe(withRelayClientTracing);
+      if (previous) {
+        yield* Ref.update(publishedStateByThreadRef, (states) =>
+          new Map(states).set(threadId, { ...previous, notificationLevel }),
+        );
+      }
+      return;
+    }
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
-      !hasLivePublishedState(publishedStateByThread, threadId)
+      (previous === undefined || previous.identity === CLEARED_PUBLISH_IDENTITY)
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
     }
+    const metadataOnly =
+      snapshot.state !== null &&
+      previous?.identity === publishIdentity &&
+      previous.notificationLevel !== snapshot.state.notificationLevel;
     if (
-      publishedStateByThread.get(threadId) === publishIdentity &&
-      // A held completion settled after an earlier clear still has to alert.
+      previous?.identity === publishIdentity &&
+      !metadataOnly &&
       !(snapshot.state === null && heldCompletions.has(threadId))
     ) {
       // Clear moot deadlines so later transient nulls cannot skip their deferral window.
@@ -636,7 +690,8 @@ export const make = Effect.gen(function* () {
     // Confirm tombstones over live state to avoid removing active cards.
     // Confirm completion: a run can end moments before its continuation starts, and the relay
     // alerts on every move into completed.
-    const requiresConfirmation = snapshot.state === null || snapshot.state?.phase === "completed";
+    const requiresConfirmation =
+      snapshot.state === null || (snapshot.state?.phase === "completed" && !metadataOnly);
     if (requiresConfirmation) {
       if (snapshot.state?.phase === "completed") heldCompletions.add(threadId);
       const deadline = publishConfirmDeadlines.get(threadId);
@@ -687,7 +742,11 @@ export const make = Effect.gen(function* () {
         heldCompletions.delete(threadId);
         publishConfirmDeadlines.set(threadId, nowMs + 5_000);
         yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
-          new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(completion)),
+          new Map(publishedStates).set(threadId, {
+            identity: agentAwarenessPublishIdentity(completion),
+            notificationLevel: completion.notificationLevel,
+            updatedAt: completion.updatedAt,
+          }),
         );
         yield* schedulePublishConfirm(threadId);
         return;
@@ -712,12 +771,15 @@ export const make = Effect.gen(function* () {
 
     const childRequestId = snapshot.subagentWait?.requestId;
     const childAlert = childAlertByThread.get(threadId);
-    const state =
+    const childState =
       snapshot.state !== null &&
       childRequestId !== undefined &&
       childAlert?.requestId === childRequestId
         ? { ...snapshot.state, updatedAt: childAlert.updatedAt }
         : snapshot.state;
+    const state = metadataOnly
+      ? { ...snapshot.state, updatedAt: previous.updatedAt, silent: true }
+      : childState;
     yield* publishState({
       projectId: snapshot.projectId,
       state,
@@ -729,7 +791,12 @@ export const make = Effect.gen(function* () {
     publishConfirmDeadlines.delete(threadId);
     heldCompletions.delete(threadId);
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
-      new Map(publishedStates).set(threadId, publishIdentity),
+      new Map(publishedStates).set(threadId, {
+        identity: publishIdentity,
+        notificationLevel: state?.notificationLevel,
+        updatedAt:
+          state?.updatedAt ?? previous?.updatedAt ?? DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+      }),
     );
   });
 
@@ -807,7 +874,20 @@ export const make = Effect.gen(function* () {
       retry.timer = undefined;
       yield* Fiber.interrupt(timer);
     }
-    yield* publishThreadUnsafe(threadId).pipe(
+    yield* Effect.gen(function* () {
+      const levelEvent = notificationLevelPublishes.get(threadId);
+      const activity = activityPublishes.get(threadId);
+      if (levelEvent !== undefined) {
+        yield* publishThreadUnsafe(threadId, true);
+        if (notificationLevelPublishes.get(threadId) === levelEvent) {
+          notificationLevelPublishes.delete(threadId);
+        }
+      }
+      if (activity !== undefined) {
+        yield* publishThreadUnsafe(threadId, false);
+        if (activityPublishes.get(threadId) === activity) activityPublishes.delete(threadId);
+      }
+    }).pipe(
       Effect.tap(() => cancelPublishRetry(threadId)),
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.void;
@@ -821,8 +901,12 @@ export const make = Effect.gen(function* () {
   });
 
   const worker = yield* makeAgentAwarenessPublishWorker(processThreadPublish);
+  const enqueueActivityPublish = (threadId: ThreadId) =>
+    Effect.sync(() => activityPublishes.set(threadId, {})).pipe(
+      Effect.andThen(worker.enqueue(threadId)),
+    );
   const enqueueThreadPublish = (threadId: ThreadId) =>
-    cancelPublishRetry(threadId).pipe(Effect.andThen(worker.enqueue(threadId)));
+    cancelPublishRetry(threadId).pipe(Effect.andThen(enqueueActivityPublish(threadId)));
   enqueueTopLevelPublish = enqueueThreadPublish;
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
     enqueueThreadPublish(threadId).pipe(Effect.andThen(worker.drain));
@@ -941,7 +1025,7 @@ export const make = Effect.gen(function* () {
   schedulePublishConfirm = (threadId) =>
     Effect.forkIn(
       Effect.sleep("5 seconds").pipe(
-        Effect.andThen(worker.enqueue(threadId)),
+        Effect.andThen(enqueueActivityPublish(threadId)),
         Effect.catchCause((cause) =>
           Effect.logWarning("deferred agent activity confirmation failed", {
             threadId,
@@ -988,10 +1072,17 @@ export const make = Effect.gen(function* () {
           if (!shouldPublishAgentAwarenessEvent(event)) {
             return Effect.void;
           }
+          const enqueue =
+            event.type === "thread.notification-level-updated"
+              ? Effect.sync(() => notificationLevelPublishes.set(threadId, event.id)).pipe(
+                  Effect.andThen(cancelPublishRetry(threadId)),
+                  Effect.andThen(worker.enqueue(threadId)),
+                )
+              : enqueueThreadPublish(threadId);
           return Effect.logDebug("agent activity publishing queued thread publish", {
             eventType: event.type,
             threadId,
-          }).pipe(Effect.andThen(enqueueThreadPublish(threadId)));
+          }).pipe(Effect.andThen(enqueue));
         }),
       );
     },

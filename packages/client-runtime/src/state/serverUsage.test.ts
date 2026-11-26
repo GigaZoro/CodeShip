@@ -1,6 +1,8 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   UsageDay,
   UsageReadError,
   USAGE_CONTRACT_VERSION,
@@ -13,6 +15,7 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,10 +24,12 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   AVAILABLE_CONNECTION_STATE,
+  ConnectionTransientError,
   PrimaryConnectionTarget,
   type PreparedConnection,
   type SupervisorConnectionState,
@@ -74,12 +79,34 @@ const cursorSource = (refreshing: boolean): UsageSource => ({
 
 const sameServerSettings = Schema.toEquivalence(ServerSettings);
 
+const CHANGED_PRICE: ServerSettings = {
+  ...DEFAULT_SERVER_SETTINGS,
+  usagePriceOverrides: {
+    "custom-model": { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
+  },
+};
+
+const CHANGED_CLAUDE_HOME: ServerSettings = {
+  ...DEFAULT_SERVER_SETTINGS,
+  providerInstances: {
+    [ProviderInstanceId.make("claudeAgent")]: {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      config: { homePath: "/accounts/work" },
+    },
+  },
+};
+
 const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
   beforeRead: (
     request: number,
     input: UsageSummaryInput,
   ) => Effect.Effect<void, UsageReadError> = () => Effect.void,
   sources: (input: UsageSummaryInput) => readonly UsageSource[] = () => [],
+  progress?: (request: number) => {
+    readonly output: number;
+    readonly partialReason?: UsageSummary["partialReason"];
+  },
+  supportsProvisional = false,
 ) {
   const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
   let settings = DEFAULT_SERVER_SETTINGS;
@@ -94,10 +121,14 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
       ),
     [WS_METHODS.serverGetUsageSummary]: (input: UsageSummaryInput) =>
       Effect.gen(function* () {
-        requests += 1;
+        if (input.provisional === true && !supportsProvisional) {
+          return yield* new UsageReadError({ reason: "scanFailed", detail: "No saved usage" });
+        }
+        const ordinal = ++requests;
         inputs.push(input);
         const price = settings.usagePriceOverrides["custom-model"]?.inputCostPerMillionTokens ?? 0;
-        yield* beforeRead(requests, input);
+        yield* beforeRead(ordinal, input);
+        const step = progress?.(ordinal);
         return {
           contractVersion: USAGE_CONTRACT_VERSION,
           readAt: "2026-09-04T12:00:00Z",
@@ -111,7 +142,7 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
                 uncachedInputTokens: 1_000_000,
                 cachedInputTokens: 0,
                 cacheCreationTokens: 0,
-                outputTokens: 0,
+                outputTokens: step?.output ?? 0,
                 reasoningTokens: 0,
               },
               costUsd: price,
@@ -123,6 +154,7 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
             },
           ],
           sources: sources(input),
+          ...(step?.partialReason === undefined ? {} : { partialReason: step.partialReason }),
           pricing: PRICING,
           scanDurationMs: 0,
         } satisfies UsageSummary;
@@ -137,12 +169,13 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   };
+  const connection = yield* SubscriptionRef.make<SupervisorConnectionState>({
+    ...AVAILABLE_CONNECTION_STATE,
+    phase: "connected",
+  });
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: TARGET,
-    state: yield* SubscriptionRef.make<SupervisorConnectionState>({
-      ...AVAILABLE_CONNECTION_STATE,
-      phase: "connected",
-    }),
+    state: connection,
     session: yield* SubscriptionRef.make(Option.some(session)),
     prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
     connect: Effect.void,
@@ -170,9 +203,10 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     clear: () => Effect.void,
   });
   const runtime = Atom.runtime(
-    Layer.merge(
+    Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
       Layer.succeed(Persistence.EnvironmentCacheStore, cache),
+      Layer.succeed(Clock.Clock, yield* Clock.Clock),
     ),
   );
   const initialConfigValueAtom = Atom.make(CONFIG);
@@ -203,6 +237,8 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     requests: () => requests,
     inputs: () => inputs,
     updateSettings,
+    setConnection: (next: SupervisorConnectionState) =>
+      SubscriptionRef.set(connection, next).pipe(Effect.andThen(Effect.yieldNow)),
     summary: (input = INPUT) => atoms.usageSummary({ environmentId: TARGET.environmentId, input }),
   };
 });
@@ -215,6 +251,18 @@ function settledUsage<E>(
     Stream.filter((result) => result._tag !== "Initial" && !result.waiting),
     Stream.runHead,
     Effect.map(Option.getOrThrow),
+  );
+}
+
+function settledSummary<E>(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Atom<AsyncResult.AsyncResult<UsageSummary, E>>,
+) {
+  return settledUsage(registry, atom).pipe(
+    Effect.map((result) => {
+      if (!AsyncResult.isSuccess(result)) throw new Error("Expected settled usage figures");
+      return result.value;
+    }),
   );
 }
 
@@ -234,6 +282,8 @@ const makeRefreshingHarness = Effect.fn("ServerUsageTest.makeRefreshingHarness")
         ...(input.provisional === true ? { scannedFiles: 0 } : {}),
       },
     ],
+    undefined,
+    true,
   );
   return { ...harness, followUpStarted };
 });
@@ -269,12 +319,7 @@ it.effect("restarts a pending usage read after a price change", () =>
     const summary = harness.summary();
     const unmount = harness.registry.mount(summary);
     yield* Deferred.await(started);
-    yield* harness.updateSettings({
-      ...DEFAULT_SERVER_SETTINGS,
-      usagePriceOverrides: {
-        "custom-model": { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
-      },
-    });
+    yield* harness.updateSettings(CHANGED_PRICE);
     yield* waitForCost(harness.registry, summary, 5);
     yield* Deferred.await(interrupted);
     expect(harness.requests()).toBe(2);
@@ -299,6 +344,230 @@ it.effect("publishes the first usage answer while the slow follow-up is pending"
     yield* Deferred.succeed(finish, undefined);
     const result = yield* settledUsage(harness.registry, summary);
     expect(AsyncResult.isSuccess(result) && result.value.sources).toEqual([cursorSource(false)]);
+    unmount();
+  }),
+);
+
+it.effect("keeps a cold Usage query pending and follows it until the first figures arrive", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const harness = yield* makeHarness(
+      (request, input) =>
+        request === 1
+          ? Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" }))
+          : Effect.sync(() => expect(input.awaitRefresh).toBe(true)).pipe(
+              Effect.andThen(Deferred.succeed(started, undefined)),
+              Effect.andThen(Deferred.await(release)),
+            ),
+      () => [],
+      () => ({ output: 12 }),
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    yield* Deferred.await(started);
+    const result = harness.registry.get(summary);
+    expect(result.waiting).toBe(true);
+    expect(AsyncResult.isSuccess(result)).toBe(false);
+    yield* Deferred.succeed(release, undefined);
+    expect((yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens).toBe(
+      12,
+    );
+    expect(harness.requests()).toBe(2);
+    unmount();
+  }),
+);
+
+it.effect("fails the Usage query when every follow-up stays pending", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const harness = yield* makeHarness(() =>
+      Deferred.succeed(started, undefined).pipe(
+        Effect.andThen(
+          Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
+        ),
+      ),
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    yield* Deferred.await(started);
+    yield* TestClock.adjust("20 seconds");
+    const terminal = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+      Stream.filter((value) => AsyncResult.isFailure(value) && !value.waiting),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+    expect(AsyncResult.isFailure(terminal) && terminal.cause.toString()).toContain(
+      "The usage scan timed out.",
+    );
+    expect(harness.requests()).toBe(21);
+    unmount();
+  }),
+);
+
+it.effect("keeps five partial tokens when the Usage follow-up budget runs out", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const harness = yield* makeHarness(
+      () => Deferred.succeed(started, undefined),
+      () => [{ ...cursorSource(false), status: "partial", message: "Usage is still refreshing." }],
+      () => ({ output: 5, partialReason: "scanTimedOut" }),
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    yield* Deferred.await(started);
+    yield* TestClock.adjust("20 seconds");
+    const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+      Stream.filter((result) => !result.waiting && !AsyncResult.isInitial(result)),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+    expect(AsyncResult.isSuccess(settled) && settled.value.buckets[0]?.totals.outputTokens).toBe(5);
+    expect(AsyncResult.isSuccess(settled) && settled.value.partialReason).toBe("scanTimedOut");
+    expect(harness.requests()).toBe(21);
+    unmount();
+  }),
+);
+
+it.effect("settles an unreadable transcript after one request instead of following it up", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness(
+      () => Effect.void,
+      () => [{ ...cursorSource(false), status: "partial", message: "A transcript is unreadable." }],
+      () => ({ output: 5 }),
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    const settled = yield* settledSummary(harness.registry, summary);
+    expect(settled.sources[0]?.status).toBe("partial");
+    expect(settled.partialReason).toBeUndefined();
+    expect(harness.requests()).toBe(1);
+    unmount();
+  }),
+);
+
+it.effect.each([
+  { kind: "a top-level reason", firstRun: 21 },
+  { kind: "a refreshing source", firstRun: 21 },
+  { kind: "complete figures", firstRun: 1 },
+] as const)(
+  "keeps the same window's figures from $kind through a scanPending-only refresh",
+  ({ kind, firstRun }) =>
+    Effect.gen(function* () {
+      const first = yield* Deferred.make<void>();
+      const retry = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(
+        (request) =>
+          request <= firstRun
+            ? Deferred.succeed(first, undefined)
+            : Deferred.succeed(retry, undefined).pipe(
+                Effect.andThen(
+                  Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
+                ),
+              ),
+        () => [cursorSource(kind === "a refreshing source")],
+        () =>
+          kind === "a top-level reason"
+            ? { output: 5, partialReason: "scanTimedOut" }
+            : { output: 5 },
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(first);
+      yield* TestClock.adjust("20 seconds");
+      expect(
+        (yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens,
+      ).toBe(5);
+
+      harness.registry.refresh(summary);
+      yield* Deferred.await(retry);
+      yield* TestClock.adjust("20 seconds");
+      const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+        Stream.filter((result) => !result.waiting && !AsyncResult.isInitial(result)),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(AsyncResult.isSuccess(settled) && settled.value.buckets[0]?.totals.outputTokens).toBe(
+        5,
+      );
+      expect(AsyncResult.isSuccess(settled) && settled.value.partialReason).toBe("scanTimedOut");
+      expect(harness.requests()).toBe(firstRun + 21);
+      unmount();
+    }),
+);
+
+it.effect("reports the reconnect failure once a settings change discards the figures", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness(
+      () => Effect.void,
+      () => [],
+      () => ({ output: 5 }),
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    expect((yield* settledSummary(harness.registry, summary)).buckets[0]?.costUsd).toBe(0);
+    const lastFailure = new ConnectionTransientError({ reason: "transport", detail: "Down." });
+    yield* harness.setConnection({
+      ...AVAILABLE_CONNECTION_STATE,
+      desired: true,
+      phase: "backoff",
+      attempt: 1,
+      lastFailure,
+      retryAt: 1,
+    });
+    yield* harness.updateSettings(CHANGED_PRICE);
+    const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+      Stream.filter((result) => !result.waiting),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+    expect(AsyncResult.isFailure(settled)).toBe(true);
+    expect(Option.isNone(AsyncResult.value(settled))).toBe(true);
+    expect(harness.requests()).toBe(1);
+    unmount();
+  }),
+);
+
+it.effect.each([
+  { change: "price", next: CHANGED_PRICE },
+  { change: "Claude home folder", next: CHANGED_CLAUDE_HOME },
+])("never settles a pending scan with partial figures from the previous $change", ({ next }) =>
+  Effect.gen(function* () {
+    const first = yield* Deferred.make<void>();
+    const changed = yield* Deferred.make<void>();
+    const harness = yield* makeHarness(
+      (request) =>
+        request <= 21
+          ? Deferred.succeed(first, undefined)
+          : Deferred.succeed(changed, undefined).pipe(
+              Effect.andThen(
+                Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
+              ),
+            ),
+      () => [],
+      () => ({ output: 5, partialReason: "scanTimedOut" }),
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    yield* Deferred.await(first);
+    yield* TestClock.adjust("20 seconds");
+    expect((yield* settledSummary(harness.registry, summary)).buckets[0]?.costUsd).toBe(0);
+    yield* harness.updateSettings(next);
+    yield* Deferred.await(changed);
+    expect(Option.isNone(AsyncResult.value(harness.registry.get(summary)))).toBe(true);
+    yield* TestClock.adjust("20 seconds");
+    const settled = harness.registry.get(summary);
+    expect(settled.waiting).toBe(false);
+    expect(AsyncResult.isFailure(settled)).toBe(true);
+    expect(Option.isNone(AsyncResult.value(settled))).toBe(true);
+    expect(harness.requests()).toBe(42);
+
+    harness.registry.refresh(summary);
+    yield* TestClock.adjust("20 seconds");
+    const retried = harness.registry.get(summary);
+    expect(retried.waiting).toBe(false);
+    expect(AsyncResult.isFailure(retried)).toBe(true);
+    expect(harness.requests()).toBe(63);
     unmount();
   }),
 );
@@ -337,14 +606,9 @@ it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
       { provisional: undefined, awaitRefresh: undefined },
       { provisional: undefined, awaitRefresh: true },
     ]);
-    // With figures on screen, a refresh reads them exactly instead of asking for saved ones.
-    yield* harness.updateSettings({
-      ...DEFAULT_SERVER_SETTINGS,
-      usagePriceOverrides: {
-        "custom-model": { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
-      },
-    });
-    yield* waitForCost(harness.registry, summary, 5);
+    // A refresh under the same settings can reuse the displayed figures.
+    harness.registry.refresh(summary);
+    yield* settledUsage(harness.registry, summary);
     expect(harness.inputs()[3]?.provisional).toBeUndefined();
     unmount();
   }),
@@ -352,15 +616,51 @@ it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
 
 it.effect("reads usage in full when the saved answer cannot be read", () =>
   Effect.gen(function* () {
-    const harness = yield* makeHarness((_request, input) =>
-      input.provisional === true
-        ? Effect.fail(new UsageReadError({ reason: "scanFailed", detail: "saved scan unreadable" }))
-        : Effect.void,
+    const harness = yield* makeHarness(
+      (_request, input) =>
+        input.provisional === true
+          ? Effect.fail(
+              new UsageReadError({ reason: "scanFailed", detail: "saved scan unreadable" }),
+            )
+          : Effect.void,
+      undefined,
+      undefined,
+      true,
     );
     const summary = harness.summary();
     const unmount = harness.registry.mount(summary);
     yield* settledUsage(harness.registry, summary);
     expect(harness.inputs().map(({ provisional }) => provisional)).toEqual([true, undefined]);
+    unmount();
+  }),
+);
+
+it.effect("updates the same Usage query from five to twelve tokens after a partial follow-up", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const harness = yield* makeHarness(
+      (request) =>
+        request === 2
+          ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      (input) => [cursorSource(!input.awaitRefresh)],
+      (request) =>
+        request === 2
+          ? { output: 5, partialReason: "scanTimedOut" }
+          : { output: request === 1 ? 5 : 12 },
+    );
+    const summary = harness.summary();
+    const unmount = harness.registry.mount(summary);
+    yield* Deferred.await(started);
+    const current = harness.registry.get(summary);
+    expect(AsyncResult.isSuccess(current) && current.value.buckets[0]?.totals.outputTokens).toBe(5);
+    yield* Deferred.succeed(release, undefined);
+    yield* TestClock.adjust("1 second");
+    expect((yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens).toBe(
+      12,
+    );
+    expect(harness.requests()).toBe(3);
     unmount();
   }),
 );

@@ -44,7 +44,7 @@ picker. See [Use multiple accounts](#use-multiple-accounts).
 
 If an authenticated Codex installation reports “Timed out while checking Codex
 app-server provider status,” set `T3CODE_CODEX_PROBE_TIMEOUT_MS=60000` in the
-T3 server's environment and restart it. See [Provider check timeouts](./install.md#provider-check-timeouts)
+T3.CodeShip server's environment and restart it. See [Provider check timeouts](./install.md#provider-check-timeouts)
 for configuration and other providers.
 
 ## Generate images
@@ -67,6 +67,21 @@ API key. The flag does not add image support to an unsupported model or account.
 Launch arguments apply to Codex sessions started after you save them. Start a new
 thread with the same Codex provider and ask it to generate an image. The completed
 image appears in the thread.
+
+## Which instructions generated metadata uses
+
+T3.CodeShip uses your selected account, repository instructions, and applicable policy
+when it generates titles, branch names, commit messages, pull request text, review
+guides, and manual step reviews. The metadata runtime skips the personal
+`AGENTS.md` in your Codex home and disables MCP servers for these requests.
+Standard desktop and standalone server installations select the bundled runtime
+automatically. Source checkouts use the regular Codex executable. If you set a
+custom binary for an account using native sign-in, T3.CodeShip uses that launcher.
+You can enable metadata mode for the launcher with a compatible host override.
+Interactive chats use your usual Codex launcher and instructions.
+
+See the [host provisioning guide](../operations/codex-metadata/README.md) for the
+override and installation details.
 
 ## Use multiple accounts
 
@@ -165,6 +180,35 @@ that reads the account's limits, so choose **Read limits** for the account under
 **Switch to another account, else resume when the limit resets** under **Settings → Threads →
 When a thread hits a usage limit**. A stopped thread moves to an account with room or resumes
 at the reset.
+
+### Keep working on prepaid credits
+
+When an account's plan usage is used up but it still has prepaid credits, T3.CodeShip starts no
+turn on it, because that turn would spend your money. To allow it, enter how many credits it may
+spend under **Spend prepaid credits** for the account in **Settings → Providers & models**, on
+each machine that runs its threads. New work still goes first to an account whose plan has room,
+and runs on this account's credits only when none has.
+
+T3.CodeShip counts how far the account's balance falls from then on, from any use of the account,
+and starts no new turn on credits once it has fallen by the cap. Before a turn starts on the
+account, it reads the account's usage again if its last reading is more than two minutes old. A
+turn already running stops, with the same explanation, as soon as a reading shows the cap reached
+or the plan used up for work the credits do not cover, so the count can pass the cap only by what
+that turn spent between two readings. The count survives restarts; clearing the cap turns spending
+off, stops the turns running on credits, and the next cap counts from zero. Spending also stops
+when the credits, or the monthly credit limit you set in ChatGPT, run out. What is left of the cap
+shows under it in Settings, and on the account in the mobile app's provider settings.
+
+A thread that may spend the credits and was stopped by the plan's usage limit continues on them,
+or moves to another account it may spend them on, without waiting for the reset, when stopped
+threads resume or switch accounts for you (**Settings → Threads → When a thread hits a usage
+limit**).
+
+To let only some threads spend the credits, add their ids to the account's `spendCredits` entry
+in `settings.json`, as `"spendCredits": { "capCredits": 3000, "threadIds": ["<thread id>"] }`.
+The delegates those threads start may spend them too; forks, side chats and other threads may
+not. Agents can see each account's cap, what is left of it, and the threads it covers, but only
+you can set it.
 
 ### ChatGPT's app limit
 

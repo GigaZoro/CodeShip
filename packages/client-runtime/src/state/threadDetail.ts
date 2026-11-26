@@ -2,6 +2,7 @@ import {
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
   OrchestrationV2TurnItem,
+  type MessageId,
   type OrchestrationV2ThreadProjection,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -30,7 +31,6 @@ import type {
   EnvironmentThread,
   EnvironmentThreadStructure,
   ThreadStructure,
-  ThreadStructureThread,
   ThreadStructureTurnItem,
   ThreadStructureVisibleTurnItem,
 } from "./models.ts";
@@ -43,11 +43,20 @@ import {
 import { arrayElementsEqual, parseThreadKey, threadKey } from "./entities.ts";
 import { getProjectionArrayReplacementIndex } from "./orchestrationV2Projection.ts";
 
+export const messageStarCommand = { type: "thread.message.star" } as const;
+
 const EMPTY_VISIBLE_TURN_ITEMS: OrchestrationV2ThreadProjection["visibleTurnItems"] = Object.freeze(
   [],
 );
 const EMPTY_THREAD_STRUCTURE_TURN_ITEMS: ReadonlyArray<ThreadStructureVisibleTurnItem> =
   Object.freeze([]);
+const EMPTY_STARRED_MESSAGE_IDS: ReadonlyArray<MessageId> = Object.freeze([]);
+const EMPTY_STARRED_MESSAGE_IDS_ATOM = Atom.make(EMPTY_STARRED_MESSAGE_IDS);
+const EMPTY_STARRED_MESSAGE_PREVIEWS: ReadonlyArray<{
+  readonly id: MessageId;
+  readonly preview: string | null;
+}> = Object.freeze([]);
+const NOT_STARRED_ATOM = Atom.make(false);
 const EMPTY_CHECKPOINT_SUMMARIES: ReadonlyArray<ThreadCheckpointSummary> = Object.freeze([]);
 
 /**
@@ -84,7 +93,6 @@ export function deriveWorkspaceMutationId(
 
 type TurnItem = OrchestrationV2ThreadProjection["turnItems"][number];
 type VisibleTurnItem = OrchestrationV2ThreadProjection["visibleTurnItems"][number];
-type AppThread = OrchestrationV2ThreadProjection["thread"];
 
 // Items are stripped once each: unchanged items keep their identity across
 // structure changes, which the incremental timeline relies on.
@@ -150,8 +158,19 @@ export function isCompleteTurnItemRow(row: ThreadStructureVisibleTurnItem): row 
 // The open thread is marked visited several times while a reply streams. Visit
 // state is read from the shell, or from lastVisitedAtAtom while the thread is
 // not in the shell index yet, so a mark is not structure.
-function toThreadStructureThread(thread: AppThread): ThreadStructureThread {
-  const { updatedAt: _updatedAt, lastVisitedAt: _lastVisitedAt, ...structure } = thread;
+function toThreadStructureThread<
+  T extends {
+    readonly updatedAt: unknown;
+    readonly lastVisitedAt?: unknown;
+    readonly starredMessageIds?: unknown;
+  },
+>(thread: T) {
+  const {
+    updatedAt: _updatedAt,
+    lastVisitedAt: _lastVisitedAt,
+    starredMessageIds: _starredMessageIds,
+    ...structure
+  } = thread;
   return structure;
 }
 
@@ -166,7 +185,9 @@ function toThreadStructure(projection: OrchestrationV2ThreadProjection): ThreadS
 }
 
 const sameTurnItem = Schema.toEquivalence(OrchestrationV2TurnItem);
-const sameAppThread = Schema.toEquivalence(OrchestrationV2AppThread);
+const sameAppThreadStructure = Schema.toEquivalence(
+  OrchestrationV2AppThread.mapFields(toThreadStructureThread),
+);
 const sameMessage = Schema.toEquivalence(OrchestrationV2ConversationMessage);
 
 // Overlays previous's structure on next, so the fields the strip functions
@@ -249,8 +270,7 @@ function sameApartFromStreamedAssistantText(
 /**
  * Whether `previous` and `next` have the same ThreadStructure: they differ
  * only by text streamed into existing assistant and reasoning items or by a
- * visit mark. The same items exist, with the same status, and every other
- * field is unchanged.
+ * visit or bookmark change. The same items exist, with the same status.
  */
 export function sameThreadStructure(
   previous: OrchestrationV2ThreadProjection,
@@ -269,15 +289,7 @@ export function sameThreadStructure(
     }
     if (previous[key] !== next[key]) return false;
   }
-  if (
-    previous.thread !== next.thread &&
-    !sameApartFromStripped(
-      sameAppThread,
-      previous.thread,
-      toThreadStructureThread(previous.thread),
-      next.thread,
-    )
-  ) {
+  if (previous.thread !== next.thread && !sameAppThreadStructure(previous.thread, next.thread)) {
     return false;
   }
   return (
@@ -380,6 +392,21 @@ export function createEnvironmentThreadDetailAtoms<E>(
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-visible-turn-items:${key}`));
   });
 
+  const starredMessageIdsAtomFamily = Atom.family((key: string) =>
+    Atom.make(
+      (get) =>
+        Option.getOrNull(get(threadStateValueAtomFamily(key)).data)?.thread.starredMessageIds ??
+        EMPTY_STARRED_MESSAGE_IDS,
+    ).pipe(Atom.setIdleTTL(0)),
+  );
+  const isMessageStarredAtomFamily = Atom.family((key: string) => {
+    const separator = key.lastIndexOf("\u0000");
+    const thread = key.slice(0, separator);
+    const messageId = key.slice(separator + 1) as MessageId;
+    return Atom.make((get) => get(starredMessageIdsAtomFamily(thread)).includes(messageId)).pipe(
+      Atom.setIdleTTL(0),
+    );
+  });
   const quietVisibleTurnItemsAtomFamily = Atom.family((key: string) => {
     const projectQuestionHistory = createQuestionHistoryProjector<ThreadStructureVisibleTurnItem>();
     return Atom.make((get) => {
@@ -405,6 +432,38 @@ export function createEnvironmentThreadDetailAtoms<E>(
       Atom.setIdleTTL(0),
       Atom.withLabel(`environment-thread-timeline-visible-turn-items:${key}`),
     );
+  });
+
+  // The timeline's structure moves with every tool call of a turn; the Starred list follows
+  // only its own previews.
+  const starredMessagePreviewsAtomFamily = Atom.family((key: string) => {
+    let previous = EMPTY_STARRED_MESSAGE_PREVIEWS;
+    return Atom.make((get) => {
+      const ids = get(starredMessageIdsAtomFamily(key));
+      if (ids.length === 0) {
+        previous = EMPTY_STARRED_MESSAGE_PREVIEWS;
+        return previous;
+      }
+      const wanted = new Set(ids);
+      const previews = new Map<MessageId, string>();
+      for (const { item } of get(timelineVisibleTurnItemsAtomFamily(key))) {
+        if (
+          (item.type === "user_message" || item.type === "assistant_message") &&
+          wanted.has(item.messageId)
+        ) {
+          const preview = item.text.slice(0, 640).replace(/\s+/g, " ").trim().slice(0, 160);
+          previews.set(item.messageId, preview);
+        }
+      }
+      const unchanged =
+        previous.length === ids.length &&
+        previous.every(
+          (entry, index) =>
+            entry.id === ids[index] && entry.preview === (previews.get(entry.id) ?? null),
+        );
+      if (!unchanged) previous = ids.map((id) => ({ id, preview: previews.get(id) ?? null }));
+      return previous;
+    }).pipe(Atom.setIdleTTL(0));
   });
 
   const assistantMessageTextAtomFamily = Atom.family((key: string) => {
@@ -675,6 +734,14 @@ export function createEnvironmentThreadDetailAtoms<E>(
       quietVisibleTurnItemsAtomFamily(threadKey(ref)),
     timelineVisibleTurnItemsAtom: (ref: ScopedThreadRef) =>
       timelineVisibleTurnItemsAtomFamily(threadKey(ref)),
+    starredMessageIdsAtom: (ref: ScopedThreadRef | null) =>
+      ref === null ? EMPTY_STARRED_MESSAGE_IDS_ATOM : starredMessageIdsAtomFamily(threadKey(ref)),
+    isMessageStarredAtom: (ref: ScopedThreadRef | null, messageId: MessageId) =>
+      ref === null
+        ? NOT_STARRED_ATOM
+        : isMessageStarredAtomFamily(`${threadKey(ref)}\u0000${messageId}`),
+    starredMessagePreviewsAtom: (ref: ScopedThreadRef) =>
+      starredMessagePreviewsAtomFamily(threadKey(ref)),
     assistantMessageTextAtom: (ref: ScopedThreadRef, itemId: string) =>
       assistantMessageTextAtomFamily(`${threadKey(ref)}\u0000${itemId}`),
     statusAtom: (ref: ScopedThreadRef) => statusAtomFamily(threadKey(ref)),

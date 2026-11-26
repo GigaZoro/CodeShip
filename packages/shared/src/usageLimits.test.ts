@@ -89,7 +89,17 @@ describe("new thread model fallback", () => {
   };
   it.each([
     ["exhausted default", {}, fallback],
+    [
+      "quota-aware Auto with an exhausted placeholder",
+      { defaultSelection: { ...selection, quotaAwareAuto: true } },
+      { ...selection, quotaAwareAuto: true },
+    ],
     ["explicit selection", { explicitSelection: selection }, selection],
+    [
+      "quota-aware fallback with a full placeholder",
+      { fallbackSelection: { ...fallback, quotaAwareAuto: true }, providers: [limited] },
+      { ...fallback, quotaAwareAuto: true },
+    ],
     ["missing default", { defaultSelection: null }, null],
     ["no fallback", { fallbackSelection: null }, selection],
     ["expired window", { now: Date.parse("2026-09-04T00:00:00Z") }, selection],
@@ -392,7 +402,16 @@ describe("new thread model fallback", () => {
     ["antigravity", ["gemini-weekly"], "claude-opus-5-5", false, undefined, undefined],
     ["antigravity", ["3p-weekly"], "claude-opus-5-5", true, undefined, undefined],
     ["antigravity", ["gemini-weekly"], "antigravity-default", true, undefined, undefined],
-    ["codex", ["individual"], "gpt-5.5", true, undefined, undefined],
+    ["antigravity", ["gemini-weekly"], "gemini-4-neon", true, undefined, undefined],
+    ["antigravity", ["gemini-weekly"], "gemini-4-argon-high", false, undefined, undefined],
+    ["antigravity", ["gemini-argon-wtu-weekly"], "gemini-4-neon", false, undefined, undefined],
+    ["antigravity", ["gemini-argon-wtu-weekly"], "gemini-4-argon-high", true, undefined, undefined],
+    ["antigravity", ["3p-weekly"], "gpt-6.2-astra", true, undefined, undefined],
+    ["antigravity", ["3p-weekly"], "unknown-model", false, undefined, undefined],
+    ["antigravity", ["gemini-weekly"], "gemini-4-carbon", false, undefined, undefined],
+    ["antigravity", ["gemini-carbon-weekly"], "gemini-4-carbon", true, undefined, undefined],
+    ["antigravity", ["gemini-carbon-weekly"], "gemini-4-neon", false, undefined, undefined],
+    ["codex", ["individual"], "gpt-5.5", false, undefined, undefined],
     ["opencode", ["go_weekly"], "opencode/big-pickle", false, undefined, undefined],
     ["opencode", ["go_weekly"], "opencode-go/big-pickle", true, undefined, undefined],
     ["opencode", ["budget_model"], "opencode/other", false, ["opencode/limited"], undefined],
@@ -457,6 +476,7 @@ describe("new thread model fallback", () => {
                   ...window,
                   id,
                   usedPercent: 100,
+                  ...(id === "gemini-weekly" ? { scope: "gemini-default" as const } : {}),
                   ...(modelIds === undefined ? {} : { modelIds }),
                   ...(providerIds === undefined ? {} : { providerIds }),
                 })),
@@ -473,7 +493,9 @@ describe("new thread model fallback", () => {
 it.each([
   ["claudeAgent", ["seven_day_opus"], false],
   ["claudeAgent", ["seven_day"], true],
+  ["claudeAgent", ["monthly_spend"], false],
   ["codex", ["5h"], true],
+  ["codex", ["individual"], false],
   ["cursor", ["apiPercentUsed"], false],
   ["cursor", ["apiPercentUsed", "autoPercentUsed"], true],
   ["antigravity", ["gemini-weekly"], false],
@@ -492,6 +514,47 @@ it.each([
       null,
     ) !== undefined,
   ).toBe(limited);
+});
+
+it.each([
+  { driver: "antigravity", id: "gemini-weekly", model: "gemini-4-neon", applies: false },
+  { driver: "antigravity", id: "unclassified-quota", model: "gemini-4-neon", applies: false },
+  { driver: "antigravity", id: "gemini-5h", model: "opaque-model", applies: true },
+  { driver: "antigravity", id: "gemini-argon-5h", model: "opaque-model", applies: false },
+  { driver: "example-adapter", id: "model-quota", model: "example/model-a", applies: true },
+  { driver: "example-adapter", id: "model-quota", model: "example/model-b", applies: false },
+  { driver: "example-adapter", id: "shared-pool", model: "example/model-a", applies: true },
+  { driver: "example-adapter", id: "shared-pool", model: "example/model-b", applies: true },
+  { driver: "example-adapter", id: "shared-pool", model: "example/model-c", applies: false },
+] as const)("uses scope evidence for $driver $id on $model", ({ driver, id, model, applies }) => {
+  const live = provider({
+    driver: ProviderDriverKind.make(driver),
+    models: [
+      {
+        slug: "opaque-model",
+        name: "My Argon alias",
+        nativeModelFamily: "gemini-4-neon",
+        isCustom: false,
+        capabilities: null,
+      },
+    ],
+    usageLimits: {
+      checkedAt: "2026-09-03T11:00:00Z",
+      windows: [
+        {
+          ...window,
+          id,
+          usedPercent: 100,
+          ...(id === "model-quota" ? { model: "example/model-a" } : {}),
+          ...(id === "shared-pool"
+            ? { scope: { models: ["example/model-a", "example/model-b"] as const } }
+            : {}),
+        },
+      ],
+    },
+  });
+  expect(exhaustedUsageWindow(live, now, model) !== undefined).toBe(applies);
+  expect(exhaustedUsageWindow(live, now, null)).toBeUndefined();
 });
 
 describe("pace", () => {
@@ -1398,8 +1461,8 @@ describe("pools", () => {
     ]);
     const accounts = collectLimitAccounts(input);
     expect(accounts.map((account) => account.key)).toEqual([
-      "env-a:first:seat.json",
-      "env-b:second:seat.json",
+      "claudeAgent:old@example.com",
+      "claudeAgent:new@example.com",
     ]);
     const columns = collectLimitPools(accounts, Date.parse(checkedAt))[0]?.windows[0]?.columns;
     expect(columns?.map((column) => [column.account.email, column.window?.usedPercent])).toEqual([

@@ -139,7 +139,14 @@ import CodeShipMigration0025 from "./CodeShipMigrations/025_MonitoringSettledThr
 import CodeShipMigration0026 from "./CodeShipMigrations/026_MonitoringAnalysesWithoutProject.ts";
 import CodeShipMigration0027 from "./CodeShipMigrations/027_MonitoringAnalysesSettleStamp.ts";
 import CodeShipMigration0028 from "./CodeShipMigrations/028_MonitoringStoredDetailsAndRetries.ts";
-import CodeShipMigration0029 from "./CodeShipMigrations/029_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0029 from "./CodeShipMigrations/029_ColdThreadHistoryCompaction.ts";
+import CodeShipMigration0030 from "./CodeShipMigrations/030_DatabaseSizeSamples.ts";
+import CodeShipMigration0031 from "./CodeShipMigrations/031_ScheduledTaskRunReportedResult.ts";
+import CodeShipMigration0032 from "./CodeShipMigrations/032_ThreadPreferences.ts";
+import CodeShipMigration0033 from "./CodeShipMigrations/033_ScheduledTaskLastRunId.ts";
+import CodeShipMigration0034 from "./CodeShipMigrations/034_UsageStopDecisions.ts";
+import CodeShipMigration0035 from "./CodeShipMigrations/035_TurnItemMessageIndex.ts";
+import CodeShipMigration0036 from "./CodeShipMigrations/036_PayloadIndexesJsonValid.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -268,7 +275,14 @@ const codeShipMigrationEntries = [
   [26, "MonitoringAnalysesWithoutProject", CodeShipMigration0026],
   [27, "MonitoringAnalysesSettleStamp", CodeShipMigration0027],
   [28, "MonitoringStoredDetailsAndRetries", CodeShipMigration0028],
-  [29, "PayloadIndexesJsonValid", CodeShipMigration0029],
+  [29, "ColdThreadHistoryCompaction", CodeShipMigration0029],
+  [30, "DatabaseSizeSamples", CodeShipMigration0030],
+  [31, "ScheduledTaskRunReportedResult", CodeShipMigration0031],
+  [32, "ThreadPreferences", CodeShipMigration0032],
+  [33, "ScheduledTaskLastRunId", CodeShipMigration0033],
+  [34, "UsageStopDecisions", CodeShipMigration0034],
+  [35, "TurnItemMessageIndex", CodeShipMigration0035],
+  [36, "PayloadIndexesJsonValid", CodeShipMigration0036],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

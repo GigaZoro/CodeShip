@@ -87,7 +87,10 @@ import {
   type MuseSdkHost,
 } from "./sdk.ts";
 import type * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
+import type {
+  ManagedServerProvider,
+  UsageLimitsPublisher,
+} from "@t3tools/provider-core/server/snapshot";
 import {
   providerMessageTextWithAttachmentPaths,
   isProviderNativeImageAttachment,
@@ -118,7 +121,8 @@ const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionE
 const isProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
 
 const MuseProviderCapabilitiesV2 = {
-  runtimePolicy: { enforcement: "native" },
+  // Muse asks the owner instead of refusing a change.
+  runtimePolicy: { enforcement: "native", readOnlySandbox: false },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,
@@ -218,7 +222,7 @@ export interface MuseAdapterV2Options {
   readonly requestTimeoutMs?: number;
   readonly nativeEventLogger?: ProviderEventLoggers.EventNdjsonLogger;
   /** Receives every account-wide usage report, whichever session's host sent it. */
-  readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  readonly bindUsageLimits?: ManagedServerProvider["bindUsageLimits"];
   readonly continuationRequests?: {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -363,6 +367,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       const eventPermit = yield* Semaphore.make(1);
       let host: MuseSdkHost;
       let hostLogin: MuseLoginReport | undefined;
+      let publishUsageLimits: UsageLimitsPublisher | undefined;
       let hostEpoch = 0;
       let closed = false;
       let broken = false;
@@ -1440,8 +1445,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         // usage/changed is account-wide and carries no session ID.
         if (method === "usage/changed") {
           latestSubscriptionUsage = yield* decode(MuseSubscriptionUsage, params);
-          if (options.onUsageLimits) {
-            yield* options.onUsageLimits(museUsageToLimits(latestSubscriptionUsage));
+          if (publishUsageLimits) {
+            yield* publishUsageLimits(museUsageToLimits(latestSubscriptionUsage));
           }
           return;
         }
@@ -1856,6 +1861,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           command: options.settings.binaryPath || "muse",
           args: [],
           name: "muse",
+          cwd,
           threadId: input.threadId,
           env: environment,
         });
@@ -1868,6 +1874,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         // Observe raw exit before acquisition: inherited stdout can also block startup cleanup.
         yield* Deferred.await(processExited).pipe(Effect.andThen(stopScope), Effect.forkIn(scope));
         const login = options.login ? yield* options.login : undefined;
+        const usagePublisher = options.bindUsageLimits ? yield* options.bindUsageLimits : undefined;
         const created = yield* Effect.acquireRelease(
           createMuseSdkHostEffect(
             {
@@ -1914,6 +1921,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         ).pipe(Effect.provideService(Scope.Scope, scope));
         host = created;
         hostLogin = login;
+        publishUsageLimits = usagePublisher;
         created.connection.onNotification((notification) => {
           Queue.offerUnsafe(inbox, {
             type: "notification",

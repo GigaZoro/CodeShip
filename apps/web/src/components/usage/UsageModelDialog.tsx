@@ -164,7 +164,12 @@ export function UsageModelDialog({
                 tokens: formatTokens(model.unpricedTokens),
               })}
             </span>
-            <Button onClick={onSetPrice} disabled={readOnly}>
+            <Button
+              aria-disabled={readOnly}
+              onClick={() => {
+                if (!readOnly) onSetPrice();
+              }}
+            >
               {t("Set price")}
             </Button>
           </DialogFooter>

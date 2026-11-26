@@ -18,6 +18,7 @@ import {
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -37,6 +38,22 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 // Match local waits: return before MCP client timeouts and T3 Connect's ~100 s idle drop.
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 export const MAX_WAIT_TIMEOUT_MS = 45_000;
+
+const TOOL_REQUEST_DEADLINES: Readonly<Record<string, Duration.Duration>> = {
+  // Worktree preparation is asynchronous, but preflighting a base can fetch and retry a ref lock.
+  t3_thread_launch: Duration.seconds(90),
+  // A page can carry up to 100 items of 50,000 characters plus metadata and MCP encoding.
+  t3_thread_read: Duration.minutes(2),
+  // The synchronous clone can try both SSH and HTTPS, with up to 120 s per attempt.
+  t3_project_clone: Duration.seconds(270),
+  // A prompt file read can do two 60 s Git network operations before reading the blob.
+  schedule_task: Duration.minutes(3),
+  run_scheduled_task_now: Duration.minutes(3),
+  // Guide generation runs in the background, but the request can preflight 20 PR heads in batches.
+  write_pull_request_guides: Duration.minutes(5),
+  // A guide read refreshes forge metadata, including an optional credential fallback.
+  read_pull_request_guide: Duration.minutes(2),
+};
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -208,6 +225,9 @@ const make = Effect.gen(function* () {
       ...(sender === undefined ? {} : { sender }),
       success: success as Schema.Decoder<A>,
       ...(ignorableArguments === undefined ? {} : { ignorableArguments }),
+      deadline: Object.hasOwn(TOOL_REQUEST_DEADLINES, toolName)
+        ? TOOL_REQUEST_DEADLINES[toolName]
+        : undefined,
     });
   });
 

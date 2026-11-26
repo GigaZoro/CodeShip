@@ -409,7 +409,7 @@ export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitC
   outputLength: Schema.optional(Schema.Number),
   reason: ForwardCompatibleOptional(GitCommandFailureReason),
   detail: Schema.String,
-  // Phase timings and Git's own error lines, with credentials stripped from URLs.
+  // Phase timings and the shapes of Git's own error lines, with every value removed.
   diagnostics: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Defect()),
 }) {

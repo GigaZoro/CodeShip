@@ -48,6 +48,7 @@ import {
   openCodeProviderModels,
   readSettledOpenCode2Catalog,
 } from "./status.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import {
@@ -300,8 +301,9 @@ export const OpenCodeDriver: ProviderDriver<
       // The instance registry has already read a referenced password from its secret provider.
       serverPassword: settingsSecretLiteral(config.serverPassword),
     } satisfies OpenCodeSettings;
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
     const probeRuntime = (probeEnv: NodeJS.ProcessEnv) =>
-      probeOpenCodeRuntime(effectiveConfig, probeEnv).pipe(
+      probeOpenCodeRuntime(effectiveConfig, probeEnv, versionMemory.lastKnownVersion).pipe(
         Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
       );
@@ -505,6 +507,18 @@ export const OpenCodeDriver: ProviderDriver<
         })),
       ),
     );
+    // The runtime probe reads the last known version itself, since session opens share it.
+    const readStatus = () =>
+      checkOpenCodeProviderStatus(
+        effectiveConfig,
+        host.paths.cwd,
+        runtimeProbe.refresh,
+        loadOpenCode2Models,
+        processEnv,
+      );
+    // A configured server version cannot establish which local CLI is installed.
+    const checkStatus =
+      effectiveConfig.serverUrl.trim().length > 0 ? readStatus() : versionMemory.check(readStatus);
     const checkProvider = Effect.all(
       {
         // A configured loopback server reports its running version. Probe the local
@@ -520,13 +534,7 @@ export const OpenCodeDriver: ProviderDriver<
                 Effect.orElseSucceed(() => undefined),
               )
             : Effect.void,
-        provider: checkOpenCodeProviderStatus(
-          effectiveConfig,
-          host.paths.cwd,
-          runtimeProbe.refresh,
-          loadOpenCode2Models,
-          processEnv,
-        ).pipe(
+        provider: checkStatus.pipe(
           Effect.annotateLogs({ providerInstanceId: instanceId }),
           Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),

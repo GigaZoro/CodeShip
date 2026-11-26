@@ -44,7 +44,12 @@ import {
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
-import { ServerProviderResetKind } from "./providerUsageLimits.ts";
+import {
+  ProviderCreditGrant,
+  ProviderCreditUse,
+  ServerProviderResetKind,
+  ServerProviderUsageScope,
+} from "./providerUsageLimits.ts";
 import { PullRequestState } from "./pullRequest.ts";
 import {
   ThreadLinkedPullRequest,
@@ -197,7 +202,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project: a worktree of that repository from its default branch.",
+        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project, or of another repository in a linked environment: a worktree of that repository from its default branch.",
     }),
   ),
   mode: Schema.optional(
@@ -704,17 +709,21 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
   usage: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Add each Claude and Codex account's usage: meters, credits, banked resets. Reads one older than 10 minutes again.",
+        "Add available usage for enabled provider accounts: meters, credits, banked resets. Reads one older than 10 minutes again.",
     }),
   ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 
 export const OrchestratorMcpUsageMeter = Schema.Struct({
-  /** `session`, `weekly_all`, `weekly_scoped:<model>`, or the provider's own id for another meter. */
+  /** The provider's id, with legacy aliases for Claude and Codex session and weekly meters. */
   id: Schema.String,
-  /** The one model a scoped meter limits; null when it limits the account. */
+  /** The provider's id when `id` is a legacy alias. */
+  nativeId: Schema.optional(Schema.String),
+  /** The model or family the provider named, if given. */
   model: Schema.NullOr(Schema.String),
+  scope: Schema.optional(ServerProviderUsageScope),
+  observedAt: Schema.optional(IsoDateTime),
   usedPercent: Schema.Number,
   windowMinutes: Schema.NullOr(Schema.Number),
   resetsAt: Schema.NullOr(Schema.String),
@@ -797,7 +806,10 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
       weeklySessionAvailableAt: Schema.NullOr(Schema.String),
     }),
   ),
-  /** False while the account is usageLimited or its provider says it may not run (Codex). */
+  /**
+   * False while the account is usageLimited, or its provider says its plan may not run (Codex)
+   * and it is not spending prepaid credits the user turned on.
+   */
   usageAllowed: Schema.Boolean,
   /** The last banked reset this server claimed for the account; null when it has claimed none. */
   lastRedemption: Schema.NullOr(OrchestratorMcpLastRedemption),
@@ -844,6 +856,18 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   usageLimited: Schema.optional(
     Schema.Literal(true).annotate({
       description: "Usage-limited until limitedUntil (provider reset or T3 hold).",
+    }),
+  ),
+  prepaidCredits: Schema.optional(
+    ProviderCreditUse.annotate({
+      description:
+        "Codex prepaid credits, for work this thread starts or delegates. spending: plan usage is used up and new work runs on the credits the user allowed. standby: allowed, unused while the plan has room. not_enabled: the user has not allowed spending them, so a used-up plan holds the account; only the user allows it (Settings > Providers > Spend prepaid credits). out_of_scope: allowed only for other threads and their delegates. cap_reached: the account has spent the credits the user allowed. used_up: the balance or monthly credit limit is spent.",
+    }),
+  ),
+  prepaidCreditGrant: Schema.optional(
+    ProviderCreditGrant.annotate({
+      description:
+        "What the user allowed this Codex account to spend of its prepaid credits: capCredits, spentCredits counted since then, remainingCredits, and threadIds, the threads whose work and delegates may spend them (absent: any thread). Running turns can pass the cap a little.",
     }),
   ),
   /** With `usage`, for an enabled Claude or Codex account; null when `usageError` says why. */
@@ -1190,6 +1214,24 @@ export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
 export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =
   typeof OrchestratorMcpClaimScheduledTaskOccurrenceResult.Type;
 
+/**
+ * What a scheduled run's agent reports about its own occurrence: `completed` when the work was done
+ * or verified to need none, `incomplete` when a required step could not be done.
+ */
+export const OrchestratorMcpReportScheduledRunInput = Schema.Struct({
+  outcome: Schema.Literals(["completed", "incomplete"]),
+  summary: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+});
+export type OrchestratorMcpReportScheduledRunInput =
+  typeof OrchestratorMcpReportScheduledRunInput.Type;
+
+export const OrchestratorMcpReportScheduledRunResult = Schema.Struct({
+  scheduledTaskId: ScheduledTaskId,
+  outcome: Schema.Literals(["completed", "incomplete"]),
+});
+export type OrchestratorMcpReportScheduledRunResult =
+  typeof OrchestratorMcpReportScheduledRunResult.Type;
+
 /** For a linked machine: the shared settings this machine knows, so it can catch up with no client open. */
 export const OrchestratorMcpSharedSettingsResult = Schema.Struct({
   versions: Schema.Array(SharedSettingVersion),
@@ -1462,6 +1504,16 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "memory_short",
       /** Auto mode is off where the thread would start, or its provider has no enabled account there. */
       "auto_mode_unavailable",
+      /**
+       * A linked environment's answer did not arrive, so whether it acted is unknown. The same
+       * call sent again with its clientRequestId is recorded there once.
+       */
+      "no_answer",
+      /**
+       * No address of a linked environment answered as it, so the call was not sent there. A call
+       * sent earlier with the same clientRequestId may still have arrived.
+       */
+      "unreachable",
       /** A linked environment answered, but its version answers in a way this one cannot read. */
       "version_mismatch",
     ]),

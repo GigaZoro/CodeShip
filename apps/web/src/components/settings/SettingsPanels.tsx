@@ -627,7 +627,9 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
       }
     }
     const previousClient = getClientSettings();
-    const undoPlans = plans.map((plan) => planScopedSettingsUndo(plan, previousClient));
+    const undoPlans = plans.map((plan) =>
+      planScopedSettingsUndo(plan, previousClient, environments),
+    );
     for (const plan of plans) runPlan(plan);
     onRestored?.();
     const toastId = toastManager.add({

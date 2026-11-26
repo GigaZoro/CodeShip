@@ -34,5 +34,6 @@ export function guestShareView(
     expiresAt: share.expiresAt,
     messages: share.messages,
     model,
+    access: share.access,
   };
 }

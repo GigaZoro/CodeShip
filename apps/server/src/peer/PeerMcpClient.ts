@@ -18,7 +18,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
-import type * as HttpClientError from "effect/http/HttpClientError";
+import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
@@ -48,19 +48,37 @@ export const READ_ONLY_PEER_LIMITS: PeerCallLimits = {
 export const PEER_READ_TIMEOUT = Duration.seconds(20);
 
 /**
+ * A peer's `/mcp` holds a wait open for its whole timeout without sending
+ * anything, and T3 Connect's edge drops a request idle for about 100 s, so a
+ * forwarded wait goes out in pieces no longer than this.
+ */
+export const FORWARDED_WAIT_CHUNK_MS = 50_000;
+/**
+ * What a request may take beyond its wait piece, a terminal's startup included, while the whole
+ * stays under the relay's idle drop of about 100 s.
+ */
+const PEER_REQUEST_OVERHEAD_MS = 25_000;
+const PEER_REQUEST_DEADLINE = Duration.millis(FORWARDED_WAIT_CHUNK_MS + PEER_REQUEST_OVERHEAD_MS);
+
+interface PeerRequestOptions {
+  /** Tool-specific budget when the receiving handler can legitimately outlast the default. */
+  readonly deadline?: Duration.Duration | undefined;
+  /** The most the tool's result may take as JSON; a larger answer is refused, never read whole. */
+  readonly maxResultBytes?: number;
+}
+
+/**
  * Calls a linked environment's T3 MCP tools as this environment's outside
  * agent. Each call carries the calling agent's limits in `T3-Mode-Limit`, so
  * the peer enforces the narrower of those and the link's own access.
  */
-interface PeerCallInput<S extends Schema.Decoder<unknown>> {
+interface PeerCallInput<S extends Schema.Decoder<unknown>> extends PeerRequestOptions {
   readonly environmentId: EnvironmentId;
   readonly tool: string;
   readonly arguments: Record<string, unknown>;
   readonly limits: PeerCallLimits;
   readonly success: S;
   readonly sender?: OrchestrationV2LinkedSender;
-  /** The most the tool's result may take as JSON; a larger answer is refused, never read whole. */
-  readonly maxResultBytes?: number;
   /**
    * Top-level arguments a peer may lack because its version already does what they ask; a peer
    * that lacks one is called without it. Any other argument its tool's schema lacks refuses the
@@ -133,7 +151,9 @@ const fromLinkError = (error: PeerLinkError) =>
         ? "invalid_request"
         : error.reason === "expired" || error.reason === "incompatible"
           ? "capability_denied"
-          : "orchestration_error",
+          : error.reason === "unreachable"
+            ? "unreachable"
+            : "orchestration_error",
     message: error.message,
   });
 
@@ -211,17 +231,46 @@ const make = Effect.gen(function* () {
     >
   >(new Map());
 
-  const post = (url: string, token: string, body: unknown, headers: Record<string, string>) =>
-    httpClient.execute(
-      HttpClientRequest.post(`${url}/mcp`).pipe(
-        HttpClientRequest.setHeaders({
-          accept: "application/json, text/event-stream",
-          authorization: `Bearer ${token}`,
-          ...headers,
-        }),
-        HttpClientRequest.setBody(HttpBody.text(JSON.stringify(body), "application/json")),
-      ),
+  const scopedHttp = HttpClient.withScope(httpClient);
+  const post = (
+    url: string,
+    token: string,
+    body: unknown,
+    headers: Record<string, string>,
+    options?: PeerRequestOptions,
+  ) => {
+    const request = HttpClientRequest.post(`${url}/mcp`).pipe(
+      HttpClientRequest.setHeaders({
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${token}`,
+        ...headers,
+      }),
+      HttpClientRequest.setBody(HttpBody.text(JSON.stringify(body), "application/json")),
     );
+    return scopedHttp.execute(request).pipe(
+      Effect.flatMap((response) =>
+        (response.status === 200
+          ? readBody(response, options?.maxResultBytes)
+          : Effect.succeed("")
+        ).pipe(
+          Effect.map((body) => ({ status: response.status, headers: response.headers, body })),
+        ),
+      ),
+      Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: options?.deadline ?? PEER_REQUEST_DEADLINE,
+        orElse: () =>
+          Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.TransportError({
+                request,
+                description: "Peer MCP request deadline exceeded",
+              }),
+            }),
+          ),
+      }),
+    );
+  };
 
   const openSession = Effect.fn("PeerMcpClient.openSession")(
     function* (url: string, token: string, limitHeader: Record<string, string>) {
@@ -301,13 +350,20 @@ const make = Effect.gen(function* () {
       { readonly sessionId: string; readonly body: unknown },
       OrchestratorMcpFailure | HttpClientError.HttpClientError | Cause.TimeoutError
     >,
+    options?: PeerRequestOptions,
   ) {
     const attempt = Effect.flatMap(prepared, ({ sessionId, body }) =>
-      post(peer.url, peer.token, body, {
-        ...peer.limitHeader,
-        "mcp-session-id": sessionId,
-        "mcp-protocol-version": PROTOCOL_VERSION,
-      }).pipe(Effect.map((response) => ({ sessionId, response }))),
+      post(
+        peer.url,
+        peer.token,
+        body,
+        {
+          ...peer.limitHeader,
+          "mcp-session-id": sessionId,
+          "mcp-protocol-version": PROTOCOL_VERSION,
+        },
+        options,
+      ).pipe(Effect.map((response) => ({ sessionId, response }))),
     );
     let sent = yield* attempt;
     if (sent.response.status === 404) {
@@ -323,6 +379,13 @@ const make = Effect.gen(function* () {
       });
     }
     if (response.status === 403) return yield* linkedEnvironmentsOffThere;
+    // A server error comes from the machine or a gateway on its route, after the call may have run.
+    if (response.status >= 500) {
+      return yield* new OrchestratorMcpFailure({
+        code: "no_answer",
+        message: `The linked environment's address answered HTTP ${response.status}, so whether it acted is unknown.`,
+      });
+    }
     if (response.status !== 200) {
       return yield* new OrchestratorMcpFailure({
         code: "orchestration_error",
@@ -341,7 +404,7 @@ const make = Effect.gen(function* () {
       })),
     );
     const listed = yield* decodeToolsListResponse(
-      responseJson(response.headers["content-type"], yield* response.text),
+      responseJson(response.headers["content-type"], response.body),
     ).pipe(Effect.catch(() => unreadable(peer)));
     if (listed.error !== undefined) {
       return yield* new OrchestratorMcpFailure({
@@ -450,12 +513,10 @@ const make = Effect.gen(function* () {
           params: { name: input.tool, arguments: toolArguments },
         },
       })),
+      input,
     );
     const body = yield* decodeToolCallResponse(
-      responseJson(
-        response.headers["content-type"],
-        yield* readBody(response, input.maxResultBytes),
-      ),
+      responseJson(response.headers["content-type"], response.body),
     ).pipe(Effect.catch(() => unreadable(peer)));
     if (
       body.error?.code === INVALID_PARAMS &&
@@ -514,7 +575,8 @@ const make = Effect.gen(function* () {
         links.recordOutcome(input.environmentId, { error: error.message }),
       ),
       Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
-      // Recorded above with the transport's own message; the agent hears it plainly.
+      // Recorded above with the transport's own message; the agent hears it plainly. The request
+      // may have reached there, so it is no answer, not a refusal.
       Effect.catchTags({
         TimeoutError: () =>
           Effect.fail(
@@ -526,7 +588,7 @@ const make = Effect.gen(function* () {
         HttpClientError: () =>
           Effect.fail(
             new OrchestratorMcpFailure({
-              code: "orchestration_error",
+              code: "no_answer",
               message: "The linked environment stopped answering.",
             }),
           ),

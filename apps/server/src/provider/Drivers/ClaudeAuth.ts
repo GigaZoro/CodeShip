@@ -80,6 +80,7 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     const executable = yield* resolveClaudeSdkExecutablePath(
       options.binaryPath,
       options.environment,
+      options.cwd,
     );
     // Older npm installs resolve to a script entry that the SDK also runs with node.
     const launch = executable.endsWith(".js")

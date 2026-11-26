@@ -14,7 +14,7 @@ import { CliError } from "effect/cli";
 import { HttpClient } from "effect/http";
 import * as Schema from "effect/Schema";
 
-import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
+import { CLI_RELEASE_BASE_URL_ENV, matchesCliVersion } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
 import { acquireServiceSelectionLock } from "./serviceSelectionLock.ts";
@@ -26,6 +26,7 @@ import {
 } from "../serviceLauncher.ts";
 import {
   ensurePinnedRuntimeInstalled,
+  readRuntimeSentinel,
   launcherOwnsVersionsDir,
   pinnedRuntimeCommand,
   pinnedRuntimePaths,
@@ -1262,6 +1263,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         runner
           .run({
             command: pinnedRuntimeCommand(runtime).command,
+            env: { T3CODE_VERIFY_INSTALL: "1" },
             args: [...pinnedRuntimeCommand(runtime).args, "--version"],
             timeout: Duration.seconds(30),
           })
@@ -1273,9 +1275,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
                   cause,
                 }),
             ),
-            Effect.flatMap((result) => {
-              const reportedVersion = /\bv(\S+)\s*$/.exec(result.stdout)?.[1];
-              return result.code === 0 && reportedVersion === input.cliVersion
+            Effect.flatMap((result) =>
+              matchesCliVersion(result.code, result.stdout, input.cliVersion)
                 ? Effect.void
                 : Effect.fail(
                     new PinnedRuntimeInstallError({
@@ -1284,8 +1285,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
                       stdoutLength: result.stdout.length,
                       stderrLength: result.stderr.length,
                     }),
-                  );
-            }),
+                  ),
+            ),
           ),
     }).pipe(
       Effect.mapError((error) =>
@@ -1557,7 +1558,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const [unit, runtimeEntryExists, runtimeSentinel, stateText] = yield* Effect.all([
       fs.readFileString(unitPath),
       fs.exists(runtimePaths.entryPath),
-      fs.readFileString(runtimePaths.sentinelPath).pipe(Effect.option),
+      readRuntimeSentinel(runtimePaths.sentinelPath),
       fs.readFileString(statePath).pipe(Effect.option),
     ]);
     const state = Option.isSome(stateText) ? parseServiceState(stateText.value) : undefined;

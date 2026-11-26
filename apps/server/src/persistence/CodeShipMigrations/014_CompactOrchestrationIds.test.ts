@@ -123,7 +123,14 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
       [26, "MonitoringAnalysesWithoutProject"],
       [27, "MonitoringAnalysesSettleStamp"],
       [28, "MonitoringStoredDetailsAndRetries"],
-      [29, "PayloadIndexesJsonValid"],
+      [29, "ColdThreadHistoryCompaction"],
+      [30, "DatabaseSizeSamples"],
+      [31, "ScheduledTaskRunReportedResult"],
+      [32, "ThreadPreferences"],
+      [33, "ScheduledTaskLastRunId"],
+      [34, "UsageStopDecisions"],
+      [35, "TurnItemMessageIndex"],
+      [36, "PayloadIndexesJsonValid"],
     ]);
     assert.deepStrictEqual(yield* eventPayloadIds, {
       "event:first": ROOT,

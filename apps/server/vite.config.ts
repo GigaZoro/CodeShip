@@ -1,6 +1,10 @@
 import "vite-plus/test/config";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- tsdown needs the asset path when it reads this config.
 import * as NodePath from "node:path";
+import {
+  codexMetadataInventory,
+  codexMetadataInventoryDigest,
+} from "@t3tools/shared/codexMetadataInventory";
 import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
@@ -145,6 +149,13 @@ export default mergeConfig(
         js: "#!/usr/bin/env node\n",
       },
       define: {
+        __T3CODE_CODEX_METADATA_INVENTORY_SHA256__: JSON.stringify(
+          packExecutable && process.env.T3CODE_BUILD_CODEX_METADATA_DIR
+            ? codexMetadataInventoryDigest(
+                await codexMetadataInventory(process.env.T3CODE_BUILD_CODEX_METADATA_DIR),
+              )
+            : "",
+        ),
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
         __T3CODE_TELEMETRY_CHANNEL__: JSON.stringify(telemetryChannel),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),

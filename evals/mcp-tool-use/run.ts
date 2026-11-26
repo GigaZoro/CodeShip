@@ -13,6 +13,7 @@ import { autoModeModelFor } from "@t3tools/shared/serverSettings";
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodePath from "node:path";
 import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
@@ -23,8 +24,17 @@ import { formatSharedSkillPrompt, SharedSkillInstructions } from "@t3tools/share
 import {
   AutoModeModel,
   ComposerContextRecord,
+  DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
   DeviceOperationError,
   DeviceSummary,
+  OrchestrationV2DispatchCommandResult,
+  OrchestratorMcpDeleteScheduledTaskResult,
+  OrchestratorMcpListScheduledTasksResult,
+  OrchestratorMcpScheduleTaskResult,
+  OrchestratorMcpSaveScheduledTaskInput,
+  ProjectId,
+  ScheduledTaskId,
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
   OrchestratorMcpTaskRole,
   PreviewAutomationError,
   PreviewAutomationUnavailableError,
@@ -34,6 +44,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Config from "effect/Config";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -47,6 +58,8 @@ import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
+import { runConditionCommandProblem } from "../../apps/server/src/scheduledTasks/RunConditionCheck.ts";
+import { nextScheduledRunAt } from "../../apps/server/src/scheduledTasks/Schedule.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -217,6 +230,17 @@ type McpToolUseCall = typeof McpToolUseCall.Type;
 
 /** Grading rules. Tool names are bare: `delegate_task`, `Bash`, `Agent`. */
 const McpToolUseExpect = Schema.Struct({
+  /** Keep this release's owner active and resume it once verification becomes possible. */
+  pendingRelease: Schema.optional(
+    Schema.Struct({
+      threadId: Schema.String,
+      retryAfter: Schema.String,
+      /** Case-insensitive patterns identifying this delivery, its outstanding check and its evidence. */
+      promptMust: Schema.NonEmptyArray(Schema.NonEmptyString),
+      /** Known command exit codes at the scheduled occurrence on this fixture's machine. */
+      conditionExitCodes: Schema.optional(Schema.Record(Schema.String, Schema.Int)),
+    }),
+  ),
   /** Each entry needs one matching call. */
   calls: Schema.optional(Schema.Array(McpToolUseCall)),
   /** At least one of these calls must match, with its own arguments. */
@@ -333,6 +357,8 @@ export const McpToolUseCase = Schema.Struct({
     linkedEnvironments: Schema.optional(Schema.Boolean),
     /** The thread's machine runs Windows: the template's OS, shell and paths say so. */
     platform: Schema.optional(Schema.Literal("win32")),
+    /** Fix the harness and simulated tools to the same UTC day for a time-sensitive scenario. */
+    date: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/))),
     /** delegate_task `role` for a delegated child. T3 builds the child's first message from it. */
     delegateRole: Schema.optional(OrchestratorMcpTaskRole),
     context: Schema.optional(Schema.String),
@@ -387,6 +413,8 @@ export const McpToolUseCase = Schema.Struct({
   /** Empty to resume a top-level thread without side-chat context after its last tool result. */
   prompt: Schema.String,
   promptSkills: Schema.optional(Schema.Array(SharedSkillInstructions)),
+  /** Read the invoked project skill from .agents/skills in the checkout being evaluated. */
+  projectSkill: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z0-9-]+$/))),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
   expect: McpToolUseExpect,
@@ -687,6 +715,15 @@ export const onWindows = (template: string) =>
       (_, rest: string) => `C:\\\\Users\\\\user${rest.replaceAll("/", "\\\\")}`,
     );
 
+/** Both captures carry the current day in their native prompts. The simulator reads it there too. */
+const onDate = (template: string, date: string) =>
+  template
+    .replaceAll(/Today's date is \d{4}-\d{2}-\d{2}/g, `Today's date is ${date}`)
+    .replaceAll(
+      /<current_date>\d{4}-\d{2}-\d{2}<\/current_date>/g,
+      `<current_date>${date}</current_date>`,
+    );
+
 /** Rebuilds the parts of a captured request that every case shares. */
 export const buildBase = (
   template: typeof MessagesRequest.Type,
@@ -929,6 +966,7 @@ type Sample = {
   readonly shellUsage: Usage;
   readonly linked: Set<string>;
   readonly codeStore: Record<string, unknown>;
+  readonly scheduledTasks: Map<string, OrchestratorMcpScheduleTaskResult>;
   nextTask: number;
   /** Threads t3_thread_launch started, so a replay or a read of one answers as T3 would. */
   readonly launches: Array<{
@@ -987,6 +1025,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     shellUsage: emptyUsage(),
     linked: new Set([...urls, ...shell.flatMap(createdPullRequests)]),
     codeStore: {},
+    scheduledTasks: new Map(),
     nextTask: Math.max(0, ...taskNumbers) + 1,
     launches: [],
     threads: new Map(),
@@ -1670,6 +1709,9 @@ export const shellRequest = (sample: Sample, call: Omit<ShellEntry, "output">, m
     `Working directory: ${cwd} on ${platform}, a git checkout of github.com/${repo}.${date ? ` Today is ${date}.` : ""}`,
     gitStatus(testCase),
     `World: ${valueText(world ?? {})}`,
+    ...(testCase.promptSkills ?? []).map(
+      (skill) => `File ${skill.path} contains exactly:\n${skill.instructions}`,
+    ),
     ...(shellMocks.length > 0
       ? [`Commands that match these regexes print exactly this output: ${valueText(shellMocks)}`]
       : []),
@@ -1727,11 +1769,11 @@ export const shellResponsesRequest = (body: ReturnType<typeof shellRequest>) => 
 });
 
 /** The tool output in the simulator's JSON reply, or its raw text if that is not JSON. */
-export const shellOutput = (content: ReadonlyArray<Block>) => {
+export const shellOutput = (content: ReadonlyArray<Block>, preserveOutput = false) => {
   const reply = content.flatMap((block) => (isText(block) ? [block.text] : [])).join("");
   return Option.match(decodeShellReply(reply), {
-    onNone: () => reply.trim(),
-    onSome: ({ output }) => output.trim(),
+    onNone: () => (preserveOutput ? reply : reply.trim()),
+    onSome: ({ output }) => (preserveOutput ? output : output.trim()),
   });
 };
 
@@ -1760,23 +1802,210 @@ export const cannedOutput = (sample: Sample, command: string) =>
   launcherHelp(sample.devices?.launchers ?? [], command) ??
   sample.devices?.sessionError(sample.shell, command);
 
+const fixtureWord = String.raw`(?:[\w./:@%+,=-]+|'[^'\r\n]*'|"[^"$\x60\\\r\n]*")`;
+const unquoteFixtureWord = (word: string) => word.replace(/^(["'])(.*)\1$/, "$2");
+
+// Only literal commands joined by shell list operators. Expansion, redirects, and pipelines stay
+// in the simulator; their output cannot serve as evidence of the contents of a loaded skill.
+function fixtureCommandList(source: string) {
+  const command = new RegExp(
+    `[ \\t]*(${fixtureWord}(?:[ \\t]+${fixtureWord})*)[ \\t]*(?:(&&|\\|\\||[;\\n])\\s*|$)`,
+    "gy",
+  );
+  const parts = [];
+  let gate = ";";
+  for (const match of source.matchAll(command)) {
+    const words = match[1]!.match(new RegExp(fixtureWord, "g"))!.map(unquoteFixtureWord);
+    if (
+      !/^[\w./-]+$/.test(words[0]!) ||
+      /^(?:if|then|else|elif|fi|while|until|do|done|for|case|esac|return|exec|eval|source|\.|set|export|pushd|popd)$/.test(
+        words[0]!,
+      )
+    )
+      return;
+    parts.push({ gate, words, command: match[1]!, offset: match.index });
+    gate = match[2] ?? "";
+    if (match.index + match[0].length === source.length && gate !== "&&" && gate !== "||")
+      return parts;
+  }
+}
+
+const fixtureReader = /^(?:cat|head|tail|sed|rg|grep)$/;
+const emptyShellOutput = "(Bash completed with no output)";
+const fixtureLines = (content: string) => content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+
 /** Output for a shell, file, or web tool: canned output, else the shell simulator. */
 const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   sample: Sample,
   config: Config,
   call: Omit<ShellEntry, "output">,
 ) {
-  const command = call.tool === "Bash" && isRecord(call.input) ? call.input.command : undefined;
-  let output = typeof command === "string" ? cannedOutput(sample, command) : undefined;
-  if (output === undefined) {
-    const body = shellRequest(sample, call, config.shellModel);
+  const input = isRecord(call.input) ? call.input : {};
+  const command =
+    call.tool === "Bash" && typeof input.command === "string" ? input.command : undefined;
+  const skills = sample.testCase.promptSkills ?? [];
+  const { cwd, platform } = sample.base.environment;
+  const paths = platform === "win32" ? NodePath.win32 : NodePath.posix;
+  const requestedCwd = input.workdir ?? input.cwd;
+  const start = paths.resolve(cwd, typeof requestedCwd === "string" ? requestedCwd : ".");
+  let workdir = start;
+  const findSkill = (operand: string) => {
+    const file = paths.resolve(workdir, unquoteFixtureWord(operand));
+    return skills.find((skill) => paths.relative(file, paths.resolve(cwd, skill.path)) === "");
+  };
+  const history = { ...sample, shell: [...sample.shell] };
+  const shell = Effect.fnUntraced(function* (script: string | undefined, preserveOutput = false) {
+    const canned = script === undefined ? undefined : cannedOutput(sample, script);
+    if (canned !== undefined) return canned;
+    const current =
+      script === undefined
+        ? call
+        : {
+            ...call,
+            input: {
+              ...input,
+              command: script,
+              ...(input.cmd === undefined ? {} : { cmd: script }),
+              ...(workdir === start ? {} : { workdir, cwd: workdir }),
+            },
+          };
+    const body = shellRequest(history, current, config.shellModel);
+    if (preserveOutput) {
+      body.system +=
+        "\nReturn the precise text printed by this command, including all final newlines, so it can be joined with the next command's output.";
+    }
     const response = isPricedModel(config.shellModel)
       ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
       : yield* callCodex(config, shellResponsesRequest(body));
     addUsage(sample.shellUsage, response.usage);
-    output = shellOutput(response.content);
+    const output = shellOutput(response.content, preserveOutput);
+    if (script && skills.length) {
+      for (const missing of output.matchAll(
+        /^(?:cat|sed|head|tail|rg|grep): (?:can't read |cannot (?:open|read) )?(.+?)(?: for reading)?: No such file or directory\b/gm,
+      )) {
+        const skill = findSkill(missing[1]!);
+        if (skill)
+          return yield* Effect.die(
+            new Error(`Shell simulator reported a missing fixture: ${skill.path}`),
+          );
+      }
+    }
+    history.shell.push({ ...current, output });
+    return output;
+  });
+
+  const source = command?.trim() ?? "";
+  const mentionsSkill = (file: string) =>
+    skills.some((skill) => paths.basename(file) === paths.basename(skill.path));
+  const parts = skills.length && source ? fixtureCommandList(source) : undefined;
+  const lastRead =
+    parts?.findLastIndex(
+      ({ words }) =>
+        fixtureReader.test(paths.basename(words[0]!)) && words.slice(1).some(mentionsSkill),
+    ) ?? -1;
+  const nestedRead = parts?.some(
+    ({ words }) =>
+      /^(?:bash|sh|zsh|env|command|builtin|xargs)$/.test(paths.basename(words[0]!)) &&
+      words.slice(1).some((word) => /\b(?:cat|head|tail|sed|rg|grep)\b/.test(word)),
+  );
+  if (skills.length && (!parts || nestedRead) && /\b(?:cat|head|tail|sed|rg|grep)\b/.test(source)) {
+    const tokens = source.match(new RegExp(fixtureWord, "g"))?.map(unquoteFixtureWord) ?? [];
+    if (
+      skills.some((skill) => source.includes(skill.path)) ||
+      tokens.some(findSkill) ||
+      (tokens.includes("cd") && tokens.some(mentionsSkill))
+    ) {
+      return yield* Effect.die(new Error("Cannot verify a fixture read in this shell expression."));
+    }
   }
-  if (call.tool === "Bash" && output === "") output = "(Bash completed with no output)";
+  let output = "";
+  const file =
+    call.tool === "Read" && typeof input.file_path === "string"
+      ? findSkill(input.file_path)
+      : undefined;
+  if (file) {
+    const offset = input.offset ?? 1;
+    const limit = input.limit ?? 2000;
+    if (
+      typeof offset !== "number" ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      typeof limit !== "number" ||
+      !Number.isSafeInteger(limit) ||
+      limit < 0
+    ) {
+      output = "<tool_use_error>Expected nonnegative integer offset and limit.</tool_use_error>";
+    } else {
+      const first = Math.max(1, offset);
+      output = fixtureLines(file.instructions)
+        .slice(first - 1, first - 1 + limit)
+        .map((line, i) => String(first + i).padStart(6) + "\t" + line)
+        .join("");
+    }
+  } else if (!parts || lastRead < 0) {
+    output = yield* shell(command);
+  } else {
+    let status = 0;
+    for (const [i, part] of parts.entries()) {
+      if ((part.gate === "&&" && status !== 0) || (part.gate === "||" && status === 0)) continue;
+      const [executable, ...args] = part.words;
+      const program = paths.basename(executable!);
+      const operands = args[0] === "--" ? args.slice(1) : args;
+      const fixtures = fixtureReader.test(program) ? operands.map(findSkill) : [];
+      const fixture = fixtures.find((skill) => skill !== undefined);
+      let stdout = "";
+      // Passing bare exit to a fresh simulator would discard the last executed command's status.
+      if (executable === "exit" && (operands.length === 0 || i < lastRead)) {
+        if (operands.length === 1 && /^\d+$/.test(operands[0]!)) status = Number(operands[0]) % 256;
+        else if (operands.length !== 0)
+          return yield* Effect.die(
+            new Error("Cannot resolve exit status before the fixture read."),
+          );
+        break;
+      }
+      status = 0;
+      if (fixture && program === "cat" && fixtures.every((skill) => skill !== undefined)) {
+        stdout = fixtures.map((skill) => skill.instructions).join("");
+      } else if (
+        fixture &&
+        program === "sed" &&
+        args.length === 3 &&
+        args[0] === "-n" &&
+        /^[1-9]\d*(?:,[1-9]\d*)?p$/.test(args[1]!) &&
+        findSkill(args[2]!) === fixture
+      ) {
+        const [first, last = first] = args[1]!.slice(0, -1).split(",").map(Number);
+        stdout = fixtureLines(fixture.instructions)
+          .slice(first! - 1, Math.max(first!, last!))
+          .join("");
+      } else if ((program === "true" || program === "false") && i < lastRead) {
+        status = program === "false" ? 1 : 0;
+      } else {
+        const result = yield* shell(
+          i > lastRead ? source.slice(part.offset) : part.command,
+          i <= lastRead,
+        );
+        if (fixture)
+          return yield* Effect.die(
+            new Error(`Cannot verify the simulated ${program} output for fixture: ${fixture.path}`),
+          );
+        const failure = /^Exit code (\d+)(?:\n|$)/.exec(result);
+        status = failure ? Number(failure[1]) : 0;
+        stdout = result === emptyShellOutput ? "" : result.slice(failure?.[0].length ?? 0);
+        if (program === "cd" && i < lastRead && status === 0) {
+          if (operands.length !== 1 || operands[0] === "-")
+            return yield* Effect.die(
+              new Error("Cannot resolve the simulated working directory for a fixture read."),
+            );
+          workdir = paths.resolve(workdir, operands[0]!);
+        }
+      }
+      output += stdout;
+      if (i > lastRead) break;
+    }
+    if (status) output = `Exit code ${status}${output ? "\n" + output : ""}`;
+  }
+  if (call.tool === "Bash" && output === "") output = emptyShellOutput;
   const entry = { ...call, output };
   sample.shell.push(entry);
   for (const url of createdPullRequests(entry)) sample.linked.add(url);
@@ -1786,6 +2015,39 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
 /** Tells the shell simulator about a file request_secret saved, so it exists for later commands. */
 const savedSecretFile = (sample: Sample, result: unknown) => {
   if (isRecord(result) && typeof result.file === "string") sample.secretFiles.push(result.file);
+};
+
+// Creates (including replays) use the caller's defaults. Updates by ID keep the stored choices.
+const scheduledWriteDestination = (
+  save: OrchestratorMcpSaveScheduledTaskInput,
+  stored:
+    | Pick<OrchestratorMcpScheduleTaskResult, "projectId" | "shared" | "boundThreadId" | "enabled">
+    | undefined,
+  hasOwner: boolean,
+) => {
+  const update = save.scheduledTaskId === undefined ? undefined : stored;
+  const projectId = update?.projectId ?? save.projectId ?? ProjectId.make(EVAL_PROJECT_ID);
+  const requestShared = save.shared ?? update?.shared ?? false;
+  // The create API sends sharing to the scheduler only when enabling it.
+  const shared = requestShared || (!update && stored?.shared === true);
+  const bound =
+    save.bindToCurrentThread ??
+    (update
+      ? update.boundThreadId !== null
+      : !requestShared && projectId === EVAL_PROJECT_ID && hasOwner);
+  let bindingProblem: string | undefined;
+  if (bound && (projectId !== EVAL_PROJECT_ID || !hasOwner || shared))
+    bindingProblem = "The requested task cannot bind to this thread in this environment.";
+  else if (save.modelSelection && (bound || save.followsDefaultModel === true))
+    bindingProblem = "Choose an explicit model only on an unbound task with its own model.";
+  return {
+    projectId,
+    requestShared,
+    shared,
+    bound,
+    bindingProblem,
+    enabled: save.enabled ?? update?.enabled ?? true,
+  };
 };
 
 /** The result for one tool call. */
@@ -1850,6 +2112,162 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (sample.devices && isT3Name(call.name) && isDeviceTool(name) && fromWorld) {
     const result = yield* sample.devices.call(name, input, failure);
     return result.isError ? failed(result.text) : toolResult(call.id, result.text);
+  }
+  const environment = testCase.setup.world?.environment;
+  const owner = isRecord(environment) ? environment.T3CODE_THREAD_ID : undefined;
+  if (mock === "default" && name === "t3_thread_organize") {
+    if (
+      (input.threadId ?? owner) !== owner ||
+      (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
+    )
+      return failed("The target thread does not exist in this fixture.");
+    if (input.action === "settle") return toolResult(call.id, { settlesWhenTurnEnds: true });
+    if (input.action === "archive") return toolResult(call.id, { archivesWhenTurnEnds: true });
+    return toolResult(call.id, { sequence: sample.nextTask++ });
+  }
+  if (
+    mock === "default" &&
+    ["schedule_task", "list_scheduled_tasks", "delete_scheduled_task"].includes(name)
+  ) {
+    if (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
+      return failed("The scheduling fixture does not contain that environment.");
+    const id = typeof input.scheduledTaskId === "string" ? input.scheduledTaskId : undefined;
+    // Each sample has its own scheduler session. Replayed creates address the same row.
+    const replayId =
+      name === "schedule_task" && id === undefined && typeof input.clientRequestId === "string"
+        ? ScheduledTaskId.make(
+            `scheduled-task:command:mcp:fixture:schedule-task:${encodeURIComponent(input.clientRequestId)}`,
+          )
+        : undefined;
+    const lookupId = id ?? replayId;
+    const stored = lookupId === undefined ? undefined : sample.scheduledTasks.get(lookupId);
+    if (name === "list_scheduled_tasks") {
+      const tasks =
+        id === undefined
+          ? [...sample.scheduledTasks.values()].filter(
+              (task) => task.projectId === (input.projectId ?? EVAL_PROJECT_ID),
+            )
+          : stored
+            ? [stored]
+            : [];
+      const counts = { outcomes: {}, skipReasons: {} };
+      return toolResult(call.id, {
+        tasks: tasks.map(({ prompt, ...task }) => ({
+          ...task,
+          ...(id !== undefined || input.includePrompt === true ? { prompt } : {}),
+          runCounts: { last7Days: counts, last30Days: counts },
+        })),
+        claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+      });
+    }
+    if (id !== undefined && !stored)
+      return failed("No existing scheduled task with this id in the fixture.");
+    if (name === "delete_scheduled_task" && stored) {
+      sample.scheduledTasks.delete(stored.scheduledTaskId);
+      return toolResult(call.id, { scheduledTaskId: stored.scheduledTaskId, deleted: true });
+    }
+    const edit = scheduledEdit(input);
+    if (Option.isNone(edit)) return failed("Invalid scheduled task arguments.");
+    const save = edit.value;
+    // Only a save by task ID is a partial update. Replaying a create reapplies its defaults.
+    const update = id === undefined ? undefined : stored;
+    if (
+      id === undefined &&
+      (!save.schedule || (save.prompt === undefined && save.promptFile == null))
+    )
+      return failed("Creating a scheduled task requires a schedule and a prompt or prompt file.");
+    const schedule = save.schedule ?? stored?.schedule;
+    if (!schedule || schedule.type === "webhook")
+      return failed("This fixture needs a scheduled time.");
+    const world = testCase.setup.world;
+    const promptFilePath =
+      save.promptFile === undefined ? stored?.promptFile?.path : save.promptFile;
+    if (
+      save.prompt !== undefined &&
+      (save.promptFile != null || (update && promptFilePath != null))
+    )
+      return failed("Supply either a prompt or a prompt file.");
+    const fileText =
+      promptFilePath && isRecord(world?.files) ? world.files[promptFilePath] : undefined;
+    if (promptFilePath && typeof fileText !== "string")
+      return failed("The scheduled prompt file does not exist in the fixture.");
+    const prompt = typeof fileText === "string" ? fileText : (save.prompt ?? stored?.prompt);
+    if (!prompt?.trim()) return failed("A scheduled task needs a prompt or a prompt file.");
+
+    const { projectId, requestShared, shared, bound, enabled, bindingProblem } =
+      scheduledWriteDestination(save, stored, typeof owner === "string");
+    const requestOneMachine = save.oneMachine ?? update?.oneMachine;
+    if ((save.oneMachine === true || save.excludedMachines !== undefined) && !requestShared)
+      return failed("oneMachine and excludedMachines require a shared task.");
+    if (save.machineOrder !== undefined && (!requestShared || !requestOneMachine))
+      return failed("machineOrder requires a one-machine shared task.");
+    if (save.catchUpMissedRun !== undefined && schedule.type !== "fixed_time")
+      return failed("catchUpMissedRun applies only to a fixed_time schedule.");
+    if (bindingProblem) return failed(bindingProblem);
+    let runCondition = stored?.runCondition;
+    if (save.runCondition === null) runCondition = undefined;
+    else if (save.runCondition !== undefined) {
+      const problem = runConditionCommandProblem(save.runCondition.command);
+      if (problem) return failed(problem);
+      runCondition = {
+        command: save.runCondition.command,
+        timeoutSeconds: save.runCondition.timeoutSeconds ?? DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
+      };
+    }
+    const now = DateTime.makeUnsafe(`${base.environment.date ?? "2026-01-01"}T12:00:00Z`);
+    const next = enabled ? nextScheduledRunAt(schedule, now) : null;
+    if (enabled && schedule.type === "once" && next === null)
+      return failed("The run time has passed. Pick a time in the future.");
+    const defaultBranch = typeof world?.defaultBranch === "string" ? world.defaultBranch : "main";
+    const ref = `origin/${defaultBranch}`;
+    const commit = isRecord(world?.refs) ? world.refs[`refs/remotes/${ref}`] : undefined;
+    const lastRead =
+      typeof commit === "string" ? { at: DateTime.formatIso(now), ref, commit } : null;
+    const preview = prompt.replace(/\s+/g, " ").trim();
+    const oneMachine = requestShared ? (save.oneMachine ?? stored?.oneMachine) : stored?.oneMachine;
+    const task: OrchestratorMcpScheduleTaskResult = {
+      scheduledTaskId:
+        stored?.scheduledTaskId ?? replayId ?? ScheduledTaskId.make(uuid(sample.nextTask++)),
+      projectId,
+      boundThreadId: bound && typeof owner === "string" ? ThreadId.make(owner) : null,
+      title:
+        save.title ??
+        update?.title ??
+        ((save.prompt ?? save.promptFile ?? "").split("\n")[0]!.trim().slice(0, 80) ||
+          "Scheduled task"),
+      description:
+        save.description === undefined ? stored?.description : (save.description ?? undefined),
+      prompt,
+      ...(promptFilePath ? { promptFile: { path: promptFilePath, lastRead } } : {}),
+      promptHash: scheduledPromptHash(prompt),
+      promptPreview: preview.length > 80 ? `${preview.slice(0, 79)}…` : preview,
+      enabled,
+      shared,
+      ...(shared && oneMachine ? { oneMachine } : {}),
+      ...(shared
+        ? { excludedMachines: save.excludedMachines ?? stored?.excludedMachines ?? [] }
+        : {}),
+      ...(shared && oneMachine
+        ? { machineOrder: save.machineOrder ?? stored?.machineOrder ?? [] }
+        : {}),
+      placement: save.placement ?? stored?.placement,
+      group: save.group === undefined ? stored?.group : (save.group ?? undefined),
+      delegateProviders: save.delegateProviders ?? stored?.delegateProviders,
+      maxLiveRuns: save.maxLiveRuns ?? stored?.maxLiveRuns,
+      ...(schedule.type === "fixed_time"
+        ? { catchUpMissedRun: save.catchUpMissedRun ?? stored?.catchUpMissedRun ?? true }
+        : {}),
+      schedule:
+        schedule.type === "once"
+          ? { type: "once", runAt: DateTime.formatIso(DateTime.makeUnsafe(schedule.runAt)) }
+          : schedule,
+      nextRunAt: next ? DateTime.formatIso(next) : null,
+      lastRunStatus: "never",
+      ...(runCondition ? { runCondition } : {}),
+    };
+    sample.scheduledTasks.set(task.scheduledTaskId, task);
+    const { prompt: _prompt, ...summary } = task;
+    return toolResult(call.id, summary);
   }
   // A pasted secret is saved without a card, so a mocked card outcome does not apply.
   if (mock !== undefined && mock !== "default" && !pastedSecret(name, input)) {
@@ -1965,10 +2383,248 @@ const withOptionsObject = (input: unknown) => {
   return { ...input, target: { ...input.target, options } };
 };
 
-/** What the user wrote in the case's thread: its context, prior user turns and the prompt. */
-/** `world.files` keys: paths relative to the thread cwd, or absolute. */
-export const worldFilePaths = ({ setup }: Pick<McpToolUseCase, "setup">) =>
-  Object.keys(isRecord(setup.world?.files) ? setup.world.files : {});
+const dispatchResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestrationV2DispatchCommandResult),
+);
+const scheduledPromptHash = (prompt: string) =>
+  NodeCrypto.createHash("sha256").update(prompt).digest("hex").slice(0, 12);
+const listedTasksResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestratorMcpListScheduledTasksResult),
+);
+const deletedTaskResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestratorMcpDeleteScheduledTaskResult),
+);
+const scheduledEdit = Schema.decodeUnknownOption(OrchestratorMcpSaveScheduledTaskInput);
+const scheduledResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestratorMcpScheduleTaskResult),
+);
+
+/** Replay successful local actions. A canned success cannot override the tool's actual target or inputs. */
+const gradePendingRelease = (
+  release: NonNullable<McpToolUseCase["expect"]["pendingRelease"]>,
+  calls: ReadonlyArray<Call>,
+  files: unknown,
+) => {
+  let pinned = false;
+  let unsettled = false;
+  // Run counts and the prompt file's last-read time can change between a save and its readback.
+  const retryState = (task: OrchestratorMcpScheduleTaskResult) =>
+    JSON.stringify([
+      task.scheduledTaskId,
+      task.projectId,
+      task.boundThreadId,
+      task.title,
+      task.enabled,
+      task.shared ?? false,
+      task.oneMachine ?? false,
+      task.schedule.type,
+      task.schedule.type === "once" ? Date.parse(task.schedule.runAt) : null,
+      task.nextRunAt && Date.parse(task.nextRunAt),
+      task.blockedByPolicy,
+      task.runCondition?.command,
+      task.runCondition?.timeoutSeconds,
+      task.promptFile?.path,
+      task.promptHash,
+    ]);
+  // Recorded samples from older fixtures can assign two IDs to one idempotent create.
+  const idByCreateKey = new Map<string, string>();
+  const conflictingIds = new Set<string>();
+  const refusedCreates = new Set<string>();
+  const retries = new Map<
+    string,
+    {
+      task: OrchestratorMcpScheduleTaskResult;
+      saved?: string;
+      requested: OrchestratorMcpSaveScheduledTaskInput;
+      readPrompt: string | undefined;
+    }
+  >();
+  for (const { tool, input, failed, output } of calls) {
+    if (
+      failed !== false ||
+      !isRecord(input) ||
+      (input.environmentId !== undefined && input.environmentId !== EVAL_ENVIRONMENT_ID)
+    )
+      continue;
+    if (
+      tool === "t3_thread_organize" &&
+      (input.threadId ?? release.threadId) === release.threadId &&
+      Option.isSome(dispatchResult(output))
+    ) {
+      if (input.action === "unsettle") unsettled = true;
+      if (input.action === "pin" || input.action === "unpin") pinned = input.action === "pin";
+    }
+    if (tool === "delete_scheduled_task") {
+      const reply = deletedTaskResult(output);
+      if (
+        Option.isSome(reply) &&
+        reply.value.deleted &&
+        reply.value.scheduledTaskId === input.scheduledTaskId
+      )
+        retries.delete(reply.value.scheduledTaskId);
+    }
+    if (tool === "list_scheduled_tasks") {
+      const reply = listedTasksResult(output);
+      if (Option.isNone(reply)) continue;
+      const inScope = (task: OrchestratorMcpScheduleTaskResult) =>
+        input.scheduledTaskId !== undefined
+          ? task.scheduledTaskId === input.scheduledTaskId
+          : task.projectId === (input.projectId ?? EVAL_PROJECT_ID);
+      const listed = reply.value.tasks.filter(inScope);
+      const visible = new Set<string>(listed.map((task) => task.scheduledTaskId));
+      for (const [id, known] of retries) {
+        if (inScope(known.task) && !visible.has(id))
+          retries.set(id, { ...known, readPrompt: undefined });
+      }
+      const full = input.includePrompt === true || input.scheduledTaskId !== undefined;
+      for (const task of listed) {
+        const previous = retries.get(task.scheduledTaskId);
+        const readPrompt = full
+          ? task.prompt
+          : previous && retryState(previous.task) === retryState(task)
+            ? previous.readPrompt
+            : undefined;
+        retries.set(task.scheduledTaskId, {
+          ...previous,
+          requested: previous?.requested ?? {},
+          task,
+          readPrompt,
+        });
+      }
+    }
+    if (tool === "schedule_task") {
+      const edit = scheduledEdit(input);
+      const reply = scheduledResult(output);
+      if (Option.isNone(edit) || Option.isNone(reply)) continue;
+      const { scheduledTaskId, schedule, prompt, promptFile } = edit.value;
+      if (
+        scheduledTaskId === undefined &&
+        (schedule === undefined || (prompt === undefined) === (promptFile == null))
+      )
+        continue;
+      if (scheduledTaskId !== undefined && scheduledTaskId !== reply.value.scheduledTaskId)
+        continue;
+      const task = reply.value;
+      if (scheduledTaskId === undefined && edit.value.clientRequestId !== undefined) {
+        const key = edit.value.clientRequestId;
+        const first = idByCreateKey.get(key);
+        if (first === undefined) idByCreateKey.set(key, task.scheduledTaskId);
+        else if (first !== task.scheduledTaskId) {
+          conflictingIds.add(first);
+          conflictingIds.add(task.scheduledTaskId);
+        }
+      }
+      const previous = retries.get(task.scheduledTaskId);
+      // A trace can start with an update to a task created before this sample.
+      const observed = previous?.task ?? (scheduledTaskId === undefined ? undefined : task);
+      const prior = previous?.requested;
+      // Once the sample has written a field, a stale readback cannot change its value.
+      const stored = observed && {
+        projectId: prior?.projectId ?? observed.projectId,
+        shared: prior?.shared ?? observed.shared,
+        enabled: prior?.enabled ?? observed.enabled,
+        boundThreadId:
+          prior?.bindToCurrentThread === undefined
+            ? observed.boundThreadId
+            : prior.bindToCurrentThread
+              ? ThreadId.make(release.threadId)
+              : null,
+      };
+      const { projectId, shared, bound, enabled, bindingProblem } = scheduledWriteDestination(
+        edit.value,
+        stored,
+        true,
+      );
+      // A refused binding leaves the existing task in place. It cannot create a task for a later rename.
+      if (bindingProblem) {
+        if (scheduledTaskId === undefined && !previous) refusedCreates.add(task.scheduledTaskId);
+        continue;
+      }
+      if (scheduledTaskId === undefined) refusedCreates.delete(task.scheduledTaskId);
+      const requested = {
+        ...edit.value,
+        projectId,
+        shared,
+        bindToCurrentThread: bound,
+        enabled,
+        // The scheduler retains these fields when omitted. Model validation is per write.
+        prompt: prompt ?? prior?.prompt,
+        promptFile: promptFile === undefined ? prior?.promptFile : promptFile,
+        schedule: schedule ?? prior?.schedule ?? observed?.schedule,
+        runCondition:
+          edit.value.runCondition === undefined
+            ? prior?.runCondition === undefined
+              ? observed?.runCondition
+              : prior.runCondition
+            : edit.value.runCondition,
+      };
+      // Even a partial update requires a fresh read of the saved task.
+      retries.set(task.scheduledTaskId, {
+        task,
+        saved: retryState(task),
+        requested,
+        readPrompt: undefined,
+      });
+    }
+  }
+  const hasRetry = [...retries.values()].some(({ task, saved, requested, readPrompt }) => {
+    if (
+      conflictingIds.has(task.scheduledTaskId) ||
+      refusedCreates.has(task.scheduledTaskId) ||
+      typeof readPrompt !== "string" ||
+      (saved !== undefined && saved !== retryState(task))
+    )
+      return false;
+    const next = Date.parse(task.nextRunAt ?? "");
+    const schedule = requested.schedule ?? task.schedule;
+    const due =
+      task.schedule.type === "once" &&
+      schedule.type === "once" &&
+      next === Date.parse(task.schedule.runAt) &&
+      next === Date.parse(schedule.runAt) &&
+      next >= Date.parse(release.retryAfter);
+    const ownerBound =
+      task.boundThreadId === release.threadId &&
+      requested.bindToCurrentThread !== false &&
+      requested.modelSelection === undefined &&
+      task.projectId === EVAL_PROJECT_ID &&
+      (requested.projectId === undefined || requested.projectId === task.projectId) &&
+      !task.shared &&
+      requested.shared !== true &&
+      requested.oneMachine !== true;
+    const runnable =
+      task.enabled &&
+      requested.enabled !== false &&
+      task.blockedByPolicy === undefined &&
+      // The one occurrence is usable only if its stored condition is known to allow it to run.
+      (task.runCondition === undefined ||
+        release.conditionExitCodes?.[task.runCondition.command] === 0) &&
+      (requested.runCondition === undefined ||
+        (requested.runCondition?.command === task.runCondition?.command &&
+          (requested.runCondition == null ||
+            (requested.runCondition.timeoutSeconds ?? DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS) ===
+              task.runCondition?.timeoutSeconds))) &&
+      requested.catchUpMissedRun === undefined;
+    const expectedPrompt = task.promptFile
+      ? isRecord(files) && Object.hasOwn(files, task.promptFile.path) && files[task.promptFile.path]
+      : (requested.prompt ?? readPrompt);
+    const promptMatches =
+      (requested.promptFile === undefined ||
+        (requested.promptFile ?? undefined) === task.promptFile?.path) &&
+      expectedPrompt === readPrompt &&
+      (task.promptHash === undefined || scheduledPromptHash(readPrompt) === task.promptHash) &&
+      release.promptMust.every((pattern) => new RegExp(pattern, "i").test(readPrompt));
+    return due && ownerBound && runnable && promptMatches;
+  });
+  return [
+    { check: "keeps the owning thread active", pass: pinned || unsettled },
+    {
+      check:
+        "reads back a runnable owner-bound retry identifying the delivery, installed check and evidence",
+      pass: hasRetry,
+    },
+  ];
+};
 
 export const pastedText = ({ prompt, setup }: Pick<McpToolUseCase, "prompt" | "setup">) =>
   [
@@ -2005,8 +2661,7 @@ const withPage = (tool: string, input: unknown, files: ReadonlyMap<string, strin
 export const gradeSample = (
   expect: McpToolUseCase["expect"],
   run: SampleRun,
-  pasted = "",
-  worldFiles: ReadonlyArray<string> = [],
+  { pasted = "", files }: { readonly pasted?: string; readonly files?: unknown } = {},
 ) => {
   const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
@@ -2120,13 +2775,15 @@ export const gradeSample = (
     const exact = valueText(numbers.toSorted((a, b) => a - b));
     add("linkedNumbers", exact === valueText(expect.linkedNumbers.toSorted((a, b) => a - b)));
   }
+  if (expect.pendingRelease)
+    checks.push(...gradePendingRelease(expect.pendingRelease, calls, files));
   checks.push(...gradeDevice(expect.device, run));
   checks.push(
     ...gradeFileLinks(
       expect.fileLinks,
       run.stopReason === "end_turn" ? run.finalText : undefined,
       run.cwd,
-      worldFiles,
+      Object.keys(isRecord(files) ? files : {}),
     ),
   );
   checks.push(...gradeSecret(expect.secret, run, pasted));
@@ -2145,7 +2802,7 @@ export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pa
       ...run,
       calls: run.calls.filter((call) => !isPageTool(call.tool) || call.failed !== undefined),
     },
-    pasted,
+    { pasted },
   ).some((check) => !check.pass && SETTLED.test(check.check));
 
 const requestBody = ({ base, tools }: Sample, effort: string, messages: unknown) => ({
@@ -2786,8 +3443,19 @@ const main = Effect.gen(function* () {
           return { ...turn, toolCalls };
         }),
       );
+      const name = testCase.projectSkill;
+      const promptSkills = [...(testCase.promptSkills ?? [])];
+      if (name !== undefined) {
+        const baseDirectory = `.agents/skills/${name}`;
+        const skillPath = `${baseDirectory}/SKILL.md`;
+        const instructions = yield* fs.readFileString(
+          path.resolve(import.meta.dirname, "../..", skillPath),
+        );
+        promptSkills.push({ name, path: skillPath, baseDirectory, instructions });
+      }
       return {
         ...testCase,
+        promptSkills,
         setup: {
           ...testCase.setup,
           priorTurns,
@@ -2805,14 +3473,24 @@ const main = Effect.gen(function* () {
     templatePath.endsWith(".gz") ? NodeZlib.gunzipSync(templateBytes) : templateBytes,
   );
   const keepUserInstructions = flags["user-instructions"] === "keep";
-  const buildFor = (
-    role: McpToolUseCase["setup"]["role"],
-    deviceAccess: boolean,
-    browserAccess: boolean,
-    links: boolean,
-    windows: boolean,
-  ): Effect.Effect<Base, Schema.SchemaError> => {
-    const request = windows ? onWindows(template) : template;
+  const baseOptions = (setup: McpToolUseCase["setup"]) => ({
+    role: codex && setup.role === "native-subagent" ? ("top" as const) : setup.role,
+    deviceAccess: setup.world?.deviceAgentAccess !== false,
+    browserAccess: setup.world?.browserAgentAccess !== false,
+    links: setup.linkedEnvironments === true,
+    windows: setup.platform === "win32",
+    date: setup.date,
+  });
+  const buildFor = ({
+    role,
+    deviceAccess,
+    browserAccess,
+    links,
+    windows,
+    date,
+  }: ReturnType<typeof baseOptions>): Effect.Effect<Base, Schema.SchemaError> => {
+    const platformTemplate = windows ? onWindows(template) : template;
+    const request = date === undefined ? platformTemplate : onDate(platformTemplate, date);
     return codex
       ? decodeCodexCapture(request).pipe(
           Effect.map((capture) =>
@@ -2846,33 +3524,17 @@ const main = Effect.gen(function* () {
           }),
         );
   };
-  // Codex has no native subagents; its cases with that role run as top-level threads.
-  const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.platform === "win32"}`;
-  const base = yield* buildFor("top", true, true, false, false);
-  const bases = new Map<string, Base>([["top:true:true:false:false", base]]);
-  for (const testCase of selected) {
-    const key = baseKey(testCase);
-    if (bases.has(key)) continue;
-    const [role = "top", device, browser, links, windows] = key.split(":") as [
-      McpToolUseCase["setup"]["role"],
-      string,
-      string,
-      string,
-      string,
-    ];
-    bases.set(
-      key,
-      yield* buildFor(
-        role,
-        device === "true",
-        browser === "true",
-        links === "true",
-        windows === "true",
-      ),
-    );
+  const defaults = baseOptions({ role: "top" });
+  const base = yield* buildFor(defaults);
+  const baseKey = ({ role, deviceAccess, browserAccess, links, windows, date }: typeof defaults) =>
+    [role, deviceAccess, browserAccess, links, windows, date].join("|");
+  const bases = new Map<string, Base>([[baseKey(defaults), base]]);
+  for (const { setup } of selected) {
+    const options = baseOptions(setup);
+    const key = baseKey(options);
+    if (!bases.has(key)) bases.set(key, yield* buildFor(options));
   }
-  const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
+  const baseFor = ({ setup }: McpToolUseCase) => bases.get(baseKey(baseOptions(setup)))!;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
   if (flags["dry-run"]) {
     // One JSON line per case. Without --case this also checks that every case builds.
@@ -2941,12 +3603,10 @@ const main = Effect.gen(function* () {
           ),
         }),
         onSuccess: (sample) => {
-          const checks = gradeSample(
-            testCase.expect,
-            sample,
-            pastedText(testCase),
-            worldFilePaths(testCase),
-          );
+          const checks = gradeSample(testCase.expect, sample, {
+            pasted: pastedText(testCase),
+            files: testCase.setup.world?.files,
+          });
           const { secret } = testCase.expect;
           return {
             ...identity,

@@ -16,6 +16,8 @@ export type ProviderUsageLimitsReport = ProviderUsageLimitsUpdate & {
   readonly complete?: boolean;
 };
 
+export type UsageLimitsPublisher = (update: ProviderUsageLimitsReport) => Effect.Effect<void>;
+
 export interface ManagedServerProvider {
   /** Cached; pass { fresh: true } before executing updates. */
   readonly resolveMaintenance: (options?: {
@@ -33,6 +35,6 @@ export interface ManagedServerProvider {
    */
   readonly refreshAfterRedemption: Effect.Effect<Fiber.Fiber<boolean>>;
   readonly streamChanges: Stream.Stream<ServerProvider>;
-  /** Merge windows by ID and set any authLabel; an update with no window leaves the snapshot untouched. */
-  readonly applyUsageLimits: (update: ProviderUsageLimitsReport) => Effect.Effect<void>;
+  /** Capture once when the native session opens. Its updates stop when the account changes. */
+  readonly bindUsageLimits: Effect.Effect<UsageLimitsPublisher>;
 }

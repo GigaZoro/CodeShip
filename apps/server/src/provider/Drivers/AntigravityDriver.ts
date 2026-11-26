@@ -47,7 +47,6 @@ import {
 import {
   antigravityCliSessionMode,
   antigravityModelOptions,
-  antigravityThinkingConfig,
   makeAntigravityAcpRuntime,
   type AntigravityAcpRuntimeInput,
 } from "../acp/AntigravityAcpSupport.ts";
@@ -388,10 +387,12 @@ export const AntigravityDriver: ProviderDriver<
       // Thinking levels differ per model and are reported only for the selected one.
       const configOptions = started.sessionSetupResult.configOptions ?? [];
       const current = configOptions.find((option) => option.id === "model")?.currentValue;
-      if (antigravityThinkingConfig(configOptions) !== undefined && typeof current === "string") {
-        for (const model of [...antigravityModelOptions(configOptions), { value: current }]) {
-          yield* runtime.setModel(model.value).pipe(Effect.ignore);
-        }
+      if (typeof current === "string") {
+        const alternatives = antigravityModelOptions(configOptions).filter(
+          (entry) => entry.value !== current,
+        );
+        for (const model of alternatives) yield* runtime.setModel(model.value).pipe(Effect.ignore);
+        if (alternatives.length > 0) yield* runtime.setModel(current).pipe(Effect.ignore);
       }
       yield* runtime.drainEvents;
     }, Effect.scoped);

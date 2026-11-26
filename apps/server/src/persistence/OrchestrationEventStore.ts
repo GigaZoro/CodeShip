@@ -76,6 +76,8 @@ export class OrchestrationEventStore extends Context.Service<
         readonly eventCount: number;
         readonly rawPayloadBytes: number;
         readonly hasCreateEvent: boolean;
+        /** Superseded events after `afterSequence` were removed, so a replay would miss them. */
+        readonly historyCompacted: boolean;
       },
       OrchestrationEventStoreError
     >;
@@ -598,11 +600,18 @@ const makeEventStore = Effect.gen(function* () {
       readonly eventCount: number;
       readonly rawPayloadBytes: number;
       readonly hasCreateEvent: number;
+      readonly historyCompacted: number;
     }>`
       SELECT
         COUNT(*) AS "eventCount",
         COALESCE(SUM(octet_length(payload_json)), 0) AS "rawPayloadBytes",
-        COALESCE(MAX(event_type = 'thread.created'), 0) AS "hasCreateEvent"
+        COALESCE(MAX(event_type = 'thread.created'), 0) AS "hasCreateEvent",
+        EXISTS (
+          SELECT 1
+          FROM orchestration_v2_thread_history_compaction
+          WHERE thread_id = ${input.threadId}
+            AND compacted_through_sequence > ${input.afterSequence}
+        ) AS "historyCompacted"
       FROM (
         SELECT ${restoredPayloadJson} AS payload_json, event_type
         FROM orchestration_events
@@ -621,6 +630,7 @@ const makeEventStore = Effect.gen(function* () {
         eventCount: rows[0]?.eventCount ?? 0,
         rawPayloadBytes: rows[0]?.rawPayloadBytes ?? 0,
         hasCreateEvent: (rows[0]?.hasCreateEvent ?? 0) !== 0,
+        historyCompacted: (rows[0]?.historyCompacted ?? 0) !== 0,
       })),
     );
 

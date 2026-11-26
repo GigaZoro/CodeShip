@@ -6,14 +6,17 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { TRIAGE_PROMPT_FILE_NAME } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/cli";
-import { vi } from "vite-plus/test";
+import { onTestFinished, vi } from "vite-plus/test";
 
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import * as Path from "effect/Path";
+import { triageCommand } from "./triage.ts";
 import { cli } from "../binCli.ts";
 import { buildTriageLaunchPrompt } from "../triage/triagePrompt.ts";
 
@@ -71,5 +74,40 @@ it.live("a failed agent launch points at the prompt it could not run", () =>
     Effect.provide(
       Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, TestConsole.layer),
     ),
+  ),
+);
+
+it.effect("checks and launches the requested triage agent from the session directory", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const baseDir = yield* fs.makeTempDirectoryScoped();
+    const tools = path.join(baseDir, "userdata", "fixture-tools");
+    const executable = path.join(tools, isWindowsHost ? "codex.cmd" : "codex");
+    yield* fs.makeDirectory(tools, { recursive: true });
+    yield* fs.writeFileString(
+      executable,
+      isWindowsHost ? "@echo off\r\ncd > observed-cwd\r\n" : "#!/bin/sh\npwd > observed-cwd\n",
+    );
+    if (!isWindowsHost) yield* fs.chmod(executable, 0o755);
+    vi.stubEnv("PATH", path.join("..", "..", "fixture-tools"));
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    yield* Command.runWith(triageCommand, { version: "0.0.0" })([
+      "--base-dir",
+      baseDir,
+      "--agent",
+      "codex",
+    ]);
+    const triageDir = path.join(baseDir, "userdata", "triage");
+    const sessions = yield* fs.readDirectory(triageDir);
+    expect(sessions).toHaveLength(1);
+    const session = path.join(triageDir, sessions[0]!);
+    const observed = yield* fs.readFileString(path.join(session, "observed-cwd"));
+    expect(yield* fs.realPath(observed.trim())).toBe(yield* fs.realPath(session));
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer)),
   ),
 );

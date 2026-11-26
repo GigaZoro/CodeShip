@@ -82,6 +82,7 @@ import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as ServerBrowserProfiles from "./ServerBrowserProfiles.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
+import * as HostSandboxProfiles from "../hostSandboxProfiles.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
@@ -567,7 +568,7 @@ const make = Effect.gen(function* () {
   >();
   const runSyncExit = Effect.runSyncExitWith(yield* Effect.context<never>());
   // sudo resets the environment, so the command has to name this server's home.
-  const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND, [
+  const setupCommand = yield* resolveRootCliCommand(HostSandboxProfiles.SETUP_SUBCOMMAND, [
     "--base-dir",
     config.baseDir,
   ]);

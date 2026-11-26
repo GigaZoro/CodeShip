@@ -44,6 +44,7 @@ import {
   getInitialServerConfig,
   isRpcClientError,
   request,
+  requestGuarded,
 } from "../rpc/client.ts";
 
 interface CommandMetadata {
@@ -296,7 +297,7 @@ const allocateCommandId = Effect.fn("EnvironmentCommands.allocateCommandId")(fun
 });
 
 const dispatch = (command: OrchestrationV2Command) =>
-  request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
+  requestGuarded(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
 
 // The socket can close after the server accepted the frame but before it answered.
 // The server replays an accepted commandId from its receipt, so the same command

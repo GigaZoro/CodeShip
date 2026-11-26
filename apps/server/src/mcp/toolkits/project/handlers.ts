@@ -50,6 +50,16 @@ import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
 
+/** What a caller can do about a base ref, by the lookup that found it unusable. */
+const BASE_REF_REFUSAL_NEXT_STEP: Record<ThreadLaunch.ThreadLaunchBaseRefLookup, string> = {
+  checkout:
+    "Pass a branch, tag, or commit that exists there, or set startFromOrigin:true if it exists only on a remote.",
+  "no-remote": "Pass a branch, tag, or commit that exists there, or add a remote that has it.",
+  "remotes-lack-commit":
+    "Push the commit to one of those remotes, or pass a branch, tag, or commit that exists there.",
+  "not-a-commit": "Pass a branch, tag, or commit SHA instead.",
+};
+
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
   const message =
@@ -68,7 +78,6 @@ function worktreeCheckHint(
     | ThreadLaunch.ThreadLaunchBaseRefError
     | ThreadLaunch.ThreadLaunchBranchConflictError
     | ThreadLaunch.ThreadLaunchNotRepositoryError,
-  strategy: { readonly startFromOrigin?: boolean | undefined },
 ) {
   if (error._tag === "ThreadLaunchNotRepositoryError")
     return `Use workspaceStrategy: {type: "root"}, or pass the projectId of a Git repository.`;
@@ -78,11 +87,17 @@ function worktreeCheckHint(
       sibling === error.branch ? "" : `, such as "${sibling}"`
     }.`;
   }
-  return `Pass a branch, tag, or commit that exists there${
-    strategy.startFromOrigin === true
-      ? "; fetching from the project's remote did not bring it in, so push it there or the project has no usable remote."
-      : ", or set startFromOrigin:true if it exists only on a remote."
-  }`;
+  return BASE_REF_REFUSAL_NEXT_STEP[error.lookup];
+}
+
+/** Git giving no answer about a project's repository is not a project without one. */
+function repositoryReadFailure(error: Project.ProjectRepositoryReadError) {
+  return error._tag === "RepositoryIdentityLookupError"
+    ? new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: `Could not read which repository a project holds: ${error.message} Try again.`,
+      })
+    : unavailable();
 }
 
 /** Require project worktrees so launches cannot target arbitrary host directories. */
@@ -329,7 +344,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               (error) =>
                 new OrchestratorMcpFailure({
                   code: "invalid_request",
-                  message: `${error.message} No thread was created. ${worktreeCheckHint(error, strategy)}`,
+                  message: `${error.message} No thread was created. ${worktreeCheckHint(error)}`,
                 }),
             ),
           );
@@ -472,13 +487,16 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       // Identities are resolved: linked environments find this side's project by repository.
       return yield* projects
         .listPage({ cursor: input.cursor ?? 0, limit: input.limit ?? 20 })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(Effect.mapError(repositoryReadFailure));
     }),
   ),
   t3_project_read: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const projects = yield* access;
-      const result = yield* projects.getById(input.projectId).pipe(Effect.mapError(unavailable));
+      // Resolved like the list: a linked environment checks it holds the caller's repository.
+      const result = yield* projects
+        .getWithRepositoryIdentity(input.projectId)
+        .pipe(Effect.mapError(repositoryReadFailure));
       if (Option.isNone(result))
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",

@@ -24,6 +24,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  type ScheduledTask,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -37,6 +38,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -58,7 +60,11 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskIdentities } from "../scheduledTasks/sharedTaskTestLayers.ts";
+import { originalDemandId } from "./demandId.ts";
+import {
+  HERE_ENVIRONMENT_ID,
+  layerSharedTaskIdentities,
+} from "../scheduledTasks/sharedTaskTestLayers.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -203,6 +209,7 @@ function makeHarness(options: HarnessOptions = {}) {
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
       delete: () => Effect.die("unused"),
+      getWithRepositoryIdentity: () => Effect.die("unused"),
       listPage: () => Effect.die("unused"),
       getById: (id) =>
         Effect.succeed(
@@ -355,6 +362,574 @@ function launchInput(input: {
     creationSource: "web" as const,
   };
 }
+
+// Advances the clock past the scheduler's tick and waits until the task shows `done`: the clock
+// passing the tick does not mean its forked run has finished writing.
+const tickUntil = (done: (task: ScheduledTask) => boolean) =>
+  Effect.gen(function* () {
+    const tasks = yield* ScheduledTasks.ScheduledTaskService;
+    const shown = yield* tasks.subscribeList().pipe(
+      Stream.map((list) => list.tasks[0]!),
+      Stream.filter(done),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* TestClock.adjust("6 seconds");
+    const found = yield* TestClock.withLive(Effect.timeoutOption(Fiber.join(shown), "10 seconds"));
+    if (Option.isSome(found) && Option.isSome(found.value)) return found.value.value;
+    return assert.fail(
+      `The task never reached the awaited state: ${JSON.stringify((yield* tasks.list()).tasks[0])}`,
+    );
+  });
+
+// Polls the scheduler at `time` until the task shows `done`. Closing the scheduler before its run
+// finished writing would cut that run.
+const pollScheduler = <E, R>(
+  scheduler: Layer.Layer<ScheduledTasks.ScheduledTaskService, E, R>,
+  time: number,
+  done: (task: ScheduledTask) => boolean,
+) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(time);
+    return yield* tickUntil(done).pipe(Effect.provide(scheduler));
+  });
+
+/** No run in flight and the occurrence `due` names is used up, so a run it started has finished. */
+const settledPast = (due: string) => (task: ScheduledTask) =>
+  task.lastRunStatus !== "running" && task.nextRunAt !== due;
+
+const replayScenarios = [
+  "restart replay",
+  "unknown",
+  "unknown catch-up rewrite",
+  "accepted unknown cursor",
+  "accepted late retry",
+  "failure before receipt",
+  "failure before receipt, history write lost",
+] as const;
+it.effect.each(
+  replayScenarios.flatMap((mode) =>
+    (["existing", "new"] as const).map((target) => ({ mode, target })),
+  ),
+)("one durable scheduled dispatch after $mode in $target threads", ({ mode, target }) => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const sql = yield* SqlClient.SqlClient;
+    const attempts: string[] = [];
+    const held = mode === "accepted late retry";
+    const old = mode.startsWith("accepted ");
+    const unknown = mode.includes("unknown");
+    const failsFirst = mode.startsWith("failure before receipt");
+    const historyLost = mode.endsWith("history write lost");
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.succeed(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            sendToThread: (input) =>
+              Effect.suspend(() => {
+                attempts.push(input.commandId);
+                if (failsFirst && attempts.length === 1)
+                  return Effect.die("transient failure before receipt");
+                return threads.sendToThread(input);
+              }),
+          }),
+          Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+            ...launches,
+            launch: (input) =>
+              Effect.suspend(() => {
+                attempts.push(input.commandId);
+                if (failsFirst && attempts.length === 1)
+                  return Effect.die("transient failure before receipt");
+                return launches.launch(input);
+              }),
+          }),
+        ),
+      ),
+    );
+    const due = DateTime.makeZonedUnsafe(
+      { year: 1970, month: 1, day: 2, hour: 7 },
+      { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+    );
+    const slot = DateTime.toEpochMillis(due);
+    const when = slot + (held ? 60 * 60_000 : unknown ? 25 * 60_000 : 0);
+    const scheduledFor = DateTime.formatIso(DateTime.makeUnsafe(when));
+    const id = ScheduledTaskId.make("daily-replay");
+    yield* TestClock.setTime(slot - 60_000);
+    const bound =
+      target === "existing"
+        ? (yield* launches.launch(launchInput({ command: "setup", thread: "thread:bound" })))
+            .threadId
+        : null;
+    yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      yield* tasks.upsert(
+        {
+          id,
+          title: "Daily",
+          prompt: "Daily check",
+          enabled: true,
+          maxLiveRuns: 4,
+          schedule: { type: "fixed_time", timeOfDay: "07:00" },
+          projectId,
+          threadId: bound,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        },
+        ScheduledTasks.CHANGED_IN_APP,
+      );
+    }).pipe(Effect.provide(scheduler));
+    const firstSlot = DateTime.formatIso(DateTime.makeUnsafe(slot));
+    const [row] = yield* sql<{
+      incarnation_id: string;
+    }>`SELECT incarnation_id FROM scheduled_tasks WHERE task_id = ${id}`;
+    const demand = held
+      ? originalDemandId(
+          "scheduled-task",
+          HERE_ENVIRONMENT_ID,
+          id,
+          row!.incarnation_id,
+          "scheduled",
+          firstSlot,
+        )
+      : null;
+    const zone = DateTime.zoneMakeLocal().id;
+    const evidence = held
+      ? { at: firstSlot, timeZone: zone, schedule: { type: "fixed_time", timeOfDay: "07:00" } }
+      : null;
+    const cursor = () =>
+      sql`UPDATE scheduled_tasks SET next_run_at = ${scheduledFor}, usage_hold_json = ${held || unknown ? JSON.stringify({ until: scheduledFor, heldOccurrence: evidence }) : null} WHERE task_id = ${id}`;
+    const poll = (time: number) => pollScheduler(scheduler, time, settledPast(scheduledFor));
+    yield* cursor();
+    if (old) {
+      const earlier = held ? slot + 25 * 60_000 : when;
+      const earlierFor = DateTime.formatIso(DateTime.makeUnsafe(earlier));
+      const key = `${id}:${earlier}:scheduled`;
+      const commandId = CommandId.make(`scheduled-task:${key}`);
+      const message = {
+        messageId: MessageId.make(`scheduled-task-message:${key}`),
+        demandId: demand,
+        scheduledTaskId: id,
+        text: "Daily check",
+        attachments: [],
+      };
+      const threadId =
+        bound ??
+        (yield* launches.launch({
+          ...launchInput({ command: commandId, thread: "thread:older" }),
+          initialMessage: message,
+        })).threadId;
+      if (bound !== null)
+        yield* threads.sendToThread({
+          ...message,
+          projectId,
+          threadId,
+          commandId,
+          mode: "queue",
+          createdBy: "user",
+          creationSource: "web",
+        });
+      yield* sql`INSERT INTO scheduled_task_runs (run_id,task_id,trigger,scheduled_for,started_at,thread_id,outcome)
+          VALUES (${key},${id},'scheduled',${earlierFor},${earlierFor},${threadId},'succeeded')`;
+    } else {
+      const first = yield* poll(when);
+      assert.equal(first.lastRunStatus, failsFirst ? "failed" : "succeeded");
+    }
+    // Run history is best-effort: the retry's reopen of the failed run can be lost, and that run's
+    // old result must not then stand in for the retry's own.
+    if (historyLost)
+      yield* sql`CREATE TRIGGER lose_run_reopen BEFORE UPDATE OF outcome ON scheduled_task_runs
+        WHEN NEW.outcome = 'running' BEGIN SELECT RAISE(ABORT, 'history write lost'); END`;
+    yield* cursor();
+    const last = yield* poll(when + (mode === "unknown catch-up rewrite" ? 15 * 60_000 : 8000));
+    const history =
+      yield* sql`SELECT trigger,scheduled_for,outcome,thread_id FROM scheduled_task_runs WHERE task_id = ${id} ORDER BY rowid`;
+    const receipts =
+      yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id LIKE 'scheduled-task:%' AND command_type = 'message.dispatch' AND status = 'accepted'`;
+    const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+    const projections = yield* Effect.forEach(shells, (shell) =>
+      threads.getThreadProjection(shell.id),
+    );
+    const messages = projections.flatMap((p) => p.messages);
+    assert.equal(last.lastRunStatus, "succeeded");
+    assert.lengthOf(receipts, 1);
+    assert.lengthOf(messages, 1);
+    assert.lengthOf(shells, 1);
+    assert.lengthOf(history, 1);
+    assert.equal(history[0]?.outcome, historyLost ? "failed" : "succeeded");
+    assert.equal(history[0]?.thread_id, historyLost ? null : shells[0]!.id);
+    if (unknown)
+      assert.deepEqual(
+        projections.flatMap((p) => p.runs.map((r) => r.demandId)),
+        [null],
+      );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each([
+  "before the replay",
+  "after the replay",
+  "after a restart cut the replay",
+] as const)(
+  "the task keeps a delivered run's reported result when its chat reports %s",
+  (order) => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sql = yield* SqlClient.SqlClient;
+      // While set, a launch never finishes, so closing the scheduler cuts the run as a restart does.
+      let cutLaunch = false;
+      const scheduler = ScheduledTasks.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NodeCrypto.layer,
+            Scheduler.layer,
+            layerSharedTaskIdentities(),
+            ManagedPolicy.layerTest(),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+              ...launches,
+              launch: (input) => (cutLaunch ? Effect.never : launches.launch(input)),
+            }),
+          ),
+        ),
+      );
+      const report = (threadId: ThreadId, outcome: "completed" | "incomplete", summary: string) =>
+        Effect.gen(function* () {
+          const tasks = yield* ScheduledTasks.ScheduledTaskService;
+          return yield* tasks.reportRunResult({ threadId, outcome, summary });
+        }).pipe(Effect.provide(scheduler));
+      const slot = DateTime.toEpochMillis(
+        DateTime.makeZonedUnsafe(
+          { year: 1970, month: 1, day: 2, hour: 7 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        ),
+      );
+      const id = ScheduledTaskId.make("daily-reported");
+      yield* TestClock.setTime(slot - 60_000);
+      yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        yield* tasks.upsert(
+          {
+            id,
+            title: "Daily",
+            prompt: "Daily check",
+            enabled: true,
+            maxLiveRuns: 4,
+            schedule: { type: "fixed_time", timeOfDay: "07:00" },
+            projectId,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "user",
+            creationSource: "web",
+          },
+          ScheduledTasks.CHANGED_IN_APP,
+        );
+      }).pipe(Effect.provide(scheduler));
+      const due = DateTime.formatIso(DateTime.makeUnsafe(slot));
+      const cursor = () =>
+        sql`UPDATE scheduled_tasks SET next_run_at = ${due} WHERE task_id = ${id}`;
+      const poll = (time: number) => pollScheduler(scheduler, time, settledPast(due));
+      const history = () =>
+        sql<{
+          outcome: string;
+          thread_id: string | null;
+          reported_outcome: string | null;
+          reported_summary: string | null;
+        }>`SELECT outcome, thread_id, reported_outcome, reported_summary FROM scheduled_task_runs WHERE task_id = ${id}`;
+      yield* cursor();
+      assert.equal((yield* poll(slot)).lastRunStatus, "succeeded");
+      const [delivered] = yield* history();
+      const chat = ThreadId.make(delivered!.thread_id!);
+      const blocked = "Blocked: the market API was down.";
+      if (order === "before the replay") yield* report(chat, "incomplete", blocked);
+      // As a replay does: the cursor names the delivered occurrence again, so it dispatches under the same run id.
+      yield* cursor();
+      cutLaunch = order === "after a restart cut the replay";
+      // A cut replay stays running: the poll waits for it to start, then closing the scheduler cuts it.
+      let settled = yield* cutLaunch
+        ? pollScheduler(scheduler, slot + 8000, (task) => task.lastRunStatus === "running")
+        : poll(slot + 8000);
+      cutLaunch = false;
+      if (order !== "before the replay") {
+        // The replay started after the delivered run; the task still names that run, and once a
+        // restart recovers it, takes that run's result rather than the cut.
+        const recovered = yield* poll(slot + 16000);
+        assert.equal(recovered.lastRunStatus, "succeeded");
+        assert.equal(recovered.lastRunError, null);
+        yield* report(chat, "incomplete", blocked);
+        settled = yield* poll(slot + 24000);
+      }
+      assert.equal(settled.lastRunStatus, "failed");
+      assert.equal(settled.lastRunError, blocked);
+      assert.deepEqual(yield* history(), [
+        {
+          outcome: "failed",
+          thread_id: chat,
+          reported_outcome: "incomplete",
+          reported_summary: blocked,
+        },
+      ]);
+      const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+      const projections = yield* Effect.forEach(shells, (shell) =>
+        threads.getThreadProjection(shell.id),
+      );
+      assert.lengthOf(
+        projections.flatMap((p) => p.messages),
+        1,
+      );
+      const refused = yield* Effect.flip(report(chat, "completed", "Checked."));
+      assert.equal(refused.message, "This run already reported its result.");
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect(
+  "a replay that cannot name its delivered run leaves the task on that run, still due",
+  () => {
+    const harness = makeHarness();
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sql = yield* SqlClient.SqlClient;
+      const slot = DateTime.toEpochMillis(
+        DateTime.makeZonedUnsafe(
+          { year: 1970, month: 1, day: 2, hour: 7 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        ),
+      );
+      const id = ScheduledTaskId.make("daily-named");
+      yield* TestClock.setTime(slot - 60_000);
+      yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        yield* tasks.upsert(
+          {
+            id,
+            title: "Daily",
+            prompt: "Daily check",
+            enabled: true,
+            maxLiveRuns: 4,
+            schedule: { type: "fixed_time", timeOfDay: "07:00" },
+            projectId,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "user",
+            creationSource: "web",
+          },
+          ScheduledTasks.CHANGED_IN_APP,
+        );
+      }).pipe(Effect.provide(scheduler));
+      const due = DateTime.formatIso(DateTime.makeUnsafe(slot));
+      const cursor = () =>
+        sql`UPDATE scheduled_tasks SET next_run_at = ${due} WHERE task_id = ${id}`;
+      const history = () =>
+        sql<{
+          run_id: string;
+          outcome: string;
+          thread_id: string | null;
+        }>`SELECT run_id, outcome, thread_id FROM scheduled_task_runs WHERE task_id = ${id}`;
+      yield* cursor();
+      assert.equal(
+        (yield* pollScheduler(scheduler, slot, settledPast(due))).lastRunStatus,
+        "succeeded",
+      );
+      const delivered = yield* history();
+      // Stands in for a restart between marking the replay running and naming the run it delivered:
+      // either way the naming is lost, and the mark must not outlive it.
+      yield* sql`CREATE TRIGGER lose_run_naming BEFORE UPDATE OF last_run_id ON scheduled_tasks
+      WHEN NEW.last_run_id IN (SELECT run_id FROM scheduled_task_runs WHERE thread_id IS NOT NULL)
+      BEGIN SELECT RAISE(ABORT, 'run naming lost'); END`;
+      yield* cursor();
+      yield* TestClock.setTime(slot + 8000);
+      const afterLoss = yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        // The failed attempt's release announces a change, whether or not it found the task running.
+        const announced = yield* tasks.subscribeList().pipe(
+          Stream.drop(1),
+          Stream.map((list) => list.tasks[0]!),
+          Stream.filter((task) => task.lastRunStatus !== "running"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        return Option.getOrThrow(
+          Option.flatten(
+            yield* TestClock.withLive(Effect.timeoutOption(Fiber.join(announced), "10 seconds")),
+          ),
+        );
+      }).pipe(Effect.provide(scheduler));
+      assert.equal(afterLoss.lastRunStatus, "succeeded");
+      assert.equal(afterLoss.lastRunError, null);
+      assert.equal(afterLoss.nextRunAt, due);
+      yield* sql`DROP TRIGGER lose_run_naming`;
+      const replayed = yield* pollScheduler(scheduler, slot + 16000, settledPast(due));
+      assert.equal(replayed.lastRunStatus, "succeeded");
+      assert.deepEqual(yield* history(), delivered);
+      const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+      const projections = yield* Effect.forEach(shells, (shell) =>
+        threads.getThreadProjection(shell.id),
+      );
+      assert.lengthOf(
+        projections.flatMap((p) => p.messages),
+        1,
+      );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each(["existing", "new"] as const)(
+  "replays fixed-time receipts only within the same task incarnation in %s threads",
+  (target) => {
+    const harness = makeHarness();
+    const scheduler = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeCrypto.layer,
+          Scheduler.layer,
+          layerSharedTaskIdentities(),
+          ManagedPolicy.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sql = yield* SqlClient.SqlClient;
+      const due = DateTime.makeZonedUnsafe(
+        { year: 1970, month: 1, day: 2, hour: 7 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      );
+      const at = DateTime.toEpochMillis(due);
+      yield* TestClock.setTime(at - 1_000);
+      const bound =
+        target === "existing"
+          ? (yield* launches.launch(
+              launchInput({ command: "command:setup", thread: "thread:bound" }),
+            )).threadId
+          : null;
+      const scheduledFor = DateTime.formatIso(DateTime.toUtc(due));
+      const id = ScheduledTaskId.make("recreated");
+      const expected: string[] = [];
+      for (const replace of [false, true]) {
+        yield* TestClock.setTime(at - 1_000);
+        yield* Effect.gen(function* () {
+          const tasks = yield* ScheduledTasks.ScheduledTaskService;
+          if (replace) yield* tasks.delete({ id });
+          yield* tasks.upsert(
+            {
+              id,
+              title: "Daily",
+              prompt: "Daily check",
+              enabled: true,
+              maxLiveRuns: 2,
+              schedule: { type: "fixed_time", timeOfDay: "07:00" },
+              projectId,
+              threadId: bound,
+              workspaceStrategy: { type: "root" },
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdBy: "user",
+              creationSource: "web",
+            },
+            ScheduledTasks.CHANGED_IN_APP,
+          );
+          const [row] = yield* sql<{
+            incarnation_id: string;
+          }>`SELECT incarnation_id FROM scheduled_tasks WHERE task_id = ${id}`;
+          const demandId = originalDemandId(
+            "scheduled-task",
+            HERE_ENVIRONMENT_ID,
+            id,
+            row!.incarnation_id,
+            "scheduled",
+            scheduledFor,
+          );
+          expected.push(demandId);
+          if (!replace) {
+            const oldRun = `${id}:${at}:scheduled`;
+            const commandId = CommandId.make(`scheduled-task:${oldRun}`);
+            const message = {
+              messageId: MessageId.make(`scheduled-task-message:${oldRun}`),
+              demandId,
+              scheduledTaskId: id,
+              text: "Daily check",
+              attachments: [],
+            };
+            const threadId =
+              bound ??
+              (yield* launches.launch({
+                ...launchInput({ command: commandId, thread: "thread:legacy" }),
+                initialMessage: message,
+              })).threadId;
+            if (bound !== null)
+              yield* threads.sendToThread({
+                projectId,
+                threadId,
+                commandId,
+                ...message,
+                mode: "queue",
+                createdBy: "user",
+                creationSource: "web",
+              });
+            yield* sql`INSERT INTO scheduled_task_runs (run_id,task_id,trigger,scheduled_for,started_at,thread_id,outcome)
+              VALUES (${oldRun}, ${id}, 'scheduled', ${scheduledFor}, ${scheduledFor}, ${threadId}, 'succeeded')`;
+          }
+          assert.equal((yield* tickUntil(settledPast(scheduledFor))).runCount, 1);
+          // Replay the same occurrence at a different dispatch time, including after recreation.
+          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${scheduledFor} WHERE task_id = ${id}`;
+          assert.equal((yield* tickUntil(settledPast(scheduledFor))).lastRunStatus, "succeeded");
+          const [run] = (yield* tasks.listRuns({ id })).runs;
+          assert.equal(run?.outcome, "succeeded");
+          const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
+          const projections = yield* Effect.forEach(shells, (shell) =>
+            threads.getThreadProjection(shell.id),
+          );
+          assert.sameMembers(
+            projections.flatMap((p) => p.runs.map((r) => r.demandId)),
+            expected,
+          );
+          assert.equal(projections.flatMap((p) => p.messages).length, expected.length);
+          assert.equal(shells.length, bound === null ? expected.length : 1);
+        }).pipe(Effect.provide(scheduler));
+      }
+      assert.notEqual(expected[0], expected[1]);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect.each(
   (["new", "existing"] as const).flatMap((target) =>
@@ -3422,13 +3997,31 @@ it.effect("leaves uncertain Git detection failures to workspace preparation", ()
   }),
 );
 
-it.effect.each([
-  { name: "is missing", baseRef: "t3/renamed", startFromOrigin: false, origin: true },
+const missingSha = "0123456789abcdef0123456789abcdef01234567";
+it.effect.each<{
+  readonly name: string;
+  readonly baseRef: string;
+  readonly startFromOrigin: boolean;
+  readonly remoteNames: ReadonlyArray<string>;
+  readonly fetchedFrom?: string;
+  readonly lookup: ThreadLaunch.ThreadLaunchBaseRefLookup;
+  readonly message: string;
+}>([
   {
-    name: "has no origin to come from",
+    name: "is missing",
+    baseRef: "t3/renamed",
+    startFromOrigin: false,
+    remoteNames: ["origin"],
+    lookup: "checkout",
+    message: `Base ref "t3/renamed" does not resolve to a commit in project "Project" (/repo).`,
+  },
+  {
+    name: "has no remote to come from",
     baseRef: "t3/renamed",
     startFromOrigin: true,
-    origin: false,
+    remoteNames: [],
+    lookup: "no-remote",
+    message: `Base ref "t3/renamed" is not in project "Project" (/repo), which has no Git remote to fetch it from.`,
   },
   {
     name: "was deleted on its remote",
@@ -3440,25 +4033,52 @@ it.effect.each([
     name: "is a previous checkout there never was",
     baseRef: "-",
     startFromOrigin: false,
-    origin: true,
+    remoteNames: ["origin"],
+    lookup: "checkout",
+    message: `Base ref "-" does not resolve to a commit in project "Project" (/repo).`,
   },
-  // The fetch succeeds, yet no branch of the remote holds a commit that was never pushed.
   {
-    name: "is a commit the remote still lacks after a fetch",
-    baseRef: "0123456789abcdef0123456789abcdef01234567",
+    name: "is a commit none of its remotes has",
+    baseRef: missingSha,
     startFromOrigin: true,
-    origin: true,
+    remoteNames: ["origin", "upstream"],
+    lookup: "remotes-lack-commit",
+    message: `Base ref "${missingSha}" is not in project "Project" (/repo), and none of its remotes (origin, upstream) has that commit.`,
   },
-])("refuses a new worktree whose base ref $name", (testCase) =>
+  {
+    name: "is a commit in a checkout with no remote",
+    baseRef: missingSha,
+    startFromOrigin: true,
+    remoteNames: [],
+    lookup: "no-remote",
+    message: `Base ref "${missingSha}" is not in project "Project" (/repo), which has no Git remote to fetch it from.`,
+  },
+  // The fetch succeeds, yet the SHA names a tree or blob, which no worktree can start from.
+  {
+    name: "is an object a remote gives that is no commit",
+    baseRef: "89abcdef0123456789abcdef0123456789abcdef",
+    startFromOrigin: true,
+    remoteNames: ["origin"],
+    fetchedFrom: "origin",
+    lookup: "not-a-commit",
+    message: `Base ref "89abcdef0123456789abcdef0123456789abcdef" names an object from remote origin that is not a commit, in project "Project" (/repo).`,
+  },
+])("refuses a new worktree whose base ref $name, saying which lookup failed", (testCase) =>
   Effect.gen(function* () {
     const harness = makeHarness({
       hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD"),
       fetchWorktreeBaseCommit: () => Effect.succeed(null),
       git: {
         resolveWorktreeBaseRemote: () =>
-          Effect.succeed(testCase.origin ? { remoteName: "origin", branchName: "main" } : null),
+          Effect.succeed(
+            testCase.remoteNames.length > 0 ? { remoteName: "origin", branchName: "main" } : null,
+          ),
         hasRefNamed: () => Effect.succeed(false),
-        fetchRemote: () => Effect.void,
+        fetchCommit: () =>
+          Effect.succeed({
+            fetchedFrom: testCase.fetchedFrom ?? null,
+            remoteNames: testCase.remoteNames,
+          }),
       },
     });
     yield* Effect.gen(function* () {
@@ -3477,11 +4097,9 @@ it.effect.each([
         _tag: "ThreadLaunchBaseRefError",
         projectId,
         baseRef: testCase.baseRef,
+        lookup: testCase.lookup,
       });
-      assert.equal(
-        error.message,
-        `Base ref "${testCase.baseRef}" does not resolve to a commit in project "Project" (/repo).`,
-      );
+      assert.equal(error.message, testCase.message);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -3528,9 +4146,11 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
       hasCommit: ({ refName }) =>
         Ref.get(fetched).pipe(Effect.map((names) => refName === "HEAD" || names.length > 0)),
       git: {
-        resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: sha }),
         hasRefNamed: () => Effect.succeed(false),
-        fetchRemote: ({ remoteName }) => Ref.update(fetched, (names) => [...names, remoteName]),
+        fetchCommit: ({ commitSha }) =>
+          Ref.update(fetched, (shas) => [...shas, commitSha]).pipe(
+            Effect.as({ fetchedFrom: "origin", remoteNames: ["origin"] }),
+          ),
       },
     });
     yield* Effect.gen(function* () {
@@ -3539,19 +4159,58 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
         projectId,
         workspaceStrategy: { type: "worktree", baseRef: sha, startFromOrigin: true },
       });
-      assert.deepEqual(yield* Ref.get(fetched), ["origin"]);
+      assert.deepEqual(yield* Ref.get(fetched), [sha]);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
 
-it.effect("fails preparing a worktree from a commit the remote lacks, naming the commit", () => {
+// Preparation fetches the commit itself, and the setup panel shows that transfer as its fetch.
+it.effect("marks the fetch stage done once preparation has fetched a commit SHA", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const fetched = { done: false };
+  const harness = makeHarness({
+    hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD" || fetched.done),
+    git: {
+      fetchCommit: () =>
+        Effect.sync(() => {
+          fetched.done = true;
+          return { fetchedFrom: "origin", remoteNames: ["origin"] };
+        }),
+    },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:fetched-commit",
+        thread: "thread:launch:fetched-commit",
+        message: "Start from a fetched commit",
+        workspace: { type: "worktree", baseRef: sha, startFromOrigin: true },
+      }),
+    );
+    const settled = yield* tracker.stream(launched.threadId).pipe(
+      Stream.filter(
+        (snapshot) =>
+          snapshot?.stages.some(
+            (stage) => stage.id === "checkout" && stage.status !== "pending",
+          ) === true,
+      ),
+      Stream.runHead,
+    );
+    assert.equal(
+      Option.getOrUndefined(settled)?.stages.find((stage) => stage.id === "fetch")?.status,
+      "done",
+    );
+    assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, sha);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("fails preparing a worktree from a commit no remote has, naming the commit", () => {
   const sha = "0123456789abcdef0123456789abcdef01234567";
   const harness = makeHarness({
     hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD"),
-    git: {
-      resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: sha }),
-      fetchRemote: () => Effect.void,
-    },
+    git: { fetchCommit: () => Effect.succeed({ fetchedFrom: null, remoteNames: ["origin"] }) },
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3572,7 +4231,10 @@ it.effect("fails preparing a worktree from a commit the remote lacks, naming the
     );
     const projection = yield* threads.getThreadProjection(launched.threadId);
     const failure = projection.turnItems.find((item) => item.type === "error")?.failure;
-    assert.include(failure?.message ?? "", `Base ref "${sha}" does not resolve to a commit`);
+    assert.include(
+      failure?.message ?? "",
+      `Base ref "${sha}" is not in project "Project" (/repo), and none of its remotes (origin) has that commit.`,
+    );
     assert.equal(harness.createWorktree.mock.calls.length, 0);
   }).pipe(Effect.provide(harness.layer));
 });

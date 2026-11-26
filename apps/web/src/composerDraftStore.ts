@@ -767,6 +767,7 @@ export interface EffectiveComposerModelState {
   modelOptions: ProviderOptionSelectionsByProvider | null;
   /** The server picks the account; see `ModelSelection.autoAccount`. */
   autoAccount: boolean;
+  quotaAwareAutoSelection: ModelSelection | null;
 }
 
 interface ComposerDraftModelState {
@@ -1143,12 +1144,15 @@ function normalizeModelSelection(
   if (!model) {
     return null;
   }
-  const autoAccount = candidate?.autoAccount === true ? { autoAccount: true as const } : {};
+  const routing = {
+    ...(candidate?.autoAccount === true ? { autoAccount: true } : {}),
+    ...(candidate?.quotaAwareAuto === true ? { quotaAwareAuto: true } : {}),
+  };
   if (Array.isArray(candidate?.options)) {
     const selections = coerceProviderOptionSelections(candidate.options);
     return {
       ...createModelSelection(instanceId, model, selections),
-      ...autoAccount,
+      ...routing,
     } as NormalizedModelSelection;
   }
   const kindForLegacyOptions = normalizeProviderDriverKind(instanceId);
@@ -1162,7 +1166,7 @@ function normalizeModelSelection(
   const options = kindForLegacyOptions ? modelOptions?.[kindForLegacyOptions] : undefined;
   return {
     ...createModelSelection(instanceId, model, options),
-    ...autoAccount,
+    ...routing,
   } as NormalizedModelSelection;
 }
 
@@ -1179,11 +1183,7 @@ function legacySyncModelSelectionOptions(
   }
   const kind = normalizeProviderDriverKind(modelSelection.instanceId);
   const options = kind ? modelOptions?.[kind] : undefined;
-  return createModelSelection(
-    modelSelection.instanceId,
-    modelSelection.model,
-    options,
-  ) as NormalizedModelSelection;
+  return withModelSelectionOptions(modelSelection, options);
 }
 
 function legacyMergeModelSelectionIntoProviderModelOptions(
@@ -1357,9 +1357,11 @@ export function deriveEffectiveComposerModelState(input: {
     ].find((selections) => modelSelectionByProviderToOptions(selections) !== null) ?? null;
   const modelOptions = modelSelectionByProviderToOptions(optionSelections);
   // A draft pick decides alone: picking a model on one account pins the thread to it.
-  const autoAccount =
-    (activeSelection ?? input.threadModelSelection ?? input.projectModelSelection)?.autoAccount ===
-    true;
+  const selection = activeSelection ?? input.threadModelSelection ?? input.projectModelSelection;
+  const requestedSelection = input.draft?.activeProvider
+    ? input.draft.modelSelectionByProvider?.[input.draft.activeProvider]
+    : undefined;
+  const routing = requestedSelection ?? selection;
 
   return {
     selectedModel,
@@ -1369,7 +1371,8 @@ export function deriveEffectiveComposerModelState(input: {
       optionSelections,
       selectedModel,
     }),
-    autoAccount,
+    autoAccount: selection?.autoAccount === true,
+    quotaAwareAutoSelection: routing?.quotaAwareAuto === true ? routing : null,
   };
 }
 
@@ -3361,11 +3364,15 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextMap = { ...base.modelSelectionByProvider };
             // Traits apply to the model the composer shows, which on a started
             // thread is the thread's model rather than a stored seed.
-            nextMap[instanceKey] = createModelSelection(
-              instanceKey,
+            const currentForProvider = nextMap[instanceKey];
+            const model =
               normalizeCustomModelSlug(options?.model) ??
-                nextMap[instanceKey]?.model ??
-                fallbackModel,
+              currentForProvider?.model ??
+              fallbackModel;
+            nextMap[instanceKey] = withModelSelectionOptions(
+              currentForProvider
+                ? { ...currentForProvider, model }
+                : createModelSelection(instanceKey, model),
               providerOpts,
             );
 
@@ -3384,11 +3391,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               const appliesToSticky = rememberedModel === stickyBase.model;
               if (providerOpts) {
                 if (appliesToSticky) {
-                  nextStickyMap[instanceKey] = createModelSelection(
-                    instanceKey,
-                    stickyBase.model,
-                    providerOpts,
-                  );
+                  nextStickyMap[instanceKey] = withModelSelectionOptions(stickyBase, providerOpts);
                 }
                 nextOptionsByModel = {
                   ...state.stickyOptionsByModelByProvider,
@@ -3399,8 +3402,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 };
               } else {
                 if (appliesToSticky && (stickyBase.options?.length ?? 0) > 0) {
-                  const { options: _, ...rest } = stickyBase;
-                  nextStickyMap[instanceKey] = rest as ModelSelection;
+                  nextStickyMap[instanceKey] = withModelSelectionOptions(stickyBase, undefined);
                 }
                 const rememberedByModel = {
                   ...state.stickyOptionsByModelByProvider[instanceKey],

@@ -8,6 +8,23 @@ export async function runCliCommand() {
   // Install the socket guard before importing code that can open outbound connections.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
+  if (
+    process.env.T3CODE_VERIFY_INSTALL === "1" &&
+    (command === "--version" || command === "__service-preflight")
+  ) {
+    const { dirname } = await import("node:path");
+    const { embeddedCodexMetadataDigest, verifyCodexMetadataInstallation } =
+      await import("@t3tools/shared/codexMetadataInventory");
+    try {
+      await verifyCodexMetadataInstallation(dirname(process.execPath), embeddedCodexMetadataDigest);
+    } catch (error) {
+      process.stderr.write(
+        `Reinstall this t3 release to restore its Codex metadata package: ${String(error)}\n`,
+      );
+      process.exitCode = 78;
+      return;
+    }
+  }
   if (command === "__document-text") {
     const { extractDocumentText } = await import("./provider/documentTextWorker.ts");
     try {

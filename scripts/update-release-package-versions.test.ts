@@ -79,6 +79,28 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
     }),
   );
 
+  it.effect("keeps the T3 Code version that the first release stamp replaces", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "update-release-package-versions-t3code-",
+      });
+
+      yield* writePackageJsonFixtures(baseDir, "0.1.6");
+      yield* updateReleasePackageVersions("2026.1125.11", { rootDir: baseDir });
+      yield* updateReleasePackageVersions("2026.1125.12", { rootDir: baseDir });
+
+      for (const relativePath of releasePackageFiles) {
+        const packageJson = yield* fs
+          .readFileString(path.join(baseDir, relativePath))
+          .pipe(Effect.flatMap(decodePackageJson));
+        assert.strictEqual(packageJson.version, "2026.1125.12", relativePath);
+        assert.strictEqual(packageJson.t3CodeVersion, "0.1.6", relativePath);
+      }
+    }),
+  );
+
   it.effect("returns changed=false when all versions already match", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

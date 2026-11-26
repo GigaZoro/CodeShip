@@ -122,6 +122,28 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
     );
   });
 
+  it("restores account and model labels without restoring funding from disk", () => {
+    const model = {
+      slug: "legacy",
+      name: "Legacy",
+      isCustom: false,
+      capabilities: null,
+      funding: "included" as const,
+    };
+    const restored = hydrateCachedProvider({
+      fallbackProvider: makeProvider(CODEX_DRIVER),
+      cachedProvider: makeProvider(CODEX_DRIVER, {
+        auth: { status: "authenticated", funding: "included" },
+        models: [model],
+      }),
+    });
+    assert.notEqual(restored.auth.funding, "included");
+    assert.notEqual(
+      restored.models.find((entry) => entry.slug === model.slug)?.funding,
+      "included",
+    );
+  });
+
   it("ignores stale cached enabled state when the provider is now disabled", () => {
     const cachedCodex = makeProvider(CODEX_DRIVER, {
       checkedAt: "2026-04-10T12:00:00.000Z",

@@ -16,6 +16,8 @@ import {
 } from "@electron/asar";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { codexMetadataInventory } from "@t3tools/shared/codexMetadataInventory";
+import { CODEX_METADATA_INVENTORY } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -1080,6 +1082,9 @@ export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // Cursor walks from argv[1] to platform assets; helpers and native addons need real paths outside ASAR.
   "!**/node_modules/@cursor/sdk-*/**/*",
+  "!apps/desktop/prod-resources/codex-metadata",
+  "!apps/desktop/prod-resources/codex-metadata/**/*",
+  `!apps/desktop/prod-resources/${CODEX_METADATA_INVENTORY}`,
   "!apps/desktop/prod-resources/cursor-sdk",
   "!apps/desktop/prod-resources/cursor-sdk/**/*",
   // The installed Claude CLI is supplied explicitly; exclude optional bundled executables, retaining SDK JavaScript.
@@ -1185,6 +1190,11 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
+  {
+    from: "apps/desktop/prod-resources",
+    to: ".",
+    filter: ["codex-metadata/**/*", CODEX_METADATA_INVENTORY],
+  },
   {
     from: "apps/desktop/prod-resources/cursor-sdk",
     to: "node_modules/@cursor",
@@ -1536,6 +1546,19 @@ export function resolveMergedStageDependencies(input: {
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
   };
 }
+
+export const stageCodexMetadata = Effect.fn("stageCodexMetadata")(function* (resourcesDir: string) {
+  const source = yield* Config.String("T3CODE_BUILD_CODEX_METADATA_DIR").pipe(Config.option);
+  if (Option.isSome(source)) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = path.join(resourcesDir, "codex-metadata");
+    yield* fs.copy(source.value, root);
+    const inventory = yield* Effect.tryPromise(() => codexMetadataInventory(root));
+    yield* fs.writeFileString(path.join(resourcesDir, CODEX_METADATA_INVENTORY), inventory);
+    return inventory;
+  }
+});
 
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
 export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
@@ -3684,6 +3707,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   readonly stageRoot: string;
   readonly repoRoot: string;
   readonly serverDistDir: string;
+  readonly metadataInventory: string | undefined;
   readonly arch: typeof BuildArch.Type;
   readonly appVersion: string;
   readonly runtimeExternalDependencies: Record<string, string>;
@@ -3697,7 +3721,14 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
 
   const serverStageDir = path.join(input.stageRoot, "server");
   yield* fs.makeDirectory(path.join(serverStageDir, "apps/server"), { recursive: true });
-  yield* fs.copy(input.serverDistDir, path.join(serverStageDir, "apps/server/dist"));
+  const serverDist = path.join(serverStageDir, "apps/server/dist");
+  yield* fs.copy(input.serverDistDir, serverDist);
+  if (input.metadataInventory) {
+    yield* fs.writeFileString(
+      path.join(serverDist, CODEX_METADATA_INVENTORY),
+      input.metadataInventory,
+    );
+  }
 
   const sidecarDependencies = {
     ...input.runtimeExternalDependencies,
@@ -4427,6 +4458,13 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
+  const metadataInventory = yield* stageCodexMetadata(stageProdResourcesDir);
+  if (metadataInventory && options.platform !== "win") {
+    yield* fs.writeFileString(
+      path.join(stageAppDir, "apps/server/dist", CODEX_METADATA_INVENTORY),
+      metadataInventory,
+    );
+  }
 
   const stageDependencies =
     options.platform === "win"
@@ -4489,6 +4527,7 @@ const stageDesktopApp = Effect.fn("stageDesktopApp")(function* (
       stageRoot,
       repoRoot,
       serverDistDir: distDirs.serverDist,
+      metadataInventory,
       arch: options.arch,
       appVersion,
       runtimeExternalDependencies: resolvedServerRuntimeExternalDependencies,

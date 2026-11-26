@@ -3,6 +3,7 @@ import {
   CLI_RELEASE_BASE_URL_ENV,
   CLI_RELEASE_CHANNELS,
   cliReleaseChannelOf,
+  matchesCliVersion,
   releaseAssetUrl,
   updateFeedFileName,
   type CliReleaseChannel,
@@ -24,17 +25,18 @@ import * as ReleaseIndex from "../cloud/releaseIndex.ts";
 import {
   ensurePinnedRuntimeInstalled,
   findPosixLauncher,
-  launcherOwnsVersionsDir,
+  ownedLauncherVersion,
   pinnedRuntimeCommand,
   isUnpublishedRelease,
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
+  pinnedRuntimePreviousDir,
   pinnedRuntimeVersionsDir,
   prunePinnedRuntimes,
-  recordPinnedRuntimeLauncher,
   resolveLauncherPath,
+  repointPinnedRuntimeLauncher,
+  readRuntimeSentinel,
   windowsShimTarget,
-  writePosixLauncher,
 } from "../cloud/pinnedRuntime.ts";
 import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -106,57 +108,30 @@ export const resolveMirrorVersion = Effect.fn("cli.update.resolve_mirror")(funct
 
 /**
  * Only a launcher that already points into this home's `runtime/versions` tree is touched; a
- * plain copy of the executable, or a launcher for some other install, is left alone. It is
- * recorded before it moves, so prune never meets a repointed launcher it does not know about.
+ * plain copy of the executable, or a launcher for some other install, is left alone.
  */
 export const repointLauncher = Effect.fn("cli.update.repoint_launcher")(function* (input: {
   readonly launchedAs: string | undefined;
   readonly baseDir: string;
   readonly targetEntryPath: string;
 }) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   if (input.launchedAs === undefined) return Option.none<string>();
   const versionsDir = pinnedRuntimeVersionsDir(path, input.baseDir);
-  const ownsTarget = (candidate: string) => launcherOwnsVersionsDir(path, versionsDir, candidate);
-  const remember = (launcher: string) =>
-    recordPinnedRuntimeLauncher({ baseDir: input.baseDir, launcher }).pipe(
-      Effect.mapError(
-        () => new CliUpdateError({ reason: `Could not record the t3 launcher at ${launcher}.` }),
-      ),
-    );
-
-  if (platform === "win32") {
-    const shimPath = yield* findWindowsShim(input.launchedAs);
-    if (shimPath === undefined) return Option.none<string>();
-    const current = yield* fs.readFileString(shimPath).pipe(Effect.option);
-    const quoted = Option.isSome(current) ? windowsShimTarget(current.value) : undefined;
-    if (quoted === undefined || !ownsTarget(quoted)) return Option.none<string>();
-    yield* remember(shimPath);
-    yield* fs
-      .writeFileString(shimPath, `@echo off\r\n"${input.targetEntryPath}" %*`)
-      .pipe(
-        Effect.mapError(
-          () => new CliUpdateError({ reason: `Could not rewrite the t3 launcher at ${shimPath}.` }),
-        ),
-      );
-    return Option.some(shimPath);
-  }
-
-  const launcher = yield* findPosixLauncher({ launchedAs: input.launchedAs, versionsDir });
+  const launcher =
+    platform === "win32"
+      ? yield* findWindowsShim(input.launchedAs)
+      : yield* findPosixLauncher({ launchedAs: input.launchedAs, versionsDir });
   if (launcher === undefined) return Option.none<string>();
-  yield* remember(launcher);
-  yield* writePosixLauncher({
+  if ((yield* ownedLauncherVersion({ launcher, versionsDir })) === undefined) {
+    return Option.none<string>();
+  }
+  yield* repointPinnedRuntimeLauncher({
+    baseDir: input.baseDir,
     launcher,
-    executable: input.targetEntryPath,
-    exclusive: false,
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new CliUpdateError({ reason: `Could not repoint the t3 launcher at ${launcher}.`, cause }),
-    ),
-  );
+    targetEntryPath: input.targetEntryPath,
+  }).pipe(Effect.mapError((cause) => new CliUpdateError({ reason: cause.message, cause })));
   return Option.some(launcher);
 });
 
@@ -382,7 +357,65 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       ? serviceVersion
       : currentVersion;
 
+  const ensureTarget = ensurePinnedRuntimeInstalled({
+    onProgress: progress.report,
+    baseDir: input.baseDir,
+    version: targetVersion,
+    fs,
+    path,
+    runner,
+    httpClient,
+    platform,
+    arch,
+    releaseBaseUrl: mirror?.feedUrl ?? (environment[CLI_RELEASE_BASE_URL_ENV]?.trim() || undefined),
+    requirePublishedRelease: mirror !== undefined,
+    validate: (paths) =>
+      runner
+        .run({
+          command: pinnedRuntimeCommand(paths).command,
+          env: { T3CODE_VERIFY_INSTALL: "1" },
+          args: [...pinnedRuntimeCommand(paths).args, "--version"],
+          timeout: Duration.seconds(30),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PinnedRuntimeInstallError({ step: "verifying the downloaded t3", cause }),
+          ),
+          Effect.flatMap((result) =>
+            matchesCliVersion(result.code, result.stdout, targetVersion)
+              ? Effect.void
+              : Effect.fail(
+                  new PinnedRuntimeInstallError({
+                    step: "verifying the downloaded t3",
+                    exitCode: Number(result.code),
+                  }),
+                ),
+          ),
+        ),
+  }).pipe(
+    Effect.ensuring(Effect.sync(progress.finish)),
+    Effect.catchIf(isUnpublishedRelease, () =>
+      Effect.fail(
+        new CliUpdateError({
+          reason:
+            mirror === undefined
+              ? `No release archive was published for t3@${targetVersion}.`
+              : `${mirror.organization}'s update mirror has no t3@${targetVersion} for this machine.`,
+        }),
+      ),
+    ),
+  );
+
+  const paths = pinnedRuntimePaths(path, input.baseDir, targetVersion, platform);
   if (executableCurrent && serviceCurrent) {
+    if (
+      input.requestedVersion !== undefined &&
+      ((yield* fs.exists(paths.versionDir)) ||
+        (yield* fs.exists(pinnedRuntimePreviousDir(path, paths.versionDir))))
+    ) {
+      yield* ensureTarget;
+    }
     yield* Console.log(
       serviceVersion !== undefined
         ? `t3 and its background service are already on ${targetVersion} (${targetChannel}).`
@@ -396,12 +429,9 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     });
   }
 
-  const alreadyOnDisk = yield* fs
-    .readFileString(pinnedRuntimePaths(path, input.baseDir, targetVersion, platform).sentinelPath)
-    .pipe(
-      Effect.map((sentinel) => sentinel.trim() === targetVersion),
-      Effect.orElseSucceed(() => false),
-    );
+  const alreadyOnDisk = yield* readRuntimeSentinel(paths.sentinelPath).pipe(
+    Effect.map(Option.exists((sentinel: string) => sentinel.trim() === targetVersion)),
+  );
 
   progress.heading(
     executableCurrent && restartPending
@@ -436,54 +466,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     }
   }
 
-  const runtime = yield* ensurePinnedRuntimeInstalled({
-    onProgress: progress.report,
-    baseDir: input.baseDir,
-    version: targetVersion,
-    fs,
-    path,
-    runner,
-    httpClient,
-    platform,
-    arch,
-    releaseBaseUrl: mirror?.feedUrl ?? (environment[CLI_RELEASE_BASE_URL_ENV]?.trim() || undefined),
-    requirePublishedRelease: mirror !== undefined,
-    validate: (paths) =>
-      runner
-        .run({
-          command: pinnedRuntimeCommand(paths).command,
-          args: [...pinnedRuntimeCommand(paths).args, "--version"],
-          timeout: Duration.seconds(30),
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new PinnedRuntimeInstallError({ step: "verifying the downloaded t3", cause }),
-          ),
-          Effect.flatMap((result) =>
-            result.code === 0 && /\bv(\S+)\s*$/.exec(result.stdout)?.[1] === targetVersion
-              ? Effect.void
-              : Effect.fail(
-                  new PinnedRuntimeInstallError({
-                    step: "verifying the downloaded t3",
-                    exitCode: Number(result.code),
-                  }),
-                ),
-          ),
-        ),
-  }).pipe(
-    Effect.ensuring(Effect.sync(progress.finish)),
-    Effect.catchIf(isUnpublishedRelease, () =>
-      Effect.fail(
-        new CliUpdateError({
-          reason:
-            mirror === undefined
-              ? `No release archive was published for t3@${targetVersion}.`
-              : `${mirror.organization}'s update mirror has no t3@${targetVersion} for this machine.`,
-        }),
-      ),
-    ),
-  );
+  const runtime = yield* ensureTarget;
 
   const launchedAs = (yield* HostProcess.IsExecutable) ? yield* resolveLauncherPath : undefined;
   const repointed = yield* repointLauncher({

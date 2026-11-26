@@ -145,6 +145,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageResetRedeemer: Schema.optionalKey(Schema.Boolean),
   /** Honors `autoModeProvider`, `autoModeModels` and `ModelSelection.autoAccount`; hide Auto where absent. */
   autoMode: Schema.optionalKey(Schema.Boolean),
+  /** Resolves fresh `ModelSelection.quotaAwareAuto` picks on the destination. */
+  quotaAwareAuto: Schema.optionalKey(Schema.Boolean),
   /** Stores `newThreadsUseLastModel`; hide its switch where absent. */
   lastPickedModel: Schema.optionalKey(Schema.Boolean),
   /** Serves provider.skills.export and provider.skills.install; hide Copy to machine where absent. */
@@ -179,6 +181,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * chats in its group's folder, and serves `threadFolders.rename`; hide folder actions where absent.
    */
   threadFolders: Schema.optionalKey(Schema.Boolean),
+  /** Accepts the thread.message.star command. */
+  threadMessageStars: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `delegateProviders` and skips its runs while one is out of usage; hide that choice where absent. */
   scheduledTaskDelegateProviders: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `maxLiveRuns` and skips its runs while that many still work; hide that choice where absent. */
@@ -196,6 +200,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
   usageModelAliases: Schema.optionalKey(Schema.Boolean),
   threadPinning: Schema.optionalKey(Schema.Boolean),
+  threadNotificationLevel: Schema.optionalKey(Schema.Boolean),
+  threadColor: Schema.optionalKey(Schema.Boolean),
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   threadActiveReorder: Schema.optionalKey(Schema.Boolean),
   threadAutoSettleOptOut: Schema.optionalKey(Schema.Boolean),
@@ -207,6 +213,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   detectedManualSteps: Schema.optionalKey(Schema.Boolean),
   /** Serves `provider.usageHolds`, the accounts CodeShip skips after a usage refusal. */
   usageHolds: Schema.optionalKey(Schema.Boolean),
+  /** Serves `provider.creditGrants`, what is left of the prepaid credits each account may spend. */
+  creditGrants: Schema.optionalKey(Schema.Boolean),
   /** Serves `manualSteps.review` and `manualSteps.reviewAgain`, AI reviews of manual steps. */
   manualStepReviews: Schema.optionalKey(Schema.Boolean),
   /** Serves `manualSteps.startChat`, a chat that carries out the user's decision on a step. */

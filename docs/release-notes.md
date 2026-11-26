@@ -1,3 +1,241 @@
+## 2026-11-26 — More precise provider quota readings
+
+- Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
+- Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
+- Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
+
+## 2026-11-25 — Antigravity 1.4.5 is no longer marked incompatible
+
+- Settings no longer marks the managed Antigravity runtime, 1.4.5, as incompatible or offers an update it cannot install. T3.CodeShip checked T3 Code's provider compatibility rules against its own release number, such as 2026.1125.11, so it took on a rule meant for T3 Code 0.1.10 and later, which needs Antigravity 1.5. Each release now keeps the T3 Code version it is built from and checks the rules against that version.
+- Support for Antigravity 1.5 comes once T3.CodeShip takes in the T3 Code release that adds it.
+
+## 2026-11-25 — Star messages you want to revisit
+
+- Star prompts and replies to bookmark them across devices. Jump back from **Outline → Starred** or the command palette on web and desktop, or from the star in the thread header on mobile. Repeated jumps cycle through starred messages in conversation order. You can also unstar a message directly from either list.
+- A message loses its star when it is rolled back or sent back to the queue.
+
+## 2026-11-25 — Worktree removal names Git's failed status check
+
+- When removing a worktree fails because Git could not start `git status` in it, the error now shows Git's line as "fatal: failed to run 'git status' on '…': …", with the path and Git's reason hidden. Before, it showed "(message withheld)".
+- Refreshing a pull request's checkout, and starting a thread on a commit only a remote has, can fetch into refs of their own, which they delete afterwards. Each such fetch now also deletes the refs an earlier one left more than an hour before, when a restart cut it or its delete failed. Before, those refs stayed and kept the fetched objects on disk.
+
+## 2026-11-25 — Usage follows secret setting changes and keeps newer reads
+
+- Changing a secret environment value of a provider instance, such as an API key, now refreshes Usage on every connected client. Clients only ever see such a value hidden, so before they kept showing figures read with the old value. The server now sends clients a key it derives from its settings with a secret of its own, which changes with the value but does not reveal it.
+- Two Usage requests with the same settings share one read of the transcripts even when the settings list their fields in a different order.
+- When Usage works out the speed tier of an earlier turn, it no longer counts the corrected figures as a new read of the transcript. A later read of the same transcript by another T3.CodeShip process sharing the saved usage now wins, so the turns it found are no longer dropped.
+
+## 2026-11-25 — Identify provider wake events
+
+- Background wake records now retain provider event identities, whether the provider actually started the wake, and the parent run that first acknowledged a delegated result, so usage reports can trace repeated deliveries.
+
+## 2026-11-25 — CodeShip's own scheduled tasks share one group
+
+- For people who work on T3.CodeShip: the project's three scheduled tasks (the weekly sync from T3 Code, the weekly dependency upgrade and the translation check) are now declared in the group "CodeShip maintenance" in `machine-config.json`. Their chats share one sidebar folder, and the group pauses and resumes them together. The machine check reports a copy that sits in another group.
+
+## 2026-11-25 — Guest links can last longer and run read-only
+
+- When you create a guest link, choose how long it works: 1 hour, 1 day, 7 days, or 30 days. New links last 1 day, and the guest's sign-in lasts as long as the link.
+- A new **Read-only** access level runs the guest's messages straight away, one at a time, without waiting for you, while the agent cannot change files. Every turn on that thread runs read-only and never asks for approval until you stop sharing, a run that started read-only stays read-only, and the agent cannot use T3.CodeShip's own tools there. It works with Codex, Claude, Grok, Antigravity, and fx. **Wait for me** keeps today's behaviour: you send or dismiss each message.
+- Web and mobile show the access level and the link's expiry, and the share bar marks a read-only link.
+
+## 2026-11-25 — Low-priority load no longer holds every command waiting for CPU
+
+- `t3_command_run` no longer counts niced (low-priority) CPU time as saturation. A deliberately niced load, such as a flake soak, kept every new command queued for hours even though a normal-priority command takes the CPU ahead of it. On Linux, niced work at or above a command's own priority, such as other commands of this server, still counts, so commands cannot overcommit the machine. A command that waits for CPU now says how much of the load is low-priority work that gives way.
+
+## 2026-11-25 — Pull request checks no longer crowd out your Azure CLI
+
+- T3.CodeShip now runs at most two Azure CLI (`az`) commands at a time, including the checks it makes when it starts. Before, its pull request lookups could keep eight running at once, so your own `az` commands on the same machine slowed to a crawl.
+- A branch with no pull request is asked about again after a push, or after a wait that grows from five minutes to a day. Viewing the thread still checks it at once.
+- After a restart, T3.CodeShip only checks finished threads from the last day for a pull request opened since, instead of every finished thread. Each turn's end makes one check fewer.
+
+## 2026-11-25 — Usage saves only what changed
+
+- After a refresh, Usage saves only the transcripts that changed instead of rewriting everything it remembers, which could be tens of megabytes on each refresh. It merges those saves into one file from time to time, a part at a time, so the app stays responsive while it does.
+- Two T3.CodeShip servers that share a state folder, such as the desktop app and `npx t3`, no longer rewrite each other's saved usage on every refresh.
+- A transcript whose usage has expired no longer leaves its session names in later saves.
+
+## 2026-11-25 — A stuck transcript or saved-usage disk no longer holds up Usage
+
+- When one transcript sits on a disk that stops answering, the refresh that first meets it still waits up to 5 minutes, and every later refresh answers on time with the other transcripts' figures. Usage marks that source as partial and keeps counting what it had already read from the stuck file. Before, every later refresh waited behind it.
+- When saved usage takes more than 20 seconds to load, for example from a stuck network disk, Usage answers with what it has and notes that saved usage has not finished loading. The note clears once the load finishes.
+- A transcript that cannot be read is now logged as an error with its path and the reason, once until it reads again. A transcript on a disk that stopped answering is logged again with the real error once the disk returns one.
+- A transcript deleted while Usage reads it no longer marks the source as partial.
+
+## 2026-11-25 — Replay usage-limit recovery receipts
+
+- Groundwork for usage-limit recovery accounting: a retry counts as a recovery only when it completes for the same stopped run, request and selected account, and only a failed retry counts as a failed recovery. Lost tokens stay unknown. Nothing in the app reports this yet.
+
+## 2026-11-25 — Record usage-limit routing decisions
+
+- Usage-limit stops now retain opaque account choices, exclusion reasons and the account selected when a continuation starts.
+
+## 2026-11-25 — A slow `--version` on a busy machine no longer takes a provider offline
+
+- When a provider CLI does not answer `--version` in time, for example on a machine short of memory, T3.CodeShip now checks the account with the version that CLI last reported instead of marking the provider unable to run. Before, a busy machine could make Claude report "installed but failed to run. Timed out while running command." and leave the account unavailable for up to an hour, even though the CLI worked. This applies to Claude, Grok, fx, Muse Code, Pi and OpenCode.
+- The version is remembered across restarts, so the first check after T3.CodeShip starts on a busy machine is covered too. A provider that has never reported a version still says that `--version` timed out. Pi, whose model discovery may fail without stopping it, shows a warning instead of ready when neither `pi --version` nor discovery answered.
+
+## 2026-11-25 — check:changed no longer discards passing tests in a new worktree
+
+- For people who work on T3.CodeShip: `vp run check:changed` now writes the mobile app's generated modules before it starts its checks. In a new worktree, such as the one each landing uses, knip used to write them while the tests ran, and the run reported `FAIL test` with every test passing.
+- When test results are discarded because their inputs changed during the run, the summary now names each changed input under the test step, such as a file path, HEAD or the install.
+
+## 2026-11-25 — Codex metadata requests read the repository on Ubuntu 23.10 and later
+
+- On Ubuntu 23.10 and later, AppArmor kept the bundled Codex metadata runtime from starting its read-only sandbox, so generated titles, commit messages and other text were written without reading the repository. `sudo t3 browser setup` now also installs an AppArmor profile that allows that sandbox, and the server log names the exact command when the profile is missing.
+
+## 2026-11-25 — Deleting a transcript no longer shrinks past usage early
+
+- Usage keeps the saved figures of a deleted transcript for 92 days after T3.CodeShip first finds it gone. Before, they expired 92 days after the file's last write, so deleting an old transcript could drop its usage from a past window within days. If the file comes back, it counts as a live transcript again.
+- Usage keeps refreshing on schedule after the system clock is set back, by a time sync or by hand. Before, its short waits between refreshes ran on the clock and could last until the clock caught up again.
+
+## 2026-11-25 — Cursor account usage stays readable through a dashboard blip
+
+- A network error, a server error or a slow answer from the Cursor dashboard no longer marks Cursor account usage as unavailable. T3.CodeShip keeps the last result, logs why the check failed (such as a refused connection), and tries again later. Only a rejected or missing Cursor login turns it off.
+- When cursor.com turns down a Cursor login by sending it to the sign-in page, account usage now asks you to sign in to Cursor again instead of reporting a failed request.
+- Cursor's status no longer waits up to 10 seconds on the account-history check. That check runs after the status is published and updates it when the answer changes.
+
+## 2026-11-25 — Usage never shows partial or older totals as current
+
+- While one environment is still loading a new period, the Usage page keeps the last complete view and marks it as previous usage, even after you switch period twice. Before, it could show one environment's partial totals as if they were the whole period. Once every environment has answered, previous usage no longer says it is updating.
+- When one environment fails while Past 24 hours refreshes, the totals no longer jump back to an older minute.
+- A disconnected environment no longer holds the page on the previous period. The page shows the new period and names the environment that is not connected, and stays on it when the environment reconnects.
+- A period shortcut pressed while previous usage is shown leaves keyboard focus on the control you were on. Model rows, the breakdown switch and Set price stay focusable and do nothing while previous usage is shown. Refresh also keeps keyboard focus while it runs.
+- Enable Cursor usage and ChatGPT's Manage usage stay available while previous usage is shown, because they act on the environment rather than on the figures.
+
+## 2026-11-25 — Codex metadata runtime builds pass on Linux and Windows
+
+- The Linux metadata runtime is built on Ubuntu 24.04. Ubuntu 22.04's musl 1.2.2 linked a CLI that crashed on start. The build now stops early on an older musl and names the failing check when the built CLI does not start.
+- The Windows release check now reads its test repository through the read-only sandbox. It had used a Python temporary folder that grants access only to the folder's owner, which the sandbox cannot use. Real checkouts were not affected.
+
+## 2026-11-25 — A tool call a failed run left open no longer holds automatic updates
+
+- When T3.CodeShip has to stop a chat's provider itself, because it could not record the turn's output or found the turn still running when the next message started, it now also closes the tool calls that turn had open. Before, such a call stayed "running" for ever, and an automatic update waited on it as background work until the server restarted.
+- While an update waits on background work, its log line is written once each time that work changes instead of about once a second.
+
+## 2026-11-25 — Scheduled runs report blocked work as failed
+
+- A scheduled run's agent can now report how its occurrence ended. If a required step could not be done, the run shows as failed in the schedule's history and status instead of succeeded. A run with nothing to do stays successful, and the first report of a run is final.
+
+## 2026-11-25 — Landings finish on a Mac left alone
+
+- A landing keeps a Mac from idle-sleeping until it ends, so checks no longer time out while a Mac on battery sleeps.
+- A landing no longer stops on a conflict in the agent tool-text size budget when main added tool text too.
+
+## 2026-11-25 — A Mac's sleep no longer times out checks or landings
+
+- For people who work on T3.CodeShip: `vp run check:changed` now counts its step and Git time limits in time the machine is awake. Before, a Mac that slept during a run came back to find healthy steps killed as `TIMEOUT`.
+- A landing's fetch or push of `main` that ran out of time because the Mac slept now runs again instead of ending the landing.
+- The short Git and Node version reads of a check or a push now run once more when they time out, so one the Mac slept under no longer fails the check.
+
+## 2026-11-25 — Restore Codex metadata packaging for releases
+
+- Linux, Windows and macOS release builds now fetch the Codex metadata build files from the exact release commit. An unrelated vendored Git submodule had stopped packaging before the runtime could be built.
+
+## 2026-11-25 — A landing that gives up on a stalled remote stops what Git started
+
+- When a fetch or push to the remote runs past its time limit, the landing script now stops Git's transport too, such as an SSH connection or a credential helper, instead of leaving it running.
+- Two landing tests that failed in the fork's Windows check pass there again.
+
+## 2026-11-25 — Windows tests no longer report a pass they skipped
+
+- Maintainers: four server tests that cannot run on Windows now report a skip there instead of a pass, and the `no-platform-early-return-in-tests` lint rule also catches an early return on `HostProcess.isWindows`. It no longer reports a return that ends only a hook, finalizer, helper or iteration callback, or a check that does not depend on the host platform.
+
+## 2026-11-25 — Bound the database of finished chats
+
+- After a day idle, settled and archived chats keep only the latest state of each message, step and turn, so their history stops growing the database. Their content and timeline stay the same. The freed space returns to disk while the server runs, and `t3 doctor` applies the same cleanup.
+- Settings → Maintenance & about → Storage & cleanup shows how much each machine's database grew or shrank a day over the past week.
+
+## 2026-11-25 — Codex turns stop at the prepaid credit cap
+
+- A turn running on a Codex account's prepaid credits kept going after the count reached the cap you set, or after the plan ran out for work the credits were not allowed for. It now stops as soon as a reading shows that, with the same explanation a refused turn gives, and so do turns running on credits when you clear the cap or narrow it to other threads.
+- Before a turn starts on a Codex account with prepaid credits, T3.CodeShip reads the account's usage again when its last reading is more than two minutes old, so a stale reading can no longer let a turn spend credits you did not allow.
+
+## 2026-11-25 — A worktree's base commit is looked for on every remote, and Git errors quote no names
+
+- A new worktree from a commit its checkout lacks now asks the project's remotes in turn, the primary first, and passes over one that cannot be reached. A server that refuses to send a commit by its SHA is asked through the branches and tags it advertises, and a named branch is looked up on a lone remote that is not called `origin`. Before, the first remote that failed ended the search, a server that refused SHA fetches made the commit look missing, and a lone remote under another name was never asked.
+- A launch refused for its base commit now says which lookup failed and names the remotes that answered without it, so you know where to push it. Before, every refusal said that fetching did not bring the commit in. Fetching a base commit no longer rewrites `FETCH_HEAD`, and a launch that fetched one shows its fetch stage as done instead of skipped.
+- `delegate_task` with worktree isolation to a linked machine now refuses only when your checkout has no Git remote. The linked machine checks its own remotes for your commit, and the task fails with its refusal. Before, your machine refused a commit none of its fetched branches held, even one the linked machine could fetch.
+- When Git fails, times out or cannot start while CodeShip reads which repository a folder holds, delegation, project reads, scheduled tasks and the pull request list now fail with that reason, a thread's pull request is looked for again, and the next read asks Git again. Before, the folder was taken for one with no repository and kept as such for a while, so a worktree helper could start from the default branch, a scheduled task could miss its project, a project left the pull request list unseen and a thread's pull request was not looked for again.
+- Git's error text in failures, logs and clone errors now shows only messages CodeShip knows, with each URL, host, path, ref, name and e-mail in them replaced by `…`; any other line reads "(message withheld)". Before, Git's last lines were quoted as printed with only a URL's credentials removed, so a failure could show your e-mail or a folder path. A project's first commit that fails for an empty Git user name now says to set `user.name` and `user.email`, instead of repeating Git's line with your e-mail in it.
+
+## 2026-11-25 — Stopped threads continue on the prepaid credits you allowed them
+
+- A thread allowed to spend a Codex account's prepaid credits that the plan's usage limit stopped waited for the plan to reset. It now continues on the credits, or moves to another account it may spend them on, as soon as the sweep sees it, when stopped threads resume or switch accounts for you.
+- **Settings → Providers & models** shows what is left of each Codex account's prepaid-credit cap under it, and the mobile app's provider settings show it with the threads the allowance covers.
+
+## 2026-11-25 — Choose how much of a Codex account's prepaid credits work may spend
+
+- A Codex account whose plan usage is used up starts no turn on its prepaid credits until you set a cap under **Spend prepaid credits** for it in **Settings → Providers & models**. It is off by default and applies on that machine only. New work still prefers accounts whose plan has room, and once the account's balance has fallen by the cap, no new turn starts on it. The count survives restarts and starts again from zero when you clear the cap.
+- An allowance can be limited to chosen threads and the delegates they start; every other thread, scheduled task included, is refused when its turn would spend the credits.
+- **Try again** on a usage-limited account, on web, desktop and mobile, now says whether new work can start on it, and if not, until when and why, instead of reporting a release that the next launch would refuse. An agent that releases an account gets the same answer, and the account list agents read shows each Codex account's prepaid-credit state, cap, what is left of it, and the threads it covers.
+
+## 2026-11-25 — `t3` follows a background service that updated itself
+
+- A background service that installed an update itself left the `t3` command on the release it replaced, so commands such as `t3 thread release-worktree` were missing and the old release stayed on disk. Once the service runs the new release, it moves each `t3` launcher of that install to it. A `t3` already on a newer release is left alone. The old release is then removed on the same start. `t3 update` and `t3 uninstall` also recognize a `t3` linked to the install through another path to its folder.
+
+## 2026-11-25 — Linked-machine task result test coverage
+
+- Remote delegation tests now check that a failed task's reply which starts with a blank line is still its result, not the reply before it.
+
+## 2026-11-25 — A failed task on a linked machine keeps its last real reply
+
+- A delegated task on a linked machine whose run failed without an error, and whose last reply was only blank lines in a long thread, reported that it ended without a reply. Its result is now the run's last reply with text, as for a task on this machine.
+
+## 2026-11-25 — Empty leftovers no longer hold a worktree or blank a task's result
+
+- Storage cleanup kept a finished worktree with "Worktree has private reflogs" once Git had deleted a worktree-only ref and left its reflog's empty folders. Those worktrees are released; a reflog that still holds history keeps its worktree.
+- A delegated task on a linked machine whose last reply or plan was blank gave the chat that started it a blank result. Its result is now its last reply with text, as for a task on this machine.
+
+## 2026-11-24 — Daily wake usage report
+
+- Run `node scripts/wake-usage.mjs <statev2.sqlite> <YYYY-MM-DD>` to compare confirmed repeat wakes across all chats and the five with the most recorded tokens for a UTC day. The read-only report shows where missing observations affect the result.
+
+## 2026-11-24 — Fixed-time retries and recreated tasks
+
+- A delayed task keeps its occurrence when a local slot falls at or before retry eligibility. Replaying that occurrence sends one prompt, and a successful retry records its chat in run history. Editing its schedule starts a new occurrence, and recreating the task can send a fresh prompt even in the same clock tick.
+
+## 2026-11-24 — Fixed-time task usage accounting
+
+- A local task delayed by an account usage limit keeps its original scheduled occurrence across retries, restarts, and time-zone changes. Older retries with insufficient timing information count as unknown.
+
+## 2026-11-24 — Mute, follow, and color-code threads
+
+- Open a thread’s menu to mute its notifications, follow it for completion and Needs you alerts, or give it a color marker. Follow overrides per-event alert preferences. Mobile push still requires device and connection notification permissions. Both choices sync across devices. You can also change them from the command palette on web and desktop or from the mobile thread header.
+- Each completion, failure and request for approval or input alerts once on iOS and Android. Renaming a thread or a repeated update no longer alerts again, and Android now shows one notification per thread instead of combining events that arrive together.
+
+## 2026-11-24 — Usage figures follow every usage setting
+
+- Changing any setting the Usage page reads starts a new scan. The figures and scan errors from before the change are no longer shown while it runs, on web and mobile. This covers prices, model aliases, the model filter, Cursor Keychain access, and turning a provider on or off. It also covers a provider's home folder or environment variables.
+- Usage figures that include a transcript the scan could not read are labelled as possibly incomplete instead of "Ready" or "Usage up to date".
+- When a refresh times out, the page keeps the last figures it had for the same window and settings and marks them as possibly incomplete, instead of failing.
+
+## 2026-11-24 — Shipping a branch with release checks pending
+
+- Shipping chats wait for requested checks on installed releases. If a release is delayed, the chat arranges a retry and keeps the checkout needed for verification.
+
+## 2026-11-24 — Codex metadata instructions
+
+- CodeShip’s metadata runtime uses fewer input tokens for titles and other generated text by skipping personal Codex instructions. It retains repository guidance and the selected account.
+- The npm launcher verifies the cached CLI before each launch and can restore the requested version offline after an interrupted update. WSL defers runtime replacement while a mounted backend is using its Codex helpers.
+
+## 2026-11-24 — Requests stop waiting when a linked machine goes quiet
+
+- When a linked machine stops answering, CodeShip detects it sooner so delegated work can retry without waiting for the connection to give up.
+- Asking which providers a machine can run, or delegating to one there that was last seen unusable, now answers within a minute even when checking that provider takes longer, and even when a role's provider and its fallback, or several new chats' providers, all need a check. Asking again while a provider's check runs waits for that check instead of starting another. The slow check finishes in the background, and the answer says it is still running, so a slow check on a linked machine no longer looks like the machine stopped answering.
+
+## 2026-11-24 — A task delegated to a machine that was away finishes sooner
+
+- When a linked machine running a delegated task stops answering (asleep, shut down, or restarting for an update), CodeShip now waits at most 30 seconds after a failed try before trying again, instead of backing off to 5 minutes. A machine that comes back hands over the task's result that much sooner. Moving the finished task's chat there off that machine's active list is retried for up to 20 minutes after the result arrives.
+- A task that could not start on a linked machine now says why it could not start, also when recording that fails at first. Before, it then said only that its chat there was not found.
+- Delegating a task to a linked machine whose answer is lost on the way, as on a dropped connection, now returns the task, and CodeShip sends the start again until that machine answers, without starting it twice. Before, the call failed and the task was stopped there although it had started. A task stopped or cancelled before its start reaches that machine now has its chat there stopped once the start arrives, instead of left running.
+- Cancelling a delegated task again with the same request, or a cancel whose answer was lost on the way, no longer stops new work started in its chat on the other machine since the first cancel.
+- A delegated task whose start lost its answer keeps being sent while the linked machine cannot be reached for a while, instead of being stopped there although it may have started. A task delegated to a machine none of whose addresses answers fails at once with `unreachable`, as nothing reached it, and an error page from a gateway on the way counts as a lost answer, since the machine may have acted on it.
+
+## 2026-11-24 — A landing's checks read only the commit it lands
+
+- The landing turn runs its checks in a private checkout of the commit it pushes, so an edit to the lander's worktree while they run can no longer slip past them.
+
 ## 2026-11-24 — Finished worktrees are released again
 
 - Storage cleanup kept every finished worktree whose Git metadata had a `refs` folder, which Git 2.56 creates for each worktree, with "Worktree metadata requires its owner". Those worktrees are released again unless they hold refs of their own, and the reason now names the metadata it found.
@@ -207,6 +445,22 @@
 
 - New owner requests and accepted guest messages receive a demand ID. Steering, failover, and final review retain the original demand. Delegated questions and completions use their recorded sources. On-return compaction shares the demand ID of the following message.
 
+## 2026-11-22 — Stopped usage scans end cleanly and slow compressed transcripts finish
+
+- Stopping a Usage scan while it checks where a transcript left off no longer crashes the server, and a stopped scan does no more reading.
+- A compressed (`.jsonl.zst`) transcript that produces no output for a while as it decompresses no longer makes the Usage scan give up as stalled and start again.
+
+## 2026-11-22 — Saved usage works with several T3 processes at once
+
+- Saved transcript usage is now kept as separate snapshot files. Several T3.CodeShip processes on one machine can add to it at the same time without taking a lock, so a Usage scan never waits for another process to finish saving.
+- If saved usage is damaged, can't be read, or comes from a newer version, the file is kept and the Usage page marks the figures as partial. They count in full again once the file can be read. The cache from an older version is moved in and merged once, even when several processes start together.
+- If saving fails at shutdown, the error log says how many transcript files were left unsaved. Saved rows older than 92 days are removed before every save.
+
+## 2026-11-22 — A Windows command's folder is free as soon as it ends
+
+- On Windows, the hidden wrapper that runs a `t3_command_run` command now works in its own run folder and starts the command in its `cwd`. Before, the wrapper worked in the command's folder and outlived the command for a moment to record how it ended, so an agent that removed that folder, such as a worktree, as soon as the command's end reached it could be refused with "being used by another process".
+- Maintainers: a landing that warns about another worktree with unmerged work on the same files now names that worktree's path as the system writes it, as in `C:\Users\…`, where Git for Windows gives `C:/Users/…`.
+
 ## 2026-11-22 — Relay client installs keep each other's locks
 
 - CodeShip checks the version that each managed relay binary reports and reuses the exact pin even when an older release folder contains it. New installs use a separate cache tree and hold a SQLite transaction until they finish. The lock survives a host suspend, and the OS releases it if the installer exits.
@@ -247,6 +501,52 @@
 
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
+
+## 2026-11-22 — A new worktree starts from a pushed commit no fetched branch reaches
+
+- A thread started in a new worktree from a pushed commit that none of the checkout's fetched branches reaches, such as one on a branch a single-branch clone does not fetch, now starts. The launch fetches the commit itself, from the primary remote first and then the project's other remotes. Before, it fetched only the primary remote's branches and refused the commit as missing.
+- `delegate_task` to a linked environment now fails with "Unable to read this thread's project." when your thread's project cannot be read, instead of asking for a `target.projectId` it does not need or starting a worktree helper from that project's default branch.
+
+## 2026-11-21 — Usage scans share one refresh
+
+- The Usage page shares one transcript scan with its slow-source refresh. If a scan runs past the request deadline, the page can show the figures already collected while the scan continues. New transcripts can take up to five seconds to appear.
+
+## 2026-11-21 — Worktree helpers in another repository on a linked machine start from its default branch
+
+- `delegate_task` with `isolation: "worktree"`, a linked environment, and `target.projectId` naming a project of another repository there now starts the helper in a new worktree of that project from its default branch. Before, it passed your thread's commit, which that repository cannot have, and the launch failed with only "git worktree add failed". A project of your thread's repository still branches from your pushed commit.
+- A new worktree from a commit that neither the checkout nor any of its remotes has is now refused before the thread is created, naming the commit, instead of failing later while the worktree is prepared. CodeShip asks each remote for the commit itself, so one pushed on a branch the checkout does not fetch, as in a single-branch clone, is found.
+- A worktree helper is no longer started when your thread's project cannot be read: the call fails with "Unable to read this thread's project." Before, the helper was taken for one of no repository and started from the default branch, or asked for a target it did not need.
+- A worktree from a missing commit now reports it as a missing ref (`ref_not_found`).
+
+## 2026-11-21 — The ACP terminal kill test expects SIGTERM on Windows too
+
+- Maintainers: Effect's kill now ends a Windows process through Node's own handle, which reports the signal, so a killed ACP terminal command reports `SIGTERM` on Windows as it does elsewhere. The terminal kill test still expected no signal there and failed on every Windows run; it now expects `SIGTERM` on every platform. No change to the app.
+
+## 2026-11-21 — `check:changed` keeps its pace on a busy Windows machine
+
+- Maintainers: on Windows, `check:changed` no longer starts PowerShell after each git call to end what git started once git has exited. It still ends the process tree of every check step, and of a git call that is killed or that leaves a process holding its output. Each walk took about 1.7 s on a machine at full CPU load, and a run makes 18 git calls one after another, so each `check-changed.test.ts` launcher test took 48 to 58 s there, close to the 60 s test limit, which a landing could then fail on load alone. They now take 16 to 24 s.
+
+## 2026-11-21 — Lint catches a test timeout passed through a const
+
+- The `t3code/no-test-timeout-or-unreasoned-skip` lint rule now reads a test's options the way a test run does. It follows `const` names, object spreads, `satisfies`, `as` and keys held in a constant or a template literal, so `const options = { timeout: 180_000 }` passed to a test, a hook's time limit held in a constant, `{ [key]: 1_000 }`, `{ skip: SKIP }` or `vi[name]({ testTimeout: 120_000 })` is reported like the literal. So is a time limit worked out from numbers, as in `2 * MINUTE` or `slow ? 60_000 : undefined`, a timeout set on some runs only, as in `...(slow ? { timeout: 5_000 } : {})`, one set through another `const` name for the same object, and one the file keeps while it changes or deletes another option, as in `options.concurrent = true`. Before, putting the override in a constant or behind a condition hid it from the rule. A skip is reported only when every run keeps it, so one a later option turns off, as in `{ ...defaults, skip: false }`, one the test file turns off or deletes before the test runs, as in `(options as Options).skip = false` or `delete options.skip`, and one set on some runs only, like a `skipIf`, are not. A branch no run takes, as in `defaults || { timeout: 90_000 }` with `defaults` an object or `if (slow) options.timeout = 90_000` with `const slow = false`, counts for nothing, and the other arm of one every run takes counts for nothing either. The rule applies the changes made before the test registers in the order they run, those in the statement that registers it included, as in `options.timeout = 5_000, it("slow", options, test)`, counts one a loop repeats and ignores one made after it. A change nested in an earlier statement, as in `if (ci) options.skip = false`, may or may not run, and one in a callback, a class field or a function declaration may run at any time, so it may be the last. `const copy = Object.assign(options, {})` is read as another name for `options`, and only the global `Object` counts, not one the file declares. A file of many `Object.assign(options, options)` lines no longer stalls the linter. It also reports options copied with `Object.assign`, a skip every run keeps truthy, as in `ci || true`, a time limit a call works out, as in `Number("90000")`, `parseInt(limit)` or `Math.max(5_000, 90_000)`, and a property test's time limit or options in its fourth argument, as in `it.prop(name, arbitraries, test, 90_000)`. An object spread into the options, or copied into them with `Object.assign`, gives them what it holds after its own changes, which change no other object, so `delete overrides.timeout` leaves `{ timeout: 5_000, ...overrides }` its timeout. A logical assignment sets an option only on a run whose old value calls for it: `options.skip ??= true` on options without a skip turns it on, `options.skip ||= false` leaves a skip that was on, and `options.timeout &&= 5_000` on options without a timeout sets none; `??=` writes over a `null` or `undefined` skip and `||=` over any falsy one, so a skip of `ci ? true : null` is on for every run once `??=` sets it, and a local variable named `undefined` is not taken for `undefined`. A skip a getter returns is not taken for one every run keeps, even once a setter is given `true` through the options' name or `Object.assign`. Options copied with a spread or `Object.assign` from a function that holds them, as in `{ ...extra }` after `extra.timeout = 5_000`, are reported, a declared `function extra() {}` included, and a function passed as a test's body is never read as its options, nor is one a condition picks or `Object.assign` returns, onto a body a condition picks included. `vi.setConfig` reads the options a function holds, as Vitest does, so `vi.setConfig(configured)` after `configured.testTimeout = 5_000` is reported.
+- Every `t3code` lint rule now reads `a[b]` and `{ [b]: value }` as the variable `b`, not as a property named `b`, and a rule that checks a method or key reads it through the constant `b` holds, so `t3code/no-frame-waits-in-browser-tests` reports `el[addEventListener]("transitionend", done)` after `const addEventListener = "addEventListener"`. A file with thousands of changes to one options object no longer makes the rules read each change again for every test. `t3code/no-wildcard-listen-in-tests` reads such a key through the constant it holds, so `listen({ [portKey]: 0 })` with no host is reported and `listen({ port: 0, [hostKey]: "127.0.0.1" })` is not. It also reads the changes a test makes to the options through their name, in the order a run makes them: options given a port, or stripped of their host, as in `delete options.host`, with no other host are reported, and so are options whose host only some runs or a callback add, as in `if (ci) options.host = "127.0.0.1"`, or only a branch no run takes adds, even when `Object.assign` copies it in. A change in the statement that listens counts, as in `delete options.host, server.listen(options)`. A change every run makes that adds a host, such as `options.host = "127.0.0.1"` or `Object.assign(options, { host })`, is not, nor is one whose key the rule cannot read. A socket path is no host: Node listens on the port when the options give one, so `listen({ port: 0, path })` is reported. Neither is a host Node takes as none, such as `undefined`, `null` or `""`, nor a second argument that is not a string, as in `listen(0, undefined)`, the backlog of `listen(0, 511, ready)` or one a condition picks from numbers, as in `listen(0, ci ? 128 : 511)`. Options that give Node a handle or a descriptor, as in `listen({ fd: 3, port: 0 })`, are not reported, since Node listens on it ahead of the port, while an fd below 0, such as `fd: -1`, which Node does not use, is no descriptor. `new WebSocketServer({ port: 0, fd: 3 })` is reported, as `ws` passes Node only the port and host. The rule follows each combination of port and host a run may reach, and takes the changes in one arm of an `if` or `a ? b : c` together, in order, after those its test makes, and a change on the left of `&&` or `||` as made, as in `if ((options.host = "127.0.0.1") && ci)`, so options that every arm setting a port gives a host, as in `if (ci) { options.port = 0; options.host = "127.0.0.1"; } else options.path = socket;`, are not reported, and a host a logical assignment writes counts only where it writes over the host the options hold: `&&=` only over a truthy one, and `??=` only over `null` or `undefined`, so `{ port: 0, host: "" }` stays without a host after `host ??= "127.0.0.1"`. `Object.assign(options, { backlog: 511 })` adds no host, and a change made after the server listens does not count. `t3code/no-ambiguous-detail-navigation`, `t3code/prefer-effect-fn` and `t3code/no-mobile-pull-request-glyph-literals` read a bracketed method or key the same way, so `navigation[method]("Thread")` with `const method = "navigate"`, `Effect[key](function* () {})` with `const key = "gen"` and `{ ios, [androidKey]: "merge" }` are reported, and `handlers[match]({ run: () => Effect.gen(...) })` is no longer taken for `Option.match`. So do the rules that check a React hook, an Effect method, a text call or key, or a temp folder's path, as in `React[hook](() => total, [items])` with `const hook = "useMemo"`, `Effect["catchTag"]("A", handle)`, `window[method]("Discard changes?")`, `{ [key]: "Try again later" }` or `process[cwd]()`, and a private method such as `this.#beforeEach` is never taken for the hook or method of that name. No change to the app.
+
+## 2026-11-21 — The `check:changed` launcher tests no longer depend on who runs them
+
+- Maintainers: each launcher test starts a real `check:changed` run, which now gets none of the caller's `CHECK_CHANGED_*` or landing-turn settings, whatever case Windows gives their names. Before, the run under test inherited the settings of the run that started the tests, such as a landing's test step limit, so its steps changed with whoever ran it. No change to the app.
+
+## 2026-11-21 — `check:changed` stops a git call that runs away
+
+- **Maintenance:** every git call `vp run check:changed` makes now fails after 5 minutes and its process is killed, so a listing that runs away can no longer hold a core for the rest of the run. Each call normally takes seconds. A git that ignores the stop signal is force-killed 5 seconds later, and a comparison with a remote's `main` that runs out of time fails the run instead of passing for a missing ref. So does a remote's `main` whose commit this clone lacks, with git's message, instead of being skipped: `git fetch` repairs it. A process that git started and that still holds git's output no longer keeps the run from exiting, and neither does any process that code lets run on after it is done with it, while a reader of their output still gets all of it. The pre-push check of a `check:changed` pass and its listing of files marked assume-unchanged or skip-worktree stop at the same limit.
+
+## 2026-11-21 — `check:changed` starts its checks in seconds on Windows
+
+- Maintainers: before its first check, `vp run check:changed` lists the ignored generated sources, declarations and env files its cache depends on. On Windows, Git followed pnpm's `node_modules` links into every package's dependencies, so that listing could take over an hour. It now skips `node_modules`, and a name in another case, such as `NODE_MODULES`, where the file system takes it for the same folder or a lowercase `node_modules` link leads to it, as Node reads dependencies through either, and never follows links, nor reads what Git for Windows lists inside a folder a link leads to, and the run prints how long the listing took. Like git, it stops at a folder that holds another repository, and only there: a `.git` marker file or an empty `.git` folder does not stop it. It matches `.git` in another case, such as `.GIT`, where git does. It tells whether a folder holds a repository as git does: it reads only regular files, so a FIFO there cannot stall it, and takes a `HEAD` that is a link by where it points, which must be under `refs/`, so a repository whose branch has no commit yet stops it. A `.git` link that leads back to itself, which git cannot read either, does not stop it.
+
+## 2026-11-21 — Windows test runs check command environments in PowerShell
+
+- Maintainers: the four tests of what a `t3_command_run` command gets from its agent's shell and the host environment, PATH included, run on Windows again, in PowerShell, instead of skipping there. The ACP terminal test runs its pipe in the host's shell too, cmd.exe on Windows.
+- The agent context budget test also checks that macOS offers an agent the same tools as Linux, since the budget keeps no separate value for macOS. The Antigravity attachment test no longer depends on the machine's path separators.
 
 ## 2026-11-21 — Monitoring stays visible while it updates
 

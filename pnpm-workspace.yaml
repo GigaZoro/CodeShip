@@ -279,7 +279,8 @@ patchedDependencies:
   # The spawner takes an injected spawn function so Windows launches can run on worker threads
   # (apps/server/src/process/SpawnWorker.ts). On Windows its kill ends only the leader: taskkill /T
   # ends descendants by pid from a snapshot and can end a program that took a pid meanwhile;
-  # endingWindowsTrees ends the descendants through its checked walk.
+  # endingWindowsTrees ends the descendants through its checked walk. After scope closure,
+  # inherited output pipes keep the event loop alive only while a reader needs them.
   "@effect/platform-node-shared@4.1.2": patches/@effect__platform-node-shared@4.1.2.patch
   # Electron net requests never emit "socket", so upstream's idle timeout never fires and a
   # stalled update download hangs forever.

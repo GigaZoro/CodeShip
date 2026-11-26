@@ -3,6 +3,7 @@ import {
   OrchestratorMcpFailure,
   type OrchestrationV2AppThread,
   type OrchestrationV2Command,
+  type OrchestrationV2DomainEvent,
   type ThreadMetadataMcpAction,
   type ThreadMetadataMcpUpdateInput,
   type ThreadMetadataMcpUpdateResult,
@@ -63,7 +64,10 @@ function metadataCommand(input: {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly update: ThreadMetadataMcpUpdateInput;
-}): Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }> {
+}): Extract<
+  OrchestrationV2Command,
+  { readonly type: "thread.metadata.update" | "thread.notification-level.set" | "thread.color.set" }
+> {
   switch (input.update.action) {
     case "rename":
       return {
@@ -71,6 +75,20 @@ function metadataCommand(input: {
         commandId: input.commandId,
         threadId: input.threadId,
         title: input.update.title!,
+      };
+    case "set_notification_level":
+      return {
+        type: "thread.notification-level.set",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        notificationLevel: input.update.notificationLevel!,
+      };
+    case "set_color":
+      return {
+        type: "thread.color.set",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        color: input.update.color!,
       };
     case "regenerate_title":
       return {
@@ -88,7 +106,13 @@ function resultFromThread(input: {
   readonly sequence: number;
   readonly thread: Pick<
     OrchestrationV2AppThread,
-    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt"
+    | "id"
+    | "title"
+    | "titleRegeneration"
+    | "linkedPullRequest"
+    | "updatedAt"
+    | "notificationLevel"
+    | "color"
   >;
 }): ThreadMetadataMcpUpdateResult {
   return {
@@ -97,6 +121,8 @@ function resultFromThread(input: {
     commandId: input.commandId,
     sequence: input.sequence,
     title: input.thread.title,
+    notificationLevel: input.thread.notificationLevel ?? "default",
+    color: input.thread.color ?? null,
     titleRegeneration:
       input.thread.titleRegeneration === undefined || input.thread.titleRegeneration === null
         ? null
@@ -173,13 +199,20 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
-    const metadataEvent = dispatched.storedEvents.find(
-      (stored) => stored.event.type === "thread.metadata-updated",
-    );
+    const metadataEvent = dispatched.storedEvents
+      .map((stored) => stored.event)
+      .find(
+        (
+          event,
+        ): event is Extract<OrchestrationV2DomainEvent, { payload: OrchestrationV2AppThread }> =>
+          event.type === "thread.metadata-updated" ||
+          event.type === "thread.notification-level-updated" ||
+          event.type === "thread.color-updated",
+      );
     // Retries may find stored events compacted away; answer from the projection.
     const thread =
-      metadataEvent?.event.type === "thread.metadata-updated"
-        ? metadataEvent.event.payload
+      metadataEvent !== undefined
+        ? metadataEvent.payload
         : yield* threadManagement
             .getThreadShell(threadId)
             .pipe(Effect.mapError((error) => failure("orchestration_error", errorMessage(error))));

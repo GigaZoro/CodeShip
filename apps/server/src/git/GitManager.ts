@@ -151,9 +151,9 @@ export class GitManager extends Context.Service<
       options?: GitRemoteStatusOptions,
     ) => Effect.Effect<VcsStatusRemoteResult | null, GitManagerServiceError>;
     /**
-     * refresh queries the host; freshGitState rereads only git state and is required before persisting.
-     * A merged or closed answer is confirmed against git state unless confirmTerminal is false;
-     * callers that opt out confirm before acting on it.
+     * Before acting, use refresh to query the host or freshGitState to reread only Git (cached for five minutes).
+     * Pushes invalidate host answers. Missing PRs back off for up to a day.
+     * Terminal answers are checked against Git unless confirmTerminal is false and the caller confirms them.
      */
     readonly branchPullRequest: (
       input: { readonly cwd: string; readonly branch: string },
@@ -198,6 +198,7 @@ const STATUS_RESULT_CACHE_TTL = Duration.seconds(1);
 const STATUS_RESULT_CACHE_CAPACITY = 2_048;
 const PR_LOOKUP_CACHE_TTL = Duration.seconds(60);
 const PR_LOOKUP_NO_OPEN_PR_CACHE_TTL = Duration.minutes(5);
+const PR_LOOKUP_NO_PR_MAX_TTL = Duration.hours(24);
 const PR_LOOKUP_FAILURE_BASE_TTL = Duration.seconds(20);
 const PR_LOOKUP_FAILURE_MAX_TTL = Duration.minutes(15);
 const PR_LOOKUP_CACHE_CAPACITY = 2_048;
@@ -229,12 +230,27 @@ const isSourceControlProviderError = Schema.is(SourceControlProviderError);
 
 /**
  * Throttled lookups fail fast, so a flat failure TTL would retry faster than a healthy
- * lookup refreshes. Backing off per branch keeps a 429 from becoming sustained pressure.
+ * lookup refreshes. A branch with no pull request answers the same until a push, so asking
+ * every few minutes kept thousands of idle branches busy. Both back off per branch.
  */
-function prLookupFailureTtl(consecutiveFailures: number): Duration.Duration {
-  const exponent = Math.max(0, consecutiveFailures - 1);
-  const backoffMs = Duration.toMillis(PR_LOOKUP_FAILURE_BASE_TTL) * Math.pow(2, exponent);
-  return Duration.min(Duration.millis(backoffMs), PR_LOOKUP_FAILURE_MAX_TTL);
+function backoffTtl(
+  consecutive: number,
+  base: Duration.Duration,
+  max: Duration.Duration,
+): Duration.Duration {
+  const exponent = Math.max(0, consecutive - 1);
+  const backoffMs = Duration.toMillis(base) * Math.pow(2, exponent);
+  return Duration.min(Duration.millis(backoffMs), max);
+}
+
+function isDefaultBranchName(branch: string, defaultBranch: string | null): boolean {
+  return defaultBranch === null
+    ? branch === "main" || branch === "master"
+    : branch === defaultBranch;
+}
+
+function headOfRefs(snapshot: RepositorySnapshot, refs: ReadonlyArray<string>): string {
+  return refs.map((ref) => snapshot.refs.get(ref)?.oid ?? "").join("\u0000");
 }
 type StripProgressContext<T> = T extends any ? Omit<T, "actionId" | "cwd" | "action"> : never;
 type GitActionProgressPayload = StripProgressContext<GitActionProgressEvent>;
@@ -1300,21 +1316,22 @@ export const make = Effect.gen(function* () {
       details.remoteName ?? "",
       String(prLookupEpoch(cwd)),
     ].join("\u0000");
-  const prLookupFailureStreakByKey = new Map<string, number>();
-  const nextPrLookupFailureTtl = (key: string) => {
-    if (
-      !prLookupFailureStreakByKey.has(key) &&
-      prLookupFailureStreakByKey.size >= PR_LOOKUP_CACHE_CAPACITY
-    ) {
-      const oldestKey = prLookupFailureStreakByKey.keys().next().value;
-      if (oldestKey !== undefined) {
-        prLookupFailureStreakByKey.delete(oldestKey);
-      }
+  // Re-inserting keeps recently written keys last, so a full map evicts its stalest key.
+  const setRecent = <V>(map: Map<string, V>, key: string, value: V) => {
+    map.delete(key);
+    if (map.size >= PR_LOOKUP_CACHE_CAPACITY) {
+      const oldestKey = map.keys().next().value;
+      if (oldestKey !== undefined) map.delete(oldestKey);
     }
-    const streak = (prLookupFailureStreakByKey.get(key) ?? 0) + 1;
-    prLookupFailureStreakByKey.set(key, streak);
-    return prLookupFailureTtl(streak);
+    map.set(key, value);
   };
+  const nextStreak = (streaks: Map<string, number>, key: string) => {
+    const streak = (streaks.get(key) ?? 0) + 1;
+    setRecent(streaks, key, streak);
+    return streak;
+  };
+  const prLookupFailureStreakByKey = new Map<string, number>();
+  const prLookupNoPullRequestStreakByKey = new Map<string, number>();
   const pullRequestStateChanges = yield* PubSub.sliding<ThreadPullRequestKey>(64);
   const lookupStates = new Map<
     string,
@@ -1327,12 +1344,7 @@ export const make = Effect.gen(function* () {
       const key = normalizeThreadPullRequestKey(parsed);
       const id = threadPullRequestKeyOf(key);
       const previous = lookupStates.get(id);
-      lookupStates.delete(id);
-      if (lookupStates.size >= PR_LOOKUP_CACHE_CAPACITY) {
-        const oldest = lookupStates.keys().next().value;
-        if (oldest !== undefined) lookupStates.delete(oldest);
-      }
-      lookupStates.set(id, { state: pr.state, isDraft: pr.isDraft === true });
+      setRecent(lookupStates, id, { state: pr.state, isDraft: pr.isDraft === true });
       return (previous?.state ?? "open") === pr.state &&
         (previous?.isDraft === true) === (pr.isDraft === true)
         ? Effect.void
@@ -1370,32 +1382,72 @@ export const make = Effect.gen(function* () {
             yield* forgetRepositorySnapshot(cwd);
           }
         }
+        const forced = !(yield* AllowCachedPrLookup);
         const { headContext, lookup } = yield* resolveLookupHeadContext(cwd, details);
-        if (!lookup) {
-          return { latest: null, headContext };
-        }
+        // Every snapshot read so far predates the host's answer, so a push during the lookup
+        // still shows as a moved head next time.
+        const snapshot = yield* readRepositorySnapshot(cwd).pipe(
+          Effect.provideService(RepositorySnapshotMaxAgeMs, Number.POSITIVE_INFINITY),
+        );
+        const trackingRef =
+          details.upstreamRef === null ? null : `refs/remotes/${details.upstreamRef}`;
+        const answer = (latest: PullRequestInfo | null, queriedRef: string | null) => {
+          // A push moves the saved upstream when the lookup asked about it. Otherwise the head
+          // was found by the branch's own name, which a push to any remote moves or publishes;
+          // a worktree branch's upstream, the default branch, moves without one.
+          const watchedRefs =
+            trackingRef !== null && queriedRef === trackingRef
+              ? [trackingRef]
+              : snapshot.remoteNames.map((name) => `refs/remotes/${name}/${branch}`);
+          return {
+            latest,
+            headContext,
+            forced,
+            watchedRefs,
+            watchedHead: headOfRefs(snapshot, watchedRefs),
+          };
+        };
+        if (!lookup) return answer(null, null);
         if (
           details.localBranchExists &&
           (details.upstreamRef === null || headContext.remoteName === null) &&
           (yield* isUnpublishedBranch(cwd, headContext))
         ) {
-          return { latest: null, headContext };
+          return answer(null, null);
         }
         const latest = yield* findLatestPrForHeadContext(cwd, headContext, details.defaultBranch);
         if (latest !== null) yield* noteLookupState(latest);
-        return { latest, headContext };
+        return answer(
+          latest,
+          headContext.remoteName === null
+            ? null
+            : `refs/remotes/${headContext.remoteName}/${headContext.headBranch}`,
+        );
       }).pipe(Effect.provideService(UseRepositorySnapshot, true));
     },
     {
       capacity: PR_LOOKUP_CACHE_CAPACITY,
       timeToLive: (exit, key) => {
-        if (Exit.isSuccess(exit)) {
-          prLookupFailureStreakByKey.delete(key);
-          return exit.value.latest?.state === "open"
-            ? PR_LOOKUP_CACHE_TTL
-            : PR_LOOKUP_NO_OPEN_PR_CACHE_TTL;
+        if (Exit.isFailure(exit)) {
+          return backoffTtl(
+            nextStreak(prLookupFailureStreakByKey, key),
+            PR_LOOKUP_FAILURE_BASE_TTL,
+            PR_LOOKUP_FAILURE_MAX_TTL,
+          );
         }
-        return nextPrLookupFailureTtl(key);
+        prLookupFailureStreakByKey.delete(key);
+        const { latest, forced } = exit.value;
+        if (latest === null) {
+          // A refresh asks at once and keeps the step: only the backoff's own lookups lengthen it.
+          return backoffTtl(
+            (forced ? prLookupNoPullRequestStreakByKey.get(key) : undefined) ??
+              nextStreak(prLookupNoPullRequestStreakByKey, key),
+            PR_LOOKUP_NO_OPEN_PR_CACHE_TTL,
+            PR_LOOKUP_NO_PR_MAX_TTL,
+          );
+        }
+        prLookupNoPullRequestStreakByKey.delete(key);
+        return latest.state === "open" ? PR_LOOKUP_CACHE_TTL : PR_LOOKUP_NO_OPEN_PR_CACHE_TTL;
       },
     },
   );
@@ -2049,9 +2101,7 @@ export const make = Effect.gen(function* () {
       return { headContext, lookup: true };
     }
     const upstreamHeadIsBase =
-      headContext.headBranch === details.defaultBranch ||
-      (details.defaultBranch === null &&
-        (headContext.headBranch === "main" || headContext.headBranch === "master")) ||
+      isDefaultBranchName(headContext.headBranch, details.defaultBranch) ||
       headContext.headBranch ===
         (yield* gitCore.readBranchBase(cwd, details.branch).pipe(Effect.orElseSucceed(() => null)));
     if (!upstreamHeadIsBase) {
@@ -2858,13 +2908,17 @@ export const make = Effect.gen(function* () {
       localBranchExists,
       ...(localBranchExists ? {} : { remoteName }),
     });
-    if (options.refresh) {
-      const cached = yield* Cache.getOption(prLookupCache, cacheKey).pipe(
-        Effect.orElseSucceed(() => Option.none()),
-      );
-      if (Option.isSome(cached)) yield* Cache.invalidate(prLookupCache, cacheKey);
-    }
-    let cached = yield* getPrLookup(cacheKey, !options.refresh);
+    // A cached failure keeps its backoff, so only an answer can be outdated by a push.
+    const previous = yield* Cache.getOption(prLookupCache, cacheKey).pipe(
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    const pushed =
+      Option.isSome(previous) &&
+      headOfRefs(snapshot, previous.value.watchedRefs) !== previous.value.watchedHead;
+    if (pushed) prLookupNoPullRequestStreakByKey.delete(cacheKey);
+    const force = options.refresh || pushed;
+    if (force && Option.isSome(previous)) yield* Cache.invalidate(prLookupCache, cacheKey);
+    let cached = yield* getPrLookup(cacheKey, !force);
     // Lookup may use a fork instead of the saved upstream; verify the remote actually queried.
     const identityRemoteName = (headContext: BranchHeadContext) =>
       headContext.remoteName ?? remoteName ?? undefined;
@@ -2911,11 +2965,7 @@ export const make = Effect.gen(function* () {
     }
     const { latest } = cached;
     if (latest === null) return null;
-    if (
-      (branch === defaultBranch ||
-        (defaultBranch === null && (branch === "main" || branch === "master"))) &&
-      latest.state !== "open"
-    ) {
+    if (isDefaultBranchName(branch, defaultBranch) && latest.state !== "open") {
       return null;
     }
     return {

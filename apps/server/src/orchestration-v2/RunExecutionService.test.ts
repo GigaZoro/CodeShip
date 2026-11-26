@@ -4,6 +4,7 @@ import {
   ChatAttachmentId,
   ChatFileAttachment,
   CommandId,
+  EventId,
   MessageId,
   NodeId,
   type OrchestrationV2AppThread,
@@ -3516,6 +3517,21 @@ it.effect.each(["failure", "defect", "interrupt-failure", "ownership-lost"] as c
         ReadonlyArray<ProviderAdapter.ProviderAdapterV2InterruptInput>
       >([]);
       const ids = backgroundScenarioIds(`ingestion:${failureMode}`);
+      const openToolCall = {
+        id: ids.itemId,
+        threadId: ids.threadId,
+        runId: ids.runId,
+        nodeId: ids.rootNodeId,
+        providerThreadId: ids.providerThreadId,
+        providerTurnId: ids.rootProviderTurnId,
+        ordinal: 1,
+        type: "dynamic_tool",
+        toolName: "mcp__t3-code__t3_worktree_handoff",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      } as unknown as OrchestrationV2TurnItem;
       const { written, observed, finalEvents } = yield* captureRootRunTermination({
         key: `ingestion:${failureMode}`,
         initialProviderTurnId: null,
@@ -3527,25 +3543,45 @@ it.effect.each(["failure", "defect", "interrupt-failure", "ownership-lost"] as c
           Stream.unwrap(
             Deferred.await(started).pipe(
               Effect.as(
-                Stream.make({
-                  type: "provider_turn.updated" as const,
-                  driver,
-                  providerTurn: {
-                    id: ids.rootProviderTurnId,
-                    providerThreadId: ids.providerThreadId,
-                    nodeId: ids.rootNodeId,
-                    runAttemptId: ids.attemptId,
-                    nativeTurnRef: null,
-                    ordinal: 1,
-                    status: "running" as const,
-                    startedAt: now,
-                    completedAt: null,
+                Stream.make(
+                  { type: "turn_item.updated" as const, driver, turnItem: openToolCall },
+                  {
+                    type: "provider_turn.updated" as const,
+                    driver,
+                    providerTurn: {
+                      id: ids.rootProviderTurnId,
+                      providerThreadId: ids.providerThreadId,
+                      nodeId: ids.rootNodeId,
+                      runAttemptId: ids.attemptId,
+                      nativeTurnRef: null,
+                      ordinal: 1,
+                      status: "running" as const,
+                      startedAt: now,
+                      completedAt: null,
+                    },
                   },
-                }),
+                ),
               ),
             ),
           ),
-        ingestNormalized: () => {
+        ingestNormalized: ({ event }) => {
+          if (event.type === "turn_item.updated") {
+            return Effect.succeed([
+              {
+                sequence: 1,
+                commandId: null,
+                event: {
+                  id: EventId.make(`event:ingestion:${failureMode}:tool`),
+                  type: "turn-item.updated",
+                  threadId: ids.threadId,
+                  runId: ids.runId,
+                  nodeId: ids.rootNodeId,
+                  occurredAt: now,
+                  payload: openToolCall,
+                },
+              } as OrchestrationV2StoredEvent,
+            ]);
+          }
           const error = new ProviderEventIngestor.ProviderEventPublishError({
             providerSessionId: ProviderSessionId.make(`session:${failureMode}`),
             eventCount: 1,
@@ -3602,12 +3638,17 @@ it.effect.each(["failure", "defect", "interrupt-failure", "ownership-lost"] as c
         const error = written.find((item) => item.type === "error");
         assert.include(error?.failure.message ?? "", "(SQLITE_CANTOPEN)");
         const repaired = finalEvents.find((event) => event.type === "provider-turn.updated");
+        // The stopped runtime can never report the end of its open tool call.
+        const settledToolCall = written.find((item) => item.id === ids.itemId);
         if (failureMode === "interrupt-failure") {
           assert.isUndefined(repaired);
+          assert.isUndefined(settledToolCall);
         } else {
           assert.equal(repaired?.payload.id, ids.rootProviderTurnId);
           assert.equal(repaired?.payload.status, "interrupted");
           assert.isNotNull(repaired?.payload.completedAt);
+          assert.equal(settledToolCall?.status, "interrupted");
+          assert.isNotNull(settledToolCall?.completedAt);
         }
       }
     }),
@@ -4660,7 +4701,7 @@ function runBackgroundItemScenario(
                     options?.providerThreadOwnerLost === true &&
                     input.writeIfProviderThreadOwner !== undefined
                   )
-                  ? [{} as OrchestrationV2StoredEvent]
+                  ? [{ event: { type: "provider-thread.updated" } } as OrchestrationV2StoredEvent]
                   : [];
               });
               // A write outside a batch waits for queued snapshots, as the event sink's does.

@@ -57,6 +57,7 @@ const make = Effect.gen(function* () {
   const host = yield* ProviderHost.ProviderHost;
   const accountReader = yield* CursorAccountReader.CursorAccountReader;
   const digest = yield* Digest.Digest;
+  const scope = yield* Effect.scope;
 
   const cachePath = path.join(host.paths.stateDir, CURSOR_ACCOUNT_CACHE_FILE_NAME);
   const caches = new Map<string, CursorAccountCache>();
@@ -164,8 +165,8 @@ const make = Effect.gen(function* () {
         if (current !== undefined) return current;
         const done = Deferred.makeUnsafe<void>();
         refreshes.set(credentialKey, done);
-        // Detached: a departing client must not cancel a fetch later reads reuse.
         yield* refreshAccount(credential, credentialKey, retentionStartMs).pipe(
+          Effect.timeout("2 minutes"),
           Effect.catchCause(() =>
             Clock.currentTimeMillis.pipe(
               Effect.map((atMs) =>
@@ -179,7 +180,8 @@ const make = Effect.gen(function* () {
               return Deferred.succeed(done, undefined);
             }),
           ),
-          Effect.forkDetach,
+          Effect.interruptible,
+          Effect.forkIn(scope),
         );
         return done;
       }),

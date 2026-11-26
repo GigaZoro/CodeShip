@@ -82,6 +82,13 @@ export function assertGrokBackgroundBashOutput(
   ]);
 
   const wakeMessage = projection.messages.find((message) => message.id === wakeRun?.userMessageId);
+  assert.isNotEmpty(wakeMessage?.notification?.wakeEventIds);
+  assert.isTrue(
+    projection.providerTurns.some(
+      (turn) => turn.nodeId === wakeRun?.rootNodeId && turn.nativeWakeStarted === true,
+    ),
+    "the replayed wake frames prove the native wake started",
+  );
   assert.equal(`${wakeMessage?.createdBy}:${wakeMessage?.creationSource}`, "agent:provider");
   assert.isNotEmpty(
     projection.turnItems.filter(

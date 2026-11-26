@@ -9,12 +9,14 @@ import {
   type ProviderInstanceId,
   type RunId,
   type ServerSettings as ServerSettingsValue,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
 import { canAccountRun } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -25,6 +27,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import {
   AccountRouting,
   type AccountRoutingContext,
+  type AccountEligibility,
   accountsWithRoom,
   type McpSignIns,
   readMcpSignIns,
@@ -35,6 +38,14 @@ import {
   resolveAutoRoute,
   routeAutoAccount,
 } from "./AccountRouting.ts";
+import {
+  boundedCandidates,
+  type DispatchRecorder,
+  evidenceKey,
+  makeDispatchRecorder,
+  recordStopDecision,
+  recordDispatchFailure,
+} from "./StopDecisionEvidence.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
@@ -290,14 +301,43 @@ function failoverSearch({ thread, ...input }: FailoverInput) {
  * account of its driver with room left.
  */
 export function limitFailoverCommand(input: FailoverInput): DispatchCommand | null {
-  const search = failoverSearch(input);
-  if (search === null) return null;
-  const target = accountsWithRoom(search).find(
-    (account) => account.instanceId !== search.exceptInstanceId,
-  );
-  return target === undefined
-    ? null
-    : continueLimitedRun("limit-failover", input.thread, search.runId, target);
+  return limitFailoverDecision(input).command;
+}
+
+export function limitFailoverDecision(input: FailoverInput, switching = true) {
+  const search = switching ? failoverSearch(input) : null;
+  const candidates: Array<{ id: string; reason: AccountEligibility | "source_account" }> = [];
+  const observe = (instanceId: ProviderInstanceId, reason: AccountEligibility) => {
+    candidates.push({
+      id: evidenceKey(instanceId),
+      reason: instanceId === input.thread.providerInstanceId ? "source_account" : reason,
+    });
+  };
+  const target =
+    search === null
+      ? undefined
+      : accountsWithRoom(search, observe).find(
+          (account) => account.instanceId !== search.exceptInstanceId,
+        );
+  const command =
+    search === null || target === undefined
+      ? null
+      : continueLimitedRun("limit-failover", input.thread, search.runId, target);
+  const reason = !switching
+    ? "switching_disabled"
+    : search === null
+      ? "search_not_applicable"
+      : target !== undefined
+        ? "selected"
+        : "no_eligible_account";
+  return {
+    command,
+    evidence: {
+      reason,
+      ...boundedCandidates(candidates, target ? evidenceKey(target.instanceId) : null),
+      selected: target === undefined ? null : evidenceKey(target.instanceId),
+    },
+  };
 }
 
 /** The waiting thread's own account and run, when this machine redeems banked usage resets. */
@@ -478,6 +518,8 @@ const makeSweep = Effect.gen(function* () {
       ),
     ),
   );
+  // Decisions already written, so a stop that looks the same every tick takes no write lock.
+  const recentDecisions = new Set<string>();
   return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
@@ -495,6 +537,7 @@ const makeSweep = Effect.gen(function* () {
         autoResume: resuming,
         snooze: preferences.snoozeLimitedThreads,
         waiting: switching || resetting,
+        observeStops: true,
       })
       .pipe(NodeSqliteClient.inBackground);
     const signedOut =
@@ -504,7 +547,9 @@ const makeSweep = Effect.gen(function* () {
             .pipe(NodeSqliteClient.inBackground)
         : [];
     const providers =
-      candidates.length > 0 || signedOut.length > 0 ? yield* providerRegistry.getProviders : null;
+      candidates.some((thread) => !thread.observationOnly) || signedOut.length > 0
+        ? yield* providerRegistry.getProviders
+        : null;
     const routing =
       providers === null
         ? null
@@ -523,14 +568,35 @@ const makeSweep = Effect.gen(function* () {
             }),
             nowMs,
           };
-    const failover = switching ? routing : null;
-    const dispatchContinuation = (command: DispatchCommand, failureMessage: string) =>
-      threads.dispatch(command).pipe(
+    // Each stopped thread is the requester its prepaid credits are judged for, as at dispatch.
+    const routings = new Map(
+      routing === null
+        ? []
+        : yield* Effect.forEach(
+            [...signedOut, ...candidates.filter((thread) => !thread.observationOnly)],
+            (thread) =>
+              accountRouting
+                .creditAccess(thread.id)
+                .pipe(
+                  Effect.map((creditAccess) => [thread.id, { ...routing, creditAccess }] as const),
+                ),
+          ),
+    );
+    const routingFor = (thread: { readonly id: ThreadId }) => routings.get(thread.id) ?? null;
+    const failoverFor = (thread: { readonly id: ThreadId }) =>
+      switching ? routingFor(thread) : null;
+    const dispatchContinuation = (
+      command: DispatchCommand,
+      failureMessage: string,
+      recorder?: DispatchRecorder,
+    ) =>
+      (recorder ? threads.dispatch(command, recorder) : threads.dispatch(command)).pipe(
         Effect.as("dispatched" as const),
         // This exact command was refused on an earlier tick; warning again every tick adds nothing.
         // A snooze the person set meanwhile holds it until the thread wakes.
         Effect.catchTags({
           OrchestratorCommandPreviouslyRejectedError: () => Effect.succeed("refused" as const),
+          ThreadManagementProviderInstanceDisabledError: () => Effect.succeed("refused" as const),
           OrchestratorContinuationSnoozedError: () => Effect.succeed("refused" as const),
         }),
         Effect.catchCause((cause) =>
@@ -543,9 +609,11 @@ const makeSweep = Effect.gen(function* () {
     let targetRoomAt = Infinity;
     for (const thread of signedOut) {
       // Moving needs the account still signed out, resuming it signed in, so at most one applies.
+      const failover = failoverFor(thread);
+      const routed = routingFor(thread);
       const command =
         (failover === null ? null : signedOutFailoverCommand({ ...failover, thread })) ??
-        (routing === null ? null : signedInResumeCommand({ ...routing, thread }));
+        (routed === null ? null : signedInResumeCommand({ ...routed, thread }));
       if (command === null) continue;
       const outcome = yield* dispatchContinuation(
         command,
@@ -554,13 +622,75 @@ const makeSweep = Effect.gen(function* () {
       if (outcome !== "refused") acted = true;
     }
     for (const thread of candidates) {
+      const routed = routingFor(thread);
+      if (thread.latestRunId === null) continue;
+      if (thread.observationOnly) {
+        yield* recordStopDecision(
+          {
+            source: thread.latestRunId,
+            heldAttempt: undefined,
+            command: null,
+            nowMs,
+            evidence: {
+              reason: switching ? "no_actionable_reset" : "switching_disabled",
+              candidates: [],
+              omitted: 0,
+              selected: null,
+            },
+          },
+          { recent: recentDecisions },
+        );
+        continue;
+      }
+      if (routed === null) continue;
       // Another account with room comes first: it costs no banked credit.
-      const continuation =
-        (failover === null ? null : limitFailoverCommand({ ...failover, thread })) ??
-        (routing === null ? null : resetCreditResumeCommand({ ...routing, thread }));
+      const decision = limitFailoverDecision({ ...routed, thread }, switching);
+      const continuation = decision.command ?? resetCreditResumeCommand({ ...routed, thread });
+      const source = thread.latestRunId;
+      const record = (command: DispatchCommand | null, evidence = decision.evidence) =>
+        recordStopDecision(
+          { source, heldAttempt: thread.heldAttemptId, command, evidence, nowMs },
+          { recent: recentDecisions },
+        );
+      const dispatchRecorded = Effect.fnUntraced(function* (
+        command: DispatchCommand,
+        evidence: typeof decision.evidence,
+        message: string,
+      ) {
+        const sql = yield* SqlClient.SqlClient;
+        const recorder = makeDispatchRecorder(
+          { source, heldAttempt: thread.heldAttemptId, command, evidence, nowMs },
+          sql,
+        );
+        const outcome = yield* dispatchContinuation(command, message, recorder);
+        // Thread management routes before recording; a dispatch that failed earlier still leaves one.
+        const decisionKey = recorder.decisionKey() ?? (yield* record(command, evidence));
+        if (outcome !== "dispatched" && decisionKey !== undefined)
+          yield* recordDispatchFailure(decisionKey, outcome);
+        return outcome;
+      });
+      const resetEvidence = (
+        command: DispatchCommand,
+        reason: "reset_credit_room" | "reset_elapsed" | "early_resume_room",
+      ) => {
+        const selected =
+          reason === "reset_elapsed"
+            ? null
+            : evidenceKey(command.modelSelection?.instanceId ?? thread.providerInstanceId);
+        return {
+          reason,
+          selected,
+          candidates: selected === null ? [] : [{ id: selected, reason: "eligible" as const }],
+          omitted: 0,
+          failover: decision.evidence,
+        };
+      };
       if (continuation !== null) {
-        const outcome = yield* dispatchContinuation(
+        const outcome = yield* dispatchRecorded(
           continuation,
+          decision.command === null
+            ? resetEvidence(continuation, "reset_credit_room")
+            : decision.evidence,
           "orchestration-v2.limit-continuation.dispatch-failed",
         );
         // A refused command stays refused, so only a dispatch or a failed attempt re-checks next tick.
@@ -568,7 +698,7 @@ const makeSweep = Effect.gen(function* () {
         if (outcome === "dispatched") continue;
         // A refused or failed one falls through, so the stop still arms its reset-time resume.
       }
-      const target = routing === null ? null : limitRecoveryTarget({ ...routing, thread });
+      const target = limitRecoveryTarget({ ...routed, thread });
       const recover = (room: LimitRecoveryTarget | null) =>
         limitRecoveryCommand(
           thread,
@@ -578,6 +708,7 @@ const makeSweep = Effect.gen(function* () {
           room,
         );
       const command = recover(target);
+      if (continuation === null && command?.type !== "message.dispatch") yield* record(null);
       if (command === null) {
         // A resume that waits only for room on its target checks again when that room comes.
         if (
@@ -595,7 +726,16 @@ const makeSweep = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         if (command.type === "thread.limit-recovery.arm")
           yield* orchestrator.autoArmLimitRecovery(command);
-        else yield* threads.dispatch(command);
+        else {
+          yield* dispatchRecorded(
+            command,
+            resetEvidence(
+              command,
+              command.modelSelection === undefined ? "reset_elapsed" : "early_resume_room",
+            ),
+            "orchestration-v2.limit-recovery.dispatch-failed",
+          );
+        }
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("orchestration-v2.limit-recovery.dispatch-failed", {
@@ -611,18 +751,22 @@ const makeSweep = Effect.gen(function* () {
       .getLimitRecoveryWakeAt(now, { waiting: switching || resetting })
       .pipe(NodeSqliteClient.inBackground);
     // A waiting or signed-out thread can move to another account the moment its limit ends.
-    const accountRoomAt =
-      failover === null
-        ? Infinity
-        : Math.min(
-            ...[
-              ...candidates.map((thread) => failoverSearch({ ...failover, thread })),
-              ...signedOut.map((thread) => signedOutSearch({ ...failover, thread })),
-            ].flatMap((search) => {
-              const at = search === null ? null : nextAccountRoomAt(search);
-              return at === null ? [] : [at];
-            }),
-          );
+    const searches = [
+      ...candidates.map((thread) => {
+        const failover = failoverFor(thread);
+        return failover === null ? null : failoverSearch({ ...failover, thread });
+      }),
+      ...signedOut.map((thread) => {
+        const failover = failoverFor(thread);
+        return failover === null ? null : signedOutSearch({ ...failover, thread });
+      }),
+    ];
+    const accountRoomAt = Math.min(
+      ...searches.flatMap((search) => {
+        const at = search === null ? null : nextAccountRoomAt(search);
+        return at === null ? [] : [at];
+      }),
+    );
     yield* due.record(
       readVersion,
       Math.min(wakeAt ?? Infinity, accountRoomAt, targetRoomAt),

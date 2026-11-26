@@ -12,6 +12,7 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -20,9 +21,12 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as TestClock from "effect/testing/TestClock";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SeaRequiresCodexMetadata } from "./packagedCodexMetadata.ts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 
@@ -58,6 +62,11 @@ const layerCodexTextGenerationTest = ServerConfig.ServerConfig.layerTest(process
 
 interface FakeCodexInput {
   output: string;
+  metadata?: "supported" | "stock" | "legacy";
+  invokedName?: string;
+  expectedHome?: string;
+  expectedManaged?: boolean;
+  metadataReplies?: Readonly<Record<string, unknown>>;
   lifecycle?: { port: number; command: "exec" | "mcp list" };
   exitCode?: number;
   stderr?: string;
@@ -91,17 +100,37 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     requireMcpServersOff: input.requireMcpServersOff ?? [],
     stderr: input.stderr ?? null,
     output: input.output,
+    metadata: input.metadata ?? null,
+    expectedHome: input.expectedHome ?? null,
+    expectedManaged: input.expectedManaged ?? false,
+    metadataReplies: input.metadataReplies ?? {},
     exitCode: input.exitCode ?? 0,
   });
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    return writeFakeCli({
+    const fs = yield* FileSystem.FileSystem;
+    const binary = writeFakeCli({
       directory: path.join(dir, "bin"),
       name: "codex",
       source: [
         'import * as NodeFS from "node:fs";',
         `const check = ${check};`,
         "const args = process.argv.slice(2);",
+        'if (args.join(" ") === "exec --help") {',
+        "  const home = process.env.CODEX_HOME;",
+        "  if (!home || home === check.expectedHome || home !== process.env.HOME || NodeFS.readdirSync(home).length) process.exit(20);",
+        "  if (process.env.OPENAI_API_KEY || process.env.ACCESS_TOKEN) process.exit(20);",
+        '  if (process.cwd() !== NodeFS.realpathSync(new URL(".", import.meta.url))) process.exit(29);',
+        '  if (check.metadata === "supported") process.stdout.write("      --codeship-metadata-no-mcp\\n");',
+        '  if (check.metadata === "legacy") process.stdout.write("      --codeship-metadata\\n");',
+        "  process.exit(0);",
+        "}",
+        "if (check.expectedHome && process.env.CODEX_HOME !== check.expectedHome) process.exit(21);",
+        "if (check.metadata) {",
+        '  const expectedKey = check.expectedManaged ? undefined : "synthetic-test-key";',
+        "  if (process.env.OPENAI_API_KEY !== expectedKey) process.exit(23);",
+        '  if (args.includes("model_provider=synthetic-managed") !== check.expectedManaged) process.exit(24);',
+        "}",
         'const isMcpList = args.includes("mcp") && args.includes("list");',
         ...(input.lifecycle === undefined
           ? []
@@ -113,6 +142,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
               "}",
             ]),
         "if (isMcpList) {",
+        "  if (check.metadata) process.exit(34);",
         '  if (typeof check.mcpServers === "number") process.exit(check.mcpServers);',
         "  process.stdout.write(JSON.stringify(check.mcpServers));",
         "  process.exit(0);",
@@ -203,11 +233,40 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         '  fail("stdin contained forbidden content", 4);',
         "}",
         'if (check.stderr !== null) process.stderr.write(check.stderr + "\\n");',
-        'if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "if (check.metadata) {",
+        '  if (!args.includes("--codeship-metadata-no-mcp") || outputPath !== null) fail("wrong metadata argv", 22);',
+        '  if (!originalArgs.includes(" --ephemeral --skip-git-repo-check -s read-only --model gpt-5.4-mini ")) fail("wrong policy or model", 25);',
+        '  const schemaArg = args.indexOf("--output-schema");',
+        '  if (schemaArg < 0 || args.at(-1) !== "-") fail("missing schema or stdin prompt", 26);',
+        '  const schema = JSON.parse(NodeFS.readFileSync(args[schemaArg + 1], "utf8"));',
+        '  if (schema.additionalProperties !== false) fail("schema must be strict", 27);',
+        '  const reply = check.metadataReplies[Object.keys(schema.properties).sort().join(",")];',
+        '  if (reply !== undefined && schema.properties.branch && !seenImage) fail("missing metadata image", 31);',
+        '  process.stdout.write((reply === undefined ? check.output : JSON.stringify(reply)) + "\\n");',
+        "} else {",
+        '  if (args.includes("--codeship-metadata-no-mcp")) fail("stock exec received metadata flag", 32);',
+        '  if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "}",
         "process.exitCode = check.exitCode;",
         "",
       ].join("\n"),
     });
+    if (input.metadata) {
+      const script = path.join(dir, "bin", "codex-stub.mjs");
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+      yield* fs.writeFileString(
+        binary,
+        [
+          "#!/bin/sh",
+          ...(input.invokedName
+            ? ['test "${0##*/}" = ' + quote(input.invokedName) + " || exit 33"]
+            : []),
+          `exec ${quote(process.execPath)} ${quote(script)} "$@"`,
+          "",
+        ].join("\n"),
+      );
+    }
+    return binary;
   });
 }
 
@@ -219,21 +278,109 @@ function withFakeCodexEnv<A, E, R>(
     defaultModel?: string;
     customModels?: ReadonlyArray<string>;
     managedRuntime?: boolean;
+    packaged?: true | "missing-directory";
+    metadataPath?: "configured" | "relative" | "missing" | "unset";
+    customBinary?:
+      | "same"
+      | "different"
+      | "absolute-shim"
+      | "path-shim"
+      | "relative-shim"
+      | "relative-path-shim"
+      | "linked-parent-shim"
+      | "different-shim-name";
   },
-  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGeneration.TextGeneration["Service"],
+    fixtureRoot: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
-    const codexPath = yield* makeFakeCodexBinary(tempDir, input);
+    const codexPath = yield* makeFakeCodexBinary(
+      tempDir,
+      input.metadata ? { output: "", exitCode: 28, stderr: "Unexpected stock exec" } : input,
+    );
+    const path = yield* Path.Path;
+    const home = path.join(tempDir, "selected-home");
+    const relativeShim =
+      input.customBinary === "relative-shim" || input.customBinary === "relative-path-shim";
+    const shim =
+      relativeShim ||
+      input.customBinary === "linked-parent-shim" ||
+      input.customBinary === "absolute-shim" ||
+      input.customBinary === "path-shim" ||
+      input.customBinary === "different-shim-name";
+    const packageDir = path.join(tempDir, "codex-metadata");
+    const usePackageFixture = input.packaged && input.metadataPath === "unset" && input.metadata;
+    if (input.packaged && !usePackageFixture) {
+      // The ordinary or explicitly configured launcher must win over this incompatible package.
+      yield* makeFakeCodexBinary(packageDir, { metadata: "stock", output: "" });
+    }
+    const metadataBinary = input.metadata
+      ? yield* makeFakeCodexBinary(usePackageFixture ? packageDir : path.join(tempDir, "host"), {
+          ...input,
+          ...(shim ? { invokedName: "account-codex" } : {}),
+          expectedHome: home,
+          expectedManaged: input.managedRuntime === true,
+        })
+      : undefined;
+    if (input.packaged === "missing-directory") {
+      yield* fs.remove(packageDir, { recursive: true });
+    }
+    let metadataPath = metadataBinary;
+    if (shim && metadataBinary) {
+      metadataPath = path.join(path.dirname(metadataBinary), "account-codex");
+      yield* fs.symlink(metadataBinary, metadataPath);
+      if (input.customBinary === "linked-parent-shim") {
+        yield* fs.symlink(path.dirname(metadataBinary), path.join(tempDir, "linked"));
+      }
+      if (relativeShim) yield* fs.symlink(codexPath, path.join(tempDir, "bin", "account-codex"));
+    }
+    const configuredPath = {
+      configured: metadataPath,
+      relative: "bin/codex",
+      missing: path.join(tempDir, "missing"),
+      unset: undefined,
+    }[input.metadataPath ?? "configured"];
+    const customPaths = {
+      same: metadataPath,
+      different: codexPath,
+      "absolute-shim": metadataPath,
+      "path-shim": "account-codex",
+      "relative-shim": "./bin/account-codex",
+      "relative-path-shim": "account-codex",
+      "linked-parent-shim": "./linked/../bin/account-codex",
+      "different-shim-name": metadataBinary,
+    };
     const config = decodeCodexSettings({
-      binaryPath: codexPath,
-      launchArgs: input.launchArgs,
+      binaryPath: input.customBinary
+        ? customPaths[input.customBinary]
+        : input.metadata
+          ? "codex"
+          : codexPath,
+      launchArgs:
+        input.managedRuntime && input.metadata
+          ? [input.launchArgs, "--config model_provider=synthetic-managed"]
+              .filter(Boolean)
+              .join(" ")
+          : input.launchArgs,
+      homePath: input.metadata ? home : undefined,
       customModels: input.customModels,
     });
+    const environment = {
+      ...process.env,
+      ...(shim && metadataPath ? { PATH: relativeShim ? "bin" : path.dirname(metadataPath) } : {}),
+      T3CODE_CODEX_METADATA_BINARY_PATH: codexPath,
+      ...(input.metadata
+        ? { OPENAI_API_KEY: input.managedRuntime ? undefined : "synthetic-test-key" }
+        : {}),
+      ...input.environment,
+    };
     const textGeneration = yield* makeCodexTextGeneration(
       config,
-      input.environment === undefined ? undefined : { ...process.env, ...input.environment },
+      environment,
       Effect.succeed(
         (input.models ?? []).map((slug) => ({
           slug,
@@ -245,18 +392,313 @@ function withFakeCodexEnv<A, E, R>(
       ),
       input.managedRuntime
         ? Effect.succeed({
-            config,
-            environment: input.environment ?? process.env,
+            config: { ...config, binaryPath: codexPath },
+            environment,
             revision: "test",
             privateMcpSignIns: false,
           })
         : undefined,
+      Effect.succeed(codexPath),
+    ).pipe(
+      Effect.provideService(SeaRequiresCodexMetadata, Boolean(input.packaged)),
+      Effect.provideService(HostProcess.IsExecutable, Boolean(input.packaged)),
+      Effect.provideService(HostProcess.ExecutablePath, path.join(tempDir, "t3")),
+      Effect.provideService(HostProcess.Environment, {
+        ...process.env,
+        T3CODE_CODEX_METADATA_BINARY_PATH: configuredPath,
+      }),
     );
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration, tempDir);
   }).pipe(Effect.scoped);
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
+  for (const customBinary of ["relative-shim", "relative-path-shim"] as const) {
+    it.effect.skipIf(isWindowsHost)(`resolves ${customBinary} from the request repository`, () =>
+      withFakeCodexEnv(
+        { customBinary, metadata: "supported", output: '{"title":"Repository launcher"}' },
+        (generation, root) =>
+          Effect.gen(function* () {
+            const path = yield* Path.Path;
+            const title = (cwd: string) =>
+              generation.generateThreadTitle({
+                cwd,
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              });
+            expect((yield* title(path.join(root, "host"))).title).toBe("Repository launcher");
+            const error = yield* Effect.flip(title(root));
+            expect(error.detail).toContain("different custom launcher");
+          }),
+      ),
+    );
+  }
+  it.effect.skipIf(isWindowsHost)(
+    "invokes the selected named shim reached through a linked parent",
+    () =>
+      withFakeCodexEnv(
+        {
+          customBinary: "linked-parent-shim",
+          metadata: "supported",
+          output: '{"title":"Physical launcher"}',
+        },
+        (generation, cwd) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateThreadTitle({
+              cwd,
+              message: "Name this thread",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            });
+            expect(result.title).toBe("Physical launcher");
+          }),
+      ),
+  );
+  it.effect.skipIf(isWindowsHost)("allows a cold metadata launch within the request deadline", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const checking = yield* Deferred.make<void>();
+      const coldSpawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (command._tag === "StandardCommand" && command.args.includes("--help")) {
+            yield* Deferred.succeed(checking, undefined);
+            yield* Effect.sleep("40 seconds");
+          }
+          return yield* spawner.spawn(command);
+        }),
+      );
+      const request = yield* withFakeCodexEnv(
+        {
+          packaged: true,
+          metadataPath: "unset",
+          metadata: "supported",
+          output: '{"title":"Cold launch"}',
+        },
+        (generation) =>
+          generation.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          }),
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, coldSpawner),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(checking);
+      yield* TestClock.adjust("40 seconds");
+      expect((yield* Fiber.join(request)).title).toBe("Cold launch");
+    }),
+  );
+  for (const customBinary of ["absolute-shim", "path-shim"] as const) {
+    it.effect.skipIf(isWindowsHost)(`invokes the named metadata launcher for ${customBinary}`, () =>
+      withFakeCodexEnv(
+        {
+          packaged: true,
+          customBinary,
+          metadata: "supported",
+          output: '{"title":"Named launcher"}',
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Name this thread",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            });
+            expect(result.title).toBe("Named launcher");
+          }),
+      ),
+    );
+  }
+  for (const managedRuntime of [false, true]) {
+    it.effect.skipIf(isWindowsHost)(
+      `uses the explicit host override before the package (managed=${managedRuntime})`,
+      () =>
+        withFakeCodexEnv(
+          {
+            packaged: true,
+            managedRuntime,
+            metadata: "supported",
+            output: '{"title":"Host override"}',
+          },
+          (generation) =>
+            Effect.gen(function* () {
+              const result = yield* generation.generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              });
+              expect(result.title).toBe("Host override");
+            }),
+        ),
+    );
+    it.effect.skipIf(isWindowsHost)(
+      `uses the packaged metadata binary with the selected home (managed=${managedRuntime})`,
+      () =>
+        withFakeCodexEnv(
+          {
+            metadata: "supported",
+            managedRuntime,
+            packaged: true,
+            metadataPath: "unset",
+            ...(managedRuntime ? { customBinary: "different" as const } : {}),
+            output: "",
+            metadataReplies: {
+              "needsRefinement,title": { title: "Read-only metadata" },
+              branch: { branch: "metadata" },
+              "body,subject": { subject: "Add metadata", body: "" },
+              "body,title": { title: "Add metadata", body: "Summary" },
+              stops: { stops: [] },
+              "needsPerson,solutions,summary,translation": {
+                summary: "Review the step",
+                needsPerson: false,
+                solutions: [
+                  { title: "Run checks", detail: "Verify metadata", command: "", agentCanDo: true },
+                ],
+                translation: { title: "Run checks", step: "Verify metadata" },
+              },
+            },
+            launchArgs: "--strict-config --listen off --config features.plugins=true",
+            mcpServers: [{ name: "server.with.dots", enabled: true }],
+            requireArg:
+              "--config features.plugins=false --config features.apps=false --codeship-metadata-no-mcp",
+            forbidArg: "--listen",
+          },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              const path = yield* Path.Path;
+              const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+              const imageId = `metadata-image-${managedRuntime}`;
+              const imagePath = path.join(attachmentsDir, `${imageId}.png`);
+              yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+              yield* Effect.acquireRelease(fs.writeFile(imagePath, Buffer.from("image")), () =>
+                fs.remove(imagePath).pipe(Effect.ignore),
+              );
+              const common = { cwd: process.cwd(), modelSelection: DEFAULT_TEST_MODEL_SELECTION };
+              const message = "Name this synthetic thread";
+              const result = yield* Effect.all(
+                {
+                  title: textGeneration.generateThreadTitle({ ...common, message }),
+                  branch: textGeneration.generateBranchName({
+                    ...common,
+                    message,
+                    attachments: [
+                      {
+                        type: "image",
+                        id: imageId,
+                        name: "metadata.png",
+                        mimeType: "image/png",
+                        sizeBytes: 5,
+                      },
+                    ],
+                  }),
+                  commit: textGeneration.generateCommitMessage({
+                    ...common,
+                    branch: "example",
+                    stagedSummary: "M README.md",
+                    stagedPatch: "diff --git a/README.md b/README.md",
+                  }),
+                  pr: textGeneration.generatePrContent({
+                    ...common,
+                    baseBranch: "main",
+                    headBranch: "example",
+                    commitSummary: "Add metadata",
+                    diffSummary: "M README.md",
+                    diffPatch: "diff --git a/README.md b/README.md",
+                  }),
+                  guide: textGeneration.generateReviewGuide({
+                    ...common,
+                    number: 1,
+                    title: "Add metadata",
+                    description: "Local fixture",
+                    baseBranch: "main",
+                    baseCommit: "abc123",
+                    settledReview: "",
+                    language: "en",
+                  }),
+                  step: textGeneration.generateManualStepReview({
+                    ...common,
+                    step: {
+                      title: "Check metadata",
+                      step: "Run checks",
+                      kind: "hands-on",
+                      machine: "Test host",
+                    },
+                    notes: [],
+                    language: "en",
+                  }),
+                },
+                { concurrency: "unbounded" },
+              );
+              expect(result).toEqual({
+                title: { title: "Read-only metadata" },
+                branch: { branch: "metadata" },
+                commit: { subject: "Add metadata", body: "" },
+                pr: { title: "Add metadata", body: "Summary" },
+                guide: { stops: [] },
+                step: {
+                  summary: "Review the step",
+                  needsPerson: false,
+                  solutions: [{ title: "Run checks", detail: "Verify metadata", agentCanDo: true }],
+                  translation: { title: "Run checks", step: "Verify metadata" },
+                },
+              });
+            }),
+        ),
+    );
+  }
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps the selected native custom launcher on a packaged host",
+    () =>
+      withFakeCodexEnv(
+        { packaged: true, metadataPath: "unset", output: '{"title":"Custom launcher"}' },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Name this thread",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            });
+            expect(result.title).toBe("Custom launcher");
+          }),
+      ),
+  );
+
+  for (const [fixture, detail] of [
+    [{ packaged: "missing-directory", metadataPath: "unset" }, "Reinstall CodeShip"],
+    [{ packaged: true, metadataPath: "unset", metadata: "legacy" }, "Reinstall CodeShip"],
+    [{ packaged: true, metadataPath: "missing" }, "absolute path of an executable patched Codex"],
+    [{ metadataPath: "relative" }, "absolute path of an executable patched Codex"],
+    [{ metadataPath: "missing" }, "absolute path of an executable patched Codex"],
+    [{ metadata: "stock" }, "supports --codeship-metadata-no-mcp"],
+    [{ metadata: "legacy" }, "supports --codeship-metadata-no-mcp"],
+    [{ customBinary: "different" }, "different custom launcher"],
+    [{ customBinary: "different-shim-name" }, "different custom launcher"],
+    [{ output: '{"title":"Title","extra":true}' }, "invalid structured output"],
+    [{ output: 'progress\n{"title":"Title"}' }, "invalid structured output"],
+    [{ exitCode: 3, stderr: "Synthetic policy denial" }, "Synthetic policy denial"],
+  ] as const) {
+    it.effect.skipIf(isWindowsHost)(
+      `reports a metadata failure for ${JSON.stringify(fixture)}`,
+      () =>
+        withFakeCodexEnv(
+          { metadata: "supported", output: '{"title":"Title"}', ...fixture },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              const error = yield* Effect.flip(
+                textGeneration.generateThreadTitle({
+                  cwd: process.cwd(),
+                  message: "Name this thread",
+                  modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+                }),
+              );
+              expect(error.detail).toContain(detail);
+            }),
+        ),
+    );
+  }
+
   it.effect.each(["exec", "mcp list"] as const)(
     "kills a stalled %s CLI when its request is interrupted",
     (command) =>
@@ -799,6 +1241,16 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
         ? selection
         : threadDefault,
     ]);
+    const refusal = yield* Effect.flip(
+      service.generateThreadTitle({
+        cwd: "/tmp",
+        message: "Fresh Auto title",
+        linkedContext: "",
+        modelSelection: { ...selection, quotaAwareAuto: true },
+      }),
+    );
+    expect(refusal.operation).toBe("generateThreadTitle");
+    expect(calls).toHaveLength(1);
   }),
 );
 

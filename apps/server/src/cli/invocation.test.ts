@@ -152,7 +152,7 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
           path.join(prefix, "lib/node_modules/t3/package.json"),
           `{"name":"t3","version":"${packageJson.version}"}`,
         );
-        yield* fs.symlink(npmLauncher, path.join(prefix, "bin/t3"));
+        yield* fs.symlink(path.resolve(npmLauncher), path.join(prefix, "bin/t3"));
         expect(
           yield* rootCommand({
             node: "/home/theo/.t3/runtime/versions/1.0.0/t3",

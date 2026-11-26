@@ -141,11 +141,12 @@ function windowsEnvironmentValue(environment: NodeJS.ProcessEnv, name: string) {
 export const museLaunch = Effect.fn("museLaunch")(function* (
   binaryPath: string,
   environment?: NodeJS.ProcessEnv,
+  cwd?: string,
 ): Effect.fn.Return<MuseLaunch> {
   if ((yield* HostProcess.Platform) !== "win32") return { command: binaryPath, args: [] };
   const env = environment ?? (yield* HostProcess.Environment);
   const resolveExecutable = yield* SpawnExecutableResolution;
-  const resolved = resolveExecutable(binaryPath, "win32", env) ?? binaryPath;
+  const resolved = resolveExecutable(binaryPath, "win32", env, cwd) ?? binaryPath;
   if (!/\.(?:cmd|bat)$/i.test(resolved)) return { command: resolved, args: [] };
   const systemRoot = windowsEnvironmentValue(env, "SystemRoot");
   return {
@@ -277,7 +278,8 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
   options: Omit<MuseSdkHostOptions, "signal">,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
-  const native = options.launch ?? (yield* museLaunch(options.binaryPath, options.environment));
+  const native =
+    options.launch ?? (yield* museLaunch(options.binaryPath, options.environment, options.cwd));
   const platform = yield* HostProcess.Platform;
   // The Muse SDK hands libuv the cwd and the PATH search, which freeze the server while a
   // mount under either hangs; `env` does both in the child.

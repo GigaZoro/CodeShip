@@ -14,6 +14,7 @@ const AT = Date.parse("2026-01-10T00:00:00.000Z");
 
 // One dollar per million uncached input tokens; only "priced-model" has a price.
 const layerUsage = Layer.mock(UsageService.UsageService)({
+  clientSettingsKey: () => "unused",
   priceTokens: (items) =>
     Effect.succeed(
       items.map((item) =>

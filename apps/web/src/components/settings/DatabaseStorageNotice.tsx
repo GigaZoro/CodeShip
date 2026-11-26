@@ -9,6 +9,7 @@ import {
   type EnvironmentId,
   offlineVacuumBytes,
 } from "@t3tools/contracts";
+import { describeDatabaseChange } from "@t3tools/client-runtime/host-resources";
 import { formatBytes } from "@t3tools/shared/formatBytes";
 import * as Schema from "effect/Schema";
 import { type ReactNode, useState } from "react";
@@ -40,7 +41,7 @@ const reclaimPermissionsAtom = environmentAtomList(
 
 const formatGiB = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
-/** Shows each machine's database size, and offers to reclaim the space on every machine whose database still holds at least 1 GiB of freed pages. */
+/** Shows each machine's database size and daily growth and offers to reclaim freed space. */
 export function DatabaseStorageNotice({
   environments,
 }: {
@@ -78,13 +79,7 @@ export function DatabaseStorageNotice({
         <SettingsRow
           key={`size-${environmentId}`}
           title={t("Database on {environment}", { environment: labelOf(environmentId) })}
-          description={
-            status.reclaimableBytes + status.fragmentedBytes > 0
-              ? t("{size} can be reclaimed", {
-                  size: formatBytes(status.reclaimableBytes + status.fragmentedBytes),
-                })
-              : undefined
-          }
+          description={describeDatabaseChange(status).join(" · ") || undefined}
           control={
             <span className="text-sm tabular-nums">{formatBytes(status.databaseBytes)}</span>
           }

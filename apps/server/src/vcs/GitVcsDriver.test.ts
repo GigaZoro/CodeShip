@@ -2077,7 +2077,8 @@ it.effect("GitVcsDriver keeps Git's exit code and error lines when detection fai
     const error = yield* broken.detectRepository(cwd).pipe(Effect.flip);
     assert.strictEqual(error._tag, "VcsProcessExitError");
     assert.strictEqual(error._tag === "VcsProcessExitError" && error.exitCode, 128);
-    assert.include(error.message, "fatal: bad config line 3");
+    assert.include(error.message, "fatal: bad config line … in file …");
+    assert.notInclude(error.message, "/r/.git/config");
     assert.notInclude(error.message, "hint: x");
 
     const plain = yield* makeStubbedDriver({
@@ -2087,6 +2088,39 @@ it.effect("GitVcsDriver keeps Git's exit code and error lines when detection fai
     });
     assert.strictEqual(yield* plain.detectRepository(cwd), null);
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+it.effect.each([
+  [
+    "listing the workspace files",
+    (driver: VcsDriver.VcsDriver["Service"]) => Effect.asVoid(driver.listWorkspaceFiles("/r")),
+  ],
+  [
+    "listing the remotes",
+    (driver: VcsDriver.VcsDriver["Service"]) => Effect.asVoid(driver.listRemotes("/r")),
+  ],
+  [
+    "filtering ignored paths",
+    (driver: VcsDriver.VcsDriver["Service"]) =>
+      Effect.asVoid(driver.filterIgnoredPaths("/r", ["a.txt"])),
+  ],
+] as const)("GitVcsDriver quotes no value Git printed when %s fails", ([, run]) =>
+  Effect.gen(function* () {
+    const email = "review-fixture@example.invalid";
+    const driver = yield* makeStubbedDriver({
+      code: 128,
+      stdout: "",
+      stderr: `fatal: empty ident name (for <${email}>) not allowed\nfatal: cannot read ${email}\n`,
+    });
+    const error = yield* run(driver).pipe(Effect.flip);
+    assert.strictEqual(error._tag, "VcsProcessExitError");
+    assert.include(
+      error.message,
+      "fatal: empty ident name (for <…>) not allowed | fatal: (message withheld)",
+    );
+    assert.notInclude(error.message, email);
+    assert.notInclude(JSON.stringify(error), email);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 const gitCommandCount = (operation: string, outcome: string) =>

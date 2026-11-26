@@ -27,6 +27,7 @@ import {
 
 export interface UsageReading {
   readonly summary: UsageSummary;
+  readonly usageSettingsKey: string;
   readonly requestKey: string;
   readonly window: UsageSummaryInput;
   readonly complete: boolean;
@@ -38,6 +39,7 @@ export interface UsageReading {
 }
 
 export interface UsageFailure {
+  readonly usageSettingsKey: string;
   readonly requestKey: string;
   readonly window: UsageSummaryInput;
   readonly windowKey: string;
@@ -105,15 +107,14 @@ function compatible(summary: UsageSummary): boolean {
   return isCompatibleUsageContractVersion(summary.contractVersion, USAGE_CONTRACT_VERSION);
 }
 
-function requestKeyOf(
-  window: UsageSummaryInput,
-  environment: EnvironmentUsageStatus,
-  hidden: readonly UsageProviderKind[],
-): string {
-  return JSON.stringify([usagePeriodKey(window), environment.modelFilter ?? null, hidden]);
+// The model filter is a usage setting: readings under another one are dropped, not keyed apart.
+function requestKeyOf(window: UsageSummaryInput, hidden: readonly UsageProviderKind[]): string {
+  return JSON.stringify([usagePeriodKey(window), hidden]);
 }
 
-// A slot leaves out the per-environment model filter so readings compare across environments.
+// Past 24h requests roll each minute while the page is visible (makeWindow floors them to the
+// minute), so each minute is its own slot. Scans are incremental, which keeps a rescan per minute
+// cheap; an hourly key would leave up to 59 minutes of usage off the page.
 function slotOf(
   window: UsageSummaryInput,
   windowKey: string,
@@ -124,6 +125,24 @@ function slotOf(
 
 function windowEnd(window: UsageSummaryInput): string {
   return window.untilTime ?? window.untilDay;
+}
+
+// The reading on screen stays until another view replaces it, so a later switch can still fall
+// back to it while environments load.
+function trimReadings(
+  readings: readonly UsageReading[],
+  onScreen: string | null,
+): readonly UsageReading[] {
+  if (readings.length <= MAX_READING_KEYS) return readings;
+  const kept = new Set(
+    [...readings]
+      .sort(
+        (left, right) =>
+          Number(right.slot === onScreen) - Number(left.slot === onScreen) || right.seq - left.seq,
+      )
+      .slice(0, MAX_READING_KEYS),
+  );
+  return readings.filter((reading) => kept.has(reading));
 }
 
 function newest(readings: readonly UsageReading[]): UsageReading | undefined {
@@ -229,10 +248,22 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
       changed = true;
       continue;
     }
+    const { usageSettingsKey } = environment;
+    const saved = readings.get(id) ?? [];
+    if (saved.some((reading) => reading.usageSettingsKey !== usageSettingsKey)) {
+      const current = saved.filter((reading) => reading.usageSettingsKey === usageSettingsKey);
+      if (current.length === 0) readings.delete(id);
+      else readings.set(id, current);
+      changed = true;
+    }
+    if (failures.has(id) && failures.get(id)!.usageSettingsKey !== usageSettingsKey) {
+      failures.delete(id);
+      changed = true;
+    }
     if (!input.enabled) continue;
 
     const { window } = input;
-    const requestKey = requestKeyOf(window, environment, hidden);
+    const requestKey = requestKeyOf(window, hidden);
     const windowKey = usageWindowKey(window);
     let own = readings.get(id) ?? [];
     if (failures.get(id)?.requestKey !== undefined && failures.get(id)?.requestKey !== requestKey) {
@@ -273,6 +304,7 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
         ...own.filter((reading) => reading !== at),
         {
           summary: answer,
+          usageSettingsKey,
           requestKey,
           window,
           complete,
@@ -283,10 +315,7 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
           hidden,
         },
       ];
-      own =
-        next.length > MAX_READING_KEYS
-          ? [...next].sort((left, right) => right.seq - left.seq).slice(0, MAX_READING_KEYS)
-          : next;
+      own = trimReadings(next, state.view.kind === "figures" ? state.view.slot : null);
       readings.set(id, own);
       changed = true;
     };
@@ -303,7 +332,13 @@ export function settleUsageView(state: UsageViewState, input: UsageViewInput): U
         environment.isConnected &&
         (failure?.windowKey !== windowKey || failure.message !== environment.error)
       ) {
-        failures.set(id, { requestKey, window, windowKey, message: environment.error });
+        failures.set(id, {
+          usageSettingsKey,
+          requestKey,
+          window,
+          windowKey,
+          message: environment.error,
+        });
         changed = true;
       }
       if (summary !== null && !knownAtRequest(summary)) record(summary, true);
@@ -400,14 +435,14 @@ function chooseView(
       : NO_USAGE;
   }
 
-  const requestKeys = new Map(
-    members.map((environment) => [environment, requestKeyOf(window, environment, hidden)]),
-  );
+  const requestKey = requestKeyOf(window, hidden);
+  // A disconnected environment cannot answer until it reconnects, and its gap names it.
   const resolved = (environment: EnvironmentUsageStatus) => {
     const failure = state.failures.get(environment.environmentId);
     return (
+      !environment.isConnected ||
       (failure !== undefined &&
-        failure.requestKey === requestKeys.get(environment) &&
+        failure.requestKey === requestKey &&
         failure.windowKey === windowKey) ||
       (!environment.isPending && environment.summary !== null && !compatible(environment.summary))
     );
@@ -415,36 +450,43 @@ function chooseView(
   const unresolved = (environment: EnvironmentUsageStatus) =>
     !own(environment).some(
       (reading) =>
-        reading.complete &&
-        reading.requestKey === requestKeys.get(environment) &&
-        reading.windowKey === windowKey,
+        reading.complete && reading.requestKey === requestKey && reading.windowKey === windowKey,
     ) && !resolved(environment);
-  const readingAt = (environment: EnvironmentUsageStatus, slot: string) => {
-    const candidates = own(environment).filter((reading) => reading.slot === slot);
-    return (
-      candidates.find((reading) => reading.requestKey === requestKeys.get(environment)) ??
-      newest(candidates)
-    );
-  };
+  // Every saved reading was read under its environment's current usage settings, and `record`
+  // keeps one reading per slot.
   const holdersAt = (slot: string) =>
     members.flatMap((environment) => {
-      const reading = readingAt(environment, slot);
+      const reading = own(environment).find((candidate) => candidate.slot === slot);
       return reading === undefined ? [] : [{ environment, reading }];
     });
 
-  const newestBySlot = new Map<string, number>();
+  const newestBySlot = new Map<string, UsageReading>();
   for (const environment of members) {
-    for (const { slot, seq } of own(environment)) {
-      newestBySlot.set(slot, Math.max(newestBySlot.get(slot) ?? 0, seq));
+    for (const reading of own(environment)) {
+      const known = newestBySlot.get(reading.slot);
+      if (known === undefined || reading.seq > known.seq) newestBySlot.set(reading.slot, reading);
     }
   }
-  const slots = [...newestBySlot].sort(([, left], [, right]) => right - left).map(([slot]) => slot);
+  const slots = [...newestBySlot.values()]
+    .sort((left, right) => right.seq - left.seq)
+    .map(({ slot }) => slot);
   const requestedSlot = slotOf(window, windowKey, hidden);
+  const onScreen = previous.kind === "figures" ? newestBySlot.get(previous.slot) : undefined;
+  const olderThanOnScreen = (slot: string) => {
+    if (onScreen === undefined || slot === requestedSlot) return false;
+    const reading = newestBySlot.get(slot)!;
+    // Once the requested period is on screen, another period's reading is older usage.
+    if (reading.requestKey !== onScreen.requestKey) return onScreen.requestKey === requestKey;
+    return windowEnd(reading.window) < windowEnd(onScreen.window);
+  };
   // Returning to a period or showing a hidden provider again finds its reading older than the
   // one on screen, so newest-first alone would keep showing the other request.
-  const candidates = newestBySlot.has(requestedSlot)
-    ? [requestedSlot, ...slots.filter((slot) => slot !== requestedSlot)]
-    : slots;
+  const candidates = (
+    newestBySlot.has(requestedSlot)
+      ? [requestedSlot, ...slots.filter((slot) => slot !== requestedSlot)]
+      : slots
+  ).filter((slot) => !olderThanOnScreen(slot));
+  // With no complete view, the one on screen stays rather than one environment's partial figures.
   const chosen =
     candidates.find((slot) => {
       const holders = holdersAt(slot);
@@ -456,14 +498,13 @@ function chooseView(
               holders.some((holder) => holder.environment === environment) || resolved(environment),
           ))
       );
-    }) ?? slots[0]!;
+    }) ??
+    onScreen?.slot ??
+    slots[0]!;
   const holders = holdersAt(chosen);
   const shown = holders[0]!.reading;
   const kept =
-    holders.some(
-      ({ environment, reading }) => reading.requestKey !== requestKeys.get(environment),
-    ) ||
-    (shown.windowKey !== windowKey && !members.some(unresolved));
+    shown.requestKey !== requestKey || (shown.windowKey !== windowKey && !members.some(unresolved));
   const reserved = reservedProviders(holders.map(({ reading }) => reading));
 
   if (

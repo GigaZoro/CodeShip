@@ -20,6 +20,7 @@ import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import {
   DesktopWslEnvironment,
   layer as layerDesktopWslEnvironment,
+  buildWslMountedServerCommand,
   buildWslRuntimeInstallScript,
   makeIsAvailable,
   buildWslRuntimeInvalidateScript,
@@ -75,7 +76,8 @@ const awaitHolder = (condition: string) =>
 const holdRuntimeBusy = (entry: string) =>
   [
     `exec 7> >(exec -a ${entry} cat >/dev/null 2>&1)`,
-    awaitHolder(`grep -qF -- ${entry} /proc/[0-9]*/cmdline 2>/dev/null`),
+    "runtime_holder=$!",
+    awaitHolder(`grep -qF -- ${entry} "/proc/$runtime_holder/cmdline" 2>/dev/null`),
   ].join("\n");
 
 const holdInstallLock = (lock: string) =>
@@ -116,7 +118,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     fixtures.length = 0;
   });
 
-  const createFixture = (serverEntry = SERVER_ENTRY_SOURCE) => {
+  const createFixture = (serverEntry = SERVER_ENTRY_SOURCE, includeMetadata = false) => {
     const result = runShell(
       [
         "set -eu",
@@ -125,6 +127,28 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'mkdir -p "$stage/node_modules/node-pty/build/Release" "$work/home"',
         `printf '%s' ${sh(serverEntry)} > "$stage/t3"`,
         'chmod +x "$stage/t3"',
+        ...(includeMetadata
+          ? [
+              'mkdir -p "$stage/codex-metadata/bin"',
+              'printf champ > "$stage/codex-metadata/bin/codex"',
+              'chmod +x "$stage/codex-metadata/bin/codex"',
+              `digest=$(sha256sum "$stage/codex-metadata/bin/codex" | cut -d ' ' -f 1)`,
+              `printf 'x %s bin/codex\\n' "$digest" > "$stage/codex-metadata.files"`,
+              // The fixture server models the integrity check embedded in required release executables.
+              `cat >> "$stage/t3" <<'VERIFY_INSTALL'`,
+              'if [ "${T3CODE_VERIFY_INSTALL:-}" = 1 ]; then',
+              '  cd "${0%/*}" || exit 1',
+              `  digest=$(printf champ | sha256sum | cut -d ' ' -f 1)`,
+              '  if [ "$(cat codex-metadata.files)" != "x $digest bin/codex" ] ||',
+              "     [ ! -x codex-metadata/bin/codex ] ||",
+              `     ! printf '%s  %s\\n' "$digest" codex-metadata/bin/codex | sha256sum --status -c -; then`,
+              "    echo 'Invalid required metadata package' >&2",
+              "    exit 1",
+              "  fi",
+              "fi",
+              "VERIFY_INSTALL",
+            ]
+          : []),
         `printf '%s' 'pty-native-payload' > "$stage/node_modules/node-pty/build/Release/pty.node"`,
         `tar -czf "$work/wsl-runtime.tar.gz" -C "$work/stage" t3-0.0.0-linux-x64`,
         `printf 'work:%s\\n' "$work"`,
@@ -157,6 +181,23 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
       install: (archive?: string, sha?: string) => runShell(installScript(archive, sha)),
     };
   };
+
+  const startMountedBackend = (fixture: ReturnType<typeof createFixture>) => {
+    const entry = `${fixture.work}/mounted-server.sh`;
+    const command = buildWslMountedServerCommand("bash", entry, fixture.runtimeRoot)
+      .map(sh)
+      .join(" ");
+    return [
+      `export T3CODE_WSL_CODEX_METADATA_RUNTIME_ROOT=${sh(fixture.runtimeRoot)}`,
+      // Keep an actual mounted process alive on stdin. Only its environment names the sidecar.
+      `printf '%s\\n' 'touch "$HOME/mounted-ready"' 'cat >/dev/null' > ${sh(entry)}`,
+      `exec 6> >(exec ${command})`,
+      "holder=$!",
+      awaitHolder('[ -e "$HOME/mounted-ready" ]'),
+    ].join("\n");
+  };
+
+  const stopMountedBackend = 'exec 6>&-\nwait "$holder"';
 
   const probeFixture = (fixture: ReturnType<typeof createFixture>) =>
     runShell(
@@ -237,6 +278,163 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     expect(result.stderr).toContain("libatomic.so.1");
     expect(parseWslRuntimeRoot(result.stdout)).toBeNull();
   });
+
+  it.each([
+    "rm -rf codex-metadata",
+    "rm -rf codex-metadata codex-metadata.files",
+    "chmod -x codex-metadata/bin/codex",
+    ": > codex-metadata/bin/codex",
+    "printf chump > codex-metadata/bin/codex",
+  ])("restores required metadata from the verified archive after %s", (damage) => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    expect(fixture.install().status).toBe(0);
+    expect(runShell(`cd ${sh(fixture.runtimeRoot)} && ${damage}`).status).toBe(0);
+    const repaired = fixture.install();
+    expect(repaired.status, repaired.stderr).toBe(0);
+    const restored = runShell(
+      `cd ${sh(fixture.runtimeRoot)} && test -s codex-metadata.files && test -x codex-metadata/bin/codex && cat codex-metadata/bin/codex`,
+    );
+    expect(restored.stdout).toBe("champ");
+  });
+
+  it("rejects an extraction that loses the inventory declared by the verified archive", () => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    const result = runShell(
+      [
+        'tar() { command tar "$@" && rm -f "$runtime_tmp/codex-metadata.files"; }',
+        fixture.installScript(),
+      ].join("\n"),
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Invalid required metadata package");
+    expect(parseWslRuntimeRoot(result.stdout)).toBeNull();
+  });
+
+  it.each([
+    ["extraction", "tar() { confirm_backend; return 1; }"],
+    [
+      "verification",
+      'tar() { command tar "$@" && confirm_backend && rm "$runtime_tmp/codex-metadata.files"; }',
+    ],
+    [
+      "promotion",
+      'mv() { if [ "$3" = "$runtime_tmp" ]; then confirm_backend; return 1; fi; command mv "$@"; }',
+    ],
+  ])("keeps the installed backend at its path after failed %s", (_, injectFailure) => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    expect(fixture.install().status).toBe(0);
+    const damage = runShell(
+      `cd ${sh(fixture.runtimeRoot)} && rm codex-metadata/bin/codex && touch original-install`,
+    );
+    expect(damage.status, damage.stderr).toBe(0);
+
+    const failed = runShell(
+      [
+        holdRuntimeBusy(sh(fixture.serverEntry)),
+        `confirm_backend() { grep -qF -- ${sh(fixture.serverEntry)} "/proc/$runtime_holder/cmdline" && echo "injected failure with live backend" >&2; }`,
+        injectFailure,
+        // The parent owns the holder's pipe while the installer opens its own lock descriptors.
+        `(\n${fixture.installScript()}\n)`,
+      ].join("\n"),
+    );
+
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain("injected failure with live backend");
+    expect(parseWslRuntimeRoot(failed.stdout)).toBeNull();
+    const original = runShell(
+      `test -f ${sh(`${fixture.runtimeRoot}/original-install`)} && ${sh(fixture.serverEntry)} --version`,
+    );
+    expect(original.status, original.stderr).toBe(0);
+    const retried = fixture.install();
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(parseWslRuntimeRoot(retried.stdout)).toBe(fixture.runtimeRoot);
+    expect(runShell(`test ! -e ${sh(`${fixture.runtimeRoot}/original-install`)}`).status).toBe(0);
+  });
+
+  it("recovers the installed path after interruption between promotion renames", () => {
+    const fixture = createFixture();
+    expect(fixture.install().status).toBe(0);
+    const interrupted = runShell(
+      [
+        "set -eu",
+        `mv -T ${sh(fixture.runtimeRoot)} ${sh(`${fixture.runtimeParent}/.${fixture.runtimeId}.rollback`)}`,
+        `rm ${sh(fixture.archivePath)}`,
+      ].join("\n"),
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(0);
+
+    const recovered = fixture.install();
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(parseWslRuntimeRoot(recovered.stdout)).toBe(fixture.runtimeRoot);
+    expect(runShell(`${sh(fixture.serverEntry)} --version`).status).toBe(0);
+  });
+
+  it.each([
+    {
+      operation: "repair",
+      heldRoot: "$root",
+      setup: 'touch "$root/original"; rm "$root/.t3code-wsl-runtime-ready"',
+      whileMounted: 'test -f "$root/original" && test ! -e "$root/.t3code-wsl-runtime-ready"',
+      afterExit: 'test ! -e "$root/original" && test -f "$root/.t3code-wsl-runtime-ready"',
+      warm: false,
+    },
+    {
+      operation: "restore a rollback",
+      heldRoot: "$rollback",
+      setup: 'touch "$root/original"; mv -T "$root" "$rollback"; rm "$archive"',
+      whileMounted: 'test ! -e "$root" && test -f "$rollback/original"',
+      afterExit: 'test -f "$root/original" && test ! -e "$rollback"',
+      warm: false,
+    },
+    {
+      operation: "reuse a warm runtime with a pending rollback",
+      heldRoot: "$root",
+      setup: 'mkdir "$rollback"; touch "$rollback/original"; rm "$archive"',
+      whileMounted: 'test -f "$rollback/original" && test -f "$root/.t3code-wsl-runtime-ready"',
+      afterExit: 'test ! -e "$rollback" && test -f "$root/.t3code-wsl-runtime-ready"',
+      warm: true,
+    },
+  ])(
+    "respects the mounted sidecar lease during $operation",
+    ({ setup, heldRoot, whileMounted, afterExit, warm }) => {
+      const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+      expect(fixture.install().status).toBe(0);
+      const result = runShell(
+        [
+          "set -eu",
+          `export HOME=${sh(`${fixture.work}/home`)}`,
+          `root=${sh(fixture.runtimeRoot)}`,
+          `rollback=${sh(`${fixture.runtimeParent}/.${fixture.runtimeId}.rollback`)}`,
+          `archive=${sh(fixture.archivePath)}`,
+          `cd ${sh(fixture.work)}`,
+          'helper="$root/codex-metadata/bin/codex"',
+          'before=$(stat -c %i "$helper")',
+          setup,
+          `held_helper="${heldRoot}/codex-metadata/bin/codex"`,
+          "cat > install.sh <<'INSTALL'",
+          fixture.installScript(),
+          "INSTALL",
+          startMountedBackend(fixture),
+          "status=0",
+          "timeout 5 sh install.sh > held.out 2> held.err || status=$?",
+          'test "$status" -ne 124 || { echo "waited for the mounted backend"; exit 1; }',
+          `if [ "$status" -ne ${warm ? 0 : 1} ]; then echo "unexpected held install status $status"; cat held.err; exit 1; fi`,
+          warm ? 'grep -Fxq "runtimeRoot:$root" held.out' : 'grep -q "repair deferred" held.err',
+          'kill -0 "$holder"',
+          `${whileMounted} || { echo "changed the leased installation"; exit 1; }`,
+          'test "$before" = "$(stat -c %i "$held_helper")" || { echo "leased helper inode changed"; exit 1; }',
+          'printf %s champ | cmp -s - "$held_helper" || { echo "leased helper contents changed"; exit 1; }',
+          stopMountedBackend,
+          "sh install.sh > retried.out",
+          'grep -Fxq "runtimeRoot:$root" retried.out',
+          `${afterExit} || { echo "repair did not finish after release"; exit 1; }`,
+          'test -x "$helper"',
+          'printf %s champ | cmp -s - "$helper" || { echo "retry changed helper contents"; exit 1; }',
+        ].join("\n"),
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    },
+  );
 
   it("reinstalls a cache whose executable was truncated", () => {
     const fixture = createFixture();
@@ -475,6 +673,47 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         expect(version.stdout).toBe("t3code wsl runtime test server 0.0.0\n");
       }).pipe(Effect.provide(layerWslEnvironment(`${fixture.work}/home`)));
     });
+  });
+
+  it("renews the mounted launch grace when the staged executable is invalidated", () => {
+    const fixture = createFixture();
+    expect(fixture.install().status).toBe(0);
+    const result = runShell(
+      [
+        "set -eu",
+        `export HOME=${sh(`${fixture.work}/home`)}`,
+        `touch -d '10 minutes ago' ${sh(`${fixture.runtimeRoot}/.t3code-wsl-runtime-selected`)}`,
+        `(\n${buildWslRuntimeInvalidateScript(fixture.runtimeId)}\n)`,
+        buildWslRuntimePruneScript("sha256-current"),
+        `test -x ${sh(fixture.serverEntry)}`,
+        `test ! -e ${sh(`${fixture.runtimeRoot}/.t3code-wsl-runtime-ready`)}`,
+      ].join("\n"),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  });
+
+  it("keeps a mounted backend's metadata runtime until the backend exits", () => {
+    const fixture = createFixture(SERVER_ENTRY_SOURCE, true);
+    expect(fixture.install().status).toBe(0);
+    const selected = `${fixture.runtimeRoot}/.t3code-wsl-runtime-selected`;
+    const prune = `(\n${buildWslRuntimePruneScript("sha256-current")}\n)`;
+    const result = runShell(
+      [
+        "set -eu",
+        `export HOME=${sh(`${fixture.work}/home`)}`,
+        `(\n${buildWslRuntimeInvalidateScript(fixture.runtimeId)}\n)`,
+        prune,
+        `test -x ${sh(`${fixture.runtimeRoot}/codex-metadata/bin/codex`)} || { echo "lost before launch"; exit 1; }`,
+        startMountedBackend(fixture),
+        `touch -d '10 minutes ago' ${sh(selected)}`,
+        prune,
+        `test -x ${sh(`${fixture.runtimeRoot}/codex-metadata/bin/codex`)} || { echo "lost while running"; exit 1; }`,
+        stopMountedBackend,
+        prune,
+        `test ! -e ${sh(fixture.runtimeRoot)} || { echo "retained after exit"; exit 1; }`,
+      ].join("\n"),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 
   it("prunes old and markerless caches without touching retained, active, locked, or unrelated roots", () => {

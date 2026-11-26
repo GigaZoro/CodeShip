@@ -53,6 +53,7 @@ message passes only when every word in it is listed here.
 | archive                                   | архівувати, архів                             |
 | tag (a thread label)                      | тег (мн. теги)                                |
 | pin / unpin                               | закріпити / відкріпити                        |
+| star / unstar a message                   | позначити зірочкою / зняти зірочку            |
 | scheduled task                            | заплановане завдання                          |
 | tray / notification area (Windows)        | трей / область сповіщень                      |
 | skill                                     | навичка                                       |

@@ -7,12 +7,12 @@
  */
 import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as Schema from "effect/Schema";
 
-import { gradeSample, McpToolUseCase, pastedText, worldFilePaths } from "./run.ts";
+import { gradeSample, McpToolUseCase, pastedText } from "./run.ts";
 
-const { values, positionals } = NodeUtil.parseArgs({
+const { values, positionals } = parseCommandLine({
   allowPositionals: true,
   options: { cases: { type: "string", multiple: true } },
 });
@@ -36,12 +36,10 @@ for (const file of positionals) {
     const row = JSON.parse(line);
     const testCase = cases.get(row.id);
     if (testCase === undefined || row.error !== undefined) continue;
-    const failed = gradeSample(
-      testCase.expect,
-      row,
-      pastedText(testCase),
-      worldFilePaths(testCase),
-    ).filter((check) => !check.pass);
+    const failed = gradeSample(testCase.expect, row, {
+      pasted: pastedText(testCase),
+      files: testCase.setup.world?.files,
+    }).filter((check) => !check.pass);
     const cut = failed.length === 0 && row.stopReason === "failed_early";
     const pass = failed.length === 0 && !cut;
     const count = counts.get(row.id) ?? { n: 0, was: 0, now: 0, cut: 0 };

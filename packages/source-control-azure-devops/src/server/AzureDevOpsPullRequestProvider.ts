@@ -2,7 +2,6 @@ import { resolvePullRequestAuthorFilter, SourceControlProviderKind } from "@t3to
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Semaphore from "effect/Semaphore";
 import { rollupCheckStatuses } from "@t3tools/source-control-core/server/pullRequestChecks";
 import type { PullRequestCapabilities, PullRequestViewerPermissions } from "@t3tools/contracts";
 
@@ -40,9 +39,6 @@ import { definition } from "../shared/definition.ts";
 
 /** A file the blob batch missed pays for two Python startups. */
 const DIFF_FILE_CONCURRENCY = 4;
-
-/** Readers share a spawn budget across requests. */
-export const MAX_DIFF_SPAWNS = 2 * DIFF_FILE_CONCURRENCY;
 
 export const LOCATION_CACHE_CAPACITY = 128;
 
@@ -173,11 +169,6 @@ function toSummary(pullRequest: AzureDevOpsPullRequest): ProviderChangeRequestSu
 
 export const make = Effect.gen(function* () {
   const cli = yield* AzureDevOpsPullRequestCli.AzureDevOpsPullRequestCli;
-  const diffSpawns = yield* Semaphore.make(MAX_DIFF_SPAWNS);
-  const readItemContent = (input: Parameters<typeof cli.readItemContent>[0]) =>
-    diffSpawns.withPermits(1)(cli.readItemContent(input));
-  const readBlobs = (input: Parameters<typeof cli.readBlobs>[0]) =>
-    diffSpawns.withPermits(1)(cli.readBlobs(input));
 
   const fail =
     (operation: string) => (error: AzureDevOpsPullRequestCli.AzureDevOpsPullRequestCliError) =>
@@ -320,7 +311,7 @@ export const make = Effect.gen(function* () {
       [
         input.change.changeKind === "new"
           ? Effect.succeed(EMPTY_ITEM)
-          : readItemContent({
+          : cli.readItemContent({
               cwd: input.cwd,
               location: input.location,
               path: input.change.oldPath,
@@ -328,7 +319,7 @@ export const make = Effect.gen(function* () {
             }),
         input.change.changeKind === "deleted"
           ? Effect.succeed(EMPTY_ITEM)
-          : readItemContent({
+          : cli.readItemContent({
               cwd: input.cwd,
               location: input.location,
               path: input.change.path,
@@ -579,18 +570,20 @@ export const make = Effect.gen(function* () {
         while (!full && index < changes.length) {
           if (index >= blobsUntil) {
             blobsUntil = index + BLOB_BATCH_FILES;
-            blobs = yield* readBlobs({
-              cwd: input.cwd,
-              location: scope.location,
-              objectIds: changes.slice(index, blobsUntil).flatMap(blobIdsOf),
-            }).pipe(
-              // Per-file reads then answer, or fail, for each file.
-              Effect.catchTags({
-                AzureDevOpsPullRequestNotFoundError: () => Effect.succeed(new Map()),
-                AzureDevOpsCommandFailedError: () => Effect.succeed(new Map()),
-                AzureDevOpsPullRequestReadError: () => Effect.succeed(new Map()),
-              }),
-            );
+            blobs = yield* cli
+              .readBlobs({
+                cwd: input.cwd,
+                location: scope.location,
+                objectIds: changes.slice(index, blobsUntil).flatMap(blobIdsOf),
+              })
+              .pipe(
+                // Per-file reads then answer, or fail, for each file.
+                Effect.catchTags({
+                  AzureDevOpsPullRequestNotFoundError: () => Effect.succeed(new Map()),
+                  AzureDevOpsCommandFailedError: () => Effect.succeed(new Map()),
+                  AzureDevOpsPullRequestReadError: () => Effect.succeed(new Map()),
+                }),
+              );
           }
           const batch = changes.slice(index, Math.min(index + batchWidth(), blobsUntil));
           const read = yield* Effect.forEach(

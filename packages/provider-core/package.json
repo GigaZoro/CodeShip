@@ -23,6 +23,10 @@
       "types": "./src/server/auth.ts",
       "import": "./src/server/auth.ts"
     },
+    "./server/cliVersionMemory": {
+      "types": "./src/server/cliVersionMemory.ts",
+      "import": "./src/server/cliVersionMemory.ts"
+    },
     "./server/collectStreamText": {
       "types": "./src/server/collectStreamText.ts",
       "import": "./src/server/collectStreamText.ts"

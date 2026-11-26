@@ -9,3 +9,8 @@ apps/server/schema/** linguist-generated
 **/*.graphql.ts linguist-generated
 # Rebases and merges keep release notes newest first; `vp i` configures the driver.
 docs/release-notes.md merge=release-notes
+# Patches are hashed before use on every release host, including Windows.
+docs/operations/codex-metadata/*.patch -text whitespace=-blank-at-eol
+docs/operations/codex-metadata/*.diff -text whitespace=-blank-at-eol
+# A landing's rebase adds both sides' bytes together; see landing-turn.cjs.
+apps/server/src/provider/agentContextBudget.json merge=agent-context-budget

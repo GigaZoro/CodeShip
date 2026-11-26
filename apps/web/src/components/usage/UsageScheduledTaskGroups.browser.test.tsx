@@ -80,6 +80,7 @@ function groups(minutes: number, changed = false, withLaptop = false) {
     isConnected: true,
     isPending: false,
     summary: null,
+    usageSettingsKey: "settings",
   };
   const time = Date.parse("2026-11-21T12:00:00Z");
   return (

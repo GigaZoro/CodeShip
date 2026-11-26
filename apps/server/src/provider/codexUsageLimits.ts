@@ -112,6 +112,7 @@ export function codexRateLimitsToWindows(
     const resetsAt = isoFromEpochSeconds(individualLimit.resetsAt);
     windows.push({
       id: "individual",
+      scope: "spending-cap",
       kind: "monthly",
       label: "Monthly credit limit",
       usedPercent: clampPercent(100 - individualLimit.remainingPercent),

@@ -19,6 +19,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import {
+  parseRecorderArguments,
+  replayScenarioNames,
+  validateReplayOutput,
+} from "./replayRecorderArguments.ts";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
@@ -70,10 +75,16 @@ type WireMessage =
   /** One ACP process ended and the adapter spawned the next (an idle release). */
   | { readonly direction: "respawn" };
 
-function readArgValues(name: string): ReadonlyArray<string> {
-  const args = process.argv.slice(2);
-  return args.flatMap((arg, index) => (arg === name && args[index + 1] ? [args[index + 1]!] : []));
-}
+const { values: flags } = parseRecorderArguments(
+  {
+    options: {
+      force: { type: "boolean" },
+      out: { type: "string" },
+      scenario: { type: "string", multiple: true, default: [] },
+    },
+  },
+  process.argv.slice(2),
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -588,7 +599,7 @@ const recordScenario = Effect.fn("recordKiroScenario")(function* (fixtureName: s
       return cause;
     }
   })();
-  if (liveFailure !== undefined && !process.argv.includes("--force")) {
+  if (liveFailure !== undefined && !flags.force) {
     return yield* Effect.die(
       new Error(`Live orchestration failed ${fixtureName} assertions; nothing was written.`, {
         cause: liveFailure,
@@ -596,7 +607,7 @@ const recordScenario = Effect.fn("recordKiroScenario")(function* (fixtureName: s
     );
   }
 
-  const outputPath = readArgValues("--out")[0] ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = flags.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const { entries: transcriptEntries, ...header } = transcript;
   yield* fs.writeFileString(
     outputPath,
@@ -609,13 +620,8 @@ const recordScenario = Effect.fn("recordKiroScenario")(function* (fixtureName: s
   yield* Console.log(`Wrote ${transcriptEntries.length} Kiro ACP replay entries to ${outputPath}`);
 });
 
-const scenarios = readArgValues("--scenario").flatMap((value) => value.split(","));
-if (scenarios.length === 0) {
-  throw new Error("Pass --scenario <fixture name>[,<fixture name>...]");
-}
-if (scenarios.length > 1 && readArgValues("--out").length > 0) {
-  throw new Error("--out cannot be used with multiple scenarios; run them separately.");
-}
+const scenarios = replayScenarioNames(flags.scenario);
+validateReplayOutput(flags.out, scenarios.length);
 
 await Effect.runPromise(
   Effect.forEach(scenarios, (name) => Effect.scoped(recordScenario(name)), {

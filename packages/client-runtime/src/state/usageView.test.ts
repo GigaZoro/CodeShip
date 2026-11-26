@@ -1,5 +1,8 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
   USAGE_MERGE_COMPATIBLE_SINCE,
   UsageDay,
@@ -8,6 +11,7 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { usageWindowLabel } from "@t3tools/shared/usageFormat";
+import { usageScanSettingsKey } from "@t3tools/shared/usageScanSettings";
 import { DateTime } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -132,6 +136,7 @@ function status(
     error: null,
     summary: summary({ host: label }),
     canReadDiagnostics: true,
+    usageSettingsKey: "settings",
     ...overrides,
   };
 }
@@ -456,17 +461,22 @@ describe("settleUsageView choosing the shown key", () => {
       "Desk: This environment is not connected. Showing its last values.",
     ]);
 
+    const commonStep: Step = {
+      window: next,
+      environments: [reconnecting(null), answered("Laptop", 210)],
+    };
     const common = run([
       atTick,
       { window: tick, environments: [reconnecting(desk.summary), laptop] },
-      { window: next, environments: [reconnecting(null), answered("Laptop", 210)] },
+      commonStep,
     ]);
     expect(shown(common)).toEqual({
-      environments: ["Desk", "Laptop"],
-      tokens: 300,
-      window: tick,
+      environments: ["Laptop"],
+      tokens: 210,
+      window: next,
       kept: false,
     });
+    expect(messages(common, commonStep)).toEqual(["Desk: This environment is not connected."]);
 
     const apartStep: Step = {
       window: later,
@@ -486,6 +496,110 @@ describe("settleUsageView choosing the shown key", () => {
       kept: false,
     });
     expect(messages(apart, apartStep)).toEqual(["Desk: This environment is not connected."]);
+  });
+
+  it("keeps the previous complete view marked as previous when the period is switched twice while one environment is still loading", () => {
+    const week = daily(7, "2026-09-05");
+    const month = daily(30, "2026-09-05");
+    const state = run([
+      atTick,
+      { window: week, environments: [answered("Desk", 130), pending("Laptop")] },
+      { window: month, environments: [answered("Desk", 150), pending("Laptop")] },
+    ]);
+    expect(shown(state)).toEqual({
+      environments: ["Desk", "Laptop"],
+      tokens: 300,
+      window: tick,
+      kept: true,
+    });
+  });
+
+  it("keeps the previous complete view marked as previous when an environment that failed answers the new period first", () => {
+    const week = daily(7, "2026-09-05");
+    const state = run([
+      { window: tick, environments: [desk, laptop, failed("Phone")] },
+      {
+        window: week,
+        environments: [pending("Desk"), pending("Laptop"), answered("Phone", 40)],
+      },
+    ]);
+    expect(shown(state)).toEqual({
+      environments: ["Desk", "Laptop"],
+      tokens: 300,
+      window: tick,
+      kept: true,
+    });
+  });
+
+  it("never goes back to an older minute when one environment fails during a rolling refresh", () => {
+    const steps: Step[] = [
+      atTick,
+      { window: next, environments: [answered("Desk", 110), failed("Laptop")] },
+      { window: later, environments: [pending("Desk"), pending("Laptop")] },
+      { window: later, environments: [answered("Desk", 120), pending("Laptop")] },
+      { window: later, environments: [answered("Desk", 120), failed("Laptop")] },
+    ];
+    let state = initialUsageViewState;
+    const seen = steps.map((step) => {
+      state = settle(state, step);
+      const { tokens, window, kept } = shown(state);
+      return { tokens, until: window.untilTime, kept };
+    });
+    expect(seen).toEqual([
+      { tokens: 300, until: tick.untilTime, kept: false },
+      { tokens: 110, until: next.untilTime, kept: false },
+      { tokens: 110, until: next.untilTime, kept: false },
+      { tokens: 110, until: next.untilTime, kept: false },
+      { tokens: 120, until: later.untilTime, kept: false },
+    ]);
+  });
+
+  it("never pins the page to the previous period while an environment with a cached session is disconnected", () => {
+    const week = daily(7, "2026-09-05");
+    const offline = status("Desk", { isConnected: false, isPending: true, summary: null });
+    const step: Step = { window: week, environments: [offline, answered("Laptop", 230)] };
+    const state = run([atTick, step]);
+    expect(shown(state)).toEqual({
+      environments: ["Laptop"],
+      tokens: 230,
+      window: week,
+      kept: false,
+    });
+    expect(figures(state).settled).toBe(true);
+    expect(messages(state, step)).toEqual(["Desk: This environment is not connected."]);
+
+    const reconnected = settle(state, {
+      window: week,
+      environments: [pending("Desk"), answered("Laptop", 230)],
+    });
+    expect(shown(reconnected)).toEqual({
+      environments: ["Laptop"],
+      tokens: 230,
+      window: week,
+      kept: false,
+    });
+    const answeredAgain = settle(reconnected, {
+      window: week,
+      environments: [answered("Desk", 130), answered("Laptop", 230)],
+    });
+    expect(shown(answeredAgain)).toEqual({
+      environments: ["Desk", "Laptop"],
+      tokens: 360,
+      window: week,
+      kept: false,
+    });
+  });
+
+  it("keeps each minute of the rolling 24 hours as its own reading and shows the newest", () => {
+    const state = run([
+      { window: tick, environments: [answered("Desk", 100)] },
+      { window: next, environments: [answered("Desk", 110)] },
+    ]);
+    expect(state.readings.get(id("Desk"))?.map(({ window: { untilTime } }) => untilTime)).toEqual([
+      tick.untilTime,
+      next.untilTime,
+    ]);
+    expect(shown(state)).toMatchObject({ tokens: 110, window: next, kept: false });
   });
 
   it("shows Laptop's 200 alone after Desk loses access during a rolling refresh", () => {
@@ -654,22 +768,6 @@ describe("settleUsageView readings", () => {
     expect(shown(updated)).toMatchObject({ tokens: 90, window: nextWeek, kept: false });
   });
 
-  it("marks the previous totals as kept while a model filter changes the request", () => {
-    const desk = answered("Desk", 100);
-    const filter = { exclude: [{ model: "model" }] };
-    const kept = run([
-      { window: tick, environments: [desk] },
-      { window: tick, environments: [pending("Desk", { modelFilter: filter })] },
-    ]);
-    expect(shown(kept)).toMatchObject({ tokens: 100, kept: true });
-
-    const answeredFilter = status("Desk", { modelFilter: filter });
-    expect(shown(settle(kept, { window: tick, environments: [answeredFilter] }))).toMatchObject({
-      tokens: 0,
-      kept: false,
-    });
-  });
-
   it("never keeps an incompatible answer as figures", () => {
     const old = status("Old", {
       summary: summary({ contractVersion: USAGE_MERGE_COMPATIBLE_SINCE - 1 }),
@@ -731,6 +829,63 @@ describe("settleUsageView readings", () => {
       ],
     });
     expect(shown(back)).toMatchObject({ environments: ["Desk"], tokens: 100 });
+  });
+});
+
+describe("settleUsageView usage settings", () => {
+  const before = DEFAULT_SERVER_SETTINGS;
+  it.each([
+    [
+      "a price",
+      {
+        ...before,
+        usagePriceOverrides: {
+          model: { inputCostPerMillionTokens: 5, outputCostPerMillionTokens: 10 },
+        },
+      },
+    ],
+    ["a model alias", { ...before, usageModelAliases: { model: "gpt-5" } }],
+    ["the model filter", { ...before, usageModelFilter: { exclude: [{ model: "model" }] } }],
+    [
+      "a provider's transcript home",
+      {
+        ...before,
+        providerInstances: {
+          [ProviderInstanceId.make("claudeAgent")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            config: { homePath: "/accounts/work" },
+          },
+        },
+      },
+    ],
+  ] as const)("drops every figure and failure read before changing %s", (_setting, after) => {
+    const old = { usageSettingsKey: usageScanSettingsKey(before) };
+    const changed = { usageSettingsKey: usageScanSettingsKey(after) };
+    const saved = run([
+      {
+        window: tick,
+        environments: [
+          answered("Desk", 100, old),
+          pending("Laptop", { ...old, summary: summary({ tokens: 30, refreshing: ["cursor"] }) }),
+          { ...failed("Phone"), ...old },
+        ],
+      },
+    ]);
+    expect(shown(saved).environments).toEqual(["Desk", "Laptop"]);
+
+    const reloading: Step = {
+      window: tick,
+      environments: ["Desk", "Laptop", "Phone"].map((label) => pending(label, changed)),
+    };
+    const state = settle(saved, reloading);
+    expect(state.view).toEqual({ kind: "loading" });
+    expect(gaps(state, reloading)).toBeNull();
+    const idle = ["Desk", "Laptop", "Phone"].map((label) =>
+      status(label, { ...changed, summary: null }),
+    );
+    expect(settle(saved, { window: tick, environments: idle, enabled: false }).view).toEqual({
+      kind: "none",
+    });
   });
 });
 

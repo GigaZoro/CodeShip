@@ -25,12 +25,15 @@ describe("projectThreadAwarenessV2", () => {
         OrchestrationV2ThreadShell,
         | "activityRunStatus"
         | "latestRunBackgroundWake"
+        | "latestRunCompletedAt"
         | "latestRunStopRequested"
         | "status"
         | "pendingBackgroundTasks"
         | "pendingRuntimeRequest"
         | "lineage"
         | "settledOverride"
+        | "title"
+        | "updatedAt"
       >
     > = {},
   ) => ({
@@ -47,6 +50,49 @@ describe("projectThreadAwarenessV2", () => {
     settledOverride: null,
     updatedAt,
     ...overrides,
+  });
+
+  const occurredAt = DateTime.makeUnsafe("2026-05-22T11:59:00.000Z");
+  it.each([
+    ["completed", { status: "completed", latestRunCompletedAt: occurredAt }],
+    ["failed", { status: "failed", latestRunCompletedAt: occurredAt }],
+    [
+      "waiting_for_input",
+      {
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("request-input"),
+          kind: "user_input",
+          createdAt: occurredAt,
+        },
+      },
+    ],
+    [
+      "waiting_for_approval",
+      {
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("request-approval"),
+          kind: "command",
+          createdAt: occurredAt,
+        },
+      },
+    ],
+  ] as const)("keeps the %s occurrence time through a rename", (phase, overrides) => {
+    const publish = (thread: Parameters<typeof v2Thread>[0]) =>
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
+        project: { title: "t3code" },
+        thread: v2Thread(thread),
+      });
+    const before = publish(overrides);
+    const renamed = publish({
+      ...overrides,
+      title: "Renamed",
+      updatedAt: DateTime.makeUnsafe("2026-05-22T12:05:00.000Z"),
+    });
+    expect(before).toMatchObject({ phase, occurredAt: "2026-05-22T11:59:00.000Z" });
+    expect(renamed?.occurredAt).toBe(before?.occurredAt);
+    expect(publish({ status: "running" })).not.toHaveProperty("occurredAt");
   });
 
   it("does not announce completion after a manual stop", () => {

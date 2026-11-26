@@ -1,4 +1,8 @@
-import { OrchestrationV2TurnItemJson, type OrchestrationV2TurnItem } from "@t3tools/contracts";
+import {
+  type OrchestrationV2DomainEvent,
+  OrchestrationV2TurnItemJson,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Context from "effect/Context";
@@ -34,6 +38,11 @@ export interface ToolOutputRetentionResult {
   readonly unreadableItemCount: number;
 }
 
+export interface ColdThreadHistoryResult {
+  readonly threadCount: number;
+  readonly deletedEventCount: number;
+}
+
 export interface ProjectionMaintenanceV2Shape {
   /** Deletes events the projections already cover once they are older than the retained history. */
   readonly pruneEventStore: (betweenPages?: Effect.Effect<void>) => Effect.Effect<
@@ -53,6 +62,15 @@ export interface ProjectionMaintenanceV2Shape {
     readonly idleBefore: DateTime.Utc;
     readonly betweenPages?: Effect.Effect<void>;
   }) => Effect.Effect<ToolOutputRetentionResult, ProjectionMaintenanceError>;
+  /**
+   * In chats whose whole family is cold (as above) and idle since `idleBefore`, delete each
+   * entity's superseded events, so the log holds one event per entity whatever its revisions.
+   * A rebuild yields the same projections, and a resume from before the pass gets a snapshot.
+   */
+  readonly compactColdThreadHistory: (input: {
+    readonly idleBefore: DateTime.Utc;
+    readonly betweenPages?: Effect.Effect<void>;
+  }) => Effect.Effect<ColdThreadHistoryResult, ProjectionMaintenanceError>;
 }
 
 export class ProjectionMaintenanceV2 extends Context.Service<
@@ -78,6 +96,94 @@ const RETAINED_EVENT_HISTORY = Duration.days(1);
 // Small pages bound work on the reader worker and synchronous fallback.
 const PAGE_SIZE = 50;
 const REFERENCE_SCAN_WINDOW = 1000;
+// Nothing visible changes and a resume from before the pass gets a snapshot, so a day is enough.
+const COLD_HISTORY_IDLE_DAYS = 1;
+
+/** Bound the event log of chats past retention, for the server's storage pass and `t3 doctor`. */
+export const compactIdleThreadHistory = Effect.fn("ProjectionMaintenance.compactIdleThreadHistory")(
+  function* (betweenPages?: Effect.Effect<void>) {
+    const maintenance = yield* ProjectionMaintenanceV2;
+    const idleBefore = DateTime.subtract(yield* DateTime.now, { days: COLD_HISTORY_IDLE_DAYS });
+    return yield* maintenance.compactColdThreadHistory({
+      idleBefore,
+      ...(betweenPages === undefined ? {} : { betweenPages }),
+    });
+  },
+);
+
+/**
+ * "latest": the projection replaces the whole row by entity id, so only the newest event per
+ * entity matters. "all": the event is kept. A new event type fails typecheck here until it is
+ * classified, so the log of chats past retention stays bounded.
+ */
+const COLD_HISTORY_RULE: Record<OrchestrationV2DomainEvent["type"], "latest" | "all"> = {
+  "node.updated": "latest",
+  "message.updated": "latest",
+  "plan.updated": "latest",
+  "runtime-request.updated": "latest",
+  // Subagent items keep every snapshot: later rows can reference an earlier prompt.
+  "turn-item.updated": "latest",
+  // The projection keeps the last token usage when a newer event has none.
+  "provider-turn.updated": "latest",
+  // Subagent snapshots keep the prompt later rows point at.
+  "subagent.updated": "all",
+  "checkpoint-scope.created": "all",
+  "checkpoint.captured": "all",
+  "checkpoint.rollback-requested": "all",
+  "context-handoff.updated": "all",
+  "context-transfer.created": "all",
+  "context-transfer.updated": "all",
+  "provider-session.attached": "all",
+  "provider-session.detached": "all",
+  "provider-session.updated": "all",
+  "provider-thread.updated": "all",
+  "run-attempt.created": "all",
+  "run-attempt.updated": "all",
+  "run.background-work-cancelled": "all",
+  "run.created": "all",
+  "run.delegated-completion-updated": "all",
+  "run.updated": "all",
+  // The global event-store pass keeps the newest of each thread group and the thread.created anchor.
+  "thread.created": "all",
+  "thread.archived": "all",
+  "thread.unarchived": "all",
+  "thread.deleted": "all",
+  "thread.settled": "all",
+  "thread.unsettled": "all",
+  "thread.snoozed": "all",
+  "thread.unsnoozed": "all",
+  "thread.pinned": "all",
+  "thread.auto-settle-set": "all",
+  "thread.later-set": "all",
+  "thread.unpinned": "all",
+  "thread.pin-reordered": "all",
+  "thread.active-reordered": "all",
+  "thread.tags-updated": "all",
+  "thread.notification-level-updated": "all",
+  "thread.color-updated": "all",
+  "thread.message-stars-updated": "all",
+  "thread.folder-updated": "all",
+  "thread.artifacts-updated": "all",
+  "thread.visited": "all",
+  "thread.visit-recorded": "all",
+  "thread.marked-unread": "all",
+  "thread.metadata-updated": "all",
+  "thread.pull-request-synced": "all",
+  "thread.pull-request-link-updated": "all",
+  "thread.runtime-mode-updated": "all",
+  "thread.interaction-mode-updated": "all",
+  "thread.model-selection-updated": "all",
+  "thread.provider-switched": "all",
+  "thread.guest-share-updated": "all",
+};
+
+const LATEST_ONLY_EVENT_TYPES = Object.entries(COLD_HISTORY_RULE)
+  .filter(([, rule]) => rule === "latest")
+  .map(([type]) => type);
+
+const encodeEntityKey = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String, Schema.NullOr(Schema.String)])),
+);
 
 type MetadataRow = {
   readonly projection_name: string;
@@ -410,6 +516,17 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         ) AS cold
       `.pipe(Effect.map((rows) => rows[0]?.cold === 1));
 
+    // Pacing leaves time for the family to reopen, so every write checks it again inside its
+    // transaction, which the single writer serializes with every other write.
+    const whileFamilyCold =
+      (rootThreadId: string, idleBefore: string) =>
+      <A, E, R>(write: Effect.Effect<A, E, R>) =>
+        sql.withTransaction(
+          Effect.flatMap(familyIsCold(rootThreadId, idleBefore), (isCold) =>
+            isCold ? Effect.asSome(write) : Effect.succeedNone,
+          ),
+        );
+
     // Projection rows first, then every event of those items, so a rebuild replays the pruned shape.
     // Each read scans one bounded page; writes run in their own short transaction between pages.
     // Untraced: runs once per chat inside the pass span.
@@ -424,14 +541,13 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       let eventCount = 0;
       let unreadableItemCount = 0;
       const done = (pruned: boolean) => ({ pruned, itemCount, eventCount, unreadableItemCount });
-      const cold = familyIsCold(input.rootThreadId, input.idleBefore);
-      // Pacing leaves time for the family to reopen, so every write checks it again inside its
-      // transaction, which the single writer serializes with every other write.
-      const whileCold = <A, E, R>(write: Effect.Effect<A, E, R>) =>
-        sql.withTransaction(
-          Effect.flatMap(cold, (isCold) => (isCold ? Effect.asSome(write) : Effect.succeedNone)),
-        );
-      if (!(yield* cold.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground)))
+      const whileCold = whileFamilyCold(input.rootThreadId, input.idleBefore);
+      if (
+        !(yield* familyIsCold(input.rootThreadId, input.idleBefore).pipe(
+          NodeSqliteClient.readOnly,
+          NodeSqliteClient.inBackground,
+        ))
+      )
         return done(false);
       // Events appended after this read belong to new activity and stay as written.
       const [stream] = yield* sql<{ readonly last_sequence: number | null }>`
@@ -672,9 +788,192 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       mapError("prune cold thread tool output"),
     );
 
+    // Newest first, so the first event seen for an entity is the one its projection row holds.
+    // Untraced: runs once per chat inside the pass span.
+    const compactThreadHistory = Effect.fnUntraced(function* (input: {
+      readonly threadId: string;
+      readonly rootThreadId: string;
+      readonly idleBefore: string;
+      readonly betweenPages: Effect.Effect<void>;
+    }) {
+      let deletedEventCount = 0;
+      const done = (compacted: boolean) => ({ compacted, deletedEventCount });
+      const whileCold = whileFamilyCold(input.rootThreadId, input.idleBefore);
+      if (
+        !(yield* familyIsCold(input.rootThreadId, input.idleBefore).pipe(
+          NodeSqliteClient.readOnly,
+          NodeSqliteClient.inBackground,
+        ))
+      )
+        return done(false);
+      // Events appended after this read belong to new activity and stay as written.
+      const [stream] = yield* sql<{ readonly last_sequence: number | null }>`
+        SELECT MAX(sequence) AS last_sequence
+        FROM orchestration_events
+        WHERE application_event_version = 2
+          AND aggregate_kind = 'thread'
+          AND stream_id = ${input.threadId}
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+      const lastSequence = stream?.last_sequence ?? 0;
+      // Commits with each delete, so a resume from a cursor before it gets a snapshot. Until the
+      // pass finishes it covers only what was deleted, so a stopped chat stays a candidate.
+      const mark = (throughSequence: number) => sql`
+        INSERT INTO orchestration_v2_thread_history_compaction (
+          thread_id,
+          compacted_through_sequence
+        )
+        VALUES (${input.threadId}, ${throughSequence})
+        ON CONFLICT(thread_id) DO UPDATE SET
+          compacted_through_sequence = MAX(
+            compacted_through_sequence,
+            excluded.compacted_through_sequence
+          )
+      `;
+
+      const seen = new Set<string>();
+      // Provider turns whose newest event has no token usage keep the newest one that has it.
+      const missingTokenUsage = new Set<string>();
+      let throughSequence = lastSequence;
+      while (throughSequence > 0) {
+        const rows = yield* sql<{
+          readonly sequence: number;
+          readonly event_type: string;
+          readonly entity_id: string | null;
+          readonly commanded: number;
+          readonly has_token_usage: number;
+        }>`
+          SELECT
+            sequence,
+            event_type,
+            CASE
+              WHEN event_type IN ${sql.in(LATEST_ONLY_EVENT_TYPES)}
+                AND (
+                  event_type <> 'turn-item.updated'
+                  OR json_extract(payload_json, '$.type') IS NOT 'subagent'
+                )
+              THEN json_extract(payload_json, '$.id')
+            END AS entity_id,
+            command_id IS NOT NULL AS commanded,
+            (
+              event_type = 'provider-turn.updated'
+              AND json_type(payload_json, '$.tokenUsage') IS NOT NULL
+            ) AS has_token_usage
+          FROM orchestration_events
+          WHERE application_event_version = 2
+            AND aggregate_kind = 'thread'
+            AND stream_id = ${input.threadId}
+            AND sequence <= ${throughSequence}
+          ORDER BY sequence DESC
+          LIMIT ${PAGE_SIZE}
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+        const obsolete: number[] = [];
+        for (const row of rows) {
+          if (row.entity_id === null) continue;
+          const key = encodeEntityKey([row.event_type, input.threadId, row.entity_id]);
+          if (!seen.has(key)) {
+            seen.add(key);
+            if (row.event_type === "provider-turn.updated" && row.has_token_usage !== 1) {
+              missingTokenUsage.add(key);
+            }
+          } else if (row.has_token_usage === 1 && missingTokenUsage.has(key)) {
+            missingTokenUsage.delete(key);
+          } else if (row.commanded === 0) {
+            // A duplicate command replays every event of its command, so commanded ones stay.
+            obsolete.push(row.sequence);
+          }
+        }
+        yield* Effect.yieldNow;
+        if (obsolete.length > 0) {
+          const deleted = yield* whileCold(
+            sql`DELETE FROM orchestration_events WHERE sequence IN ${sql.in(obsolete)}`.pipe(
+              Effect.andThen(mark(obsolete[0]!)),
+            ),
+          );
+          if (Option.isNone(deleted)) return done(false);
+          deletedEventCount += obsolete.length;
+          yield* Effect.yieldNow;
+        }
+        const last = rows.at(-1);
+        if (last === undefined || rows.length < PAGE_SIZE) break;
+        throughSequence = last.sequence - 1;
+        yield* input.betweenPages;
+      }
+
+      return done(Option.isSome(yield* whileCold(mark(lastSequence))));
+    });
+
+    const compactColdThreadHistory = Effect.fn("ProjectionMaintenance.compactColdThreadHistory")(
+      function* (input: {
+        readonly idleBefore: DateTime.Utc;
+        readonly betweenPages?: Effect.Effect<void>;
+      }) {
+        const idleBefore = DateTime.formatIso(input.idleBefore);
+        const betweenPages = input.betweenPages ?? Effect.void;
+        let threadCount = 0;
+        let deletedEventCount = 0;
+        let threadCursor = "";
+
+        while (true) {
+          // A compacted chat comes back once it has events past its mark.
+          const threads = yield* sql<{
+            readonly thread_id: string;
+            readonly root_thread_id: string | null;
+            readonly candidate: number;
+          }>`
+            WITH page AS (
+              SELECT thread_id, updated_at, payload_json
+              FROM orchestration_v2_projection_threads
+              WHERE thread_id > ${threadCursor}
+              ORDER BY thread_id
+              LIMIT ${PAGE_SIZE}
+            )
+            SELECT
+              page.thread_id,
+              json_extract(page.payload_json, '$.lineage.rootThreadId') AS root_thread_id,
+              (
+                page.updated_at < ${idleBefore}
+                AND COALESCE(history.compacted_through_sequence, 0) < (
+                  SELECT COALESCE(MAX(event.sequence), 0)
+                  FROM orchestration_events AS event
+                  WHERE event.application_event_version = 2
+                    AND event.aggregate_kind = 'thread'
+                    AND event.stream_id = page.thread_id
+                )
+              ) AS candidate
+            FROM page
+            LEFT JOIN orchestration_v2_thread_history_compaction AS history
+              ON history.thread_id = page.thread_id
+            ORDER BY page.thread_id
+          `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
+
+          for (const thread of threads) {
+            if (thread.candidate !== 1 || thread.root_thread_id === null) continue;
+            const result = yield* compactThreadHistory({
+              threadId: thread.thread_id,
+              rootThreadId: thread.root_thread_id,
+              idleBefore,
+              betweenPages,
+            });
+            if (result.compacted) threadCount += 1;
+            deletedEventCount += result.deletedEventCount;
+            yield* betweenPages;
+          }
+
+          const last = threads.at(-1);
+          if (last === undefined || threads.length < PAGE_SIZE) break;
+          threadCursor = last.thread_id;
+          yield* betweenPages;
+        }
+
+        return { threadCount, deletedEventCount };
+      },
+      mapError("compact cold thread history"),
+    );
+
     return ProjectionMaintenanceV2.of({
       pruneColdThreadToolOutput,
       pruneEventStore,
+      compactColdThreadHistory,
     });
   }),
 );

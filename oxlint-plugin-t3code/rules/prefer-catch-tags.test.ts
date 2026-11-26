@@ -5,6 +5,17 @@ import { createOxlintRuleHarness } from "../test/utils.ts";
 const rule = createOxlintRuleHarness("t3code/prefer-catch-tags");
 
 describe("t3code/prefer-catch-tags", () => {
+  rule.invalid(
+    "reports catchTag a bracketed string or a const key names",
+    `
+      import * as Effect from "effect/Effect";
+      const key = "catchTag";
+      export const byKey = Effect[key]("A", () => Effect.void);
+      export const byString = Effect["catchTag"]("A", () => Effect.void);
+    `,
+    (output) => assert.equal(output.match(/prefer-catch-tags/g)?.length, 2),
+  );
+
   rule.valid(
     "allows Effect.catchTags",
     `

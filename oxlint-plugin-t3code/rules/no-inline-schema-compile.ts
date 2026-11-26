@@ -1,8 +1,8 @@
-import { defineRule } from "@oxlint/plugins";
+import { defineRule, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const COMPILER_METHODS = new Set<keyof typeof Schema>([
   "is",
@@ -34,7 +34,10 @@ const COMPILER_METHODS = new Set<keyof typeof Schema>([
   "encodeUnknownSync",
 ]);
 
-const getSchemaCompilerMethod = (callee: unknown): Option.Option<string> => {
+const getSchemaCompilerMethod = (
+  sourceCode: SourceCode,
+  callee: unknown,
+): Option.Option<string> => {
   const expression = unwrapExpression(callee);
   if (Option.isNone(expression) || expression.value.type !== "MemberExpression") {
     return Option.none();
@@ -43,7 +46,7 @@ const getSchemaCompilerMethod = (callee: unknown): Option.Option<string> => {
   const object = unwrapExpression(expression.value.object);
   if (!isIdentifier(object, "Schema")) return Option.none();
 
-  return Option.filter(getPropertyName(expression.value.property), (method) =>
+  return Option.filter(resolvePropertyName(sourceCode, expression.value.property), (method) =>
     COMPILER_METHODS.has(method as keyof typeof Schema),
   );
 };
@@ -60,7 +63,7 @@ const isStaticSchemaReference = (node: unknown): boolean => {
   return expression.value.type === "MemberExpression";
 };
 
-const isNestedStaticSchemaCall = (node: unknown): boolean => {
+const isNestedStaticSchemaCall = (sourceCode: SourceCode, node: unknown): boolean => {
   const expression = unwrapExpression(node);
   if (Option.isNone(expression) || expression.value.type !== "CallExpression") return false;
 
@@ -70,10 +73,10 @@ const isNestedStaticSchemaCall = (node: unknown): boolean => {
   const object = unwrapExpression(callee.value.object);
   if (!isIdentifier(object, "Schema")) return false;
 
-  const method = getPropertyName(callee.value.property);
+  const method = resolvePropertyName(sourceCode, callee.value.property);
   if (Option.isSome(method) && method.value === "fromJsonString") {
     const firstArg = expression.value.arguments[0];
-    return isStaticSchemaReference(firstArg) || isNestedStaticSchemaCall(firstArg);
+    return isStaticSchemaReference(firstArg) || isNestedStaticSchemaCall(sourceCode, firstArg);
   }
 
   return true;
@@ -134,12 +137,12 @@ export default defineRule({
       CallExpression(node) {
         if (functionDepth === 0) return;
 
-        const method = getSchemaCompilerMethod(node.callee);
+        const method = getSchemaCompilerMethod(context.sourceCode, node.callee);
         if (Option.isNone(method)) return;
         if (!isImmediatelyInvoked(node)) return;
 
         const firstArg = node.arguments[0];
-        const high = firstArg && isNestedStaticSchemaCall(firstArg);
+        const high = firstArg && isNestedStaticSchemaCall(context.sourceCode, firstArg);
         if (!high && !isStaticSchemaReference(firstArg)) return;
 
         context.report({

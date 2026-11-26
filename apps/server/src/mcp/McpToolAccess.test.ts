@@ -21,7 +21,7 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
-import { liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { liveThreadShell, liveThreadsLayer } from "./McpToolAccess.testkit.ts";
 import { assertFullAccess } from "./threadAccess.ts";
 import { MCP_TOOLKITS } from "./toolkits.testkit.ts";
 
@@ -33,6 +33,7 @@ const backgroundThreadId = ThreadId.make("thread:background");
 const oldProviderThreadId = ThreadId.make("thread:old-provider-background");
 const archivedThreadId = ThreadId.make("thread:archived-background");
 const unknownOwnerThreadId = ThreadId.make("thread:unknown-background-owner");
+const readOnlyGuestThreadId = ThreadId.make("thread:read-only-guest");
 
 const backgroundShell = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) => ({
   ...liveThreadShell(threadId, { activeRunId: null }),
@@ -48,6 +49,10 @@ const shells = new Map([
     liveThreadShell(planThreadId, { runtimeMode: "approval-required", interactionMode: "plan" }),
   ],
   [fullAccessThreadId, liveThreadShell(fullAccessThreadId)],
+  [
+    readOnlyGuestThreadId,
+    { ...liveThreadShell(readOnlyGuestThreadId), readOnlyGuestShare: true as const },
+  ],
   [endedThreadId, liveThreadShell(endedThreadId, { activeRunId: null })],
   [backgroundThreadId, backgroundShell(backgroundThreadId, ProviderInstanceId.make("codex"))],
   [oldProviderThreadId, backgroundShell(oldProviderThreadId, ProviderInstanceId.make("claude"))],
@@ -232,6 +237,7 @@ const background = threadCaller(backgroundThreadId);
 const oldProviderBackground = threadCaller(oldProviderThreadId);
 const archivedBackground = threadCaller(archivedThreadId);
 const unknownOwnerBackground = threadCaller(unknownOwnerThreadId);
+const readOnlyGuest = threadCaller(readOnlyGuestThreadId);
 const mismatchedProvider = {
   ...background,
   thread: { ...background.thread!, providerInstanceId: ProviderInstanceId.make("claude") },
@@ -259,6 +265,15 @@ it.effect.each([
   ["writes_threads", readOnlyClient, { threadId: supervisedThreadId }, "capability_denied"],
   ["starts_threads", readOnlyClient, {}, "capability_denied"],
   ["writes_environment", readOnlyClient, {}, "capability_denied"],
+
+  ["reads", readOnlyGuest, {}, "capability_denied"],
+  ["reads_as_caller", readOnlyGuest, {}, "capability_denied"],
+  ["acts_as_caller", readOnlyGuest, {}, "capability_denied"],
+  ["writes", readOnlyGuest, {}, "capability_denied"],
+  ["writes_with_capability", readOnlyGuest, {}, "capability_denied"],
+  ["writes_threads", readOnlyGuest, { threadId: supervisedThreadId }, "capability_denied"],
+  ["starts_threads", readOnlyGuest, {}, "capability_denied"],
+  ["writes_environment", readOnlyGuest, {}, "capability_denied"],
 
   ["reads_as_caller", ended, {}, "ran"],
   ["reads_as_caller", fullAccessClient, {}, "thread_credential_required"],
@@ -731,7 +746,10 @@ const threadToolProbe = (tool: Tool.Any) => {
       success: Schema.Struct({ ran: Schema.String }),
       failure: tool.failureSchema as Schema.Codec<unknown>,
       failureMode: "return",
-      dependencies: [McpInvocationContext.McpInvocationContext],
+      dependencies: [
+        McpInvocationContext.McpInvocationContext,
+        ThreadManagement.ThreadManagementService,
+      ],
     }),
   );
   const echo = McpToolAccess.reads((params: Record<string, unknown>) =>
@@ -742,6 +760,8 @@ const threadToolProbe = (tool: Tool.Any) => {
     McpToolAccess.toLayer(ProbeToolkit, { [tool.name]: echo } as never),
   ).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    // The cast handler map hides this requirement from the type checker.
+    Layer.provide(liveThreadsLayer),
     Layer.provide(
       Layer.mock(PeerForwarding.PeerForwarding)({
         call: (_scope, _tool, environmentId, params) =>

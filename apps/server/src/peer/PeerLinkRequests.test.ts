@@ -94,7 +94,14 @@ const rootNode = NodeId.make("node:laptop:root");
 
 /** The box needs no tools of its own: linking only signs in to its /mcp. */
 const NoTools = Toolkit.make(
-  Tool.make("noop", { success: Schema.Struct({}), failure: OrchestratorMcpFailure }),
+  Tool.make("noop", {
+    success: Schema.Struct({}),
+    failure: OrchestratorMcpFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagement.ThreadManagementService,
+    ],
+  }),
 );
 const serveBox = servePeer(
   box,

@@ -29,6 +29,7 @@ describe("codexRateLimitsToLimits", () => {
     const windows = [
       {
         id: "individual",
+        scope: "spending-cap",
         kind: "monthly",
         label: "Monthly credit limit",
         usedPercent: 1,
@@ -363,6 +364,7 @@ describe("mergeCodexRateLimits", () => {
         },
         {
           id: "individual",
+          scope: "spending-cap",
           kind: "monthly",
           label: "Monthly credit limit",
           usedPercent: 25,

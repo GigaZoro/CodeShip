@@ -103,6 +103,21 @@ describe("t3code/no-test-in-loop", () => {
   );
 });
 
+describe("t3code/no-test-in-loop computed modifiers", () => {
+  rule.invalid(
+    "reports a test declared in a loop through a modifier a const names",
+    `
+      import { it } from "@effect/vitest";
+
+      const modifier = "effect";
+      for (const value of [1, 2]) {
+        it[modifier]("handles value", () => {});
+      }
+    `,
+    (output) => assert.match(output, /Do not call it.effect/),
+  );
+});
+
 const productionRule = createOxlintRuleHarness("t3code/no-test-in-loop");
 
 productionRule.valid(

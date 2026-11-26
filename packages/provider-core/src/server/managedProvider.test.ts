@@ -147,6 +147,121 @@ const enrichedSnapshotSecond: ServerProvider = {
 };
 
 describe("makeManagedServerProvider", () => {
+  it.effect(
+    "binds sparse observations to the original account across plan and same-plan switches",
+    () =>
+      Effect.gen(function* () {
+        const account = (accountKey: string, plan: string): ServerProvider => ({
+          ...refreshedSnapshot,
+          usageLimits: {
+            checkedAt: refreshedSnapshot.checkedAt,
+            accountKey,
+            plan,
+            credits: { balance: "8", unlimited: false },
+            windows: [],
+          },
+        });
+        const a = account("A", "pro");
+        const snapshot = yield* Ref.make(a);
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: () => false,
+          initialSnapshot: () => Effect.succeed(a),
+          checkProvider: Ref.get(snapshot),
+          refreshOnInterval: false,
+        });
+        yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+        const publishA = yield* provider.bindUsageLimits;
+        const update = {
+          checkedAt: "2026-04-10T01:00:00.000Z",
+          windows: [
+            { id: "session", kind: "session" as const, label: "Session", usedPercent: 100 },
+          ],
+          credits: { balance: "0", unlimited: false },
+        };
+        yield* provider.refresh;
+        yield* publishA(update);
+        assert.strictEqual((yield* provider.getSnapshot).usageLimits?.credits?.balance, "0");
+        for (const next of [account("B", "team"), account("C", "team"), account("C", "pro"), a]) {
+          const old = yield* provider.bindUsageLimits;
+          yield* Ref.set(snapshot, next);
+          const switched = yield* provider.refresh;
+          yield* old(update);
+          yield* publishA(update);
+          assert.strictEqual(yield* provider.getSnapshot, switched);
+          assert.strictEqual(switched.usageLimits?.credits?.balance, "8");
+        }
+        const anonymous = {
+          ...a,
+          usageLimits: { checkedAt: a.checkedAt, plan: "pro", windows: [] },
+        };
+        yield* Ref.set(snapshot, anonymous);
+        yield* provider.refresh;
+        const unverified = yield* provider.bindUsageLimits;
+        const refreshed = yield* provider.refresh;
+        yield* unverified(update);
+        assert.strictEqual(yield* provider.getSnapshot, refreshed);
+
+        const sameLogin = (next: ServerProvider): ServerProvider => ({
+          ...next,
+          auth: { status: "authenticated", email: "shared@example.test" },
+        });
+        const unsupported = sameLogin({
+          ...a,
+          usageLimits: {
+            checkedAt: a.checkedAt,
+            windows: [],
+            unavailable: { reason: "unsupported" },
+          },
+        });
+        yield* Ref.set(snapshot, sameLogin(a));
+        yield* provider.refresh;
+        const originalSession = yield* provider.bindUsageLimits;
+        for (const next of [account("B", "pro"), a]) {
+          yield* Ref.set(snapshot, unsupported);
+          yield* provider.refresh;
+          const unknownSession = yield* provider.bindUsageLimits;
+          yield* Ref.set(snapshot, sameLogin(next));
+          const switched = yield* provider.refresh;
+          yield* originalSession(update);
+          yield* unknownSession(update);
+          assert.strictEqual(yield* provider.getSnapshot, switched);
+        }
+      }).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
+  it.effect("retries usage reported by a status check after its first missing reading", () =>
+    Effect.gen(function* () {
+      const reads = yield* Ref.make(0);
+      const provider = yield* makeManagedServerProvider<TestSettings>({
+        resolveMaintenance: () => Effect.die("quota reads need no maintenance"),
+        getSettings: Effect.succeed({ enabled: true }),
+        streamSettings: Stream.empty,
+        haveSettingsChanged: () => false,
+        initialSnapshot: () => Effect.succeed(refreshedSnapshot),
+        readsUsageOnRefresh: true,
+        checkProvider: Ref.updateAndGet(reads, (n) => n + 1).pipe(
+          Effect.map((n) =>
+            n === 1
+              ? refreshedSnapshot
+              : {
+                  ...refreshedSnapshot,
+                  usageLimits: {
+                    checkedAt: refreshedSnapshot.checkedAt,
+                    windows: [
+                      { id: "session", kind: "session", label: "Session", usedPercent: 20 },
+                    ],
+                  },
+                },
+          ),
+        ),
+      });
+      yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+      yield* provider.refreshUsage!;
+      assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 20);
+    }).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
   it.effect("invalidates cached usage and queues one refresh behind an in-flight refresh", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -196,12 +311,18 @@ describe("makeManagedServerProvider", () => {
         const queued = yield* provider.refreshUsage!.pipe(
           Effect.forkChild({ startImmediately: true }),
         );
-        yield* provider.refreshUsage!;
+        const joined = yield* Deferred.make<void>();
+        const waiter = yield* provider.refreshUsage!.pipe(
+          Effect.andThen(Deferred.succeed(joined, undefined)),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        assert.isFalse(yield* Deferred.isDone(joined));
         assert.strictEqual(yield* Ref.get(calls), 2);
         assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 20);
         yield* Deferred.succeed(releaseProbe, undefined);
         yield* Fiber.join(refresh);
         yield* Fiber.join(queued);
+        yield* Fiber.join(waiter);
         assert.strictEqual(yield* Ref.get(calls), 3);
         assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 100);
       }),
@@ -269,7 +390,7 @@ describe("makeManagedServerProvider", () => {
         yield* Deferred.await(probeStarted);
         assert.isUndefined((yield* provider.getSnapshot).usageLimits?.resetCredits);
         // A streamed update is no read of the account, so it confirms no reset.
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           ...usage("2026-04-10T00:00:02.500Z", 100),
           available: true,
         });
@@ -904,12 +1025,12 @@ describe("makeManagedServerProvider", () => {
         );
         yield* Effect.yieldNow;
 
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:05:00.000Z",
           windows: [{ id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 25 }],
           authLabel: "tier-1",
         });
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:06:00.000Z",
           windows: [],
           authLabel: "tier-2",
@@ -921,13 +1042,20 @@ describe("makeManagedServerProvider", () => {
           checkedAt: "2026-04-10T00:05:00.000Z",
           accountReadAt: "2026-04-10T00:00:01.000Z",
           windows: [
-            { id: "five_hour", kind: "session", label: "Session", usedPercent: 10 },
+            {
+              id: "five_hour",
+              kind: "session",
+              label: "Session",
+              usedPercent: 10,
+              observedAt: "2026-04-10T00:00:01.000Z",
+            },
             {
               id: "seven_day",
               kind: "weekly",
               label: "Weekly",
               usedPercent: 25,
               resetsAt: "2026-04-17T00:00:00.000Z",
+              observedAt: "2026-04-10T00:05:00.000Z",
             },
           ],
         });
@@ -994,15 +1122,16 @@ describe("makeManagedServerProvider", () => {
           kind: "session",
           label: "Session",
           usedPercent: 60,
+          observedAt: "2026-04-10T00:00:02.000Z",
         } as const;
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:02.000Z",
           authLabel: "tier-2",
           windows: [liveWindow],
         });
 
         if (clearPlan) {
-          yield* provider.applyUsageLimits({
+          yield* (yield* provider.bindUsageLimits)({
             checkedAt: "2026-04-10T00:00:02.000Z",
             complete: true,
             windows: [liveWindow],
@@ -1065,14 +1194,14 @@ describe("makeManagedServerProvider", () => {
         yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
         const refresh = yield* provider.refresh.pipe(Effect.forkChild);
         yield* Deferred.await(started);
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:04.000Z",
           authLabel: "tier-2",
           complete: true,
           windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 70 }],
         });
         if (clearPlan) {
-          yield* provider.applyUsageLimits({
+          yield* (yield* provider.bindUsageLimits)({
             checkedAt: "2026-04-10T00:00:04.000Z",
             complete: true,
             windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 70 }],
@@ -1104,14 +1233,24 @@ describe("makeManagedServerProvider", () => {
           refreshOnInterval: false,
         });
         yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
-        yield* provider.applyUsageLimits({ ...usageLimits, complete: true, authLabel: "tier-2" });
+        yield* (yield* provider.bindUsageLimits)({
+          ...usageLimits,
+          complete: true,
+          authLabel: "tier-2",
+        });
         assert.strictEqual((yield* provider.refresh).auth.label, "tier-2");
 
-        yield* provider.applyUsageLimits({ ...usageLimits, complete: true });
+        yield* (yield* provider.bindUsageLimits)({ ...usageLimits, complete: true });
         assert.strictEqual((yield* provider.getSnapshot).auth.label, undefined);
         const refreshed = yield* provider.refresh;
         assert.strictEqual(refreshed.auth.label, undefined);
-        assert.deepStrictEqual(refreshed.usageLimits, usageLimits);
+        assert.deepStrictEqual(refreshed.usageLimits, {
+          ...usageLimits,
+          windows: usageLimits.windows.map((window) => ({
+            ...window,
+            observedAt: usageLimits.checkedAt,
+          })),
+        });
       }),
     ).pipe(Effect.provide(layerAlwaysRunTest)),
   );
@@ -1145,22 +1284,22 @@ describe("makeManagedServerProvider", () => {
           label: "Weekly",
           usedPercent: 20,
         } as const;
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:02.000Z",
           windows: [weekly],
         });
         const partial = yield* provider.getSnapshot;
         assert.deepStrictEqual(partial.usageLimits, {
           checkedAt: "2026-04-10T00:00:02.000Z",
-          windows: [weekly],
+          windows: [{ ...weekly, observedAt: "2026-04-10T00:00:02.000Z" }],
           unavailable: failedLimits.unavailable,
         });
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:03.000Z",
           windows: [{ ...weekly }],
         });
         assert.strictEqual(yield* provider.getSnapshot, partial);
-        assert.deepStrictEqual((yield* provider.refresh).usageLimits, failedLimits);
+        assert.deepStrictEqual((yield* provider.refresh).usageLimits, partial.usageLimits);
 
         const completeLimits = {
           checkedAt: "2026-04-10T00:00:04.000Z",
@@ -1170,7 +1309,13 @@ describe("makeManagedServerProvider", () => {
           ],
         } as const;
         yield* Ref.set(probeSnapshot, { ...refreshedSnapshot, usageLimits: completeLimits });
-        assert.deepStrictEqual((yield* provider.refresh).usageLimits, completeLimits);
+        assert.deepStrictEqual((yield* provider.refresh).usageLimits, {
+          ...completeLimits,
+          windows: completeLimits.windows.map((window) => ({
+            ...window,
+            observedAt: completeLimits.checkedAt,
+          })),
+        });
       }),
     ).pipe(Effect.provide(layerAlwaysRunTest)),
   );

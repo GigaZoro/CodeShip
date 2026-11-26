@@ -16,12 +16,13 @@ import {
   museModelCapabilities,
   resolveMuseStartupTimeoutMs,
 } from "./modelCatalog.ts";
+import { museSubscriptionLimits } from "./usageLimits.ts";
+import { resolveCliVersion } from "@t3tools/provider-core/server/cliVersionMemory";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
   DEFAULT_TIMEOUT_MS,
   isCommandMissingCause,
-  parseCliVersionResult,
   providerModelsFromSettings,
   providerProbeEnvironment,
   spawnAndCollect,
@@ -69,6 +70,8 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
   cwd?: string,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
   onLiveCatalog: Effect.Effect<void> = Effect.void,
+  /** The version this instance last reported, used when `--version` misses its deadline. */
+  lastKnownVersion: string | null = null,
 ) {
   if (!settings.enabled) return yield* makePendingMuseProvider(settings);
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -84,6 +87,7 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
     });
   const versionResult = yield* Effect.gen(function* () {
     const spawnCommand = yield* resolveSpawnCommand(settings.binaryPath, ["--version"], {
+      cwd,
       env: museEnvironment,
     });
     return yield* spawnAndCollect(
@@ -113,7 +117,13 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         : "Failed to execute Muse Code CLI. Check its binary path on this T3.CodeShip server host.",
     });
   }
-  if (Option.isNone(versionResult.success)) {
+  const resolvedVersion = yield* resolveCliVersion({
+    cli: "Muse Code CLI",
+    output: versionResult.success,
+    lastKnownVersion,
+    parse: parseMuseVersion,
+  });
+  if (resolvedVersion === null) {
     return snapshot({
       installed: true,
       version: null,
@@ -122,9 +132,8 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
       message: "Muse Code CLI version check timed out.",
     });
   }
-  const versionOutput = versionResult.success.value;
-  const version = parseCliVersionResult(versionOutput, parseMuseVersion);
-  if (versionOutput.code !== 0) {
+  const { output: versionOutput, version } = resolvedVersion;
+  if (versionOutput !== undefined && versionOutput.code !== 0) {
     return snapshot({
       installed: true,
       version,
@@ -157,14 +166,23 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         "Muse Code SDK could not read the model catalog. Check your Muse installation and run `muse login` on this T3.CodeShip server host.",
     });
   }
-  const { models, live } = catalog.success.value;
+  const { models, live, usage } = catalog.success.value;
+  const usageLimits = usage === undefined ? undefined : museSubscriptionLimits(usage);
   if (live) yield* onLiveCatalog;
   // MSP reports no login state; a turn Muse refuses for its login marks the account signed out.
   return snapshot(
     {
       installed: true,
       version,
-      auth: { status: "unknown" },
+      auth: {
+        status: "unknown",
+        ...(museEnvironment.META_API_KEY
+          ? { funding: "metered" }
+          : usageLimits
+            ? { funding: "included", label: usageLimits.plan }
+            : {}),
+      },
+      ...(usageLimits === undefined ? {} : { usageLimits }),
       ...(models.length > 0
         ? { status: "ready" }
         : {

@@ -46,6 +46,8 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.settle",
   "thread.pin",
   "thread.snooze",
+  "thread.notifications",
+  "thread.color",
   "thread.archive",
   "thread.regenerateTitle",
   "thread.reopenLastArchived",

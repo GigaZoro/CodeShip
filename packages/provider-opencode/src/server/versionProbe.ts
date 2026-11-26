@@ -18,7 +18,7 @@ export interface ProbedOpenCode {
 }
 
 // Meant to stop a hung `--version`; wrapped installs can take several seconds to start cold.
-const OPENCODE_VERSION_PROBE_TIMEOUT_MS = 10_000;
+export const OPENCODE_VERSION_PROBE_TIMEOUT_MS = 10_000;
 const OPENCODE_SERVER_PROBE_TIMEOUT_MS = 5_000;
 // 2.x's own CLI decodes `{version, pid}` from `/api/info`; requiring both keeps unrelated JSON out.
 const decodeApiInfo = Schema.decodeUnknownOption(
@@ -59,6 +59,7 @@ function classifyOpenCodeProbeResponse(
 export const probeOpenCodeBinary = Effect.fn("probeOpenCodeBinary")(function* (
   binaryPath: string,
   environment: NodeJS.ProcessEnv | undefined,
+  lastKnownVersion: Effect.Effect<string | null> = Effect.succeed(null),
 ) {
   const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const timeoutMs = resolveProviderProbeTimeoutMs(
@@ -66,25 +67,29 @@ export const probeOpenCodeBinary = Effect.fn("probeOpenCodeBinary")(function* (
     OPENCODE_VERSION_PROBE_TIMEOUT_MS,
     environment,
   );
-  const { stdout } = yield* runtime
+  const output = yield* runtime
     .runOpenCodeCommand({
       binaryPath,
       args: ["--version"],
       ...(environment === undefined ? {} : { environment }),
     })
-    .pipe(
-      Effect.timeoutOrElse({
-        duration: timeoutMs,
-        orElse: () =>
-          Effect.fail(
-            new OpenCodeRuntime.OpenCodeRuntimeError({
-              operation: "probeOpenCodeBinary",
-              detail: `OpenCode CLI version probe timed out after ${timeoutMs / 1_000} seconds.`,
-            }),
-          ),
-      }),
+    .pipe(Effect.timeoutOption(timeoutMs));
+  if (Option.isNone(output)) {
+    // A `--version` that misses its deadline on a loaded machine says nothing about the CLI.
+    const fallback = probed(yield* lastKnownVersion);
+    if (fallback === undefined) {
+      return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+        operation: "probeOpenCodeBinary",
+        detail: `OpenCode CLI version probe timed out after ${timeoutMs / 1_000} seconds.`,
+      });
+    }
+    yield* Effect.logWarning(
+      "OpenCode --version timed out; checking with the version it last reported.",
+      { lastKnownVersion: fallback.version },
     );
-  const result = classifyOpenCodeCliVersion(stdout);
+    return fallback;
+  }
+  const result = classifyOpenCodeCliVersion(output.value.stdout);
   if (result) return result;
   return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
     operation: "probeOpenCodeBinary",
@@ -174,6 +179,8 @@ export const probeOpenCodeRuntime = (
     readonly serverPassword: string;
   },
   environment?: NodeJS.ProcessEnv,
+  /** The version this instance last reported, read only when the binary's `--version` times out. */
+  lastKnownVersion: Effect.Effect<string | null> = Effect.succeed(null),
 ): Effect.Effect<
   ProbedOpenCode,
   OpenCodeRuntime.OpenCodeRuntimeError,
@@ -181,7 +188,7 @@ export const probeOpenCodeRuntime = (
 > =>
   settings.serverUrl.trim().length > 0
     ? probeOpenCodeServer(settings.serverUrl, settings.serverPassword, environment)
-    : probeOpenCodeBinary(settings.binaryPath, environment);
+    : probeOpenCodeBinary(settings.binaryPath, environment, lastKnownVersion);
 
 // Only 2.x is kept: 1.x can be upgraded in place while T3 runs, and 2.x converts the shared
 // database, so going back is unsupported.

@@ -1,3 +1,5 @@
+import type { WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTree";
+
 /**
  * Tells a command's wrapper from a later process under its pid. Linux: boot id and start ticks.
  * Windows and macOS: the stored creation time; on Windows the window the launch bounds it to when
@@ -21,6 +23,12 @@ export const timeIdentity = (startedAtMs: number) => `${TIME_PREFIX}${startedAtM
 
 /** A wrapper whose start its launch could not read, which started between `from` and `to`. */
 export const windowIdentity = (from: number, to: number) => `${WINDOW_PREFIX}${from}:${to}`;
+
+/**
+ * A start no process has, which a gone wrapper's stop passes as its root's, so a holder of the pid
+ * is another process and bounds the wrapper's children by its start, not by a clock reading.
+ */
+const NO_ROOT = { from: 0, to: 0 };
 
 /** The start time of an identity that holds one. */
 export const identityTime = (identity: string | null): number | undefined => {
@@ -98,4 +106,28 @@ export const recordedIdentity = (platform: NodeJS.Platform, text: string): strin
   if (platform === "linux") return linuxIdentity(first, second);
   const startedAt = Date.parse(`${first.trim()} UTC`);
   return first.trim() !== "" && Number.isFinite(startedAt) ? timeIdentity(startedAt) : undefined;
+};
+
+/**
+ * The root a Windows stop of a wrapper takes (`windowsStopTreeArgs`): its pid, its identity as
+ * recorded at `recordedAt`, `namedAt`, when it wrote its pid just before it started the command, and
+ * `ended`, when the runner saw it exit.
+ */
+export const windowsStopRoot = (wrapper: {
+  readonly pid: number;
+  readonly identity: string | null;
+  readonly recordedAt: number;
+  readonly namedAt: number | undefined;
+  readonly ended: WindowsProcessTreeRoot["ended"];
+}): WindowsProcessTreeRoot => {
+  const created = wrapper.identity === ENDED_IDENTITY ? NO_ROOT : identityWindow(wrapper.identity);
+  // With a window or an ended record, take nothing made before the record or before the wrapper
+  // named itself, since the window may hold what an earlier holder of its pid made; a clock set back
+  // spares the command's own processes. Without a window, `since` also places the root.
+  const since =
+    identityTime(wrapper.identity) ??
+    (created === undefined
+      ? wrapper.recordedAt
+      : Math.max(wrapper.recordedAt, wrapper.namedAt ?? wrapper.recordedAt));
+  return { pid: wrapper.pid, since, created: created ?? "unknown", ended: wrapper.ended };
 };

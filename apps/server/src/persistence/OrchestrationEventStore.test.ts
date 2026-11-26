@@ -438,11 +438,13 @@ layer("OrchestrationEventStore", (it) => {
         eventCount: 2,
         rawPayloadBytes: Buffer.byteLength(unicodePayload) + Buffer.byteLength(oversizedPayload),
         hasCreateEvent: true,
+        historyCompacted: false,
       });
       assert.deepEqual(yield* store.getAgentReplayStats({ ...range, afterSequence: first }), {
         eventCount: 1,
         rawPayloadBytes: Buffer.byteLength(oversizedPayload),
         hasCreateEvent: false,
+        historyCompacted: false,
       });
       assert.equal(
         (yield* store.getAgentReplayStats({ ...range, throughSequence: later, maxEvents: 1 }))
@@ -453,7 +455,18 @@ layer("OrchestrationEventStore", (it) => {
         eventCount: 0,
         rawPayloadBytes: 0,
         hasCreateEvent: false,
+        historyCompacted: false,
       });
+      yield* sql`
+        INSERT INTO orchestration_v2_thread_history_compaction (thread_id, compacted_through_sequence)
+        VALUES (${threadId}, ${head})
+      `;
+      assert.isTrue(
+        (yield* store.getAgentReplayStats({ ...range, afterSequence: first })).historyCompacted,
+      );
+      assert.isFalse(
+        (yield* store.getAgentReplayStats({ ...range, afterSequence: head })).historyCompacted,
+      );
       assert.deepEqual(
         yield* store.getReplayStats({ afterSequence: baseline, throughSequence: head }),
         {

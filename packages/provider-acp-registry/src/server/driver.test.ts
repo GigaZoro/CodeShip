@@ -161,7 +161,9 @@ describe("acpRegistrySnapshotReadiness", () => {
           ready: true,
           icon: null,
           authMethods: [],
-          models: [{ id: "probe-model", name: "Probe model", description: null }],
+          models: [
+            { id: "probe-model", name: "Probe model", description: null, funding: "included" },
+          ],
           currentModelId: "probe-model",
           configOptions: [],
           sessionManagement: {
@@ -182,7 +184,7 @@ describe("acpRegistrySnapshotReadiness", () => {
       applyAcpRegistryLiveConfiguration(
         provider,
         {
-          models: [{ id: "live-model", name: "Live model", description: null }],
+          models: [{ id: "live-model", name: "Live model", description: null, funding: "metered" }],
           currentModelId: "live-model",
           configOptions: [],
         },
@@ -191,7 +193,7 @@ describe("acpRegistrySnapshotReadiness", () => {
     ).toMatchObject({
       auth: { status: "unknown", canLogout: true },
       nativeSessions: { canList: true, canLoad: true, canResume: true },
-      models: [{ slug: "live-model", isDefault: true }],
+      models: [{ slug: "live-model", isDefault: true, funding: "metered" }],
     });
 
     expect(
@@ -201,6 +203,26 @@ describe("acpRegistrySnapshotReadiness", () => {
         [],
       ).models,
     ).toEqual(provider.models);
+
+    for (const authStatus of ["authenticated", "unauthenticated"] as const) {
+      const afterLoginChange = {
+        ...provider,
+        auth: { status: authStatus },
+        models: provider.models.map((model) => ({ ...model, funding: "unknown" as const })),
+      };
+      const updated = applyAcpRegistryLiveConfiguration(
+        afterLoginChange,
+        {
+          models: [
+            { id: "probe-model", name: "Old session", description: null, funding: "included" },
+          ],
+          currentModelId: "probe-model",
+          configOptions: [],
+        },
+        [],
+      );
+      expect(updated.models[0]?.funding).not.toBe("included");
+    }
 
     const liveOptions = [
       {
@@ -221,6 +243,7 @@ describe("acpRegistrySnapshotReadiness", () => {
       {
         slug: "probe-model",
         isDefault: true,
+        funding: "included",
         capabilities: { optionDescriptors: [{ id: "effort", currentValue: "high" }] },
       },
     ]);

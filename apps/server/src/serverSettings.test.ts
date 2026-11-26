@@ -770,6 +770,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     ).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect(
+    "retains fresh Auto in effective text generation settings when its placeholder is absent",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const auto = {
+          instanceId: ProviderInstanceId.make("another-host"),
+          model: "placeholder",
+          quotaAwareAuto: true,
+        };
+        const saved = yield* service.updateSettings({ textGenerationModelSelection: auto });
+        assert.deepEqual(saved.textGenerationModelSelection, auto);
+        assert.deepEqual((yield* service.getSettings).textGenerationModelSelection, auto);
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("preserves model when switching providers via textGenerationModelSelection", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;

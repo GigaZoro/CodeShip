@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration"]);
@@ -29,21 +29,29 @@ const someDescendant = (node: unknown, match: (node: ESTree.Node) => boolean): b
   return false;
 };
 
-const memberName = (node: unknown): Option.Option<readonly [string, string]> => {
+const memberName = (
+  sourceCode: SourceCode,
+  node: unknown,
+): Option.Option<readonly [string, string]> => {
   const expression = unwrapExpression(node);
   if (Option.isNone(expression) || expression.value.type !== "MemberExpression") {
     return Option.none();
   }
   const object = unwrapExpression(expression.value.object);
-  const property = getPropertyName(expression.value.property);
+  const property = resolvePropertyName(sourceCode, expression.value.property);
   if (Option.isNone(object) || object.value.type !== "Identifier" || Option.isNone(property)) {
     return Option.none();
   }
   return Option.some([object.value.name, property.value] as const);
 };
 
-const isMember = (node: unknown, object: string, property: string): boolean =>
-  Option.match(memberName(node), {
+const isMember = (
+  sourceCode: SourceCode,
+  node: unknown,
+  object: string,
+  property: string,
+): boolean =>
+  Option.match(memberName(sourceCode, node), {
     onNone: () => false,
     onSome: ([name, key]) => name === object && key === property,
   });
@@ -58,11 +66,12 @@ const isTimerReference = (node: unknown): boolean => {
 };
 
 // `Promise.resolve()`, or a `new Promise` whose executor schedules a timer.
-const isTickPromise = (node: unknown): boolean => {
+const isTickPromise = (sourceCode: SourceCode, node: unknown): boolean => {
   const expression = unwrapExpression(node);
   if (Option.isNone(expression)) return false;
   const value = expression.value;
-  if (value.type === "CallExpression") return isMember(value.callee, "Promise", "resolve");
+  if (value.type === "CallExpression")
+    return isMember(sourceCode, value.callee, "Promise", "resolve");
   if (value.type !== "NewExpression" || !isIdentifier(Option.some(value.callee), "Promise")) {
     return false;
   }
@@ -75,22 +84,23 @@ const isTickPromise = (node: unknown): boolean => {
   );
 };
 
-const thunkReturnsTick = (node: unknown): boolean => {
+const thunkReturnsTick = (sourceCode: SourceCode, node: unknown): boolean => {
   if (!isNode(node) || node.type !== "ArrowFunctionExpression") return false;
   const body = node.body;
-  if (body.type !== "BlockStatement") return isTickPromise(body);
+  if (body.type !== "BlockStatement") return isTickPromise(sourceCode, body);
   const last = body.body.at(-1);
-  return last?.type === "ReturnStatement" && isTickPromise(last.argument);
+  return last?.type === "ReturnStatement" && isTickPromise(sourceCode, last.argument);
 };
 
-const isWait = (node: ESTree.Node): boolean => {
-  if (node.type === "MemberExpression") return isMember(node, "Effect", "yieldNow");
-  if (node.type === "AwaitExpression") return isTickPromise(node.argument);
-  if (node.type === "NewExpression") return isTickPromise(node);
+const isWait = (sourceCode: SourceCode, node: ESTree.Node): boolean => {
+  if (node.type === "MemberExpression") return isMember(sourceCode, node, "Effect", "yieldNow");
+  if (node.type === "AwaitExpression") return isTickPromise(sourceCode, node.argument);
+  if (node.type === "NewExpression") return isTickPromise(sourceCode, node);
   if (node.type !== "CallExpression") return false;
-  if (isMember(node.callee, "Effect", "sleep")) return true;
+  if (isMember(sourceCode, node.callee, "Effect", "sleep")) return true;
   if (isIdentifier(unwrapExpression(node.callee), "setImmediate")) return true;
-  if (isMember(node.callee, "Effect", "promise")) return thunkReturnsTick(node.arguments[0]);
+  if (isMember(sourceCode, node.callee, "Effect", "promise"))
+    return thunkReturnsTick(sourceCode, node.arguments[0]);
   return false;
 };
 
@@ -177,10 +187,11 @@ export default defineRule({
     schema: [],
   },
   create(context) {
+    const { sourceCode } = context;
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
 
     const check = (loop: LoopNode) => {
-      if (!someDescendant(loop.body, isWait)) return;
+      if (!someDescendant(loop.body, (node) => isWait(sourceCode, node))) return;
       if (!hasPredicateExit(loop)) return;
       context.report({ node: loop, message: MESSAGE });
     };

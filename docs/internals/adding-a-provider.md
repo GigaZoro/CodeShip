@@ -41,8 +41,20 @@ capabilities, never the driver kind.
 - **Instances.** Session state, catalogs, and credentials belong to a provider instance, not the
   driver. Remove ambient credentials the instance did not configure, so two instances cannot
   silently share an account or billing.
+- **Auto funding.** Declare `included` only when the executable account or model can use its
+  allowance without falling through to paid usage. Leave funding unknown when a login, model
+  name or quota reading does not establish this. If the destination can select a different payer,
+  set `auth.fundingScope` to `workspace` and implement `fundingForWorkspace` on the instance.
+  Auto calls it with the actual launch directory and model before choosing the account.
+  ACP agents can declare funding for each model
+  through `_meta["t3.codes/funding"]` on its model entry or model-select choice. That declaration
+  must hold across the workspaces where the instance advertises it.
 - **Status checks.** Background status and model refreshes must not open a session that can start
-  MCP servers, run hooks, or launch a login. Keep heavier probes behind an explicit refresh.
+  MCP servers, run hooks, or launch a login. Keep heavier probes behind an explicit refresh. A
+  `--version` that misses its deadline on a busy machine is not a failure: run the check through
+  `makeCliVersionMemory(...).check` and `resolveCliVersion`
+  ([`cliVersionMemory.ts`](../../packages/provider-core/src/server/cliVersionMemory.ts)), so it goes
+  on with the version the CLI last reported.
 - **T3 MCP tools.** Inject the thread's MCP server so agents can use T3's tools, and make a turn
   survive when that server is unreachable.
 - **Updates.** Run an update only through the installer that provably owns the binary; otherwise

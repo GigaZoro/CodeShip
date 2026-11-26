@@ -1,4 +1,6 @@
 import {
+  UsageReadError,
+  USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type ThreadId,
   type EnvironmentStartup,
@@ -18,6 +20,8 @@ import {
   type UsageSummary,
   WS_METHODS,
 } from "@t3tools/contracts";
+import { isCompatibleUsageContractVersion } from "@t3tools/shared/usageMerge";
+import { usageScanSettingsKey } from "@t3tools/shared/usageScanSettings";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -76,6 +80,7 @@ import {
 import type { RpcSession } from "../rpc/session.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { recordProviderMcpProblems } from "./providerMcpProblems.ts";
+import { usageSummaryAwaitsRefresh } from "./usageProgress.ts";
 import {
   applyServerConfigProjection,
   reuseUnchanged,
@@ -960,6 +965,27 @@ export function recordFetchedWorkspaceSnapshot(
   );
 }
 
+/** A failed follow-up leaves these figures final, so a source still refreshing shows as partial. */
+function markUnrefreshedSources(summary: UsageSummary): UsageSummary {
+  return {
+    ...summary,
+    sources: summary.sources.map(({ refreshing, ...source }) =>
+      refreshing !== true
+        ? source
+        : {
+            ...source,
+            status: source.status === "failed" ? ("failed" as const) : ("partial" as const),
+            message: [
+              t("Could not refresh this usage source. Showing its last values."),
+              source.message,
+            ]
+              .filter(Boolean)
+              .join(" "),
+          },
+    ),
+  };
+}
+
 export function createServerEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<
     EnvironmentRegistry.EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
@@ -1053,6 +1079,22 @@ export function createServerEnvironmentAtoms<R, E>(
       return { ...merged, providers: previousProviders };
     }).pipe(Atom.withLabel(`environment-data:server:config:${environmentId}`));
   });
+  const threadPreferenceCapabilitiesAtom = Atom.family((environmentId: EnvironmentId | null) =>
+    Atom.make((get) => {
+      const capabilities = get(configValueAtom(environmentId))?.environment.capabilities;
+      return {
+        threadNotificationLevel: capabilities?.threadNotificationLevel === true,
+        threadColor: capabilities?.threadColor === true,
+      };
+    }).pipe(
+      Atom.withEquality(
+        (a: { threadNotificationLevel: boolean; threadColor: boolean }, b: typeof a) =>
+          a.threadNotificationLevel === b.threadNotificationLevel &&
+          a.threadColor === b.threadColor,
+      ),
+      Atom.withLabel(`environment-data:server:thread-preference-capabilities:${environmentId}`),
+    ),
+  );
   const updateStateValueAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) =>
       serverUpdateStateForServerVersion(
@@ -1506,37 +1548,12 @@ export function createServerEnvironmentAtoms<R, E>(
         : (get(hiddenThreadTagsAtom(environmentId)) ?? NO_BLOCKED_THREAD_TAGS),
     ).pipe(Atom.withLabel(`environment-data:server:blocked-thread-tags:${environmentId}`)),
   );
-  const usagePricesAtom = Atom.family((environmentId: EnvironmentId) =>
+  // The refresh trigger and the compatibility key of every retained Usage answer. Only the
+  // server's key sees secret values; older servers send none, so their redacted settings stand in.
+  const usageScanSettingsKeyAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => {
-      const overrides = get(settingsValueAtom(environmentId))?.usagePriceOverrides ?? {};
-      // Only changed prices should trigger another transcript scan. Settings
-      // snapshots can recreate the same mapping in a different property order.
-      return JSON.stringify(
-        Object.keys(overrides)
-          .sort()
-          .map((model) => {
-            const price = overrides[model]!;
-            return [
-              model,
-              price.inputCostPerMillionTokens,
-              price.outputCostPerMillionTokens,
-              price.cacheReadCostPerMillionTokens,
-              price.cacheWriteCostPerMillionTokens,
-            ];
-          }),
-      );
-    }).pipe(Atom.withLabel(`environment-data:server:usage-prices:${environmentId}`)),
-  );
-  const usageScanSettingsAtom = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make((get) => {
-      const settings = get(settingsValueAtom(environmentId));
-      const aliases = settings?.usageModelAliases ?? {};
-      return JSON.stringify([
-        get(usagePricesAtom(environmentId)),
-        Object.keys(aliases)
-          .sort()
-          .map((model) => [model, aliases[model]]),
-      ]);
+      const config = get(configValueAtom(environmentId));
+      return config?.usageSettingsKey ?? usageScanSettingsKey(config?.settings ?? null);
     }).pipe(Atom.withLabel(`environment-data:server:usage-scan-settings:${environmentId}`)),
   );
   // Settings snapshots rebuild the filter object; only a changed filter should touch the Usage tab.
@@ -1657,6 +1674,13 @@ export function createServerEnvironmentAtoms<R, E>(
     staleTimeMs: 30_000,
     refreshIntervalMs: 60_000,
   });
+  // Spending shows here within the minute of the balance reading it is counted from.
+  const creditGrants = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:provider:credit-grants",
+    tag: WS_METHODS.providerCreditGrants,
+    staleTimeMs: 30_000,
+    refreshIntervalMs: 60_000,
+  });
   const databaseStorage = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:database-storage",
     tag: WS_METHODS.serverGetDatabaseStorage,
@@ -1716,6 +1740,7 @@ export function createServerEnvironmentAtoms<R, E>(
     monitoringThread,
     monitoringThreadView,
     configValueAtom,
+    threadPreferenceCapabilitiesAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,
@@ -1747,6 +1772,7 @@ export function createServerEnvironmentAtoms<R, E>(
     hiddenThreadTagsAtom,
     blockedThreadTagsAtom,
     usageModelFilterAtom,
+    usageScanSettingsKeyAtom,
     providersValueAtom,
     providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:provider:auth-state",
@@ -2024,54 +2050,54 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:usage-summary",
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
-      refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
-      execute: (input, emit, previous) => {
-        const settled = (summary: UsageSummary) =>
-          !summary.sources.some((source) => source.refreshing === true);
-        const read = request(WS_METHODS.serverGetUsageSummary, input).pipe(
-          Effect.filterOrElse(settled, (summary) =>
-            emit(summary).pipe(
-              Effect.andThen(
-                request(WS_METHODS.serverGetUsageSummary, { ...input, awaitRefresh: true }),
-              ),
-              Effect.catch((error) =>
-                Effect.logWarning("Could not refresh slow usage sources.").pipe(
-                  Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
-                  Effect.as({
-                    ...summary,
-                    sources: summary.sources.map(({ refreshing, ...source }) =>
-                      refreshing !== true
-                        ? source
-                        : {
-                            ...source,
-                            status:
-                              source.status === "failed"
-                                ? ("failed" as const)
-                                : ("partial" as const),
-                            message: [
-                              t("Could not refresh this usage source. Showing its last values."),
-                              source.message,
-                            ]
-                              .filter(Boolean)
-                              .join(" "),
-                          },
-                    ),
-                  }),
-                ),
-              ),
-            ),
-          ),
-        );
-        if (Option.isSome(previous)) return read;
-        return request(WS_METHODS.serverGetUsageSummary, { ...input, provisional: true }).pipe(
-          Effect.matchEffect({
-            // The saved answer only speeds things up; without it the plain read still answers.
-            onFailure: () => read,
-            onSuccess: (saved) =>
-              settled(saved) ? Effect.succeed(saved) : emit(saved).pipe(Effect.andThen(read)),
-          }),
-        );
-      },
+      refreshTrigger: ({ environmentId }) => usageScanSettingsKeyAtom(environmentId),
+      discardPreviousOnSignalChange: true,
+      execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit, prior) {
+        let previous: UsageSummary | undefined;
+        if (Option.isNone(prior)) {
+          const saved = yield* request(WS_METHODS.serverGetUsageSummary, {
+            ...input,
+            provisional: true,
+          }).pipe(Effect.result);
+          if (Result.isSuccess(saved)) {
+            if (!usageSummaryAwaitsRefresh(saved.success)) return saved.success;
+            previous = saved.success;
+            yield* emit(previous);
+          }
+        }
+        for (let attempt = 0; attempt <= 20; attempt++) {
+          if (attempt > 1) yield* Effect.sleep("1 second");
+          const result = yield* request(
+            WS_METHODS.serverGetUsageSummary,
+            attempt === 0 ? input : { ...input, awaitRefresh: true },
+          ).pipe(Effect.result);
+          if (Result.isFailure(result)) {
+            const error = result.failure;
+            if (error._tag === "UsageReadError" && error.reason === "scanPending") continue;
+            if (previous === undefined) return yield* error;
+            yield* Effect.logWarning("Could not refresh slow usage sources.").pipe(
+              Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
+            );
+            return markUnrefreshedSources(previous);
+          }
+          const summary = result.success;
+          if (!usageSummaryAwaitsRefresh(summary)) return summary;
+          previous = summary;
+          yield* emit(summary);
+        }
+        // The runtime passes `prior` only while the window and the usage settings key are unchanged.
+        const fallback =
+          previous ??
+          (Option.isSome(prior) &&
+          isCompatibleUsageContractVersion(prior.value.contractVersion, USAGE_CONTRACT_VERSION)
+            ? prior.value
+            : undefined);
+        if (fallback !== undefined) return { ...fallback, partialReason: "scanTimedOut" as const };
+        return yield* new UsageReadError({
+          reason: "scanFailed",
+          detail: "The usage scan timed out.",
+        });
+      }),
     }),
     resourceTelemetry: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry",
@@ -2116,6 +2142,7 @@ export function createServerEnvironmentAtoms<R, E>(
       },
     }),
     usageHolds,
+    creditGrants,
     retryUsageLimit: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-usage-limit",
       tag: WS_METHODS.providerRetryUsageLimit,

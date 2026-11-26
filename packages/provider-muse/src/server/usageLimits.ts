@@ -1,5 +1,5 @@
 import * as DateTime from "effect/DateTime";
-import { clampPercent } from "@t3tools/provider-core/server/usageLimits";
+import { clampPercent, makeUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import type { ProviderUsageLimitsReport } from "@t3tools/provider-core/server/snapshot";
 
 import { LATEST_DATE_MS, type MuseSubscriptionUsage } from "./protocol.ts";
@@ -11,14 +11,18 @@ export function museUsageToLimits(usage: MuseSubscriptionUsage): ProviderUsageLi
   const tier = usage.tier.trim();
   return {
     checkedAt: isoMillis(usage.observedAtMs),
+    complete: true,
     windows: [
       {
         id: "session",
         kind: "session",
         label: "Session",
         usedPercent: clampPercent(usage.window.usedPercent),
+        ...(Number.isSafeInteger(usage.window.windowDurationMins)
+          ? { windowDurationMins: usage.window.windowDurationMins }
+          : {}),
         resetsAt: isoMillis(usage.window.resetsAtMs),
-        windowDurationMins: usage.window.windowDurationMins,
+        observedAt: isoMillis(usage.observedAtMs),
       },
       {
         id: "weekly",
@@ -27,10 +31,17 @@ export function museUsageToLimits(usage: MuseSubscriptionUsage): ProviderUsageLi
         usedPercent: clampPercent(usage.weekly.usedPercent),
         resetsAt: isoMillis(usage.weekly.resetsAtMs),
         windowDurationMins: 7 * 24 * 60,
+        observedAt: isoMillis(usage.observedAtMs),
       },
     ],
     ...(tier ? { authLabel: tier } : {}),
   };
+}
+
+export function museSubscriptionLimits(usage: MuseSubscriptionUsage) {
+  const report = museUsageToLimits(usage);
+  const limits = makeUsageLimits(report);
+  return report.authLabel === undefined ? limits : { ...limits, plan: report.authLabel };
 }
 
 /** Credential proxies may omit error.quota from 429 refusals; inspect text too. */

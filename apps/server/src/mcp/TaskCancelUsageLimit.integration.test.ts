@@ -164,6 +164,7 @@ it.effect.each([
       const layerRecovery = UsageLimitRecoveryWorker.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            SqlitePersistence.layerMemory,
             Layer.succeed(Scheduler.Scheduler, {
               register: <E, R>(name: string, work: Effect.Effect<void, E, R>) =>
                 Effect.gen(function* () {
@@ -175,6 +176,7 @@ it.effect.each([
             ServerSettings.layerTest({ autoResumeLimitedThreads: true }),
             Layer.mock(AccountRouting.AccountRouting)({
               releaseAllowedHolds: Effect.succeed(false),
+              creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
             }),
             Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
           ),

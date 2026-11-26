@@ -9,8 +9,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Scope from "effect/Scope";
@@ -178,6 +180,32 @@ const promptThenCancel = (input: {
   }).pipe(Effect.scoped);
 
 describe("AcpSessionRuntime", () => {
+  it.effect.skipIf(isWindowsHost)(
+    "starts the ACP child in the physical directory used for lookup",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const repo = NodePath.join(root, "repo");
+        const receipt = NodePath.join(root, "cwd");
+        const preload = NodePath.join(root, "record.cjs");
+        yield* fs.makeDirectory(NodePath.join(repo, "child"), { recursive: true });
+        yield* fs.symlink("repo/child", NodePath.join(root, "link"));
+        yield* fs.writeFileString(
+          preload,
+          `require("node:fs").writeFileSync(${JSON.stringify(receipt)}, process.cwd())`,
+        );
+        const cwd = NodePath.join(root, "link") + "/..";
+        const runtime = yield* AcpSessionRuntime.make({
+          ...mockRuntimeOptions,
+          cwd,
+          spawn: { command: process.execPath, args: ["--require", preload, mockAgentPath], cwd },
+        });
+        yield* runtime.start();
+        assert.equal(yield* fs.readFileString(receipt), yield* fs.realPath(repo));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each(["session/new", "session/resume"] as const)(
     "buffers root metadata while %s startup is still pending",
     (setupMethod) =>

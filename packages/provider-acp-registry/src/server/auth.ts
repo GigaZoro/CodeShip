@@ -9,7 +9,8 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Hex from "effect/encoding/Hex";
-import * as FileSystem from "effect/FileSystem";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Callback realpath collapses linked parent components before traversal.
+import * as NodeFSP from "node:fs/promises";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -86,15 +87,13 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
     const platform = yield* HostProcess.Platform;
     const resolveExecutable = yield* SpawnExecutableResolution;
     const executable =
-      resolveExecutable(options.settings.commandPath, platform, options.environment) ??
+      resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd) ??
       options.settings.commandPath;
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* fs.realPath(executable).pipe(Effect.orElseSucceed(() => executable));
+    const path = yield* Effect.tryPromise(() => NodeFSP.realpath(executable)).pipe(
+      Effect.orElseSucceed(() => (platform === "win32" ? executable.toLowerCase() : executable)),
+    );
     // Local launcher arguments can identify different agents and can contain secrets.
-    const command = encodeCommand([
-      platform === "win32" ? path.toLowerCase() : path,
-      ...options.settings.commandArgs,
-    ]);
+    const command = encodeCommand([path, ...options.settings.commandArgs]);
     const digest = yield* digester
       .digest(Digest.sha256, new TextEncoder().encode(command))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
@@ -154,7 +153,7 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   const discoverMethods = Effect.scoped(
     Effect.gen(function* () {
       const inspected = yield* catalog
-        .inspect(options.settings, options.environment)
+        .inspect(options.settings, options.environment, options.cwd)
         .pipe(
           Effect.mapError((cause) =>
             failure("methods", "Could not inspect the selected ACP agent.", cause),

@@ -2,10 +2,22 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  guestShareAccessOptions,
+  guestShareCreatedText,
+  guestShareLifetimeOptions,
+} from "@t3tools/client-runtime/guest-share-options";
+import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_GUEST_SHARE_LIFETIME,
+  type EnvironmentId,
+  type GuestShareAccess,
+  type GuestShareLifetime,
+  type ThreadGuestShare,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useMemo, useState } from "react";
 import { Platform, ScrollView, Share, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -14,7 +26,10 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
+import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { useDeadlinePassed } from "../../lib/clock";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -44,7 +59,7 @@ export function useCanShareWithGuest(environmentId: EnvironmentId | null): boole
 type CreateState =
   | { readonly status: "idle" }
   | { readonly status: "creating" }
-  | { readonly status: "created"; readonly url: string }
+  | { readonly status: "created"; readonly url: string; readonly share: ThreadGuestShare }
   | { readonly status: "failed"; readonly message: string };
 
 type GuestShareTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
@@ -74,6 +89,8 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
     reportFailure: false,
   });
   const [state, setState] = useState<CreateState>({ status: "idle" });
+  const [access, setAccess] = useState<GuestShareAccess>("approve");
+  const [lifetime, setLifetime] = useState<GuestShareLifetime>(DEFAULT_GUEST_SHARE_LIFETIME);
   const [copiedAtMs, setCopiedAtMs] = useState<number | null>(null);
   const copyFeedbackEnded = useDeadlinePassed(
     copiedAtMs === null ? null : copiedAtMs + COPY_FEEDBACK_DURATION_MS,
@@ -86,9 +103,9 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
 
   const create = async () => {
     setState({ status: "creating" });
-    const result = await createGuestShare({ environmentId, input: { threadId } });
+    const result = await createGuestShare({ environmentId, input: { threadId, access, lifetime } });
     if (result._tag === "Success") {
-      setState({ status: "created", url: result.value.url });
+      setState({ status: "created", url: result.value.url, share: result.value.share });
       return;
     }
     if (isAtomCommandInterrupted(result)) {
@@ -135,7 +152,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
               </Text>
             </View>
             <Text className="px-1 text-xs text-foreground-muted">
-              {t("Send it to one person. It works once and expires in 24 hours.")}
+              {t("Send it to one person.")} {guestShareCreatedText(state.share)}
             </Text>
           </View>
           <View className="flex-row gap-3">
@@ -170,9 +187,36 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
             </View>
             <Text className="min-w-0 flex-1 text-sm leading-normal text-foreground-secondary">
               {t(
-                "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.",
+                "The guest sees the thread as you do, including command output and the agent's reasoning.",
               )}
             </Text>
+          </View>
+          <ListSection title={t("Guest messages")}>
+            {guestShareAccessOptions().map((option, index) => (
+              <ListChoiceRow
+                key={option.value}
+                label={option.label}
+                description={option.description}
+                selected={access === option.value}
+                separated={index > 0}
+                disabled={creating}
+                onPress={() => setAccess(option.value)}
+              />
+            ))}
+          </ListSection>
+          <View className="gap-2">
+            <Text className="px-1 text-sm text-foreground-muted">{t("Link expires after")}</Text>
+            <SegmentedControl
+              options={guestShareLifetimeOptions().map((option) => ({
+                ...option,
+                accessibilityLabel: t("Link expires after {lifetime}", {
+                  lifetime: option.label,
+                }),
+              }))}
+              selected={lifetime}
+              disabled={creating}
+              onSelect={setLifetime}
+            />
           </View>
           <View className="gap-1.5">
             {!threadLoaded ? (
@@ -190,9 +234,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
                   : t("A guest link is active. A new link ends the current one.")}
               </Text>
             ) : (
-              <Text className="text-sm text-foreground">
-                {t("The link works once and expires in 24 hours.")}
-              </Text>
+              <Text className="text-sm text-foreground">{t("The link works once.")}</Text>
             )}
             {state.status === "failed" ? (
               <Text accessibilityRole="alert" className="text-sm text-danger-foreground">

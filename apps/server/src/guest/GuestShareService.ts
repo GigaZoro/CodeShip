@@ -2,13 +2,14 @@ import {
   type ChatAttachment,
   ChatAttachmentId,
   CommandId,
-  GUEST_SHARE_TTL_MS,
+  GUEST_SHARE_LIFETIME_MS,
   GuestMessageId,
   GuestShareCreateError,
   type GuestShareCreateInput,
   type GuestShareCreateResult,
   GuestShareId,
   type GuestRedeemRequest,
+  MessageId,
   type GuestStreamEvent,
   type GuestSubmitRequest,
   type OrchestrationV2AppThread,
@@ -46,8 +47,14 @@ import {
 import * as ServerConfig from "../config.ts";
 import { CloudManagedEndpointRuntime } from "../cloud/ManagedEndpointRuntime.ts";
 import * as CommandOutputHub from "../orchestration-v2/CommandOutputHub.ts";
-import { GUEST_FAILURE } from "../orchestration-v2/GuestShareDecider.ts";
+import {
+  GUEST_FAILURE,
+  READ_ONLY_SHARE_RUN_ACTIVE,
+  READ_ONLY_SHARE_UNSUPPORTED,
+} from "../orchestration-v2/GuestShareDecider.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadMessageIntake from "../orchestration-v2/ThreadMessageIntake.ts";
 import { coalesceThreadLiveStream } from "../orchestration-v2/ThreadLiveEventCoalescer.ts";
 import { buildBoundedThreadStreamSnapshot } from "../orchestration-v2/ThreadStream.ts";
 import {
@@ -103,6 +110,7 @@ export class GuestShareAccessError extends Schema.TaggedError<GuestShareAccessEr
       "inactive",
       "used",
       "busy",
+      "running",
       "stale_page",
       "unavailable",
       "rejected",
@@ -128,7 +136,9 @@ const guestFailureReason = (cause: unknown): GuestShareAccessError["reason"] =>
         ? "busy"
         : cause === GUEST_FAILURE.filesBusy
           ? "files_busy"
-          : "rejected";
+          : cause === GUEST_FAILURE.running
+            ? "running"
+            : "rejected";
 
 const SessionClaims = Schema.Struct({
   kind: Schema.Literal("session"),
@@ -146,16 +156,19 @@ export class GuestShareService extends Context.Service<
     readonly create: (
       input: GuestShareCreateInput,
     ) => Effect.Effect<GuestShareCreateResult, GuestShareCreateError>;
-    /** Spends an invite and returns the session token for the guest's cookie. */
+    /** Spends an invite and returns the session token for the guest's cookie, and its lifetime. */
     readonly redeem: (
       request: GuestRedeemRequest,
     ) => Effect.Effect<
-      { readonly token: string; readonly shareId: GuestShareId },
+      { readonly token: string; readonly shareId: GuestShareId; readonly expiresInMs: number },
       GuestShareAccessError
     >;
     /** Succeeds while the session can still open its share. */
     readonly check: (session: string) => Effect.Effect<void, GuestShareAccessError>;
-    /** Stores the guest's files as the thread's attachments and records the message with them. */
+    /**
+     * Stores the guest's files as the thread's attachments and records the message with them. On
+     * a read-only link the message is then sent; if that fails it waits for the owner instead.
+     */
     readonly submit: (
       session: string,
       request: GuestSubmitRequest,
@@ -239,6 +252,12 @@ const make = Effect.gen(function* () {
         base64UrlEncode(Buffer.from(signature, "base64url").subarray(0, INVITE_SIGNATURE_BYTES)),
       ),
     );
+  const intakeContext = yield* Effect.context<
+    | ThreadManagement.ThreadManagementService
+    | ServerConfig.ServerConfig
+    | FileSystem.FileSystem
+    | DocumentText.DocumentText
+  >();
 
   // Tokens are derived from the share id, so nothing secret is stored and replacing or closing
   // the share in the thread projection revokes every token for it. An invite is
@@ -348,7 +367,9 @@ const make = Effect.gen(function* () {
     }
     const shareId = GuestShareId.make(base64UrlEncode(yield* random.randomBytes(SHARE_ID_BYTES)));
     const now = yield* DateTime.now;
-    const expiresAt = DateTime.formatIso(DateTime.add(now, { milliseconds: GUEST_SHARE_TTL_MS }));
+    const expiresAt = DateTime.formatIso(
+      DateTime.add(now, { milliseconds: GUEST_SHARE_LIFETIME_MS[input.lifetime] }),
+    );
     yield* orchestrator
       .dispatch({
         type: "thread.guest-share.open",
@@ -357,8 +378,21 @@ const make = Effect.gen(function* () {
         shareId,
         host,
         expiresAt,
+        access: input.access,
       })
-      .pipe(Effect.mapError(() => new GuestShareCreateError({ reason: "thread_unavailable" })));
+      .pipe(
+        Effect.mapError((error) => {
+          const cause = "cause" in error ? error.cause : undefined;
+          return new GuestShareCreateError({
+            reason:
+              cause === READ_ONLY_SHARE_UNSUPPORTED
+                ? "read_only_unsupported"
+                : cause === READ_ONLY_SHARE_RUN_ACTIVE
+                  ? "run_active"
+                  : "thread_unavailable",
+          });
+        }),
+      );
     const { thread } = yield* orchestrator
       .getThreadRecords(input.threadId, [])
       .pipe(Effect.mapError(() => new GuestShareCreateError({ reason: "read_failed" })));
@@ -381,7 +415,8 @@ const make = Effect.gen(function* () {
     // Guests have no client connection, so their events carry no surface.
     yield* analytics.record("feature.used", { feature: "guest_share.join" });
     const token = yield* signSession({ kind: "session", threadId: thread.id, shareId: share.id });
-    return { token, shareId: share.id };
+    const expiresInMs = Date.parse(share.expiresAt) - DateTime.toEpochMillis(yield* DateTime.now);
+    return { token, shareId: share.id, expiresInMs: Math.max(0, expiresInMs) };
   });
 
   const check = Effect.fn("GuestShareService.check")(function* (session: string) {
@@ -467,12 +502,13 @@ const make = Effect.gen(function* () {
       return yield* new GuestShareAccessError({ reason: "empty" });
     }
     const attachments = yield* storeUploads(thread.id, uploads);
+    const guestMessageId = GuestMessageId.make(yield* random.uuidV4);
     yield* dispatchGuestCommand({
       type: "thread.guest-message.submit",
       commandId: yield* commandId("submit"),
       threadId: thread.id,
       shareId: share.id,
-      guestMessageId: GuestMessageId.make(yield* random.uuidV4()),
+      guestMessageId,
       text: request.text,
       ...(attachments.length === 0 ? {} : { attachments }),
     }).pipe(Effect.onError(() => removeStored(attachments)));
@@ -480,6 +516,33 @@ const make = Effect.gen(function* () {
       feature: "guest_message.submit",
       variant: attachments.length === 0 ? "text_only" : "with_files",
     });
+    if (share.access === "read-only") yield* sendReadOnlyMessage(thread.id, guestMessageId);
+  });
+
+  /** Sends a read-only guest's message the way the owner's Send does. */
+  const sendReadOnlyMessage = Effect.fn("GuestShareService.sendReadOnlyMessage")(function* (
+    threadId: ThreadId,
+    guestMessageId: GuestMessageId,
+  ) {
+    const sendId = yield* commandId("send");
+    yield* ThreadMessageIntake.dispatchCommand({
+      type: "message.dispatch",
+      commandId: sendId,
+      threadId,
+      messageId: MessageId.make(sendId),
+      guestMessageId,
+      text: "",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "server",
+    }).pipe(
+      Effect.provideContext(intakeContext),
+      // The message stays pending, so the owner can still send or dismiss it.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("guest-share.read-only-send-failed", { threadId, cause }),
+      ),
+    );
   });
 
   /** Completes once the session no longer opens its share, so open reads end with it. */

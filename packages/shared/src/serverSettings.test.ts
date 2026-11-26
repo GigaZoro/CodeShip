@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderOptionDescriptor,
   SecretProviderId,
   SecretProviderKind,
   ServerSettings,
@@ -28,6 +29,7 @@ import {
   parsePersistedServerObservabilitySettings,
   resolveAutoModelSelection,
   resolveInheritedDefaultModelSelection,
+  resolveQuotaAwareAutoProfile,
   resolveReviewGuideModelSelection,
   resolveSourceControlWriterModelSelection,
   supportsAccountFailover,
@@ -35,6 +37,7 @@ import {
 } from "./serverSettings.ts";
 
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
+const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
@@ -201,6 +204,27 @@ describe("resolveInheritedDefaultModelSelection", () => {
     ] as const;
     expect(resolve(configs, mac)?.model).toBe(opus.model);
     expect(resolve(configs)?.model).toBe(sonnet.model);
+  });
+
+  it("inherits fresh Auto across machines with different providers", () => {
+    const auto = { ...opus, quotaAwareAuto: true };
+    const destination = machine(null, [
+      provider("custom", { driver: ProviderDriverKind.make("custom"), models: [model("local")] }),
+    ]);
+    const source = machine(auto, []);
+    const capable = { ...destination, environment: { capabilities: { quotaAwareAuto: true } } };
+    expect(
+      resolve([
+        [mac, source],
+        [pc, capable],
+      ]),
+    ).toEqual(auto);
+    expect(
+      resolve([
+        [mac, source],
+        [pc, destination],
+      ]),
+    ).toBeNull();
   });
 });
 
@@ -440,6 +464,39 @@ describe("serverSettings helpers", () => {
         { id: "fastMode", value: false },
       ],
     });
+  });
+
+  it("keeps fresh Auto through a text generation option edit and releases it for a manual pick", () => {
+    const pin = createModelSelection(ProviderInstanceId.make("custom"), "local-model");
+    const auto = { ...pin, quotaAwareAuto: true };
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      textGenerationModelSelection: auto,
+    });
+    expect(settings.textGenerationModelSelection).toEqual(auto);
+    expect(
+      applyServerSettingsPatch(settings, { textGenerationModelSelection: { options: [] } })
+        .textGenerationModelSelection,
+    ).toEqual(auto);
+    expect(
+      applyServerSettingsPatch(settings, { textGenerationModelSelection: pin })
+        .textGenerationModelSelection,
+    ).toEqual(pin);
+    const writers = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelection: auto,
+      reviewGuideModelSelection: auto,
+    };
+    expect(resolveSourceControlWriterModelSelection(writers, [], null)).toEqual(auto);
+    expect(resolveReviewGuideModelSelection(writers, [], null)).toEqual(auto);
+    const manual = applyServerSettingsPatch(
+      { ...settings, scheduledTaskModelSelection: auto, finalReviewModelSelections: [auto] },
+      {
+        scheduledTaskModelSelection: pin,
+        finalReviewModelSelections: [pin],
+      },
+    );
+    expect(manual.scheduledTaskModelSelection).toEqual(pin);
+    expect(manual.finalReviewModelSelections).toEqual([pin]);
   });
 
   it("replaces text generation selection across providers without leaking stale options", () => {
@@ -1147,6 +1204,8 @@ describe("Auto mode", () => {
     ],
   ] as const)("%s", (_, selection, started, expected) => {
     expect(resolve(selection, started)).toEqual({ ...expected, autoAccount: true });
+    const quotaAware = { ...selection, quotaAwareAuto: true };
+    expect(resolve(quotaAware, started)).toBe(quotaAware);
   });
 
   const project = ProjectId.make("project");
@@ -1254,6 +1313,32 @@ describe("Auto mode", () => {
     ).toBeNull();
   });
 
+  it("leaves explicit and quota-aware picks to their own routing paths", () => {
+    const explicit = {
+      instanceId: ProviderInstanceId.make("claude_second"),
+      model: "claude-sonnet-5-5",
+      options: [{ id: "effort", value: "max" }],
+    };
+    expect(resolve(explicit, false)).toBe(explicit);
+    const quotaAware = { ...explicit, quotaAwareAuto: true };
+    expect(resolve(quotaAware, false)).toBe(quotaAware);
+  });
+
+  it("round-trips a quota-aware default alongside a legacy provider pin", () => {
+    const selection = {
+      instanceId: ProviderInstanceId.make("claude_second"),
+      model: "claude-sonnet-5-5",
+      quotaAwareAuto: true,
+    };
+    const patch = decodeServerSettingsPatch({ defaultModelSelection: selection });
+    const next = applyServerSettingsPatch(settings, patch);
+    const decoded = decodeServerSettings(encodeServerSettings(next));
+
+    expect(decoded.defaultModelSelection).toEqual(selection);
+    expect(decoded.autoModeProvider).toBe(claude);
+    expect(decoded.autoModeModels).toEqual(settings.autoModeModels);
+  });
+
   it("replaces and clears one provider's Auto model without touching the others", () => {
     const next = applyServerSettingsPatch(settings, {
       autoModeModels: { [claude]: { model: "claude-sonnet-5-5" } },
@@ -1265,6 +1350,119 @@ describe("Auto mode", () => {
     expect(
       applyServerSettingsPatch(next, { autoModeModels: { [codex]: null } }).autoModeModels,
     ).toEqual({ [claude]: { model: "claude-sonnet-5-5" } });
+  });
+});
+
+describe("resolveQuotaAwareAutoProfile", () => {
+  const model = (slug: string, optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor>) => ({
+    slug,
+    name: slug,
+    capabilities: optionDescriptors === undefined ? null : { optionDescriptors },
+  });
+  const select = (id: string, values: ReadonlyArray<string>) => ({
+    id,
+    label: id,
+    type: "select" as const,
+    options: values.map((id) => ({ id, label: id })),
+  });
+  const account = (driver: string, models: ReadonlyArray<ReturnType<typeof model>>) => ({
+    instanceId: ProviderInstanceId.make(`${driver}_account`),
+    driver: ProviderDriverKind.make(driver),
+    models,
+  });
+  const nativeFamilies = [
+    ["antigravity", "thinking_level", "neon-5.9", "neon-5.10"],
+    ["antigravity", "thinking_level", "gemini-4-neon", "gemini-4.1-neon"],
+    ["claudeAgent", "effort", "claude-opus-5-9", "claude-opus-5-10"],
+    ["codex", "reasoningEffort", "gpt-9-astra", "gpt-10-astra"],
+  ] as const;
+
+  it.each(nativeFamilies)(
+    "pins the newest supported %s native profile at xhigh",
+    (driver, id, older, newer) => {
+      const options = [select(id, ["medium", "xhigh"])];
+      const destination = account(driver, [model(older, options), model(newer, options)]);
+
+      expect(resolveQuotaAwareAutoProfile(destination)).toEqual({
+        instanceId: destination.instanceId,
+        model: newer,
+        options: [{ id, value: "xhigh" }],
+      });
+      expect(resolveQuotaAwareAutoProfile(destination, (slug) => slug !== newer)).toEqual({
+        instanceId: destination.instanceId,
+        model: older,
+        options: [{ id, value: "xhigh" }],
+      });
+    },
+  );
+
+  it.each(nativeFamilies)(
+    "requires the advertised family and native option for %s",
+    (driver, id, older, newer) => {
+      const lookalike = { ...select("anotherOption", ["xhigh"]), role: "reasoning" as const };
+      const models = [
+        {
+          ...model(driver === "codex" ? "gpt-6.2-sol" : "other", [select(id, ["xhigh"])]),
+          name: newer,
+          aliases: [older],
+        },
+        model(older),
+        model(newer, [select(id, ["high", "max"]), lookalike]),
+      ];
+
+      expect(resolveQuotaAwareAutoProfile(account(driver, models))).toBeNull();
+    },
+  );
+
+  it("skips a newer model whose xhigh choice is prompt-injected", () => {
+    const descriptor = select("effort", ["xhigh"]);
+    const destination = account("claudeAgent", [
+      model("claude-opus-5-9", [descriptor]),
+      model("claude-opus-5-10", [{ ...descriptor, promptInjectedValues: ["xhigh"] }]),
+    ]);
+
+    expect(resolveQuotaAwareAutoProfile(destination)?.model).toBe("claude-opus-5-9");
+  });
+
+  it("dispatches opaque Neon IDs only when the provider identifies their family", () => {
+    const options = [select("thinking_level", ["xhigh"])];
+    const models = [
+      { ...model("model-a", options), name: "Gemini 6 Neon" },
+      { ...model("model-b", options), nativeModelFamily: "gemini-5.10-neon" },
+      { ...model("gemini-6-argon", options), name: "Gemini 7 Neon" },
+    ];
+
+    expect(resolveQuotaAwareAutoProfile(account("antigravity", models))?.model).toBe("model-b");
+  });
+
+  it("prefers a new driver's admitted default and falls back to an included model", () => {
+    const destination = {
+      ...account("custom_adapter", []),
+      models: [
+        { ...model("legacy"), isLegacy: true, funding: "included" },
+        { ...model("first"), funding: "included" },
+        { ...model("account-default"), isDefault: true, funding: "metered" },
+      ],
+    };
+
+    expect(resolveQuotaAwareAutoProfile(destination)).toEqual({
+      instanceId: destination.instanceId,
+      model: "account-default",
+    });
+    const included = new Set(
+      destination.models.filter((entry) => entry.funding === "included").map((entry) => entry.slug),
+    );
+    expect(resolveQuotaAwareAutoProfile(destination, (slug) => included.has(slug))?.model).toBe(
+      "first",
+    );
+    expect(resolveQuotaAwareAutoProfile(destination, (slug) => slug === "legacy")?.model).toBe(
+      "legacy",
+    );
+    expect(resolveQuotaAwareAutoProfile(destination, () => false)).toBeNull();
+  });
+
+  it("returns no profile for an empty catalog", () => {
+    expect(resolveQuotaAwareAutoProfile(account("custom_adapter", []))).toBeNull();
   });
 });
 

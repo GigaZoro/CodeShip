@@ -3,19 +3,28 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ClaudeSettings, type ServerProvider } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { vi } from "vite-plus/test";
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
   buildClaudeCapabilitiesProbeQueryOptions,
+  claudeWorkspaceFunding,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
   spawnClaudeProbeThroughEnv,
@@ -67,6 +76,102 @@ it.live.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
       const output = yield* Effect.promise(() => child.stdout.setEncoding("utf8").toArray());
       assert.equal(output.join(""), `${workspace} --probe\n`);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("resolves the Windows Claude SDK probe launcher from its child directory", () =>
+  Effect.gen(function* () {
+    const cwd = "C:\\checkout";
+    const expected = `${cwd}\\tools\\claude.exe`;
+    const query = vi.mocked(claudeQuery).mockImplementationOnce(() => {
+      throw new Error("probe fixture");
+    });
+    yield* probeClaudeCapabilities(
+      yield* decodeClaudeSettings({ binaryPath: "claude" }),
+      { PATH: "tools" },
+      cwd,
+      false,
+    ).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(SpawnExecutableResolution, (_command, _platform, _env, directory) =>
+        directory === cwd ? expected : "C:\\server\\tools\\claude.exe",
+      ),
+      Effect.flip,
+    );
+    assert.equal(query.mock.lastCall?.[0].options?.cwd, cwd);
+    assert.equal(query.mock.lastCall?.[0].options?.pathToClaudeCodeExecutable, expected);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("verifies Claude's funding for the actual destination and active login", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cwd = yield* fs.makeTempDirectoryScoped();
+    const homePath = yield* fs.makeTempDirectoryScoped();
+    yield* fs.makeDirectory(path.join(cwd, ".claude"));
+    const settings = yield* decodeClaudeSettings({ enabled: true, homePath });
+    const provider = {
+      instanceId: ProviderInstanceId.make("work"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+      installed: true,
+      status: "ready",
+      version: "1",
+      checkedAt: "2026-11-26T12:00:00Z",
+      auth: { status: "authenticated", email: "member@example.test" },
+      models: [],
+      slashCommands: [],
+      skills: [],
+    } as const satisfies ServerProvider;
+    let probes = 0;
+    const funding = (overage: boolean | null, email: string = provider.auth.email) =>
+      claudeWorkspaceFunding(
+        settings,
+        { HOME: homePath },
+        { provider, cwd },
+        (_settings, _environment, directory, _usage, launch) => {
+          probes++;
+          assert.equal(directory, cwd);
+          assert.deepEqual(launch?.settingSources, ["user", "project", "local"]);
+          return Effect.succeed({
+            email,
+            subscriptionType: "max",
+            tokenSource: "claude.ai",
+            apiKeySource: "none",
+            apiProvider: "firstParty",
+            slashCommands: [],
+            usage: {
+              rate_limits_available: true,
+              rate_limits:
+                overage === null
+                  ? {}
+                  : {
+                      extra_usage: {
+                        is_enabled: overage,
+                        monthly_limit: null,
+                        used_credits: null,
+                        utilization: null,
+                      },
+                    },
+            },
+          });
+        },
+      );
+    assert.equal(yield* funding(false), "included");
+    assert.equal(yield* funding(true), "metered");
+    assert.equal(yield* funding(null), "unknown");
+    assert.equal(yield* funding(false, "other@example.test"), "unknown");
+    const filename = path.join(cwd, ".claude", "settings.local.json");
+    for (const local of [
+      { env: { ANTHROPIC_BASE_URL: "https://gateway.example.test" } },
+      { env: { ANTHROPIC_API_KEY: "test-fixture" } },
+      { apiKeyHelper: "example" },
+    ]) {
+      yield* fs.writeFileString(filename, JSON.stringify(local));
+      assert.equal(yield* funding(false), "unknown");
+    }
+    assert.equal(probes, 4);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("reports a deleted worktree's scan as finished, not pending", () =>

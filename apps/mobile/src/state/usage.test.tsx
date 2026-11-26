@@ -50,6 +50,7 @@ vi.mock("./server", async () => {
     serverEnvironment: {
       usageSummary: vi.fn(() => Atom.make(AsyncResult.initial())),
       usageModelFilterAtom: () => Atom.make(undefined),
+      usageScanSettingsKeyAtom: () => Atom.make("settings"),
     },
   };
 });
@@ -109,6 +110,7 @@ function failedScan(error: string): EnvironmentUsageStatus {
     isConnected: true,
     canReadDiagnostics: true,
     error,
+    usageSettingsKey: "settings",
   };
 }
 
@@ -336,4 +338,28 @@ it("keeps 100 mobile tokens after the following minute's scan fails", async () =
   await act(() => screen.root.render(<ScopedUsage period={after} />));
   expect(screen.container.textContent).toContain("100 tokens");
   expect(screen.container.textContent).toContain("Showing its last values");
+});
+
+it("drops mobile figures and failures read under other usage settings while the new ones load", async () => {
+  await using screen = mountUsageProbe();
+  const period = makeWindow(7, new Date("2026-10-23T12:00:00Z"));
+  const laptop = {
+    ...failedScan("Laptop scan failed"),
+    label: "Laptop",
+    environmentId: EnvironmentId.make("laptop"),
+  };
+  const saved = [statusWithTokens("Desk", 100), laptop];
+  state.environments = saved;
+  await act(() => screen.root.render(<ScopedUsage period={period} />));
+  expect(screen.container.textContent).toBe("100 tokensLaptop: Laptop scan failedRetry");
+
+  state.environments = saved.map((environment) => ({
+    ...environment,
+    summary: null,
+    error: null,
+    isPending: true,
+    usageSettingsKey: "repriced",
+  }));
+  await act(() => screen.root.render(<ScopedUsage period={period} />));
+  expect(screen.container.textContent).toBe("");
 });

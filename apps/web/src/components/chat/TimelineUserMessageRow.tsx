@@ -59,6 +59,7 @@ import {
 } from "./SnapShotAttachmentDetails";
 import { GuestMessageName, guestBubbleClassName } from "./guestMessageStyle";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { MessageStarButton, MessageStarMarker } from "./MessageStarButton";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { formatBytes } from "@t3tools/shared/formatBytes";
@@ -268,7 +269,12 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
       {modelSwitch ? (
         <ModelSwitchRow environmentId={ctx.activeThreadEnvironmentId} modelSwitch={modelSwitch} />
       ) : null}
-      <UserMessageContent row={row} />
+      <div className="relative">
+        <UserMessageContent row={row} />
+        <div className="pointer-events-none absolute end-0 top-0 -translate-y-1/2">
+          <MessageStarMarker messageId={row.message.id} />
+        </div>
+      </div>
     </>
   );
 }
@@ -276,11 +282,16 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
 function UserMessageContent({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   return ctx.workflowOpening?.messageId === row.message.id ? (
-    <WorkflowOpeningBlock
-      opening={ctx.workflowOpening}
-      environmentId={ctx.activeThreadEnvironmentId}
-      onOpenThread={(threadId) => ctx.onOpenThread(ThreadId.make(threadId))}
-    />
+    <div className="group">
+      <WorkflowOpeningBlock
+        opening={ctx.workflowOpening}
+        environmentId={ctx.activeThreadEnvironmentId}
+        onOpenThread={(threadId) => ctx.onOpenThread(ThreadId.make(threadId))}
+      />
+      <div className="flex justify-end opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
+        <MessageStarButton messageId={row.message.id} />
+      </div>
+    </div>
   ) : resolveUserMessagePresentation(row.message).attribution === "automation" ? (
     <AutomationMessageRow row={row} />
   ) : (
@@ -364,6 +375,7 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 <RevertUserMessageButton turnCount={revertTurnCount} messageId={row.message.id} />
               )}
               <MessageCopyButton text={text} variant="ghost" />
+              <MessageStarButton messageId={row.message.id} />
               {promptLink !== null && (
                 <MessageCopyButton
                   text={promptLink}
@@ -838,6 +850,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             variant="ghost"
           />
         )}
+        {row.projectedItem ? <MessageStarButton messageId={row.message.id} /> : null}
         {promptLink !== null && (
           <MessageCopyButton
             text={promptLink}

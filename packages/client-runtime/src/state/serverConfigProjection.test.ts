@@ -63,21 +63,34 @@ describe("applyServerConfigProjection settingsUpdated", () => {
     expect(nextSettings.providerInstances.claude.config.launchArgs).toBe("--verbose");
   });
 
-  it("keeps the settings object when an update repeats the current settings", () => {
-    const wire = encodeSettings(DEFAULT_SERVER_SETTINGS);
-    const decode = () => decodeSettings(structuredClone(wire));
-    const settings = decode();
-    const current = Option.some({
-      config: { settings } as unknown as ServerConfig,
-      latestEvent: {} as ServerConfigStreamEvent,
-      source: "live" as const,
-    });
-    const next = applyServerConfigProjection(current, {
-      type: "settingsUpdated",
-      payload: { settings: decode() },
-    } as ServerConfigStreamEvent);
-    expect(Option.getOrThrow(next).config).toBe(Option.getOrThrow(current).config);
-  });
+  // Redaction blanks secret values, so only the server's usage key shows that one changed.
+  it.each([
+    { usageSettingsKey: "usage-a", keepsConfig: true },
+    { usageSettingsKey: "usage-b", keepsConfig: false },
+    { usageSettingsKey: undefined, keepsConfig: false },
+  ])(
+    "keeps the settings object when an update repeats the current settings ($usageSettingsKey)",
+    ({ usageSettingsKey, keepsConfig }) => {
+      const wire = encodeSettings(DEFAULT_SERVER_SETTINGS);
+      const decode = () => decodeSettings(structuredClone(wire));
+      const settings = decode();
+      const config = { settings, usageSettingsKey: "usage-a" } as unknown as ServerConfig;
+      const current = Option.some({
+        config,
+        latestEvent: {} as ServerConfigStreamEvent,
+        source: "live" as const,
+      });
+      const next = Option.getOrThrow(
+        applyServerConfigProjection(current, {
+          type: "settingsUpdated",
+          payload: { settings: decode(), usageSettingsKey },
+        } as ServerConfigStreamEvent),
+      ).config;
+      expect(next === config).toBe(keepsConfig);
+      expect(next.settings).toBe(settings);
+      expect(next.usageSettingsKey).toBe(usageSettingsKey);
+    },
+  );
 });
 
 describe("applyServerConfigProjection provider catalogs", () => {

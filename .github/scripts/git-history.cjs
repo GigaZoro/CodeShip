@@ -8,6 +8,25 @@ const REAL_HISTORY_ENV = Object.freeze({
   GIT_GRAFT_FILE: "/dev/null/grafts",
 });
 
+// A git call that runs away is killed instead of holding a core, and a push waiting on it, until someone notices;
+// each call takes seconds even on a large worktree. SIGKILL, since one that ignored SIGTERM would hold the wait.
+const GIT_CALL_TIMEOUT_MS = 5 * 60 * 1000;
+const GIT_CALL_LIMITS = Object.freeze({ timeout: GIT_CALL_TIMEOUT_MS, killSignal: "SIGKILL" });
+
+/**
+ * `read` again when a synchronous call in it ran out of its limit. Such a limit counts a Mac's sleep, so a call the
+ * Mac slept under times out when it wakes. A second timeout is thrown, so a runaway call is still killed. A killed
+ * git can leave its locks, so `read` makes anew whatever its calls lock.
+ */
+function rerunAfterTimeout(read) {
+  try {
+    return read();
+  } catch (error) {
+    if (error.code !== "ETIMEDOUT") throw error;
+    return read();
+  }
+}
+
 // Past spawnSync's and execFileSync's 1 MiB default: Git prints a line per path for `ls-files`, `status` and a merge's
 // conflicts, where this repository's paths alone take 2 MB, and `show` prints the release notes, which grow each day.
 const GIT_OUTPUT_MAX_BYTES = 256 * 1024 * 1024;
@@ -17,13 +36,17 @@ const GIT_OUTPUT_MAX_BYTES = 256 * 1024 * 1024;
  * a tree checked from the worktree can differ from the commit it is pushed as.
  */
 function markedFiles(cwd) {
-  const listed = spawnSync("git", ["-C", cwd, "ls-files", "-v"], {
-    encoding: "utf8",
-    env: { ...process.env, ...REAL_HISTORY_ENV },
-    maxBuffer: GIT_OUTPUT_MAX_BYTES,
-    windowsHide: true,
+  const listed = rerunAfterTimeout(() => {
+    const result = spawnSync("git", ["-C", cwd, "ls-files", "-v"], {
+      encoding: "utf8",
+      env: { ...process.env, ...REAL_HISTORY_ENV },
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
+      ...GIT_CALL_LIMITS,
+      windowsHide: true,
+    });
+    if (result.error) throw result.error;
+    return result;
   });
-  if (listed.error) throw listed.error;
   if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr.trim()}`);
   return listed.stdout
     .split("\n")
@@ -31,4 +54,11 @@ function markedFiles(cwd) {
     .map((line) => line.slice(2));
 }
 
-module.exports = { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles };
+module.exports = {
+  GIT_CALL_LIMITS,
+  GIT_CALL_TIMEOUT_MS,
+  GIT_OUTPUT_MAX_BYTES,
+  REAL_HISTORY_ENV,
+  markedFiles,
+  rerunAfterTimeout,
+};

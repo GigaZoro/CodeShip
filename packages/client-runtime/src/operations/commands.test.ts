@@ -39,6 +39,7 @@ import {
   type SupervisorConnectionState,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { RpcPermissionGuard } from "../rpc/client.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
@@ -51,9 +52,12 @@ import {
   updateThreadMetadata,
 } from "./commands.ts";
 
-const layerTestRandom = Layer.succeed(
-  SecureRandom.SecureRandom,
-  SecureRandom.make((size) => new Uint8Array(size)),
+const authorizedCommandLayer = Layer.merge(
+  Layer.succeed(RpcPermissionGuard, { authorize: () => Effect.void }),
+  Layer.succeed(
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => new Uint8Array(size)),
+  ),
 );
 
 const TARGET = new PrimaryConnectionTarget({
@@ -164,7 +168,7 @@ describe("V2 environment commands", () => {
         { type: "queued-run.start", commandId: "send-selected", threadId, runId: "selected" },
         { type: "queue.resume", commandId: "resume-queue", threadId },
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("preserves caller command ids for idempotent V2 commands", () =>
@@ -180,7 +184,7 @@ describe("V2 environment commands", () => {
       expect(commands).toEqual([
         { type: "thread.archive", commandId: "queued-command", threadId: "thread-1" },
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("sends the branch a branch update expects, so the server can refuse a stale one", () =>
@@ -204,7 +208,7 @@ describe("V2 environment commands", () => {
           expectedBranch: "main",
         },
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("resolves run ordinal zero to the persisted thread-start checkpoint", () =>
@@ -248,7 +252,7 @@ describe("V2 environment commands", () => {
           checkpointId,
         },
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("forwards the triggering message for an on-return compaction", () =>
@@ -273,7 +277,7 @@ describe("V2 environment commands", () => {
         type: "message.dispatch",
         compactionForMessageId: trigger,
       });
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("preserves an existing worktree and branch during first-message launch", () =>
@@ -317,7 +321,7 @@ describe("V2 environment commands", () => {
           branch: "feature",
         },
       });
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("uses server-resolved delivery intent without fetching the full projection", () =>
@@ -353,7 +357,7 @@ describe("V2 environment commands", () => {
         });
       }
       expect(projectionRequests).toEqual([]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   // A dead socket reaches the caller as a protocol error, or as an interrupt when
@@ -414,7 +418,7 @@ describe("V2 environment commands", () => {
         ["message.dispatch", "command-lost-ack"],
       ]);
       expect(Exit.isSuccess(exit)).toBe(true);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("stops resending a message whose dispatch keeps losing the socket", () =>
@@ -466,7 +470,7 @@ describe("V2 environment commands", () => {
         "command-socket-killer",
       ]);
       expect(error._tag).toBe("RpcClientError");
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("fails a message dispatch the host never answers on a live socket", () =>
@@ -505,7 +509,7 @@ describe("V2 environment commands", () => {
       expect(sendFiber.pollUnsafe()).toBeDefined();
       expect((yield* Fiber.join(sendFiber))._tag).toBe("EnvironmentRpcUnavailableError");
       expect(commands.map((command) => command.commandId)).toEqual(["command-unanswered"]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("holds a lost message through reconnect backoff until disconnect", () =>
@@ -568,7 +572,7 @@ describe("V2 environment commands", () => {
         "command-host-gone-false",
         "command-host-gone-true",
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("Stop with no run left ends the thread's pull request watches", () =>
@@ -622,7 +626,7 @@ describe("V2 environment commands", () => {
           watching: false,
         },
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect.each(["waiting", "completed", "rolled_back"] as const)(
@@ -693,7 +697,7 @@ describe("V2 environment commands", () => {
                 },
               ],
         );
-      }).pipe(Effect.provide(layerTestRandom)),
+      }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect(
@@ -747,7 +751,7 @@ describe("V2 environment commands", () => {
             subagentId,
           },
         ]);
-      }).pipe(Effect.provide(layerTestRandom)),
+      }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect(
@@ -806,7 +810,7 @@ describe("V2 environment commands", () => {
           },
           { type: "thread.stop", commandId: "lineage-stop", threadId: childThreadId },
         ]);
-      }).pipe(Effect.provide(layerTestRandom)),
+      }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
   it.effect("stops a thread without relying on background work in the history window", () =>
@@ -834,6 +838,6 @@ describe("V2 environment commands", () => {
           threadId: v2ThreadId,
         },
       ]);
-    }).pipe(Effect.provide(layerTestRandom)),
+    }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 });

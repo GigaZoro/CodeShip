@@ -35,7 +35,9 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
+import { vi } from "vite-plus/test";
+import { originalDemandId } from "../orchestration-v2/demandId.ts";
+import { HERE_ENVIRONMENT_ID, layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -593,6 +595,7 @@ const runHistoryLayer = (
   sharedDependencies: ReturnType<
     typeof layerSharedTaskDependencies
   > = layerSharedTaskDependencies(),
+  threads = Layer.mock(ThreadManagementService.ThreadManagementService)({}),
 ) =>
   ScheduledTaskService.layer.pipe(
     Layer.provide(
@@ -607,7 +610,7 @@ const runHistoryLayer = (
           namedProjectsRoot: "/projects",
           isScratchProject: () => Effect.succeed(false),
         }),
-        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        threads,
         sharedDependencies,
         Layer.mock(SecretRequests.SecretRequests)({}),
         accountRouting,
@@ -902,12 +905,18 @@ it.effect.each([
               selection: { ...input.selection, instanceId: spare },
               failover,
             }),
-          limits: Effect.succeed({
-            accounts: new Map(),
-            estimated: new Set<never>(),
-            models: new Map(),
-          }),
-          retryAccount: () => Effect.void,
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
+          creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+          creditOverruns: Effect.succeed([]),
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
         }),
@@ -1209,6 +1218,254 @@ it.effect.each([
         expect(yield* Ref.get(launched)).toEqual(["Daily"]);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:00Z",
+    last: "2026-11-10T07:30Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "",
+    late: true,
+  },
+  ...[false, true].map((late) => ({
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:25Z",
+    last: "2026-11-10T08:00Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "",
+    late,
+    probe: "move-after-slot",
+  })),
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T06:50Z",
+    last: "2026-11-10T08:00Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "",
+    late: true,
+    probe: "superseded",
+  },
+  {
+    from: "UTC",
+    to: "UTC",
+    first: "2026-11-10T07:00Z",
+    retry: "2026-11-10T09:00Z",
+    last: "2026-11-10T09:30Z",
+    next: "2026-11-11T09:00Z",
+    legacy: "",
+    late: false,
+    probe: "reschedule",
+  },
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:00Z",
+    last: "2026-11-10T07:30Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "migrate",
+    late: true,
+    probe: "migrate",
+  },
+  {
+    from: "Europe/London",
+    to: "UTC",
+    first: "2026-03-28T07:00Z",
+    retry: "2026-03-29T05:55Z",
+    last: "2026-03-29T06:30Z",
+    next: "2026-03-29T07:00Z",
+    legacy: "",
+    late: false,
+  },
+  ...[true, false].map((late) => ({
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T05:05Z",
+    last: "2026-11-10T05:30Z",
+    next: "2026-11-10T07:00Z",
+    legacy: "",
+    late,
+  })),
+  {
+    from: "Europe/Kyiv",
+    to: "Europe/London",
+    first: "2026-11-10T05:00Z",
+    retry: "2026-11-10T07:00Z",
+    last: "2026-11-10T07:30Z",
+    next: "2026-11-11T07:00Z",
+    legacy: "history",
+    late: true,
+  },
+  ...["history", "no zone"].map((legacy) => ({
+    from: "America/Los_Angeles",
+    to: "Europe/Kyiv",
+    first: "2026-11-10T15:00Z",
+    retry: "2026-11-10T15:05Z",
+    last: "2026-11-10T15:30Z",
+    next: "2026-11-11T05:00Z",
+    legacy,
+    late: true,
+  })),
+])(
+  "admits the held fixed time from $from after restart in $to (retry=$retry, legacy=$legacy, late=$late)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const { from, to, first, retry, last, next, legacy, late } = scenario;
+      const probe = "probe" in scenario ? scenario.probe : undefined;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => vi.stubEnv("TZ", from)),
+        () => Effect.sync(() => vi.unstubAllEnvs()),
+      );
+      const iso = (at: string) => DateTime.formatIso(DateTime.makeUnsafe(at));
+      yield* TestClock.setTime(
+        Date.parse(first) - (legacy === "history" ? 23 * 3_600_000 : 60_000),
+      );
+      const demands: Array<string | null | undefined> = [];
+      let until: string | null = iso(retry);
+      const layer = runHistoryLayer(
+        (input) =>
+          Effect.sync(() => {
+            demands.push(input.initialMessage?.demandId);
+            return { threadId: ThreadId.make("held"), resumed: false } as never;
+          }),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () =>
+            Effect.succeed(
+              until === null
+                ? null
+                : {
+                    driver: ProviderDriverKind.make("claude"),
+                    until,
+                    accounts: [ProviderInstanceId.make("claude_primary")],
+                  },
+            ),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      );
+      const input = yield* historyTask("Held fixed time");
+      const task = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        return (yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP)).task;
+      }).pipe(Effect.provide(layer));
+      expect(task.nextRunAt).toBe(iso(first));
+      const poll = (when: number) =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(when);
+          return yield* Effect.gen(function* () {
+            const service = yield* ScheduledTaskService.ScheduledTaskService;
+            yield* TestClock.adjust("6 seconds");
+            return (yield* service.list()).tasks[0]!;
+          }).pipe(Effect.provide(layer));
+        });
+      expect((yield* poll(Date.parse(first))).nextRunAt).toBe(iso(retry));
+      const sql = yield* SqlClient.SqlClient;
+      if (probe === "move-after-slot") yield* TestClock.setTime(Date.parse("2026-11-10T07:22Z"));
+      if (probe === "reschedule") {
+        yield* TestClock.setTime(Date.parse("2026-11-10T07:05Z"));
+        yield* Effect.gen(function* () {
+          const svc = yield* ScheduledTaskService.ScheduledTaskService;
+          const edited = yield* svc.upsert(
+            { ...input, id: task.id, schedule: { type: "fixed_time", timeOfDay: "09:00" } },
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          expect(edited.task.nextRunAt).toBe(iso(retry));
+        }).pipe(Effect.provide(layer));
+      }
+      if (legacy === "migrate") {
+        yield* sql`DROP TRIGGER scheduled_task_clear_usage_hold`;
+        yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN incarnation_id`;
+        yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN usage_hold_json`;
+      } else if (legacy) {
+        yield* sql`UPDATE scheduled_tasks SET usage_hold_json = ${legacy === "history" ? sql`NULL` : sql`json_remove(usage_hold_json, '$.heldOccurrence.timeZone')`} WHERE task_id = ${task.id}`;
+      }
+      vi.stubEnv("TZ", to);
+      until = iso(last);
+      expect((yield* poll(Date.parse(retry) + (late ? 15 * 60_000 : 0))).nextRunAt).toBe(iso(last));
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const edit = yield* service.upsert(
+          {
+            ...input,
+            id: task.id,
+            schedule: { type: "fixed_time", timeOfDay: probe === "reschedule" ? "9:00" : "7:00" },
+          },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect(edit.task.nextRunAt).toBe(iso(last));
+      }).pipe(Effect.provide(layer));
+      until = null;
+      expect((yield* poll(Date.parse(last))).nextRunAt).toBe(iso(next));
+      yield* poll(Date.parse(next));
+      const [row] = yield* sql<{
+        incarnation_id: string;
+      }>`SELECT incarnation_id FROM scheduled_tasks WHERE task_id = ${task.id}`;
+      const demand = (at: string) =>
+        originalDemandId(
+          "scheduled-task",
+          HERE_ENVIRONMENT_ID,
+          task.id,
+          row!.incarnation_id ?? task.createdAt,
+          "scheduled",
+          iso(at),
+        );
+      expect(demands).toEqual([
+        legacy
+          ? null
+          : demand(
+              probe === "reschedule" ? retry : probe === "superseded" ? "2026-11-10T07:00Z" : first,
+            ),
+        demand(next),
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("separates bound fixed-time runs of tasks recreated in the same clock tick", () =>
+  Effect.gen(function* () {
+    const demands: Array<string | null | undefined> = [];
+    const layer = runHistoryLayer(
+      () => Effect.die("expected a bound send"),
+      undefined,
+      undefined,
+      undefined,
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        sendToThread: (input) =>
+          Effect.sync(() => {
+            demands.push(input.demandId);
+            return {} as never;
+          }),
+      }),
+    );
+    const due = DateTime.makeZonedUnsafe(
+      { year: 2026, month: 11, day: 10, hour: 7 },
+      { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+    );
+    const dueMs = DateTime.toEpochMillis(due);
+    const input = yield* historyTask("Bound", { id: "recreated", threadId: "bound" });
+    for (const replace of [false, true]) {
+      yield* TestClock.setTime(dueMs - 60_000);
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        if (replace) yield* service.delete({ id: input.id! });
+        const { task } = yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+        expect(task.nextRunAt).toBe(DateTime.formatIso(DateTime.toUtc(due)));
+        yield* TestClock.adjust("65 seconds");
+        expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+          { outcome: "succeeded", scheduledFor: task.nextRunAt },
+        ]);
+      }).pipe(Effect.provide(layer));
+    }
+    expect(demands).toEqual([expect.stringMatching(/^demand:/), expect.stringMatching(/^demand:/)]);
+    expect(demands[0]).not.toBe(demands[1]);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(

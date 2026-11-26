@@ -1,5 +1,5 @@
 import { t } from "~/i18n";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { AudioPreviewUnmountContext } from "../files/AudioPreview";
@@ -8,6 +8,7 @@ import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
 import {
@@ -95,6 +96,9 @@ import {
   liveAnswerPreview,
   type MessagesTimelineRow,
   type TimelineLatestRun,
+  nextStarredMessage,
+  resolveStarJump,
+  type StarJumpTarget,
 } from "./MessagesTimeline.logic";
 import { deriveRetryTarget, type RetryTarget } from "./timelineRetry";
 import { type ThreadFindMatch } from "./threadFind";
@@ -1358,12 +1362,146 @@ const ConversationTimeline = memo(function ConversationTimeline({
 
   const scrollToTimelineRow = (rowIndex: number) => {
     navigateTimeline();
-    void listRef.current?.scrollToIndex({
+    return listRef.current?.scrollToIndex({
       index: rowIndex,
       animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
       viewOffset: TIMELINE_MINIMAP_TARGET_OFFSET,
     });
   };
+  const registry = useContext(RegistryContext);
+  const [starJump, setStarJump] = useState<{ threadKey: string; target: StarJumpTarget } | null>(
+    null,
+  );
+  const starredIds = useAtomValue(
+    environmentThreadDetails.starredMessageIdsAtom(
+      starJump?.threadKey === listIdentityKey ? citationThreadRef : null,
+    ),
+  );
+  const lastStarJumpRef = useRef<{
+    threadKey: string;
+    messageId: MessageId;
+    scrollOffset: number | null;
+  } | null>(null);
+  const jumpToStar = (target: StarJumpTarget) => {
+    lastStarJumpRef.current = null;
+    setStarJump({ threadKey: listIdentityKey, target });
+  };
+  const revealStarred = useStableCallback((messageId: MessageId) => {
+    jumpToStar({ kind: "message", messageId });
+  });
+  const nextStarred = useStableCallback(() => {
+    const state = listRef.current?.getState();
+    if (restoringThreadPosition || !state || state.data !== rows) return;
+    const ids = registry.get(environmentThreadDetails.starredMessageIdsAtom(citationThreadRef));
+    const starred = new Set(ids);
+    const entries = timelineEntries.filter(
+      (entry): entry is Extract<TimelineEntry, { kind: "message" }> =>
+        entry.kind === "message" && starred.has(entry.message.id),
+    );
+    const rowIndices = new Map(rows.map((row, index) => [row.id, index]));
+    const foldIds = entries.some((entry) => !rowIndices.has(entry.id))
+      ? timelineTurnFoldRunIdsByEntryId({
+          timelineEntries,
+          latestRun,
+          runningRunId,
+          isWorking,
+          runlessWorkActive,
+        })
+      : null;
+    const last = lastStarJumpRef.current;
+    const target = nextStarredMessage({
+      entries: entries.map((entry) => {
+        const index =
+          rowIndices.get(entry.id) ??
+          rowIndices.get(`attempt-fold:${entry.attempt?.id}`) ??
+          rowIndices.get(`turn-fold:${foldIds?.get(entry.id)}`);
+        return {
+          messageId: entry.message.id,
+          top: index === undefined ? undefined : state.positionAtIndex(index),
+        };
+      }),
+      starredIds: ids,
+      hasMoreHistory: historyControls?.hasMoreHistory === true,
+      scrollOffset: listRef.current?.getScrollableNode()?.scrollTop ?? state.scroll,
+      landingLine: readRowSpaceScroll(state) + TIMELINE_MINIMAP_TARGET_OFFSET,
+      lastLanded:
+        last?.threadKey === listIdentityKey && last.scrollOffset !== null
+          ? { messageId: last.messageId, scrollOffset: last.scrollOffset }
+          : null,
+    });
+    if (target !== undefined) jumpToStar(target);
+  });
+  const landStarJump = useStableCallback(() => {
+    if (restoringThreadPosition || starJump === null) return;
+    if (starJump.threadKey !== listIdentityKey) {
+      setStarJump(null);
+      return;
+    }
+    const loadedMessages = timelineEntries.filter((candidate) => candidate.kind === "message");
+    const resolution = resolveStarJump(
+      starJump.target,
+      registry.get(environmentThreadDetails.starredMessageIdsAtom(citationThreadRef)),
+      loadedMessages.map((candidate) => candidate.message.id),
+      historyControls?.hasMoreHistory === true,
+    );
+    if (resolution.kind === "load" && historyControls?.error === null) {
+      if (!historyControls.loading) historyControls.onLoadEarlier(resolution.throughEntryId);
+      return;
+    }
+    if (resolution.kind !== "land") {
+      setStarJump(null);
+      return;
+    }
+    const entry = loadedMessages.find((candidate) => candidate.message.id === resolution.messageId);
+    if (entry === undefined) return;
+
+    const rowIndex = rows.findIndex((row) => row.kind === "message" && row.id === entry.id);
+    if (rowIndex >= 0) {
+      const list = listRef.current;
+      const landing = {
+        threadKey: starJump.threadKey,
+        messageId: resolution.messageId,
+        scrollOffset: null,
+      };
+      lastStarJumpRef.current = landing;
+      void scrollToTimelineRow(rowIndex)?.then(() => {
+        if (!list || list !== listRef.current || lastStarJumpRef.current !== landing) return;
+        lastStarJumpRef.current = {
+          ...landing,
+          scrollOffset: list.getScrollableNode()?.scrollTop ?? list.getState().scroll,
+        };
+      });
+      setStarJump(null);
+      return;
+    }
+    const runId = timelineTurnFoldRunIdsByEntryId({
+      timelineEntries,
+      latestRun,
+      runningRunId,
+      isWorking,
+      runlessWorkActive,
+    }).get(entry.id);
+    const attemptId = entry.attempt?.status === "superseded" ? entry.attempt.id : undefined;
+    if (runId !== undefined && !expandedRunIds.has(runId)) {
+      setExpandedRunIds((current) => new Set(current).add(runId));
+    } else if (attemptId !== undefined && !expandedAttemptIds.has(attemptId)) {
+      setExpandedAttemptIds((current) => new Set(current).add(attemptId));
+    } else {
+      setStarJump(null);
+    }
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a bookmark jump loads earlier history or waits for its row to be laid out before scrolling
+  useLayoutEffect(landStarJump, [
+    landStarJump,
+    starJump,
+    starredIds,
+    listIdentityKey,
+    restoringThreadPosition,
+    historyControls?.hasMoreHistory,
+    historyControls?.loading,
+    historyControls?.error,
+    rows,
+  ]);
   const revealOutlinePrompt = useStableCallback((promptId: string) => {
     const item = minimapItems.find((candidate) => candidate.id === promptId);
     if (item) scrollToTimelineRow(item.rowIndex);
@@ -1384,8 +1522,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this timeline's scrolling with the outline registry the details card and prompt shortcuts use
   useLayoutEffect(
-    () => attachTimelineOutline(listIdentityKey, revealOutlinePrompt, stepPrompt),
-    [listIdentityKey, revealOutlinePrompt, stepPrompt],
+    () =>
+      attachTimelineOutline(listIdentityKey, revealOutlinePrompt, stepPrompt, {
+        reveal: revealStarred,
+        next: nextStarred,
+      }),
+    [listIdentityKey, revealOutlinePrompt, stepPrompt, revealStarred, nextStarred],
   );
   // The index still points into the previous thread until the restore settles.
   const outlineCurrentId =

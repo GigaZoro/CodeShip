@@ -151,13 +151,21 @@ export function plainMobileSettingsWrites(
   writes: readonly { readonly environmentId: EnvironmentId; readonly patch: ServerSettingsPatch }[],
 ): MobileSettingsWritePlan {
   return plainSettingsWrites(
-    writes.map((write) => ({
-      ...write,
-      label:
-        targets.find((target) => target.environment.environmentId === write.environmentId)
-          ?.environment.label ?? write.environmentId,
-    })),
+    labelMobileSettingsWrites(targets, writes),
+    targets.map(({ environment }) => environment),
   );
+}
+
+function labelMobileSettingsWrites(
+  targets: readonly ScopedMobileSettingsTarget[],
+  writes: readonly { readonly environmentId: EnvironmentId; readonly patch: ServerSettingsPatch }[],
+) {
+  return writes.map((write) => ({
+    ...write,
+    label:
+      targets.find((target) => target.environment.environmentId === write.environmentId)
+        ?.environment.label ?? write.environmentId,
+  }));
 }
 
 /**
@@ -174,14 +182,12 @@ export function planMobileSettingsWrites(input: {
   readonly projectSelected: boolean;
   readonly patch: ServerSettingsPatch;
 }): MobileSettingsWritePlan {
-  const plain = plainMobileSettingsWrites(
-    input.targets,
-    planMobileScopedSettingsPatch(input.targets, input.projectSelected, input.patch),
-  );
-  if (!input.allSelected || input.projectSelected) return plain;
+  const writes = planMobileScopedSettingsPatch(input.targets, input.projectSelected, input.patch);
+  if (!input.allSelected || input.projectSelected)
+    return plainMobileSettingsWrites(input.targets, writes);
   return planSharedSettingsWrites({
     machines: input.machines,
-    writes: plain.writes,
+    writes: labelMobileSettingsWrites(input.targets, writes),
     origin: input.targets[0]?.environment.environmentId ?? null,
     sharedPatch: () => input.patch,
     writeFor: ({ environmentId, label }) => ({ environmentId, label, patch: {} }),

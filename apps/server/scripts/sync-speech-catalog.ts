@@ -8,8 +8,10 @@ import { catalog } from "@handy-computer/models";
 import * as Schema from "effect/Schema";
 
 import manifest from "../package.json" with { type: "json" };
+import { parseCommandLine } from "../../../scripts/lib/command-line.ts";
 import { renderSpeechCatalog } from "./speech-catalog.ts";
 
+const { values } = parseCommandLine({ options: { check: { type: "boolean" } } });
 const require = NodeModule.createRequire(import.meta.url);
 const source = require.resolve("@handy-computer/models/catalog.json");
 const sourceManifest = Schema.decodeSync(
@@ -24,7 +26,7 @@ const expected = await renderSpeechCatalog(
   sourceManifest.version,
   manifest.dependencies["transcribe-cpp"],
 );
-if (process.argv.includes("--check")) {
+if (values.check) {
   if (NodeFS.readFileSync(target, "utf8") !== expected) {
     throw new Error("Speech catalog differs; run vp run speech:catalog:sync in apps/server.");
   }

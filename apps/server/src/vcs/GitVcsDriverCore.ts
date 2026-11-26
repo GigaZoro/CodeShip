@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -150,6 +151,33 @@ export const NON_INTERACTIVE_GIT_ENV = Object.freeze({
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 
+/** What `git fetch <remote> <sha>` prints when the remote does not have that object. */
+const REMOTE_LACKS_OBJECT = /upload-pack: not our ref [0-9a-f]+/;
+/**
+ * What a protocol v0 server without uploadpack.allow*SHA1InWant prints for every SHA it does not
+ * advertise, whether it has the object or not.
+ */
+const REMOTE_REFUSES_UNADVERTISED_OBJECT = /Server does not allow request for unadvertised object/;
+/**
+ * Fetches read what they fetched from refs under here, one prefix per fetch, then delete them.
+ * A prefix is named `<epoch ms>-<uuid>` from when its fetch started.
+ */
+const SCRATCH_FETCH_REF_ROOT = "refs/t3code/fetch";
+/**
+ * Far past any fetch's timeout: a prefix this old outlived its fetch, which a restart cut or whose
+ * delete failed, and nothing else would ever delete it.
+ */
+const SCRATCH_FETCH_REF_MAX_AGE_MS = Duration.toMillis(Duration.hours(1));
+/** The `refs/t3code/fetch/<name>` a scratch ref sits under. */
+const scratchRefPrefix = (ref: string): string => {
+  const end = ref.indexOf("/", SCRATCH_FETCH_REF_ROOT.length + 1);
+  return end === -1 ? ref : ref.slice(0, end);
+};
+/** A prefix without a start time was named before prefixes carried one, so it is left over too. */
+const isLeftoverScratchPrefix = (prefix: string, now: number): boolean => {
+  const startedAt = /^(\d+)-/.exec(prefix.slice(SCRATCH_FETCH_REF_ROOT.length + 1))?.[1];
+  return startedAt === undefined || now - Number(startedAt) > SCRATCH_FETCH_REF_MAX_AGE_MS;
+};
 const pickPrimaryRemoteName = (remoteNames: ReadonlyArray<string>): string | null =>
   remoteNames.includes("origin") ? "origin" : (remoteNames[0] ?? null);
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
@@ -230,7 +258,7 @@ interface ExecuteGitOptions {
   keepLineCallbacksAfterTruncation?: boolean | undefined;
   progress?: GitVcsDriver.ExecuteGitProgress | undefined;
   writesSharedConfig?: boolean | undefined;
-  /** For a command whose arguments hold no secret: a failure then carries Git's own lines. */
+  /** A failure then carries the shapes of Git's own lines, their values removed. */
   quoteGitLines?: boolean | undefined;
 }
 
@@ -699,28 +727,131 @@ export function remoteFailureText(error: GitCommandError): string {
 // Git's own diagnostics; credential helpers and the remote (`remote:`) can print anything.
 const GIT_OWN_DIAGNOSTIC_LINE = /^(?:fatal|error|warning): /;
 const MAX_FETCH_DIAGNOSTIC_LINES = 3;
-const MAX_FETCH_DIAGNOSTIC_LINE_LENGTH = 300;
 
-// Git strips passwords from the URLs it prints, but not tokens in user names or query strings.
-function withoutUrlCredentials(line: string): string {
-  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@'"]*@)?([^\s?#'"]*)[^\s'"]*/gi, "$1$2");
+const HTTP_ERROR_STATUSES = [400, 401, 403, 404, 407, 429, 500, 502, 503, 504];
+
+// The messages a failure may quote, after Git's own `fatal: `, `error: ` or `warning: `. Each …
+// is a value Git fills in (a URL, host, path, ref, name or e-mail) and is never quoted. The first
+// fit wins, so a narrower shape comes before a wider one.
+const GIT_MESSAGE_SHAPES = [
+  "unable to access '…': Could not resolve host: …",
+  "unable to access '…': Failed to connect to …",
+  ...HTTP_ERROR_STATUSES.map(
+    (status) => `unable to access '…': The requested URL returned error: ${status}`,
+  ),
+  "unable to access '…': SSL certificate problem: …",
+  "unable to access '…': …",
+  "Authentication failed for '…'",
+  "could not read Username for '…': terminal prompts disabled",
+  "could not read Password for '…': terminal prompts disabled",
+  "Could not resolve host: …",
+  "repository '…' not found",
+  "'…' does not appear to be a git repository",
+  "… does not appear to be a git repository",
+  "… not valid: is this a git repository?",
+  "Could not read from remote repository.",
+  "the remote end hung up unexpectedly",
+  "early EOF",
+  "index-pack failed",
+  "RPC failed; …",
+  "couldn't find remote ref …",
+  "Server does not allow request for unadvertised object …",
+  "remote error: upload-pack: not our ref …",
+  "remote error: …",
+  "failed to push some refs to '…'",
+  "redirecting to …",
+  "…: Permission denied (publickey).",
+  "…: Permission denied (…).",
+  "Host key verification failed.",
+  "ssh: Could not resolve hostname …",
+  "ssh: connect to host …",
+  "not a valid branch point: '…'",
+  "empty ident name (for <…>) not allowed",
+  "unable to auto-detect email address (got '…')",
+  "detected dubious ownership in repository at '…'",
+  "not a git repository (or any of the parent directories): …",
+  "not a git repository: …",
+  "bad config line … in file …",
+  "ambiguous argument '…': unknown revision or path not in the working tree.",
+  "bad revision '…'",
+  "bad object …",
+  "invalid reference: …",
+  "Needed a single revision",
+  "not a valid object name: '…'",
+  "Not a valid object name …",
+  "'…' is not a commit and a branch '…' cannot be created from it",
+  "pathspec '…' did not match any file(s) known to git",
+  "'…' is not a working tree",
+  // Why `git worktree remove` refused, which storage cleanup shows.
+  "'…' is a main working tree",
+  "'…' contains modified or untracked files, use --force to delete it",
+  "cannot remove a locked working tree, lock reason: …",
+  "cannot remove a locked working tree;",
+  "working trees containing submodules cannot be moved or removed",
+  "validation failed, cannot remove working tree: …",
+  // Git prints these two through die_errno, which appends `: <strerror>`.
+  "failed to run 'git status' on '…', code …",
+  "failed to run 'git status' on '…': …",
+  "failed to delete '…': …",
+  "a branch named '…' already exists",
+  "'…' is already checked out at '…'",
+  "'…' is already used by worktree at '…'",
+  "'…' already exists",
+  "destination path '…' already exists and is not an empty directory.",
+  "could not create work tree dir '…': …",
+  "You appear to have cloned an empty repository.",
+  "your current branch '…' does not have any commits yet",
+  "Unable to create '…': File exists.",
+  "cannot lock ref '…': …",
+  "fetching ref … failed: incorrect old value provided",
+  "fetching ref … failed: reference already exists",
+  "index file corrupt",
+  "failed to remove …: …",
+].map((shape) => shape.split("…"));
+
+// Each literal part is taken at its first place after the last one, which finds a fit whenever
+// there is one, in time linear in the line; every value holds at least one character.
+function fitsShape(message: string, parts: ReadonlyArray<string>): boolean {
+  const first = parts[0] ?? "";
+  if (parts.length === 1) return message === first;
+  if (!message.startsWith(first)) return false;
+  let end = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const at = message.indexOf(part, end + 1);
+    if (at === -1) return false;
+    end = at + part.length;
+  }
+  const last = parts.at(-1) ?? "";
+  return message.length - last.length > end && message.endsWith(last);
 }
 
-/** The last lines Git itself printed, with URL credentials stripped, for a failure message. */
+/**
+ * One line Git printed, for a person or a log: its shape with every value removed, or only its
+ * severity when it fits no shape, since Git, a hook, a credential helper or the remote can print
+ * anything there.
+ */
+export function gitDiagnosticLine(line: string): string {
+  const trimmed = line.trim();
+  const severity = GIT_OWN_DIAGNOSTIC_LINE.exec(trimmed)?.[0] ?? "";
+  const message = trimmed.slice(severity.length);
+  const shape = GIT_MESSAGE_SHAPES.find((parts) => fitsShape(message, parts));
+  return `${severity}${shape === undefined ? "(message withheld)" : shape.join("…")}`;
+}
+
+/** The last lines Git itself printed, each as gitDiagnosticLine gives it, for a failure message. */
 export function gitErrorLines(stderr: string): string {
   return stderr
     .split(/\r?\n/)
     .filter((line) => GIT_OWN_DIAGNOSTIC_LINE.test(line))
     .slice(-MAX_FETCH_DIAGNOSTIC_LINES)
-    .map((line) => withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH))
+    .map(gitDiagnosticLine)
     .join(" | ");
 }
 
 /**
  * What a failed Git command leaves on its error: the exit code, the output sizes, and with
- * `quoteGitLines` Git's last lines. Those lines can echo the command's arguments, so only a command
- * whose arguments hold no secret asks for them. A classified failure never quotes them: they name
- * refs and paths, and its reason already says what went wrong.
+ * `quoteGitLines` the shapes of Git's last lines, their values removed (gitDiagnosticLine). A
+ * classified failure never quotes them: its reason already says what went wrong.
  */
 export function gitFailureFacts(
   result: {
@@ -764,7 +895,7 @@ function makeRemoteTimeline() {
     onStderrLine: (line) =>
       Effect.sync(() => {
         if (!GIT_OWN_DIAGNOSTIC_LINE.test(line)) return;
-        gitLines.push(withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH));
+        gitLines.push(gitDiagnosticLine(line));
         if (gitLines.length > MAX_FETCH_DIAGNOSTIC_LINES) gitLines.shift();
       }),
     onCredentialHelperStarted: (helper) =>
@@ -1280,7 +1411,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         };
         const env = { ...baseEnv, ...explicitBareRepositoryEnv(baseEnv, hostPlatform) };
         const spawnEnv = { ...env, ...windowsLongPathConfigEnv(hostPlatform, env) };
-        const resolved = yield* resolveSpawnCommand("git", [], { env: spawnEnv });
+        const resolved = yield* resolveSpawnCommand("git", [], {
+          cwd: commandInput.cwd,
+          env: spawnEnv,
+        });
         const spawnError = (cause: unknown) =>
           new GitCommandError({
             ...gitCommandContext(commandInput),
@@ -4910,7 +5044,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       remoteNamesResult.exitCode === 0 ? parseRemoteNames(remoteNamesResult.stdout) : [];
     if (remoteNamesResult.exitCode !== 0 && remoteNamesResult.stderr.trim().length > 0) {
       yield* Effect.logWarning(
-        `GitVcsDriver.listRefs: remote name lookup returned code ${remoteNamesResult.exitCode} for ${gitCommonDir}: ${remoteNamesResult.stderr.trim()}. Falling back to an empty remote name list.`,
+        `GitVcsDriver.listRefs: remote name lookup returned code ${remoteNamesResult.exitCode} for ${gitCommonDir}: ${gitErrorLines(remoteNamesResult.stderr) || "Git printed no error line"}. Falling back to an empty remote name list.`,
       );
     }
     const defaultBranch =
@@ -5757,22 +5891,218 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return Number.isFinite(byPatch) ? Math.min(bySha, Math.max(1, byPatch)) : bySha;
     });
 
+  /**
+   * The scratch refs under `under`. A listing past the output cap keeps its whole lines; the refs
+   * it leaves out wait for a later fetch.
+   */
+  const listScratchRefs = (operation: string, cwd: string, under: string) =>
+    executeGit(operation, cwd, ["for-each-ref", "--format=%(refname)", under], {
+      appendTruncationMarker: true,
+    }).pipe(
+      Effect.map((result) => {
+        const lines = result.stdout.split("\n");
+        if (result.stdoutTruncated) lines.pop();
+        return lines.filter((ref) => ref.length > 0);
+      }),
+    );
+
+  const deleteScratchRefs = (
+    operation: string,
+    cwd: string,
+    refs: ReadonlyArray<string>,
+  ): Effect.Effect<void, GitCommandError> =>
+    refs.length === 0
+      ? Effect.void
+      : runGit(`${operation}.deleteScratchRefs`, cwd, ["update-ref", "--stdin"], {
+          stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
+          fallbackErrorDetail: "git failed to delete the fetch's scratch refs",
+        });
+
+  /**
+   * Deletes the prefixes earlier fetches left behind, which a restart cut or whose delete failed:
+   * nothing else ever would. Each prefix is a transaction of its own, so one that Git cannot
+   * delete, such as one a stale lock holds, keeps only itself.
+   */
+  const deleteLeftoverScratchRefs = Effect.fn("GitVcsDriver.deleteLeftoverScratchRefs")(
+    function* (operation: string, cwd: string) {
+      const refs = yield* listScratchRefs(
+        `${operation}.listLeftoverScratchRefs`,
+        cwd,
+        `${SCRATCH_FETCH_REF_ROOT}/`,
+      );
+      const now = yield* Clock.currentTimeMillis;
+      const leftovers = Arr.groupBy(
+        refs.filter((ref) => isLeftoverScratchPrefix(scratchRefPrefix(ref), now)),
+        scratchRefPrefix,
+      );
+      let deleted = 0;
+      for (const [prefix, prefixRefs] of Object.entries(leftovers)) {
+        const ok = yield* deleteScratchRefs(`${operation}.leftover`, cwd, prefixRefs).pipe(
+          Effect.as(true),
+          Effect.catch((cause) =>
+            Effect.logWarning("could not delete the scratch refs an earlier fetch left", {
+              prefix,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (ok) deleted += prefixRefs.length;
+      }
+      if (deleted > 0)
+        yield* Effect.logInfo("deleted the scratch refs earlier fetches left", { refs: deleted });
+    },
+    Effect.catch((cause) =>
+      Effect.logWarning("could not list the scratch refs earlier fetches left", { cause }),
+    ),
+  );
+
+  /**
+   * Runs `use` with a ref prefix of its own and deletes every ref under it afterwards, then any an
+   * earlier fetch left behind. A fetch reads what it fetched from there: FETCH_HEAD is the whole
+   * checkout's, and another fetch, such as the status poll, can rewrite it between the fetch and
+   * the read.
+   */
+  const withScratchRefs = <A, E, R>(
+    cwd: string,
+    operation: string,
+    use: (prefix: string) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.acquireUseRelease(
+      crypto.randomUUIDv4().pipe(
+        Effect.zipWith(
+          Clock.currentTimeMillis,
+          (id, now) => `${SCRATCH_FETCH_REF_ROOT}/${now}-${id}`,
+        ),
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation,
+              command: "crypto.randomUUIDv4",
+              cwd,
+              detail: "Failed to name a scratch ref for the fetch.",
+              cause,
+            }),
+        ),
+      ),
+      use,
+      (prefix) =>
+        listScratchRefs(`${operation}.listScratchRefs`, cwd, `${prefix}/`).pipe(
+          Effect.flatMap((refs) => deleteScratchRefs(operation, cwd, refs)),
+          // The fetch's answer stands; a ref left under the scratch root only keeps objects alive
+          // until a later fetch deletes it.
+          Effect.catch((cause) =>
+            Effect.logWarning("could not delete a fetch's scratch refs", { prefix, cause }),
+          ),
+          Effect.andThen(deleteLeftoverScratchRefs(operation, cwd)),
+        ),
+    );
+
   const fetchRefCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchRefCommit"] = Effect.fn(
     "GitVcsDriver.fetchRefCommit",
   )(function* (input) {
     const remoteName = yield* resolvePrimaryRemoteName(input.cwd);
-    // No refspec destination: the ref lands in FETCH_HEAD (per worktree) instead of a branch,
-    // which is the only way to read it while that branch is checked out somewhere.
-    yield* executeGit(
-      "GitVcsDriver.fetchRefCommit",
-      input.cwd,
-      ["fetch", "--quiet", "--no-tags", "--", remoteName, input.ref],
-      {
-        fallbackErrorDetail: "git fetch ref failed",
-      },
+    // Not into a branch: Git refuses to update one that is checked out somewhere.
+    return yield* withScratchRefs(input.cwd, "GitVcsDriver.fetchRefCommit", (prefix) =>
+      executeGit(
+        "GitVcsDriver.fetchRefCommit",
+        input.cwd,
+        [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--",
+          remoteName,
+          `+${input.ref}:${prefix}/ref`,
+        ],
+        { fallbackErrorDetail: "git fetch ref failed" },
+      ).pipe(Effect.andThen(resolveCommit({ cwd: input.cwd, revision: `${prefix}/ref` }))),
+    );
+  });
+
+  // A search of several remotes says which one failed; its detail stays the fixed diagnosis.
+  const namingRemote = <T extends { readonly diagnostics: string }>(
+    remoteName: string,
+    result: T,
+  ) => ({
+    ...result,
+    diagnostics: `Remote ${remoteName}: ${result.diagnostics}`,
+  });
+
+  const hasObject = (cwd: string, sha: string) =>
+    executeGit("GitVcsDriver.fetchCommit.hasObject", cwd, ["cat-file", "-e", sha], {
+      allowNonZeroExit: true,
+      // A partial clone would ask its promisor remote for the object, which is the fetch being judged.
+      env: { GIT_NO_LAZY_FETCH: "1" },
+    }).pipe(Effect.map((result) => result.exitCode === 0));
+
+  /**
+   * Fetches every branch and tag `remoteName` advertises into refs of the fetch's own, and says
+   * whether the object came with them: the one way to get a commit from a server that refuses
+   * to be asked for it by SHA.
+   */
+  const fetchObjectThroughAdvertisedRefs = (cwd: string, remoteName: string, sha: string) =>
+    withScratchRefs(cwd, "GitVcsDriver.fetchCommit.advertised", (prefix) =>
+      Effect.gen(function* () {
+        const fetchInput = {
+          operation: "GitVcsDriver.fetchCommit.advertised",
+          cwd,
+          args: [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            remoteName,
+            `+refs/heads/*:${prefix}/heads/*`,
+            `+refs/tags/*:${prefix}/tags/*`,
+          ],
+          fallbackErrorDetail: `git fetch ${remoteName} branches and tags failed`,
+        };
+        const result = yield* runRemote(fetchInput);
+        if (result.exitCode !== 0)
+          return yield* remoteFailure(fetchInput, namingRemote(remoteName, result));
+        return yield* hasObject(cwd, sha);
+      }),
     );
 
-    return yield* resolveCommit({ cwd: input.cwd, revision: "FETCH_HEAD" });
+  const fetchCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchCommit"] = Effect.fn(
+    "GitVcsDriver.fetchCommit",
+  )(function* (input) {
+    const remoteNames = yield* listRemoteNames(input.cwd);
+    const primary = pickPrimaryRemoteName(remoteNames);
+    const ordered =
+      primary === null ? [] : [primary, ...remoteNames.filter((name) => name !== primary)];
+    // One broken remote says nothing about the others; its error stands only if none has it.
+    let firstFailure: GitCommandError | undefined;
+    for (const remoteName of ordered) {
+      const fetchInput = {
+        operation: "GitVcsDriver.fetchCommit",
+        cwd: input.cwd,
+        args: [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--",
+          remoteName,
+          input.commitSha,
+        ],
+        fallbackErrorDetail: `git fetch ${remoteName} ${input.commitSha} failed`,
+      };
+      const result = yield* runRemote(fetchInput);
+      if (result.exitCode === 0) return { fetchedFrom: remoteName, remoteNames: ordered };
+      if (REMOTE_LACKS_OBJECT.test(result.stderr)) continue;
+      const fetched = REMOTE_REFUSES_UNADVERTISED_OBJECT.test(result.stderr)
+        ? yield* Effect.result(
+            fetchObjectThroughAdvertisedRefs(input.cwd, remoteName, input.commitSha),
+          )
+        : Result.fail(remoteFailure(fetchInput, namingRemote(remoteName, result)));
+      if (Result.isFailure(fetched)) firstFailure ??= fetched.failure;
+      else if (fetched.success) return { fetchedFrom: remoteName, remoteNames: ordered };
+    }
+    if (firstFailure !== undefined) return yield* firstFailure;
+    return { fetchedFrom: null, remoteNames: ordered };
   });
 
   const refreshCheckedOutBranch: GitVcsDriver.GitVcsDriver["Service"]["refreshCheckedOutBranch"] =
@@ -5901,7 +6231,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const resolveWorktreeBaseRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveWorktreeBaseRemote"] =
     Effect.fn("resolveWorktreeBaseRemote")(function* (input) {
-      const remoteNames = (yield* listRemoteNames(input.cwd)).toSorted(
+      const remoteNamesInGitOrder = yield* listRemoteNames(input.cwd);
+      const remoteNames = remoteNamesInGitOrder.toSorted(
         (left, right) => right.length - left.length,
       );
       // Upstream atoms read config even before the tracking ref has been fetched.
@@ -5930,7 +6261,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         target = parseRemoteRefWithRemoteNames(input.refName, remoteNames);
       }
       const { remoteName, branchName } = target ?? {
-        remoteName: "origin",
+        remoteName: pickPrimaryRemoteName(remoteNamesInGitOrder) ?? "",
         branchName: input.refName,
       };
       // `<remote>/HEAD` is the remote's default-branch pointer, not a branch it can serve, and
@@ -6478,6 +6809,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* withListRefsInvalidation(input.cwd, fetchRefIntoBranch(input));
     }),
     fetchRefCommit,
+    fetchCommit,
     resolveCommit,
     countUnmergedCommits,
     refreshCheckedOutBranch: Effect.fnUntraced(function* (input) {

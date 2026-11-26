@@ -438,6 +438,8 @@ export function commandLabel(command: KeybindingCommand): string {
   if (command === "thread.steerQueuedMessage") return t("Queue: Send First Queued Message");
   if (command === "thread.editQueuedMessage") return t("Queue: Edit Last Queued Message");
   if (command === "thread.copyReference") return t("Pull Request: Copy Link or Thread");
+  if (command === "thread.notifications") return t("Change thread notifications");
+  if (command === "thread.color") return t("Change thread color");
   const usageMetric = METRIC_OPTIONS.find((option) => option.command === command);
   if (usageMetric) return t("Usage: {metric}", { metric: t(usageMetric.label) });
   const usagePeriod = WINDOW_OPTIONS.find((option) => option.command === command);

@@ -1,4 +1,8 @@
-import type { HostResourcesSnapshot, HostSpaceUsage } from "@t3tools/contracts";
+import type {
+  DatabaseStorageStatus,
+  HostResourcesSnapshot,
+  HostSpaceUsage,
+} from "@t3tools/contracts";
 import { formatBytes } from "@t3tools/shared/formatBytes";
 import { t, tn } from "@t3tools/shared/i18n";
 
@@ -76,6 +80,21 @@ export function describeFreeSpace(meter: ResourceMeter): string {
     free: formatBytes(meter.totalBytes - meter.usedBytes),
     total: formatBytes(meter.totalBytes),
   });
+}
+
+export function describeDatabaseChange(status: DatabaseStorageStatus): ReadonlyArray<string> {
+  const growth = status.dailyGrowthBytes;
+  const reclaimable = status.reclaimableBytes + status.fragmentedBytes;
+  return [
+    growth === null
+      ? null
+      : growth > 0
+        ? t("Grows {size} a day", { size: formatBytes(growth) })
+        : growth < 0
+          ? t("Shrinks {size} a day", { size: formatBytes(-growth) })
+          : t("Size unchanged"),
+    reclaimable > 0 ? t("{size} can be reclaimed", { size: formatBytes(reclaimable) }) : null,
+  ].filter((detail) => detail !== null);
 }
 
 function formatDuration(seconds: number): string {

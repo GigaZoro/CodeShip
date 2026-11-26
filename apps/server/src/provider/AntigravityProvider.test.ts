@@ -267,7 +267,7 @@ describe("Antigravity model catalog", () => {
               { value: "gemini", name: "Gemini" },
               { value: "claude", name: "Claude" },
               { value: "plain", name: "Plain" },
-              { value: "unseen", name: "Unseen" },
+              { value: "unseen", name: "Gemini 4 Neon" },
             ],
           },
           thinking("high"),
@@ -284,8 +284,10 @@ describe("Antigravity model catalog", () => {
     expect(thinkingOf("gemini")).toMatchObject({ id: "thinking_level", currentValue: "high" });
     expect(thinkingOf("claude")).toMatchObject({ id: "thinking_level", currentValue: "low" });
     expect(thinkingOf("plain")).toBeUndefined();
-    expect(thinkingOf("unseen")).toMatchObject({ id: "thinking_level" });
-    expect(thinkingOf("unseen")).not.toHaveProperty("currentValue");
+    expect(models.find((model) => model.slug === "unseen")).toMatchObject({
+      nativeModelFamily: "gemini-4-neon",
+      capabilities: null,
+    });
   });
 });
 
@@ -374,7 +376,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       const [snapshot] = yield* nextReady;
       expect(snapshot).toMatchObject({
         status: "ready",
-        auth: { status: "authenticated", type: "oauth-personal" },
+        auth: { status: "authenticated", type: "oauth-personal", funding: "included" },
         supportsTextGeneration: true,
       });
       expect(snapshot.models).toEqual(buildAntigravityModelsFromSession(sessionSetupResult));
@@ -393,6 +395,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       yield* harness.initialize;
       for (const clear of [harness.provider.onSignedOut, harness.provider.onAuthRequired]) {
         yield* harness.provider.onSessionStarted(started, "/workspace");
+        expect((yield* harness.provider.snapshot.getSnapshot).auth.funding).toBe("metered");
         yield* harness.provider.onAvailableCommands(commands, "/workspace");
         yield* clear;
         expect(yield* harness.provider.snapshot.getSnapshot).toMatchObject({
@@ -674,6 +677,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
               kind: "weekly",
               label: "Claude & GPT (shared) · Weekly",
               usedPercent: 75,
+              observedAt: "2026-10-09T12:00:00.000Z",
             },
           ],
         };
@@ -762,12 +766,26 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       const ready = yield* harness.provider.snapshot.getSnapshot;
       expect(ready).toMatchObject({ status: "ready", auth: { status: "authenticated" } });
       expect(ready.usageLimits).toBeUndefined();
+      const refresh = yield* harness.provider.snapshot.refreshUsage!.pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
       expect(yield* Ref.get(reads)).toBe(1);
       const limits = {
         checkedAt: "2026-10-09T12:00:00.000Z",
-        windows: [{ id: "gemini-5h", kind: "session", label: "Gemini · 5-hour", usedPercent: 10 }],
+        windows: [
+          {
+            id: "gemini-5h",
+            kind: "session",
+            label: "Gemini · 5-hour",
+            usedPercent: 10,
+            observedAt: "2026-10-09T12:00:00.000Z",
+          },
+        ],
       } satisfies ServerProviderUsageLimits;
       yield* Deferred.succeed(readResult, limits);
+      yield* Fiber.join(refresh);
+      expect((yield* harness.provider.snapshot.getSnapshot).usageLimits).toEqual(limits);
+      expect(yield* Ref.get(reads)).toBe(1);
       expect((yield* published)?.usageLimits).toEqual(limits);
     }),
   );
@@ -777,7 +795,15 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       const oldReadStarted = yield* Deferred.make<void>();
       const newLimits = {
         checkedAt: "2026-10-09T12:01:00.000Z",
-        windows: [{ id: "3p-weekly", kind: "weekly", label: "Weekly", usedPercent: 40 }],
+        windows: [
+          {
+            id: "3p-weekly",
+            kind: "weekly",
+            label: "Weekly",
+            usedPercent: 40,
+            observedAt: "2026-10-09T12:01:00.000Z",
+          },
+        ],
       } satisfies ServerProviderUsageLimits;
       const usage = yield* Ref.make<Effect.Effect<ServerProviderUsageLimits>>(
         Deferred.succeed(oldReadStarted, undefined).pipe(Effect.andThen(Effect.never)),

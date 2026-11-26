@@ -60,6 +60,36 @@ describe("t3code/prefer-effect-fn", () => {
   `,
   );
 
+  rule.valid(
+    "reads a bracketed combinator through the const that holds its name",
+    `
+    import * as Effect from "effect/Effect";
+    import * as Option from "effect/Option";
+    const method = "match";
+    export const program = Option[method](Option.none(), {
+      onNone: () => Effect.gen(function* () { yield* Effect.void; }),
+      onSome: () => Effect.void,
+    });
+  `,
+  );
+
+  rule.invalid(
+    "reports members whose bracketed key or method holds another name",
+    `
+    import * as Context from "effect/Context";
+    import * as Effect from "effect/Effect";
+    const match = "register";
+    const defaultValue = "build";
+    export const registered = handlers[match]({
+      run: () => Effect.gen(function* () { yield* Effect.void; }),
+    });
+    export const Default = Context.Reference("Default", {
+      [defaultValue]: () => Effect.gen(function* () { yield* Effect.void; }),
+    });
+  `,
+    (output) => assert.equal(output.match(/prefer-effect-fn/g)?.length, 2),
+  );
+
   for (const name of ["onSome", "onNone", "onSuccess", "onFailure", "defaultValue"]) {
     rule.invalid(
       `reports service members named ${name}`,
@@ -218,5 +248,18 @@ describe("t3code/prefer-effect-fn", () => {
       get read() { return Effect.gen(function* () { yield* Effect.void; }); }
     }
   `,
+  );
+
+  rule.invalid(
+    "reads a bracketed gen or pipe, and one a const holds",
+    `
+    import * as Effect from "effect/Effect";
+    const gen = "gen";
+    export const read = () => Effect["gen"](function* () { yield* Effect.void; });
+    export const write = () => Effect[gen](function* () { yield* Effect.void; });
+    `,
+    (output) => {
+      assert.equal(output.match(/prefer-effect-fn/g)?.length, 2);
+    },
   );
 });

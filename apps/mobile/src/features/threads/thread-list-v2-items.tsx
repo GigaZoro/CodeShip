@@ -1,3 +1,6 @@
+import { threadPreferenceLabels } from "@t3tools/client-runtime/thread-preferences";
+import type { ThreadColor } from "@t3tools/contracts";
+import { useThreadPreferenceMenu } from "./useThreadPreferenceMenu";
 import {
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
@@ -1155,46 +1158,64 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const searchExcerpt = props.searchMatch
     ? `${props.searchMatch.source === "user" ? t("You:") : t("Agent:")} ${props.searchMatch.snippet}`
     : null;
-  const rowAccessibilityLabel = threadRowAccessibilityLabel(
-    variant === "card"
-      ? {
-          title: thread.title,
-          status: statusText ? { label: statusText, duration: spokenDuration } : null,
-          lastKnownMachine: lastKnownMachineLabel,
-          woke: showsWoke,
-          time: timeLabel,
-          error: errorText,
-          pinned: pinnedRow,
-          scheduledTask: hasScheduledTask,
-          queuedMessages: props.hasQueuedMessages === true,
-          regeneratingTitle: isRegeneratingTitle,
-          searchExcerpt,
-          project: props.project?.title ?? null,
-          environment: errorText === null ? props.environmentLabel : null,
-          providerName: providerNameLabel,
-          pullRequest: pr?.accessibilityLabel ?? null,
-        }
-      : {
-          title: thread.title,
-          status: null,
-          lastKnownMachine: null,
-          woke: false,
-          time:
-            snoozedRow && props.snoozeWakeLabelText !== undefined
-              ? props.snoozeWakeLabelText
-              : timeLabel,
-          error: null,
-          pinned: false,
-          scheduledTask: false,
-          queuedMessages: props.hasQueuedMessages === true,
-          regeneratingTitle: isRegeneratingTitle,
-          searchExcerpt,
-          project: props.project?.title ?? null,
-          environment: null,
-          providerName: providerNameLabel,
-          pullRequest: null,
-        },
-  );
+  const preferences = useThreadPreferenceMenu(thread);
+  const labels = threadPreferenceLabels(thread);
+  const rowAccessibilityLabel = [
+    threadRowAccessibilityLabel(
+      variant === "card"
+        ? {
+            title: thread.title,
+            status: statusText ? { label: statusText, duration: spokenDuration } : null,
+            lastKnownMachine: lastKnownMachineLabel,
+            woke: showsWoke,
+            time: timeLabel,
+            error: errorText,
+            pinned: pinnedRow,
+            scheduledTask: hasScheduledTask,
+            queuedMessages: props.hasQueuedMessages === true,
+            regeneratingTitle: isRegeneratingTitle,
+            searchExcerpt,
+            project: props.project?.title ?? null,
+            environment: errorText === null ? props.environmentLabel : null,
+            providerName: providerNameLabel,
+            pullRequest: pr?.accessibilityLabel ?? null,
+          }
+        : {
+            title: thread.title,
+            status: null,
+            lastKnownMachine: null,
+            woke: false,
+            time:
+              snoozedRow && props.snoozeWakeLabelText !== undefined
+                ? props.snoozeWakeLabelText
+                : timeLabel,
+            error: null,
+            pinned: false,
+            scheduledTask: false,
+            queuedMessages: props.hasQueuedMessages === true,
+            regeneratingTitle: isRegeneratingTitle,
+            searchExcerpt,
+            project: props.project?.title ?? null,
+            environment: null,
+            providerName: providerNameLabel,
+            pullRequest: null,
+          },
+    ),
+    labels.color,
+    labels.notifications,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const colorMarker =
+    thread.color == null ? null : (
+      <View
+        accessible={false}
+        className={cn(
+          "size-2 shrink-0 self-center rounded-full",
+          threadColorDotClass[thread.color],
+        )}
+      />
+    );
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const exportThreadMarkdown = useExportThreadMarkdown();
@@ -1437,6 +1458,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...(canEditTags && blockedTags !== null
         ? [{ id: "tags", title: t("Tags…"), image: "tag" }]
         : []),
+      ...preferences.items.map((item): MenuAction => ({
+        id: item.id,
+        title: item.label,
+        image: item.id === "notifications" ? "bell" : "paintpalette",
+        subactions: item.children.map((child) => ({
+          id: child.id,
+          title: child.label,
+          state: child.checked ? "on" : "off",
+        })),
+      })),
     ];
     if (snoozedRow) {
       return layoutThreadListV2RowMenuActions({
@@ -1515,6 +1546,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     folderMenuItems,
     laterMenuItems,
     pinMenuItems,
+    preferences.items,
     props.settlementSupported,
     readOnlyMenuActions,
     reorderMenuItems,
@@ -1533,6 +1565,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         });
         return;
       }
+      if (preferences.select(nativeEvent.event)) return;
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -1604,6 +1637,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       }
     },
     [
+      preferences,
       folderNames,
       moveThreadToFolder,
       promptNewFolder,
@@ -1742,6 +1776,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const cardContent = (
     <>
       <View className="flex-row items-start gap-2">
+        {colorMarker}
         {props.project ? (
           <View className="justify-center" style={{ height: titleLineHeight }}>
             <ProjectFavicon
@@ -2106,6 +2141,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             </View>
           ) : null}
+          {colorMarker}
           <View className="min-w-0 flex-1">
             <Text
               className={cn(
@@ -2223,3 +2259,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     </View>
   );
 });
+
+const threadColorDotClass = {
+  red: "bg-adaptive-red-600-a80-400-a80",
+  orange: "bg-adaptive-orange-600-400",
+  yellow: "bg-adaptive-amber-700-400",
+  green: "bg-adaptive-emerald-600-400",
+  blue: "bg-adaptive-blue-600-400",
+  purple: "bg-adaptive-violet-600-400",
+  gray: "bg-muted-foreground",
+} satisfies Record<ThreadColor, string>;

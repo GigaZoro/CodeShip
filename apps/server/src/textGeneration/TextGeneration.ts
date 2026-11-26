@@ -89,6 +89,12 @@ export const make = Effect.gen(function* () {
       modelSelection: ModelSelection,
     ) => Effect.Effect<A, TextGenerationError>,
   ) {
+    if (selection.quotaAwareAuto === true) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "Auto needs a provider selection before starting text generation.",
+      });
+    }
     const textGenerator = yield* textGenerators.runner(selection.instanceId);
     // A review guide reaches a text generator only through a fallback; it needs an agent instead.
     const textGeneratorId = selection.instanceId;

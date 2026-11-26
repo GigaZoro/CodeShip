@@ -2,6 +2,7 @@ import { makeAggregateState } from "./agentActivityAggregate.ts";
 import type { RelayAgentActivityState, RelayDeliveryResult } from "@t3tools/contracts/relay";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as NodeCryptoLayer from "@effect/platform-node/NodeCrypto";
@@ -81,9 +82,10 @@ function makeAgentActivityRows(
   overrides: Partial<AgentActivityRows.AgentActivityRows["Service"]> = {},
 ): AgentActivityRows.AgentActivityRows["Service"] {
   return {
-    upsert: () => Effect.void,
+    upsert: () => Effect.succeed(null),
     remove: () => Effect.void,
     pruneTerminal: () => Effect.void,
+    markAlertUnsent: () => Effect.void,
     listForUser: () => Effect.succeed([state]),
     getForUserThread: () => Effect.succeed(state),
     ...overrides,
@@ -94,7 +96,7 @@ function makeEnvironmentLinks(
   overrides: Partial<EnvironmentLinks.EnvironmentLinks["Service"]> = {},
 ): EnvironmentLinks.EnvironmentLinks["Service"] {
   return {
-    upsert: () => Effect.void,
+    upsert: () => Effect.succeed(null),
     listDeliveryUsersForEnvironment: () =>
       Effect.succeed([
         {
@@ -116,7 +118,7 @@ function makeApnsDeliveries(
   overrides: Partial<ApnsDeliveries.ApnsDeliveries["Service"]> = {},
 ): ApnsDeliveries.ApnsDeliveries["Service"] {
   return {
-    processBatch: () => Effect.void,
+    sendPushNotificationForTarget: () => Effect.succeed(null),
     sendForTarget: () => Effect.succeed(null),
     sendLiveActivity: () =>
       Effect.succeed({
@@ -168,7 +170,7 @@ describe("AgentActivityPublisher", () => {
         deviceId: android.device_id,
       });
       expect(fcmCalls).toEqual([
-        { target: android, state },
+        { target: android, state, trigger: false },
         { target: android, state: null, replay: true },
       ]);
       expect(appleDevices).toEqual(["ios"]);
@@ -197,6 +199,125 @@ describe("AgentActivityPublisher", () => {
                 enqueue: (input) =>
                   Effect.sync(() => {
                     fcmCalls.push(input);
+                    return null;
+                  }),
+                process: () => Effect.void,
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it.effect("alerts once per occurrence on iOS and Android, again after a failed publish", () => {
+    const android = { ...target("android"), platform: "android" as const, ios_major_version: null };
+    const stored = new Map<string, { state: RelayAgentActivityState; alertUnsent: boolean }>();
+    let failTargetListing = false;
+    const appleTriggers: Array<RelayAgentActivityState | null | undefined> = [];
+    const androidTriggers: Array<boolean | undefined> = [];
+    const completed = {
+      ...state,
+      phase: "completed",
+      occurredAt: "1970-01-01T00:01:00.000Z",
+      updatedAt: "1970-01-01T00:01:00.000Z",
+    } satisfies RelayAgentActivityState;
+    const renamed = { ...completed, threadTitle: "Renamed", updatedAt: "1970-01-01T00:02:00.000Z" };
+    const second = {
+      ...completed,
+      occurredAt: "1970-01-01T00:03:00.000Z",
+      updatedAt: "1970-01-01T00:03:00.000Z",
+    };
+    const legacyWaiting = {
+      ...state,
+      phase: "waiting_for_input",
+    } satisfies RelayAgentActivityState;
+    return Effect.gen(function* () {
+      const publisher = yield* AgentActivityPublisher.AgentActivityPublisher;
+      const publish = (next: RelayAgentActivityState) =>
+        publisher.publish({
+          environmentId: next.environmentId,
+          environmentPublicKey: "key",
+          threadId: next.threadId,
+          state: next,
+        });
+      for (const next of [state, completed, renamed, renamed]) yield* publish(next);
+      failTargetListing = true;
+      expect(Exit.isFailure(yield* Effect.exit(publish(second)))).toBe(true);
+      for (const next of [second, second, legacyWaiting, legacyWaiting]) yield* publish(next);
+      expect(appleTriggers).toEqual([
+        null,
+        completed,
+        null,
+        null,
+        second,
+        null,
+        legacyWaiting,
+        null,
+      ]);
+      expect(androidTriggers).toEqual([false, true, false, false, true, false, true, false]);
+    }).pipe(
+      Effect.provide(
+        AgentActivityPublisher.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(
+                AgentActivityRows.AgentActivityRows,
+                makeAgentActivityRows({
+                  upsert: ({ state: next }) =>
+                    Effect.sync(() => {
+                      const previous = stored.get(next.threadId);
+                      stored.set(next.threadId, { state: next, alertUnsent: false });
+                      return previous
+                        ? {
+                            phase: previous.state.phase,
+                            occurredAt: previous.state.occurredAt ?? null,
+                            alertUnsent: previous.alertUnsent,
+                          }
+                        : null;
+                    }),
+                  markAlertUnsent: ({ state: sent }) =>
+                    Effect.sync(() => {
+                      const row = stored.get(sent.threadId);
+                      if (row?.state === sent) row.alertUnsent = true;
+                    }),
+                }),
+              ),
+              Layer.succeed(EnvironmentLinks.EnvironmentLinks, makeEnvironmentLinks()),
+              Layer.succeed(
+                LiveActivities.LiveActivities,
+                makeLiveActivities({
+                  listTargets: ({ userId }) => {
+                    if (!failTargetListing) {
+                      return Effect.succeed([
+                        android,
+                        { ...target("ios"), push_token: "apns-token" },
+                      ]);
+                    }
+                    failTargetListing = false;
+                    return Effect.fail(
+                      new LiveActivities.LiveActivityTargetListPersistenceError({
+                        userId,
+                        cause: "connection reset",
+                      }),
+                    );
+                  },
+                }),
+              ),
+              Layer.succeed(
+                ApnsDeliveries.ApnsDeliveries,
+                makeApnsDeliveries({
+                  sendForTarget: (input) =>
+                    Effect.sync(() => {
+                      appleTriggers.push(input.trigger);
+                      return null;
+                    }),
+                }),
+              ),
+              Layer.succeed(FcmDeliveries.FcmDeliveries, {
+                enqueue: (input) =>
+                  Effect.sync(() => {
+                    androidTriggers.push(input.trigger);
                     return null;
                   }),
                 process: () => Effect.void,

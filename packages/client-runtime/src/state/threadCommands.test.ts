@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  AuthOrchestrationOperateScope,
+  type AuthSessionState,
   CommandId,
   RuntimeRequestId,
   EnvironmentId,
@@ -39,6 +41,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import { renameThreadFolderOf } from "../threadFolders.ts";
 import type { AtomCommandResult } from "./runtime.ts";
 import { createSavedThreadFolders } from "./savedThreadFolders.ts";
+import { createEnvironmentSessionAtoms } from "./session.ts";
 import { createThreadEnvironmentAtoms } from "./threadCommands.ts";
 import { createOptimisticThreadLifecycle } from "./threadLifecycle.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
@@ -165,7 +168,25 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
     Atom.make<OrchestrationV2ShellSnapshot | null>(SNAPSHOT),
   );
   const commands = createThreadEnvironmentAtoms(runtime, snapshotAtom, () => Atom.make(null));
-  const registry = AtomRegistry.make();
+  const grant: AuthSessionState = {
+    authenticated: true,
+    auth: {
+      policy: "remote-reachable",
+      bootstrapMethods: [],
+      sessionMethods: [],
+      sessionCookieName: "test",
+    },
+    scopes: [AuthOrchestrationOperateScope],
+    permissions: [AuthOrchestrationOperateScope],
+  };
+  const registry = AtomRegistry.make({
+    initialValues: [
+      [
+        createEnvironmentSessionAtoms(runtime).sessionStateAtom(ENVIRONMENT_ID),
+        AsyncResult.success(grant),
+      ],
+    ],
+  });
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
   const visibleAtom = commands.snapshotAtom(ENVIRONMENT_ID);
   registry.mount(visibleAtom);

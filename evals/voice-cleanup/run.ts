@@ -1,4 +1,4 @@
-import * as NodeUtil from "node:util";
+import { parseCommandLine } from "../../scripts/lib/command-line.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CodexSettings,
@@ -16,7 +16,7 @@ import { makeCodexTextGeneration } from "../../apps/server/src/textGeneration/Co
 import { buildTranscriptionPostProcessingPrompt } from "../../apps/server/src/textGeneration/TranscriptionPostProcessing.ts";
 import { cases } from "./cases.ts";
 
-const { values } = NodeUtil.parseArgs({
+const { values } = parseCommandLine({
   options: {
     out: { type: "string" },
     model: { type: "string" },

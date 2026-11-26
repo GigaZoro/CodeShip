@@ -174,6 +174,16 @@ it.effect("resolves only the requested active project page in creation order", (
         new Set(yield* Ref.get(inspected)),
         new Set(["/work/page-0", "/work/page-2", "/work/page-sentinel"]),
       );
+      assert.deepEqual(
+        Option.map(
+          yield* service.getWithRepositoryIdentity(ProjectId.make("page:3")),
+          (project) => project.repositoryIdentity?.canonicalKey,
+        ),
+        Option.some("example.test/work/page-3"),
+      );
+      assert.isTrue(
+        Option.isNone(yield* service.getWithRepositoryIdentity(ProjectId.make("page:1"))),
+      );
       const second = yield* service.listPage({ cursor: first.nextCursor!, limit: 2 });
       assert.deepEqual(
         second.projects.map((project) => project.id),
@@ -191,6 +201,60 @@ it.effect("resolves only the requested active project page in creation order", (
         projects: [],
         nextCursor: null,
       });
+    }).pipe(Effect.scoped, Effect.provide(layerTestFor(metadata)));
+  }),
+);
+
+// A lookup Git did not answer read as a project with no repository, so a linked environment
+// matching projects by repository started a delegated worktree from the default branch.
+it.effect("fails a read whose repository Git did not give, unlike a project without one", () =>
+  Effect.gen(function* () {
+    const metadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (workspaceRoot) =>
+          workspaceRoot === "/work/stalled"
+            ? Effect.fail(
+                new RepositoryIdentityResolver.RepositoryIdentityLookupError({
+                  cwd: workspaceRoot,
+                  step: "find-root",
+                  outcome: "timed-out",
+                }),
+              )
+            : Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* ProjectService.ProjectService;
+      yield* sql`INSERT INTO projection_projects ${sql.insert(
+        ["plain", "stalled"].map((name) => ({
+          project_id: `identity:${name}`,
+          title: name,
+          workspace_root: `/work/${name}`,
+          scripts_json: "[]",
+          created_at: "2026-10-01T00:00:00.000Z",
+          updated_at: "2026-10-01T00:00:00.000Z",
+          deleted_at: null,
+          auto_pull: 0,
+        })),
+      )}`;
+      const plain = yield* service.getWithRepositoryIdentity(ProjectId.make("identity:plain"));
+      assert.isNull(Option.getOrThrow(plain).repositoryIdentity);
+      for (const read of [
+        Effect.asVoid(service.getWithRepositoryIdentity(ProjectId.make("identity:stalled"))),
+        Effect.asVoid(service.listPage({ cursor: 0, limit: 10 })),
+      ]) {
+        const failure = yield* Effect.flip(read);
+        assert.strictEqual(failure._tag, "RepositoryIdentityLookupError");
+        assert.strictEqual(
+          failure.message,
+          "Git timed out while finding the repository root in /work/stalled.",
+        );
+      }
     }).pipe(Effect.scoped, Effect.provide(layerTestFor(metadata)));
   }),
 );

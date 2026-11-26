@@ -13,11 +13,13 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { type WorktreeSubmodules } from "@t3tools/contracts";
+import { GitCommandError, type WorktreeSubmodules } from "@t3tools/contracts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import {
+  gitErrorLines,
   gitFailureFacts,
   makeGitVcsDriverCore,
   parseGitCheckoutProgressLine,
@@ -34,6 +36,8 @@ import {
   withGitFileProtocol,
   makeFailedHandle,
 } from "./GitVcsDriverCore.testkit.ts";
+
+const encodeGitCommandError = Schema.encodeEffect(Schema.fromJsonString(GitCommandError));
 
 it.layer(layerTest)("Git worktree creation", (it) => {
   it.effect("starts a new branch from a branch that exists only on the remote", () =>
@@ -795,21 +799,40 @@ it.layer(layerTest)("Git worktree creation", (it) => {
       assert.notProperty(error, "reason");
       assert.include(
         error.message,
-        `Exit code 128. Git said: fatal: not a valid branch point: '${missingCommit}'`,
+        "Exit code 128. Git said: fatal: not a valid branch point: '…'",
       );
+      assert.notInclude(error.message, missingCommit);
       assert.notProperty(error, "stderr");
     }),
   );
 
-  it.effect("quotes Git's lines only for a command that asks and strips URL credentials", () =>
+  it.effect("quotes the shape of the Git lines it knows, never a value in them", () =>
     Effect.gen(function* () {
-      const stderr = "fatal: odd failure at https://user:token@example.com/repo.git?key=secret\n";
+      const email = "review-fixture@example.invalid";
+      const stderr = [
+        `fatal: empty ident name (for <${email}>) not allowed`,
+        "fatal: unable to access 'https://user:token@example.com/repo.git?key=secret': Could not resolve host: example.com",
+        `fatal: odd failure for ${email}`,
+      ].join("\n");
       const facts = gitFailureFacts({ exitCode: 2, stdout: "", stderr }, { quoteGitLines: true });
 
       assert.equal(
         facts.diagnostics,
-        "Exit code 2. Git said: fatal: odd failure at https://example.com/repo.git",
+        "Exit code 2. Git said: fatal: empty ident name (for <…>) not allowed | fatal: unable to access '…': Could not resolve host: … | fatal: (message withheld)",
       );
+      const error = new GitCommandError({
+        operation: "GitVcsDriver.test",
+        command: "git",
+        cwd: "/repo",
+        detail: "Git command exited with a non-zero status.",
+        ...facts,
+      });
+      for (const text of [error.message, yield* encodeGitCommandError(error)]) {
+        assert.include(text, "fatal: empty ident name (for <…>) not allowed");
+        for (const value of [email, "token", "secret", "example.com"]) {
+          assert.notInclude(text, value);
+        }
+      }
       assert.equal(facts.stderrLength, stderr.length);
       // Arguments can carry a secret that Git echoes, so the default keeps the exit code only.
       assert.equal(
@@ -820,6 +843,44 @@ it.layer(layerTest)("Git worktree creation", (it) => {
         stdoutLength: 0,
         stderrLength: 0,
       });
+    }),
+  );
+
+  it.effect.each([
+    [
+      "fatal: '/w/secret' contains modified or untracked files, use --force to delete it",
+      "fatal: '…' contains modified or untracked files, use --force to delete it",
+    ],
+    [
+      "fatal: cannot remove a locked working tree, lock reason: secret\nuse 'remove -f -f' to override or unlock first",
+      "fatal: cannot remove a locked working tree, lock reason: …",
+    ],
+    [
+      "fatal: cannot remove a locked working tree;\nuse 'remove -f -f' to override or unlock first",
+      "fatal: cannot remove a locked working tree;",
+    ],
+    [
+      "fatal: working trees containing submodules cannot be moved or removed",
+      "fatal: working trees containing submodules cannot be moved or removed",
+    ],
+    ["fatal: '/w/secret' is a main working tree", "fatal: '…' is a main working tree"],
+    [
+      "fatal: validation failed, cannot remove working tree: '/w/secret/.git' does not exist",
+      "fatal: validation failed, cannot remove working tree: …",
+    ],
+    // die_errno appends `: <strerror>` to both.
+    [
+      "fatal: failed to run 'git status' on '/w/secret': No such file or directory",
+      "fatal: failed to run 'git status' on '…': …",
+    ],
+    [
+      "fatal: failed to run 'git status' on '/w/secret', code 128: No such file or directory",
+      "fatal: failed to run 'git status' on '…', code …",
+    ],
+    ["error: failed to delete '/w/secret': Permission denied", "error: failed to delete '…': …"],
+  ] as const)("keeps why Git refused to remove a worktree: %s", ([stderr, shape]) =>
+    Effect.sync(() => {
+      assert.equal(gitErrorLines(stderr), shape);
     }),
   );
 

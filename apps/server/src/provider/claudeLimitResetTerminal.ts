@@ -269,7 +269,11 @@ const openSession = Effect.fn("ClaudeLimitResetTerminal.openSession")(function* 
   }
   // Claude prints dates in its own zone; in UTC they parse to the same instant on any host.
   environment.TZ = "UTC";
-  const executable = yield* resolveClaudeSdkExecutablePath(options.binaryPath, environment);
+  const executable = yield* resolveClaudeSdkExecutablePath(
+    options.binaryPath,
+    environment,
+    options.cwd,
+  );
   // Older npm installs resolve to a script entry that the SDK also runs with node.
   const launch = executable.endsWith(".js")
     ? { shell: "node", args: [executable] }

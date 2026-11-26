@@ -82,6 +82,7 @@ const makeHarnessFor = Effect.fnUntraced(function* (
   });
   let authorize: URL | undefined;
   let refreshes = 0;
+  let renewalToken: string | undefined;
   let revoked = false;
   let refreshError: string | undefined;
   let revocationStatus = 200;
@@ -157,7 +158,7 @@ const makeHarnessFor = Effect.fnUntraced(function* (
                 }
                 response.end(
                   JSON.stringify({
-                    access_token: `access-${refreshes}`,
+                    access_token: renewalToken ?? `access-${refreshes}`,
                     refresh_token: `refresh-${refreshes}`,
                     token_type: "Bearer",
                     expires_in: 3600,
@@ -373,6 +374,9 @@ const makeHarnessFor = Effect.fnUntraced(function* (
       signInWithMethod(`chatgpt-profile:${clientId}`, stopSessions),
     phase,
     seedExpired,
+    setRenewalToken: (value: string) => {
+      renewalToken = value;
+    },
     exchanges,
     authorizationRequests,
     callbackResponses,
@@ -1863,6 +1867,17 @@ it.effect("a running session renews its bound profile but refuses a replacement 
       assert.equal(renewed[0].accessToken, "access-1");
       assert.deepEqual(renewed[0], renewed[1]);
       assert.equal(yield* h.auth.profileKey(renewed[0]), profileKey);
+      const workspaceToken = (id: string) =>
+        `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: id } })).toString("base64url")}.sig`;
+      h.setRenewalToken(workspaceToken("workspace-A"));
+      yield* h.seedExpired;
+      assert.equal((yield* first.access.pipe(Effect.flip)).operation, "access");
+      const accountA = yield* h.auth.access;
+      const boundA = yield* h.bindProfile(yield* h.auth.profileKey(accountA));
+      h.setRenewalToken(workspaceToken("workspace-B"));
+      yield* h.seedExpired;
+      assert.equal((yield* boundA.access.pipe(Effect.flip)).operation, "access");
+      assert.equal((yield* h.auth.access).accessToken, workspaceToken("workspace-B"));
 
       const admitted = yield* Deferred.make<void>();
       const published = yield* Deferred.make<void>();
@@ -1891,7 +1906,7 @@ it.effect("a running session renews its bound profile but refuses a replacement 
       assert.equal(replacement.subject, renewed[0].subject);
       yield* h.seedExpired;
       assert.equal((yield* first.access.pipe(Effect.flip)).operation, "access");
-      assert.equal(h.refreshes(), 1);
+      assert.equal(h.refreshes(), 3);
       yield* h.auth.revoke;
       assert.equal((yield* second.access.pipe(Effect.flip)).operation, "access");
       assert.isTrue(Option.isNone(yield* h.auth.read));

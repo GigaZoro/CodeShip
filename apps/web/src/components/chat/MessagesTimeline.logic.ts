@@ -2897,3 +2897,62 @@ export function timelineRowContentTime(row: MessagesTimelineRow): number {
   }
   return row.createdAt === null ? Number.NaN : Date.parse(row.createdAt);
 }
+
+export type StarJumpTarget =
+  | { readonly kind: "message"; readonly messageId: MessageId }
+  | { readonly kind: "earliest" };
+
+export function resolveStarJump(
+  target: StarJumpTarget,
+  starredIds: ReadonlyArray<MessageId>,
+  loadedIds: ReadonlyArray<MessageId>,
+  hasMoreHistory: boolean,
+):
+  | { kind: "load"; throughEntryId?: MessageId }
+  | { kind: "land"; messageId: MessageId }
+  | { kind: "cancel" } {
+  if (target.kind === "message") {
+    if (!starredIds.includes(target.messageId)) return { kind: "cancel" };
+    if (loadedIds.includes(target.messageId)) return { kind: "land", messageId: target.messageId };
+    return hasMoreHistory ? { kind: "load", throughEntryId: target.messageId } : { kind: "cancel" };
+  }
+
+  if (hasMoreHistory) {
+    const loaded = new Set(loadedIds);
+    if (starredIds.some((id) => !loaded.has(id))) return { kind: "load" };
+  }
+  const starred = new Set(starredIds);
+  const first = loadedIds.find((id) => starred.has(id));
+  return first === undefined ? { kind: "cancel" } : { kind: "land", messageId: first };
+}
+
+export function nextStarredMessage(input: {
+  readonly entries: ReadonlyArray<{
+    readonly messageId: MessageId;
+    readonly top: number | undefined;
+  }>;
+  readonly starredIds: ReadonlyArray<MessageId>;
+  readonly hasMoreHistory: boolean;
+  readonly scrollOffset: number;
+  readonly landingLine: number;
+  readonly lastLanded: { readonly messageId: MessageId; readonly scrollOffset: number } | null;
+}): StarJumpTarget | undefined {
+  const { entries, starredIds, hasMoreHistory, scrollOffset, landingLine, lastLanded } = input;
+  const lastIndex =
+    lastLanded?.scrollOffset === scrollOffset
+      ? entries.findIndex((entry) => entry.messageId === lastLanded.messageId)
+      : -1;
+  const next =
+    lastIndex >= 0
+      ? entries[lastIndex + 1]
+      : entries.find((entry) => entry.top !== undefined && entry.top > landingLine + 2);
+  if (next !== undefined) return { kind: "message", messageId: next.messageId };
+  const wrap = resolveStarJump(
+    { kind: "earliest" },
+    starredIds,
+    entries.map((entry) => entry.messageId),
+    hasMoreHistory,
+  );
+  if (wrap.kind === "load") return { kind: "earliest" };
+  if (wrap.kind === "land") return { kind: "message", messageId: wrap.messageId };
+}

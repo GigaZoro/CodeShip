@@ -101,6 +101,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksApplyShared]: AuthOrchestrationOperateScope,
   [WS_METHODS.threadFoldersRename]: AuthOrchestrationOperateScope,
   [WS_METHODS.threadFoldersSave]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
@@ -112,6 +113,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
+
+const CLIENT_GUARDED_COMMAND_SCOPES = {
+  "thread.message.star": AuthOrchestrationOperateScope,
+  "thread.tag.set": AuthOrchestrationOperateScope,
+} as const;
 
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
@@ -125,9 +131,9 @@ export function clientRpcRequiredScopes(
     typeof input === "object" &&
     input !== null &&
     "type" in input &&
-    input.type === "thread.tag.set"
+    (input.type === "thread.message.star" || input.type === "thread.tag.set")
   ) {
-    return [AuthOrchestrationOperateScope];
+    return [CLIENT_GUARDED_COMMAND_SCOPES[input.type]];
   }
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);

@@ -1,19 +1,23 @@
 import {
+  OrchestratorMcpUsageMeter,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { providerUsageFields, usageReadingStale } from "./orchestratorUsage.ts";
+import {
+  providerUsageFields,
+  publishesUsage,
+  staleUsageObservations,
+} from "./orchestratorUsage.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
+const decodeMeters = Schema.decodeUnknownSync(Schema.Array(OrchestratorMcpUsageMeter));
 
-function provider(
-  driver: "claudeAgent" | "codex",
-  overrides: Partial<ServerProvider> = {},
-): ServerProvider {
+function provider(driver: string, overrides: Partial<ServerProvider> = {}): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make(driver),
     driver: ProviderDriverKind.make(driver),
@@ -65,6 +69,42 @@ const claudeLimits: ServerProviderUsageLimits = {
 };
 
 describe("providerUsageFields", () => {
+  it("publishes native quota IDs and scopes for a metered driver outside Claude and Codex", () => {
+    const antigravity = provider("antigravity", {
+      usageLimits: {
+        checkedAt: claudeLimits.checkedAt,
+        windows: [
+          { ...claudeLimits.windows[1]!, id: "gemini-weekly", scope: "gemini-default" },
+          { ...claudeLimits.windows[1]!, id: "gemini-argon-wtu-weekly", scope: "gemini-argon" },
+          { ...claudeLimits.windows[1]!, id: "3p-weekly", scope: "third-party" },
+        ],
+      },
+    });
+    expect(publishesUsage(antigravity)).toBe(true);
+    expect(providerUsageFields(antigravity, false).usage?.meters).toMatchObject([
+      { id: "gemini-weekly", scope: "gemini-default" },
+      { id: "gemini-argon-wtu-weekly", scope: "gemini-argon" },
+      { id: "3p-weekly", scope: "third-party" },
+    ]);
+  });
+
+  it("publishes a custom driver's reading when supplied and leaves empty readings unknown", () => {
+    const custom = provider("example-adapter", {
+      usageLimits: { checkedAt: claudeLimits.checkedAt, windows: [] },
+    });
+    expect(publishesUsage(custom)).toBe(true);
+    expect(providerUsageFields(custom, false)).toEqual({ usage: null, usageError: "not_read" });
+    const scope = { models: ["example/model-a", "example/model-b"] } as const;
+    const observedAt = "2026-09-02T11:55:00.000Z";
+    const window = { ...claudeLimits.windows[0]!, id: "shared-pool", scope, observedAt };
+    const usage = providerUsageFields(
+      { ...custom, usageLimits: { ...claudeLimits, windows: [window] } },
+      false,
+    ).usage;
+    const meters = decodeMeters(usage?.meters);
+    expect(meters).toMatchObject([{ id: "shared-pool", scope, observedAt }]);
+  });
+
   it("publishes meters by stable id, and a spent scoped meter leaves the account's usage allowed", () => {
     expect(
       providerUsageFields(provider("claudeAgent", { usageLimits: claudeLimits }), false),
@@ -76,21 +116,30 @@ describe("providerUsageFields", () => {
         meters: [
           {
             id: "session",
+            nativeId: "five_hour",
+            observedAt: claudeLimits.checkedAt,
             model: null,
+            scope: "account",
             usedPercent: 40,
             windowMinutes: 300,
             resetsAt: "2026-09-03T14:00:00.000Z",
           },
           {
             id: "weekly_all",
+            nativeId: "seven_day",
+            observedAt: claudeLimits.checkedAt,
             model: null,
+            scope: "account",
             usedPercent: 70,
             windowMinutes: 10080,
             resetsAt: "2026-09-06T00:00:00.000Z",
           },
           {
             id: "weekly_scoped:Fable",
+            nativeId: "seven_day_fable",
+            observedAt: claudeLimits.checkedAt,
             model: "Fable",
+            scope: "model",
             usedPercent: 100,
             windowMinutes: 10080,
             resetsAt: "2026-09-06T00:00:00.000Z",
@@ -285,6 +334,55 @@ describe("providerUsageFields", () => {
     ).toBe(false);
   });
 
+  it("keeps a spent Codex credit cap separate from ordinary plan usage", () => {
+    const fields = providerUsageFields(
+      provider("codex", {
+        usageLimits: {
+          checkedAt: claudeLimits.checkedAt,
+          windows: [
+            {
+              id: "individual",
+              label: "Monthly credit limit",
+              kind: "monthly",
+              usedPercent: 100,
+            },
+          ],
+          usageAllowed: true,
+          credits: { balance: "25.00", unlimited: false },
+        },
+      }),
+      false,
+      new Map(),
+      "used_up",
+    );
+    expect(fields.usage).toMatchObject({
+      meters: [{ id: "individual", scope: "spending-cap" }],
+      credits: { balance: "25.00" },
+      usageAllowed: true,
+    });
+  });
+
+  it.each([
+    { credits: "spending", allowed: true },
+    { credits: "not_enabled", allowed: false },
+    { credits: "used_up", allowed: false },
+  ] as const)(
+    "allows a Codex account its plan refuses only while it is $credits prepaid credits",
+    ({ credits, allowed }) => {
+      const codex = provider("codex", {
+        usageLimits: {
+          checkedAt: "2026-09-03T11:55:00.000Z",
+          windows: [],
+          usageAllowed: false,
+          credits: { balance: "25.00", unlimited: false },
+        },
+      });
+      expect(providerUsageFields(codex, false, new Map(), credits).usage?.usageAllowed).toBe(
+        allowed,
+      );
+    },
+  );
+
   it.each([
     ["signed out", { auth: { status: "unauthenticated" as const } }, "signed_out"],
     ["never read", {}, "not_read"],
@@ -319,11 +417,15 @@ describe("providerUsageFields", () => {
   );
 });
 
-describe("usageReadingStale", () => {
+describe("staleUsageObservations", () => {
   const probedLongAgo = "2026-09-03T11:49:00.000Z";
   it.each([
     { name: "no reading", probedAt: probedLongAgo, stale: true },
-    { name: "no reading from a probe a minute ago", probedAt: "2026-09-03T11:59:00.000Z" },
+    {
+      name: "no reading despite a recent heartbeat",
+      probedAt: "2026-09-03T11:59:00.000Z",
+      stale: true,
+    },
     {
       name: "a fresh reading",
       probedAt: probedLongAgo,
@@ -341,10 +443,26 @@ describe("usageReadingStale", () => {
       usage: { checkedAt: "2026-09-03T11:58:00.000Z", accountReadAt: "2026-09-03T11:49:00.000Z" },
       stale: true,
     },
+    {
+      name: "a fresh stream update before the first full read",
+      probedAt: "2026-09-03T11:59:00.000Z",
+      usage: { checkedAt: "2026-09-03T11:58:00.000Z", streamOnly: true as const },
+      stale: true,
+    },
+    {
+      name: "a fresh stream update retaining an older window",
+      probedAt: "2026-09-03T11:59:00.000Z",
+      usage: {
+        checkedAt: "2026-09-03T11:58:00.000Z",
+        windows: [{ ...claudeLimits.windows[1]!, observedAt: probedLongAgo }],
+      },
+      stale: true,
+    },
   ])("reads again after ten minutes: $name", ({ probedAt, usage, stale = false }) => {
-    const overrides = usage === undefined ? {} : { usageLimits: { ...usage, windows: [] } };
-    expect(usageReadingStale(provider("codex", { checkedAt: probedAt, ...overrides }), now)).toBe(
-      stale,
-    );
+    const overrides = usage === undefined ? {} : { usageLimits: { windows: [], ...usage } };
+    expect(
+      staleUsageObservations(provider("codex", { checkedAt: probedAt, ...overrides }), now).length >
+        0,
+    ).toBe(stale);
   });
 });

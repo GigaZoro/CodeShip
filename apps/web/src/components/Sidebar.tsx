@@ -15,6 +15,12 @@ import {
 } from "@t3tools/client-runtime/state/thread-sort";
 import { Checkbox } from "./ui/checkbox";
 import { readThreadTagsMenuState, useThreadTagActions } from "../hooks/useThreadTagActions";
+import { useAtomCommand } from "../state/use-atom-command";
+import {
+  threadPreferenceCommand,
+  threadPreferenceMenuItems,
+} from "@t3tools/client-runtime/thread-preferences";
+import { randomUUID } from "../lib/utils";
 import { t, tn } from "~/i18n";
 import { attachSidebarTree } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
@@ -1568,6 +1574,10 @@ export default function Sidebar({
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const setPreferences = useAtomCommand(
+    threadEnvironment.setPreferences,
+    t("Failed to update thread preferences"),
+  );
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -3904,6 +3914,14 @@ export default function Sidebar({
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               folders: readThreadFolderMenuState([threadRef]),
               ...(configLoaded ? { tags: readThreadTagsMenuState([threadRef]) } : {}),
+              preferenceItems: appAtomRegistry.get(
+                threadEnvironment.setPreferences.permissionAtom(threadRef.environmentId),
+              )
+                ? threadPreferenceMenuItems(
+                    thread,
+                    serverConfigs.get(thread.environmentId)?.environment.capabilities,
+                  )
+                : [],
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -3921,6 +3939,11 @@ export default function Sidebar({
           ),
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
+        const preference = threadPreferenceCommand(clicked.value, threadRef.threadId, randomUUID);
+        if (preference) {
+          await setPreferences({ environmentId: threadRef.environmentId, input: preference });
+          return;
+        }
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (isThreadFolderMenuAction(clicked.value)) {
           await folderActions.runMenuAction(clicked.value, [threadRef]);

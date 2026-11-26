@@ -169,7 +169,7 @@ export const triageCommand = Command.make("triage", {
 
       const installed: Array<TriageAgent> = [];
       for (const agent of TRIAGE_AGENTS) {
-        if (yield* isCommandAvailable(agent.command)) {
+        if (yield* isCommandAvailable(agent.command, { cwd: session.sessionDir })) {
           installed.push(agent);
         }
       }
@@ -209,10 +209,11 @@ export const triageCommand = Command.make("triage", {
 
       const model = Option.getOrUndefined(flags.model);
       const launchPrompt = buildTriageLaunchPrompt(promptFilePath);
-      const spawnSpec = yield* resolveSpawnCommand(selected.command, [
-        ...(model === undefined ? [] : ["--model", model]),
-        launchPrompt,
-      ]);
+      const spawnSpec = yield* resolveSpawnCommand(
+        selected.command,
+        [...(model === undefined ? [] : ["--model", model]), launchPrompt],
+        { cwd: sessionDir },
+      );
       yield* Console.log(`Starting ${selected.label}. It will ask what went wrong.\n`);
       const exitCode = yield* runInteractiveSession({ ...spawnSpec, cwd: sessionDir });
       if (exitCode !== 0) {

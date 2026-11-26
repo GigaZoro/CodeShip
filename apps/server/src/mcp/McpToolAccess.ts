@@ -32,10 +32,12 @@ import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes
 import {
   assertFullAccess,
   assertLiveCaller,
+  assertNotReadOnlyGuestThread,
   assertTargetWithinLimits,
   type Caller,
   loadCaller,
   readCaller,
+  refuseReadOnlyGuestCaller,
   unavailable,
 } from "./threadAccess.ts";
 
@@ -133,11 +135,13 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(({ caller }) => assertNotReadOnlyGuestThread(caller)),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(({ caller }) => assertNotReadOnlyGuestThread(caller)),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
@@ -146,12 +150,19 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
 
 export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(
-    (params: P) => handle(params),
-    () => Effect.void,
+    (params: P) => refuseReadOnlyGuestCaller().pipe(Effect.flatMap(() => handle(params))),
+    () => refuseReadOnlyGuestCaller(),
   );
 
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
+  declare(
+    (params: P) =>
+      requireThreadCaller.pipe(
+        Effect.andThen(refuseReadOnlyGuestCaller()),
+        Effect.flatMap(() => handle(params)),
+      ),
+    undefined,
+  );
 
 export const actsAsCaller = <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,

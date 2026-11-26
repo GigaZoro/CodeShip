@@ -51,6 +51,16 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const decodeClientServerSettingsPatch = Schema.decodeUnknownSync(ClientServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
+
+it("round trips fresh Auto in the partial text generation model patch", () => {
+  const auto = {
+    instanceId: ProviderInstanceId.make("remote"),
+    model: "placeholder",
+    quotaAwareAuto: true,
+  };
+  const patch = { textGenerationModelSelection: auto };
+  expect(decodeServerSettingsPatch(encodeServerSettingsPatch(patch))).toEqual(patch);
+});
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 it("drops theme defaults from a client's settings patch", () => {
@@ -707,6 +717,7 @@ describe("shouldRecommendDatabaseCompaction", () => {
     fragmentedBytes: 0,
     incrementalVacuumEnabled: true,
     compactCommand: "t3 doctor",
+    dailyGrowthBytes: null,
     ...patch,
   });
 

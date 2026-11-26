@@ -10,16 +10,20 @@ import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import { mergeUsageCopies } from "./usageAggregation.ts";
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 
-const USAGE_SCAN_CACHE_VERSION = 17 as const;
+export const USAGE_SCAN_CACHE_VERSION = 18 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
- * An older server sharing that directory cannot read a newer cache and would
- * replace it, dropping saved usage for deleted transcripts. Separate files keep
- * the newer one; older files are removed once it is saved.
+ * Snapshots here are written once and never changed, so processes sharing a state directory need
+ * no lock. A save holds the rows changed since its writer's last save; only a full save, which
+ * holds every live row, deletes what it covers. A newer format only reads these: a running
+ * writer's later saves hold just the rows they changed and need its earlier snapshots beside them.
  */
-export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v17.json";
-export const LEGACY_SCAN_CACHE_FILE_NAMES = [
+export const SCAN_CACHE_DIRECTORY_NAME = `usage-scan-cache-v${USAGE_SCAN_CACHE_VERSION}`;
+/** Single-file caches of older builds, which a sync moves into the store as legacy inputs. */
+export const LEGACY_SCAN_CACHE_DIRECTORY_NAMES = ["usage-scan-cache-v11"] as const;
+const LEGACY_SCAN_CACHE_FILE_NAMES = [
+  "usage-scan-cache-v17.json",
   "usage-scan-cache-v16.json",
   "usage-scan-cache-v15.json",
   "usage-scan-cache-v14.json",
@@ -35,11 +39,36 @@ export const LEGACY_SCAN_CACHE_FILE_NAMES = [
   "usage-scan-cache.json",
 ] as const;
 
+const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const SNAPSHOT_NAME = new RegExp(`^${UUID_PATTERN}-\\d+\\.json$`);
+const CLAIMED_LEGACY_NAME = new RegExp(`^legacy-${UUID_PATTERN}-(.+)$`);
+
+export const isLegacyScanCacheFileName = (name: string): boolean =>
+  (LEGACY_SCAN_CACHE_FILE_NAMES as readonly string[]).includes(name);
+export const scanCacheSnapshotName = (writerId: string, seq: number) => `${writerId}-${seq}.json`;
+export const claimedLegacyScanCacheName = (claimId: string, legacyName: string) =>
+  `legacy-${claimId}-${legacyName}`;
+/** Temporary files of an atomic write never match, so a sync cannot read a half-written file. */
+export function isScanCacheInput(name: string): boolean {
+  if (SNAPSHOT_NAME.test(name)) return true;
+  const legacyName = CLAIMED_LEGACY_NAME.exec(name)?.[1];
+  return legacyName !== undefined && isLegacyScanCacheFileName(legacyName);
+}
+
 const SPEEDS: readonly UsageSpeed[] = ["standard", "fast", "ultrafast"];
 
 export interface CachedFile {
   readonly size: number;
+  readonly needsReparse?: true;
+  /** Decoded from an older format: it loses to a current row observed at the same time. */
+  readonly legacy?: true;
   readonly mtimeMs: number;
+  /** Wall-clock time a scan stored this row, compared across processes when rows meet. */
+  readonly observedAtMs: number;
+  /** Wall-clock time the service first found the file gone; its retention counts from here. */
+  readonly missingSinceMs?: number;
+  /** Wall-clock time a listing last found the file back after it went missing. */
+  readonly presentSinceMs?: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
   /** Unterminated tail records stay separate because incremental parsing rereads them. */
@@ -50,6 +79,88 @@ export interface CachedFile {
 }
 
 export type ScanCache = Map<string, CachedFile>;
+
+export interface CachedSource {
+  readonly dir: string;
+  readonly volumeId: string;
+  /** Wall-clock time a scan recorded this directory or its volume. */
+  readonly seenAtMs?: number;
+}
+
+const isCurrentRow = (entry: CachedFile) => entry.legacy === undefined && !entry.needsReparse;
+
+const unresolvedTurns = (entry: CachedFile) => {
+  const turns: string[] = [];
+  for (const records of [entry.records, entry.tailRecords]) {
+    for (const { unresolvedServiceTierTurnId: turn } of records) {
+      if (turn !== undefined) turns.push(turn);
+    }
+  }
+  return turns;
+};
+
+/**
+ * Every place rows for one transcript meet uses this order, so any merge order of the same
+ * snapshots gives the same rows: the later observation, then a current-format row, then the
+ * larger file, then fewer unresolved speed tiers (resolving one keeps the read time), then the
+ * lower list of unresolved turns, then the row already held.
+ */
+function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
+  if (incoming.observedAtMs !== held.observedAtMs) {
+    return incoming.observedAtMs > held.observedAtMs ? incoming : held;
+  }
+  const heldCurrent = isCurrentRow(held);
+  if (heldCurrent !== isCurrentRow(incoming)) return heldCurrent ? held : incoming;
+  if (incoming.size !== held.size) return incoming.size > held.size ? incoming : held;
+  const heldTurns = unresolvedTurns(held);
+  if (heldTurns.length === 0) return held;
+  const incomingTurns = unresolvedTurns(incoming);
+  if (incomingTurns.length !== heldTurns.length) {
+    return incomingTurns.length < heldTurns.length ? incoming : held;
+  }
+  return incomingTurns.join("\n") < heldTurns.join("\n") ? incoming : held;
+}
+
+const latest = (...times: readonly (number | undefined)[]) => {
+  const known = times.filter((time) => time !== undefined);
+  return known.length === 0 ? undefined : Math.max(...known);
+};
+
+/**
+ * Presence says nothing about a file's contents, so it never picks the winning row. The winner
+ * takes the latest missing time from a row read at the same time or found gone after its own
+ * read, unless a listing found the file back after it: an earlier one is stale. A listing does
+ * not change observedAtMs, so only the time it found the file back can show that.
+ */
+export function mergeScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
+  const winner = pickScanEntry(held, incoming);
+  const presentSinceMs = latest(held.presentSinceMs, incoming.presentSinceMs);
+  const missingSinceMs = latest(
+    ...[held, incoming].map(({ observedAtMs, missingSinceMs }) =>
+      missingSinceMs !== undefined &&
+      (observedAtMs === winner.observedAtMs || missingSinceMs > winner.observedAtMs) &&
+      missingSinceMs > (presentSinceMs ?? -Infinity)
+        ? missingSinceMs
+        : undefined,
+    ),
+  );
+  if (missingSinceMs === winner.missingSinceMs && presentSinceMs === winner.presentSinceMs) {
+    return winner;
+  }
+  const { missingSinceMs: _missing, presentSinceMs: _present, ...contents } = winner;
+  return {
+    ...contents,
+    ...(missingSinceMs === undefined ? {} : { missingSinceMs }),
+    ...(presentSinceMs === undefined ? {} : { presentSinceMs }),
+  };
+}
+
+export function mergeCachedSource(held: CachedSource, incoming: CachedSource): CachedSource {
+  const incomingWins = (incoming.seenAtMs ?? -Infinity) > (held.seenAtMs ?? -Infinity);
+  const [winner, other] = incomingWins ? [incoming, held] : [held, incoming];
+  if (winner.volumeId !== "" || other.volumeId === "" || other.dir !== winner.dir) return winner;
+  return { ...winner, volumeId: other.volumeId };
+}
 
 type SerializedRecord = readonly [
   timestampMs: number,
@@ -70,7 +181,12 @@ type SerializedRecord = readonly [
 
 interface SerializedFile {
   readonly s: number;
+  readonly nr?: true;
+  readonly lg?: true;
   readonly m: number;
+  readonly oa?: number;
+  readonly ms?: number;
+  readonly ps?: number;
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
   readonly t: readonly SerializedRecord[];
@@ -132,7 +248,12 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   ];
   return {
     s: entry.size,
+    ...(entry.needsReparse ? { nr: true } : {}),
+    ...(entry.legacy ? { lg: true } : {}),
     m: entry.mtimeMs,
+    oa: entry.observedAtMs,
+    ...(entry.missingSinceMs === undefined ? {} : { ms: entry.missingSinceMs }),
+    ...(entry.presentSinceMs === undefined ? {} : { ps: entry.presentSinceMs }),
     p: entry.provider,
     r: entry.records.map(serializeRecord),
     t: entry.tailRecords.map(serializeRecord),
@@ -144,28 +265,63 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   };
 }
 
-/** Yields the document in pieces so large caches never become one string; growing intern tables preserve indexes, retaining unused strings until restart. */
-export function makeScanCacheWriter(): (
-  cache: ScanCache,
+/** Characters a save encodes before it lets the event loop run again; a larger row is one piece. */
+export const SCAN_CACHE_PIECE_CHARS = 1 << 20;
+
+/**
+ * Encodes one snapshot a piece at a time, for a caller that writes each piece before asking for
+ * the next. Each snapshot interns only the models and sessions its own rows use, so a pruned
+ * row's session leaves later snapshots; the tables come after the files because only then are
+ * they complete. `extra` must not hold `files`.
+ */
+export function* scanCacheDocumentPieces(
+  rows: Iterable<readonly [string, CachedFile]>,
   extra: Readonly<Record<string, unknown>>,
-) => Iterable<string> {
+): Generator<string, void, undefined> {
   const tables = makeInternTables();
-  function* encode(entries: readonly (readonly [string, CachedFile])[], extra: object) {
-    yield '{"files":{';
-    for (const [index, [path, entry]] of entries.entries()) {
-      yield `${index === 0 ? "" : ","}${JSON.stringify(path)}:${JSON.stringify(serializeFile(entry, tables))}`;
+  let piece = '{"files":{';
+  let separator = "";
+  for (const [path, entry] of rows) {
+    piece += `${separator}${JSON.stringify(path)}:${JSON.stringify(serializeFile(entry, tables))}`;
+    separator = ",";
+    if (piece.length >= SCAN_CACHE_PIECE_CHARS) {
+      yield piece;
+      piece = "";
     }
-    // Encoded after the files, which may have added to the intern tables.
-    const tail = JSON.stringify({
-      ...extra,
-      version: USAGE_SCAN_CACHE_VERSION,
-      models: tables.models,
-      sessions: tables.sessions,
-    });
-    yield `},${tail.slice(1)}`;
   }
-  // Snapshot now: the encoding runs later, while the file is written.
-  return (cache, extra) => encode([...cache], extra);
+  const head = JSON.stringify({
+    ...extra,
+    version: USAGE_SCAN_CACHE_VERSION,
+    models: tables.models,
+    sessions: tables.sessions,
+  });
+  yield `${piece}},${head.slice(1)}`;
+}
+
+/** More snapshots than this cost a startup more to read than one full save costs to write. */
+const MAX_RETIRABLE_SNAPSHOTS = 64;
+
+/**
+ * A save writes every live row, so it may retire every snapshot it read or wrote, when its
+ * changed and dropped rows are over half the live rows, or when those snapshots number more than
+ * MAX_RETIRABLE_SNAPSHOTS or hold more characters outside the largest one than in it. The bounds
+ * keep a startup's reads under about twice the live rows while most saves write a few rows.
+ */
+export function isFullSaveDue(input: {
+  readonly liveRows: number;
+  readonly staleRows: number;
+  /** Characters in each snapshot a full save would retire. */
+  readonly retirableChars: readonly number[];
+}): boolean {
+  if (input.staleRows * 2 > input.liveRows) return true;
+  if (input.retirableChars.length > MAX_RETIRABLE_SNAPSHOTS) return true;
+  let total = 0;
+  let largest = 0;
+  for (const chars of input.retirableChars) {
+    total += chars;
+    largest = Math.max(largest, chars);
+  }
+  return total - largest > largest;
 }
 
 function isRecordArray(value: unknown): value is readonly unknown[] {
@@ -312,7 +468,8 @@ export function decodeScanCache(
     // v13 adds Claude 1-hour cache writes; v14 uses Codex request ledgers.
     // v15 repairs skipped Codex requests whose counters rewound; clean v14 entries stay served.
     // v17 keys Grok turns by time, restoring turns previously dropped as repeats.
-    const legacy =
+    const needsReparse =
+      entry.nr === true ||
       (entry.p === "claude" && version < 13) ||
       (entry.p === "grok" && version < 17) ||
       (format.state !== undefined &&
@@ -320,20 +477,28 @@ export function decodeScanCache(
           (entry.p === "codex" && (version < 14 || (version < 15 && malformedRecords > 0)))));
     // A corrupt state disqualifies the entry: resuming with it would attach
     // appended usage to the wrong model or replay fork-copied history.
-    if (!legacy && !isValidState.get(entry.p)?.(entry.cs)) continue;
+    if (!needsReparse && !isValidState.get(entry.p)?.(entry.cs)) continue;
     // Before v16 a Codex baseline can lack the time of its latest move, or carry an older one,
     // and that time keeps a re-emitted older snapshot from billing twice. A grown file re-parses
     // whole instead of resuming.
-    const resumable = !legacy && !(entry.p === "codex" && version < 16);
+    const resumable = !needsReparse && !(entry.p === "codex" && version < 16);
 
     const provider = entry.p;
     const records = decodeRecords(entry.r, provider);
     const tailRecords = decodeRecords(entry.t, provider);
     if (records === null || tailRecords === null) continue;
+    // Rows written before observations were recorded count as observed at their mtime.
+    const observedAtMs =
+      typeof entry.oa === "number" && Number.isFinite(entry.oa) ? entry.oa : entry.m;
 
     cache.set(path, {
-      size: legacy ? -1 : entry.s,
+      size: entry.s,
+      ...(needsReparse ? { needsReparse: true } : {}),
+      ...(version < USAGE_SCAN_CACHE_VERSION || entry.lg === true ? { legacy: true } : {}),
       mtimeMs: entry.m,
+      observedAtMs,
+      ...(isEpochMillis(entry.ms) ? { missingSinceMs: entry.ms } : {}),
+      ...(isEpochMillis(entry.ps) ? { presentSinceMs: entry.ps } : {}),
       provider,
       records,
       tailRecords,
@@ -352,6 +517,9 @@ export function decodeScanCache(
   return cache;
 }
 
+const isEpochMillis = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
 function makeStateValidators(
   formats: ReadonlyMap<UsageProviderKind, TranscriptUsageFormat<unknown>>,
 ): ReadonlyMap<UsageProviderKind, (value: unknown) => boolean> {
@@ -366,16 +534,23 @@ function makeStateValidators(
   );
 }
 
-export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): number {
-  let removed = 0;
-  for (const [path, entry] of cache) {
-    if (entry.mtimeMs < retentionCutoffMs) {
-      cache.delete(path);
-      removed += 1;
-    }
-  }
-  return removed;
-}
+/** A deleted transcript's usage counts from when it went missing, so deleting it never ends it early. */
+export const isRetained = (entry: CachedFile, retentionCutoffMs: number): boolean =>
+  (entry.missingSinceMs ?? entry.mtimeMs) >= retentionCutoffMs;
+
+/**
+ * mergeScanEntry keeps a missing time only when it is after the presence time, so each mark
+ * stays after the other even when the clock steps back or both come in the same millisecond.
+ */
+export const markMissing = (entry: CachedFile, nowMs: number): CachedFile => ({
+  ...entry,
+  missingSinceMs: Math.max(nowMs, (entry.presentSinceMs ?? -1) + 1),
+});
+
+export const markPresent = (entry: CachedFile, nowMs: number): CachedFile => {
+  const { missingSinceMs, ...seen } = entry;
+  return { ...seen, presentSinceMs: Math.max(nowMs, missingSinceMs ?? -1) };
+};
 
 /** Pass only newline-terminated records: an unterminated tail can still change, so the aggregator merges it per scan. */
 export function dedupeWithinFile(records: readonly UsageRecord[]): readonly UsageRecord[] {

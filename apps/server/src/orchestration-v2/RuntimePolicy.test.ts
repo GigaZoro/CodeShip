@@ -1,8 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import {
+  GuestShareId,
+  type GuestShareAccess,
   type ManagedPolicySummary,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ProviderCapabilities,
   ProjectId,
   ProviderInstanceId,
   type RuntimeMode,
@@ -32,6 +35,8 @@ function makeThread(input: {
   readonly now: DateTime.Utc;
   readonly worktreePath: string | null;
   readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: OrchestrationV2AppThread["interactionMode"];
+  readonly guestAccess?: GuestShareAccess | undefined;
 }): OrchestrationV2AppThread {
   const threadId = ThreadId.make("thread:runtime-policy");
   return {
@@ -43,7 +48,7 @@ function makeThread(input: {
     providerInstanceId,
     modelSelection,
     runtimeMode: input.runtimeMode ?? "full-access",
-    interactionMode: "default",
+    interactionMode: input.interactionMode ?? "default",
     branch: null,
     worktreePath: input.worktreePath,
     activeProviderThreadId: null,
@@ -60,11 +65,25 @@ function makeThread(input: {
     settledAt: null,
     lastVisitedAt: null,
     deletedAt: null,
+    ...(input.guestAccess === undefined
+      ? {}
+      : {
+          guestShare: {
+            id: GuestShareId.make("share:runtime-policy"),
+            host: "host.example",
+            createdAt: DateTime.formatIso(input.now),
+            expiresAt: DateTime.formatIso(input.now),
+            guestName: null,
+            messages: [],
+            access: input.guestAccess,
+          },
+        }),
   };
 }
 
 const grokInstanceId = ProviderInstanceId.make("grok");
 const antigravityInstanceId = ProviderInstanceId.make("antigravity");
+const cursorInstanceId = ProviderInstanceId.make("cursor");
 const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArray<RuntimeMode>>([
   [grokInstanceId, ["approval-required", "auto", "full-access"]],
   [antigravityInstanceId, ["approval-required", "auto-accept-edits", "full-access"]],
@@ -76,6 +95,15 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
         supportedRuntimeModes: supportedRuntimeModesByInstance.get(instanceId),
       } as ServerProvider),
     },
+    orchestrationAdapter: {
+      getCapabilities: () =>
+        Effect.succeed({
+          runtimePolicy: {
+            enforcement: "native",
+            readOnlySandbox: instanceId !== cursorInstanceId,
+          },
+        } as OrchestrationV2ProviderCapabilities),
+    } as Pick<ProviderInstance["orchestrationAdapter"], "getCapabilities">,
   }) as ProviderInstance;
 
 const layerWithPolicy = (policy?: ManagedPolicySummary) =>
@@ -158,6 +186,62 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
     }),
+  );
+
+  it.effect(
+    "runs read-only without asking while a read-only guest link is open, and for runs it started",
+    () =>
+      Effect.gen(function* () {
+        const policy = yield* RuntimePolicy.RuntimePolicyV2;
+        const now = yield* DateTime.now;
+        const resolve = (
+          guestAccess: GuestShareAccess | undefined,
+          options: {
+            readonly instanceId?: ProviderInstanceId;
+            readonly startedReadOnly?: boolean;
+          } = {},
+        ) =>
+          policy.resolve({
+            thread: makeThread({
+              now,
+              worktreePath: "/work",
+              guestAccess,
+              interactionMode: "plan",
+            }),
+            modelSelection: {
+              instanceId: options.instanceId ?? providerInstanceId,
+              model: "test-model",
+            },
+            ...(options.startedReadOnly === true ? { run: { readOnlyGuestShare: true } } : {}),
+          });
+        const readOnlyFields = (resolved: { readonly [key: string]: unknown }) => ({
+          runtimeMode: resolved.runtimeMode,
+          interactionMode: resolved.interactionMode,
+          approvalPolicy: resolved.approvalPolicy,
+          sandboxPolicy: resolved.sandboxPolicy,
+          maxRuntimeMode: resolved.maxRuntimeMode,
+        });
+        const readOnlyPolicy = {
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly" },
+          maxRuntimeMode: "approval-required",
+        };
+
+        assert.deepStrictEqual(readOnlyFields(yield* resolve("read-only")), readOnlyPolicy);
+        assert.deepStrictEqual(
+          readOnlyFields(yield* resolve(undefined, { startedReadOnly: true })),
+          readOnlyPolicy,
+        );
+        const approve = yield* resolve("approve");
+        assert.equal(approve.runtimeMode, "full-access");
+        assert.equal(approve.interactionMode, "plan");
+        const refused = yield* resolve("read-only", { instanceId: cursorInstanceId }).pipe(
+          Effect.flip,
+        );
+        assert.equal(refused._tag, "RuntimePolicyReadOnlyUnsupportedError");
+      }),
   );
 });
 

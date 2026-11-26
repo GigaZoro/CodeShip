@@ -15,7 +15,7 @@ const work = (id: string | undefined, label: string) => ({
 });
 
 describe("update waits for background work", () => {
-  it.effect("goes once the work listed at the start ends, even with newer work running", () =>
+  it.effect("goes once the work listed at the start ends, telling each change of it once", () =>
     Effect.gen(function* () {
       const waitedOn: Array<ReadonlyArray<string>> = [];
       const outcome = yield* untilListedRestartHoldWorkEnds(
@@ -26,6 +26,14 @@ describe("update waits for background work", () => {
             work: [
               work("a", "Review A, round 2"),
               work("b", "Review B"),
+              work(undefined, "Legacy C"),
+            ],
+          },
+          // Only work the wait does not list changed.
+          {
+            work: [
+              work("a", "Review A, round 2"),
+              work("b", "Review B, round 2"),
               work(undefined, "Legacy C"),
             ],
           },

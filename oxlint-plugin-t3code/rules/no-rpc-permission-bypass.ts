@@ -1,6 +1,6 @@
 import { defineRule } from "@oxlint/plugins";
 import * as Option from "effect/Option";
-import { getPropertyName } from "../utils.ts";
+import { getPropertyName, resolvePropertyName } from "../utils.ts";
 
 const readOptions = (options: ReadonlyArray<unknown>) => {
   const [first] = options;
@@ -44,6 +44,7 @@ export default defineRule({
     defaultOptions: [{ allowRawClientAccess: false, allowGuardInstallation: false }],
   },
   create(context) {
+    const { sourceCode } = context;
     const { allowRawClientAccess, allowGuardInstallation } = readOptions(context.options);
     const report = (node: NonNullable<Parameters<typeof context.report>[0]["node"]>) =>
       context.report({
@@ -75,13 +76,13 @@ export default defineRule({
         for (const property of node.id.properties) {
           if (
             property.type === "Property" &&
-            Option.getOrNull(getPropertyName(property.key)) === "client"
+            Option.getOrNull(resolvePropertyName(sourceCode, property.key)) === "client"
           )
             report(property);
         }
       },
       MemberExpression(node) {
-        const property = Option.getOrNull(getPropertyName(node.property));
+        const property = Option.getOrNull(resolvePropertyName(sourceCode, node.property));
         if (!allowGuardInstallation && property === "RpcPermissionGuard") report(node);
         if (!allowRawClientAccess && property === "client") report(node);
       },

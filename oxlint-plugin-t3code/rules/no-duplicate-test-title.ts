@@ -1,7 +1,7 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, importBinding, unwrapExpression } from "../utils.ts";
+import { getPropertyName, importBinding, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const SUITES = new Set(["describe", "suite"]);
@@ -49,7 +49,8 @@ export default defineRule({
     const callKind = (callee: unknown): "suite" | "test" | undefined => {
       let current = unwrapExpression(callee);
       while (Option.isSome(current) && current.value.type === "MemberExpression") {
-        if (Option.isNone(getPropertyName(current.value.property))) return undefined;
+        if (Option.isNone(resolvePropertyName(context.sourceCode, current.value.property)))
+          return undefined;
         current = unwrapExpression(current.value.object);
       }
       if (Option.isNone(current) || current.value.type !== "Identifier") return undefined;
@@ -71,7 +72,8 @@ export default defineRule({
       if (target.value.type === "Identifier") return effectVitestExport(target.value) === "layer";
       return (
         target.value.type === "MemberExpression" &&
-        Option.getOrUndefined(getPropertyName(target.value.property)) === "layer" &&
+        Option.getOrUndefined(resolvePropertyName(context.sourceCode, target.value.property)) ===
+          "layer" &&
         callKind(target.value.object) === "test"
       );
     };

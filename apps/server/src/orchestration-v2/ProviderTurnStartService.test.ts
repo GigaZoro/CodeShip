@@ -1,4 +1,5 @@
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
@@ -25,6 +26,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ThreadProjection,
@@ -193,6 +195,7 @@ function startWithMissingWorktree(
       {
         id: runId,
         status: "starting",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex-personal"), model: "gpt-5.4" },
         rootNodeId,
         activeAttemptId: attemptId,
         providerThreadId,
@@ -508,6 +511,7 @@ function makeLocalCommandHarness(input: {
   /** Opens a session and starts an ordinary provider turn, like a prompt. */
   readonly nativeTurn?: boolean;
   readonly autoAccount?: boolean;
+  readonly quotaAwareAuto?: boolean;
   readonly otherAutoProvider?: boolean;
   readonly limitsReadFailure?: boolean;
   /** The thread is a delegated task's child. */
@@ -516,6 +520,8 @@ function makeLocalCommandHarness(input: {
   readonly restartRetry?: RestartRetryDelivery;
   /** The thread's provider session was already running when this turn started. */
   readonly sessionLive?: boolean;
+  /** Account routing says this turn would spend prepaid credits the user did not allow it. */
+  readonly creditRefusal?: AccountRouting.CreditRefusal;
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -540,6 +546,7 @@ function makeLocalCommandHarness(input: {
       instanceId: newInstanceId,
       model: "gpt-5.4",
       ...(input.autoAccount ? { autoAccount: true } : {}),
+      ...(input.quotaAwareAuto ? { quotaAwareAuto: true } : {}),
     },
     providerThreadId,
     userMessageId: messageId,
@@ -1091,6 +1098,28 @@ function makeLocalCommandHarness(input: {
           completedAt: input.previousTurn.turnStatus === "running" ? null : now,
         },
       ],
+      turnItems: [
+        ...projection.turnItems,
+        {
+          id: TurnItemId.make("previous-tool-call"),
+          type: "dynamic_tool",
+          threadId,
+          runId: previousRunId,
+          nodeId: NodeId.make("previous-root"),
+          providerThreadId: previousProviderThreadId,
+          providerTurnId: previousTurnId,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: "Hand off to a worktree",
+          toolName: "mcp__t3-code__t3_worktree_handoff",
+          input: {},
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        },
+      ],
     };
   }
   let providerBusy =
@@ -1467,6 +1496,11 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([ProviderInstanceId.make("claude_work")]),
         }),
+        input.creditRefusal === undefined
+          ? Layer.empty
+          : Layer.mock(AccountRouting.AccountRouting)({
+              creditRefusal: () => Effect.succeed(input.creditRefusal ?? null),
+            }),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -2304,6 +2338,10 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
       status: "interrupted",
       completedAt: expect.anything(),
     });
+    // The restarted runtime can never report the end of the tool call the failed run left open.
+    expect(
+      harness.projection().turnItems.find((item) => item.id === "previous-tool-call"),
+    ).toMatchObject({ status: "interrupted", completedAt: expect.anything() });
     expect(harness.startRootRun).toHaveBeenCalledOnce();
     expect(harness.startRootRun.mock.calls[0]?.[0].providerThread.nativeThreadRef?.nativeId).toBe(
       "existing-native-conversation",
@@ -3805,6 +3843,50 @@ effectIt.effect(
       expect(projection.providerTurns).toEqual([]);
       expect(projection.checkpoints).toEqual([]);
     }),
+);
+
+effectIt.effect(
+  "stops an unresolved Auto selection before it can use its placeholder account",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Review the diff",
+        nativeTurn: true,
+        quotaAwareAuto: true,
+      });
+      yield* harness.start;
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        { type: "error", failure: { class: "validation_error", code: "auto_route_unresolved" } },
+      ]);
+    }),
+);
+
+effectIt.effect("refuses a turn that would spend prepaid credits the user did not allow", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Review the diff",
+      nativeTurn: true,
+      createdBy: "agent",
+      creditRefusal: { credits: "out_of_scope", limitedUntil: "2026-09-08T00:00:00.000Z" },
+    });
+
+    yield* harness.start;
+
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        title: "Prepaid credits not allowed",
+        // A usage limit would hold the account for the threads the user did allow.
+        failure: { class: "permission_error", code: "prepaid_credits_not_allowed" },
+      },
+    ]);
+  }),
 );
 
 effectIt.effect("refuses a provider sign-out that an agent or scheduled task sent", () =>

@@ -32,7 +32,7 @@ import * as Layer from "effect/Layer";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { createCommandPermissions } from "./commandPermissions.ts";
-import { createEnvironmentRpcCommand } from "./runtime.ts";
+import { createEnvironmentCommand, createEnvironmentRpcCommand } from "./runtime.ts";
 import { AVAILABLE_CONNECTION_STATE, BearerConnectionTarget } from "../connection/model.ts";
 import { createPeerLinkEnvironmentAtoms } from "./peerLinks.ts";
 
@@ -218,6 +218,30 @@ describe("command permissions", () => {
       expect(registry.get(permissions.permissionAtom(other, input))).toBe(false);
       const denied = yield* permissions.authorize(registry, other, input).pipe(Effect.flip);
       expect(denied._tag).toBe("EnvironmentAuthorizationError");
+    }),
+  );
+  it.effect("requires operate for all payloads on the shared dispatch RPC", () =>
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const dispatch = createCommandPermissions(
+        runtime,
+        ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+      );
+      registry.set(sessions(env), AsyncResult.success(grant(false)));
+      for (const type of [
+        "thread.notification-level.set",
+        "thread.color.set",
+        "thread.tag.set",
+        "thread.message.star",
+      ]) {
+        const input = { type };
+        expect(registry.get(dispatch.permissionAtom(env, input))).toBe(false);
+        expect((yield* dispatch.authorize(registry, env, input).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      yield* dispatch.authorize(registry, env, { type: "thread.tag.set" });
     }),
   );
   it.effect("waits for an initial grant", () =>
@@ -538,7 +562,7 @@ it.effect("honors exact empty permissions and preserves legacy parent grants", (
   }),
 );
 
-it.effect("rejects protected unary and streamed RPCs outside a guarded command", () =>
+it.effect("requires the destination grant for a protected RPC in a composed command", () =>
   Effect.gen(function* () {
     let writes = 0;
     const session = {
@@ -571,5 +595,23 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     }).pipe(Stream.runDrain, Effect.provideService(EnvironmentSupervisor, supervisor), Effect.flip);
     expect(streamed._tag).toBe("EnvironmentAuthorizationError");
     expect(writes).toBe(0);
+
+    const registry = yield* setup;
+    const command = createEnvironmentCommand(runtime, {
+      label: "test:composed-command",
+      execute: () =>
+        requestGuarded(WS_METHODS.scheduledTasksDelete, {
+          id: ScheduledTaskId.make("task"),
+        }).pipe(Effect.provideService(EnvironmentSupervisor, supervisor)),
+    });
+    const run = () =>
+      Effect.promise(() => command.run(registry, { environmentId: env, input: {} }));
+    registry.set(sessions(env), AsyncResult.success(grant(false)));
+    expect((yield* run())._tag).toBe("Failure");
+    expect(writes).toBe(0);
+
+    registry.set(sessions(env), AsyncResult.success(grant(true)));
+    expect((yield* run())._tag).toBe("Success");
+    expect(writes).toBe(1);
   }),
 );

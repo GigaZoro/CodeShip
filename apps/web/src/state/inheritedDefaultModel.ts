@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ModelSelection, ProjectId } from "@t3tools/contracts";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { modelPicksEqual } from "@t3tools/shared/model";
 import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
 import { Atom } from "effect/reactivity";
 
@@ -19,7 +19,7 @@ const inheritedDefaultModelSelectionAtom = Atom.family((key: string) => {
       projectId,
       preferredEnvironmentId: get(primaryEnvironmentIdAtom),
     });
-    if (next === null || previous === null || !modelSelectionsEqual(next, previous)) {
+    if (next === null || previous === null || !modelPicksEqual(next, previous)) {
       previous = next;
     }
     return previous;

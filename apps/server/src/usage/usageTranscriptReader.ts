@@ -4,8 +4,8 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeStringDecoder from "node:string_decoder";
-import * as NodeUtil from "node:util";
 import * as NodeZlib from "node:zlib";
 
 import type {
@@ -46,11 +46,60 @@ export const GUARD_LENGTH = 64;
 const STREAMING_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const READ_CHUNK_BYTES = 256 * 1024;
 const NEWLINE = 0x0a;
-const STAT_CONCURRENCY = 32;
+export const STAT_CONCURRENCY = 32;
 const WALK_CONCURRENCY = 16;
-// Measured about 3x faster than the promise API's stat across 20,000 transcripts.
-const statFile = NodeUtil.promisify(NodeFS.stat);
 const CARRIAGE_RETURN = 0x0d;
+
+interface TranscriptIoOptions {
+  readonly signal?: AbortSignal;
+  readonly onProgress?: () => void;
+}
+
+export interface TranscriptPathFailure {
+  readonly path: string;
+  readonly cause: unknown;
+}
+
+/** Thrown instead of a new call on a path whose earlier call has not returned. */
+export class PathCallPendingError extends Error {
+  constructor() {
+    super("An earlier file system call on this path has not returned.");
+  }
+}
+
+export const isGone = (cause: unknown) =>
+  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+
+// A call on a hung mount holds its descriptor and a libuv thread until the kernel returns,
+// so a path stays here until its own call settles, and no new call starts on it before then.
+const pendingPaths = new Set<string>();
+
+async function callUnlessPending<A>(path: string, call: () => Promise<A>): Promise<A> {
+  if (pendingPaths.has(path)) throw new PathCallPendingError();
+  pendingPaths.add(path);
+  try {
+    return await call();
+  } finally {
+    pendingPaths.delete(path);
+  }
+}
+
+/** A cancelled scan must not look alive to its stall watchdog. */
+const progressUntilAborted = (options: TranscriptIoOptions | undefined) => () => {
+  if (options?.signal?.aborted !== true) options?.onProgress?.();
+};
+
+/** Settles a step, then rethrows the abort reason if the read was cancelled while it waited. */
+type AbortAware = <A>(step: Promise<A>) => Promise<A>;
+const abortAware =
+  (signal: AbortSignal | undefined): AbortAware =>
+  async (step) => {
+    try {
+      return await step;
+    } finally {
+      signal?.throwIfAborted();
+    }
+  };
 
 function selectUsageFields(fields: SelectedFields) {
   return (path: ReadonlyArray<string | number | null>): boolean => {
@@ -73,36 +122,35 @@ function fnv1a(buffer: Buffer): number {
   return hash >>> 0;
 }
 
-/** Skips Grok logs without usage; preserves readdir order for first-seen deduplication. */
+/** Skips Grok logs without usage. */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
-): Promise<{
-  readonly files: readonly TranscriptFile[];
-  readonly walked: readonly string[];
-  readonly failedPaths: number;
-}> {
+  options?: TranscriptIoOptions & { readonly fileName?: string | undefined },
+) {
   const fileName = options?.fileName;
-  let failedPaths = 0;
+  const progress = progressUntilAborted(options);
+  const failures: TranscriptPathFailure[] = [];
   let reading = 0;
   const waiting: Array<() => void> = [];
-  // Sibling directories read together; each returns its own list so the result keeps readdir order.
+  // Each sibling returns its own list so parallel readdir retains traversal order.
   const walk = async (dir: string): Promise<readonly string[]> => {
     if (reading < WALK_CONCURRENCY) reading += 1;
     else await new Promise<void>((resume) => waiting.push(resume));
     let entries;
     try {
-      entries = await NodeFSP.readdir(dir, { withFileTypes: true });
-    } catch {
-      failedPaths += 1;
+      options?.signal?.throwIfAborted();
+      entries = await callUnlessPending(dir, () => NodeFSP.readdir(dir, { withFileTypes: true }));
+    } catch (cause) {
+      if (!isGone(cause)) failures.push({ path: dir, cause });
       return [];
     } finally {
-      // A waiting directory takes over this slot, so the count only drops when none waits.
+      progress();
       const next = waiting.shift();
       if (next === undefined) reading -= 1;
       else next();
     }
+    options?.signal?.throwIfAborted();
     const found = await Promise.all(
       entries.map((entry) => {
         const child = NodePath.join(dir, entry.name);
@@ -119,27 +167,38 @@ export async function listTranscriptFiles(
     return found.flat();
   };
   const candidates = await walk(root);
+  const result = await statTranscriptFiles(candidates, sinceMs, options);
+  return { files: result.files, failures: [...failures, ...result.failures] };
+}
 
+export async function statTranscriptFiles(
+  candidates: readonly string[],
+  sinceMs: number,
+  options?: TranscriptIoOptions,
+) {
   const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
   const queue = candidates.entries();
+  const progress = progressUntilAborted(options);
+  const failures: TranscriptPathFailure[] = [];
   const statQueued = async (): Promise<void> => {
     for (const [index, path] of queue) {
+      options?.signal?.throwIfAborted();
       try {
-        const stats = await statFile(path);
-        if (stats.mtimeMs >= sinceMs) {
+        const stats = await callUnlessPending(path, () => NodeFSP.stat(path));
+        if (stats.isFile() && stats.mtimeMs >= sinceMs) {
           found[index] = { path, size: stats.size, mtimeMs: stats.mtimeMs };
         }
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-          failedPaths += 1;
-        }
+      } catch (cause) {
+        if (!isGone(cause)) failures.push({ path, cause });
+      } finally {
+        progress();
       }
     }
   };
   await Promise.all(
     Array.from({ length: Math.min(STAT_CONCURRENCY, candidates.length) }, statQueued),
   );
-  return { files: found.filter((file) => file !== undefined), walked: candidates, failedPaths };
+  return { files: found.filter((file) => file !== undefined), failures };
 }
 
 export async function readDirectoryVolumeId(path: string): Promise<string> {
@@ -285,43 +344,20 @@ export async function readPhysicalSourceId(
 async function guardMatches(
   handle: NodeFSP.FileHandle,
   position: TranscriptParsePosition,
+  settle: AbortAware,
+  progress: () => void,
 ): Promise<boolean> {
   if (position.guardLength <= 0 || position.guardLength > GUARD_LENGTH) return false;
-  try {
-    const window = Buffer.alloc(position.guardLength);
-    const { bytesRead } = await handle.read(
-      window,
-      0,
-      position.guardLength,
-      position.resumeOffset - position.guardLength,
-    );
-    return bytesRead === position.guardLength && fnv1a(window) === position.guardHash;
-  } catch {
-    return false;
-  }
-}
-
-/** Plain files reuse one buffer, so a chunk is only valid until the next one is requested. */
-async function* readChunks(
-  handle: NodeFSP.FileHandle,
-  start: number,
-  compressed: boolean,
-): AsyncGenerator<Buffer> {
-  if (compressed) {
-    // Compressed snapshots cache a full parse; decoded byte offsets cannot
-    // resume the compressed input.
-    yield* handle
-      .createReadStream({ start, autoClose: true, highWaterMark: READ_CHUNK_BYTES })
-      .compose(NodeZlib.createZstdDecompress());
-    return;
-  }
-  const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
-  for (let position = start; ;) {
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-    if (bytesRead === 0) return;
-    position += bytesRead;
-    yield buffer.subarray(0, bytesRead);
-  }
+  const window = Buffer.alloc(position.guardLength);
+  // A failed guard read only means the file cannot resume; a cancelled one ends the read.
+  const bytesRead = await settle(
+    handle.read(window, 0, position.guardLength, position.resumeOffset - position.guardLength).then(
+      (read) => read.bytesRead,
+      () => -1,
+    ),
+  );
+  progress();
+  return bytesRead === position.guardLength && fnv1a(window) === position.guardHash;
 }
 
 // Match markers in one latin1 alternation; one character per byte preserves exact ASCII offsets.
@@ -336,23 +372,46 @@ export function transcriptLineGate(markers: readonly [string, ...string[]]) {
   return (line: Buffer) => pattern.test(line.toString("latin1"));
 }
 
-/** Returns null on read failure; caching it as empty would hide usage until size/mtime changes. */
+/**
+ * Rejects with the failure's cause; caching it as empty would hide usage until size/mtime changes.
+ * Rejects at once, with no file system call, while an earlier call on the path is still pending.
+ * Rejects with the signal's reason once aborted, and does no further work or progress after it.
+ */
 export async function readTranscriptRecords<State>(
   filePath: string,
   format: TranscriptUsageFormat<State>,
   resumeFrom?: TranscriptParsePosition,
-  options?: { readonly streamingThresholdBytes?: number },
-): Promise<TranscriptParseResult | null> {
+  options?: TranscriptReadOptions,
+): Promise<TranscriptParseResult> {
+  options?.signal?.throwIfAborted();
+  return callUnlessPending(filePath, () => readRecords(filePath, format, resumeFrom, options));
+}
+
+type TranscriptReadOptions = TranscriptIoOptions & { readonly streamingThresholdBytes?: number };
+
+async function readRecords<State>(
+  filePath: string,
+  format: TranscriptUsageFormat<State>,
+  resumeFrom: TranscriptParsePosition | undefined,
+  options: TranscriptReadOptions | undefined,
+): Promise<TranscriptParseResult> {
+  const signal = options?.signal;
+  const progress = progressUntilAborted(options);
+  const settle = abortAware(signal);
   const streamingThresholdBytes = options?.streamingThresholdBytes ?? STREAMING_THRESHOLD_BYTES;
   const compressed = filePath.endsWith(".jsonl.zst");
-  let handle: NodeFSP.FileHandle;
+  let handle: NodeFSP.FileHandle | undefined;
   try {
-    handle = await NodeFSP.open(filePath, "r");
-  } catch {
-    return null;
-  }
-
-  try {
+    // Assigned before the abort check, so the finally block closes a descriptor that opens late.
+    const opened = await settle(
+      NodeFSP.open(filePath, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK).then(
+        (file) => (handle = file),
+      ),
+    );
+    progress();
+    const stat = await settle(opened.stat());
+    progress();
+    if (!stat.isFile()) throw new Error("The transcript path is not a regular file.");
     const codec = format.state;
     const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
     const encodeState = codec === undefined ? undefined : Schema.encodeSync(codec.schema);
@@ -368,7 +427,7 @@ export async function readTranscriptRecords<State>(
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (codec === undefined || Option.isSome(savedState)) &&
-      (await guardMatches(handle, resumeFrom))
+      (await guardMatches(opened, resumeFrom, settle, progress))
     ) {
       if (Option.isSome(savedState)) state = savedState.value;
       start = resumeFrom.resumeOffset;
@@ -432,7 +491,7 @@ export async function readTranscriptRecords<State>(
       streaming = undefined;
       decoder = undefined;
     };
-    for await (const chunk of readChunks(handle, start, compressed)) {
+    const parseChunk = (chunk: Buffer) => {
       let lineStart = 0;
       while (lineStart < chunk.length) {
         const newlineIndex = chunk.indexOf(NEWLINE, lineStart);
@@ -450,6 +509,42 @@ export async function readTranscriptRecords<State>(
         resumeOffset = scanOffset + lineStart;
       }
       scanOffset += chunk.length;
+    };
+    const parseChunks = async (chunks: AsyncIterable<Buffer>) => {
+      for await (const chunk of chunks) parseChunk(chunk);
+    };
+    // Raw reads are the progress: compressed input can decode to nothing for a long stretch.
+    const countReads = async function* (chunks: AsyncIterable<Buffer>) {
+      for await (const chunk of chunks) {
+        progress();
+        yield chunk;
+      }
+    };
+    if (compressed) {
+      const input = opened.createReadStream({
+        start,
+        autoClose: true,
+        highWaterMark: READ_CHUNK_BYTES,
+      });
+      // Decoded byte offsets cannot resume the compressed input.
+      await settle(
+        NodeStreamPromises.pipeline(
+          input,
+          countReads,
+          NodeZlib.createZstdDecompress(),
+          parseChunks,
+          signal === undefined ? {} : { signal },
+        ),
+      );
+    } else {
+      const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+      for (let position = start; ;) {
+        const { bytesRead } = await settle(opened.read(buffer, 0, buffer.length, position));
+        progress();
+        if (bytesRead === 0) break;
+        parseChunk(buffer.subarray(0, bytesRead));
+        position += bytesRead;
+      }
     }
 
     // Parse unfinished tails against copied state so the next scan can replay from resumeOffset.
@@ -463,7 +558,8 @@ export async function readTranscriptRecords<State>(
     let guardHash = 0;
     if (guardLength > 0) {
       const window = Buffer.alloc(guardLength);
-      await handle.read(window, 0, guardLength, resumeOffset - guardLength);
+      await settle(opened.read(window, 0, guardLength, resumeOffset - guardLength));
+      progress();
       guardHash = fnv1a(window);
     }
 
@@ -479,9 +575,7 @@ export async function readTranscriptRecords<State>(
       },
       resumed,
     };
-  } catch {
-    return null;
   } finally {
-    await handle.close().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
   }
 }

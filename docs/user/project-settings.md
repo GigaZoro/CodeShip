@@ -701,8 +701,9 @@ working. Current logs, message attachments, and browser profiles are kept.
 **Remove old tool output** removes command and tool output from settled and archived chats
 after the chosen number of idle days (7 by default; turn it off to keep all output). The steps
 stay in the chat and show "Output is no longer available." A chat keeps its output while it or
-any fork of it is open or pinned. The Database section shows how large each machine's database
-is.
+any fork of it is open or pinned. After a day idle, such chats also keep only the latest state of
+each message and step; nothing in them changes. The Database section shows how large each
+machine's database is and how much it grew or shrank a day over the past week.
 
 ## Project icons
 

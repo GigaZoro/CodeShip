@@ -1,5 +1,5 @@
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import { runLiftsScope } from "./AccountRouting.ts";
+import { AccountRouting, creditRefusalMessage, runLiftsScope } from "./AccountRouting.ts";
 import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -204,6 +204,7 @@ const SETUP_REFUSAL_TAGS = [
   "ProviderSetupError",
   "ProviderWorkspaceMissingError",
   "RuntimePolicyAboveCeilingError",
+  "RuntimePolicyReadOnlyUnsupportedError",
   "WorktreeRecreateNoBaseError",
   "AcpModelSelectionError",
   "CursorModelUnavailableError",
@@ -338,6 +339,8 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
 
+const PREPAID_CREDITS_REFUSED_CODE = "prepaid_credits_not_allowed";
+
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
@@ -378,6 +381,7 @@ export const layer: Layer.Layer<
     const providerAdapters = yield* Effect.serviceOption(
       ProviderAdapterRegistry.ProviderAdapterRegistryV2,
     );
+    const accountRouting = yield* Effect.serviceOption(AccountRouting);
     const awakeSinceWake = yield* AwakeSinceWake;
 
     const settleUnstartedRun = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
@@ -806,6 +810,27 @@ export const layer: Layer.Layer<
       const providerMessage = unsentResumeMessage ?? message;
       const unstarted = { projection, run, attempt, rootNode };
       const providerSessionId = providerThread.providerSessionId;
+      const settleRunBeforeStart = (settled: Parameters<typeof settleUnstartedRun>[1]) =>
+        settleUnstartedRun(unstarted, settled);
+      if (run.modelSelection.quotaAwareAuto === true) {
+        return yield* settleRunBeforeStart({
+          signal: "auto-route-unresolved",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Auto could not select a provider",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              code: "auto_route_unresolved",
+              message:
+                "This server could not resolve the Auto selection. Choose a provider or retry on a server that supports quota-aware Auto.",
+            }),
+          },
+        });
+      }
       // A process that sent nothing for a whole start step has stopped answering, and the retry
       // would wait on it again. One still sending events for other turns stays.
       const releaseSilentSession = (error: Error) =>
@@ -941,6 +966,42 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      // Codex spends prepaid credits by itself once plan usage is used up, so every path that
+      // starts a turn stops here unless the user allowed this thread's work to spend them.
+      const creditRefusal = Option.isNone(accountRouting)
+        ? null
+        : yield* accountRouting.value.creditRefusal({
+            threadId: projection.thread.id,
+            instanceId: run.providerInstanceId,
+            model: run.modelSelection.model,
+          });
+      if (creditRefusal !== null) {
+        const now = yield* DateTime.now;
+        yield* settleRunBeforeStart({
+          signal: "prepaid-credits-refused",
+          status: "failed",
+          now,
+          startedAt: now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Prepaid credits not allowed",
+            // Not a usage limit: that would hold the account for the threads allowed to spend.
+            failure: makeProviderFailure({
+              class: "permission_error",
+              code: PREPAID_CREDITS_REFUSED_CODE,
+              message: creditRefusalMessage(creditRefusal),
+            }),
+          },
+          providerThreadUpdate: {
+            ...providerThread,
+            status: providerThread.nativeThreadRef === null ? "not_loaded" : "idle",
+            updatedAt: now,
+          },
+        });
+        return;
+      }
       const recreateResult = yield* Effect.result(restoreMissingWorktree(projection.thread));
       if (recreateResult._tag === "Failure") {
         if (retriesLater(recreateResult.failure)) return yield* recreateResult.failure;
@@ -990,17 +1051,27 @@ export const layer: Layer.Layer<
         .resolve({
           thread: projection.thread,
           modelSelection: run.modelSelection,
+          run,
         })
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
         const error = resolvedPolicy.failure;
-        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
-        yield* settleStartFailure({
-          signal: "runtime-mode-above-ceiling",
-          title: "Thread mode is above the policy limit",
-          error,
-          message: error.message,
-        });
+        if (error._tag === "RuntimePolicyResolveError") return yield* error;
+        yield* settleStartFailure(
+          error._tag === "RuntimePolicyAboveCeilingError"
+            ? {
+                signal: "runtime-mode-above-ceiling",
+                title: "Thread mode is above the policy limit",
+                error,
+                message: error.message,
+              }
+            : {
+                signal: "read-only-guest-link-unsupported",
+                title: "Provider cannot run read-only",
+                error,
+                message: error.message,
+              },
+        );
         return;
       }
       const resolvedRuntimePolicy = resolvedPolicy.success;
@@ -1060,26 +1131,58 @@ export const layer: Layer.Layer<
             return;
           }
         }
+        const abandonedRuns = new Map(
+          abandonedTurns.map(({ run: failedRun }) => [failedRun.id, failedRun] as const),
+        );
+        const { turnItems: openTurnItems } = yield* projectionStore.getThreadRecords(
+          projection.thread.id,
+          ["turnItems"],
+          {
+            turnItemRunIds: [...abandonedRuns.keys()],
+            turnItemTypes: RunExecutionService.toolTurnItemTypes,
+            turnItemStatuses: ["pending", "running", "waiting"],
+          },
+        );
         const completedAt = yield* DateTime.now;
         const repaired = yield* eventSink.writeIfRunCurrent({
           threadId: projection.thread.id,
           runId: run.id,
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
-          events: yield* Effect.forEach(abandonedTurns, ({ turn, run: abandonedRun }) =>
-            Effect.gen(function* () {
-              return {
-                id: yield* idAllocator.allocate.event(),
-                type: "provider-turn.updated" as const,
-                threadId: projection.thread.id,
-                runId: abandonedRun.id,
-                nodeId: turn.nodeId,
-                providerInstanceId: abandonedRun.providerInstanceId,
-                occurredAt: completedAt,
-                payload: { ...turn, status: "interrupted" as const, completedAt },
-              };
-            }),
-          ),
+          events: [
+            ...(yield* Effect.forEach(abandonedTurns, ({ turn, run: failedRun }) =>
+              Effect.gen(function* () {
+                return {
+                  id: yield* idAllocator.allocate.event(),
+                  type: "provider-turn.updated" as const,
+                  threadId: projection.thread.id,
+                  runId: failedRun.id,
+                  nodeId: turn.nodeId,
+                  providerInstanceId: failedRun.providerInstanceId,
+                  occurredAt: completedAt,
+                  payload: { ...turn, status: "interrupted" as const, completedAt },
+                };
+              }),
+            )),
+            // Its runtime is gone, so nothing else would record the end of its open tool calls.
+            ...(yield* Effect.forEach(
+              openTurnItems.flatMap((item) => {
+                const failedRun = item.runId === null ? undefined : abandonedRuns.get(item.runId);
+                return failedRun !== undefined && RunExecutionService.isOpenToolTurnItem(item)
+                  ? [{ item, failedRun }]
+                  : [];
+              }),
+              ({ item, failedRun }) =>
+                Effect.map(idAllocator.allocate.event(), (id) =>
+                  RunExecutionService.abandonedTurnItemEvent({
+                    id,
+                    item,
+                    providerInstanceId: failedRun.providerInstanceId,
+                    completedAt,
+                  }),
+                ),
+            )),
+          ],
         });
         if (!repaired.committed) return;
       }

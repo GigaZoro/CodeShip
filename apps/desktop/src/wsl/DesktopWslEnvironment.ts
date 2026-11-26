@@ -264,6 +264,23 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 const WSL_RUNTIME_READY_MARKER = ".t3code-wsl-runtime-ready";
 const WSL_RUNTIME_SELECTED_MARKER = ".t3code-wsl-runtime-selected";
 const WSL_RUNTIME_SELECTION_GRACE_MINUTES = 5;
+const WSL_METADATA_LEASE_SUFFIX = ".metadata.lock";
+
+export const buildWslMountedServerCommand = (
+  node: string,
+  entry: string,
+  metadataRuntimeRoot?: string,
+): ReadonlyArray<string> =>
+  metadataRuntimeRoot
+    ? [
+        "flock",
+        "--shared",
+        "--no-fork",
+        `${metadataRuntimeRoot}${WSL_METADATA_LEASE_SUFFIX}`,
+        node,
+        entry,
+      ]
+    : [node, entry];
 
 const sanitizeWslRuntimeId = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "_");
 
@@ -279,29 +296,57 @@ export const buildWslRuntimeInstallScript = (
     'runtime_parent="$HOME/.t3/wsl-runtime"',
     `runtime_root="$runtime_parent/${safeRuntimeId}"`,
     `ready_marker="$runtime_root/${WSL_RUNTIME_READY_MARKER}"`,
+    // Required distributions verify the embedded inventory and helper contents during this probe.
     "runtime_entry_runs() {",
-    '  [ -x "$1/t3" ] && "$1/t3" --version >/dev/null',
-    "}",
-    // Hash the entry to detect a swapped or partially written executable, even if it still runs.
-    "runtime_server_entry_digest() {",
-    `  sha256sum "$1/t3" 2>/dev/null | cut -d ' ' -f 1`,
+    '  [ -x "$1/t3" ] && T3CODE_VERIFY_INSTALL=1 "$1/t3" --version >/dev/null',
     "}",
     "runtime_is_ready() {",
     '  [ -f "$ready_marker" ] &&',
-    '    runtime_entry_runs "$runtime_root" 2>/dev/null &&',
     `    recorded_entry_digest=$(tr -d '[:space:]' < "$ready_marker" 2>/dev/null) &&`,
     '    [ -n "$recorded_entry_digest" ] &&',
-    '    [ "$recorded_entry_digest" = "$(runtime_server_entry_digest "$runtime_root")" ]',
+    `    [ "$recorded_entry_digest" = "$(sha256sum "$runtime_root/t3" 2>/dev/null | cut -d ' ' -f 1)" ] &&`,
+    '    runtime_entry_runs "$runtime_root" 2>/dev/null',
     "}",
     'mkdir -p "$runtime_parent"',
     `runtime_lock="$runtime_parent/.${safeRuntimeId}.install.lock"`,
     "trap 'exit 1' HUP INT TERM",
     'exec 9> "$runtime_lock"',
     "flock -x 9",
+    // The fixed backup also restores the original path on restart after interruption between renames.
+    `runtime_previous="$runtime_parent/.${safeRuntimeId}.rollback"`,
+    "restore_previous() {",
+    '  if [ -e "$runtime_previous" ] && [ ! -e "$runtime_root" ]; then',
+    '    mv -T -- "$runtime_previous" "$runtime_root"',
+    "  fi",
+    "}",
+    "retire_previous() {",
+    '  [ -e "$runtime_previous" ] || return 0',
+    '  if [ ! -d /proc/1 ] || grep -qF -- "$runtime_root/" /proc/[0-9]*/cmdline 2>/dev/null; then',
+    `    runtime_stale=$(mktemp -d "$runtime_parent/.${safeRuntimeId}.stale.XXXXXX")`,
+    '    mv -T -- "$runtime_previous" "$runtime_stale"',
+    '    touch "$runtime_stale"',
+    "  else",
+    '    rm -rf -- "$runtime_previous"',
+    "  fi",
+    "}",
+    // Mounted backends hold a shared lease while their helpers must remain at this path.
+    // A warm install can still be selected when recovery or replacement must wait.
+    `exec 7>> "$runtime_root${WSL_METADATA_LEASE_SUFFIX}"`,
+    "if flock -xn 7; then",
+    "  can_repair=true",
+    "  restore_previous",
+    "  retire_previous",
+    "else",
+    "  can_repair=false",
+    "fi",
     "if runtime_is_ready; then",
     `  touch "$runtime_root/${WSL_RUNTIME_SELECTED_MARKER}"`,
     `  printf 'runtimeRoot:%s\\n' "$runtime_root"`,
     "  exit 0",
+    "fi",
+    'if [ "$can_repair" = false ]; then',
+    "  printf 'WSL runtime repair deferred while a mounted backend uses its metadata. Retry after that backend exits.\\n' >&2",
+    "  exit 1",
     "fi",
   ];
   if (linuxArchivePath === null) {
@@ -319,52 +364,29 @@ export const buildWslRuntimeInstallScript = (
     `  printf 'WSL runtime archive does not match its recorded SHA-256 (expected %s, got %s)\\n' ${shellQuote(archiveSha256)} "$archive_sha" >&2`,
     "  exit 1",
     "fi",
-    // Deletion can remove a live backend's lazy imports; check cmdline before rename preserves its old path.
-    "runtime_in_use() {",
-    // Without /proc, assume the runtime may still be in use.
-    "  [ -d /proc/1 ] || return 0",
-    '  grep -qF -- "$1/" /proc/[0-9]*/cmdline 2>/dev/null',
-    "}",
-    'if [ -e "$runtime_root" ]; then',
-    '  if runtime_in_use "$runtime_root"; then',
-    "    runtime_root_in_use=1",
-    "  else",
-    "    runtime_root_in_use=0",
-    "  fi",
-    `  runtime_stale=$(mktemp -d "$runtime_parent/.${safeRuntimeId}.stale.XXXXXX")`,
-    '  rmdir "$runtime_stale"',
-    '  if mv -T "$runtime_root" "$runtime_stale" 2>/dev/null; then',
-    '    if [ "$runtime_root_in_use" = 1 ]; then',
-    // Renaming keeps the directory's old mtime, so restart the cleanup clock.
-    '      touch "$runtime_stale"',
-    "    else",
-    '      rm -rf "$runtime_stale"',
-    "    fi",
-    "  fi",
-    "fi",
     `runtime_tmp=$(mktemp -d "$runtime_parent/.${safeRuntimeId}.tmp.XXXXXX")`,
-    'cleanup_runtime_install() { rm -rf "$runtime_tmp"; }',
+    "cleanup_runtime_install() {",
+    "  restore_previous",
+    '  rm -rf -- "$runtime_tmp"',
+    "}",
     "trap cleanup_runtime_install EXIT",
     `tar -xzf ${shellQuote(linuxArchivePath)} -C "$runtime_tmp" --strip-components=1`,
     'if ! runtime_entry_runs "$runtime_tmp"; then',
-    "  printf 'WSL runtime archive does not contain a working t3 executable\\n' >&2",
+    "  printf 'WSL runtime archive does not contain a working t3 installation\\n' >&2",
     "  exit 1",
     "fi",
-    'installed_entry_digest=$(runtime_server_entry_digest "$runtime_tmp")',
-    'if [ -z "$installed_entry_digest" ]; then',
-    "  printf 'Could not hash the WSL runtime server entry\\n' >&2",
-    "  exit 1",
-    "fi",
+    `installed_entry_digest=$(sha256sum "$runtime_tmp/t3" | cut -d ' ' -f 1)`,
+    'test -n "$installed_entry_digest"',
     `printf '%s\\n' "$installed_entry_digest" > "$runtime_tmp/${WSL_RUNTIME_READY_MARKER}"`,
-    'if mv -T "$runtime_tmp" "$runtime_root" 2>/dev/null; then',
-    "  :",
-    "elif runtime_is_ready; then",
-    '  rm -rf "$runtime_tmp"',
-    "else",
+    `touch "$runtime_tmp/${WSL_RUNTIME_SELECTED_MARKER}"`,
+    'if [ -e "$runtime_root" ]; then',
+    '  mv -T -- "$runtime_root" "$runtime_previous"',
+    "fi",
+    'if ! mv -T -- "$runtime_tmp" "$runtime_root"; then',
     `  printf 'Could not promote WSL runtime cache at %s\\n' "$runtime_root" >&2`,
     "  exit 1",
     "fi",
-    `touch "$runtime_root/${WSL_RUNTIME_SELECTED_MARKER}"`,
+    "retire_previous",
     `printf 'runtimeRoot:%s\\n' "$runtime_root"`,
   ].join("\n");
 };
@@ -411,7 +433,13 @@ export const buildWslRuntimePruneScript = (runtimeId: string): string => {
     "    flock -u 9",
     "    continue",
     "  fi",
-    '  rm -rf -- "$candidate"',
+    // Mounted Node can use the sidecar between requests without its path appearing in argv.
+    // A sibling lease stays on the same inode even when a repair replaces the runtime directory.
+    `  exec 7> "$candidate${WSL_METADATA_LEASE_SUFFIX}"`,
+    "  if flock -n 7; then",
+    '    rm -rf -- "$candidate"',
+    "    flock -u 7",
+    "  fi",
     "  flock -u 9",
     "done",
     'for scratch in "$runtime_parent"/.*.tmp.* "$runtime_parent"/.*.stale.*; do',
@@ -427,7 +455,14 @@ export const buildWslRuntimeInvalidateScript = (runtimeId: string): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `rm -f "$HOME/.t3/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
+    `runtime_root="$HOME/.t3/wsl-runtime/${safeRuntimeId}"`,
+    '[ -d "$runtime_root" ] || exit 0',
+    `exec 9> "$HOME/.t3/wsl-runtime/.${safeRuntimeId}.install.lock"`,
+    "flock -x 9",
+    '[ -d "$runtime_root" ] || exit 0',
+    // Renew the prepare-to-spawn grace after probing the mounted backend, before its process takes the lease.
+    `touch "$runtime_root/${WSL_RUNTIME_SELECTED_MARKER}"`,
+    `rm -f "$runtime_root/${WSL_RUNTIME_READY_MARKER}"`,
   ].join("\n");
 };
 

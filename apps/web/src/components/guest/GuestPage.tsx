@@ -7,6 +7,7 @@ import {
   GUEST_SHARE_PARAM,
   GuestMessageId,
   type GuestRedeemRequest,
+  type GuestShareAccess,
   type GuestShareView,
   type GuestThreadModel,
   OrchestrationV2ThreadHistoryPage,
@@ -397,7 +398,7 @@ function NameForm({
         {t("Join")}
       </Button>
       <p className="text-xs text-muted-foreground">
-        {t("The owner sees your name and approves each message before the agent gets it.")}
+        {t("The owner sees your name and every message you send.")}
       </p>
     </form>
   );
@@ -415,7 +416,7 @@ const ignore = () => {};
  * revert, diffs, files, other threads, shell) is left out, so its control does not render.
  */
 function GuestThread({
-  view: { shareId, title, expiresAt, messages, model },
+  view: { shareId, title, expiresAt, messages, model, access },
   projection,
   awaitingRowIds,
   historyControls,
@@ -542,7 +543,12 @@ function GuestThread({
         ) : null}
       </div>
       <div className={cn(LANE, "shrink-0 pb-4")}>
-        <GuestComposer shareId={shareId} model={model} onSent={() => follow.scrollToEnd(true)} />
+        <GuestComposer
+          shareId={shareId}
+          model={model}
+          access={access}
+          onSent={() => follow.scrollToEnd(true)}
+        />
       </div>
     </>
   );
@@ -650,10 +656,12 @@ function StagedImage({ file }: { readonly file: File }) {
 function GuestComposer({
   shareId,
   model,
+  access,
   onSent,
 }: {
   readonly shareId: GuestShareView["shareId"];
   readonly model: GuestThreadModel;
+  readonly access: GuestShareAccess;
   /** The guest's own message comes into view even if they had scrolled up, as the owner's does. */
   readonly onSent: () => void;
 }) {
@@ -801,7 +809,9 @@ function GuestComposer({
           </p>
         ) : (
           <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {t("The owner approves each message")}
+            {access === "read-only"
+              ? t("Read-only: the agent cannot change files")
+              : t("The owner approves each message")}
           </p>
         )}
         <button

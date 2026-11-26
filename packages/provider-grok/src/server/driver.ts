@@ -21,6 +21,7 @@ import {
 } from "./status.ts";
 import { grokUsageReader } from "./usage.ts";
 import { readGrokAccount } from "./usageLimits.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
@@ -191,7 +192,11 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
       cwd: host.paths.stateDir,
     });
 
-    const checkProvider = checkGrokProviderStatus(effectiveConfig, processEnv, cwd).pipe(
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: DRIVER_KIND });
+    const checkStatus = versionMemory.check((lastKnownVersion) =>
+      checkGrokProviderStatus(effectiveConfig, processEnv, cwd, lastKnownVersion),
+    );
+    const checkProvider = checkStatus.pipe(
       Effect.filterOrElse(
         (snapshot) =>
           !(
@@ -201,9 +206,13 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
           ),
         (snapshot) =>
           readGrokAccount(processEnv).pipe(
-            Effect.map(({ email, usageLimits }) => ({
+            Effect.map(({ email, funding, usageLimits }) => ({
               ...snapshot,
-              auth: email ? { ...snapshot.auth, email } : snapshot.auth,
+              auth: {
+                ...snapshot.auth,
+                ...(email ? { email } : {}),
+                ...(funding ? { funding } : {}),
+              },
               usageLimits,
             })),
           ),
@@ -218,6 +227,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
 
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<GrokSettings>>({
+      readsUsageOnRefresh: true,
       resolveMaintenance,
       getSettings: snapshotSettings.getSettings,
       streamSettings: snapshotSettings.streamSettings,

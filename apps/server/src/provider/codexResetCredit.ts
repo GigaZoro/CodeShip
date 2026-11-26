@@ -23,7 +23,7 @@ export function makeCodexConsumeResetCredit<E, C>(input: {
   readonly coordinator: ResetCreditCoordinator.ResetCreditCoordinator["Service"];
   readonly openClient: Effect.Effect<CodexClient.CodexAppServerClient["Service"], E, Scope.Scope>;
   /** Fails when the login can no longer spend credits for the account this instance reports. */
-  readonly checkAccount?: Effect.Effect<void, C>;
+  readonly checkAccount?: (accountId: string | null | undefined) => Effect.Effect<void, C>;
   readonly snapshot: Pick<ManagedServerProvider, "refreshAfterRedemption">;
 }): NonNullable<ProviderInstance["consumeResetCredit"]> {
   const failure = (detail: string, cause?: unknown) =>
@@ -35,12 +35,15 @@ export function makeCodexConsumeResetCredit<E, C>(input: {
           input.accountHome,
           (idempotencyKey) =>
             Effect.gen(function* () {
-              if (input.checkAccount) yield* input.checkAccount;
               const client = yield* input.openClient;
               // The login can switch accounts after the claim was decided; never spend another's.
-              if (request?.accountKey !== undefined) {
+              if (input.checkAccount || request?.accountKey !== undefined) {
                 const read = yield* client.request("account/rateLimits/read", null);
-                if (usageAccountKey(read.accountId) !== request.accountKey) {
+                if (input.checkAccount) yield* input.checkAccount(read.accountId);
+                if (
+                  request?.accountKey !== undefined &&
+                  usageAccountKey(read.accountId) !== request.accountKey
+                ) {
                   return yield* failure(
                     "The Codex login now holds another account, so its reset was not used.",
                   );

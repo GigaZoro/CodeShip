@@ -431,23 +431,30 @@ export const releaseHold = Effect.fn("WorktreeRelease.inspect")(function* (
       return "durable ref is unavailable";
     anchors.push(anchor[1]!);
   }
+  const holdsOnlyFolders = Effect.fnUntraced(function* (directory: string) {
+    if (!(yield* lstatReleaseEntry(directory)).isDirectory()) return false;
+    const entries = yield* fs.readDirectory(directory, { recursive: true });
+    if (entries.length > 256) return false;
+    for (const entry of entries)
+      if (!(yield* lstatReleaseEntry(path.join(directory, entry))).isDirectory()) return false;
+    return true;
+  });
   const tips = new Set([request.head]);
   for (const name of yield* fs.readDirectory(admin)) {
     if (["HEAD", "index", "commondir", "gitdir"].includes(name)) continue;
     let file = path.join(admin, name);
+    // Git keeps the emptied folders of a deleted worktree-only ref (refs/worktree, refs/bisect)
+    // and of its reflog under logs/refs.
     if (name === "refs") {
-      // Git leaves refs/ folders here, empty or holding worktree-only refs (refs/worktree, refs/bisect).
-      if (!(yield* lstatReleaseEntry(file)).isDirectory()) return "worktree has private refs";
-      const entries = yield* fs.readDirectory(file, { recursive: true });
-      if (entries.length > 256) return "worktree metadata exceeds inspection limit";
-      for (const entry of entries)
-        if (!(yield* lstatReleaseEntry(path.join(file, entry))).isDirectory())
-          return "worktree has private refs";
+      if (!(yield* holdsOnlyFolders(file))) return "worktree has private refs";
       continue;
     }
     if (name === "logs") {
       const logs = yield* fs.readDirectory(file);
-      if (logs.length !== 1 || logs[0] !== "HEAD") return "worktree has private reflogs";
+      for (const log of logs)
+        if (log !== "HEAD" && (log !== "refs" || !(yield* holdsOnlyFolders(path.join(file, log)))))
+          return "worktree has private reflogs";
+      if (!logs.includes("HEAD")) continue;
       file = path.join(file, "HEAD");
     } else if (!["ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG"].includes(name))
       return `worktree metadata ${name} requires its owner`;

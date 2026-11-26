@@ -26,7 +26,14 @@ type Refusal = readonly [argv: ReadonlyArray<string>, status: number, diagnostic
 const unknownOption = (name: string) => "Unknown option '" + name + "'";
 const landingUsage =
   "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote>";
+const metadataPackageUsage = "Usage: node package.mjs <helpers|verify> <directory> <rust-target>";
+const metadataSigningUsage = "Usage: node scripts/sign-macos.ts --verify-codex-metadata";
+const wakeUsageUsage = "Usage: node scripts/wake-usage.mjs <statev2.sqlite> <YYYY-MM-DD UTC>";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
+  "../.github/scripts/bounded-git.cjs": [
+    [[UNREAD, "status"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
+    [["1000"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
+  ],
   "./lib/run-cached-test-group.ts": [
     [[], 1, "A cached test group requires at least one test file"],
     [[UNREAD], 1, "Unknown option"],
@@ -88,8 +95,22 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
       "warning: Source map upload skipped: Usage: upload-sourcemaps.mts ota <dist-dir> | build",
     ],
   ],
+  "../apps/server/scripts/record-kiro-acp-replay-fixture.ts": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+  ],
+  "../apps/server/scripts/sync-speech-catalog.ts": [[[UNREAD], 1, unknownOption(UNREAD)]],
+  "../evals/mcp-tool-use/regrade.ts": [[[UNREAD], 1, unknownOption(UNREAD)]],
+  "../evals/pr-content/run.ts": [[[UNREAD], 1, unknownOption(UNREAD)]],
+  "../evals/voice-cleanup/run.ts": [[[UNREAD], 1, unknownOption(UNREAD)]],
   "../apps/server/scripts/run-replay-recorder.ts": [
     [["invalid-recorder"], 1, "Usage: run-replay-recorder.ts codex|claude [recorder arguments]"],
+  ],
+  "../docs/operations/codex-metadata/package.mjs": [
+    [["verify", "package", "aarch64-apple-darwin", UNREAD], 1, metadataPackageUsage],
+    [["helpers", "package", "unsupported", UNREAD], 1, metadataPackageUsage],
+    [["helpers", "package"], 1, metadataPackageUsage],
+    [["verify", "  ", "x86_64-pc-windows-msvc"], 1, metadataPackageUsage],
+    [["helpers", "package", "constructor"], 1, "Unsupported Codex metadata target: constructor"],
   ],
   "../evals/mcp-tool-use/trim-capture.ts": [
     [["claude", "capture.json", "out.json.gz", UNREAD], 1, "Usage: trim-capture.ts <claude|codex>"],
@@ -146,6 +167,16 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
   ],
   "./render-metrics.ts": [
     [["compare", "before.json", "after.json", UNREAD], 1, unknownOption(UNREAD)],
+  ],
+  "./sign-macos.ts": [
+    [["--verify-codex-metadata", "Test.app", "staged", UNREAD], 1, metadataSigningUsage],
+    [["--verify-codex-metadata", "Test.app"], 1, metadataSigningUsage],
+    [["--verify-codex-metadata", " ", "staged"], 1, "App must be a non-blank path."],
+    [["--verify-codex-metadata", "Test.app", " "], 1, "Staged package must be a non-blank path."],
+  ],
+  "./wake-usage.mjs": [
+    [["statev2.sqlite", "2026-11-25", UNREAD], 1, wakeUsageUsage],
+    [["statev2.sqlite"], 1, wakeUsageUsage],
   ],
   "./upstream-sync.ts": ["begin", "status", "land", "check"].map((command) => [
     [command, UNREAD],

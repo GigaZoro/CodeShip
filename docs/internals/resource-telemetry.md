@@ -85,6 +85,15 @@ per core, slow enough to fail the timeouts they were guarded by.
 - The reading is the busy share per core over a half-second window of `os.cpus()` times,
   against the 0.95 limit Machine health's `cpu-overload` check uses. A reading stands for two
   seconds so a burst of commands shares it.
+- Niced time is room: the scheduler runs a new command ahead of it, so a deliberate low-priority
+  load (a flake soak at nice 19) must not hold every command, blockers included. Only niced
+  processes at or below a new command's own priority still count. CodeShip starts its agents and
+  commands at the server's nice level plus `AGENT_NICE_INCREMENT`, so its own commands are niced
+  too; counting all nice time as room would let 18 of them start together again.
+  [`HeldNiceTime`](../../apps/server/src/resourceTelemetry/HeldNiceTime.ts) reads each process's
+  nice level and CPU time from `/proc` (Linux only) so those stay counted. Without that reading,
+  on other platforms or when `/proc` cannot be read, all niced time counts as busy. The queued
+  message names the niced share it left out once it reaches 0.10.
 - The hold applies only while another `t3_command_run` command of this server is running. With
   none running the first queued command starts whatever the reading: other programs can keep
   the CPUs busy for hours, and a gate that waited for them would starve every command.

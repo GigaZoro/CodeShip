@@ -1,8 +1,10 @@
 import {
+  isReadOnlyGuestShare,
   isRuntimeModeAbove,
   managedRuntimeModeCeilingMessage,
   ModelSelection,
   OrchestrationV2AppThread,
+  type OrchestrationV2Run,
   ProjectId,
   ProviderInstanceId,
   RuntimeMode,
@@ -53,9 +55,27 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
+/** A read-only guest link is open, and the thread's provider cannot refuse changes without asking. */
+export class RuntimePolicyReadOnlyUnsupportedError extends Schema.TaggedError<RuntimePolicyReadOnlyUnsupportedError>()(
+  "RuntimePolicyReadOnlyUnsupportedError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  },
+) {
+  override get message(): string {
+    return "This thread has a read-only guest link, and its provider cannot block file changes. Switch the thread to a provider such as Codex or Claude, or close the guest link.";
+  }
+}
+
+export const isRuntimePolicyReadOnlyUnsupportedError = Schema.is(
+  RuntimePolicyReadOnlyUnsupportedError,
+);
+
 export const RuntimePolicyV2Error = Schema.Union([
   RuntimePolicyResolveError,
   RuntimePolicyAboveCeilingError,
+  RuntimePolicyReadOnlyUnsupportedError,
 ]);
 export type RuntimePolicyV2Error = typeof RuntimePolicyV2Error.Type;
 
@@ -71,6 +91,8 @@ export interface RuntimePolicyV2Shape {
   readonly resolve: (input: {
     readonly thread: OrchestrationV2AppThread;
     readonly modelSelection: ModelSelection;
+    /** The run about to start, which may have started under a read-only guest link since closed. */
+    readonly run?: Pick<OrchestrationV2Run, "readOnlyGuestShare">;
   }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
 }
 
@@ -137,6 +159,19 @@ export const layerEnforcingCeiling: Layer.Layer<
   }),
 );
 
+/**
+ * While a read-only guest link is open, every turn runs read-only and never asks, so a guest's
+ * message cannot change files and cannot wait on an approval or a plan question the guest cannot
+ * answer. The lowest ceiling keeps a provider mode the user picked from skipping the sandbox.
+ */
+const readOnlyGuestPolicy = {
+  runtimeMode: "approval-required",
+  interactionMode: "default",
+  approvalPolicy: "never",
+  sandboxPolicy: { type: "readOnly" },
+  maxRuntimeMode: "approval-required",
+} as const;
+
 export const layerFromProjectStore: Layer.Layer<
   RuntimePolicyV2,
   never,
@@ -155,6 +190,29 @@ export const layerFromProjectStore: Layer.Layer<
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
+        const readOnly =
+          isReadOnlyGuestShare(input.thread.guestShare) || input.run?.readOnlyGuestShare === true;
+        if (readOnly) {
+          const capabilities =
+            instance === undefined
+              ? undefined
+              : yield* instance.orchestrationAdapter.getCapabilities().pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new RuntimePolicyResolveError({
+                        projectId: input.thread.projectId,
+                        providerInstanceId: input.modelSelection.instanceId,
+                        cause,
+                      }),
+                  ),
+                );
+          if (capabilities?.runtimePolicy.readOnlySandbox !== true) {
+            return yield* new RuntimePolicyReadOnlyUnsupportedError({
+              threadId: input.thread.id,
+              providerInstanceId: input.modelSelection.instanceId,
+            });
+          }
+        }
         const supportedRuntimeModes =
           instance === undefined
             ? undefined
@@ -189,6 +247,7 @@ export const layerFromProjectStore: Layer.Layer<
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          ...(readOnly ? readOnlyGuestPolicy : {}),
         });
       }),
     });

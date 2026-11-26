@@ -145,6 +145,7 @@ function modelsFromDiscovery(
           slug: model.id,
           name: model.name,
           isCustom: false,
+          ...(model.funding !== undefined ? { funding: model.funding } : {}),
           ...(model.id === discovery?.currentModelId ? { isDefault: true } : {}),
           capabilities: capabilitiesFor(model),
         }));
@@ -296,25 +297,43 @@ export function applyAcpRegistryLiveConfiguration(
   const { message: _staleProbeMessage, ...snapshot } = provider;
   // session/load may omit models (Kimi returns `{}`); keep the probed list
   // and apply any live option descriptors to it.
-  const probedModels = provider.models.filter((model) => !model.isCustom);
+  const currentModels =
+    provider.auth.status === "unauthenticated"
+      ? provider.models.map((model) =>
+          model.funding === "included" ? { ...model, funding: "unknown" as const } : model,
+        )
+      : provider.models;
+  const probedModels = currentModels.filter((model) => !model.isCustom);
   const discovery =
     configuration.models.length > 0
-      ? configuration
+      ? {
+          ...configuration,
+          models: configuration.models.map((model) => {
+            // A persisted foreground session may belong to an old login or a different workspace.
+            if (model.funding !== "included") return model;
+            const confirmed = probedModels.find(
+              (candidate) => candidate.slug === model.id,
+            )?.funding;
+            return { ...model, funding: confirmed ?? ("unknown" as const) };
+          }),
+        }
       : {
           ...configuration,
           models: probedModels.map((model) => ({
             id: model.slug,
             name: model.name,
             description: null,
+            ...(model.funding !== undefined ? { funding: model.funding } : {}),
           })),
           currentModelId: probedModels.find((model) => model.isDefault)?.slug ?? null,
         };
   return {
     ...snapshot,
-    status: provider.enabled ? "ready" : provider.status,
+    status:
+      provider.enabled && provider.auth.status !== "unauthenticated" ? "ready" : provider.status,
     models:
       configuration.models.length === 0 && configuration.configOptions.length === 0
-        ? provider.models
+        ? currentModels
         : modelsFromDiscovery(
             discovery,
             customModels,
@@ -429,7 +448,9 @@ export const checkAcpRegistryProviderStatus = Effect.fn("AcpRegistryDriver.check
       return yield* buildInitialAcpRegistrySnapshot(input);
     }
     const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
-    const inspected = yield* Effect.result(catalog.inspect(input.settings, input.environment));
+    const inspected = yield* Effect.result(
+      catalog.inspect(input.settings, input.environment, input.cwd),
+    );
     if (Result.isFailure(inspected)) {
       return buildCheckedAcpRegistrySnapshot({
         ...input,
@@ -477,6 +498,7 @@ export const checkAcpRegistryProviderReadiness = Effect.fn(
   input: SnapshotIdentity & {
     readonly settings: AcpRegistrySettings;
     readonly environment: NodeJS.ProcessEnv;
+    readonly cwd?: string;
   },
 ): Effect.fn.Return<ServerProvider, never, AcpRegistrySupport.AcpRegistryCatalog> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -484,7 +506,9 @@ export const checkAcpRegistryProviderReadiness = Effect.fn(
     return yield* buildInitialAcpRegistrySnapshot(input);
   }
   const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
-  const inspected = yield* Effect.result(catalog.inspect(input.settings, input.environment));
+  const inspected = yield* Effect.result(
+    catalog.inspect(input.settings, input.environment, input.cwd),
+  );
   const snapshot = buildCheckedAcpRegistrySnapshot({
     ...input,
     checkedAt,
@@ -577,6 +601,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
     );
     const readinessInput = {
       ...identity,
+      cwd: host.paths.cwd,
       settings: effectiveConfig,
       environment: processEnvironment,
     };
@@ -642,10 +667,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       Effect.flatMap(withLiveRuntimeState),
     );
     const enrichProvider = checkAcpRegistryProviderStatus(
-      {
-        ...readinessInput,
-        cwd: host.paths.cwd,
-      },
+      readinessInput,
       probeAcpRegistryConfiguration,
     ).pipe(
       Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, catalog),
@@ -673,7 +695,8 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       if (
         cached !== null &&
         cached.expiresAt > now &&
-        cached.provider.version === baseSnapshot.version
+        cached.provider.version === baseSnapshot.version &&
+        !cached.provider.models.some((model) => model.funding === "included")
       ) {
         return {
           provider: { ...cached.provider, checkedAt: baseSnapshot.checkedAt },

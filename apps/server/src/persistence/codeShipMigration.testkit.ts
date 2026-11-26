@@ -33,6 +33,14 @@ import Migration026 from "./CodeShipMigrations/026_MonitoringAnalysesWithoutProj
 import Migration027 from "./CodeShipMigrations/027_MonitoringAnalysesSettleStamp.ts";
 import Migration028 from "./CodeShipMigrations/028_MonitoringStoredDetailsAndRetries.ts";
 
+import Migration029 from "./CodeShipMigrations/029_ColdThreadHistoryCompaction.ts";
+import Migration030 from "./CodeShipMigrations/030_DatabaseSizeSamples.ts";
+import Migration031 from "./CodeShipMigrations/031_ScheduledTaskRunReportedResult.ts";
+import Migration032 from "./CodeShipMigrations/032_ThreadPreferences.ts";
+import Migration033 from "./CodeShipMigrations/033_ScheduledTaskLastRunId.ts";
+import Migration034 from "./CodeShipMigrations/034_UsageStopDecisions.ts";
+import Migration035 from "./CodeShipMigrations/035_TurnItemMessageIndex.ts";
+
 const bodies = [
   Migration001,
   Migration002,
@@ -62,6 +70,13 @@ const bodies = [
   Migration026,
   Migration027,
   Migration028,
+  Migration029,
+  Migration030,
+  Migration031,
+  Migration032,
+  Migration033,
+  Migration034,
+  Migration035,
 ] as const;
 
 /** Reproduce the released fork history before the ledgers split, including actual schema changes. */

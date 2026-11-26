@@ -79,6 +79,10 @@
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
     },
+    "./threadNotifications": {
+      "types": "./src/threadNotifications.ts",
+      "import": "./src/threadNotifications.ts"
+    },
     "./agentAwareness": {
       "types": "./src/agentAwareness.ts",
       "import": "./src/agentAwareness.ts"
@@ -463,6 +467,10 @@
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"
     },
+    "./usageScanSettings": {
+      "types": "./src/usageScanSettings.ts",
+      "import": "./src/usageScanSettings.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"
@@ -518,6 +526,22 @@
     "./hostClassification": {
       "types": "./src/hostClassification.ts",
       "import": "./src/hostClassification.ts"
+    },
+    "./regularFile": {
+      "types": "./src/regularFile.ts",
+      "import": "./src/regularFile.ts"
+    },
+    "./codexMetadataInventory": {
+      "types": "./src/codexMetadataInventory.ts",
+      "import": "./src/codexMetadataInventory.ts"
+    },
+    "./runtimePromotion": {
+      "types": "./src/runtimePromotion.ts",
+      "import": "./src/runtimePromotion.ts"
+    },
+    "./runtimeDirectoryIdentity": {
+      "types": "./src/runtimeDirectoryIdentity.ts",
+      "import": "./src/runtimeDirectoryIdentity.ts"
     },
     "./cliRelease": {
       "types": "./src/cliRelease.ts",

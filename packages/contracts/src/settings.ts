@@ -17,6 +17,7 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -890,6 +891,18 @@ const LoginGeneration = Schema.optionalKey(
   }).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
 );
 
+/**
+ * Lets new work start on a Codex account once its plan usage is used up, and spend its prepaid
+ * credits. Money: only the user sets it, per account, and it stays on this machine.
+ */
+export const CodexCreditSpending = Schema.Struct({
+  /** Credits the account may spend in all while this stays on; no new work starts past it. */
+  capCredits: PositiveInt,
+  /** The threads whose work, their delegates' included, may spend them; absent: any thread. */
+  threadIds: Schema.optionalKey(Schema.Array(ThreadId)),
+});
+export type CodexCreditSpending = typeof CodexCreditSpending.Type;
+
 export const CodexSettings = makeProviderSettingsSchema(
   {
     loginGeneration: LoginGeneration,
@@ -898,6 +911,9 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
     /** The built-in account signs in apart from this machine's Codex login, as added accounts do. */
     privateLogin: Schema.optionalKey(Schema.Boolean).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    spendCredits: Schema.optionalKey(CodexCreditSpending).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     enabled: Schema.Boolean.pipe(
@@ -1502,6 +1518,10 @@ export const DatabaseStorageStatus = Schema.Struct({
   canReclaim: Schema.optionalKey(Schema.Boolean),
   /** Why the last repair started from Settings failed. */
   reclaimFailure: Schema.optionalKey(Schema.String),
+  /** Average change in `databaseBytes` per day over the past week; null until a day of samples. */
+  dailyGrowthBytes: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
 });
 export type DatabaseStorageStatus = typeof DatabaseStorageStatus.Type;
 
@@ -2127,6 +2147,8 @@ const ModelSelectionPatch = Schema.Struct({
   instanceId: Schema.optionalKey(ProviderInstanceId),
   model: Schema.optionalKey(TrimmedNonEmptyString),
   options: Schema.optionalKey(ProviderOptionSelections),
+  autoAccount: Schema.optionalKey(Schema.Boolean),
+  quotaAwareAuto: Schema.optionalKey(Schema.Boolean),
 });
 
 export const ServerSettingsPatch = Schema.Struct({

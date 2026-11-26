@@ -683,6 +683,26 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       ),
     );
   };
+  function openThreadPreferenceChoices(
+    event: KeyboardEvent,
+    preference: "notifications" | "color",
+  ) {
+    if (isInsideModalDialog(event.target) || !activeThreadShell) return false;
+    const { environmentId } = activeThreadShell;
+    const capabilities = appAtomRegistry.get(
+      serverEnvironment.threadPreferenceCapabilitiesAtom(environmentId),
+    );
+    if (
+      preference === "notifications"
+        ? !capabilities.threadNotificationLevel
+        : !capabilities.threadColor
+    )
+      return false;
+    if (!appAtomRegistry.get(threadEnvironment.setPreferences.permissionAtom(environmentId)))
+      return false;
+    openCommandPalette({ query: `>${preference}` });
+  }
+
   const shortcuts = {
     "thread.settle": () => {
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
@@ -716,6 +736,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       if (!canSnooze(activeThreadShell, { now: new Date().toISOString() })) return false;
       openCommandPalette({ query: ">Snooze" });
     },
+    "thread.notifications": ({ event }) => openThreadPreferenceChoices(event, "notifications"),
+    "thread.color": ({ event }) => openThreadPreferenceChoices(event, "color"),
     "thread.archive": ({ event }) => {
       if (isInsideModalDialog(event.target)) return false;
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;

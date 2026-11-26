@@ -1,18 +1,18 @@
-import { defineRule } from "@oxlint/plugins";
+import { defineRule, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { getPropertyName, isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const RUNTIME_PROPERTIES = new Set(["platform", "arch"]);
 const NODE_OS_MODULES = new Set(["node:os", "os"]);
 
-const isGlobalProcessObject = (node: unknown): boolean => {
+const isGlobalProcessObject = (sourceCode: SourceCode, node: unknown): boolean => {
   const expression = unwrapExpression(node);
   if (isIdentifier(expression, "process")) return true;
   if (Option.isNone(expression) || expression.value.type !== "MemberExpression") return false;
 
   const object = unwrapExpression(expression.value.object);
-  const property = getPropertyName(expression.value.property);
+  const property = resolvePropertyName(sourceCode, expression.value.property);
   return (
     isIdentifier(object, "globalThis") && Option.isSome(property) && property.value === "process"
   );
@@ -93,8 +93,9 @@ export default defineRule({
       if (Option.isNone(object) || object.value.type !== "Identifier") return Option.none();
       if (!nodeOsNamespaces.has(object.value.name)) return Option.none();
 
-      return Option.filter(getPropertyName(expression.value.property), (property) =>
-        RUNTIME_PROPERTIES.has(property),
+      return Option.filter(
+        resolvePropertyName(context.sourceCode, expression.value.property),
+        (property) => RUNTIME_PROPERTIES.has(property),
       );
     };
 
@@ -102,9 +103,9 @@ export default defineRule({
       before: resetBindings,
       ImportDeclaration: trackImportDeclaration,
       MemberExpression(node) {
-        const property = getPropertyName(node.property);
+        const property = resolvePropertyName(context.sourceCode, node.property);
         if (Option.isNone(property) || !RUNTIME_PROPERTIES.has(property.value)) return;
-        if (!isGlobalProcessObject(node.object)) return;
+        if (!isGlobalProcessObject(context.sourceCode, node.object)) return;
 
         context.report({
           node,

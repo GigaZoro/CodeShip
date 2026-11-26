@@ -1732,33 +1732,40 @@ describe("composerDraftStore modelSelection", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider).toEqual({});
   });
 
-  it("releases an auto-account pick on whichever account the thread runs it", () => {
-    const store = useComposerDraftStore.getState();
-    const pick = { ...createModelSelection(CODEX_INSTANCE, "gpt-5.5"), autoAccount: true };
-    store.setModelSelection(threadRef, pick, { explicit: true });
-    const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId);
-    h.update({
-      status: "running",
-      modelSelection: { ...pick, instanceId: CODEX_SECONDARY_INSTANCE },
-    });
-    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  it.each(["autoAccount", "quotaAwareAuto"] as const)(
+    "releases a %s pick on the account the thread runs it",
+    (intent) => {
+      const store = useComposerDraftStore.getState();
+      const pick = { ...createModelSelection(CODEX_INSTANCE, "gpt-5.5"), [intent]: true };
+      store.setModelSelection(threadRef, pick, { explicit: true });
+      expect(
+        draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+      ).toEqual(pick);
+      const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId);
+      h.update({
+        status: "running",
+        modelSelection: { ...pick, instanceId: CODEX_SECONDARY_INSTANCE },
+      });
+      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
 
-    // A pick on one account pins the thread even though it ran on auto.
-    store.setModelSelection(threadRef, createModelSelection(CODEX_INSTANCE, "gpt-5.5"), {
-      explicit: true,
-    });
-    const pinned = deriveEffectiveComposerModelState({
-      threadStarted: true,
-      draft: draftFor(threadId, TEST_ENVIRONMENT_ID),
-      providers: [],
-      selectedProvider: CODEX_DRIVER,
-      selectedInstanceId: CODEX_INSTANCE,
-      threadModelSelection: h.model(),
-      projectModelSelection: null,
-      settings: DEFAULT_UNIFIED_SETTINGS,
-    });
-    expect(pinned.autoAccount).toBe(false);
-  });
+      // A pick on one account pins the thread even though it ran on auto.
+      store.setModelSelection(threadRef, createModelSelection(CODEX_INSTANCE, "gpt-5.5"), {
+        explicit: true,
+      });
+      const pinned = deriveEffectiveComposerModelState({
+        threadStarted: true,
+        draft: draftFor(threadId, TEST_ENVIRONMENT_ID),
+        providers: [],
+        selectedProvider: CODEX_DRIVER,
+        selectedInstanceId: CODEX_INSTANCE,
+        threadModelSelection: h.model(),
+        projectModelSelection: null,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+      });
+      expect(pinned.autoAccount).toBe(false);
+      expect(pinned.quotaAwareAutoSelection).toBeNull();
+    },
+  );
 
   it("retains an unavailable provider pick through differing durable model updates", () => {
     const store = useComposerDraftStore.getState();
@@ -1785,6 +1792,23 @@ describe("composerDraftStore modelSelection", () => {
     });
     expect(fallback.selectedModel).toBe(h.model().model);
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    const auto = { ...pick, quotaAwareAuto: true };
+    expect(
+      deriveEffectiveComposerModelState({
+        threadStarted: false,
+        draft: {
+          activeProvider: pick.instanceId,
+          modelSelectionByProvider: { [primary.instanceId]: primary, [pick.instanceId]: auto },
+        },
+        providers: [],
+        selectedProvider: CODEX_DRIVER,
+        selectedInstanceId: CODEX_INSTANCE,
+        requestedInstanceId: CODEX_SECONDARY_INSTANCE,
+        threadModelSelection: h.model(),
+        projectModelSelection: null,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+      }).quotaAwareAutoSelection,
+    ).toEqual(auto);
 
     for (const modelSelection of [
       { ...pick, instanceId: CODEX_INSTANCE },
@@ -1823,20 +1847,15 @@ describe("composerDraftStore modelSelection", () => {
 
   it("replaces only the targeted provider options on the current model selection", () => {
     const store = useComposerDraftStore.getState();
-
-    store.setModelSelection(
-      threadRef,
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
+    const pick = {
+      ...modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
         effort: "max",
         fastMode: true,
       }),
-    );
-    store.setStickyModelSelection(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
-        effort: "max",
-        fastMode: true,
-      }),
-    );
+      quotaAwareAuto: true,
+    };
+    store.setModelSelection(threadRef, pick);
+    store.setStickyModelSelection(pick);
 
     store.setProviderModelOptions(
       threadRef,
@@ -1847,20 +1866,13 @@ describe("composerDraftStore modelSelection", () => {
       },
     );
 
+    const updated = { ...pick, options: toSelections({ thinking: false }) };
     expect(
       draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE],
-    ).toEqual(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
-        thinking: false,
-      }),
-    );
+    ).toEqual(updated);
     expect(
       useComposerDraftStore.getState().stickyModelSelectionByProvider[CLAUDE_AGENT_INSTANCE],
-    ).toEqual(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
-        thinking: false,
-      }),
-    );
+    ).toEqual(updated);
   });
 
   // regression: #6011 new threads ignored project default models unless edits are marked explicit

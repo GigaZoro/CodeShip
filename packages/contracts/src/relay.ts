@@ -1,3 +1,4 @@
+import { ThreadNotificationLevel } from "./threadPreferences.ts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -122,10 +123,14 @@ export const RelayAgentActivityState = Schema.Struct({
   projectTitle: TrimmedNonEmptyString,
   threadTitle: TrimmedNonEmptyString,
   phase: RelayAgentAwarenessPhase,
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
   headline: TrimmedNonEmptyString,
+  silent: Schema.optionalKey(Schema.Boolean),
   detail: Schema.optional(TrimmedNonEmptyString),
   modelTitle: TrimmedNonEmptyString,
   updatedAt: TrimmedNonEmptyString,
+  /** Absent from older servers. */
+  occurredAt: Schema.optionalKey(TrimmedNonEmptyString),
   deepLink: TrimmedNonEmptyString,
 });
 export type RelayAgentActivityState = typeof RelayAgentActivityState.Type;
@@ -137,6 +142,7 @@ export const RelayAgentActivityAggregateRow = Schema.Struct({
   threadTitle: TrimmedNonEmptyString,
   modelTitle: TrimmedNonEmptyString,
   phase: RelayAgentAwarenessPhase,
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
   status: TrimmedNonEmptyString,
   updatedAt: TrimmedNonEmptyString,
   deepLink: TrimmedNonEmptyString,

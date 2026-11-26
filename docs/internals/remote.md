@@ -120,6 +120,23 @@ Unlinking on the linking side only forgets the token.
 - **All callers on one side share the link's single session on the other**,
   so idempotency keys are hashed with the caller's namespace before they
   leave. Without that, two agents reusing a key would collide on the far side.
+- **Each peer MCP POST has a 75 s deadline**, including reading its response
+  body. A missed deadline is recorded as a transport failure and fails as
+  `no_answer`, as does an HTTP 5xx answer, which a gateway on the route can give
+  after the call ran, so delegated work backs off and retries. When no address
+  answers as the linked environment, the call is not sent and fails as
+  `unreachable`. Worktree launches have 90 s for Git preflight,
+  thread pages and PR guide reads have 2 minutes, repository clones have
+  270 s for SSH and HTTPS attempts, scheduled task saves and manual runs have
+  3 minutes for prompt-file fetches, and PR guide batches have 5 minutes for
+  forge checks. T3 Connect still drops idle requests after about 100 s on
+  relay routes. Background settings and scheduled-task reads and claims keep
+  their separate 20 s budget. Provider re-checks hold `orchestrator_capabilities`,
+  `delegate_task` and `create_threads` for at most one wait piece (50 s) per
+  request, however many providers it checks (a role's and its fallback, or one
+  per thread). A request that arrives while a provider's check runs waits for
+  that check instead of starting another. A slower check finishes in the
+  background, and the answer says it is still running.
 - **A forwarded wait is split into calls of at most 50 s**, because the
   receiving `/mcp` sends nothing while a wait is open and T3 Connect's edge
   drops idle requests after about 100 s. A link's `terminal_write` instead
@@ -158,14 +175,45 @@ The child there is a top-level thread, so nobody there owns its end state: once
 the task holds a completed result, the follower settles it through the same link
 (the fence allows the threads a link started). It skips a child with a later run,
 a queued message or a pending request, since settling would hide or cancel them,
-and a refused settle is left to auto-settlement there.
+and a refused settle is left to auto-settlement there. A Stop or cancel here of a
+task that already holds its result owes its thread there a stop
+(`delegated_task.remote.stop`), which the follower sends, so it reaches there after
+any settle request already sent; a settle still reading or backing off is cut short.
+A cancel's stop goes under the cancel's own key (`remoteChild.stopKey`), which the
+other side records once, so a cancel sent again, or one whose stop lost its answer,
+stops nothing that started there since; a Stop here gets a numbered key of its own.
+A launch whose answer was lost (`no_answer`) hands the caller its task and is sent
+again in the background with the same key, which the other side records once, while
+its answer is lost or the machine cannot be reached (`unreachable`); the follower
+starts once a launch answers. A task this request just recorded whose machine cannot
+be reached fails at once, since nothing was sent there. A stop sent meanwhile finds no thread there,
+so a launch that answers for a task already ended here records a stop it owes its
+new thread (`delegated_task.remote.stop`, keyed by the launch), which the follower
+sends. A launch refused there is stopped there, and the task fails here once
+nothing is left there, a write that fails being retried until it is recorded. The
+same request sent again launches nothing and returns the task, also while the first
+launch is still being sent or failed here, or after it could not start: `delegate_task`
+resolves it to the task first accepted for its key, and of overlapping requests that
+both get past that, only the one whose record command commits sends the launch.
 
 A task with `isolation: "worktree"` branches its child's worktree there from the
 parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
-The other machine can only fetch a pushed commit, so `RemoteDelegation` refuses an
-unpushed one by name, and `ThreadLaunchService` fetches a SHA base from the primary
-remote when the checkout lacks it. This is how a Windows-only test run happens
-at an exact commit.
+`RemoteDelegation` refuses it here only when this checkout has no Git remote, since
+then no machine can fetch the commit. Whether the other machine's remotes hold it,
+including a commit that only a tag reaches, is for that machine to say. There
+`ThreadLaunchService` fetches a SHA base the checkout lacks from the project's remotes
+in order: the primary first, then the others. A remote that fails, on its credentials
+or its network, is passed over. A server that refuses a fetch by SHA is asked again
+through the branches and tags it advertises. The launch is refused before any thread is
+created only when every remote answered and none has the commit. The refusal names
+those remotes, and the parent's task fails with it. When a remote failed and none gave
+the commit, the check cannot be sure, so the launch goes ahead and preparation reports
+that failure in the thread. A project of another repository cannot fetch it at all, so
+when `target.projectId` names one (compared by the identity `t3_project_read` resolves),
+the worktree starts from that project's default branch instead. Each side reads that
+identity from Git. A read that fails, such as Git timing out, fails the task with its
+reason instead of passing for a different repository. This is how a Windows-only test
+run happens at an exact commit.
 
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:

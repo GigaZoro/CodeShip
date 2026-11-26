@@ -119,6 +119,7 @@ const thread = {
   archivedAt: null as string | null,
   settledAt: null as string | null,
   snoozedUntil: null as string | null,
+  notificationLevel: "default" as "default" | "muted" | "following",
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   pendingRequestId: "request-1",
@@ -136,6 +137,7 @@ function toV2ThreadShell(input: typeof thread) {
     id: input.id,
     projectId: "project",
     title: input.title,
+    notificationLevel: input.notificationLevel,
     providerInstanceId: "codex",
     modelSelection: { instanceId: "codex", model: "gpt-5.4" },
     runtimeMode: "full-access",
@@ -299,6 +301,18 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     expect(TestNotification.sent.map(({ title }) => title)).toEqual([title, title]);
   },
 );
+it("follows a thread with notifications off and closes its alert when muted", async () => {
+  await using app = setup();
+  state.mode = "off";
+  app.start();
+  state.shells.set("one", shell({ hasPendingApprovals: true, notificationLevel: "following" }));
+  expect(TestNotification.sent).toHaveLength(1);
+  state.shells.set("one", shell({ hasPendingApprovals: true, notificationLevel: "muted" }));
+  expect(TestNotification.sent[0]?.close).toHaveBeenCalled();
+  state.shells.set("one", shell({ notificationLevel: "muted" }));
+  state.shells.set("one", shell({ hasPendingApprovals: true, notificationLevel: "muted" }));
+  expect(TestNotification.sent).toHaveLength(1);
+});
 
 it("presents completion notifications and sound as soon as the shell completes", async () => {
   await using app = setup();

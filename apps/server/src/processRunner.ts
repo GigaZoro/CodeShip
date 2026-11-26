@@ -262,11 +262,11 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   const truncatedMarker = input.truncatedMarker ?? "";
   const extendEnv = input.env !== undefined;
   const spawnProcess = Effect.fnUntraced(function* () {
-    const spawnCommand = yield* resolveSpawnCommand(
-      input.command,
-      input.args,
-      input.env === undefined ? {} : { env: input.env, extendEnv },
-    );
+    const cwd = input.spawnCwd ?? input.cwd;
+    const spawnCommand = yield* resolveSpawnCommand(input.command, input.args, {
+      cwd,
+      ...(input.env === undefined ? {} : { env: input.env, extendEnv }),
+    });
 
     const toSpawnError = (cause: unknown) =>
       new ProcessSpawnError({
@@ -283,7 +283,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
     const spawn = spawner
       .spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
+          ...(cwd ? { cwd } : {}),
           ...(input.env !== undefined
             ? {
                 env: input.env,

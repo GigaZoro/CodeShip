@@ -16,6 +16,7 @@ import {
   checkFxProviderStatus,
   fxDefaultModelId,
 } from "./status.ts";
+import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
@@ -110,6 +111,10 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
     } satisfies FxSettings;
+    const versionMemory = yield* makeCliVersionMemory({ instanceId, driver: FX_DRIVER_KIND });
+    const checkStatus = versionMemory.check((lastKnownVersion) =>
+      checkFxProviderStatus(effectiveConfig, processEnv, lastKnownVersion),
+    );
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<FxSettings>>({
       resolveMaintenance: () => Effect.succeed(MAINTENANCE),
@@ -118,7 +123,7 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
       haveSettingsChanged: haveProviderSnapshotSettingsChanged,
       initialSnapshot: (settings) =>
         buildInitialFxProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
-      checkProvider: checkFxProviderStatus(effectiveConfig, processEnv).pipe(
+      checkProvider: checkStatus.pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),

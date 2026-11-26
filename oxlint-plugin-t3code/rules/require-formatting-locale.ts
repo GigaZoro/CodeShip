@@ -1,7 +1,7 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { isIdentifier, resolvePropertyName, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const LOCALE_METHODS = new Set(["toLocaleString", "toLocaleDateString", "toLocaleTimeString"]);
@@ -24,10 +24,13 @@ const isMissingLocale = (argument: ESTree.Node | undefined): boolean => {
 };
 
 // `Intl.DateTimeFormat().resolvedOptions()` reads the runtime default on purpose; nothing is displayed.
-const isOnlyRead = (node: ESTree.Node): boolean =>
+const isOnlyRead = (sourceCode: SourceCode, node: ESTree.Node): boolean =>
   node.parent?.type === "MemberExpression" &&
   node.parent.object === node &&
-  Option.exists(getPropertyName(node.parent.property), (name) => name === "resolvedOptions");
+  Option.exists(
+    resolvePropertyName(sourceCode, node.parent.property),
+    (name) => name === "resolvedOptions",
+  );
 
 export default defineRule({
   meta: {
@@ -38,13 +41,14 @@ export default defineRule({
     },
   },
   create(context) {
+    const { sourceCode } = context;
     if (TEST_FILE_PATTERN.test(context.filename)) return {};
 
     return {
       CallExpression(node) {
         const callee = unwrapExpression(node.callee);
         if (Option.isNone(callee) || callee.value.type !== "MemberExpression") return;
-        const method = getPropertyName(callee.value.property);
+        const method = resolvePropertyName(sourceCode, callee.value.property);
         if (Option.isNone(method) || !LOCALE_METHODS.has(method.value)) return;
         if (!isMissingLocale(node.arguments[0])) return;
         context.report({ node, message: MESSAGE });
@@ -53,10 +57,10 @@ export default defineRule({
         const callee = unwrapExpression(node.callee);
         if (Option.isNone(callee) || callee.value.type !== "MemberExpression") return;
         if (!isIdentifier(unwrapExpression(callee.value.object), "Intl")) return;
-        const formatter = getPropertyName(callee.value.property);
+        const formatter = resolvePropertyName(sourceCode, callee.value.property);
         if (Option.isNone(formatter) || !INTL_FORMATTERS.has(formatter.value)) return;
         if (!isMissingLocale(node.arguments[0])) return;
-        if (isOnlyRead(node)) return;
+        if (isOnlyRead(sourceCode, node)) return;
         context.report({ node, message: MESSAGE });
       },
     };

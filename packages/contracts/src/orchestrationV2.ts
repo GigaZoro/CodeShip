@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Struct from "effect/Struct";
 
 import {
   CheckpointId,
@@ -43,8 +44,9 @@ import {
 } from "./baseSchemas.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
-import { ThreadGuestShare } from "./guestShare.ts";
+import { GuestShareAccess, ThreadGuestShare } from "./guestShare.ts";
 import { StoredThreadFolder, ThreadFolder, threadFolderKeyOf } from "./threadFolders.ts";
+import { ThreadColor, ThreadNotificationLevel } from "./threadPreferences.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
 import { ThreadTitleRegenerationOutcome } from "./threadTitle.ts";
 import {
@@ -383,6 +385,11 @@ export type OrchestrationV2CheckpointCapabilities =
 
 export const OrchestrationV2RuntimePolicyCapabilities = Schema.Struct({
   enforcement: Schema.Literals(["native", "client-boundary"]),
+  /**
+   * The adapter refuses every change under approvalPolicy "never" with a read-only sandbox,
+   * instead of asking or writing. Read-only guest links need it.
+   */
+  readOnlySandbox: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OrchestrationV2RuntimePolicyCapabilities =
   typeof OrchestrationV2RuntimePolicyCapabilities.Type;
@@ -409,7 +416,9 @@ export const OrchestrationV2ProviderCapabilities = Schema.Struct({
   identity: OrchestrationV2IdentityCapabilities,
   // Replay defaults old events to the weaker client-boundary guarantee.
   runtimePolicy: OrchestrationV2RuntimePolicyCapabilities.pipe(
-    Schema.withDecodingDefault(Effect.succeed({ enforcement: "client-boundary" as const })),
+    Schema.withDecodingDefault(
+      Effect.succeed({ enforcement: "client-boundary" as const, readOnlySandbox: false }),
+    ),
   ),
 });
 export type OrchestrationV2ProviderCapabilities = typeof OrchestrationV2ProviderCapabilities.Type;
@@ -477,6 +486,11 @@ const OrchestrationV2LastTitleRegeneration = Schema.Struct({
   completedAt: Schema.DateTimeUtc,
 });
 
+export const MAX_THREAD_STARRED_MESSAGES = 200;
+const StarredMessageIds = Schema.Array(MessageId).check(
+  Schema.isMaxLength(MAX_THREAD_STARRED_MESSAGES),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -532,10 +546,13 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
+  color: Schema.optionalKey(Schema.NullOr(ThreadColor)),
   /** The sidebar folder; absent or null is none. Names match by `threadFolderKey`. */
   folder: Schema.optional(StoredThreadFolder),
   /** Pages (by html_render attachment id) removed from the Artifacts gallery; the thread keeps rendering them inline. */
   hiddenArtifacts: Schema.optional(StoredHiddenArtifacts),
+  starredMessageIds: Schema.optional(StarredMessageIds),
   lastVisitedAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -884,6 +901,8 @@ export const OrchestrationV2Run = Schema.Struct({
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
   memoryAdmission: Schema.optional(OrchestrationV2RunMemoryAdmission),
+  /** Started under a read-only guest link: it and its continuations stay read-only after it closes. */
+  readOnlyGuestShare: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 
@@ -1086,6 +1105,12 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
    * one owed, so each reaches the thread there once however often it is sent.
    */
   stopCount: Schema.optional(NonNegativeInt),
+  /**
+   * The key of the cancel whose stop is owed there, so the follower sends the stop that
+   * cancel already sent, which reaches the thread there once. Absent: the follower names
+   * the stop by `stopCount`.
+   */
+  stopKey: Schema.optional(Schema.String),
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
@@ -1143,6 +1168,9 @@ export const OrchestrationV2Subagent = Schema.Struct({
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   // The run whose unfinished task was cancelled, committed with its Stop.
   cancelledRunId: Schema.optional(RunId),
+  terminalResultObservation: Schema.optional(
+    Schema.Struct({ runId: RunId, at: Schema.DateTimeUtc }),
+  ),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -1425,6 +1453,7 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
 export type OrchestrationV2ContextHandoff = typeof OrchestrationV2ContextHandoff.Type;
 
 export const OrchestrationV2ProviderTurn = Schema.Struct({
+  nativeWakeStarted: Schema.optional(Schema.Boolean),
   id: ProviderTurnId,
   providerThreadId: ProviderThreadId,
   nodeId: NodeId,
@@ -1577,6 +1606,7 @@ export const OrchestrationV2NotificationSource = kindUnionWithFallback(
 export type OrchestrationV2NotificationSource = typeof OrchestrationV2NotificationSource.Type;
 
 export const OrchestrationV2Notification = Schema.Struct({
+  wakeEventIds: Schema.optional(Schema.Array(Schema.String)),
   source: OrchestrationV2NotificationSource,
   outcome: OrchestrationV2NotificationOutcome,
   summary: TrimmedNonEmptyString,
@@ -2184,11 +2214,16 @@ const OrchestrationV2EventBase = Schema.Struct({
   occurredAt: Schema.DateTimeUtc,
 });
 
+// The star list is owned by its dedicated event and appears on thread snapshots.
+const WholeThreadEventPayload = OrchestrationV2AppThread.mapFields(
+  Struct.omit(["starredMessageIds"]),
+);
+
 export const OrchestrationV2DomainEvent = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("thread.created"),
-    payload: OrchestrationV2AppThread,
+    payload: WholeThreadEventPayload,
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -2207,6 +2242,8 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.notification-level-updated",
+      "thread.color-updated",
       "thread.folder-updated",
       "thread.artifacts-updated",
       "thread.visited",
@@ -2219,7 +2256,12 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.provider-switched",
       "thread.guest-share-updated",
     ]),
-    payload: OrchestrationV2AppThread,
+    payload: WholeThreadEventPayload,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("thread.message-stars-updated"),
+    payload: StarredMessageIds,
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -2456,6 +2498,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
   pendingGuestMessageCount: Schema.optional(NonNegativeInt),
+  /** Set only while a read-only guest link keeps the thread from changing the environment. */
+  readOnlyGuestShare: Schema.optional(Schema.Literal(true)),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   /** Excludes wakes and agent messages that advance latestUserMessageAt through the user role. */
@@ -2489,6 +2533,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  notificationLevel: Schema.optionalKey(ThreadNotificationLevel),
+  color: Schema.optionalKey(Schema.NullOr(ThreadColor)),
   /** The sidebar folder; absent or null is none. Names match by `threadFolderKey`. */
   folder: Schema.optional(StoredThreadFolder),
   lastVisitedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2757,6 +2803,9 @@ export type OrchestrationV2ExecutionNodeJson = typeof OrchestrationV2ExecutionNo
 
 export const OrchestrationV2SubagentJson = OrchestrationV2Subagent.mapFields((fields) => ({
   ...fields,
+  terminalResultObservation: Schema.optional(
+    Schema.Struct({ runId: RunId, at: Schema.DateTimeUtcFromString }),
+  ),
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   updatedAt: Schema.DateTimeUtcFromString,
@@ -3192,11 +3241,15 @@ const OrchestrationV2JsonEventBaseFields = {
   occurredAt: Schema.DateTimeUtcFromString,
 } as const;
 
+const WholeThreadEventJsonPayload = OrchestrationV2AppThreadJson.mapFields(
+  Struct.omit(["starredMessageIds"]),
+);
+
 export const OrchestrationV2DomainEventJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("thread.created"),
-    payload: OrchestrationV2AppThreadJson,
+    payload: WholeThreadEventJsonPayload,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
@@ -3215,6 +3268,8 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.notification-level-updated",
+      "thread.color-updated",
       "thread.folder-updated",
       "thread.artifacts-updated",
       "thread.visited",
@@ -3227,7 +3282,12 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.provider-switched",
       "thread.guest-share-updated",
     ]),
-    payload: OrchestrationV2AppThreadJson,
+    payload: WholeThreadEventJsonPayload,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("thread.message-stars-updated"),
+    payload: StarredMessageIds,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
@@ -3508,6 +3568,18 @@ export const OrchestrationV2Command = Schema.Union([
     tagged: Schema.Boolean,
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.notification-level.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    notificationLevel: ThreadNotificationLevel,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.color.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    color: Schema.NullOr(ThreadColor),
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.folder.set"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -3518,6 +3590,13 @@ export const OrchestrationV2Command = Schema.Union([
      * `threadFolderKey`; otherwise it fails as stale, so a move made meanwhile wins.
      */
     from: Schema.optional(Schema.NullOr(ThreadFolder)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.message.star"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    starred: Schema.Boolean,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.artifact.hide"),
@@ -3912,6 +3991,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     shareId: GuestShareId,
     host: TrimmedNonEmptyString,
     expiresAt: IsoDateTime,
+    access: GuestShareAccess.pipe(Schema.withDecodingDefault(Effect.succeed("approve" as const))),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.redeem"),
@@ -4032,6 +4112,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
+    /** Without `stoppedThere`: the key of the cancel whose stop there is still owed. */
+    stopKey: Schema.optional(Schema.String),
   }),
   /**
    * Owes a stop to the thread there of a remote task that already has its result, as Stop on
@@ -4043,6 +4125,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
+    /** The key of the cancel that owes this stop; absent for a Stop here. */
+    stopKey: Schema.optional(Schema.String),
   }),
   /**
    * Records the run there that carries a remote task, once its launch returned it. The task is
@@ -4713,6 +4797,11 @@ export const OrchestrationV2ThreadStreamItem = withRecordIdTable(
 );
 export type OrchestrationV2ThreadStreamItem = typeof OrchestrationV2ThreadStreamItem.Type;
 
+export const OrchestrationV2MessageStarRejection = Schema.Literals([
+  "message-not-found",
+  "limit-reached",
+]);
+
 export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<OrchestrationV2DispatchCommandError>()(
   "OrchestrationV2DispatchCommandError",
   {
@@ -4722,6 +4811,7 @@ export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<Orch
     detail: Schema.optional(Schema.String),
     /** Refused because the thread changed since the caller read it; its newer state stands. */
     stale: Schema.optional(Schema.Boolean),
+    messageStarReason: Schema.optional(OrchestrationV2MessageStarRejection),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

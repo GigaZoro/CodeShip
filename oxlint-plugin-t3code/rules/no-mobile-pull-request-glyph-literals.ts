@@ -1,4 +1,7 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 const PULL_REQUEST_GLYPH_NAMES = new Set([
   "arrow.triangle.pull",
@@ -14,12 +17,6 @@ const ANDROID_PULL_REQUEST_GLYPH_NAMES = new Set(["merge"]);
 
 const MESSAGE =
   "Pick a glyph by meaning from PullRequestGlyph in apps/mobile/src/features/pull-requests/pullRequestGlyphs.ts so every surface draws the same pull request the same way.";
-
-function propertyKey(node: { key: ESTree.PropertyKey }) {
-  if (node.key.type === "Identifier") return node.key.name;
-  if (node.key.type === "Literal") return node.key.value;
-  return null;
-}
 
 function staticString(node: ESTree.Node) {
   if (node.type === "Literal") return typeof node.value === "string" ? node.value : null;
@@ -38,6 +35,11 @@ export default defineRule({
     },
   },
   create(context) {
+    // `{ [key]: ... }` names what `key` holds, not `key`.
+    const keyIs = (property: ESTree.Node, name: string) =>
+      property.type === "Property" &&
+      Option.contains(resolvePropertyName(context.sourceCode, property.key), name);
+
     return {
       Literal(node) {
         if (typeof node.value !== "string" || !PULL_REQUEST_GLYPH_NAMES.has(node.value)) return;
@@ -45,11 +47,9 @@ export default defineRule({
       },
       Property(node) {
         if (
-          propertyKey(node) !== "android" ||
+          !keyIs(node, "android") ||
           node.parent.type !== "ObjectExpression" ||
-          !node.parent.properties.some(
-            (property) => property.type === "Property" && propertyKey(property) === "ios",
-          )
+          !node.parent.properties.some((property) => keyIs(property, "ios"))
         )
           return;
         const value = staticString(node.value);

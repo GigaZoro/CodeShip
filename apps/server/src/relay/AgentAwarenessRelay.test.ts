@@ -324,6 +324,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       getByWorkspaceRoot: unused,
       workspaceScanDirectory: unused,
       snapshot: Effect.succeed({ projects: [project], updatedAt: NOW }),
+      getWithRepositoryIdentity: unused,
       listPage: unused,
       getShell: unused,
       listShells: unused,
@@ -660,6 +661,35 @@ describe("AgentAwarenessRelay", () => {
     }),
   );
 
+  it.effect("publishes a mute silently after pinning a thread waiting for approval", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const approval = shell({
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("approval"),
+          kind: "command",
+          createdAt: DateTime.makeUnsafe(NOW),
+        },
+      });
+      yield* Ref.set(currentShell, approval);
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications[0]?.state?.phase, "waiting_for_approval");
+      const pinnedAt = DateTime.makeUnsafe("2026-09-04T12:00:01Z");
+      const pinned = { ...approval, pinnedAt, updatedAt: pinnedAt };
+      yield* Ref.set(currentShell, pinned);
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 1);
+      yield* Ref.set(currentShell, { ...pinned, notificationLevel: "muted" });
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 2);
+      assert.deepEqual(publications[1]?.state, {
+        ...publications[0]!.state!,
+        silent: true,
+        notificationLevel: "muted",
+      });
+    }),
+  );
+
   it.effect("republishes unchanged state with fresh credentials after relinking", () =>
     Effect.gen(function* () {
       const { relay, secrets, publications } = yield* makeTestRelay();
@@ -751,6 +781,62 @@ describe("AgentAwarenessRelay", () => {
       assert.deepEqual(
         publications.map((publication) => publication.state?.phase),
         ["running", "completed"],
+      );
+
+      const finished = publications[1]!.state!;
+      assert.isUndefined(finished.silent);
+      yield* Ref.set(
+        currentShell,
+        shell({
+          status: "completed",
+          updatedAt: DateTime.makeUnsafe("2026-09-04T12:00:01Z"),
+          notificationLevel: "following",
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 3);
+      assert.deepEqual(publications[2]?.state, {
+        ...finished,
+        silent: true,
+        notificationLevel: "following",
+      });
+
+      const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+      const pulls = yield* Queue.unbounded<void>();
+      const restarted = yield* makeTestRelay({
+        domainEvents: Stream.fromEffectRepeat(
+          Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
+        ),
+      });
+      const now = yield* DateTime.now;
+      const oldCompletion = shell({ status: "completed", latestRunCompletedAt: now });
+      yield* Ref.set(restarted.currentShell, oldCompletion);
+      yield* restarted.relay.start();
+      yield* Queue.take(pulls);
+      yield* restarted.relay.publishThread(THREAD_ID);
+      assert.isEmpty(restarted.publications);
+
+      const muted = { ...oldCompletion, notificationLevel: "muted" as const };
+      yield* Ref.set(restarted.currentShell, muted);
+      yield* Queue.offer(events, {
+        id: EventId.make("event:muted"),
+        type: "thread.notification-level-updated",
+        threadId: THREAD_ID,
+        occurredAt: now,
+        payload: { ...muted, lastVisitedAt: muted.lastVisitedAt ?? null },
+      });
+      yield* Queue.take(pulls);
+      yield* restarted.relay.drain;
+      assert.deepEqual(
+        restarted.publications.map(({ state }) => state),
+        [
+          {
+            ...finished,
+            occurredAt: DateTime.formatIso(now),
+            silent: true,
+            notificationLevel: "muted",
+          },
+        ],
       );
     }),
   );

@@ -1,6 +1,14 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercise native Windows realpath results on every test host.
+import * as NodeFSP from "node:fs/promises";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import { vi } from "vite-plus/test";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
 import { AcpRegistrySettings } from "../settings.ts";
@@ -19,6 +27,8 @@ import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import { formatFailureDetail, makeAcpRegistryAuth } from "./auth.ts";
 import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+
+vi.mock("node:fs/promises", { spy: true });
 
 const decodeSettings = Schema.decodeSync(AcpRegistrySettings);
 const instanceId = ProviderInstanceId.make("acp-auth-test");
@@ -294,6 +304,61 @@ it.effect("keeps local credentials separate from a matching registry agent ID", 
     assert.deepEqual(local.controller.credentialBinding, alias.controller.credentialBinding);
     assert.notDeepEqual(local.controller.credentialBinding, registry.controller.credentialBinding);
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+it.effect("binds Windows local sign-in to the canonical executable name", () =>
+  Effect.gen(function* () {
+    const selected = String.raw`C:\agents\Agent.exe`;
+    const alias = String.raw`C:\AGENTS\Agent.exe`;
+    const distinct = String.raw`C:\agents\agent.exe`;
+    using realpath = vi
+      .spyOn(NodeFSP, "realpath")
+      .mockResolvedValueOnce(selected)
+      .mockResolvedValueOnce(selected)
+      .mockResolvedValueOnce(distinct);
+    const binding = (commandPath: string) =>
+      makeHarness(
+        browserMethod,
+        false,
+        decodeSettings({ source: "local", commandPath, commandArgs: ["--acp"] }),
+      ).pipe(Effect.map(({ controller }) => controller.credentialBinding));
+    const first = yield* binding(selected);
+    assert.deepEqual(yield* binding(alias), first);
+    assert.notDeepEqual(yield* binding(distinct), first);
+    assert.deepEqual(
+      realpath.mock.calls.map(([input]) => input),
+      [selected, alias, distinct],
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provideService(HostProcess.Platform, "win32"),
+    Effect.provideService(SpawnExecutableResolution, (command) => command),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  ),
+);
+
+it.effect.skipIf(isWindowsHost)(
+  "shares local sign-in across paths that traverse the same executable",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const repo = path.join(root, "repo");
+      yield* fs.makeDirectory(path.join(repo, "sub"), { recursive: true });
+      yield* fs.symlink("repo/sub", path.join(root, "link"));
+      for (const dir of [root, repo]) {
+        yield* fs.writeFileString(path.join(dir, "agent"), "#!/bin/sh\n");
+        yield* fs.chmod(path.join(dir, "agent"), 0o755);
+      }
+      const binding = (commandPath: string) =>
+        makeHarness(browserMethod, false, decodeSettings({ source: "local", commandPath })).pipe(
+          Effect.map(({ controller }) => controller.credentialBinding),
+        );
+      const alias = yield* binding(path.join(root, "link") + "/../agent");
+      assert.deepEqual(alias, yield* binding(path.join(repo, "agent")));
+      assert.notDeepEqual(alias, yield* binding(path.join(root, "agent")));
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
