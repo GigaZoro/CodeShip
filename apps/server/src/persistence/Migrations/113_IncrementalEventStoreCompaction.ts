@@ -52,4 +52,9 @@ export default Effect.gen(function* () {
   yield* sql`
     ALTER TABLE orchestration_v2_legacy_imports ADD COLUMN legacy_rows_compacted_at TEXT
   `;
+  yield* sql`
+    CREATE INDEX orchestration_v2_legacy_imports_pending_compaction_idx
+    ON orchestration_v2_legacy_imports(thread_id)
+    WHERE transcript_imported_at IS NOT NULL AND legacy_rows_compacted_at IS NULL
+  `;
 });

@@ -1,6 +1,6 @@
-## 2026-11-26 — Database cleanup reads only what changed
+## 2026-11-26 — Event-log compaction skips unchanged history
 
-- The server’s six-hour event-log cleanup now skips events it has already processed. It revisits older chat state only when a new event can supersede it. A second pass over an unchanged database reads no event payloads. The first startup after upgrading builds a small index once.
+- The server’s six-hour event-log compaction revisits older chat state only when a new event can supersede it. On an unchanged database, the pass reads no event payloads. The first upgrade builds the indexes for these lookups once.
 
 ## 2026-11-26 — Provider usage shows what was measured
 

@@ -258,30 +258,29 @@ it.effect("discovers on the reader worker and deletes on the writer", () =>
       yield* seedCompaction();
       // Establish the reader before recording main-thread statements.
       yield* sql`SELECT 1`.pipe(NodeSqliteClient.readOnly);
-      const reads: string[] = [];
-      const writes: string[] = [];
+      const mainThreadStatements: string[] = [];
       const all = NodeSqlite.StatementSync.prototype.all;
       const run = NodeSqlite.StatementSync.prototype.run;
       yield* Effect.acquireRelease(
         Effect.sync(() => {
-          const readSpy = vi
+          const allSpy = vi
             .spyOn(NodeSqlite.StatementSync.prototype, "all")
             .mockImplementation(function (this: NodeSqlite.StatementSync, ...params) {
-              reads.push(this.sourceSQL);
+              mainThreadStatements.push(this.sourceSQL);
               return all.apply(this, params);
             });
-          const writeSpy = vi
+          const runSpy = vi
             .spyOn(NodeSqlite.StatementSync.prototype, "run")
             .mockImplementation(function (this: NodeSqlite.StatementSync, ...params) {
-              writes.push(this.sourceSQL);
+              mainThreadStatements.push(this.sourceSQL);
               return run.apply(this, params);
             });
-          return { readSpy, writeSpy };
+          return { allSpy, runSpy };
         }),
-        ({ readSpy, writeSpy }) =>
+        ({ allSpy, runSpy }) =>
           Effect.sync(() => {
-            readSpy.mockRestore();
-            writeSpy.mockRestore();
+            allSpy.mockRestore();
+            runSpy.mockRestore();
           }),
       );
       const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
@@ -289,11 +288,17 @@ it.effect("discovers on the reader worker and deletes on the writer", () =>
       assert.equal(result.deletedEventCount, 148);
       assert.equal(result.deletedReceiptCount, 100);
       assert.deepEqual(
-        reads.filter((query) => /\bSELECT\b/.test(query)),
+        mainThreadStatements.filter((query) => /\bSELECT\b/.test(query)),
         [],
       );
-      assert(writes.some((query) => query.includes("DELETE FROM orchestration_events")));
-      assert(writes.some((query) => query.includes("DELETE FROM orchestration_command_receipts")));
+      assert(
+        mainThreadStatements.some((query) => query.includes("DELETE FROM orchestration_events")),
+      );
+      assert(
+        mainThreadStatements.some((query) =>
+          query.includes("DELETE FROM orchestration_command_receipts"),
+        ),
+      );
     }).pipe(
       Effect.provide(
         ProjectionMaintenance.layer.pipe(
@@ -3901,7 +3906,7 @@ it.effect("publishes live events in commit order across concurrent writers", () 
 );
 
 it.effect.each(["events", "receipts"] as const)(
-  "allows writes while compaction waits for the reader to discover obsolete %s",
+  "allows writes while compaction pages past current rows to discover obsolete %s",
   (kind) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -3942,20 +3947,50 @@ it.effect.each(["events", "receipts"] as const)(
             `;
           }
         }
+        const currentRows = 101;
+        if (kind === "events") {
+          yield* sql`
+            WITH RECURSIVE history(n) AS (
+              SELECT 1 UNION ALL SELECT n + 1 FROM history WHERE n < ${currentRows}
+            )
+            INSERT INTO orchestration_events (
+              event_id, aggregate_kind, stream_id, stream_version, event_type,
+              occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+            )
+            SELECT 'current-' || n, 'thread', 'imported', n + 1, 'checkpoint.captured',
+              ${now}, 'server', '{}', '{}', 2
+            FROM history ORDER BY n
+          `;
+        } else {
+          yield* sql`
+            WITH RECURSIVE history(n) AS (
+              SELECT 1 UNION ALL SELECT n + 1 FROM history WHERE n < ${currentRows}
+            )
+            INSERT INTO orchestration_command_receipts (
+              command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence,
+              status, command_type
+            )
+            SELECT 'current-' || n, 'thread', 'imported', ${now}, 1, 'accepted', 'thread.archive'
+            FROM history ORDER BY n
+          `;
+        }
         yield* sql`CREATE TABLE concurrent_writes (value TEXT)`;
         const readerHeld = yield* Deferred.make<void>();
         const releaseReader = yield* Deferred.make<void>();
         const discoveryStarted = yield* Deferred.make<Tracer.Span>();
+        const discoveryIndex =
+          kind === "events"
+            ? "idx_orch_events_stream_sequence"
+            : "idx_orch_command_receipts_aggregate";
+        let discoveryPages = 0;
         const observeDiscovery: Statement.Transformer = (statement, _sql, _fiber, span) => {
           const [query] = statement.compile();
-          const pageQuery =
-            kind === "events" ? /^\s*SELECT\s+event\.sequence/ : /^\s*SELECT\s+receipt\.command_id/;
-          return pageQuery.test(query)
-            ? Deferred.succeed(discoveryStarted, span).pipe(
-                Effect.andThen(Deferred.await(readerHeld)),
-                Effect.as(statement),
-              )
-            : Effect.succeed(statement);
+          if (!query.includes(discoveryIndex)) return Effect.succeed(statement);
+          discoveryPages++;
+          return Deferred.succeed(discoveryStarted, span).pipe(
+            Effect.andThen(Deferred.await(readerHeld)),
+            Effect.as(statement),
+          );
         };
         const compacted = yield* Deferred.make<void>();
         const compaction = yield* maintenance.compactEventStore().pipe(
@@ -3984,7 +4019,7 @@ it.effect.each(["events", "receipts"] as const)(
               event_id, aggregate_kind, stream_id, stream_version, event_type,
               occurred_at, actor_kind, payload_json, metadata_json, application_event_version
             ) VALUES (
-              'after-bound', 'thread', 'imported', 2, 'thread.message-appended',
+              'after-bound', 'thread', 'imported', ${currentRows + 2}, 'thread.message-appended',
               ${now}, 'user', '{}', '{}', 1
             )
           `;
@@ -4000,13 +4035,18 @@ it.effect.each(["events", "receipts"] as const)(
         yield* Fiber.join(reader);
         const result = yield* Fiber.join(compaction);
         assert.equal(discoverySpan.attributes.get("db.connection"), "background-reader");
+        assert.equal(discoveryPages, 3);
         assert.equal(result.deletedEventCount, kind === "events" ? 1 : 0);
         assert.equal(result.deletedReceiptCount, kind === "receipts" ? 1 : 0);
         const retained =
           kind === "events"
             ? yield* sql`SELECT event_id AS id FROM orchestration_events ORDER BY sequence`
             : yield* sql`SELECT command_id AS id FROM orchestration_command_receipts ORDER BY rowid`;
-        assert.deepEqual(retained, [{ id: "pending" }, { id: "after-bound" }]);
+        assert.deepEqual(retained, [
+          { id: "pending" },
+          ...Array.from({ length: currentRows }, (_, index) => ({ id: `current-${index + 1}` })),
+          { id: "after-bound" },
+        ]);
       }).pipe(Effect.provide(maintenanceLayer));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

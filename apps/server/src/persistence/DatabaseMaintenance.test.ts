@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
+import { runMigrations } from "./Migrations.ts";
 import * as Sqlite from "./Sqlite.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -211,26 +212,20 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
       }).pipe(Effect.scoped),
     );
 
-    it.effect("compacts an existing database offline only once its server has stopped", () =>
+    it.effect("compacts a pre-113 database offline only once its server has stopped", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
         const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-compact-" });
-        const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
-        yield* Effect.flatMap(
-          ProjectionMaintenance.ProjectionMaintenanceV2,
-          (projections) => projections.rebuild,
-        ).pipe(
-          Effect.provide(
-            ProjectionMaintenance.layer.pipe(
-              Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-              Layer.provideMerge(Sqlite.layerFromPath(dbPath)),
-            ),
-          ),
-        );
+        const dbPath = path.join(baseDir, "statev2.sqlite");
+        const migrationHead = 112;
         yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+          yield* sql`PRAGMA journal_mode = WAL`;
+          yield* runMigrations({ toMigrationInclusive: migrationHead });
+          const projections = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+          yield* projections.rebuild;
           yield* sql`PRAGMA auto_vacuum = NONE`;
           yield* sql`VACUUM`;
           yield* sql`CREATE TABLE retained_data (value TEXT)`;
@@ -261,13 +256,27 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
           ) INSERT INTO orchestration_command_receipts (
             command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
           ) SELECT 'legacy-' || n, 'thread', 'imported', '2026-10-17', 0, 'accepted', 'legacy' FROM history`;
-        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+        }).pipe(
+          Effect.provide(
+            ProjectionMaintenance.layer.pipe(
+              Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+              Layer.provideMerge(NodeSqliteClient.layer({ filename: dbPath })),
+            ),
+          ),
+        );
 
         const sizeBefore = (yield* fs.stat(dbPath)).size;
         const refused = yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* sql`SELECT value FROM retained_data`;
-          return yield* maintenance.compact(dbPath, { toolOutputAfterDays: 7 }).pipe(Effect.flip);
+          const failure = yield* maintenance
+            .compact(dbPath, { toolOutputAfterDays: 7 })
+            .pipe(Effect.flip);
+          assert.deepEqual(
+            yield* sql`SELECT MAX(migration_id) AS head FROM effect_sql_migrations`,
+            [{ head: migrationHead }],
+          );
+          return failure;
         }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
         assert.equal(refused._tag, "DatabaseInUseError");
         assert.equal((yield* fs.stat(dbPath)).size, sizeBefore);
@@ -291,6 +300,10 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         assert.isBelow(result.afterBytes, result.beforeBytes - 3 * 1024 * 1024);
         yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(
+            yield* sql`SELECT MAX(migration_id) AS head FROM effect_sql_migrations`,
+            [{ head: migrationHead }],
+          );
           assert.deepEqual(yield* sql`PRAGMA auto_vacuum`, [{ auto_vacuum: 2 }]);
           assert.deepEqual(yield* sql`SELECT value FROM retained_data`, [{ value: "keep" }]);
           assert.deepEqual(
@@ -344,6 +357,10 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
 
         yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(
+            yield* sql`SELECT compacted_through_sequence FROM orchestration_v2_event_store_compaction`,
+            yield* sql`SELECT MAX(sequence) AS compacted_through_sequence FROM orchestration_events`,
+          );
           assert.deepEqual(
             yield* sql`
               SELECT stream_id AS "threadId"

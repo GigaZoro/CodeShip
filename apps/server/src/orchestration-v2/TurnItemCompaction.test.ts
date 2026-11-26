@@ -496,19 +496,7 @@ it.effect("keeps post-bound appends visible during compaction", () =>
   ).pipe(Effect.provide(layerTest)),
 );
 
-// Records the compaction statements that read event or receipt rows, so a test can tell which ones
-// a pass ran.
-const recordRowReads = (queries: Array<string>): Statement.Transformer => {
-  return (statement) => {
-    const [query] = statement.compile();
-    if (/FROM orchestration_(events AS event|command_receipts AS receipt)\b/.test(query)) {
-      queries.push(query);
-    }
-    return Effect.succeed(statement);
-  };
-};
-
-it.effect("reads no event or legacy receipt that a complete pass already compacted", () =>
+it.effect("reads no old event payload or receipt type on an unchanged second pass", () =>
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
@@ -523,8 +511,9 @@ it.effect("reads no event or legacy receipt that a complete pass already compact
       ],
     });
     // One legacy chat's import finished and the other's never did.
+    const importedThreadId = "thread:turn-item-compaction-legacy-imported";
     for (const [legacyThreadId, importedAt] of [
-      ["thread:turn-item-compaction-legacy-imported", nowIso],
+      [importedThreadId, nowIso],
       ["thread:turn-item-compaction-legacy-pending", null],
     ] as const) {
       yield* sql`
@@ -549,18 +538,28 @@ it.effect("reads no event or legacy receipt that a complete pass already compact
         ) VALUES (${legacyThreadId}, 'thread', ${legacyThreadId}, ${nowIso}, 1, 'accepted', 'legacy')
       `;
     }
+    yield* sql`
+      INSERT INTO orchestration_command_receipts (
+        command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
+      ) VALUES ('retained', 'thread', ${importedThreadId}, ${nowIso}, 1, 'accepted', 'thread.archive')
+    `;
     const first = yield* maintenance.compactEventStore();
     assert.deepEqual([first.deletedEventCount, first.deletedReceiptCount], [2, 1]);
-    // A pass that read any of these again would fail on the payload.
-    yield* sql`UPDATE orchestration_events SET payload_json = '{'`;
-    const rowReads: Array<string> = [];
+    // SQLite evaluates a virtual column only when its value is read. Both expressions fail
+    // on every fixture row, including when a query selects the column directly.
+    yield* sql`ALTER TABLE orchestration_events RENAME COLUMN payload_json TO stored_payload`;
+    yield* sql`ALTER TABLE orchestration_events ADD COLUMN payload_json TEXT
+      GENERATED ALWAYS AS (json('invalid:' || stored_payload)) VIRTUAL`;
+    yield* sql`ALTER TABLE orchestration_command_receipts RENAME COLUMN command_type TO stored_type`;
+    yield* sql`ALTER TABLE orchestration_command_receipts ADD COLUMN command_type TEXT
+      GENERATED ALWAYS AS (json('invalid:' || stored_type)) VIRTUAL`;
+    yield* Effect.flip(sql`SELECT payload_json FROM orchestration_events`);
+    yield* Effect.flip(sql`SELECT command_type FROM orchestration_command_receipts
+      WHERE aggregate_kind = 'thread' AND aggregate_id = ${importedThreadId}`);
 
-    const unchanged = yield* maintenance
-      .compactEventStore()
-      .pipe(Effect.provideService(Statement.CurrentTransformer, recordRowReads(rowReads)));
+    const unchanged = yield* maintenance.compactEventStore();
 
     assert.deepEqual([unchanged.deletedEventCount, unchanged.deletedReceiptCount], [0, 0]);
-    assert.deepEqual(rowReads, []);
   }).pipe(Effect.provide(layerTest)),
 );
 

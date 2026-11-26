@@ -55,10 +55,13 @@ export interface ProjectionMaintenanceV2Shape {
   readonly verify: Effect.Effect<ProjectionVerificationV2, ProjectionMaintenanceError>;
   readonly rebuild: Effect.Effect<ProjectionVerificationV2, ProjectionMaintenanceError>;
   /**
-   * Delete superseded events and imported legacy rows. A pass reads only the events appended since
-   * the last complete pass, plus the older thread state of the chats those events touched.
+   * Compact new events and the older thread state they can supersede. Offline repair can still
+   * run a full pass on databases that predate incremental compaction.
    */
-  readonly compactEventStore: (betweenPages?: Effect.Effect<void>) => Effect.Effect<
+  readonly compactEventStore: (
+    betweenPages?: Effect.Effect<void>,
+    mode?: "incremental" | "full",
+  ) => Effect.Effect<
     {
       readonly deletedEventCount: number;
       readonly deletedReceiptCount: number;
@@ -421,7 +424,12 @@ export const layer: Layer.Layer<
     // or turn item keeps one more event on each side of every mark its updates span.
     const compactEventStore = Effect.fn("ProjectionMaintenance.compactEventStore")(function* (
       betweenPages: Effect.Effect<void> = Effect.void,
+      mode: "incremental" | "full" = "incremental",
     ) {
+      const incremental = mode === "incremental";
+      const storedMark = incremental
+        ? sql`(SELECT compacted_through_sequence FROM orchestration_v2_event_store_compaction)`
+        : sql.literal("0");
       const bounds = yield* sql<{
         readonly event_sequence: number;
         readonly compacted_through_sequence: number;
@@ -429,10 +437,7 @@ export const layer: Layer.Layer<
       }>`
         SELECT
           COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS event_sequence,
-          COALESCE(
-            (SELECT compacted_through_sequence FROM orchestration_v2_event_store_compaction),
-            0
-          ) AS compacted_through_sequence,
+          COALESCE(${storedMark}, 0) AS compacted_through_sequence,
           COALESCE((SELECT MAX(rowid) FROM orchestration_command_receipts), 0) AS receipt_row_id
       `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
       const throughSequence = bounds[0]?.event_sequence ?? 0;
@@ -501,8 +506,10 @@ export const layer: Layer.Layer<
         // Never hold a transaction or the reader lock across a yield or a rest.
         yield* Effect.yieldNow;
         if (sequences.length === 0) return;
-        yield* sql`DELETE FROM orchestration_events WHERE sequence IN ${sql.in(sequences)}`;
-        deletedEventCount += sequences.length;
+        const deleted = yield* sql`
+          DELETE FROM orchestration_events WHERE sequence IN ${sql.in(sequences)} RETURNING sequence
+        `;
+        deletedEventCount += deleted.length;
         yield* Effect.yieldNow;
       });
 
@@ -564,14 +571,14 @@ export const layer: Layer.Layer<
               event.stream_id,
               event.event_type,
               CASE
-                WHEN event.event_type = 'thread.pull-request-link-updated'
+                WHEN event.application_event_version = 2
+                  AND event.event_type = 'thread.pull-request-link-updated'
                 THEN ${pullRequestLinkKey}
                 ELSE NULL
               END AS entity_id
             FROM orchestration_events AS event
               INDEXED BY orchestration_events_v2_thread_state_idx
-            WHERE event.application_event_version = 2
-              AND event.aggregate_kind = 'thread'
+            WHERE event.aggregate_kind = 'thread'
               AND event.event_type IN (${threadStateEventTypeList})
               AND event.stream_id = ${threadId}
               AND event.sequence <= ${throughThreadState}
@@ -583,7 +590,7 @@ export const layer: Layer.Layer<
         }
       }
 
-      if (throughSequence > compactedThroughSequence) {
+      if (incremental && throughSequence > compactedThroughSequence) {
         yield* sql`
           INSERT INTO orchestration_v2_event_store_compaction (id, compacted_through_sequence)
           VALUES (1, ${throughSequence})
@@ -596,50 +603,69 @@ export const layer: Layer.Layer<
       // anymore, so the first pass after its import deletes them and marks the chat done. Untraced:
       // one per chat, inside the pass span.
       const compactLegacyThread = Effect.fnUntraced(function* (threadId: string) {
+        // Advance by every indexed row so even a page with no legacy rows bounds reader work.
         let throughLegacySequence = throughSequence;
         while (throughLegacySequence > 0) {
           yield* nextPage;
-          const rows = yield* sql<{ readonly sequence: number }>`
-            SELECT event.sequence
+          const rows = yield* sql<{
+            readonly sequence: number;
+            readonly application_event_version: number;
+          }>`
+            SELECT event.sequence, event.application_event_version
             FROM orchestration_events AS event INDEXED BY idx_orch_events_stream_sequence
             WHERE event.aggregate_kind = 'thread'
               AND event.stream_id = ${threadId}
               AND event.sequence <= ${throughLegacySequence}
-              AND event.application_event_version = 1
             ORDER BY event.sequence DESC
             LIMIT ${COMPACTION_PAGE_SIZE + 1}
           `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
-          yield* deleteEvents(rows.slice(0, COMPACTION_PAGE_SIZE).map((row) => row.sequence));
+          const sequences = rows
+            .slice(0, COMPACTION_PAGE_SIZE)
+            .filter((row) => row.application_event_version === 1)
+            .map((row) => row.sequence);
+          yield* deleteEvents(sequences);
           throughLegacySequence = rows[COMPACTION_PAGE_SIZE]?.sequence ?? 0;
         }
         let throughLegacyRowId = throughReceiptRowId;
         while (throughLegacyRowId > 0) {
           yield* nextPage;
-          const rows = yield* sql<{ readonly command_id: string; readonly row_id: number }>`
-            SELECT receipt.command_id, receipt.rowid AS row_id
+          const rows = yield* sql<{
+            readonly command_id: string;
+            readonly row_id: number;
+            readonly command_type: string;
+          }>`
+            SELECT receipt.command_id, receipt.rowid AS row_id, receipt.command_type
             FROM orchestration_command_receipts AS receipt
               INDEXED BY idx_orch_command_receipts_aggregate
             WHERE receipt.aggregate_kind = 'thread'
               AND receipt.aggregate_id = ${threadId}
               AND receipt.rowid <= ${throughLegacyRowId}
-              AND receipt.command_type = 'legacy'
             ORDER BY receipt.rowid DESC
             LIMIT ${COMPACTION_PAGE_SIZE + 1}
           `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
-          const commandIds = rows.slice(0, COMPACTION_PAGE_SIZE).map((row) => row.command_id);
+          const commandIds = rows
+            .slice(0, COMPACTION_PAGE_SIZE)
+            .filter((row) => row.command_type === "legacy")
+            .map((row) => row.command_id);
           yield* Effect.yieldNow;
           if (commandIds.length > 0) {
-            yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id IN ${sql.in(commandIds)}`;
-            deletedReceiptCount += commandIds.length;
+            const deleted = yield* sql`
+              DELETE FROM orchestration_command_receipts
+              WHERE command_id IN ${sql.in(commandIds)} AND command_type = 'legacy'
+              RETURNING command_id
+            `;
+            deletedReceiptCount += deleted.length;
             yield* Effect.yieldNow;
           }
           throughLegacyRowId = rows[COMPACTION_PAGE_SIZE]?.row_id ?? 0;
         }
-        yield* sql`
-          UPDATE orchestration_v2_legacy_imports
-          SET legacy_rows_compacted_at = ${DateTime.formatIso(yield* DateTime.now)}
-          WHERE thread_id = ${threadId}
-        `;
+        if (incremental) {
+          yield* sql`
+            UPDATE orchestration_v2_legacy_imports
+            SET legacy_rows_compacted_at = ${DateTime.formatIso(yield* DateTime.now)}
+            WHERE thread_id = ${threadId}
+          `;
+        }
       });
 
       let afterLegacyThreadId = "";
@@ -650,7 +676,7 @@ export const layer: Layer.Layer<
           SELECT thread_id
           FROM orchestration_v2_legacy_imports
           WHERE transcript_imported_at IS NOT NULL
-            AND legacy_rows_compacted_at IS NULL
+            ${incremental ? sql`AND legacy_rows_compacted_at IS NULL` : sql.literal("")}
             AND thread_id > ${afterLegacyThreadId}
           ORDER BY thread_id
           LIMIT ${COMPACTION_PAGE_SIZE}

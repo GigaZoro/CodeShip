@@ -13,6 +13,7 @@ import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../orchestration-v2/messageSearchIndex.ts";
+import { migrationManifest } from "./Migrations.ts";
 import { readFragmentedBytes } from "./databaseFragmentation.ts";
 
 export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingError>()(
@@ -111,6 +112,10 @@ const isDomainError = Schema.is(
   Schema.Union([DatabaseMissingError, DatabaseInUseError, DatabaseProjectionsInvalidError]),
 );
 
+const [INCREMENTAL_EVENT_STORE_COMPACTION_MIGRATION_ID] = migrationManifest.find(
+  ([, name]) => name === "IncrementalEventStoreCompaction",
+)!;
+
 const readStorage = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const pages = yield* sql<{ readonly page_count: number }>`PRAGMA page_count`;
@@ -190,10 +195,19 @@ const make = Effect.gen(function* () {
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });
         }
+        // Doctor can restart an older server. Leave schema upgrades to startup.
+        const [incrementalCompaction] = yield* sql`
+          SELECT 1 FROM effect_sql_migrations
+          WHERE migration_id >= ${INCREMENTAL_EVENT_STORE_COMPACTION_MIGRATION_ID}
+          LIMIT 1
+        `;
         // The server's retention rules, so the rebuilt file never keeps what the server would remove.
         const history = yield* ProjectionMaintenance.compactIdleThreadHistory();
         yield* ProjectionMaintenance.pruneToolOutputAfterDays(options.toolOutputAfterDays);
-        const store = yield* maintenance.compactEventStore();
+        const store = yield* maintenance.compactEventStore(
+          Effect.void,
+          incrementalCompaction ? "incremental" : "full",
+        );
         const summary = {
           ...store,
           deletedEventCount: store.deletedEventCount + history.deletedEventCount,
