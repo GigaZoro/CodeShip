@@ -7,9 +7,14 @@ import type {
 import * as Schema from "effect/Schema";
 
 import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
+import {
+  canRetainUsageRecord,
+  makeUsageRetentionMatcher,
+  supportsUsageRetention,
+} from "./usageRetentionIdentity.ts";
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 
-export const USAGE_SCAN_CACHE_VERSION = 11 as const;
+export const USAGE_SCAN_CACHE_VERSION = 12 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
@@ -18,6 +23,7 @@ const SPEED_COMPATIBLE_SINCE_VERSION = 4;
  * holds every live row, deletes what it covers. A newer format only reads these: a running
  * writer's later saves hold just the rows they changed and need its earlier snapshots beside them.
  */
+export const PREVIOUS_SCAN_CACHE_DIRECTORY_NAME = "usage-scan-cache-v11";
 export const SCAN_CACHE_DIRECTORY_NAME = `usage-scan-cache-v${USAGE_SCAN_CACHE_VERSION}`;
 /** Single-file caches of older builds, which a sync moves into the store as legacy inputs. */
 const LEGACY_SCAN_CACHE_FILE_NAMES = [
@@ -48,6 +54,17 @@ export function isScanCacheInput(name: string): boolean {
 
 const SPEEDS: readonly UsageSpeed[] = ["standard", "fast", "ultrafast"];
 
+/** A record the file at a path held until a read found a version without it. */
+interface SupersededRecord {
+  readonly record: KeyedUsageRecord;
+  /** Latest observation of the path that still held the record. */
+  readonly seenMs: number;
+  /** Observation after seenMs that found it gone; its retention counts from here. */
+  readonly sinceMs: number;
+}
+
+type KeyedUsageRecord = UsageRecord & { readonly dedupeKey: string };
+
 export interface CachedFile {
   readonly size: number;
   readonly needsReparse?: true;
@@ -67,6 +84,17 @@ export interface CachedFile {
   /** Whole-file count, including diagnostics from the tentative tail. */
   readonly malformedRecords: number;
   readonly position: TranscriptParsePosition;
+  /**
+   * Keyed records earlier versions of the file held that this one lacks, sorted by key. Only a
+   * qualifying provider identity can distinguish a displaced call from the current contents.
+   */
+  readonly superseded?: readonly SupersededRecord[];
+  /** Prior reads in the retention window, so a late peer can date a previously unknown record's replacement. */
+  readonly priorReads?: readonly number[];
+  /** Most recent expired read. A peer's earlier sighting cannot revive history absent by this read. */
+  readonly expiredThroughMs?: number;
+  /** The last read by a different provider invalidates earlier identities for this path. */
+  readonly otherProviderAtMs?: number;
 }
 
 export type ScanCache = Map<string, CachedFile>;
@@ -94,9 +122,9 @@ const unresolvedTurns = (entry: CachedFile) => {
  * Every place rows for one transcript meet uses this order, so any merge order of the same
  * snapshots gives the same rows: the later observation, then a current-format row, then the
  * larger file, then fewer unresolved speed tiers (resolving one keeps the read time), then the
- * lower list of unresolved turns, then the row already held.
+ * lower list of unresolved turns. Equal-time rewrites use their contents as a final tiebreak.
  */
-function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
+function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile | undefined {
   if (incoming.observedAtMs !== held.observedAtMs) {
     return incoming.observedAtMs > held.observedAtMs ? incoming : held;
   }
@@ -104,18 +132,206 @@ function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
   if (heldCurrent !== isCurrentRow(incoming)) return heldCurrent ? held : incoming;
   if (incoming.size !== held.size) return incoming.size > held.size ? incoming : held;
   const heldTurns = unresolvedTurns(held);
-  if (heldTurns.length === 0) return held;
   const incomingTurns = unresolvedTurns(incoming);
   if (incomingTurns.length !== heldTurns.length) {
     return incomingTurns.length < heldTurns.length ? incoming : held;
   }
-  return incomingTurns.join("\n") < heldTurns.join("\n") ? incoming : held;
+  const left = JSON.stringify(heldTurns);
+  const right = JSON.stringify(incomingTurns);
+  if (left !== right) return right < left ? incoming : held;
+  const fileInfo = (entry: CachedFile) =>
+    JSON.stringify([
+      entry.provider,
+      entry.mtimeMs,
+      entry.needsReparse,
+      entry.legacy,
+      entry.malformedRecords,
+      entry.position.resumeOffset,
+      entry.position.guardLength,
+      entry.position.guardHash,
+      entry.position.state,
+    ]);
+  const heldInfo = fileInfo(held);
+  const incomingInfo = fileInfo(incoming);
+  if (heldInfo !== incomingInfo) return incomingInfo < heldInfo ? incoming : held;
+  for (const field of ["records", "tailRecords"] as const) {
+    const a = held[field];
+    const b = incoming[field];
+    if (a === b) continue;
+    if (a.length !== b.length) return b.length > a.length ? incoming : held;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] === b[i]) continue;
+      if (!sameRecord(a[i]!, b[i]!))
+        return recordIdentity(b[i]!) < recordIdentity(a[i]!) ? incoming : held;
+    }
+  }
+  return undefined;
 }
 
 const latest = (...times: readonly (number | undefined)[]) => {
   const known = times.filter((time) => time !== undefined);
   return known.length === 0 ? undefined : Math.max(...known);
 };
+
+function sameRecord(a: UsageRecord, b: UsageRecord) {
+  return (
+    a.dedupeKey === b.dedupeKey &&
+    a.timestampMs === b.timestampMs &&
+    a.model === b.model &&
+    a.rateModel === b.rateModel &&
+    a.sessionId === b.sessionId &&
+    a.reportedCostUsd === b.reportedCostUsd &&
+    a.speed === b.speed &&
+    a.unresolvedServiceTierTurnId === b.unresolvedServiceTierTurnId &&
+    a.totals.uncachedInputTokens === b.totals.uncachedInputTokens &&
+    a.totals.cachedInputTokens === b.totals.cachedInputTokens &&
+    a.totals.cacheCreationTokens === b.totals.cacheCreationTokens &&
+    a.totals.outputTokens === b.totals.outputTokens &&
+    a.totals.reasoningTokens === b.totals.reasoningTokens
+  );
+}
+
+const recordIdentity = (record: UsageRecord) =>
+  JSON.stringify([
+    record.dedupeKey,
+    record.timestampMs,
+    record.model,
+    record.rateModel ?? null,
+    record.sessionId,
+    record.totals.uncachedInputTokens,
+    record.totals.cachedInputTokens,
+    record.totals.cacheCreationTokens,
+    record.totals.outputTokens,
+    record.totals.reasoningTokens,
+    record.reportedCostUsd,
+    record.speed,
+    record.unresolvedServiceTierTurnId ?? null,
+  ]);
+
+function firstReadAfter(priorReads: readonly number[], seenMs: number, lastRead: number) {
+  let low = 0;
+  let high = priorReads.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (priorReads[mid]! <= seenMs) low = mid + 1;
+    else high = mid;
+  }
+  return priorReads[low] ?? lastRead;
+}
+
+function sameItems<T>(own: readonly T[] | undefined, next: readonly T[]) {
+  return (own?.length ?? 0) === next.length && next.every((item, index) => item === own?.[index]);
+}
+
+interface ReadEvidence {
+  /** Only the original parsed row proves the committed prefix survived a verified append. */
+  readonly retainedPrefix?: CachedFile;
+  readonly liveKeys?: ReadonlySet<string>;
+}
+
+export function carrySuperseded(
+  winner: CachedFile,
+  loser: CachedFile,
+  read?: ReadEvidence,
+): CachedFile {
+  if (loser === winner || !supportsUsageRetention(winner.provider)) return winner;
+  const sameProvider = loser.provider === winner.provider;
+  const otherProviderAtMs = latest(
+    winner.otherProviderAtMs,
+    sameProvider ? loser.otherProviderAtMs : loser.observedAtMs,
+  );
+  const expiredThroughMs = latest(
+    winner.expiredThroughMs,
+    sameProvider ? loser.expiredThroughMs : undefined,
+  );
+  const floor = expiredThroughMs ?? -Infinity;
+  const times = new Set(winner.priorReads);
+  if (sameProvider) {
+    for (const time of loser.priorReads ?? []) times.add(time);
+    times.add(loser.observedAtMs);
+  }
+  const priorReads = [...times]
+    .filter(
+      (time) =>
+        time > floor && time > (otherProviderAtMs ?? -Infinity) && time < winner.observedAtMs,
+    )
+    .sort((a, b) => a - b);
+
+  const retained = new Map<string, SupersededRecord>();
+  let liveKeys = read?.liveKeys;
+  const tailKeys = new Set(winner.tailRecords.map((record) => record.dedupeKey));
+  function consider(
+    record: KeyedUsageRecord,
+    seenMs: number,
+    sinceMs: number,
+    original?: SupersededRecord,
+  ) {
+    if (seenMs < floor || seenMs <= (otherProviderAtMs ?? -Infinity)) return;
+    liveKeys ??= new Set(
+      winner.records.map((live) => live.dedupeKey).filter((key) => key !== null),
+    );
+    const key = record.dedupeKey;
+    if (liveKeys.has(key) && !tailKeys.has(key)) return;
+    const held = retained.get(key);
+    if (held !== undefined && held.seenMs > seenMs) return;
+    sinceMs = Math.min(sinceMs, firstReadAfter(priorReads, seenMs, winner.observedAtMs));
+    if (held?.seenMs === seenMs) {
+      sinceMs = Math.min(sinceMs, held.sinceMs);
+      if (
+        held.record === record ||
+        sameRecord(held.record, record) ||
+        recordIdentity(held.record) <= recordIdentity(record)
+      ) {
+        record = held.record;
+        original = held;
+      }
+    }
+    retained.set(key, original?.sinceMs === sinceMs ? original : { record, seenMs, sinceMs });
+  }
+  function carryHistory(entry: CachedFile) {
+    for (const item of entry.superseded ?? []) {
+      // Concurrent sightings count as present until the next distinct read.
+      const sinceMs = item.seenMs === entry.observedAtMs ? Infinity : item.sinceMs;
+      consider(item.record, item.seenMs, sinceMs, item);
+    }
+  }
+  carryHistory(winner);
+  if (sameProvider) carryHistory(loser);
+  if (
+    sameProvider &&
+    read?.retainedPrefix !== loser &&
+    loser.observedAtMs >= floor &&
+    loser.observedAtMs > (otherProviderAtMs ?? -Infinity)
+  ) {
+    for (const record of loser.records) {
+      if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity);
+    }
+    // Only a full re-read proves the tentative line was replaced rather than completed.
+    if (read !== undefined && read.retainedPrefix === undefined) {
+      for (const record of loser.tailRecords) {
+        if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity);
+      }
+    }
+  }
+  const superseded = [...retained.values()].sort((a, b) =>
+    a.record.dedupeKey < b.record.dedupeKey ? -1 : 1,
+  );
+  if (
+    sameItems(winner.superseded, superseded) &&
+    sameItems(winner.priorReads, priorReads) &&
+    winner.expiredThroughMs === expiredThroughMs &&
+    winner.otherProviderAtMs === otherProviderAtMs
+  )
+    return winner;
+  const { superseded: _old, priorReads: _times, ...entry } = winner;
+  return {
+    ...entry,
+    ...(superseded.length ? { superseded } : {}),
+    ...(priorReads.length ? { priorReads } : {}),
+    ...(expiredThroughMs === undefined ? {} : { expiredThroughMs }),
+    ...(otherProviderAtMs === undefined ? {} : { otherProviderAtMs }),
+  };
+}
 
 /**
  * Presence says nothing about a file's contents, so it never picks the winning row. The winner
@@ -124,7 +340,12 @@ const latest = (...times: readonly (number | undefined)[]) => {
  * not change observedAtMs, so only the time it found the file back can show that.
  */
 export function mergeScanEntry(held: CachedFile, incoming: CachedFile): CachedFile {
-  const winner = pickScanEntry(held, incoming);
+  if (held === incoming) return held;
+  const picked = pickScanEntry(held, incoming);
+  const winner =
+    picked === undefined
+      ? carrySuperseded(held, incoming, { retainedPrefix: incoming })
+      : carrySuperseded(picked, picked === held ? incoming : held);
   const presentSinceMs = latest(held.presentSinceMs, incoming.presentSinceMs);
   const missingSinceMs = latest(
     ...[held, incoming].map(({ observedAtMs, missingSinceMs }) =>
@@ -180,6 +401,10 @@ interface SerializedFile {
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
   readonly t: readonly SerializedRecord[];
+  readonly pr?: readonly number[];
+  readonly ex?: number;
+  readonly op?: number;
+  readonly sp?: readonly (readonly [seenMs: number, sinceMs: number, record: SerializedRecord])[];
   readonly mr: number;
   readonly o: number;
   readonly gl: number;
@@ -245,6 +470,16 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     p: entry.provider,
     r: entry.records.map(serializeRecord),
     t: entry.tailRecords.map(serializeRecord),
+    ...(entry.priorReads === undefined ? {} : { pr: entry.priorReads }),
+    ...(entry.expiredThroughMs === undefined ? {} : { ex: entry.expiredThroughMs }),
+    ...(entry.otherProviderAtMs === undefined ? {} : { op: entry.otherProviderAtMs }),
+    ...(entry.superseded === undefined
+      ? {}
+      : {
+          sp: entry.superseded.map(
+            ({ record, seenMs, sinceMs }) => [seenMs, sinceMs, serializeRecord(record)] as const,
+          ),
+        }),
     mr: entry.malformedRecords,
     o: entry.position.resumeOffset,
     gl: entry.position.guardLength,
@@ -461,8 +696,56 @@ export function decodeScanCache(
     // Rows written before observations were recorded count as observed at their mtime.
     const observedAtMs =
       typeof entry.oa === "number" && Number.isFinite(entry.oa) ? entry.oa : entry.m;
-
-    cache.set(path, {
+    const superseded: SupersededRecord[] = [];
+    if (entry.sp !== undefined) {
+      if (!isRecordArray(entry.sp)) continue;
+      const valid = entry.sp.every((item) => {
+        if (!isRecordArray(item) || item.length !== 3) return false;
+        const [seenMs, sinceMs, rawRecord] = item;
+        if (
+          typeof seenMs !== "number" ||
+          !Number.isFinite(seenMs) ||
+          typeof sinceMs !== "number" ||
+          !Number.isFinite(sinceMs) ||
+          seenMs > observedAtMs ||
+          sinceMs > observedAtMs
+        )
+          return false;
+        const rows = decodeRecords([rawRecord], provider);
+        if (rows === null) return false;
+        const record = rows[0];
+        if (record === undefined || !canRetainUsageRecord(record)) return true;
+        const last = superseded.at(-1);
+        if (last && last.record.dedupeKey >= record.dedupeKey) return false;
+        superseded.push({ record, seenMs, sinceMs });
+        return true;
+      });
+      if (!valid) continue;
+    }
+    const priorReads = entry.pr;
+    if (
+      priorReads !== undefined &&
+      (!Array.isArray(priorReads) ||
+        priorReads.some(
+          (time, i) =>
+            !Number.isFinite(time) ||
+            time >= observedAtMs ||
+            time <= (entry.ex ?? -Infinity) ||
+            (i > 0 && time <= priorReads[i - 1]!),
+        ))
+    )
+      continue;
+    if (
+      [entry.ex, entry.op].some(
+        (time) => time !== undefined && (!Number.isFinite(time) || time > observedAtMs),
+      )
+    )
+      continue;
+    const decoded: CachedFile = {
+      ...(superseded.length ? { superseded } : {}),
+      ...(priorReads?.length ? { priorReads } : {}),
+      ...(entry.ex === undefined ? {} : { expiredThroughMs: entry.ex }),
+      ...(entry.op === undefined ? {} : { otherProviderAtMs: entry.op }),
       size: entry.s,
       ...(needsReparse ? { needsReparse: true } : {}),
       ...(version < USAGE_SCAN_CACHE_VERSION || entry.lg === true ? { legacy: true } : {}),
@@ -482,7 +765,8 @@ export function decodeScanCache(
             guardHash: entry.gh,
             state: entry.cs,
           },
-    });
+    };
+    cache.set(path, decoded);
   }
 
   return cache;
@@ -508,6 +792,74 @@ function makeStateValidators(
 /** A deleted transcript's usage counts from when it went missing, so deleting it never ends it early. */
 export const isRetained = (entry: CachedFile, retentionCutoffMs: number): boolean =>
   (entry.missingSinceMs ?? entry.mtimeMs) >= retentionCutoffMs;
+
+/** A replaced version's usage counts from when a read found it gone, as a deleted file's does. */
+export const retainedSuperseded = (
+  entry: CachedFile,
+  retentionCutoffMs: number,
+  provider: UsageProviderKind,
+): readonly UsageRecord[] => {
+  if (entry.superseded === undefined || entry.provider !== provider) return [];
+  const candidates = entry.superseded.filter((item) => item.sinceMs >= retentionCutoffMs);
+  if (candidates.length === 0) return [];
+  const matcher = makeUsageRetentionMatcher(provider, entry.records);
+  for (const record of entry.tailRecords) matcher.add(record);
+  candidates.sort((a, b) => b.seenMs - a.seenMs);
+  const kept: UsageRecord[] = [];
+  let start = 0;
+  while (start < candidates.length) {
+    let end = start;
+    const batchStart = kept.length;
+    do {
+      const { record } = candidates[end++]!;
+      if (!matcher.matches(record)) kept.push(record);
+    } while (end < candidates.length && candidates[end]!.seenMs === candidates[start]!.seenMs);
+    // Distinct IDs seen together can be separate calls even when they would be ambiguous across reads.
+    for (let i = batchStart; i < kept.length; i++) matcher.add(kept[i]!);
+    start = end;
+  }
+  return kept;
+};
+
+export const hasRetainedSuperseded = (entry: CachedFile, retentionCutoffMs: number): boolean =>
+  entry.superseded?.some(({ sinceMs }) => sinceMs >= retentionCutoffMs) ?? false;
+
+export function pruneSuperseded(
+  entry: CachedFile,
+  nowMs: number,
+  retentionCutoffMs: number,
+): CachedFile {
+  if (entry.priorReads === undefined && entry.superseded === undefined) return entry;
+  const reads = entry.priorReads ?? [];
+  const retained = entry.superseded ?? [];
+  let floor = entry.expiredThroughMs ?? -Infinity;
+  for (const time of reads) {
+    if (time >= retentionCutoffMs) break;
+    floor = Math.max(floor, time);
+  }
+  if (entry.observedAtMs < retentionCutoffMs) floor = entry.observedAtMs;
+  for (const item of retained) {
+    if (item.sinceMs < retentionCutoffMs)
+      floor = Math.max(floor, firstReadAfter(reads, item.seenMs, entry.observedAtMs));
+  }
+  const priorReads = reads.filter((time) => time > floor);
+  const superseded = retained
+    .filter((item) => item.sinceMs >= retentionCutoffMs)
+    .map((item) => (item.sinceMs <= nowMs ? item : { ...item, sinceMs: nowMs }));
+  if (
+    sameItems(reads, priorReads) &&
+    sameItems(retained, superseded) &&
+    floor === (entry.expiredThroughMs ?? -Infinity)
+  )
+    return entry;
+  const { superseded: _old, priorReads: _times, ...rest } = entry;
+  return {
+    ...rest,
+    ...(superseded.length ? { superseded } : {}),
+    ...(priorReads.length ? { priorReads } : {}),
+    ...(Number.isFinite(floor) ? { expiredThroughMs: floor } : {}),
+  };
+}
 
 /**
  * mergeScanEntry keeps a missing time only when it is after the presence time, so each mark
