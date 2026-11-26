@@ -1570,6 +1570,24 @@ it.layer(
         );
       });
 
+      it("retains catalog descriptions without admitting an earlier login or an unreported model", () => {
+        const previouslyFunded = {
+          ...signedIn,
+          auth: { ...signedIn.auth, funding: "included" as const },
+          models: signedIn.models.map((model) => ({ ...model, funding: "included" as const })),
+        };
+        const restored = ProviderRegistry.mergeProviderSnapshot(previouslyFunded, restartProbe);
+        assert.notEqual(restored.auth.funding, "included");
+        assert.notEqual(restored.models[0]?.funding, "included");
+        const changedLogin = ProviderRegistry.mergeProviderSnapshot(previouslyFunded, {
+          ...restartProbe,
+          status: "error",
+          auth: { ...signedIn.auth, email: "new@example.test", funding: "included" },
+        });
+        assert.equal(changedLogin.models[0]?.slug, signedIn.models[0].slug);
+        assert.equal(changedLogin.models[0]?.funding, "unknown");
+      });
+
       it("does not invent an account after sign-out, disable, uninstall, or for other providers", () => {
         const untouched = [
           { ...restartProbe, auth: { status: "unauthenticated" } },
@@ -1655,6 +1673,14 @@ it.layer(
       assert.deepStrictEqual(
         ProviderRegistry.mergeProviderSnapshot(previousProvider, refreshedProvider).models,
         [...previousProvider.models],
+      );
+      const differentLogin = {
+        ...refreshedProvider,
+        auth: { ...refreshedProvider.auth, profileId: "second-login" },
+      };
+      assert.deepStrictEqual(
+        ProviderRegistry.mergeProviderSnapshot(previousProvider, differentLogin).models,
+        differentLogin.models,
       );
     });
 
@@ -2061,6 +2087,18 @@ it.layer(
           expect(yield* Fiber.join(second)).toContainEqual(expect.objectContaining(fresh));
           expect(yield* read(1_000)).toContainEqual(expect.objectContaining(fresh));
           expect(yield* Ref.get(reads)).toBe(1);
+          const missingWeek = registry.refreshUsageIfStale({
+            instanceIds: [instanceId],
+            shouldRefresh: (provider) =>
+              !provider.usageLimits?.windows.some((window) => window.kind === "weekly"),
+            waitMs: 1_000,
+          });
+          yield* missingWeek;
+          yield* missingWeek;
+          expect(yield* Ref.get(reads)).toBe(2);
+          yield* TestClock.adjust("10 minutes");
+          yield* missingWeek;
+          expect(yield* Ref.get(reads)).toBe(3);
         }).pipe(
           Effect.provide(
             ProviderRegistry.layer.pipe(
@@ -2998,6 +3036,7 @@ it.layer(
             status.usageLimits?.unavailable?.reason,
             account.usageMissing ? "probeFailed" : account.expected,
           );
+          assert.notEqual(status.auth.funding, "included");
           if (account.usageMissing) {
             const published = {
               checkedAt: "2026-10-23T12:00:00.000Z",

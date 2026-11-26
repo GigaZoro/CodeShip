@@ -43,7 +43,10 @@ capabilities, never the driver kind.
   silently share an account or billing.
 - **Auto funding.** Declare `included` only when the executable account or model can use its
   allowance without falling through to paid usage. Leave funding unknown when a login, model
-  name or quota reading does not establish this. ACP agents can declare funding for each model
+  name or quota reading does not establish this. If the destination can select a different payer,
+  set `auth.fundingScope` to `workspace` and implement `fundingForWorkspace` on the instance.
+  Auto calls it with the actual launch directory and model before choosing the account.
+  ACP agents can declare funding for each model
   through `_meta["t3.codes/funding"]` on its model entry or model-select choice. That declaration
   must hold across the workspaces where the instance advertises it.
 - **Status checks.** Background status and model refreshes must not open a session that can start

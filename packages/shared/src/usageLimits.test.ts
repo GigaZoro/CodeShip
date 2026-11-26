@@ -87,7 +87,17 @@ describe("new thread model fallback", () => {
   };
   it.each([
     ["exhausted default", {}, fallback],
+    [
+      "quota-aware Auto with an exhausted placeholder",
+      { defaultSelection: { ...selection, quotaAwareAuto: true } },
+      { ...selection, quotaAwareAuto: true },
+    ],
     ["explicit selection", { explicitSelection: selection }, selection],
+    [
+      "quota-aware fallback with a full placeholder",
+      { fallbackSelection: { ...fallback, quotaAwareAuto: true }, providers: [limited] },
+      { ...fallback, quotaAwareAuto: true },
+    ],
     ["missing default", { defaultSelection: null }, null],
     ["no fallback", { fallbackSelection: null }, selection],
     ["expired window", { now: Date.parse("2026-09-04T00:00:00Z") }, selection],
@@ -426,6 +436,7 @@ describe("new thread model fallback", () => {
 it.each([
   ["claudeAgent", ["seven_day_opus"], false],
   ["claudeAgent", ["seven_day"], true],
+  ["claudeAgent", ["monthly_spend"], false],
   ["codex", ["5h"], true],
   ["codex", ["individual"], false],
   ["cursor", ["apiPercentUsed"], false],
@@ -451,6 +462,8 @@ it.each([
 it.each([
   { driver: "antigravity", id: "gemini-weekly", model: "gemini-4-neon", applies: false },
   { driver: "antigravity", id: "unclassified-quota", model: "gemini-4-neon", applies: false },
+  { driver: "antigravity", id: "gemini-5h", model: "opaque-model", applies: true },
+  { driver: "antigravity", id: "gemini-argon-5h", model: "opaque-model", applies: false },
   { driver: "example-adapter", id: "model-quota", model: "example/model-a", applies: true },
   { driver: "example-adapter", id: "model-quota", model: "example/model-b", applies: false },
   { driver: "example-adapter", id: "shared-pool", model: "example/model-a", applies: true },
@@ -459,6 +472,15 @@ it.each([
 ] as const)("uses scope evidence for $driver $id on $model", ({ driver, id, model, applies }) => {
   const live = provider({
     driver: ProviderDriverKind.make(driver),
+    models: [
+      {
+        slug: "opaque-model",
+        name: "My Argon alias",
+        nativeModelFamily: "gemini-4-neon",
+        isCustom: false,
+        capabilities: null,
+      },
+    ],
     usageLimits: {
       checkedAt: "2026-09-03T11:00:00Z",
       windows: [

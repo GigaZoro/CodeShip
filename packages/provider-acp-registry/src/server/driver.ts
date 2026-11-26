@@ -262,10 +262,26 @@ export function applyAcpRegistryLiveConfiguration(
   const { message: _staleProbeMessage, ...snapshot } = provider;
   // session/load may omit models (Kimi returns `{}`); keep the probed list
   // and apply any live option descriptors to it.
-  const probedModels = provider.models.filter((model) => !model.isCustom);
+  const currentModels =
+    provider.auth.status === "unauthenticated"
+      ? provider.models.map((model) =>
+          model.funding === "included" ? { ...model, funding: "unknown" as const } : model,
+        )
+      : provider.models;
+  const probedModels = currentModels.filter((model) => !model.isCustom);
   const discovery =
     configuration.models.length > 0
-      ? configuration
+      ? {
+          ...configuration,
+          models: configuration.models.map((model) => {
+            // A persisted foreground session may belong to an old login or a different workspace.
+            if (model.funding !== "included") return model;
+            const confirmed = probedModels.find(
+              (candidate) => candidate.slug === model.id,
+            )?.funding;
+            return { ...model, funding: confirmed ?? ("unknown" as const) };
+          }),
+        }
       : {
           ...configuration,
           models: probedModels.map((model) => ({
@@ -278,10 +294,11 @@ export function applyAcpRegistryLiveConfiguration(
         };
   return {
     ...snapshot,
-    status: provider.enabled ? "ready" : provider.status,
+    status:
+      provider.enabled && provider.auth.status !== "unauthenticated" ? "ready" : provider.status,
     models:
       configuration.models.length === 0 && configuration.configOptions.length === 0
-        ? provider.models
+        ? currentModels
         : modelsFromDiscovery(discovery, customModels),
   };
 }
@@ -620,7 +637,8 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       if (
         cached !== null &&
         cached.expiresAt > now &&
-        cached.provider.version === baseSnapshot.version
+        cached.provider.version === baseSnapshot.version &&
+        !cached.provider.models.some((model) => model.funding === "included")
       ) {
         return {
           provider: { ...cached.provider, checkedAt: baseSnapshot.checkedAt },

@@ -72,6 +72,8 @@ export const ServerProviderAuth = Schema.Struct({
   workspaceId: Schema.optional(TrimmedNonEmptyString),
   /** Published by the adapter when it can identify the payer independently of usage metrics. */
   funding: Schema.optionalKey(ServerProviderFunding),
+  /** Funding must be checked at the destination before an automatic start. */
+  fundingScope: Schema.optionalKey(Schema.Literal("workspace")),
   /**
    * When the saved login stops renewing and needs signing in again. Absent when the provider has
    * no such date or the server could not read it; a date in the past means the login has lapsed.
@@ -83,6 +85,8 @@ export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  /** Provider-reported model family when the executable slug is opaque. */
+  nativeModelFamily: Schema.optionalKey(TrimmedNonEmptyString),
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
   /** Overrides the account funding when the adapter can identify this model's payer separately. */

@@ -8,7 +8,7 @@ import {
   type ServerProviderSlashCommand,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
+import { antigravityModelFamily, createModelCapabilities } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -60,14 +60,13 @@ type ThinkingConfig = NonNullable<ReturnType<typeof antigravityThinkingConfig>>;
 /** Thinking options each model reported when selected; `null` means it has none. */
 export type AntigravityThinkingLevels = ReadonlyMap<string, ThinkingConfig | null>;
 
-function thinkingCapabilities(config: ThinkingConfig | null | undefined, observed: boolean) {
+function thinkingCapabilities(config: ThinkingConfig | null | undefined) {
+  if (config === undefined) return null;
   const descriptor = config
     ? acpProviderOptionDescriptors({ configOptions: [config], modeState: undefined })[0]
     : undefined;
   if (descriptor?.type !== "select") return EMPTY_MODEL_CAPABILITIES;
-  // Another model's selected level is not this model's default.
-  const { currentValue: _currentValue, ...unobserved } = descriptor;
-  return createModelCapabilities({ optionDescriptors: [observed ? descriptor : unobserved] });
+  return createModelCapabilities({ optionDescriptors: [descriptor] });
 }
 
 export function buildAntigravityModelsFromSession(
@@ -96,6 +95,10 @@ export function buildAntigravityModelsFromSession(
     if (!entry.value.trim() || seen.has(entry.value)) return [];
     seen.add(entry.value);
     const baseName = entry.name.trim() ? entry.name : entry.value;
+    const nativeModelFamily =
+      antigravityModelFamily(entry.value) === undefined
+        ? antigravityModelFamily(baseName)
+        : undefined;
     const name = names.has(baseName) ? `${baseName} (${entry.value})` : baseName;
     names.add(baseName);
     const observed =
@@ -104,14 +107,12 @@ export function buildAntigravityModelsFromSession(
       {
         slug: entry.value,
         name,
+        ...(nativeModelFamily === undefined ? {} : { nativeModelFamily }),
         isCustom: false,
         ...(entry.value === currentValue
           ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] }
           : {}),
-        capabilities:
-          observed === undefined
-            ? thinkingCapabilities(currentThinking, false)
-            : thinkingCapabilities(observed, true),
+        capabilities: thinkingCapabilities(observed),
       },
     ];
   });

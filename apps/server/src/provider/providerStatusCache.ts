@@ -76,13 +76,16 @@ export const hydrateCachedProvider = (input: {
   }
 
   const { message: _fallbackMessage, ...fallbackWithoutMessage } = input.fallbackProvider;
+  const { funding: _cachedFunding, fundingScope: _scope, ...auth } = input.cachedProvider.auth;
   const hydratedProvider: ServerProvider = {
     ...fallbackWithoutMessage,
-    models: mergeProviderModels(input.fallbackProvider.models, input.cachedProvider.models),
+    models: mergeProviderModels(input.fallbackProvider.models, input.cachedProvider.models).map(
+      ({ funding: _funding, ...model }) => model,
+    ),
     installed: input.cachedProvider.installed,
     version: input.cachedProvider.version,
     status: input.cachedProvider.status,
-    auth: input.cachedProvider.auth,
+    auth,
     checkedAt: input.cachedProvider.checkedAt,
     slashCommands: input.cachedProvider.slashCommands,
     skills: input.cachedProvider.skills,

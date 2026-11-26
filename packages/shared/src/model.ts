@@ -14,6 +14,13 @@ import { copySorted } from "./Array.ts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
 
+/** Identifies the quota family from an Antigravity model ID or its original ACP name. */
+export function antigravityModelFamily(value: string): string | undefined {
+  const family = value.trim().toLowerCase().replaceAll(/\s+/g, "-");
+  if (/^(?:neon|argon)(?:-|$)/.test(family)) return `gemini-${family}`;
+  return /^(?:gemini|claude|gpt)(?:-|$)/.test(family) ? family : undefined;
+}
+
 export function modelSelectionCommandType(
   currentInstanceId: ProviderInstanceId,
   selection: ModelSelection,

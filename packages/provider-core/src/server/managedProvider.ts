@@ -6,6 +6,7 @@ import {
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -74,7 +75,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 > {
   const host = yield* ProviderHost.ProviderHost;
   const refreshSemaphore = yield* Semaphore.make(1);
-  const usageRefreshQueued = yield* Ref.make<symbol | null>(null);
+  const usageRefreshQueued = yield* Ref.make<Deferred.Deferred<void, ServerSettingsError> | null>(
+    null,
+  );
   const changesPubSub = yield* Effect.acquireRelease(
     PubSub.unbounded<ServerProvider>(),
     PubSub.shutdown,
@@ -276,13 +279,13 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     )
       return;
     // An in-flight refresh may have read cached usage, so one refresh waits behind it.
-    const claim = Symbol();
+    const claim = Deferred.makeUnsafe<void, ServerSettingsError>();
     const release = Ref.update(usageRefreshQueued, (queued) => (queued === claim ? null : queued));
     yield* Effect.uninterruptibleMask((restore) =>
-      Ref.modify(usageRefreshQueued, (queued) => [queued !== null, queued ?? claim]).pipe(
-        Effect.flatMap((held) =>
-          held
-            ? Effect.void
+      Ref.modify(usageRefreshQueued, (queued) => [queued, queued ?? claim]).pipe(
+        Effect.flatMap((queued) =>
+          queued !== null
+            ? restore(Deferred.await(queued))
             : restore(
                 refreshSemaphore.withPermits(1)(
                   release.pipe(
@@ -293,7 +296,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
                     ),
                   ),
                 ),
-              ).pipe(Effect.onInterrupt(() => release)),
+              ).pipe(
+                Effect.asVoid,
+                Effect.onExit((exit) => release.pipe(Effect.andThen(Deferred.done(claim, exit)))),
+              ),
         ),
       ),
     );

@@ -1624,6 +1624,56 @@ describe("verified funding for automatic admission", () => {
   const custom = ProviderDriverKind.make("custom-local-agent");
   const weeklyReset = "2026-11-06T00:00:00.000Z";
 
+  it.effect("verifies the resolved model in the launch worktree before selecting the account", () =>
+    Effect.gen(function* () {
+      const routing = yield* AccountRouting.AccountRouting;
+      const request = {
+        projectId,
+        driver: claude,
+        model: auto.model,
+        funding: "verified" as const,
+      };
+      assert.lengthOf(yield* routing.accountsWithRoom(request), 0);
+      assert.lengthOf(yield* routing.accountsWithRoom({ ...request, cwd: "/root" }), 0);
+      assert.deepEqual(
+        (yield* routing.accountsWithRoom({ ...request, cwd: "/worktree" })).map(
+          (entry) => entry.instanceId,
+        ),
+        [primary],
+      );
+    }).pipe(
+      Effect.provide(
+        AccountRouting.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              ServerSettings.layerTest(settings([primary])),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
+              }),
+              Layer.mock(ProviderMcp.ProviderMcp)({
+                discover: () => Effect.succeedNone,
+                listLoaded: () => Effect.succeedNone,
+              }),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([
+                  provider(primary, {
+                    auth: { status: "authenticated", fundingScope: "workspace" },
+                  }),
+                ]),
+                fundingForWorkspace: ({ cwd, provider, model }) =>
+                  Effect.succeed(
+                    cwd === "/worktree" && provider.instanceId === primary && model === auto.model
+                      ? "included"
+                      : "metered",
+                  ),
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.each([
     {
       name: "Google OAuth without usage metrics",
@@ -1644,6 +1694,38 @@ describe("verified funding for automatic admission", () => {
       driver: antigravity,
       authType: "agent-platform",
       funding: "metered",
+      admits: false,
+    },
+    {
+      name: "workspace funding without a destination check",
+      driver: custom,
+      funding: "included",
+      workspaceScoped: true,
+      admits: false,
+    },
+    {
+      name: "verified funding in this worktree",
+      driver: custom,
+      funding: "unknown",
+      workspaceScoped: true,
+      verified: "included",
+      admits: true,
+    },
+    {
+      name: "a metered workspace on an otherwise included account",
+      driver: custom,
+      funding: "included",
+      workspaceScoped: true,
+      verified: "metered",
+      admits: false,
+    },
+    {
+      name: "a retained model with unknown funding in an included workspace",
+      driver: custom,
+      funding: "unknown",
+      workspaceScoped: true,
+      verified: "included",
+      modelFunding: "unknown",
       admits: false,
     },
     {
@@ -1698,6 +1780,7 @@ describe("verified funding for automatic admission", () => {
       auth: {
         status: "authenticated",
         ...("authType" in row ? { type: row.authType } : {}),
+        ...("workspaceScoped" in row ? { fundingScope: "workspace" as const } : {}),
         ...("funding" in row ? { funding: row.funding } : {}),
       },
       models: provider(primary).models.map((model) => ({
@@ -1716,6 +1799,7 @@ describe("verified funding for automatic admission", () => {
     });
     const context = {
       providers: [account],
+      ...("verified" in row ? { workspaceFunding: new Map([[primary, row.verified]]) } : {}),
       settings: {
         ...settings([primary]),
         providerInstances: { [primary]: { driver: row.driver, enabled: true } },

@@ -19,6 +19,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
@@ -60,6 +61,9 @@ import {
 } from "./Drivers/ClaudeHome.ts";
 import {
   claudeSettingsEnvironment,
+  claudeSettingSources,
+  claudeSdkShapedSettings,
+  readClaudeLaunchArgSettings,
   readConfirmedClaudeSettings,
 } from "./Drivers/ClaudeSettingsCascade.ts";
 import { discoverClaudeSkills, resolveClaudeConfigDirPath } from "./Drivers/ClaudeSkills.ts";
@@ -391,6 +395,7 @@ const probeClaudeCapabilities = (
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
   includeUsage = true,
+  launch?: Pick<ClaudeQueryOptions, "settings" | "settingSources" | "extraArgs">,
 ) => {
   const abort = new AbortController();
   return Effect.gen(function* () {
@@ -411,19 +416,22 @@ const probeClaudeCapabilities = (
           prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
             await waitForAbortSignal(abort.signal);
           })(),
-          options: buildClaudeCapabilitiesProbeQueryOptions({
-            executablePath,
-            abortController: abort,
-            environment: claudeEnvironment,
-            cwd,
-            managedMcpConfig,
-            onStderr: (chunk) => {
-              // One character past the cap lets providerOutputHead see the output was cut.
-              if (stderr.length <= PROVIDER_OUTPUT_MAX_CHARS) {
-                stderr = `${stderr}${chunk}`.slice(0, PROVIDER_OUTPUT_MAX_CHARS + 1);
-              }
-            },
-          }),
+          options: {
+            ...buildClaudeCapabilitiesProbeQueryOptions({
+              executablePath,
+              abortController: abort,
+              environment: claudeEnvironment,
+              cwd,
+              managedMcpConfig,
+              onStderr: (chunk) => {
+                // One character past the cap lets providerOutputHead see the output was cut.
+                if (stderr.length <= PROVIDER_OUTPUT_MAX_CHARS) {
+                  stderr = `${stderr}${chunk}`.slice(0, PROVIDER_OUTPUT_MAX_CHARS + 1);
+                }
+              },
+            }),
+            ...launch,
+          },
         });
         const init = await q.initializationResult();
         return { q, init };
@@ -809,9 +817,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const funding =
     authMetadata?.type === "apiKey" || authMetadata?.type === "bedrock" || nativeApiKey
       ? "metered"
-      : allowStreamedLimits && Option.isSome(settings)
-        ? "included"
-        : "unknown";
+      : "unknown";
   const usageReading = !capabilities.usage
     ? makeUnavailableUsageLimits({
         checkedAt,
@@ -868,6 +874,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       auth: {
         status: "authenticated",
         funding,
+        ...(funding === "unknown" && capabilities.apiProvider === "firstParty"
+          ? { fundingScope: "workspace" as const }
+          : {}),
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(loginProfileId ? { profileId: loginProfileId } : {}),
         ...(loginExpiresAt ? { loginExpiresAt } : {}),
@@ -924,6 +933,118 @@ export const makePendingClaudeProvider = Effect.fn("ClaudeProvider.makePendingCl
       },
     });
   },
+);
+
+/** This check uses the actual launch folder and sends no prompt. The usage endpoint explicitly reports whether extra usage can cover sends. */
+export const claudeWorkspaceFunding = Effect.fn("ClaudeProvider.workspaceFunding")(
+  function* (
+    settings: ClaudeSettings,
+    inherited: NodeJS.ProcessEnv,
+    input: { readonly cwd: string; readonly provider: ServerProvider },
+    probe: typeof probeClaudeCapabilities = probeClaudeCapabilities,
+  ) {
+    const { cwd, provider } = input;
+    if (
+      !settings.enabled ||
+      provider.status !== "ready" ||
+      provider.auth.status !== "authenticated" ||
+      (!provider.auth.email && !provider.auth.profileId)
+    )
+      return "unknown" as const;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const environment = yield* makeClaudeEnvironment(settings, inherited);
+    const homePath = yield* resolveClaudeConfigDirPath(settings, environment, cwd);
+    const tiers = yield* readConfirmedClaudeSettings({
+      settings,
+      cwd,
+      homePath,
+      environment,
+      fileSystem,
+      path,
+    });
+    if (Option.isNone(tiers)) return "unknown" as const;
+    const settingsEnv = claudeSettingsEnvironment(tiers.value);
+    const effective = { ...environment, ...settingsEnv };
+    const url = effective.ANTHROPIC_BASE_URL?.trim();
+    if (
+      (url && URL.parse(url)?.href !== "https://api.anthropic.com/") ||
+      effective.ANTHROPIC_API_KEY ||
+      effective.ANTHROPIC_AUTH_TOKEN ||
+      effective.ANTHROPIC_CUSTOM_HEADERS ||
+      tiers.value.some(
+        (tier) =>
+          tier.apiKeyHelper ||
+          (tier.forceLoginMethod && tier.forceLoginMethod !== "claudeai") ||
+          (tier.forceLoginOrgUUID &&
+            (!provider.auth.workspaceId ||
+              ![tier.forceLoginOrgUUID].flat().includes(provider.auth.workspaceId))),
+      ) ||
+      (settingsEnv.CLAUDE_CONFIG_DIR !== undefined &&
+        settingsEnv.CLAUDE_CONFIG_DIR !== environment.CLAUDE_CONFIG_DIR) ||
+      (settingsEnv.CLAUDE_CODE_OAUTH_TOKEN !== undefined &&
+        settingsEnv.CLAUDE_CODE_OAUTH_TOKEN !== environment.CLAUDE_CODE_OAUTH_TOKEN)
+    )
+      return "unknown" as const;
+    const { flags, positionals } = parseCliArgs(settings.launchArgs);
+    // An unmodelled launch flag could change the selected account, environment, or backend.
+    if (
+      positionals.length ||
+      Object.keys(flags).some(
+        (flag) =>
+          ![
+            "settings",
+            "setting-sources",
+            "project-config-root",
+            "permission-mode",
+            "dangerously-skip-permissions",
+            "effort",
+            "append-system-prompt",
+            "append-system-prompt-file",
+            "add-dir",
+          ].includes(flag),
+      )
+    )
+      return "unknown" as const;
+    const launchSettings = yield* readClaudeLaunchArgSettings({ settings, cwd, fileSystem, path });
+    const capabilities = yield* probe(settings, environment, cwd, true, {
+      settingSources: [...claudeSettingSources(settings)],
+      settings: {
+        ...(launchSettings ? claudeSdkShapedSettings(launchSettings) : {}),
+        disableAllHooks: true,
+      },
+      ...(flags["project-config-root"] === undefined
+        ? {}
+        : { extraArgs: { "project-config-root": flags["project-config-root"] } }),
+    });
+    if (
+      capabilities.apiProvider !== "firstParty" ||
+      capabilities.apiKeySource !== "none" ||
+      !(
+        ["oauth", "claude.ai", "CLAUDE_CODE_OAUTH_TOKEN"].includes(
+          capabilities.tokenSource ?? "",
+        ) ||
+        (capabilities.tokenSource === undefined &&
+          capabilities.email &&
+          capabilities.subscriptionType)
+      ) ||
+      (provider.auth.email && provider.auth.email !== capabilities.email) ||
+      (provider.usageLimits?.plan && capabilities.subscriptionType !== provider.usageLimits.plan) ||
+      (provider.auth.profileId &&
+        provider.auth.profileId !==
+          (yield* claudeLoginProfileId(settings, capabilities, environment)))
+    )
+      return "unknown" as const;
+    const limits = capabilities.usage?.rate_limits;
+    if (!capabilities.usage?.rate_limits_available || !limits) return "unknown" as const;
+    const spend = (limits as { readonly spend?: { readonly enabled?: unknown } | null }).spend;
+    if (limits.extra_usage?.is_enabled === true || spend?.enabled === true)
+      return "metered" as const;
+    return limits.extra_usage?.is_enabled === false && (spend == null || spend.enabled === false)
+      ? ("included" as const)
+      : ("unknown" as const);
+  },
+  Effect.catchCause(() => Effect.succeed("unknown" as const)),
 );
 
 export { probeClaudeCapabilities };

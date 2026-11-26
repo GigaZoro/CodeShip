@@ -72,6 +72,11 @@ export interface ProviderInstance {
   readonly snapshot: ManagedServerProvider;
   /** Set by the registry from its driver's `privateAccountHomes`; clients read it on the snapshot. */
   readonly sharesAddedAccounts?: boolean;
+  readonly fundingForWorkspace?: (input: {
+    readonly cwd: string;
+    readonly model: string;
+    readonly provider: ServerProvider;
+  }) => Effect.Effect<NonNullable<ServerProvider["auth"]["funding"]>>;
   readonly snapshotForCwd?: (
     cwd: string,
   ) => Effect.Effect<ProviderWorkspaceSnapshot, ProviderDriverError>;

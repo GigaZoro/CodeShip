@@ -128,6 +128,10 @@ export const ServerProviderUsageLimits = Schema.Struct({
   accountKey: Schema.optional(TrimmedNonEmptyString),
   plan: Schema.optional(TrimmedNonEmptyString),
   credits: Schema.optional(ServerProviderUsageCredits),
+  /** Time of a streamed balance change or removal after the last account read. */
+  creditsObservedAt: Schema.optional(IsoDateTime),
+  /** No full read has established which windows exist on this account yet. */
+  streamOnly: Schema.optional(Schema.Literal(true)),
   /**
    * The provider's own answer, at its last usage read, whether the plan's ordinary usage may run;
    * absent when it gives none. Codex says recovery must not be inferred from percentages or resets,

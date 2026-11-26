@@ -31,6 +31,7 @@ import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import {
   acceptedOptionSelections,
+  antigravityModelFamily,
   createModelSelection,
   readCustomModelEntries,
   resolveSelectableModel,
@@ -215,7 +216,7 @@ const NATIVE_AUTO_PROFILES = new Map([
   [
     "antigravity",
     {
-      family: /(?:\bgemini[ .-]+(\d+(?:[.-]\d+)*)[ .-]+)?\bneon\b(?:[ .-]+(\d+(?:[.-]\d+)*))?/i,
+      family: /^gemini-(?:(\d+(?:[.-]\d+)*)-)?neon\b(?:[.-]+(\d+(?:[.-]\d+)*))?/i,
       optionId: "thinking_level",
     },
   ],
@@ -231,7 +232,7 @@ const NATIVE_AUTO_PROFILES = new Map([
 
 type AutoProfileModel = Pick<
   ServerProviderModel,
-  "slug" | "name" | "aliases" | "isDefault" | "capabilities"
+  "slug" | "nativeModelFamily" | "isDefault" | "capabilities"
 > &
   Partial<Pick<ServerProviderModel, "isCustom" | "isLegacy">>;
 
@@ -262,11 +263,13 @@ export function resolveQuotaAwareAutoProfile(
 
   const eligible = account.models.flatMap((model) => {
     if (model.isCustom) return [];
-    const matches = [model.slug, model.name, ...(model.aliases ?? [])]
-      .map((label) => native.family.exec(label))
-      .filter((match) => match !== null);
-    if (!matches.length) return [];
-    const version = matches.map((match) => match[1] ?? match[2]).find(Boolean);
+    const identity =
+      account.driver === "antigravity"
+        ? (antigravityModelFamily(model.slug) ?? model.nativeModelFamily)
+        : model.slug;
+    const match = identity === undefined ? null : native.family.exec(identity);
+    if (match === null) return [];
+    const version = match[1] ?? match[2];
     const option = model.capabilities?.optionDescriptors?.find(
       (option) => option.id === native.optionId,
     );

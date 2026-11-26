@@ -61,6 +61,11 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   const nodePath = yield* HostProcess.ExecutablePath;
   const baseEnv = yield* HostProcess.Environment;
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-antigravity-driver-" });
+  const userHome = path.join(root, "user");
+  const userConfigDirectory = path.join(userHome, ".gemini", "config");
+  yield* fs.makeDirectory(userConfigDirectory, { recursive: true });
+  const userMcpConfig = path.join(userConfigDirectory, "mcp_config.json");
+  yield* fs.writeFileString(userMcpConfig, JSON.stringify({ mcpServers: {} }));
   const instanceId = ProviderInstanceId.make(path.basename(root));
   const mockAgentPath = yield* path.fromFileUrl(
     new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
@@ -185,6 +190,8 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     enabled: options.enabled ?? true,
     config: { ...AntigravityDriver.defaultConfig(), ...options.config },
     environment: [
+      { name: "HOME", value: userHome },
+      { name: "USERPROFILE", value: userHome },
       { name: "PATH", value: instancePath },
       { name: "T3_ACP_ANTIGRAVITY", value: "1" },
       { name: "T3_ACP_REQUEST_LOG_PATH", value: requestLog },
@@ -223,6 +230,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     fs,
     path,
     profileDirectory,
+    userMcpConfig,
     directories,
     instancePath,
     first,
@@ -275,6 +283,9 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
       Effect.gen(function* () {
         const h = yield* makeHarness();
         yield* h.refresh();
+        expect(
+          yield* h.fs.realPath(h.path.join(h.profileDirectory, "config", "mcp_config.json")),
+        ).toBe(yield* h.fs.realPath(h.userMcpConfig));
         const snapshot = yield* h.instance.snapshot.getSnapshot;
         expect(snapshot.status).toBe("ready");
         expect(snapshot.auth.status).toBe("authenticated");
@@ -315,10 +326,19 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
           "initialize",
           "auth/login",
           "session/new",
+          "session/set_config_option",
+          "session/set_config_option",
           "initialize",
           "auth/login",
           "session/new",
+          "session/set_config_option",
+          "session/set_config_option",
         ]);
+        expect(
+          requests
+            .filter((request) => request.method === "session/set_config_option")
+            .map((request) => request.params?.value),
+        ).toEqual(["gemini-test-high", "gemini-test-low", "gemini-test-high", "gemini-test-low"]);
         expect(
           requests
             .filter((request) => request.method === "auth/login")

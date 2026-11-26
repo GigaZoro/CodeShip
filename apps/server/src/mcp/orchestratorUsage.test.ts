@@ -417,7 +417,11 @@ describe("usageReadingStale", () => {
   const probedLongAgo = "2026-09-03T11:49:00.000Z";
   it.each([
     { name: "no reading", probedAt: probedLongAgo, stale: true },
-    { name: "no reading from a probe a minute ago", probedAt: "2026-09-03T11:59:00.000Z" },
+    {
+      name: "no reading despite a recent heartbeat",
+      probedAt: "2026-09-03T11:59:00.000Z",
+      stale: true,
+    },
     {
       name: "a fresh reading",
       probedAt: probedLongAgo,
@@ -436,8 +440,14 @@ describe("usageReadingStale", () => {
       stale: true,
     },
     {
+      name: "a fresh stream update before the first full read",
+      probedAt: "2026-09-03T11:59:00.000Z",
+      usage: { checkedAt: "2026-09-03T11:58:00.000Z", streamOnly: true as const },
+      stale: true,
+    },
+    {
       name: "a fresh stream update retaining an older window",
-      probedAt: probedLongAgo,
+      probedAt: "2026-09-03T11:59:00.000Z",
       usage: {
         checkedAt: "2026-09-03T11:58:00.000Z",
         windows: [{ ...claudeLimits.windows[1]!, observedAt: probedLongAgo }],

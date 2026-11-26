@@ -60,12 +60,15 @@ export function makeUnavailableUsageLimits(input: {
   };
 }
 
-/** Whether `window` is used up where the reading before it, `before`, still had room. */
-function usesUp(
+function usesUpAccount(
   window: ServerProviderUsageWindow,
   before: ServerProviderUsageWindow | undefined,
 ): boolean {
-  return window.usedPercent >= 100 && (before?.usedPercent ?? 0) < 100;
+  return (
+    (window.scope === "account" || (window.scope === undefined && window.model === undefined)) &&
+    window.usedPercent >= 100 &&
+    (before?.usedPercent ?? 0) < 100
+  );
 }
 
 function differs<T>(a: T | undefined, b: T | undefined): boolean {
@@ -80,11 +83,19 @@ function sameScope(a: ServerProviderUsageWindow["scope"], b: ServerProviderUsage
   return b.models.every((model) => members.has(model));
 }
 
-function sameWindow(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow): boolean {
+function sameMembership(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow): boolean {
+  const aScope = a.scope ?? (a.model === undefined ? undefined : "model");
+  const bScope = b.scope ?? (b.model === undefined ? undefined : "model");
   return (
     a.kind === b.kind &&
-    a.model === b.model &&
-    (a.scope === undefined || b.scope === undefined || sameScope(a.scope, b.scope)) &&
+    !differs(a.model, b.model) &&
+    (aScope === undefined || bScope === undefined || sameScope(aScope, bScope))
+  );
+}
+
+function sameWindow(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow): boolean {
+  return (
+    sameMembership(a, b) &&
     !differs(a.resetsAt, b.resetsAt) &&
     !differs(a.windowDurationMins, b.windowDurationMins)
   );
@@ -92,6 +103,38 @@ function sameWindow(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow):
 
 function observedAt(limits: ServerProviderUsageLimits, window: ServerProviderUsageWindow): string {
   return window.observedAt ?? limits.accountReadAt ?? limits.checkedAt;
+}
+
+function fullReadAt(limits: ServerProviderUsageLimits | undefined): string | undefined {
+  if (!limits || limits.streamOnly || limits.unavailable) return undefined;
+  return limits.accountReadAt ?? limits.checkedAt;
+}
+
+function creditsReadAt(limits: ServerProviderUsageLimits | undefined): string | undefined {
+  return limits?.creditsObservedAt ?? fullReadAt(limits);
+}
+
+function newer(at: string | undefined, than: string | undefined): boolean {
+  return at !== undefined && (than === undefined || Date.parse(at) > Date.parse(than));
+}
+
+function withWindowMetadata(
+  window: ServerProviderUsageWindow,
+  before: ServerProviderUsageWindow | undefined,
+): ServerProviderUsageWindow {
+  if (!before || !sameMembership(window, before)) return window;
+  const samePeriod =
+    !differs(window.resetsAt, before.resetsAt) &&
+    !differs(window.windowDurationMins, before.windowDurationMins);
+  return {
+    ...(before.model !== undefined ? { model: before.model } : {}),
+    ...(before.scope !== undefined ? { scope: before.scope } : {}),
+    ...(samePeriod && before.resetsAt !== undefined ? { resetsAt: before.resetsAt } : {}),
+    ...(samePeriod && before.windowDurationMins !== undefined
+      ? { windowDurationMins: before.windowDurationMins }
+      : {}),
+    ...window,
+  };
 }
 
 /**
@@ -152,36 +195,30 @@ export function applyUsageLimitsUpdate(input: {
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
   const previousCheckedAt = previous?.checkedAt ?? input.checkedAt;
   const currentUpdate = Date.parse(input.checkedAt) >= Date.parse(previousCheckedAt);
-  const creditsUpdate = currentUpdate ? update.credits : undefined;
+  const accountReadAt = fullReadAt(previous);
+  const previousCreditAt = creditsReadAt(previous);
+  const creditsUpdate = newer(previousCreditAt, input.checkedAt) ? undefined : update.credits;
+  const creditsObservedAt = creditsUpdate === undefined ? previousCreditAt : input.checkedAt;
   // Codex repeats unchanged limits on token ticks; those repeats are not observations.
   let changed =
     (currentUpdate && update.available === true && previous?.unavailable !== undefined) ||
-    (creditsUpdate !== undefined && !usageCreditsEqual(previous?.credits, creditsUpdate));
+    (creditsUpdate !== undefined &&
+      (!usageCreditsEqual(previous?.credits, creditsUpdate) ||
+        newer(creditsObservedAt, previousCreditAt)));
   let newlyUsedUp = false;
   for (const window of update.windows) {
     const existing = merged.get(window.id);
     const observation = window.observedAt ?? input.checkedAt;
     const existingObservation = previous && existing && observedAt(previous, existing);
-    if (existingObservation && Date.parse(observation) < Date.parse(existingObservation)) {
+    if (
+      newer(existingObservation, observation) ||
+      (existing === undefined && accountReadAt !== undefined && !newer(observation, accountReadAt))
+    ) {
       continue;
     }
     const same = existing !== undefined && sameWindow(existing, window);
     const next = trackExhaustion(
-      {
-        ...window,
-        usedPercent: clampPercent(window.usedPercent),
-        ...(same && window.resetsAt === undefined && existing.resetsAt !== undefined
-          ? { resetsAt: existing.resetsAt }
-          : {}),
-        ...(same &&
-        window.windowDurationMins === undefined &&
-        existing.windowDurationMins !== undefined
-          ? { windowDurationMins: existing.windowDurationMins }
-          : {}),
-        ...(same && window.scope === undefined && existing.scope !== undefined
-          ? { scope: existing.scope }
-          : {}),
-      },
+      { ...withWindowMetadata(window, existing), usedPercent: clampPercent(window.usedPercent) },
       { window: existing, checkedAt: existingObservation ?? previousCheckedAt },
       observation,
     );
@@ -193,7 +230,8 @@ export function applyUsageLimitsUpdate(input: {
     ) {
       merged.set(window.id, { ...next, observedAt: observation });
       changed = true;
-      newlyUsedUp ||= usesUp(next, same ? existing : undefined);
+      newlyUsedUp ||=
+        newer(observation, accountReadAt) && usesUpAccount(next, same ? existing : undefined);
     }
   }
   if (!changed && previous !== undefined) {
@@ -216,17 +254,16 @@ export function applyUsageLimitsUpdate(input: {
     };
   });
   const credits = creditsUpdate === null ? undefined : (creditsUpdate ?? previous?.credits);
-  // An update cannot grant usage the last read refused, but a window it newly used up withdraws
-  // it; one the read already saw at 100% was weighed by that read.
+  // Only fresh, account-wide exhaustion can withdraw the provider's yes for every model.
   const usageAllowed =
     previous?.usageAllowed === true && newlyUsedUp ? false : previous?.usageAllowed;
-  // A failed read gave none of the account fields, so it is no read of the account.
-  const accountReadAt =
-    previous?.accountReadAt ??
-    (previous?.unavailable === undefined ? previous?.checkedAt : undefined);
   return {
     ...makeUsageLimits({ checkedAt, windows }),
     ...(accountReadAt !== undefined && accountReadAt !== checkedAt ? { accountReadAt } : {}),
+    ...(accountReadAt === undefined && unavailable === undefined ? { streamOnly: true } : {}),
+    ...(creditsObservedAt !== undefined && creditsObservedAt !== accountReadAt
+      ? { creditsObservedAt }
+      : {}),
     ...(previous?.credentialFingerprint !== undefined
       ? { credentialFingerprint: previous.credentialFingerprint }
       : {}),
@@ -291,43 +328,73 @@ export function resolveUsageLimitsAfterProbe(input: {
   }
   if (probed.unavailable !== undefined) return probed;
   const previousById = new Map(published?.windows.map((window) => [window.id, window] as const));
-  const probedWindows = probed.windows.map((window) => {
-    const at = window.observedAt ?? probed.checkedAt;
+  const publishedRead = fullReadAt(published);
+  const probeRead = fullReadAt(probed) ?? probed.checkedAt;
+  const newerInventory = published !== undefined && newer(publishedRead, probeRead);
+  const account = newerInventory ? published : probed;
+  const accountReadAt = newerInventory ? publishedRead! : probeRead;
+  const merged = new Map<string, ServerProviderUsageWindow>();
+  for (const window of probed.windows) {
+    const observation = observedAt(probed, window);
     const before = previousById.get(window.id);
-    return {
-      ...trackExhaustion(
-        window,
-        { window: before, checkedAt: published && before ? observedAt(published, before) : at },
-        at,
-      ),
-      observedAt: at,
-    };
-  });
-  if (published && Date.parse(published.checkedAt) > Date.parse(probed.checkedAt)) {
-    // Keep only windows observed by the stream since the probe began.
-    const { credits: _readCredits, usageAllowed: readAllowed, ...read } = probed;
-    const merged = new Map<string, ServerProviderUsageWindow>(
-      probedWindows.map((window) => [window.id, window]),
-    );
-    let newlyUsedUp = false;
-    for (const window of published.windows) {
-      const at = observedAt(published, window);
-      const before = merged.get(window.id);
-      if (Date.parse(at) <= Date.parse(before?.observedAt ?? probed.checkedAt)) {
-        continue;
-      }
-      merged.set(window.id, { ...window, observedAt: at });
-      newlyUsedUp ||= usesUp(window, before && sameWindow(before, window) ? before : undefined);
+    if (!before && newerInventory && !newer(observation, publishedRead)) continue;
+    const previousObservation = before && published ? observedAt(published, before) : undefined;
+    if (before && newer(previousObservation, observation)) {
+      merged.set(window.id, {
+        ...withWindowMetadata(before, window),
+        observedAt: previousObservation,
+      });
+    } else {
+      const next = trackExhaustion(
+        withWindowMetadata(window, before),
+        { window: before, checkedAt: previousObservation ?? observation },
+        observation,
+      );
+      merged.set(window.id, { ...next, observedAt: observation });
     }
-    const usageAllowed = readAllowed === true && newlyUsedUp ? false : readAllowed;
-    return {
-      ...read,
-      checkedAt: published.checkedAt,
-      accountReadAt: probed.checkedAt,
-      windows: sortWindows(merged.values()),
-      ...(published.credits !== undefined ? { credits: published.credits } : {}),
-      ...(usageAllowed !== undefined ? { usageAllowed } : {}),
-    };
+    previousById.delete(window.id);
   }
-  return { ...probed, windows: probedWindows };
+  for (const window of previousById.values()) {
+    const observation = observedAt(published!, window);
+    if (newerInventory || newer(observation, probeRead)) {
+      merged.set(window.id, { ...window, observedAt: observation });
+    }
+  }
+
+  const windows = sortWindows(merged.values());
+  const allowed = account.usageAllowed;
+  const atRead = new Map(account.windows.map((window) => [window.id, window]));
+  const withdrewAllowance =
+    allowed === true &&
+    windows.some((window) => {
+      const prior = atRead.get(window.id);
+      return (
+        newer(window.observedAt, accountReadAt) &&
+        usesUpAccount(window, prior && sameWindow(prior, window) ? prior : undefined)
+      );
+    });
+  const creditSource =
+    published && newer(creditsReadAt(published), creditsReadAt(probed)) ? published : probed;
+  const creditsObservedAt = creditsReadAt(creditSource);
+  const checkedAt =
+    published && newer(published.checkedAt, probed.checkedAt)
+      ? published.checkedAt
+      : probed.checkedAt;
+  const {
+    credits: _balance,
+    creditsObservedAt: _balanceTime,
+    accountReadAt: _accountTime,
+    ...fields
+  } = account;
+  return {
+    ...fields,
+    checkedAt,
+    windows,
+    ...(checkedAt !== accountReadAt ? { accountReadAt } : {}),
+    ...(creditSource.credits !== undefined ? { credits: creditSource.credits } : {}),
+    ...(creditsObservedAt !== undefined && creditsObservedAt !== accountReadAt
+      ? { creditsObservedAt }
+      : {}),
+    ...(withdrewAllowance ? { usageAllowed: false } : {}),
+  };
 }

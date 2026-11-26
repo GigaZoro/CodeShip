@@ -266,7 +266,7 @@ describe("Antigravity model catalog", () => {
               { value: "gemini", name: "Gemini" },
               { value: "claude", name: "Claude" },
               { value: "plain", name: "Plain" },
-              { value: "unseen", name: "Unseen" },
+              { value: "unseen", name: "Gemini 4 Neon" },
             ],
           },
           thinking("high"),
@@ -283,8 +283,10 @@ describe("Antigravity model catalog", () => {
     expect(thinkingOf("gemini")).toMatchObject({ id: "thinking_level", currentValue: "high" });
     expect(thinkingOf("claude")).toMatchObject({ id: "thinking_level", currentValue: "low" });
     expect(thinkingOf("plain")).toBeUndefined();
-    expect(thinkingOf("unseen")).toMatchObject({ id: "thinking_level" });
-    expect(thinkingOf("unseen")).not.toHaveProperty("currentValue");
+    expect(models.find((model) => model.slug === "unseen")).toMatchObject({
+      nativeModelFamily: "gemini-4-neon",
+      capabilities: null,
+    });
   });
 });
 

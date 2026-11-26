@@ -1,6 +1,7 @@
 ## 2026-11-26 — More precise provider quota readings
 
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
+- Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 
 ## 2026-11-25 — Antigravity 1.4.5 is no longer marked incompatible
 

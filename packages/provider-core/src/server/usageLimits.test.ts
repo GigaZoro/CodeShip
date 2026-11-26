@@ -1,4 +1,9 @@
-import { usageWindowLimitEnd } from "@t3tools/shared/usageLimits";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProviderUsageLimits,
+} from "@t3tools/contracts";
+import { exhaustedUsageWindow, usageWindowLimitEnd } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -53,7 +58,11 @@ describe("applyUsageLimitsUpdate", () => {
     };
     const update = { windows: [session], available: true as const };
     const recovered = applyUsageLimitsUpdate({ previous: failed, checkedAt, update });
-    expect(recovered).toEqual({ checkedAt, windows: [{ ...session, observedAt: checkedAt }] });
+    expect(recovered).toEqual({
+      checkedAt,
+      streamOnly: true,
+      windows: [{ ...session, observedAt: checkedAt }],
+    });
     expect(resolveUsageLimitsAfterProbe({ published: recovered, probed: failed })).toBe(recovered);
     const unsupported = { ...failed, unavailable: { reason: "unsupported" as const } };
     expect(applyUsageLimitsUpdate({ previous: unsupported, checkedAt, update })).toBe(unsupported);
@@ -71,6 +80,78 @@ describe("applyUsageLimitsUpdate", () => {
       },
     });
     expect(next).toBe(published);
+  });
+
+  it("preserves omitted model and period metadata until the provider changes the window", () => {
+    const scoped = {
+      ...weekly,
+      model: "a",
+      scope: "model" as const,
+      usedPercent: 100,
+      exhaustedSince: checkedAt,
+    };
+    const sparse = { id: weekly.id, kind: weekly.kind, label: weekly.label, usedPercent: 100 };
+    const previous = { checkedAt, windows: [scoped] };
+    const unchanged = applyUsageLimitsUpdate({
+      previous,
+      checkedAt: later,
+      update: { windows: [sparse], available: true },
+    });
+    expect(unchanged?.windows[0]).toMatchObject({ ...scoped, observedAt: later });
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: previous,
+        probed: { checkedAt: later, windows: [sparse] },
+      })?.windows[0],
+    ).toMatchObject(scoped);
+    const changed = { ...sparse, windowDurationMins: 300 };
+    expect(
+      applyUsageLimitsUpdate({ previous, checkedAt: later, update: { windows: [changed] } })
+        ?.windows[0],
+    ).toMatchObject({
+      model: "a",
+      scope: "model",
+      windowDurationMins: 300,
+      exhaustedSince: later,
+    });
+    expect(
+      applyUsageLimitsUpdate({
+        previous,
+        checkedAt: later,
+        update: { windows: [{ ...sparse, model: "b" }] },
+      })?.windows[0],
+    ).toMatchObject({
+      model: "b",
+      exhaustedSince: later,
+    });
+  });
+
+  it("rejects a late meter retired by a full read while accepting an unseen meter after a sparse-only read", () => {
+    const full = resolveUsageLimitsAfterProbe({
+      published,
+      probed: { checkedAt: later, windows: [session] },
+    });
+    expect(
+      applyUsageLimitsUpdate({ previous: full, checkedAt, update: { windows: [weekly] } }),
+    ).toBe(full);
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: full,
+        probed: { checkedAt, windows: [weekly] },
+      })?.windows.map((w) => w.id),
+    ).toEqual([session.id]);
+    const partial = applyUsageLimitsUpdate({
+      previous: undefined,
+      checkedAt: later,
+      update: { windows: [session], available: true },
+    });
+    expect(
+      applyUsageLimitsUpdate({
+        previous: partial,
+        checkedAt,
+        update: { windows: [weekly] },
+      })?.windows.map((w) => w.id),
+    ).toEqual([session.id, weekly.id]);
   });
 
   it("keeps exhaustion for the same shared models and restarts it when membership changes", () => {
@@ -265,7 +346,82 @@ describe("applyUsageLimitsUpdate", () => {
         update: { windows: [{ ...weekly, usedPercent: 100 }] },
       })?.usageAllowed,
     ).toBe(false);
+    for (const id of ["individual", "monthly_spend"]) {
+      const spendingCap = {
+        id,
+        kind: "monthly" as const,
+        label: "Spend",
+        scope: "spending-cap" as const,
+        usedPercent: 100,
+      };
+      const spent = applyUsageLimitsUpdate({
+        previous: allowed,
+        checkedAt: later,
+        update: { windows: [spendingCap] },
+      });
+      expect(spent?.usageAllowed).toBe(true);
+      expect(
+        resolveUsageLimitsAfterProbe({ published: spent, probed: allowed })?.usageAllowed,
+      ).toBe(true);
+    }
   });
+
+  it.each([{ model: "a" }, { scope: { models: ["a", "c"] as const } }])(
+    "limits newly exhausted models under an earlier account permission",
+    (membership) => {
+      const pool = { ...weekly, id: "shared", ...membership };
+      const initial = {
+        checkedAt,
+        usageAllowed: true,
+        windows: [{ ...session, usedPercent: 30 }, pool],
+      };
+      const stream = applyUsageLimitsUpdate({
+        previous: initial,
+        checkedAt: later,
+        update: { windows: [{ ...pool, usedPercent: 100 }] },
+      });
+      const blocked = (usageLimits: ServerProviderUsageLimits | undefined) => {
+        const account = {
+          driver: ProviderDriverKind.make("custom"),
+          instanceId: ProviderInstanceId.make("custom"),
+          models: [],
+          checkedAt,
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready" as const,
+          auth: { status: "authenticated" as const },
+          skills: [],
+          slashCommands: [],
+          usageLimits,
+        };
+        return ["a", "b", null].map(
+          (model) => exhaustedUsageWindow(account, Date.parse(later), model)?.id,
+        );
+      };
+      expect(blocked(stream)).toEqual(["shared", undefined, undefined]);
+      const race = resolveUsageLimitsAfterProbe({ published: stream, probed: initial });
+      expect(blocked(race)).toEqual(["shared", undefined, undefined]);
+      const fresh = {
+        ...initial,
+        checkedAt: later,
+        windows: [
+          { ...session, usedPercent: 30 },
+          { ...pool, usedPercent: 100 },
+        ],
+      };
+      expect(blocked(resolveUsageLimitsAfterProbe({ published: race, probed: fresh }))).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
+      expect(blocked({ ...fresh, usageAllowed: false })).toEqual([
+        "shared",
+        session.id,
+        session.id,
+      ]);
+    },
+  );
 });
 
 describe("resolveUsageLimitsAfterProbe", () => {
@@ -319,6 +475,7 @@ describe("resolveUsageLimitsAfterProbe", () => {
   it("uses read order for windows while taking metadata from the successful probe", () => {
     const live = {
       checkedAt: "2026-09-03T12:00:05.000Z",
+      accountReadAt: checkedAt,
       windows: [
         { ...session, usedPercent: 95, observedAt: later },
         { ...weekly, usedPercent: 70, observedAt: checkedAt },
@@ -358,7 +515,12 @@ describe("resolveUsageLimitsAfterProbe", () => {
     };
     const streamed = {
       checkedAt: "2026-09-03T12:00:05.000Z",
-      windows: [{ ...session, usedPercent: 100 }, weekly],
+      accountReadAt: checkedAt,
+      creditsObservedAt: later,
+      windows: [
+        { ...session, usedPercent: 100, observedAt: later },
+        { ...weekly, observedAt: later },
+      ],
       credits: { balance: "1.00", unlimited: false },
     };
     expect(resolveUsageLimitsAfterProbe({ published: streamed, probed })).toEqual({
@@ -366,6 +528,7 @@ describe("resolveUsageLimitsAfterProbe", () => {
       accountReadAt: probed.checkedAt,
       windows: streamed.windows.map((window) => ({ ...window, observedAt: streamed.checkedAt })),
       credits: streamed.credits,
+      creditsObservedAt: later,
       usageAllowed: false,
     });
     // The read's yes already weighed a window it saw at 100%.
@@ -373,6 +536,52 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(
       resolveUsageLimitsAfterProbe({ published: streamed, probed: usedUp })?.usageAllowed,
     ).toBe(true);
+  });
+
+  it("orders observations for each meter and balance when the enclosing check or another stream tick is newer", () => {
+    const newest = "2026-09-03T12:00:09.000Z";
+    const latestSession = { ...session, usedPercent: 85, observedAt: later };
+    const oldBalance = { balance: "8.00", unlimited: false };
+    const probeBalance = { balance: "2.00", unlimited: false };
+    const original = { ...published, credits: oldBalance };
+    const withTick = applyUsageLimitsUpdate({
+      previous: original,
+      checkedAt: newest,
+      update: { windows: [latestSession] },
+    })!;
+    const probe = {
+      checkedAt: later,
+      windows: [{ ...session, observedAt: checkedAt }],
+      credits: probeBalance,
+    };
+    const merged = resolveUsageLimitsAfterProbe({ published: withTick, probed: probe });
+    expect(merged?.windows[0]).toMatchObject(latestSession);
+    expect(merged?.credits).toEqual(probeBalance);
+    const newestFull = { ...probe, checkedAt: newest };
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: { ...published, checkedAt: later, windows: [latestSession] },
+        probed: newestFull,
+      })?.windows[0],
+    ).toMatchObject(latestSession);
+    for (const credits of [probeBalance, null]) {
+      const lateBalance = applyUsageLimitsUpdate({
+        previous: withTick,
+        checkedAt: later,
+        update: { windows: [], credits },
+      });
+      expect(lateBalance?.credits).toEqual(credits ?? undefined);
+      expect(
+        resolveUsageLimitsAfterProbe({ published: lateBalance, probed: original })?.credits,
+      ).toEqual(credits ?? undefined);
+      expect(
+        applyUsageLimitsUpdate({
+          previous: lateBalance,
+          checkedAt,
+          update: { windows: [], credits: oldBalance },
+        }),
+      ).toBe(lateBalance);
+    }
   });
 
   it.each([

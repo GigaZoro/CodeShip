@@ -1256,7 +1256,11 @@ describe("resolveQuotaAwareAutoProfile", () => {
     (driver, id, older, newer) => {
       const lookalike = { ...select("anotherOption", ["xhigh"]), role: "reasoning" as const };
       const models = [
-        model("other", [select(id, ["xhigh"])]),
+        {
+          ...model(driver === "codex" ? "gpt-6.2-sol" : "other", [select(id, ["xhigh"])]),
+          name: newer,
+          aliases: [older],
+        },
         model(older),
         model(newer, [select(id, ["high", "max"]), lookalike]),
       ];
@@ -1275,14 +1279,15 @@ describe("resolveQuotaAwareAutoProfile", () => {
     expect(resolveQuotaAwareAutoProfile(destination)?.model).toBe("claude-opus-5-9");
   });
 
-  it("recognizes the Neon family by its advertised name and uses the account's model id", () => {
+  it("dispatches opaque Neon IDs only when the provider identifies their family", () => {
     const options = [select("thinking_level", ["xhigh"])];
-    const destination = account("antigravity", [
-      { ...model("model-a", options), name: "Neon 5.9" },
-      { ...model("neon", options), name: "Neon 5.10" },
-    ]);
+    const models = [
+      { ...model("model-a", options), name: "Gemini 6 Neon" },
+      { ...model("model-b", options), nativeModelFamily: "gemini-5.10-neon" },
+      { ...model("gemini-6-argon", options), name: "Gemini 7 Neon" },
+    ];
 
-    expect(resolveQuotaAwareAutoProfile(destination)?.model).toBe("neon");
+    expect(resolveQuotaAwareAutoProfile(account("antigravity", models))?.model).toBe("model-b");
   });
 
   it("prefers a new driver's admitted default and falls back to an included model", () => {

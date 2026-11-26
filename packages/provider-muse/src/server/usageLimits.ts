@@ -6,7 +6,7 @@ import { LATEST_DATE_MS, type MuseSubscriptionUsage } from "./protocol.ts";
 export function museSubscriptionLimits(usage: MuseSubscriptionUsage) {
   const format = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
   const observedAt = format(usage.observedAtMs);
-  return makeUsageLimits({
+  const limits = makeUsageLimits({
     checkedAt: observedAt,
     windows: [
       {
@@ -14,6 +14,9 @@ export function museSubscriptionLimits(usage: MuseSubscriptionUsage) {
         kind: "session",
         label: "Session",
         usedPercent: clampPercent(usage.window.usedPercent),
+        ...(Number.isSafeInteger(usage.window.windowDurationMins)
+          ? { windowDurationMins: usage.window.windowDurationMins }
+          : {}),
         resetsAt: format(usage.window.resetsAtMs),
         observedAt,
       },
@@ -27,6 +30,8 @@ export function museSubscriptionLimits(usage: MuseSubscriptionUsage) {
       },
     ],
   });
+  const plan = usage.tier.trim();
+  return plan ? { ...limits, plan } : limits;
 }
 
 /** Credential proxies may omit error.quota from 429 refusals; inspect text too. */

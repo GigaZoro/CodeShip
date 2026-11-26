@@ -194,12 +194,18 @@ describe("makeManagedServerProvider", () => {
         const queued = yield* provider.refreshUsage!.pipe(
           Effect.forkChild({ startImmediately: true }),
         );
-        yield* provider.refreshUsage!;
+        const joined = yield* Deferred.make<void>();
+        const waiter = yield* provider.refreshUsage!.pipe(
+          Effect.andThen(Deferred.succeed(joined, undefined)),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        assert.isFalse(yield* Deferred.isDone(joined));
         assert.strictEqual(yield* Ref.get(calls), 2);
         assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 20);
         yield* Deferred.succeed(releaseProbe, undefined);
         yield* Fiber.join(refresh);
         yield* Fiber.join(queued);
+        yield* Fiber.join(waiter);
         assert.strictEqual(yield* Ref.get(calls), 3);
         assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 100);
       }),

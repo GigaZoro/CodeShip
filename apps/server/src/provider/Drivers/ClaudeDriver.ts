@@ -53,6 +53,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
+  claudeWorkspaceFunding,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
@@ -808,6 +809,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ),
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
+      fundingForWorkspace: Effect.fn("ClaudeDriver.fundingForWorkspace")(
+        function* (input) {
+          const readIdentity = ClaudeResetCredits.readClaudeAccountIdentity(accountConfigPath);
+          const identity = yield* readIdentity;
+          if (
+            identity.workspaceId !== input.provider.auth.workspaceId ||
+            identity.accountKey !== input.provider.usageLimits?.accountKey
+          )
+            return "unknown" as const;
+          const funding = yield* claudeWorkspaceFunding(effectiveConfig, processEnv, input);
+          const after = yield* readIdentity;
+          return after.workspaceId === identity.workspaceId &&
+            after.accountKey === identity.accountKey
+            ? funding
+            : ("unknown" as const);
+        },
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
       snapshotForCwd: (cwd: string) =>
         snapshot.getSnapshot.pipe(
           Effect.flatMap((machineSnapshot) =>

@@ -20,13 +20,12 @@ export function publishesUsage(provider: ServerProvider): boolean {
   return provider.enabled;
 }
 
-/** A recent unsuccessful probe still counts toward the cooldown for the next read. */
 export function usageReadingStale(provider: ServerProvider, now: number): boolean {
   const limits = provider.usageLimits;
   const old = (at: string | undefined) =>
     at === undefined || now - Date.parse(at) > USAGE_READING_MAX_AGE_MS;
-  if (!old(provider.checkedAt)) return false;
   return (
+    limits?.streamOnly === true ||
     old(limits?.accountReadAt ?? limits?.checkedAt) ||
     limits?.windows.some((window) => window.observedAt !== undefined && old(window.observedAt)) ===
       true

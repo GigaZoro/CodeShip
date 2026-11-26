@@ -186,6 +186,26 @@ describe("acpRegistrySnapshotReadiness", () => {
       ).models,
     ).toEqual(provider.models);
 
+    for (const authStatus of ["authenticated", "unauthenticated"] as const) {
+      const afterLoginChange = {
+        ...provider,
+        auth: { status: authStatus },
+        models: provider.models.map((model) => ({ ...model, funding: "unknown" as const })),
+      };
+      const updated = applyAcpRegistryLiveConfiguration(
+        afterLoginChange,
+        {
+          models: [
+            { id: "probe-model", name: "Old session", description: null, funding: "included" },
+          ],
+          currentModelId: "probe-model",
+          configOptions: [],
+        },
+        [],
+      );
+      expect(updated.models[0]?.funding).not.toBe("included");
+    }
+
     const liveOptions = [
       {
         id: "effort",

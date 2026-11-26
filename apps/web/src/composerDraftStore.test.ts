@@ -1711,20 +1711,15 @@ describe("composerDraftStore modelSelection", () => {
 
   it("replaces only the targeted provider options on the current model selection", () => {
     const store = useComposerDraftStore.getState();
-
-    store.setModelSelection(
-      threadRef,
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
+    const pick = {
+      ...modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
         effort: "max",
         fastMode: true,
       }),
-    );
-    store.setStickyModelSelection(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
-        effort: "max",
-        fastMode: true,
-      }),
-    );
+      quotaAwareAuto: true,
+    };
+    store.setModelSelection(threadRef, pick);
+    store.setStickyModelSelection(pick);
 
     store.setProviderModelOptions(
       threadRef,
@@ -1735,20 +1730,13 @@ describe("composerDraftStore modelSelection", () => {
       },
     );
 
+    const updated = { ...pick, options: toSelections({ thinking: false }) };
     expect(
       draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE],
-    ).toEqual(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
-        thinking: false,
-      }),
-    );
+    ).toEqual(updated);
     expect(
       useComposerDraftStore.getState().stickyModelSelectionByProvider[CLAUDE_AGENT_INSTANCE],
-    ).toEqual(
-      modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
-        thinking: false,
-      }),
-    );
+    ).toEqual(updated);
   });
 
   // regression: #6011 new threads ignored project default models unless edits are marked explicit

@@ -189,7 +189,7 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
           const usage = {
             tier: "pro",
             observedAtMs: now - age,
-            window: { usedPercent: 120, windowDurationMins: 300, resetsAtMs: now + 3_600_000 },
+            window: { usedPercent: 120, windowDurationMins: 240, resetsAtMs: now + 3_600_000 },
             weekly: { usedPercent: 80, resetsAtMs: now + 86_400_000 },
           };
           let reportedLive = false;
@@ -204,6 +204,10 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
             }),
           );
           expect(reportedLive).toBe(live);
+          expect(snapshot.usageLimits?.plan).toBe(included ? "pro" : undefined);
+          expect(snapshot.usageLimits?.windows[0]?.windowDurationMins).toBe(
+            included ? 240 : undefined,
+          );
           expect(snapshot.auth.funding).toBe(included ? "included" : undefined);
           expect(snapshot.usageLimits?.windows.map((window) => window.usedPercent)).toEqual(
             included ? [100, 80] : undefined,

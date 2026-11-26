@@ -3077,14 +3077,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextMap = { ...base.modelSelectionByProvider };
             const currentForProvider = nextMap[instanceKey];
             if (providerOpts) {
-              nextMap[instanceKey] = createModelSelection(
-                instanceKey,
-                currentForProvider?.model ?? fallbackModel,
+              nextMap[instanceKey] = withModelSelectionOptions(
+                currentForProvider ?? createModelSelection(instanceKey, fallbackModel),
                 providerOpts,
               );
             } else if (currentForProvider && (currentForProvider.options?.length ?? 0) > 0) {
-              const { options: _, ...rest } = currentForProvider;
-              nextMap[instanceKey] = rest as ModelSelection;
+              nextMap[instanceKey] = withModelSelectionOptions(currentForProvider, undefined);
             }
 
             let nextStickyMap = state.stickyModelSelectionByProvider;
@@ -3099,11 +3097,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               const rememberedModel =
                 normalizeModelSlug(options?.model, normalizedProvider) ?? stickyBase.model;
               if (providerOpts) {
-                nextStickyMap[instanceKey] = createModelSelection(
-                  instanceKey,
-                  stickyBase.model,
-                  providerOpts,
-                );
+                nextStickyMap[instanceKey] = withModelSelectionOptions(stickyBase, providerOpts);
                 nextOptionsByModel = {
                   ...state.stickyOptionsByModelByProvider,
                   [instanceKey]: {
@@ -3112,8 +3106,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   },
                 };
               } else if ((stickyBase.options?.length ?? 0) > 0) {
-                const { options: _, ...rest } = stickyBase;
-                nextStickyMap[instanceKey] = rest as ModelSelection;
+                nextStickyMap[instanceKey] = withModelSelectionOptions(stickyBase, undefined);
                 const rememberedByModel = {
                   ...state.stickyOptionsByModelByProvider[instanceKey],
                 };

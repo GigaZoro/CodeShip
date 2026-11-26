@@ -72,6 +72,11 @@ export interface AccountRoutingContext {
   readonly nowMs: number;
   /** Who asks and what is spent, for the prepaid credits the user allowed; absent: none spend. */
   readonly creditAccess?: PrepaidCreditSpend.CreditAccess;
+  /** The adapters' verdict for this destination and requested model, evaluated for this search only. */
+  readonly workspaceFunding?: ReadonlyMap<
+    ProviderInstanceId,
+    NonNullable<ServerProvider["auth"]["funding"]>
+  >;
 }
 
 /**
@@ -336,12 +341,21 @@ function usableModel(provider: ServerProvider, input: ModelAdmissionInput): stri
 /** Checks a proposed automatic pick before ranking it or waiting for its usage to reset. */
 export function automaticAccountEligibility(
   provider: ServerProvider,
-  input: LimitInput & ModelAdmissionInput,
+  input: LimitInput & ModelAdmissionInput & Pick<AccountRoutingContext, "workspaceFunding">,
 ) {
   const model = runnableModel(provider, input);
-  if (model === null) return { kind: "account_unavailable" } as const;
+  if (
+    model === null ||
+    (provider.auth.loginExpiresAt && Date.parse(provider.auth.loginExpiresAt) <= input.nowMs)
+  )
+    return { kind: "account_unavailable" } as const;
+  const modelFunding = provider.models.find((entry) => entry.slug === model)?.funding;
   const funding =
-    provider.models.find((entry) => entry.slug === model)?.funding ?? provider.auth.funding;
+    provider.auth.fundingScope === "workspace"
+      ? modelFunding === "metered" || modelFunding === "unknown"
+        ? modelFunding
+        : input.workspaceFunding?.get(provider.instanceId)
+      : (modelFunding ?? provider.auth.funding);
   if (funding !== "included")
     return { kind: funding === "metered" ? "metered" : "funding_unverified" } as const;
   const limit = usageLimitDetail(provider, input, model);
@@ -995,6 +1009,8 @@ export class AccountRouting extends Context.Service<
         readonly projectId: ProjectId;
         readonly model: string;
         readonly funding?: "verified";
+        /** The destination directory of the actual launch, including a worktree. */
+        readonly cwd?: string;
       } & CreditRequest,
     ) => Effect.Effect<
       ReadonlyArray<{
@@ -1523,6 +1539,29 @@ export const layer = Layer.effect(
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const settings = yield* serverSettings.getSettings;
+          const cwd = input.cwd;
+          const checkFunding = providerRegistry.fundingForWorkspace;
+          const workspaceFunding = new Map<
+            ProviderInstanceId,
+            NonNullable<ServerProvider["auth"]["funding"]>
+          >();
+          if (input.funding === "verified" && cwd && checkFunding) {
+            const scoped = providers.flatMap((provider) => {
+              if (provider.driver !== input.driver || provider.auth.fundingScope !== "workspace")
+                return [];
+              const model = runnableModel(provider, { ...input, settings });
+              return model === null ? [] : [{ provider, model }];
+            });
+            const readings = yield* Effect.forEach(
+              scoped,
+              ({ provider, model }) =>
+                checkFunding({ provider, cwd, model }).pipe(
+                  Effect.map((funding) => [provider.instanceId, funding] as const),
+                ),
+              { concurrency: 4 },
+            );
+            for (const [instanceId, funding] of readings) workspaceFunding.set(instanceId, funding);
+          }
           const mcpSignInsNeeded = yield* readMcpSignIns(mcp, {
             settings,
             providers,
@@ -1532,6 +1571,7 @@ export const layer = Layer.effect(
           });
           return accountsWithRoom({
             ...input,
+            workspaceFunding,
             settings,
             providers,
             recordedLimits: yield* readLimits(now, providers),
