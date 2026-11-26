@@ -5627,42 +5627,64 @@ describe("OrchestratorMcpService provider resolution", () => {
         remote: null,
         remoteDefault: null,
         refs: ["refs/heads/develop"],
-        baseRef: "main",
+        baseRef: "develop",
+      },
+      {
+        name: "no remote, neither main nor master, a detached checkout",
+        remote: null,
+        remoteDefault: null,
+        refs: ["refs/heads/trunk", "HEAD"],
+        detached: true,
+        baseRef: "abc123",
+      },
+      {
+        name: "a single-branch clone of a feature branch, no recorded HEAD",
+        remote: "origin",
+        remoteDefault: null,
+        refs: ["refs/heads/topic", "refs/remotes/origin/topic"],
+        baseRef: "refs/remotes/origin/HEAD",
+      },
+      {
+        name: "a single-branch clone of a feature branch, a recorded HEAD",
+        remote: "origin",
+        remoteDefault: "trunk",
+        refs: ["refs/heads/topic", "refs/remotes/origin/topic"],
+        baseRef: "refs/remotes/origin/HEAD",
       },
       {
         name: "no recorded HEAD, remote main and a stale local master",
         remote: "origin",
         remoteDefault: null,
         refs: ["refs/heads/master", "refs/remotes/origin/main"],
-        baseRef: "origin/main",
+        baseRef: "refs/remotes/origin/HEAD",
       },
       {
         name: "no recorded HEAD, master only on the remote",
         remote: "origin",
         remoteDefault: null,
         refs: ["refs/remotes/origin/master"],
-        baseRef: "origin/master",
+        baseRef: "refs/remotes/origin/HEAD",
       },
       {
         name: "no recorded HEAD, local main and master only on the remote",
         remote: "origin",
         remoteDefault: null,
         refs: ["refs/heads/main", "refs/remotes/origin/master"],
-        baseRef: "origin/master",
+        baseRef: "refs/remotes/origin/HEAD",
       },
       {
         name: "no recorded HEAD, nothing conventional on the remote, local main",
         remote: "origin",
         remoteDefault: null,
         refs: ["refs/heads/main", "refs/remotes/origin/develop"],
-        baseRef: "main",
+        baseRef: "refs/remotes/origin/HEAD",
       },
       {
         name: "a recorded HEAD whose branch is gone",
         remote: "origin",
         remoteDefault: "main",
         refs: ["refs/heads/main", "refs/remotes/origin/master"],
-        baseRef: "origin/master",
+        baseRef: "refs/remotes/origin/HEAD",
       },
       {
         name: "a remote not called origin",
@@ -5676,9 +5698,9 @@ describe("OrchestratorMcpService provider resolution", () => {
         remote: "upstream",
         remoteDefault: null,
         refs: ["refs/remotes/upstream/main"],
-        baseRef: "upstream/main",
+        baseRef: "refs/remotes/upstream/HEAD",
       },
-    ])("$name starts from $baseRef", ({ remote, remoteDefault, refs, baseRef }) =>
+    ])("$name starts from $baseRef", ({ remote, remoteDefault, refs, detached, baseRef }) =>
       Effect.gen(function* () {
         const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
         const gitFailure = (cwd: string, detail: string) =>
@@ -5696,6 +5718,15 @@ describe("OrchestratorMcpService provider resolution", () => {
                   refs.includes(revision)
                     ? Effect.succeed({ commitSha: "abc123" })
                     : Effect.fail(gitFailure(cwd, "Needed a single revision")),
+                // A repository here has its first local branch checked out unless detached.
+                resolveBranchName: () =>
+                  Effect.succeed(
+                    detached === true
+                      ? null
+                      : (refs
+                          .find((ref) => ref.startsWith("refs/heads/"))
+                          ?.slice("refs/heads/".length) ?? null),
+                  ),
               },
               saved,
             ),

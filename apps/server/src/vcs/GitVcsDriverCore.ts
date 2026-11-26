@@ -5218,10 +5218,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const resolveWorktreeBaseRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveWorktreeBaseRemote"] =
     Effect.fn("resolveWorktreeBaseRemote")(function* (input) {
+      if (input.refName === "HEAD") return null;
       const remoteNamesInGitOrder = yield* listRemoteNames(input.cwd);
       const remoteNames = remoteNamesInGitOrder.toSorted(
         (left, right) => right.length - left.length,
       );
+      const trackingPrefix = "refs/remotes/";
+      if (input.refName.startsWith(trackingPrefix))
+        return parseRemoteRefWithRemoteNames(
+          input.refName.slice(trackingPrefix.length),
+          remoteNames,
+        );
       // Upstream atoms read config even before the tracking ref has been fetched.
       // Match the exact local ref: for-each-ref also returns its descendants.
       const localBranch = yield* runGitStdout("GitVcsDriver.resolveWorktreeBaseRemote", input.cwd, [
@@ -5253,11 +5260,53 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return primary === null ? null : { remoteName: primary, branchName: input.refName };
     });
 
+  const readRemoteDefaultBranch = Effect.fn("GitVcsDriver.readRemoteDefaultBranch")(function* (
+    cwd: string,
+    remoteName: string,
+  ) {
+    const command = {
+      operation: "GitVcsDriver.readRemoteDefaultBranch",
+      cwd,
+      args: [
+        "ls-remote",
+        "--symref",
+        "--",
+        remoteName,
+        "HEAD",
+        ...DEFAULT_BASE_BRANCH_CANDIDATES.map((branch) => `refs/heads/${branch}`),
+      ],
+      fallbackErrorDetail: "Git could not read the remote's default branch.",
+    };
+    const { stdout } = yield* executeRemote(command);
+    const head = /^ref: (\S+)\tHEAD\r?$/mu.exec(stdout)?.[1];
+    const branch = head === undefined ? null : branchNameFromHeadRef(head);
+    if (branch !== null) return branch;
+    const advertisedRefs = stdout
+      .trimEnd()
+      .split(/\r?\n/u)
+      .map((line) => line.split("\t")[1]);
+    const conventional = DEFAULT_BASE_BRANCH_CANDIDATES.find((name) =>
+      advertisedRefs.includes(`refs/heads/${name}`),
+    );
+    if (conventional !== undefined) return conventional;
+    return yield* new GitCommandError({
+      ...gitCommandContext(command),
+      detail: "The remote advertises neither a default branch nor a main or master branch.",
+    });
+  });
+
   const fetchWorktreeBaseCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchWorktreeBaseCommit"] =
     Effect.fn("fetchWorktreeBaseCommit")(function* (input) {
       const target = input.remote ?? (yield* resolveWorktreeBaseRemote(input));
       if (target === null) return null;
-      const { remoteName, branchName } = target;
+      const { remoteName } = target;
+      const remoteHead = `${remoteName}/HEAD`;
+      const isRemoteHead =
+        target.branchName === "HEAD" &&
+        (input.refName === remoteHead || input.refName === `refs/remotes/${remoteHead}`);
+      const branchName = isRemoteHead
+        ? yield* readRemoteDefaultBranch(input.cwd, remoteName)
+        : target.branchName;
       const remoteRefName = `${remoteName}/${branchName}`;
       // A missing remote branch can leave a stale tracking ref; never resolve it.
       const resolveTrackingRef = executeGit(

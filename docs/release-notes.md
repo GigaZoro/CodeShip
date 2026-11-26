@@ -1,3 +1,7 @@
+## 2026-11-26 — Worktrees use the remote’s default branch
+
+- New worktrees can use the remote’s default branch even in a single-branch clone. With fetching turned off, local repositories with an unconventional default branch can start from their checked-out branch or detached commit. When a remote omits its default, CodeShip uses an advertised main or master branch.
+
 ## 2026-11-26 — GPT-6.2 in managed Codex and automatic provider updates
 
 - CodeShip upgrades its managed Codex CLI to 0.172.0 on macOS, Windows and Linux. Accounts with access to GPT-6.2 Astra or Sol can select them for chats and delegated tasks. The model picker shows the required update on older Codex installations.

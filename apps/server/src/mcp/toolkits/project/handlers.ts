@@ -121,11 +121,12 @@ const withWorktreeBase = Effect.fn("mcp.withWorktreeBase")(function* <R>(
   const fallback = yield* defaultWorktreeStrategy(
     yield* GitVcsDriver.GitVcsDriver,
     project.workspaceRoot,
+    { fromOrigin: requested.startFromOrigin ?? true },
   );
   return {
     ...requested,
     baseRef: fallback.baseRef,
-    startFromOrigin: requested.startFromOrigin ?? fallback.startFromOrigin,
+    startFromOrigin: fallback.startFromOrigin,
   };
 });
 
