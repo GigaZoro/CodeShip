@@ -10,13 +10,13 @@
  * system's by as much. More would let a process that took the root's pid soon after pass for it, or
  * a child the pid's last holder started just before the spawn pass for an ended root's.
  */
-const CLOCK_SKEW_MS = 100;
+export const WINDOWS_PROCESS_CLOCK_SKEW_MS = 100;
 
 /**
  * A child older than the parent it names, or the root's child created before from, is an earlier
  * holder's. A holder of the root's pid created outside [from, to], or once the root ended, is another
- * process; the root's children count only from before its start and the root's end, each bound with
- * CLOCK_SKEW_MS. Later passes walk only from processes the stop holds open, whose pids stay theirs.
+ * process. A recorded later holder bounds the root's children even after that holder exits.
+ * Later passes walk only from processes the stop holds open, whose pids stay theirs.
  */
 export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
@@ -39,14 +39,15 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  }",
   "  $targets",
   "}",
-  "function Get-T3ProcessTree($all, $root, $since, $from, $to, $ended = [double]::PositiveInfinity, $running = $false) {",
+  "function Get-T3ProcessTree($all, $root, $since, $from, $to, $ended = [double]::PositiveInfinity, $running = $false, $later = [double]::PositiveInfinity) {",
   "  $earliest = if ($from -gt $since) { $from } else { $since }",
   "  $after = [DateTimeOffset]::FromUnixTimeMilliseconds($earliest).UtcTicks; $mine = $null",
-  "  $before = if ([double]::IsInfinity($ended)) { [long]::MaxValue } else { [DateTimeOffset]::FromUnixTimeMilliseconds($ended).UtcTicks }",
+  "  $limit = [math]::Min($ended, $later)",
+  "  $before = if ([double]::IsInfinity($limit)) { [long]::MaxValue } else { [DateTimeOffset]::FromUnixTimeMilliseconds($limit).UtcTicks }",
   "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
   "  if ($holder) {",
   "    $made = Ticks $holder.CreationDate; $ms = Ms $holder.CreationDate",
-  "    $isRoot = [double]::IsInfinity($ended) -and $ms -ge $from -and $ms -le $to",
+  "    $isRoot = [double]::IsInfinity($limit) -and $ms -ge $from -and $ms -le $to",
   "    if ($isRoot) { $mine = $holder; if ($made -gt $after) { $after = $made } } elseif ($made -lt $before) { $before = $made }",
   "  }",
   "  if ($running -and -not $mine) { return }",
@@ -103,13 +104,13 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   // held and what it started meanwhile is found. The sixth pass finds what started after the fifth
   // looked: the stop ends it but fails as unfinished, as on a target it may not open or end. Outputs
   // ended <ms> when -running finds the root gone, and left <pid> <ticks> once a target will not end.
-  "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity, $ended = [double]::PositiveInfinity, [long[]]$left = @(), [switch]$running) {",
-  `  $since -= ${CLOCK_SKEW_MS}; $from -= ${CLOCK_SKEW_MS}; $to += ${CLOCK_SKEW_MS}; $ended += ${CLOCK_SKEW_MS}`,
+  "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity, $ended = [double]::PositiveInfinity, [long[]]$left = @(), [switch]$running, $later = [double]::PositiveInfinity) {",
+  `  $since -= ${WINDOWS_PROCESS_CLOCK_SKEW_MS}; $from -= ${WINDOWS_PROCESS_CLOCK_SKEW_MS}; $to += ${WINDOWS_PROCESS_CLOCK_SKEW_MS}; $ended += ${WINDOWS_PROCESS_CLOCK_SKEW_MS}`,
   "  $open = @{}; $ticksOf = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null",
   "  try {",
   "    for ($pass = 0; $pass -le 5; $pass++) {",
   "      $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)",
-  "      $targets = if ($pass) { Get-T3Descendants $all $starts } else { Get-T3ProcessTree $all $root $since $from $to $ended $running.IsPresent }",
+  "      $targets = if ($pass) { Get-T3Descendants $all $starts } else { Get-T3ProcessTree $all $root $since $from $to $ended $running.IsPresent $later }",
   "      if ($null -eq $targets) { 'ended {0}' -f (Ms ([DateTimeOffset]::UtcNow)); break }",
   // -left lists as pid and creation ticks what an earlier stop of the tree found but did not end,
   // perhaps once it had ended their parents; CIM still listing one with that start makes it and
@@ -164,11 +165,13 @@ export interface WindowsProcessTreeRoot {
    * that has not seen the root exit.
    */
   readonly ended: number | "running";
+  /** When a later holder of the root's pid was observed to start. */
+  readonly later?: number;
 }
 
 /**
  * PowerShell's arguments that stop a tree once its root is appended to the last one as
- * ` <pid> <since> [<from> <to>] [-ended <ended>]`, for code that cannot import this module. They
+ * ` <pid> <since> [<from> <to>] [-ended <ended>] [-later <later>]`, for code that cannot import this module. They
  * hold no double quote, which Node would escape.
  */
 export const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
@@ -185,6 +188,7 @@ export const stopTreeCall = (root: WindowsProcessTreeRoot): Array<string | numbe
   root.since,
   ...(root.created === "unknown" ? [] : [root.created.from, root.created.to]),
   ...(root.ended === "running" ? [] : ["-ended", root.ended]),
+  ...(root.later === undefined ? [] : ["-later", root.later]),
 ];
 
 export const stopTreeArgs = (call: ReadonlyArray<string | number>): Array<string> =>

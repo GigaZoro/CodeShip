@@ -1,3 +1,7 @@
+## 2026-11-26 — Windows command cleanup respects reused process IDs
+
+- When CodeShip detects that another process has taken a command's PID, it remembers that process's start time so cleanup can spare its children even after it has exited.
+
 ## 2026-11-26 — Restoring a transcript preserves usage history
 
 - When an older Claude, Pi, or Muse transcript replaces a newer copy, Usage keeps identifiable records missing from the restored file for 92 days. Records shared by both copies count once, including after a restart.

@@ -462,6 +462,7 @@ const commandRow = (taskId: string) =>
       readonly exit_code: number | null;
       readonly pid: number | null;
       readonly process_identity: string | null;
+      readonly later_started_at: number | null;
       readonly started_at: string;
       readonly deadline_at: string;
       readonly delivered_at: string | null;
@@ -471,7 +472,7 @@ const commandRow = (taskId: string) =>
       readonly lost_output: string | null;
       readonly directory: string;
     }>`
-      SELECT status, exit_code, pid, process_identity, started_at, deadline_at, delivered_at,
+      SELECT status, exit_code, pid, process_identity, later_started_at, started_at, deadline_at, delivered_at,
         last_alive_at, probe_error, lost_reason, lost_output, directory
       FROM command_runs WHERE task_id = ${taskId}
     `;
@@ -1106,12 +1107,14 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const chat = yield* liveChat(name);
         const { row, launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
         const from = Date.parse(row.started_at);
+        assert.equal(row.later_started_at, holderMade);
         assert.deepEqual(yield* Queue.clear(windows.stops), [
           windowsStopTreeArgs({
             pid: windows.wrapper,
             since: from,
             created: { from, to: launched },
             ended: "running",
+            later: row.later_started_at!,
           }),
         ]);
       }),
@@ -1247,7 +1250,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             runner.run(callerOf(chat.threadId), { command: "Write-Output started" }),
           ),
         );
-        holder.startedAt = (yield* Queue.take(windows.launches)) + 60_000;
+        const laterStartedAt = (yield* Queue.take(windows.launches)) + 60_000;
+        holder.startedAt = laterStartedAt;
         // A run waits until the server has adopted what the earlier one left.
         yield* windows.on(
           withServer((runner) =>
@@ -1257,8 +1261,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const row = (yield* commandRow(started.taskId))!;
         const since = Date.parse(row.started_at);
         const bounds = identityWindow(row.process_identity)!;
+        assert.equal(row.later_started_at, laterStartedAt);
+        const stops = yield* Queue.clear(windows.stops);
         assert.deepEqual(
-          [row.status, row.lost_reason, row.pid, yield* Queue.clear(windows.stops)],
+          [row.status, row.lost_reason, row.pid, stops],
           [
             "lost",
             "pid-reused",
@@ -1269,7 +1275,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
                 since,
                 created: bounds,
                 ended: "running",
-              }),
+              }).map((arg, index) => (index === 3 ? `${arg} -later ${laterStartedAt}` : arg)),
             ],
           ],
         );
@@ -1280,31 +1286,53 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     [
       "once its wrapper had ended, with no holder of its pid as root",
       "command-win-recovered-gone",
-      true,
+      "gone",
     ],
     // Not from when it named itself: with no window for its start, that also bounds the root.
-    ["while its wrapper ran, its start unread, from its record on", "command-win-recovered", false],
+    [
+      "while its wrapper ran, its start unread, from its record on",
+      "command-win-recovered",
+      "running",
+    ],
+    ["after a later holder took its PID", "command-win-recovered-reused", "reused"],
   ] as const)(
     "stops a Windows command that a later server recovered from its pid file %s",
-    ([, name, gone]) =>
+    ([, name, state]) =>
       Effect.gen(function* () {
-        const windows = yield* fakeWindows({ startOf: () => undefined });
+        let laterStartedAt: number | undefined;
+        let readLater = false;
+        const windows = yield* fakeWindows({
+          startOf: () => {
+            if (!readLater) return undefined;
+            readLater = false;
+            return laterStartedAt;
+          },
+        });
         const chat = yield* liveChat(name);
         // Past any pid_max, so the probe finds no process.
-        const pid = gone ? 2 ** 31 - 1 : windows.wrapper;
+        const pid = state === "gone" ? 2 ** 31 - 1 : windows.wrapper;
         const { row } = yield* cancelledWhileNoServerRan(windows, chat.threadId, (taskId) =>
-          leavePidFile(taskId, pid).pipe(Effect.orDie),
+          Effect.gen(function* () {
+            const launched = (yield* commandRow(taskId))!;
+            yield* leavePidFile(taskId, pid);
+            if (state === "reused") {
+              laterStartedAt = Date.parse(launched.started_at) + 60_000;
+              readLater = true;
+            }
+          }).pipe(Effect.orDie),
         );
         const recorded = Date.parse(row.started_at);
-        const since = gone ? secondAfter(recorded) : recorded;
+        const since = state === "running" ? recorded : secondAfter(recorded);
+        assert.equal(row.later_started_at, laterStartedAt ?? null);
         assert.deepEqual(yield* Queue.clear(windows.stops), [
           // Whatever holds a gone wrapper's pid is another process, so it is no root. No clock
           // reading caps its children: one taken after a step back can come before their starts.
           windowsStopTreeArgs({
             pid,
             since,
-            created: gone ? { from: 0, to: 0 } : "unknown",
+            created: state === "running" ? "unknown" : { from: 0, to: 0 },
             ended: "running",
+            ...(laterStartedAt === undefined ? {} : { later: laterStartedAt }),
           }),
         ]);
       }),

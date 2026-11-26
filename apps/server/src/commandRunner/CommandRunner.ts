@@ -27,6 +27,7 @@ import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
 import {
+  WINDOWS_PROCESS_CLOCK_SKEW_MS,
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
 } from "@t3tools/shared/windowsProcessTreeScript";
@@ -65,6 +66,8 @@ import { LOG_KEEP_BYTES, LOG_TRIM_AT_BYTES, TRIMMED_MARKER } from "./posixLogWri
 import {
   compareIdentity,
   ENDED_IDENTITY,
+  identityTime,
+  identityWindow,
   launchIdentity,
   linuxIdentity,
   recordedIdentity,
@@ -205,6 +208,7 @@ interface CommandRunRow {
   readonly pid: number | null;
   /** What tells the wrapper from a later process under its pid (`processIdentity.ts`). */
   readonly process_identity: string | null;
+  readonly later_started_at: number | null;
   readonly unit: string | null;
   readonly status: CommandRunStatus;
   readonly exit_code: number | null;
@@ -317,6 +321,7 @@ export const placeLosses = <L extends { readonly at: number }>(
 interface Loss {
   readonly lost_reason: LostReason;
   readonly probe_error: string | null;
+  readonly later_started_at?: number;
 }
 
 /**
@@ -616,13 +621,24 @@ const make = Effect.gen(function* () {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
+    if (row.later_started_at !== null) return { lost_reason: "pid-reused", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (row.process_identity === null) return undefined;
     if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
-    const verdict = compareIdentity(row.process_identity, yield* identityOf(row.pid));
+    const current = yield* identityOf(row.pid);
+    const verdict = compareIdentity(row.process_identity, current);
     if (verdict === "unknown") return "unconfirmed";
-    return verdict === "same" ? undefined : { lost_reason: "pid-reused", probe_error };
+    if (verdict === "same") return undefined;
+    const later = windows ? identityTime(current ?? null) : undefined;
+    const original = identityWindow(row.process_identity);
+    return {
+      lost_reason: "pid-reused",
+      probe_error,
+      ...(later !== undefined && original !== undefined && later > original.to
+        ? { later_started_at: later }
+        : {}),
+    };
   });
   const isSameProcess = (row: CommandRunRow) =>
     // Unknown identity stays conservative for a stop: the wrapper's group is signalled.
@@ -663,15 +679,16 @@ const make = Effect.gen(function* () {
         yield* processRunner
           .run({
             command: "powershell.exe",
-            args: windowsStopTreeArgs(
-              windowsStopRoot({
+            args: windowsStopTreeArgs({
+              ...windowsStopRoot({
                 pid,
                 identity: row.process_identity,
                 recordedAt: Date.parse(row.started_at),
                 namedAt: named?.writtenAt?.getTime(),
                 ended: row.ended_at === null ? "running" : Date.parse(row.ended_at),
               }),
-            ),
+              ...(row.later_started_at === null ? {} : { later: row.later_started_at }),
+            }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           })
@@ -685,6 +702,7 @@ const make = Effect.gen(function* () {
     sql`
       UPDATE command_runs
       SET pid = ${row.pid}, process_identity = ${row.process_identity}, unit = ${row.unit},
+        later_started_at = ${row.later_started_at},
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
@@ -883,15 +901,21 @@ const make = Effect.gen(function* () {
    * anything is stopped, and when it was last seen alive. What it started is not left running.
    */
   const recordLoss = Effect.fn("CommandRunner.recordLoss")(function* (
-    row: CommandRunRow,
+    previous: CommandRunRow,
     loss: Loss,
   ) {
+    const row = {
+      ...previous,
+      later_started_at: loss.later_started_at ?? previous.later_started_at,
+    };
+    if (row.later_started_at !== previous.later_started_at) yield* settle(row);
     const output = yield* readTail(row);
     yield* killTree(row);
     const endedAt = yield* nowIso;
     const lost: CommandRunRow = {
       ...row,
-      ...loss,
+      lost_reason: loss.lost_reason,
+      probe_error: loss.probe_error,
       status: "lost",
       ended_at: endedAt,
       lost_output: output === "" ? null : output,
@@ -1069,7 +1093,11 @@ const make = Effect.gen(function* () {
       }
     } else {
       // A wrapper recorded as ended left its pid to whatever holds it now.
-      if (unconfirmed.has(row.task_id) || row.process_identity === ENDED_IDENTITY) {
+      if (
+        unconfirmed.has(row.task_id) ||
+        row.process_identity === ENDED_IDENTITY ||
+        row.later_started_at !== null
+      ) {
         const loss = yield* lossOf(row);
         if (loss === undefined) unconfirmed.delete(row.task_id);
         else if (loss !== "unconfirmed") return yield* lose(loss);
@@ -1480,17 +1508,16 @@ const make = Effect.gen(function* () {
     // A step back stamps a wrapper that started before it up to this late, and one that started
     // after it up to this early.
     const lagMs = Math.max(0, Math.ceil(tookMs - (returned.wall - recorded.wall)));
+    const window = { from: recorded.wall - lagMs, to: returned.wall + lagMs };
+    const read = identity === undefined ? yield* identityOf(pid) : undefined;
+    const made = windows ? identityTime(read ?? null) : undefined;
     const launched: CommandRunRow = {
       ...row,
       pid,
       // Taken before the read, which can take seconds and find a later process.
-      process_identity:
-        identity ??
-        launchIdentity(
-          yield* identityOf(pid),
-          { from: recorded.wall - lagMs, to: returned.wall + lagMs },
-          platform,
-        ),
+      process_identity: identity ?? launchIdentity(read, window, platform),
+      later_started_at:
+        made !== undefined && made > window.to + WINDOWS_PROCESS_CLOCK_SKEW_MS ? made : null,
       unit,
       last_alive_at: yield* nowIso,
     };
@@ -1818,6 +1845,7 @@ const make = Effect.gen(function* () {
                 directory,
                 pid: null,
                 process_identity: null,
+                later_started_at: null,
                 unit: null,
                 status: startEnv === undefined ? "queued" : "running",
                 exit_code: null,
@@ -1912,7 +1940,14 @@ const make = Effect.gen(function* () {
       // It started before it wrote the file; a later process reusing the pid did not. ps reports
       // whole seconds.
       if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
-        return { ...row, lost_reason: "pid-reused" as const };
+        const recovered: CommandRunRow = {
+          ...row,
+          pid,
+          process_identity: ENDED_IDENTITY,
+          later_started_at: startedAt,
+        };
+        yield* writeRow(recovered);
+        return recovered;
       }
     }
     const recovered: CommandRunRow = {
