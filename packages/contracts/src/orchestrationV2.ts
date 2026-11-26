@@ -693,6 +693,7 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
   kind: Schema.Literals(["subagent", "shell", "monitor", "task"]),
   label: TrimmedNonEmptyString,
   id: Schema.optional(TrimmedNonEmptyString),
+  awaited: Schema.optional(Schema.Literal(true)),
   /** Native id of the turn item that started this work, when it is not `id`. */
   nativeItemId: Schema.optional(TrimmedNonEmptyString),
 });
@@ -1266,10 +1267,7 @@ const PendingBackgroundTaskFields = {
   parentTaskId: Schema.optional(TrimmedNonEmptyString),
   /** Native id of the turn item that started this work, when it is not `taskId`. */
   nativeItemId: Schema.optional(TrimmedNonEmptyString),
-  /**
-   * The thread waits on this work, so it holds like a subagent: a pull request watch or a
-   * `t3_command_run` command.
-   */
+  /** The thread needs the result of this command or monitor before it can finish. */
   awaited: Schema.optional(Schema.Literal(true)),
   /** Shown as elapsed time; only a `t3_command_run` command's record knows it. */
   startedAt: Schema.optional(Schema.DateTimeUtc),
@@ -1859,6 +1857,17 @@ const OrchestrationV2LinkRequestFields = {
   failure: Schema.optional(Schema.String),
 } as const;
 
+const OrchestrationV2SystemNoticeFields = {
+  type: Schema.Literal("system_notice"),
+  message: Schema.String,
+  awaitedTaskId: Schema.optionalKey(TrimmedNonEmptyString),
+} as const;
+export const OrchestrationV2SystemNotice = Schema.Struct({
+  ...OrchestrationV2TurnItemBaseFields,
+  ...OrchestrationV2SystemNoticeFields,
+});
+export type OrchestrationV2SystemNotice = typeof OrchestrationV2SystemNotice.Type;
+
 export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -1987,11 +1996,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("run_interrupt_result"),
     message: Schema.String,
   }),
-  Schema.Struct({
-    ...OrchestrationV2TurnItemBaseFields,
-    type: Schema.Literal("system_notice"),
-    message: Schema.String,
-  }),
+  OrchestrationV2SystemNotice,
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("error"),
@@ -2902,8 +2907,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
-    type: Schema.Literal("system_notice"),
-    message: Schema.String,
+    ...OrchestrationV2SystemNoticeFields,
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

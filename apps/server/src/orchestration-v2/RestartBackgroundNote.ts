@@ -155,6 +155,7 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
         description === undefined ? task.taskId : `${description} (id ${task.taskId})`,
       ) ?? "background task",
     id: task.taskId,
+    ...(task.awaited === true ? { awaited: true } : {}),
     ...(task.nativeItemId === undefined ? {} : { nativeItemId: task.nativeItemId }),
   };
 }
@@ -178,6 +179,28 @@ export function workStartedBy(
 }
 
 const MAX_NOTE_ENTRIES = 10;
+
+export function restartAwaitedTaskResultsNote(
+  items: ReadonlyArray<OrchestrationV2TurnItem>,
+  runIds: ReadonlyArray<RunId>,
+): string | undefined {
+  const receipts = items.flatMap((item) =>
+    item.type === "system_notice" &&
+    item.awaitedTaskId !== undefined &&
+    item.runId !== null &&
+    runIds.includes(item.runId)
+      ? [item.message]
+      : [],
+  );
+  if (receipts.length === 0) return undefined;
+  return [
+    "These awaited tasks already reported before the restart:",
+    ...receipts.slice(0, MAX_NOTE_ENTRIES),
+    ...(receipts.length > MAX_NOTE_ENTRIES
+      ? [`See the thread for ${receipts.length - MAX_NOTE_ENTRIES} more results.`]
+      : []),
+  ].join("\n");
+}
 
 /** Names one entry of a run's lost work, in that run's record and in a prompt's record of it. */
 const workKey = (entry: Work) =>
@@ -428,13 +451,9 @@ export function isRestartNoteSource(
   );
 }
 
-/**
- * Matches the Working-section hold: a shell or monitor never wakes it. Most are dev servers and
- * their watchdogs, so their note waits for the next user message; commands a chat waits on run
- * through `t3_command_run`, which outlives the restart.
- */
-export function isAwaitedWork(work: Pick<Work, "kind">): boolean {
-  return work.kind !== "shell" && work.kind !== "monitor";
+/** A service or watcher records its loss for the next message unless the agent awaited it. */
+export function isAwaitedWork(work: Pick<Work, "kind" | "awaited">): boolean {
+  return work.awaited === true || (work.kind !== "shell" && work.kind !== "monitor");
 }
 
 export function runOutcome(

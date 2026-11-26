@@ -1,3 +1,8 @@
+## 2026-11-26 — Claude delegates can wait for native background work
+
+- When a Claude delegate needs the result of a background shell or Monitor, it can keep its run open until it has a final reply for its parent. A restart tells the chat which awaited work stopped. Dev servers and watchers can still be left running.
+- Claude reports a startup error if it cannot connect to the configured CodeShip tools before the first prompt.
+
 ## 2026-11-26 — The ACP idle-error test waits for the late subagent event
 
 - Maintainers: after observing the failed turn, the test tells the mock agent to complete its subagent and waits for that completion event. This keeps the test reliable on busy machines.

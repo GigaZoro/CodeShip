@@ -30,6 +30,7 @@ import {
   restartRetryRun,
 } from "./RestartContinuation.ts";
 import {
+  cancelledRosterTaskWork,
   continuationStartRetryDelayMs,
   restartCancelledBackgroundWorkNote,
   restartRetryNoticeId,
@@ -233,13 +234,24 @@ it("continues a settled root run for background work it recorded, only while its
         );
 });
 
-it.effect.each(["completed", "waiting", "cancelled"] as const)(
-  "wakes a %s run whose background task the restart cancelled, with the note as its prompt",
-  (status) =>
+it.effect.each([
+  ["completed", "background_task"],
+  ["waiting", "background_task"],
+  ["cancelled", "background_task"],
+  ["completed", "command"],
+  ["completed", "monitor"],
+] as const)(
+  "wakes a %s run whose awaited %s the restart cancelled, with the note as its prompt",
+  ([status, kind]) =>
     Effect.gen(function* () {
       const base = makeProjection();
       const work = [
-        { kind: "task" as const, label: "Watch CI run 42" },
+        cancelledRosterTaskWork({
+          kind,
+          taskId: "landing",
+          description: "Finish landing",
+          awaited: true,
+        }),
         { kind: "shell" as const, label: "vp run dev" },
       ];
       const projection = {
@@ -270,7 +282,7 @@ it.effect.each(["completed", "waiting", "cancelled"] as const)(
       assert.equal(command.type, "message.dispatch");
       if (command.type !== "message.dispatch") return;
       assert.equal(command.restartContinuationOfRunId, runId);
-      assert.include(command.text, "- task: Watch CI run 42");
+      assert.include(command.text, "Finish landing (id landing)");
       assert.include(command.text, "- shell: vp run dev");
     }),
 );
@@ -1074,12 +1086,18 @@ it.effect("names the calls the restart cut when it continues the turn", () =>
           input: "rm -rf dist",
         }),
         item("item:answer", "assistant_message", now, {}),
+        item("item:landing", "system_notice", now, {
+          status: "completed",
+          awaitedTaskId: "b-landing",
+          message: "b-landing completed with exit code 0 at abcdef12",
+        }),
       ],
     } as unknown as OrchestrationV2ThreadProjection);
     assert.deepEqual(texts, [
       [
         restartCancelledBackgroundWorkNote([reviewer, devServer]),
         "Note: the restart stopped these tool calls of your last turn before they reported a result. Some may have run in part and some may never have started, so check each one before you run it again:\n- shell: vp run typecheck\n- task: src/a.ts",
+        "These awaited tasks already reported before the restart:\nb-landing completed with exit code 0 at abcdef12",
         CONTINUE_PROMPT,
       ].join("\n\n"),
     ]);

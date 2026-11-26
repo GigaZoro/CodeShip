@@ -171,11 +171,10 @@ into an ordinary one, and every release drops the mark, so a later failure hold 
 inherit it. The run-update listener does
 not replay completions from before startup, so a startup pass after reconciliation applies
 the same release to threads whose latest run completed, then starts their queues. A settled run qualifies only when it lost work the agent waits on
-(a subagent or a background task) and its session was live, so stale records from an older
-crash never wake it. Its continuation prompt is the note of what will not report back. A
-shell or monitor does not wake a settled run: most are dev servers and their watchdogs that
-nobody waits on, and a command a chat waits on runs through `t3_command_run`, which a
-restart does not cut, so that note waits for the next user message.
+and its session was live, so stale records from an older crash never wake it. Its
+continuation prompt names the lost work. A provider-owned shell or monitor carries its
+explicit wait through restart recovery. A service left running is reported on the next
+user message.
 For a settled chat the provider thread's roster is often the only record of a background
 command, since the command's turn item may already have completed. Whoever empties a
 roster whose process is gone therefore records the loss on a run in the same write: the
@@ -295,9 +294,8 @@ other adapters receive the continuation message through their normal turn path.
 Clients hold an update while chats wait on subagents or background tasks a restart would
 cut, because no provider's background work outlives the provider process a restart stops.
 Claude Code owns its `run_in_background` shells and kills them when it exits, and a new
-server cannot reattach to an old provider process mid-protocol. Shells and monitors do not
-hold: most are dev servers and watchers, which would hold every update, and a command a chat
-waits on runs through `t3_command_run` instead. `server.watchRestartHold` streams the
+server cannot reattach to an old provider process mid-protocol. A native shell or monitor holds
+an update only when the agent has explicitly said it needs that task's result. `server.watchRestartHold` streams the
 part of what a restart would cancel that a chat waits on, computed by the same
 `restartCancelledBackgroundWork` the shutdown reconcile uses for its note, so the hold
 and the note cannot disagree. The client that starts the update waits on it before

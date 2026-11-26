@@ -35,6 +35,7 @@ import {
   isSettledRun,
   neverStarted,
   promptNeverDelivered,
+  restartAwaitedTaskResultsNote,
   restartCancelledBackgroundWorkNote,
   restartContinuationNote,
   restartCutCalls,
@@ -460,6 +461,18 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const cutCalls = note.settled
       ? []
       : restartCutCalls(source, sourceRecords.turnItems, note.work);
+    const receipts =
+      recompact || note.settled
+        ? undefined
+        : restartAwaitedTaskResultsNote(
+            note.runIds.length === 1
+              ? sourceRecords.turnItems
+              : (yield* threads.getThreadRecords(input.threadId, ["turnItems"], {
+                  turnItemTypes: ["system_notice"],
+                  turnItemRunIds: note.runIds,
+                })).turnItems,
+            note.runIds,
+          );
     const tasksText =
       recompact || note.settled
         ? undefined
@@ -475,6 +488,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         : [
             noteText,
             cutCalls.length === 0 ? undefined : restartCutCallsNote(cutCalls),
+            receipts,
             tasksText,
             CONTINUE_PROMPT,
           ]

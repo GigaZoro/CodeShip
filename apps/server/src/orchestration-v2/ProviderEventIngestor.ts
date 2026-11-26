@@ -722,6 +722,17 @@ export const layer: Layer.Layer<
               });
               return [
                 updated,
+                ...(input.event.awaitedTaskNotice === undefined
+                  ? []
+                  : [
+                      yield* makeDomainEvent(input, {
+                        type: "turn-item.updated",
+                        threadId,
+                        payload: input.event.awaitedTaskNotice,
+                        runId: input.event.awaitedTaskNotice.runId,
+                        nodeId: input.event.awaitedTaskNotice.nodeId,
+                      }),
+                    ]),
                 ...(yield* recordLostBackgroundWork(input, {
                   threadId,
                   providerThreadId: input.event.providerThread.id,

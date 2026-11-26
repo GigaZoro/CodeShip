@@ -92,10 +92,7 @@ import {
 import { TerminalToolkit } from "../../apps/server/src/mcp/toolkits/terminal/tools.ts";
 import { ThreadToolkit } from "../../apps/server/src/mcp/toolkits/thread/tools.ts";
 import { WorktreeToolkit } from "../../apps/server/src/mcp/toolkits/worktree/tools.ts";
-import {
-  CLAUDE_PROVIDER,
-  makeClaudeQueryOptions,
-} from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as ClaudeAdapter from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
   openAiConnection,
   openAiShellRequest,
@@ -115,6 +112,12 @@ import {
   launcherHelp,
   makeDeviceTools,
 } from "./devices.ts";
+
+const { CLAUDE_PROVIDER, makeClaudeQueryOptions } = ClaudeAdapter;
+// Older checkouts can replay the same cases without the Stop hook or its tool.
+const { CLAUDE_NATIVE_TASK_WAIT_TOOL: nativeWaitTool }: Partial<typeof ClaudeAdapter> =
+  ClaudeAdapter;
+
 /** Agent models by id, with the display name a harness gives them. */
 const MODELS = {
   "claude-sonnet-5-5": "Sonnet 5.5",
@@ -225,6 +228,8 @@ const McpToolUseExpect = Schema.Struct({
   /** Case-sensitive regexes on the agent's visible text. */
   textMust: Schema.optional(Schema.Array(Schema.String)),
   textMustNot: Schema.optional(Schema.Array(Schema.String)),
+  /** Regexes that must appear in a completed final answer. */
+  finalTextMust: Schema.optional(Schema.Array(Schema.String)),
   /** Each entry matches a PR URL linked at the end, as `args` values match. */
   linked: Schema.optional(Schema.Array(Schema.String)),
   /** The PR numbers linked at the end, exactly. */
@@ -313,6 +318,20 @@ export const McpToolUseCase = Schema.Struct({
           toolCalls: Schema.optional(Schema.Array(PriorToolCall)),
         }),
       ),
+    ),
+    /** Background Bash launches in this turn and the reply that triggered the Claude Stop hook. */
+    claudeStop: Schema.optional(
+      Schema.Struct({
+        tasks: Schema.NonEmptyArray(
+          Schema.Struct({
+            id: Schema.String,
+            command: Schema.String,
+            description: Schema.String,
+            output: Schema.String,
+          }),
+        ),
+        draft: Schema.String,
+      }),
     ),
     world: Schema.optional(McpToolUseWorld),
     /**
@@ -446,6 +465,7 @@ const CODEX_NAMES: Readonly<Record<string, string>> = {
 };
 export const normalizeToolName = (name: string) => {
   const bare = name.slice(name.lastIndexOf(".") + 1);
+  if (bare === nativeWaitTool?.name) return "await_task";
   return isT3Name(bare)
     ? bare.slice(T3_PREFIX.length)
     : (CODEX_NAMES[bare] ?? bare.slice(bare.lastIndexOf("_") + 1));
@@ -1139,6 +1159,31 @@ export const buildMessages = (sample: Sample) => {
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
   }
+  const stop = testCase.setup.claudeStop;
+  if (stop !== undefined && !base.codex) {
+    const bash = findTool(base, "Bash");
+    if (bash === undefined) throw new Error(`${testCase.id}: the Claude capture needs Bash.`);
+    for (const { command, description, output } of stop.tasks) {
+      const id = `toolu_prior_${nextId++}`;
+      const input = { command, description, run_in_background: true };
+      push("assistant", { type: "tool_use", id, name: bash.name, input });
+      push("user", toolResult(id, output));
+    }
+    if (nativeWaitTool?.stopFeedback) {
+      if (!hasTool(tools, nativeWaitTool.name)) {
+        tools.push({
+          name: nativeWaitTool.name,
+          description: nativeWaitTool.description,
+          input_schema: nativeWaitTool.inputSchema,
+        });
+      }
+      const { additionalContext } = nativeWaitTool.stopFeedback(
+        stop.tasks.map((task) => task.id),
+      ).hookSpecificOutput;
+      push("assistant", text(stop.draft));
+      push("user", reminder(`Stop hook additional context: ${additionalContext}`));
+    }
+  }
   return messages;
 };
 
@@ -1827,6 +1872,11 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
   }
+  if (nativeWaitTool && call.name === nativeWaitTool.name && testCase.setup.claudeStop) {
+    return testCase.setup.claudeStop.tasks.some((task) => task.id === input.task_id)
+      ? toolResult(call.id, nativeWaitTool.successText)
+      : failed("The task ID does not match a running task in this turn.");
+  }
   if (name === "ToolSearch") {
     const max = typeof input.max_results === "number" ? input.max_results : 5;
     const found = searchTools(base, valueText(input.query), max);
@@ -2370,6 +2420,9 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun, fi
     add(`shellMustNot /${p}/`, !shell.some((c) => test(p, c)));
   for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, run.text));
   for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
+  for (const p of expect.finalTextMust ?? []) {
+    add(`finalTextMust /${p}/`, run.stopReason === "end_turn" && test(p, run.finalText ?? ""));
+  }
   const isLinked = (url: string) => (run.linked ?? []).some((at) => matches(url, at));
   for (const url of expect.linked ?? []) add(`linked ${url}`, isLinked(url));
   if (expect.linkedNumbers !== undefined) {

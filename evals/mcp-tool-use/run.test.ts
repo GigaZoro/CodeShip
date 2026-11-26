@@ -136,6 +136,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
     shellMustNot: ["\\bsleep\\b"],
     textMust: ["t3-thread://v2/"],
     textMustNot: ["Paste .*token"],
+    finalTextMust: ["Started"],
     linked: ["~/pull/124"],
     linkedNumbers: [124],
   };
@@ -155,6 +156,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
       { step: 1, tool: "t3_thread_launch", input: {}, failed: false },
     ],
     text: "Started <t3-thread://v2/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/11111111-1111-4111-8111-111111111111>. Do not paste a token.",
+    finalText: "Started the review thread.",
     stopReason: "end_turn",
     linked: ["https://github.com/acme/app/pull/124"],
   };
@@ -173,6 +175,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
       { step: 3, tool: "task_status", input: { taskId: "task-1" } },
     ],
     text: "Paste your token here.",
+    finalText: "Started the review thread.",
     stopReason: "max_steps",
   };
   assert.deepEqual(failed(expect, bad), [
@@ -188,6 +191,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
     "shellMustNot /\\bsleep\\b/",
     "textMust /t3-thread://v2//",
     "textMustNot /Paste .*token/",
+    "finalTextMust /Started/",
     "linked ~/pull/124",
     "linkedNumbers",
   ]);

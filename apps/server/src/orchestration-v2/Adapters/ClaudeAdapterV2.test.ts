@@ -2674,7 +2674,11 @@ function makeFakeClaudeCli(answerSetServers = true) {
         const response = {
           subtype: "success",
           request_id: frame.request_id,
-          response: setServers ? { added: [], removed: [], errors: {} } : {},
+          response: setServers
+            ? { added: [], removed: [], errors: {} }
+            : frame.request.subtype === "mcp_status"
+              ? { mcpServers: [{ name: "t3-code", status: "connected" }] }
+              : {},
         };
         stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
       }
@@ -12351,6 +12355,1167 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each([
+    ["Bash", "without a native wake", "local_bash"],
+    ["Bash", "without a verifiable echo", "local_bash"],
+    ["Bash", "without ownership or another reply after the next anonymous result", "local_bash"],
+    [
+      "Bash",
+      "without ownership but with another reply after the next anonymous result",
+      "local_bash",
+    ],
+    ["Bash", "without a terminal receipt", "local_bash"],
+    ["Bash", "with successive discarded wakes after two missing receipts", "local_bash"],
+    ["Bash", "with coalesced discarded wakes after two missing receipts", "local_bash"],
+    ["Bash", "without the initial root result", "local_bash"],
+    ["Bash", "between two explicit markers", "local_bash"],
+    ["Bash", "before its marker", "local_bash"],
+    ["Bash", "before its launch hook", "local_bash"],
+    ["Bash", "with an owned provider failure in the report", "local_bash"],
+    ["Bash", "with an owned provider failure and a coalesced unrelated wake", "local_bash"],
+    ["Bash", "with an owned provider failure and a queued native wake", "local_bash"],
+    ["Bash", "with an owned provider failure and no discarded native wake", "local_bash"],
+    ["Bash", "with a discarded native wake before the next reply", "local_bash"],
+    ["Bash", "with a discarded native wake folding in the next prompt", "local_bash"],
+    ["Bash", "with only an anonymous result after attaching to a discarded wake", "local_bash"],
+    ["Monitor", "before the original result", "local_bash"],
+    ["Monitor", "during another notification wake", "monitor_ws"],
+    ["Bash", "while steered before and during its report", "local_bash"],
+  ] as const)(
+    "keeps the original turn open after explicitly awaiting native %s notified %s",
+    ([tool, notificationTiming, taskType]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let closed = false;
+          const harness = yield* makeWakeHarnessWithOptions({
+            close: () =>
+              Effect.sync(() => {
+                closed = true;
+              }),
+          });
+          const queuedNativeWake =
+            notificationTiming === "with an owned provider failure and a queued native wake";
+          const noDiscardedWake =
+            notificationTiming === "with an owned provider failure and no discarded native wake";
+          const onlyAnonymousWakeResult =
+            notificationTiming ===
+            "with only an anonymous result after attaching to a discarded wake";
+          const foldedWakeReply =
+            notificationTiming === "with a discarded native wake folding in the next prompt";
+          const coalescedWake =
+            queuedNativeWake ||
+            foldedWakeReply ||
+            notificationTiming === "with an owned provider failure and a coalesced unrelated wake";
+          const attachesDuringWake =
+            notificationTiming === "with a discarded native wake before the next reply" ||
+            foldedWakeReply ||
+            onlyAnonymousWakeResult;
+          const providerFailed =
+            notificationTiming === "with an owned provider failure in the report" ||
+            coalescedWake ||
+            noDiscardedWake ||
+            attachesDuringWake;
+          const noNextReply =
+            notificationTiming ===
+            "without ownership or another reply after the next anonymous result";
+          const anonymousNextReply =
+            notificationTiming ===
+            "without ownership but with another reply after the next anonymous result";
+          const hasEcho =
+            notificationTiming !== "without a verifiable echo" &&
+            !noNextReply &&
+            !anonymousNextReply;
+          const coalescedDiscarded =
+            notificationTiming === "with coalesced discarded wakes after two missing receipts";
+          const twoDiscarded =
+            coalescedDiscarded ||
+            notificationTiming === "with successive discarded wakes after two missing receipts";
+          const preservesService =
+            providerFailed ||
+            !hasEcho ||
+            twoDiscarded ||
+            notificationTiming === "before its marker";
+          const completedBeforeHook = notificationTiming === "before its launch hook";
+          const completedBeforeMark =
+            completedBeforeHook || notificationTiming === "before its marker";
+          const stopBeforeFrames =
+            notificationTiming === "before its marker" ||
+            notificationTiming === "without a native wake" ||
+            notificationTiming === "before the original result";
+          const hookPromptId = "00000000-0000-4000-8000-000000000610";
+          const serviceId = "dev-server";
+          const queuedServiceId = "queued-dev-server";
+          const serviceNoticeUuid = "00000000-0000-4000-8000-000000000614";
+          const serviceWakeId = JSON.stringify([
+            ClaudeAdapterV2.CLAUDE_PROVIDER,
+            WAKE_NATIVE_SESSION,
+            "notification",
+            serviceNoticeUuid,
+          ]);
+          const serviceNotice = claudeSdkFrame({
+            ...wakeNotification,
+            task_id: serviceId,
+            tool_use_id: "toolu_dev_server",
+            summary: "The dev server exited.",
+            uuid: serviceNoticeUuid,
+          });
+          const secondTaskId = "second-awaited-task";
+          const secondToolId = "toolu_second_awaited_task";
+          const now = yield* DateTime.now;
+          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          const providerTurnId = idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: "turn:attempt-claude-native-task-wait",
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-native-task-wait"),
+              text: "Run the verification and report its result.",
+              attachments: [],
+            }),
+          );
+          const toolUse = (uuid: string, id: string, name: string, input: unknown) =>
+            claudeSdkFrame({
+              type: "assistant",
+              message: {
+                model: "claude-sonnet-4-6",
+                id: `msg_${uuid}`,
+                type: "message",
+                role: "assistant",
+                content: [{ type: "tool_use", id, name, input }],
+                stop_reason: "tool_use",
+                stop_sequence: null,
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+              parent_tool_use_id: null,
+              uuid,
+              session_id: WAKE_NATIVE_SESSION,
+            });
+          const taskInput = {
+            ...(taskType === "monitor_ws"
+              ? { ws: { url: "wss://example.test/verification" } }
+              : { command: "sleep 8 && echo verified" }),
+            description: WAKE_TASK_DESCRIPTION,
+            ...(tool === "Bash" ? { run_in_background: true } : {}),
+          };
+          const deliverLaunchFrames = () =>
+            harness
+              .offerAndWait(
+                toolUse("00000000-0000-4000-8000-000000000601", WAKE_TOOL_USE_ID, tool, taskInput),
+              )
+              .pipe(
+                Effect.andThen(
+                  harness.offerAndWait(claudeSdkFrame({ ...wakeTaskStarted, task_type: taskType })),
+                ),
+              );
+          if (!stopBeforeFrames) yield* deliverLaunchFrames();
+          if (twoDiscarded) {
+            yield* harness.offerAndWait(
+              toolUse("00000000-0000-4000-8000-000000000632", secondToolId, "Bash", taskInput),
+            );
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeTaskStarted,
+                task_id: secondTaskId,
+                tool_use_id: secondToolId,
+                uuid: "00000000-0000-4000-8000-000000000633",
+              }),
+            );
+          }
+          if (preservesService) {
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeTaskStarted,
+                task_id: serviceId,
+                tool_use_id: "toolu_dev_server",
+                description: "Dev server",
+              }),
+            );
+          }
+          if (queuedNativeWake) {
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeTaskStarted,
+                task_id: queuedServiceId,
+                tool_use_id: "toolu_queued_dev_server",
+                description: "Already queued service",
+              }),
+            );
+          }
+          const options = harness.getOpenedOptions();
+          const stopHook = options?.hooks?.Stop?.[0]?.hooks[0];
+          if (stopHook === undefined) throw new Error("Expected a Claude Stop hook");
+          const stop = (stopHookActive: boolean) =>
+            stopHook(
+              {
+                hook_event_name: "Stop",
+                stop_hook_active: stopHookActive,
+                session_id: WAKE_NATIVE_SESSION,
+                prompt_id: hookPromptId,
+                transcript_path: "fixture.jsonl",
+                cwd: ".",
+                background_tasks: [
+                  {
+                    id: WAKE_TASK_ID,
+                    type: tool === "Bash" ? "shell" : "monitor",
+                    status: "running",
+                    description: WAKE_TASK_DESCRIPTION,
+                  },
+                  ...(twoDiscarded
+                    ? [
+                        {
+                          id: secondTaskId,
+                          type: "shell",
+                          status: "running",
+                          description: WAKE_TASK_DESCRIPTION,
+                        },
+                      ]
+                    : []),
+                  { id: serviceId, type: "shell", status: "running", description: "Dev server" },
+                ],
+              },
+              undefined,
+              { signal: new AbortController().signal },
+            );
+          if (stopBeforeFrames || completedBeforeHook) {
+            const postToolUse = options?.hooks?.PostToolUse?.at(-1)?.hooks[0];
+            if (postToolUse === undefined) throw new Error("Expected a Claude PostToolUse hook");
+            const launch = (agentId?: string) =>
+              postToolUse(
+                {
+                  hook_event_name: "PostToolUse",
+                  session_id: WAKE_NATIVE_SESSION,
+                  prompt_id: hookPromptId,
+                  transcript_path: "fixture.jsonl",
+                  cwd: ".",
+                  tool_name: tool,
+                  tool_use_id: WAKE_TOOL_USE_ID,
+                  tool_input: taskInput,
+                  tool_response:
+                    tool === "Bash"
+                      ? {
+                          backgroundTaskId: WAKE_TASK_ID,
+                          stdout: "",
+                          stderr: "",
+                          interrupted: false,
+                        }
+                      : { taskId: WAKE_TASK_ID, timeoutMs: 30_000 },
+                  ...(agentId === undefined ? {} : { agent_id: agentId }),
+                },
+                WAKE_TOOL_USE_ID,
+                { signal: new AbortController().signal },
+              );
+            if (completedBeforeHook) {
+              yield* harness.offerAndWait(wakeNotification);
+            } else {
+              yield* Effect.promise(() => launch("nested-agent"));
+              assert.deepEqual(yield* Effect.promise(() => stop(false)), {});
+            }
+            yield* Effect.promise(() => launch());
+          }
+          if (!completedBeforeHook) {
+            const offered = yield* Effect.promise(() => stop(false));
+            assert.include(JSON.stringify(offered), WAKE_TASK_ID);
+            assert.include(JSON.stringify(offered), "mcp__t3-native__await_task");
+            assert.notInclude(JSON.stringify(offered), serviceId);
+          }
+          if (notificationTiming === "before its marker") {
+            yield* deliverLaunchFrames();
+            yield* harness.offerAndWait(wakeNotification);
+          }
+
+          const server = options?.mcpServers?.["t3-native"];
+          if (server?.type !== "sdk") throw new Error("Expected an in-process MCP server");
+          const transport: Parameters<typeof server.instance.connect>[0] = {
+            start: async () => {},
+            close: async () => {},
+            send: async (response) => {
+              if ("id" in response && typeof response.id === "number") {
+                replies.get(response.id)?.(response);
+              }
+            },
+          };
+          const replies = new Map<number, (response: unknown) => void>();
+          yield* Effect.acquireRelease(
+            Effect.promise(() => server.instance.connect(transport)),
+            () => Effect.promise(() => server.instance.close()),
+          );
+          let nextRequestId = 1;
+          const request = (method: string, params: Record<string, unknown>) =>
+            Effect.promise(
+              () =>
+                new Promise<unknown>((resolve) => {
+                  const id = nextRequestId++;
+                  replies.set(id, resolve);
+                  transport.onmessage?.({ jsonrpc: "2.0", id, method, params });
+                }),
+            );
+          yield* request("initialize", {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "Claude SDK test", version: "1.0.0" },
+          });
+          transport.onmessage?.({ jsonrpc: "2.0", method: "notifications/initialized" });
+          const preToolUse = options?.hooks?.PreToolUse?.[0]?.hooks[0];
+          if (preToolUse === undefined) throw new Error("Expected a Claude PreToolUse hook");
+          const authorize = (
+            id: string,
+            {
+              agentId,
+              sessionId = WAKE_NATIVE_SESSION,
+              signal = new AbortController().signal,
+              taskId = WAKE_TASK_ID,
+            }: {
+              agentId?: string;
+              sessionId?: string;
+              signal?: AbortSignal;
+              taskId?: string;
+            } = {},
+          ) =>
+            Effect.promise(() =>
+              preToolUse(
+                {
+                  hook_event_name: "PreToolUse",
+                  session_id: sessionId,
+                  prompt_id: hookPromptId,
+                  transcript_path: "fixture.jsonl",
+                  cwd: ".",
+                  tool_name: "mcp__t3-native__await_task",
+                  tool_use_id: id,
+                  tool_input: { task_id: taskId },
+                  mcp_server: { name: "t3-native", source: "sdk" },
+                  ...(agentId === undefined ? {} : { agent_id: agentId }),
+                },
+                id,
+                { signal },
+              ),
+            );
+          const awaitTask = (toolUseId?: string, taskId = WAKE_TASK_ID, agentId?: string) =>
+            request("tools/call", {
+              name: "await_task",
+              arguments: { task_id: taskId },
+              ...(toolUseId === undefined
+                ? {}
+                : {
+                    _meta: {
+                      "claudecode/toolUseId": toolUseId,
+                      ...(agentId === undefined ? {} : { "claudecode/agentId": agentId }),
+                    },
+                  }),
+            });
+          const refused = { result: { isError: true } };
+          const denied = { hookSpecificOutput: { permissionDecision: "deny" } };
+          expect(yield* awaitTask()).toMatchObject(refused);
+          expect(yield* awaitTask("toolu_without_hook")).toMatchObject(refused);
+          expect(yield* authorize("toolu_nested", { agentId: "agent123" })).toMatchObject(denied);
+          expect(yield* awaitTask("toolu_nested")).toMatchObject(refused);
+          expect(yield* authorize("toolu_wrong_session", { sessionId: "other" })).toMatchObject(
+            denied,
+          );
+          expect(yield* awaitTask("toolu_wrong_session")).toMatchObject(refused);
+
+          const authorization = yield* Effect.abortSignal.pipe(
+            Effect.flatMap((signal) => authorize("toolu_cancelled", { signal })),
+            Effect.scoped,
+          );
+          assert.deepEqual(authorization, {});
+          expect(yield* awaitTask("toolu_cancelled")).toMatchObject(refused);
+
+          assert.deepEqual(yield* authorize("toolu_wrong_task"), {});
+          expect(yield* awaitTask("toolu_wrong_task", "unrelated-task")).toMatchObject(refused);
+          expect(yield* awaitTask("toolu_wrong_task")).toMatchObject(refused);
+
+          const caller = "toolu_root_await";
+          assert.deepEqual(yield* authorize(caller), {});
+          expect(yield* awaitTask(caller, WAKE_TASK_ID, "agent123")).toMatchObject(refused);
+          const marked = yield* awaitTask(caller);
+          expect(marked).toMatchObject({ result: { isError: false } });
+          if (twoDiscarded) {
+            const secondCaller = "toolu_second_root_await";
+            assert.deepEqual(yield* authorize(secondCaller, { taskId: secondTaskId }), {});
+            expect(yield* awaitTask(secondCaller, secondTaskId)).toMatchObject({
+              result: { isError: false },
+            });
+          }
+          assert.deepEqual(yield* authorize(caller), {});
+          expect(yield* awaitTask(caller)).toMatchObject(refused);
+          assert.deepEqual(yield* Effect.promise(() => stop(false)), {});
+          if (completedBeforeMark) {
+            expect(marked).toMatchObject({
+              result: { content: [{ type: "text", text: expect.any(String) }] },
+            });
+            const { text } = (marked as { result: { content: [{ text: string }] } }).result
+              .content[0];
+            const [intro, receipt] = text.split("\n");
+            assert.include(intro, "The native task already ended");
+            assert.deepEqual(JSON.parse(receipt ?? ""), {
+              taskId: WAKE_TASK_ID,
+              status: "completed",
+              summary: WAKE_SUMMARY,
+            });
+            if (preservesService)
+              yield* harness.offerAndWait(claudeSdkFrame({ ...wakeNotification }));
+            if (completedBeforeHook) {
+              for (const frame of [
+                claudeSdkFrame({
+                  ...wakeTaskStarted,
+                  uuid: "00000000-0000-4000-8000-000000000622",
+                }),
+                claudeSdkFrame({
+                  type: "system",
+                  subtype: "background_tasks_changed",
+                  tasks: [{ task_id: WAKE_TASK_ID, task_type: taskType }],
+                  uuid: "00000000-0000-4000-8000-000000000623",
+                  session_id: WAKE_NATIVE_SESSION,
+                }),
+              ]) {
+                yield* harness.offerAndWait(frame);
+              }
+              assert.isFalse(yield* harness.hasPendingBackgroundWork);
+            }
+            assert.lengthOf(harness.offeredMessages, 1);
+            yield* harness.offerAndWait(
+              claudeSdkFrame({ ...turnOneResult, user_message_uuid: harness.promptUuid(0) }),
+            );
+            const terminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(terminal.providerTurnId, providerTurnId);
+            assert.equal(terminal.status, "completed");
+            if (preservesService) {
+              yield* harness.offerAndWait(serviceNotice);
+              yield* harness.offerAndWait(wakeAssistant);
+              yield* harness.offerAndWait(wakeResult);
+              assert.lengthOf(harness.continuationRequests, 1);
+              assert.deepEqual(harness.continuationRequests[0]?.notification?.wakeEventIds, [
+                serviceWakeId,
+              ]);
+            }
+            return;
+          }
+
+          const recorded = yield* Queue.take(harness.providerThreadReceipts).pipe(
+            Effect.repeat({
+              until: (event) => event.providerThread.pendingBackgroundTasks?.[0]?.awaited === true,
+            }),
+          );
+          assert.equal(recorded.providerThread.pendingBackgroundTasks?.[0]?.taskId, WAKE_TASK_ID);
+          assert.equal(
+            recorded.providerThread.pendingBackgroundTasks?.[0]?.kind,
+            tool === "Monitor" ? "monitor" : "command",
+          );
+          if (stopBeforeFrames) yield* deliverLaunchFrames();
+          const secondMarker = notificationTiming === "between two explicit markers";
+          if (secondMarker || notificationTiming === "without the initial root result") {
+            const monitorId = "second-awaitable-task";
+            const monitorToolUseId = "toolu_second_monitor";
+            if (secondMarker) {
+              yield* harness.offerAndWait(
+                toolUse("00000000-0000-4000-8000-000000000627", monitorToolUseId, "Monitor", {
+                  command: "printf verified",
+                  description: "Monitor the verification",
+                }),
+              );
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  ...wakeTaskStarted,
+                  uuid: "00000000-0000-4000-8000-000000000628",
+                  task_id: monitorId,
+                  tool_use_id: monitorToolUseId,
+                  description: "Monitor the verification",
+                }),
+              );
+            }
+            yield* harness.offerAndWait(wakeNotification);
+            assert.lengthOf(harness.offeredMessages, 1);
+            if (!secondMarker) {
+              yield* TestClock.adjust("4 minutes");
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  ...makeAssistantTextFrame({
+                    uuid: "00000000-0000-4000-8000-000000000631",
+                    text: "Still checking the result.",
+                  }),
+                  user_message_uuid: harness.promptUuid(0),
+                }),
+              );
+              yield* TestClock.adjust("1 minute");
+              assert.lengthOf(harness.terminalEvents(), 0);
+              yield* TestClock.adjust("5 minutes");
+              const terminal = yield* Queue.take(harness.terminalReceipts);
+              assert.equal(terminal.providerTurnId, providerTurnId);
+              assert.equal(terminal.status, "failed");
+              assert.include(terminal.failure?.message, "did not finish the root segment");
+              return;
+            }
+
+            const secondCall = "toolu_second_await";
+            assert.deepEqual(yield* authorize(secondCall, { taskId: monitorId }), {});
+            expect(yield* awaitTask(secondCall, monitorId)).toMatchObject({
+              result: { isError: false },
+            });
+            yield* TestClock.adjust("5 minutes");
+            assert.lengthOf(harness.terminalEvents(), 0);
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeNotification,
+                uuid: "00000000-0000-4000-8000-000000000629",
+                task_id: monitorId,
+                tool_use_id: monitorToolUseId,
+                summary: "The monitor finished.",
+              }),
+            );
+            assert.lengthOf(harness.offeredMessages, 1);
+            yield* harness.offerAndWait(turnOneResult);
+            assert.lengthOf(harness.offeredMessages, 2);
+            const reportText = harness.offeredMessages[1]?.message.content;
+            if (typeof reportText !== "string") throw new Error("Expected both task receipts");
+            assert.deepEqual(
+              reportText
+                .split("\n")
+                .slice(1, -1)
+                .map((receipt) => JSON.parse(receipt)),
+              [
+                { taskId: WAKE_TASK_ID, status: "completed", summary: WAKE_SUMMARY },
+                { taskId: monitorId, status: "completed", summary: "The monitor finished." },
+              ],
+            );
+            const report = "The verification and its monitor both completed.";
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...makeResultFrame({
+                  uuid: "00000000-0000-4000-8000-000000000630",
+                  result: report,
+                }),
+                user_message_uuid: harness.promptUuid(1),
+              }),
+            );
+            const terminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(terminal.providerTurnId, providerTurnId);
+            assert.equal(terminal.status, "completed");
+            assert.lengthOf(harness.offeredMessages, 2);
+            assert.isTrue(
+              harness.events.some(
+                (event) => event.type === "message.updated" && event.message.text === report,
+              ),
+            );
+            return;
+          }
+          const notifiedEarly = notificationTiming === "before the original result";
+          if (!notifiedEarly) yield* harness.offerAndWait(turnOneResult);
+          const beforeEmpty = harness.events.length;
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: preservesService
+                ? [
+                    { task_id: serviceId, task_type: "local_bash", description: "Dev server" },
+                    ...(queuedNativeWake
+                      ? [
+                          {
+                            task_id: queuedServiceId,
+                            task_type: "local_bash",
+                            description: "Already queued service",
+                          },
+                        ]
+                      : []),
+                  ]
+                : [],
+              uuid: "00000000-0000-4000-8000-000000000604",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.until(() =>
+            harness.events
+              .slice(beforeEmpty)
+              .some((event) => event.type === "provider_thread.updated"),
+          );
+          const emptySnapshot = harness.events
+            .slice(beforeEmpty)
+            .find((event) => event.type === "provider_thread.updated");
+          assert.isTrue(
+            emptySnapshot?.type === "provider_thread.updated" &&
+              emptySnapshot.providerThread.pendingBackgroundTasks?.some(
+                (task) => task.awaited === true,
+              ) === true,
+          );
+          if (notificationTiming === "without a terminal receipt" || twoDiscarded) {
+            yield* TestClock.adjust("5 minutes");
+            const terminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(terminal.providerTurnId, providerTurnId);
+            assert.equal(terminal.status, "failed");
+            assert.include(terminal.failure?.message, "without reporting its result");
+            assert.lengthOf(harness.offeredMessages, 1);
+            if (!twoDiscarded) return;
+
+            yield* harness.offerAndWait(wakeNotification);
+            yield* harness.offerAndWait(wakeTurnInit);
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeNotification,
+                task_id: secondTaskId,
+                tool_use_id: secondToolId,
+                uuid: "00000000-0000-4000-8000-000000000634",
+              }),
+            );
+            yield* harness.offerAndWait(wakeAssistant);
+            yield* harness.offerAndWait(wakeResult);
+            assert.lengthOf(harness.continuationRequests, 0);
+            if (!coalescedDiscarded) {
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  ...wakeTurnInit,
+                  uuid: "00000000-0000-4000-8000-000000000635",
+                }),
+              );
+              yield* harness.offerAndWait(
+                makeAssistantTextFrame({
+                  uuid: "00000000-0000-4000-8000-000000000636",
+                  text: "Discarded second answer.",
+                }),
+              );
+              yield* harness.offerAndWait(
+                makeResultFrame({
+                  uuid: "00000000-0000-4000-8000-000000000637",
+                  result: "Discarded second answer.",
+                  origin: { kind: "task-notification" },
+                }),
+              );
+              assert.lengthOf(harness.continuationRequests, 0);
+            }
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeNotification,
+                task_id: serviceId,
+                tool_use_id: "toolu_dev_server",
+                summary: "The unaffected service exited.",
+                uuid: "00000000-0000-4000-8000-000000000638",
+              }),
+            );
+            yield* harness.offerAndWait(
+              makeAssistantTextFrame({
+                uuid: "00000000-0000-4000-8000-000000000639",
+                text: "Genuine service answer.",
+              }),
+            );
+            assert.lengthOf(harness.continuationRequests, 1);
+            assert.equal(harness.continuationRequests[0]?.detail, "The unaffected service exited.");
+            assert.lengthOf(harness.terminalEvents(), 1);
+            return;
+          }
+          if (notificationTiming === "during another notification wake") {
+            yield* harness.offerAndWait(
+              makeAssistantTextFrame({
+                uuid: "00000000-0000-4000-8000-000000000605",
+                text: "A different watcher reported before verification finished.",
+              }),
+            );
+          }
+          const steered = notificationTiming === "while steered before and during its report";
+          const steerAwait = (id: string) =>
+            harness.runtime.steerTurn({
+              threadId: harness.threadId,
+              runId: RunId.make("run-attempt-claude-native-task-wait"),
+              providerThread: harness.providerThread,
+              providerTurnId,
+              message: {
+                createdBy: "user",
+                creationSource: "web",
+                messageId: MessageId.make(id),
+                text: "Include the build exit status.",
+                attachments: [],
+              },
+            });
+          if (steered) {
+            yield* steerAwait("awaited-task-before-receipt");
+            assert.equal(harness.offeredMessages[1]?.priority, "now");
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                type: "command_lifecycle",
+                command_uuid: harness.promptUuid(1),
+                state: "started",
+                uuid: "00000000-0000-4000-8000-000000000632",
+                session_id: WAKE_NATIVE_SESSION,
+              }),
+            );
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000621",
+                result: "The task is still running.",
+              }),
+            );
+            assert.lengthOf(harness.terminalEvents(), 0);
+          }
+          yield* harness.offerAndWait(wakeNotification);
+          if (notifiedEarly) yield* harness.offerAndWait(turnOneResult);
+          if (notificationTiming === "during another notification wake") {
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000606",
+                result: "The unrelated watcher finished.",
+                origin: { kind: "task-notification" },
+              }),
+            );
+          }
+          const reportIndex = steered ? 2 : 1;
+          assert.lengthOf(harness.offeredMessages, reportIndex + 1);
+          const reportPrompt = harness.offeredMessages[reportIndex]!;
+          const reportBody = reportPrompt.message.content;
+          if (typeof reportBody !== "string") throw new Error("Expected a task report prompt");
+          expect(JSON.parse(reportBody.split("\n")[1]!)).toEqual({
+            taskId: WAKE_TASK_ID,
+            status: "completed",
+            summary: WAKE_SUMMARY,
+          });
+          const reportUuid = harness.promptUuid(reportIndex);
+          assert.notEqual(reportUuid, harness.promptUuid(0));
+          if (!notificationTiming.startsWith("without")) {
+            // A fresh notification wake can be for another watcher queued ahead of the report.
+            yield* harness.offerAndWait(wakeTurnInit);
+            yield* harness.offerAndWait(wakeAssistant);
+            yield* harness.offerAndWait(wakeResult);
+          }
+          yield* harness.offerAndWait(staleTaskNotificationResult);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          let finalEcho = { user_message_uuid: reportUuid } as {
+            user_message_uuid: string;
+            user_message_uuids?: string[];
+          };
+          if (steered) {
+            yield* steerAwait("awaited-task-replace-report");
+            const replacement = harness.offeredMessages[3];
+            assert.equal(replacement?.priority, "now");
+            assert.include(replacement?.message.content, WAKE_TASK_ID);
+            const replacementUuid = harness.promptUuid(3);
+            assert.notEqual(replacementUuid, reportUuid);
+            for (const [uuid, result, echoed, terminalReason, origin] of [
+              [
+                "00000000-0000-4000-8000-000000000622",
+                "Old report.",
+                [reportUuid],
+                "completed",
+                undefined,
+              ],
+              [
+                "00000000-0000-4000-8000-000000000623",
+                "Aborted old report.",
+                [reportUuid],
+                "aborted_streaming",
+                undefined,
+              ],
+              [
+                "00000000-0000-4000-8000-000000000624",
+                "Foreign reply.",
+                ["foreign-prompt", replacementUuid],
+                "completed",
+                undefined,
+              ],
+              [
+                "00000000-0000-4000-8000-000000000625",
+                "Watcher reply.",
+                [replacementUuid],
+                "completed",
+                { kind: "task-notification" },
+              ],
+            ] as const) {
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  ...makeResultFrame({
+                    uuid,
+                    result,
+                    terminalReason,
+                    ...(origin === undefined ? {} : { origin }),
+                  }),
+                  user_message_uuids: echoed,
+                }),
+              );
+            }
+            assert.lengthOf(harness.terminalEvents(), 0);
+            finalEcho = {
+              user_message_uuid: replacementUuid,
+              user_message_uuids: [harness.promptUuid(1), reportUuid, replacementUuid],
+            };
+          }
+          const finalReport = "Verification exited successfully with the expected result.";
+          if (!hasEcho) {
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                type: "command_lifecycle",
+                command_uuid: reportUuid,
+                state: "started",
+              }),
+            );
+            yield* TestClock.adjust("5 minutes");
+            assert.lengthOf(harness.terminalEvents(), 0);
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...makeAssistantTextFrame({
+                  uuid: "00000000-0000-4000-8000-000000000610",
+                  text: "Checking the task logs.",
+                }),
+                user_message_uuid: reportUuid,
+              }),
+            );
+            yield* TestClock.adjust("5 minutes");
+            assert.lengthOf(harness.terminalEvents(), 0);
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                type: "command_lifecycle",
+                command_uuid: reportUuid,
+                state: "completed",
+              }),
+            );
+          }
+          if (hasEcho && !providerFailed) {
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...makeAssistantTextFrame({
+                  uuid: "00000000-0000-4000-8000-000000000611",
+                  text: finalReport,
+                }),
+                ...finalEcho,
+              }),
+            );
+            assert.lengthOf(harness.terminalEvents(), 0);
+          }
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000607",
+                result: providerFailed ? "The provider failed the report." : finalReport,
+                ...(providerFailed
+                  ? { isError: true, apiErrorStatus: 500, terminalReason: "api_error" as const }
+                  : {}),
+              }),
+              ...(hasEcho ? finalEcho : {}),
+            }),
+          );
+          if (!hasEcho) yield* TestClock.adjust("5 minutes");
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.providerTurnId, providerTurnId);
+          assert.equal(terminal.status, hasEcho && !providerFailed ? "completed" : "failed");
+          assert.lengthOf(harness.offeredMessages, steered ? 4 : 2);
+          assert.lengthOf(harness.continuationRequests, 0);
+          assert.deepEqual(
+            harness.events.flatMap((event) =>
+              event.type === "message.updated" && event.message.role === "assistant"
+                ? [event.message.text]
+                : [],
+            ),
+            hasEcho && !providerFailed ? [finalReport] : [],
+          );
+          if (!preservesService) return;
+          assert.isFalse(closed);
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          if (providerFailed) {
+            assert.equal(terminal.failure?.code, "api_error_500");
+          }
+          if (!providerFailed || attachesDuringWake) yield* harness.offerAndWait(wakeNotification);
+          if (attachesDuringWake) yield* harness.offerAndWait(wakeTurnInit);
+          if (foldedWakeReply) yield* harness.offerAndWait(serviceNotice);
+          assert.lengthOf(harness.continuationRequests, 0);
+          const nextTurnId = idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: "turn:attempt-claude-after-unverifiable-report",
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-after-unverifiable-report"),
+              text: "Reply to the next prompt.",
+              attachments: [],
+            }),
+          );
+          assert.strictEqual(harness.getOpenedOptions(), options);
+          if (foldedWakeReply) yield* harness.offerAndWait(claudeSdkFrame({ ...serviceNotice }));
+          if (attachesDuringWake) {
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                type: "command_lifecycle",
+                command_uuid: harness.promptUuid(2),
+                state: "queued",
+              }),
+            );
+            yield* harness.offerAndWait(
+              makeAssistantTextFrame({
+                uuid: "00000000-0000-4000-8000-000000000627",
+                text: "Discarded task output after the next prompt attached.",
+              }),
+            );
+            if (!foldedWakeReply) {
+              yield* harness.offerAndWait(
+                makeResultFrame({
+                  uuid: "00000000-0000-4000-8000-000000000628",
+                  result: "Discarded wake result.",
+                  ...(onlyAnonymousWakeResult ? {} : { origin: { kind: "task-notification" } }),
+                }),
+              );
+            }
+            assert.lengthOf(harness.terminalEvents(), 1);
+          }
+          if (!providerFailed) {
+            yield* harness.offerAndWait(
+              makeAssistantTextFrame({
+                uuid: "00000000-0000-4000-8000-000000000612",
+                text: "Anonymous late report text.",
+              }),
+            );
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000613",
+                result: noNextReply ? "Next reply." : "Anonymous late report result.",
+              }),
+            );
+            assert.lengthOf(harness.terminalEvents(), 1);
+            assert.isFalse(
+              harness.events.some(
+                (event) =>
+                  event.type === "message.updated" &&
+                  event.message.text.includes("Anonymous late report"),
+              ),
+            );
+          }
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeAssistantTextFrame({
+                uuid: "00000000-0000-4000-8000-000000000615",
+                text: "Late report assistant text.",
+              }),
+              user_message_uuid: reportUuid,
+            }),
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000608",
+                result: "Late report.",
+              }),
+              user_message_uuid: reportUuid,
+            }),
+          );
+          assert.lengthOf(harness.terminalEvents(), 1);
+          if (noNextReply || onlyAnonymousWakeResult) {
+            yield* TestClock.adjust("5 minutes");
+            assert.lengthOf(harness.terminalEvents(), 2);
+            const next = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(next.providerTurnId, nextTurnId);
+            assert.equal(next.status, "failed");
+            assert.equal(next.failure?.code, "claude_unattributed_result");
+            assert.isTrue(next.failure?.retryable);
+          } else {
+            if (!providerFailed && !anonymousNextReply) {
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  type: "command_lifecycle",
+                  command_uuid: harness.promptUuid(2),
+                  state: "started",
+                }),
+              );
+              yield* TestClock.adjust("5 minutes");
+              assert.lengthOf(harness.terminalEvents(), 1);
+            }
+            const nextPromptUuid = harness.promptUuid(2);
+            const nextPromptEcho = {
+              user_message_uuid: nextPromptUuid,
+              ...(foldedWakeReply ? { user_message_uuids: [nextPromptUuid] } : {}),
+            };
+            if (attachesDuringWake) {
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  ...makeAssistantTextFrame({
+                    uuid: "00000000-0000-4000-8000-000000000629",
+                    text: "Next reply.",
+                  }),
+                  ...nextPromptEcho,
+                }),
+              );
+              assert.lengthOf(harness.terminalEvents(), 1);
+            }
+            const nextResult = makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000609",
+              result: "Next reply.",
+              ...(foldedWakeReply ? { origin: { kind: "task-notification" } } : {}),
+            });
+            yield* harness.offerAndWait(
+              attachesDuringWake
+                ? claudeSdkFrame({ ...nextResult, ...nextPromptEcho })
+                : nextResult,
+            );
+            const next = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(next.providerTurnId, nextTurnId);
+            assert.equal(next.status, "completed");
+          }
+          assert.deepEqual(
+            harness.events.flatMap((event) =>
+              event.type === "message.updated" && event.message.role === "assistant"
+                ? [event.message.text]
+                : [],
+            ),
+            noNextReply || onlyAnonymousWakeResult ? [] : ["Next reply."],
+          );
+          assert.lengthOf(harness.continuationRequests, 0);
+          assert.equal(yield* harness.hasPendingBackgroundWork, !foldedWakeReply);
+          if (queuedNativeWake) {
+            yield* harness.offerAndWait(
+              claudeSdkFrame({
+                ...wakeNotification,
+                task_id: queuedServiceId,
+                tool_use_id: "toolu_queued_dev_server",
+                summary: "The first service exited.",
+                uuid: "00000000-0000-4000-8000-000000000630",
+              }),
+            );
+            yield* harness.offerAndWait(wakeAssistant);
+            yield* harness.offerAndWait(wakeResult);
+            assert.lengthOf(harness.continuationRequests, 1);
+            assert.equal(harness.continuationRequests[0]?.detail, "The first service exited.");
+          }
+          const queuedWakeCount = queuedNativeWake ? 1 : 0;
+          if (providerFailed && !attachesDuringWake) {
+            yield* harness.offerAndWait(wakeNotification);
+            if (!noDiscardedWake) {
+              yield* harness.offerAndWait(wakeTurnInit);
+              assert.lengthOf(harness.continuationRequests, queuedWakeCount);
+            }
+          }
+          if (!foldedWakeReply) yield* harness.offerAndWait(serviceNotice);
+          if (providerFailed && !noDiscardedWake && !attachesDuringWake) {
+            yield* harness.offerAndWait(
+              makeAssistantTextFrame({
+                uuid: "00000000-0000-4000-8000-000000000616",
+                text: "Discarded task woke up.",
+              }),
+            );
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000617",
+                result: "Discarded task woke up.",
+                origin: { kind: "task-notification" },
+              }),
+            );
+            assert.lengthOf(harness.continuationRequests, queuedWakeCount);
+            assert.lengthOf(harness.terminalEvents(), 2);
+          }
+          if (coalescedWake) {
+            yield* TestClock.adjust("5 minutes");
+            assert.equal(harness.continuationRequests[queuedWakeCount]?.delivery, "message_text");
+          } else {
+            // A genuine unrelated wake can start with output alone.
+            yield* harness.offerAndWait(wakeAssistant);
+            yield* harness.offerAndWait(wakeResult);
+            yield* TestClock.adjust("5 minutes");
+            assert.isUndefined(harness.continuationRequests[0]?.delivery);
+          }
+          assert.lengthOf(harness.continuationRequests, queuedWakeCount + 1);
+          const serviceWake = harness.continuationRequests[queuedWakeCount];
+          assert.equal(serviceWake?.detail, "The dev server exited.");
+          assert.deepEqual(serviceWake?.notification?.wakeEventIds, [serviceWakeId]);
+          assert.lengthOf(harness.terminalEvents(), 2);
+          if (queuedNativeWake) {
+            const queuedTurnId = idAllocator.derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: "turn:attempt-claude-queued-unrelated",
+            });
+            const offeredBefore = harness.offeredMessages.length;
+            yield* harness.runtime.startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now,
+                attemptId: RunAttemptId.make("attempt-claude-queued-unrelated"),
+                providerTurnOrdinal: 3,
+                text: "The first service exited.",
+                attachments: [],
+                messageCreatedBy: "agent",
+                messageCreationSource: "provider",
+              }),
+            );
+            const queuedTerminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(queuedTerminal.providerTurnId, queuedTurnId);
+            assert.equal(queuedTerminal.status, "completed");
+            assert.lengthOf(harness.offeredMessages, offeredBefore);
+            assert.isTrue(
+              harness.events.some(
+                (event) =>
+                  event.type === "message.updated" && event.message.text === WAKE_ASSISTANT_TEXT,
+              ),
+            );
+            yield* harness.offerAndWait(serviceNotice);
+            yield* harness.offerAndWait(wakeTurnInit);
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000631",
+                result: "Duplicate native service answer.",
+                origin: { kind: "task-notification" },
+              }),
+            );
+            assert.lengthOf(harness.continuationRequests, 2);
+            assert.lengthOf(harness.terminalEvents(), 3);
+          }
+          assert.isFalse(
+            harness.events.some(
+              (event) =>
+                event.type === "message.updated" &&
+                event.message.text === "Discarded task woke up.",
+            ),
+          );
+          if (providerFailed) {
+            const wakeAttemptId = RunAttemptId.make("attempt-claude-unrelated-after-discarded");
+            const wakeTurnId = idAllocator.derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: "turn:attempt-claude-unrelated-after-discarded",
+            });
+            yield* harness.runtime.startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now,
+                attemptId: wakeAttemptId,
+                providerTurnOrdinal: queuedWakeCount + 3,
+                text: "The dev server exited.",
+                attachments: [],
+                messageCreatedBy: "agent",
+                messageCreationSource: coalescedWake ? "server" : "provider",
+              }),
+            );
+            if (coalescedWake) {
+              yield* harness.offerAndWait(
+                claudeSdkFrame({
+                  ...makeResultFrame({
+                    uuid: "00000000-0000-4000-8000-000000000618",
+                    result: "Recovered the dev server completion.",
+                  }),
+                  user_message_uuid: harness.promptUuid(3),
+                }),
+              );
+            }
+            const wakeTerminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(wakeTerminal.providerTurnId, wakeTurnId);
+            assert.equal(wakeTerminal.status, "completed");
+            assert.lengthOf(harness.continuationRequests, queuedWakeCount + 1);
+            assert.equal(
+              harness.events
+                .flatMap((event) =>
+                  event.type === "message.updated" && event.message.role === "assistant"
+                    ? [event.message.text]
+                    : [],
+                )
+                .at(-1),
+              coalescedWake ? "Recovered the dev server completion." : WAKE_ASSISTANT_TEXT,
+            );
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect.each([false, true])(
