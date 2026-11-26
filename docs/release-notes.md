@@ -1,3 +1,7 @@
+## 2026-11-26 — Assignment-restricted reviews
+
+- Delegation accepts an assignment isolation request and explicitly refuses it before starting a child. The current Claude and Codex adapters cannot verify all inputs and tools before inference.
+
 ## 2026-11-26 — Jump to starred messages from the chat minimap
 
 - On web and desktop, the minimap marks starred prompts and replies in loaded history. Select a marker to revisit its message.

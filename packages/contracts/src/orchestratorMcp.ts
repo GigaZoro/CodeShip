@@ -191,6 +191,33 @@ export const OrchestratorMcpTerminalDelegatedTaskStatus = Schema.Literals([
 export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
+const ReviewMaterialHandle = Schema.String.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
+);
+
+export const ReviewMaterialRead = Schema.Struct({
+  handle: ReviewMaterialHandle,
+  side: Schema.optionalKey(ReviewMaterialHandle),
+  path: Schema.optionalKey(
+    Schema.String.check(
+      Schema.isMaxLength(4096),
+      Schema.makeFilter(
+        (path) =>
+          !path.startsWith("~") &&
+          !/[:\\\p{Cc}]/u.test(path) &&
+          path.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+      ),
+    ),
+  ),
+});
+export type ReviewMaterialRead = typeof ReviewMaterialRead.Type;
+
+const AssignmentIsolation = Schema.Struct({
+  type: Schema.Literal("assignment"),
+  handle: ReviewMaterialHandle,
+});
+
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
@@ -203,9 +230,9 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   }),
   auto: Schema.optional(OrchestratorMcpAuto),
   isolation: Schema.optional(
-    Schema.Literals(["shared", "worktree"]).annotate({
+    Schema.Union([Schema.Literals(["shared", "worktree"]), AssignmentIsolation]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project, or of another repository in a linked environment: a worktree of that repository from its default branch.",
+        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project, or of another repository in a linked environment: a worktree of that repository from its default branch. Assignment isolation requires a provider that can verify all inputs before inference.",
     }),
   ),
   mode: Schema.optional(
@@ -1421,6 +1448,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "capability_denied",
       "parent_not_active",
       "provider_unavailable",
+      "restricted_review_unsupported",
       "model_unavailable",
       "runtime_mode_escalation_denied",
       "interaction_mode_escalation_denied",

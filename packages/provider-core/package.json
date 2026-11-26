@@ -143,6 +143,10 @@
       "types": "./src/server/randomUuid.ts",
       "import": "./src/server/randomUuid.ts"
     },
+    "./server/reviewMaterial": {
+      "types": "./src/server/reviewMaterial.ts",
+      "import": "./src/server/reviewMaterial.ts"
+    },
     "./server/runtimeInstructions": {
       "types": "./src/server/runtimeInstructions.ts",
       "import": "./src/server/runtimeInstructions.ts"
