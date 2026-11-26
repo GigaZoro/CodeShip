@@ -5,6 +5,7 @@ import type {
   UsageSpeed,
 } from "@t3tools/provider-core/server/usage";
 import * as Schema from "effect/Schema";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Cache merges hash native keys synchronously without buffering the full transcript.
 import * as NodeCrypto from "node:crypto";
 
 import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
