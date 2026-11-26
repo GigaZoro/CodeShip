@@ -26,3 +26,4 @@ const result =
       ? status(process.cwd(), now)
       : await land(process.cwd(), now);
 console.log(JSON.stringify(result));
+if ("releaseConfirmed" in result && result.releaseConfirmed === false) process.exitCode = 1;

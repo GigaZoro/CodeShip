@@ -1,3 +1,8 @@
+## 2026-11-26 — Landing waiters stagger polls and report unconfirmed release
+
+- Waiting landers stagger their polls and reuse lease metadata until origin advertises a different lease commit, reducing redundant Git fetches.
+- When a fallback lease release cannot be confirmed after retries, `landing-turn.cjs` and `upstream-sync.ts` report `releaseConfirmed: false`, still print any landed commit, and exit nonzero.
+
 ## 2026-11-26 — Finished subagent threads settle only on the result they delivered
 
 - A subagent thread now settles on its parent's result only if that result is still the one delivered, even when the parent writes a new task or revises the result in the same instant or while the settle is committing.

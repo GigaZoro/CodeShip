@@ -506,4 +506,21 @@ describe("upstream sync", () => {
     expect(() => checkCommand(repo.sync, {})).toThrow("untracked files included");
     await expect(land(repo.sync, later(60))).rejects.toThrow("untracked files included");
   });
+
+  it("surfaces releaseConfirmed: false when push lands the commit without confirming lease release", async () => {
+    const repo = fixture();
+    begin(repo.sync, START);
+    passCheck(repo.sync);
+    const merged = repo.head();
+    const unconfirmedPush = ({ head }: { readonly head: string }) => {
+      git(repo.sync, "push", "-q", "origin", `${head}:main`);
+      return false;
+    };
+    expect(await land(repo.sync, later(60), unconfirmedPush)).toEqual({
+      status: "landed",
+      commit: merged,
+      releaseConfirmed: false,
+    });
+    expect(repo.originMain()).toBe(merged);
+  });
 });

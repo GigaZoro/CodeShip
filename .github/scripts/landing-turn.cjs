@@ -350,10 +350,13 @@ function leaseLive(holder, { now, runId, machine, watched }) {
  * `localHolder` finds gone, has no live holder. `watched(sha, ttl)` answers how long the wait has been awake since it
  * first read the lease commit `sha`, and needs to be exact only from `ttl` on.
  */
-function readLease(lease, { now, runId = null, machine = machineTag(), watched = () => 0 }) {
+function readLease(
+  { readLeaseHolder = readHolder, ...lease },
+  { now, runId = null, machine = machineTag(), watched = () => 0 },
+) {
   const held = remoteLease(lease);
   if (!held) return { held, turn: null, liveRunId: null };
-  const holder = readHolder(lease, held);
+  const holder = readLeaseHolder(lease, held);
   const turn = turnOf(held, holder);
   // A lease nobody can read is one nobody can release, so it lapses like any other.
   const live =
@@ -458,7 +461,7 @@ function release(
     if (spent) {
       // Thrown from withTurn's finally block, it would replace the landing's own result.
       process.stderr.write(
-        `landing turn: the turn may stay held until its lease expires: ${failure.message}\n`,
+        `landing turn: could not confirm release (the turn may stay held until its lease expires): ${failure.message}\n`,
       );
       return false;
     }
@@ -514,6 +517,7 @@ function acquire({
   maxWaitMs = MAX_WAIT_MS,
   failingMs = FAILING_MS,
   pollMs = POLL_MS,
+  random = Math.random,
   sleep = sleepSync,
   clock = () => performance.now(),
   now = Date.now,
@@ -522,6 +526,19 @@ function acquire({
 }) {
   const runId = randomUUID();
   const { cwd, remote, callMs = LEASE_CALL_MS } = options;
+  let observedSha;
+  let observedHolder;
+  const lease = {
+    ...options,
+    readLeaseHolder(leaseOptions, sha) {
+      if (sha !== observedSha) {
+        // readHolder throws RemoteFailure if git fetch fails, so only a fetched commit's immutable payload is cached.
+        observedHolder = readHolder(leaseOptions, sha);
+        observedSha = sha;
+      }
+      return observedHolder;
+    },
+  };
   const queue = createQueueWaiter({
     remote,
     runId,
@@ -560,7 +577,7 @@ function acquire({
       try {
         // A take of its own that origin applied is its turn while it lives; one that lapsed goes back through the queue.
         if (tookMaybe) {
-          const { held, liveRunId } = readLease(options, { now, runId });
+          const { held, liveRunId } = readLease(lease, { now, runId });
           tookMaybe = false;
           if (liveRunId === runId) {
             recordHolder(cwd, held);
@@ -574,7 +591,7 @@ function acquire({
           // Only the head polls the lease. It checks its place again before swapping a free or lapsed lease.
           tookMaybe = true;
           const sha = tryAcquire({
-            ...options,
+            ...lease,
             runId,
             now,
             watched,
@@ -629,7 +646,7 @@ function acquire({
       } else {
         failingSince = null;
       }
-      sleep(pollMs);
+      sleep(Math.round(pollMs * (0.8 + 0.4 * random())));
     }
   } finally {
     try {
@@ -656,7 +673,7 @@ function turnEnd(data) {
  * lost, as when this machine slept and another lander took the lease, or at the turn's end. `pushMain(branch, commit)`
  * pushes `commit` there; `every` schedules the renewals and `after` the stops of calls to origin that ran out of time.
  */
-async function withTurn(
+async function runWithTurn(
   { every = repeatEvery, after = runAfter, mainCallMs = MAIN_CALL_MS, ...options },
   run,
 ) {
@@ -669,6 +686,7 @@ async function withTurn(
   // A renewal of `current` whose answer was lost, which origin may hold instead.
   let pending = null;
   let cancel = () => {};
+  let releaseConfirmed = true;
   const lose = (reason) => {
     if (lost.signal.aborted) return;
     process.stderr.write(`landing turn: lost main's landing turn: ${reason}\n`);
@@ -692,6 +710,7 @@ async function withTurn(
     if (current === null) return true;
     const released = release(options, current, { pending, turn });
     current = null;
+    if (!released) releaseConfirmed = false;
     return released;
   };
   /**
@@ -711,6 +730,7 @@ async function withTurn(
     if (status === 0 || status === 1) return status === 0;
     throw new Error(`git merge-base failed: ${stderr}`);
   };
+  let result;
   try {
     const data = JSON.parse(leaseLine(options.cwd, turn));
     let failing = false;
@@ -831,27 +851,38 @@ async function withTurn(
     // A take confirmed late, after a lost answer, has already spent part of its lease.
     if (Date.parse(data.expires_at) - now() < LEASE_TTL_MS - LEASE_RENEW_MS) renewHeld();
     cancel = every(LEASE_RENEW_MS, renewHeld);
-    return await run(turn, lost.signal, pushMain);
+    result = await run(turn, lost.signal, pushMain);
   } finally {
     cancel();
     releaseTurn();
   }
+  return { result, releaseConfirmed };
+}
+
+async function withTurn(options, run) {
+  return (await runWithTurn(options, run)).result;
 }
 
 /**
  * Pushes `head`, a commit verified against main's current commit elsewhere (the upstream sync, the weekly dependency
  * upgrade). The push is a fast-forward, so it takes the turn alone and a main that moved makes git refuse it.
  */
-async function pushChecked({ cwd, remote, head }) {
-  await withTurn({ cwd, remote }, async (_turn, _signal, pushMain) => {
-    // A checkout that left the commit during the wait is being changed by something else.
-    if (git(cwd, ["rev-parse", "HEAD"]).stdout !== head) {
-      throw new Error(`landing turn: the checkout moved off ${head} while it waited for the turn.`);
-    }
-    if (!(await pushMain("main", head))) {
-      throw new Error("landing turn: lost main's landing turn before the push.");
-    }
-  });
+async function pushChecked({ cwd, remote, head, ...options }) {
+  const { releaseConfirmed } = await runWithTurn(
+    { cwd, remote, ...options },
+    async (_turn, _signal, pushMain) => {
+      // A checkout that left the commit during the wait is being changed by something else.
+      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== head) {
+        throw new Error(
+          `landing turn: the checkout moved off ${head} while it waited for the turn.`,
+        );
+      }
+      if (!(await pushMain("main", head))) {
+        throw new Error("landing turn: lost main's landing turn before the push.");
+      }
+    },
+  );
+  return releaseConfirmed;
 }
 
 /**
@@ -1090,7 +1121,7 @@ async function land({
       check(turn, base, budgetSeconds, directory, signal),
     );
   if (!(await checkTip(null, checked))) return { status: "check-failed" };
-  return withTurn(
+  const { result, releaseConfirmed } = await runWithTurn(
     { cwd, remote, now, mainCallMs, after, awakeClock, ...rest },
     async (turn, signal, pushMain) => {
       const turnStarted = turnClock();
@@ -1112,6 +1143,7 @@ async function land({
       return { status: "landed", commit: tip };
     },
   );
+  return releaseConfirmed ? result : { ...result, releaseConfirmed };
 }
 
 /**
@@ -1161,7 +1193,7 @@ const USAGE =
   "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs>";
 const ARGUMENTS = { land: 0, "land-rebased": 4, push: 1, holder: 0, verify: 1, "merge-budget": 3 };
 
-async function main(argv, { cwd = process.cwd() } = {}) {
+async function main(argv, { cwd = process.cwd(), failingMs, check } = {}) {
   const [command, ...rest] = argv;
   if (!Object.hasOwn(ARGUMENTS, command) || rest.length !== ARGUMENTS[command]) {
     console.error(USAGE);
@@ -1203,9 +1235,12 @@ async function main(argv, { cwd = process.cwd() } = {}) {
     const result = await land({
       cwd,
       remote: "origin",
+      ...(failingMs === undefined ? {} : { failingMs }),
       rebased: command === "land-rebased" ? { base, head } : undefined,
-      check: (turn, base, budgetSeconds, directory, signal) =>
-        runCheck(directory, turn, base, budgetSeconds, signal),
+      check:
+        check ??
+        ((turn, base, budgetSeconds, directory, signal) =>
+          runCheck(directory, turn, base, budgetSeconds, signal)),
     });
     if (result.status === "rebased") {
       return (
@@ -1220,7 +1255,7 @@ async function main(argv, { cwd = process.cwd() } = {}) {
       );
     }
     console.log(JSON.stringify(result));
-    return result.status === "landed" ? 0 : 1;
+    return result.status === "landed" && result.releaseConfirmed !== false ? 0 : 1;
   }
   if (command === "push") {
     // A full id, never a ref: the commit is fixed before the wait, so nothing the checkout does meanwhile can land.
@@ -1229,9 +1264,15 @@ async function main(argv, { cwd = process.cwd() } = {}) {
       console.error(USAGE);
       return 2;
     }
-    await pushChecked({ cwd, remote: "origin", head });
-    console.log(JSON.stringify({ status: "landed", commit: head }));
-    return 0;
+    const releaseConfirmed = await pushChecked({
+      cwd,
+      remote: "origin",
+      head,
+      ...(failingMs === undefined ? {} : { failingMs }),
+    });
+    const result = { status: "landed", commit: head };
+    console.log(JSON.stringify(releaseConfirmed ? result : { ...result, releaseConfirmed }));
+    return releaseConfirmed ? 0 : 1;
   }
   if (command === "holder") {
     // `local` is null when no worktree of this clone took the lease, and `gone` says whether a waiter here takes it.

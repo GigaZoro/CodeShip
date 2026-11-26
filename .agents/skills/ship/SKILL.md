@@ -46,6 +46,7 @@ A branch behind main is rebased onto it first, and the landing then starts again
 - A rebase that conflicts stops the landing, before it waits or with the turn released: resolve it, then land again.
 - `head-moved`: the checkout moved to another commit while the landing ran, so it pushed nothing: land again from the commit you mean to land. A landing owns its checkout until it ends, so nothing else switches, commits or edits there meanwhile.
 - `lost-turn`: the landing could not renew its lease in time, as when the machine slept, and another lander took it, so it pushed nothing: land again.
+- If a fallback lease release cannot be confirmed after retries, the command exits nonzero while still printing any landed commit (`releaseConfirmed: false`). Confirm that commit on `origin/main`; once confirmed, no retry is needed and the lease lapses within ten minutes.
 - A fetch or push of main that stops answering ends the landing after ten minutes, with the turn released. A push whose answer was lost counts as landed when main holds its commit. `git push failed, and whether it landed is unknown`: fetch main; if `git merge-base --is-ancestor HEAD origin/main` succeeds, it landed, otherwise land again.
 - Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
