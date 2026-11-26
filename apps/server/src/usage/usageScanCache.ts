@@ -5,6 +5,7 @@ import type {
   UsageSpeed,
 } from "@t3tools/provider-core/server/usage";
 import * as Schema from "effect/Schema";
+import * as NodeCrypto from "node:crypto";
 
 import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import {
@@ -61,6 +62,8 @@ interface SupersededRecord {
   readonly seenMs: number;
   /** Observation after seenMs that found it gone; its retention counts from here. */
   readonly sinceMs: number;
+  /** Versions at seenMs that held this key alongside other keys. */
+  readonly readGroups?: readonly string[];
 }
 
 type KeyedUsageRecord = UsageRecord & { readonly dedupeKey: string };
@@ -223,6 +226,28 @@ function sameItems<T>(own: readonly T[] | undefined, next: readonly T[]) {
   return (own?.length ?? 0) === next.length && next.every((item, index) => item === own?.[index]);
 }
 
+const readGroupsByVersion = new WeakMap<CachedFile, readonly string[]>();
+
+function readGroupsOf(entry: CachedFile): readonly string[] {
+  const cached = readGroupsByVersion.get(entry);
+  if (cached !== undefined) return cached;
+  let group: readonly string[] = [];
+  if (entry.records.length + entry.tailRecords.length > 1) {
+    const hash = NodeCrypto.createHash("sha256");
+    let count = 0;
+    for (const records of [entry.records, entry.tailRecords]) {
+      for (const { dedupeKey } of records) {
+        if (dedupeKey === null) continue;
+        hash.update(JSON.stringify(dedupeKey) + "\n");
+        count++;
+      }
+    }
+    if (count > 1) group = [hash.digest("base64url")];
+  }
+  readGroupsByVersion.set(entry, group);
+  return group;
+}
+
 interface ReadEvidence {
   /** Only the original parsed row proves the committed prefix survived a verified append. */
   readonly retainedPrefix?: CachedFile;
@@ -272,19 +297,31 @@ export function carrySuperseded(
       winner.records.map((live) => live.dedupeKey).filter((key) => key !== null),
     );
     const key = record.dedupeKey;
-    if (liveKeys.has(key) && !tailKeys.has(key)) {
-      if (seenMs !== winner.observedAtMs) return;
-      // A later snapshot that lacks this call must pick the same value even if it met both peers separately.
+    const liveCommitted = liveKeys.has(key) && !tailKeys.has(key);
+    if (liveCommitted && seenMs !== winner.observedAtMs) return;
+    let groups = original === undefined ? readGroupsOf(loser) : (original.readGroups ?? []);
+    if (liveCommitted) {
+      // The live version already witnesses its own group; retain any other simultaneous evidence.
+      if (groups.length) groups = groups.filter((group) => !readGroupsOf(winner).includes(group));
       simultaneousRecords ??= new Map(winner.records.map((live) => [live.dedupeKey, live]));
       const live = simultaneousRecords.get(key);
-      if (live && (sameRecord(live, record) || recordIdentity(live) <= recordIdentity(record)))
-        return;
+      if (
+        live &&
+        canRetainUsageRecord(live) &&
+        (sameRecord(live, record) || recordIdentity(live) <= recordIdentity(record))
+      ) {
+        if (groups.length === 0) return;
+        record = live;
+      }
     }
     const held = retained.get(key);
     if (held !== undefined && held.seenMs > seenMs) return;
     sinceMs = Math.min(sinceMs, firstReadAfter(priorReads, seenMs, winner.observedAtMs));
     if (held?.seenMs === seenMs) {
       sinceMs = Math.min(sinceMs, held.sinceMs);
+      if (held.readGroups?.length && !sameItems(held.readGroups, groups)) {
+        groups = [...new Set([...groups, ...held.readGroups])].sort();
+      }
       if (
         held.record === record ||
         sameRecord(held.record, record) ||
@@ -294,7 +331,14 @@ export function carrySuperseded(
         original = held;
       }
     }
-    retained.set(key, original?.sinceMs === sinceMs ? original : { record, seenMs, sinceMs });
+    retained.set(
+      key,
+      original?.record === record &&
+        original.sinceMs === sinceMs &&
+        sameItems(original.readGroups, groups)
+        ? original
+        : { record, seenMs, sinceMs, ...(groups.length ? { readGroups: groups } : {}) },
+    );
   }
   function carryHistory(entry: CachedFile) {
     for (const item of entry.superseded ?? []) {
@@ -412,7 +456,13 @@ interface SerializedFile {
   readonly pr?: readonly number[];
   readonly ex?: number;
   readonly op?: number;
-  readonly sp?: readonly (readonly [seenMs: number, sinceMs: number, record: SerializedRecord])[];
+  readonly groups?: readonly string[];
+  readonly sp?: readonly (readonly [
+    seenMs: number,
+    sinceMs: number,
+    record: SerializedRecord,
+    groups?: readonly number[],
+  ])[];
   readonly mr: number;
   readonly o: number;
   readonly gl: number;
@@ -448,6 +498,8 @@ function intern(table: string[], index: Map<string, number>, value: string): num
 }
 
 function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile {
+  const groups: string[] = [];
+  let groupIndex: Map<string, number> | undefined;
   const serializeRecord = (record: UsageRecord): SerializedRecord => [
     record.timestampMs,
     intern(tables.models, tables.modelIndex, record.model),
@@ -485,9 +537,20 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
       ? {}
       : {
           sp: entry.superseded.map(
-            ({ record, seenMs, sinceMs }) => [seenMs, sinceMs, serializeRecord(record)] as const,
+            ({ record, seenMs, sinceMs, readGroups }) =>
+              [
+                seenMs,
+                sinceMs,
+                serializeRecord(record),
+                ...(readGroups === undefined
+                  ? ([] as const)
+                  : ([
+                      readGroups.map((group) => intern(groups, (groupIndex ??= new Map()), group)),
+                    ] as const)),
+              ] as const,
           ),
         }),
+    ...(groups.length ? { groups } : {}),
     mr: entry.malformedRecords,
     o: entry.position.resumeOffset,
     gl: entry.position.guardLength,
@@ -704,12 +767,25 @@ export function decodeScanCache(
     // Rows written before observations were recorded count as observed at their mtime.
     const observedAtMs =
       typeof entry.oa === "number" && Number.isFinite(entry.oa) ? entry.oa : entry.m;
+    const groups = entry.groups ?? [];
+    if (
+      !isRecordArray(groups) ||
+      !groups.every((group) => typeof group === "string" && /^[\w-]{43}$/.test(group))
+    )
+      continue;
     const superseded: SupersededRecord[] = [];
     if (entry.sp !== undefined) {
       if (!isRecordArray(entry.sp)) continue;
       const valid = entry.sp.every((item) => {
-        if (!isRecordArray(item) || item.length !== 3) return false;
-        const [seenMs, sinceMs, rawRecord] = item;
+        if (!isRecordArray(item) || (item.length !== 3 && item.length !== 4)) return false;
+        const [seenMs, sinceMs, rawRecord, refs] = item;
+        if (
+          refs !== undefined &&
+          (!isRecordArray(refs) ||
+            !refs.every((i) => Number.isInteger(i) && i >= 0 && i < groups.length))
+        )
+          return false;
+        const readGroups = refs?.map((i) => groups[i]!);
         if (
           typeof seenMs !== "number" ||
           !Number.isFinite(seenMs) ||
@@ -725,7 +801,7 @@ export function decodeScanCache(
         if (record === undefined || !canRetainUsageRecord(record)) return true;
         const last = superseded.at(-1);
         if (last && last.record.dedupeKey >= record.dedupeKey) return false;
-        superseded.push({ record, seenMs, sinceMs });
+        superseded.push({ record, seenMs, sinceMs, ...(readGroups?.length ? { readGroups } : {}) });
         return true;
       });
       if (!valid) continue;
@@ -812,19 +888,26 @@ export const retainedSuperseded = (
   if (candidates.length === 0) return [];
   const matcher = makeUsageRetentionMatcher(provider, entry.records);
   for (const record of entry.tailRecords) matcher.add(record);
-  candidates.sort((a, b) => b.seenMs - a.seenMs);
+  const groups = new Map<string, { id: string; seenMs: number; records: UsageRecord[] }>();
+  for (const { record, seenMs, readGroups } of candidates) {
+    for (const witness of readGroups ?? [null]) {
+      const id = JSON.stringify([seenMs, witness, witness === null ? record.dedupeKey : null]);
+      const group = groups.get(id);
+      if (group) group.records.push(record);
+      else groups.set(id, { id, seenMs, records: [record] });
+    }
+  }
+  const ordered = [...groups.values()].sort(
+    (a, b) => b.seenMs - a.seenMs || b.records.length - a.records.length || (a.id < b.id ? -1 : 1),
+  );
   const kept: UsageRecord[] = [];
-  let start = 0;
-  while (start < candidates.length) {
-    let end = start;
-    const batchStart = kept.length;
-    do {
-      const { record } = candidates[end++]!;
+  for (const group of ordered) {
+    const start = kept.length;
+    for (const record of group.records) {
       if (!matcher.matches(record)) kept.push(record);
-    } while (end < candidates.length && candidates[end]!.seenMs === candidates[start]!.seenMs);
-    // Distinct IDs seen together can be separate calls even when they would be ambiguous across reads.
-    for (let i = batchStart; i < kept.length; i++) matcher.add(kept[i]!);
-    start = end;
+    }
+    // A simultaneous peer may have assigned new identities; only a single source version proves coexistence.
+    for (let i = start; i < kept.length; i++) matcher.add(kept[i]!);
   }
   return kept;
 };
@@ -840,6 +923,11 @@ export function pruneSuperseded(
   if (entry.priorReads === undefined && entry.superseded === undefined) return entry;
   const reads = entry.priorReads ?? [];
   const retained = entry.superseded ?? [];
+  if (
+    (reads[0] ?? entry.observedAtMs) >= retentionCutoffMs &&
+    retained.every(({ sinceMs }) => sinceMs >= retentionCutoffMs && sinceMs <= nowMs)
+  )
+    return entry;
   let floor = entry.expiredThroughMs ?? -Infinity;
   for (const time of reads) {
     if (time >= retentionCutoffMs) break;

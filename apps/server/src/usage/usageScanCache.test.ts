@@ -544,6 +544,38 @@ describe("scan cache merge", () => {
     expect(mergeScanEntry(mergeScanEntry(later, larger), smaller)).toEqual(merged);
   });
 
+  it.each(["claude", "muse"] as const)(
+    "counts ambiguous %s identities together only when one version contained both",
+    (provider) => {
+      const call = (index: number) =>
+        record({
+          provider,
+          dedupeKey:
+            provider === "claude"
+              ? `msg:req:advisor:${index}`
+              : JSON.stringify(["muse", `envelope-${index}`]),
+        });
+      const both = row({ provider, records: [call(0), call(1)] });
+      const renamed = row({ provider, records: [call(2)] });
+      const firstOnly = row({ provider, records: [call(0)] });
+      const replaced = row({ provider, observedAtMs: 3000, records: [] });
+      const readBack = (entry: CachedFile) =>
+        decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
+      const merged = [both, firstOnly, renamed, replaced].reduce(mergeScanEntry);
+      for (const order of [
+        [replaced, renamed, firstOnly, both],
+        [firstOnly, renamed, replaced, both],
+        [replaced, both, firstOnly, renamed],
+      ]) {
+        expect(order.reduce((a, b) => readBack(mergeScanEntry(a, b)))).toEqual(merged);
+      }
+      expect(retainedSuperseded(merged, 0, provider)).toEqual(both.records);
+      expect(
+        retainedSuperseded([firstOnly, renamed, replaced].reduce(mergeScanEntry), 0, provider),
+      ).toHaveLength(1);
+    },
+  );
+
   it("discards older identities when a different provider read the same path", () => {
     const before = row({ observedAtMs: 10 });
     const switched = row({ observedAtMs: 20, provider: "codex", records: [] });
