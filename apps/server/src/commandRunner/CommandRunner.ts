@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodeURL from "node:url";
 import { flow } from "effect/Function";
 import { admitWorkspaceProcess } from "../workspace/workspaceLease.ts";
 
@@ -60,6 +61,7 @@ import * as CpuAdmission from "../resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 import { readProcessStartedAt } from "../serverRuntimeState.ts";
+import { LOG_KEEP_BYTES, LOG_TRIM_AT_BYTES, TRIMMED_MARKER } from "./posixLogWriter.ts";
 import {
   compareIdentity,
   ENDED_IDENTITY,
@@ -87,8 +89,6 @@ const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
 const IDENTITY_FILE = "identity";
-const LOG_TRIM_AT_BYTES = 8 * 1024 * 1024;
-const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
 const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
@@ -105,7 +105,6 @@ const WAVE_WINDOW = Duration.minutes(1);
  */
 export const LOSS_LOG_FILE = "command-losses.ndjson";
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
-const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
 // Win32_ProcessStartup's Create_Unicode_Environment (without it the block is ANSI).
 const CREATE_UNICODE_ENVIRONMENT = 0x400;
 // Win32_ProcessStartup's ShowWindow as SW_HIDE: the wrapper's console, which only it uses, opens
@@ -153,10 +152,8 @@ const windowsWrapper = (cwd: string) =>
 export const windowsStartOrEnded = (pid: string) =>
   `$made = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($made) { $made.StartTime.ToUniversalTime().ToString('o') } else { '${ENDED_IDENTITY}' }`;
 
-// Records its own identity, then names itself, then runs the command and outlives it to write its
-// exit status; each rename makes its file appear whole. Arguments: log, status file, pid file,
-// identity file, then the command's argv. Linux writes its stat line and the boot id, elsewhere
-// ps's start; a file with no usable line gives a later server no ownership.
+// The registered wrapper stays the command's parent. A separate reader owns the log across
+// server restarts and acknowledges completion even when descendants inherit the output pipe.
 const POSIX_WRAPPER = [
   'if [ -r "/proc/$$/stat" ]; then',
   '  { read -r s <"/proc/$$/stat" && read -r b </proc/sys/kernel/random/boot_id && printf "%s\\n%s\\n" "$s" "$b"; } >"$4.tmp" && mv -f "$4.tmp" "$4"',
@@ -164,11 +161,25 @@ const POSIX_WRAPPER = [
   '  { LC_ALL=C TZ=UTC ps -p "$$" -o lstart=; } >"$4.tmp" 2>/dev/null && mv -f "$4.tmp" "$4"',
   "fi",
   'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3"',
-  'exec >>"$1" 2>&1 </dev/null',
-  'run() { shift 4; "$@"; }',
-  'run "$@"',
-  "code=$?",
-  'printf "%s\\n" "$code" >"$2.tmp" && mv -f "$2.tmp" "$2"',
+  'fail() { printf "%s\\n" "CodeShip could not capture command output." >>"$1"; printf "1\\n" >"$2.tmp" && mv -f "$2.tmp" "$2"; exit 1; }',
+  'mkfifo -m 600 "$1.pipe" "$1.ack" || fail "$1" "$2"',
+  "writer() {",
+  '  if [ -n "$6" ]; then set -- "$5" "$6" __command-log "$1" "$2";',
+  '  else set -- "$5" __command-log "$1" "$2"; fi',
+  '  exec /usr/bin/env -i ELECTRON_RUN_AS_NODE=1 "$@"',
+  "}",
+  'writer "$@" <"$1.pipe" >"$1.ack" &',
+  'exec 4>"$1.pipe" 3<"$1.ack"',
+  'rm -f "$1.pipe" "$1.ack"',
+  'set -- "$(IFS= read -r token <&3 && printf %s "$token")" "$@"',
+  '[ -n "$1" ] || fail "$2" "$3"',
+  'run() { shift 7; "$@"; }',
+  'run "$@" </dev/null >&4 2>&1 3<&- 4>&-',
+  'printf "%s\\n" "$?" >"$3.tmp" || exit 1',
+  "trap '' PIPE",
+  'printf "\\000%s\\000" "$1" >&4 || fail "$2" "$3"',
+  "exec 4>&-",
+  'IFS= read -r ack <&3 || fail "$2" "$3"',
 ].join("\n");
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
@@ -506,6 +517,12 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const { logsDir } = yield* ServerConfig.ServerConfig;
   const platform = yield* HostProcess.Platform;
+  const runtime = yield* HostProcess.ExecutablePath;
+  const cliEntry = (yield* HostProcess.IsExecutable)
+    ? ""
+    : NodeURL.fileURLToPath(
+        new URL(import.meta.url.endsWith(".ts") ? "../bin.ts" : "./bin.mjs", import.meta.url),
+      );
   const windows = platform === "win32";
   const hostEnv = yield* HostProcess.Environment;
   const watchInterval = yield* WatchInterval;
@@ -776,13 +793,9 @@ const make = Effect.gen(function* () {
     }
   });
 
-  /**
-   * Keeps a log that keeps growing to its last part; on Windows only once the command ends. The
-   * wrapper still appends to it, so the last part moves to the front in place, following what
-   * lands meanwhile. Output that lands after the last copy, before the cut, is lost, never
-   * reordered.
-   */
-  const trimLog = Effect.fn("CommandRunner.trimLog")(function* (row: CommandRunRow) {
+  // Pre-upgrade POSIX wrappers and Windows redirect directly to this inode. The new writer
+  // rotates before the limit, so its log never enters this compatibility path.
+  const trimDirectLog = Effect.fn("CommandRunner.trimLog")(function* (row: CommandRunRow) {
     const logPath = logPathOf(row);
     const grown = yield* fs.stat(logPath).pipe(
       Effect.map((info) => Number(info.size) > LOG_TRIM_AT_BYTES),
@@ -1031,7 +1044,7 @@ const make = Effect.gen(function* () {
     });
     const exit = yield* readExitStatus(row);
     if (exit !== undefined) {
-      yield* trimLog(row);
+      yield* trimDirectLog(row);
       return yield* ended("exited", exit.code, exit.endedAt);
     }
     // A deadline that passed while no server ran is enforced at the first check after.
@@ -1071,7 +1084,7 @@ const make = Effect.gen(function* () {
         yield* settle(seen);
       }
     }
-    if (!windows) yield* trimLog(row);
+    if (!windows) yield* trimDirectLog(row);
   });
 
   const watchOnce = lock.withPermits(1)(
@@ -1215,6 +1228,8 @@ const make = Effect.gen(function* () {
           statusPath,
           path.join(directory, PID_FILE),
           path.join(directory, IDENTITY_FILE),
+          runtime,
+          cliEntry,
           ...prefix,
           resolveCommandShell(platform, env, shell ?? undefined).path,
           "-c",

@@ -674,9 +674,11 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-survives");
+        // The child's stdout stays open until liveChat stops the group after delivery.
+        NodeChildProcess.execFileSync("mkfifo", [NodePath.join(chat.workspace, "child-input")]);
         const started = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), {
-            command: "until [ -e go ]; do sleep 0.05; done; echo checked; exit 3",
+            command: "cat child-input & until [ -e go ]; do sleep 0.05; done; echo checked; exit 3",
             label: "Checks",
           }),
         );
@@ -706,7 +708,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   it.effect.skipIf(isWindowsHost)(
-    "delivers an end that came while no server was running, once one starts",
+    "delivers an end that came while no server was running and bounds a pre-upgrade log",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-ends-while-down");
@@ -718,6 +720,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
         const statusFile = NodePath.join(NodePath.dirname(started.logPath), "exit-status");
         yield* awaitFile(statusFile);
+        // A pre-upgrade wrapper appended directly to this file while the server was down.
+        NodeFS.writeFileSync(started.logPath, Buffer.alloc(9 * 1024 * 1024, "x"));
+        NodeFS.appendFileSync(started.logPath, "\nbuilt\n");
         // The status file is written as it ends, so its time is the end, not the next server's start.
         const startedAt = Date.parse((yield* commandRow(started.taskId))!.started_at);
         const endedAtSeconds = (startedAt + 42_000) / 1000;
@@ -726,6 +731,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const task = yield* taskOf(chat.threadId, started.taskId);
         assert.equal(task?.status, "completed");
         assert.match(task?.result ?? "", /^Exited with code 0 after 42s\.\nLast output:\nbuilt\n/);
+        assert.isBelow(NodeFS.statSync(started.logPath).size, 8 * 1024 * 1024);
       }),
   );
 
@@ -754,23 +760,33 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   it.effect.skipIf(isWindowsHost)(
-    "keeps the end of a log that grew too large, after a note that it was cut",
+    "keeps the exact tail of a large command log while the server is down",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-log-trimmed");
+        const input = NodePath.join(chat.workspace, "input");
+        NodeChildProcess.execFileSync("mkfifo", [input]);
         const started = yield* withServer((runner) =>
-          runner
-            .run(callerOf(chat.threadId), {
-              command: "head -c 9000000 /dev/zero | tr '\\0' x; echo; echo last-line",
-            })
-            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+          runner.run(callerOf(chat.threadId), { command: "cat input && echo last-line >&2" }),
         );
+        const output = Array.from(
+          { length: 9 * 1024 },
+          (_, line) => `${String(line).padEnd(1023, "x")}\n`,
+        ).join("");
+        yield* Effect.promise(() => NodeFS.promises.writeFile(input, output));
+        yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "exit-status"));
         const log = NodeFS.readFileSync(started.logPath, "utf8");
-        assert.match(
-          log,
-          /^\[CodeShip removed earlier output to keep this log small\]\nx+\nlast-line\n$/,
-        );
         assert.isBelow(log.length, 8 * 1024 * 1024);
+        const marker = "[CodeShip removed earlier output to keep this log small]\n";
+        assert.isTrue(log.startsWith(marker));
+        const tail = log.slice(marker.length);
+        assert.isAtLeast(tail.length, 4 * 1024 * 1024);
+        assert.isTrue(`${output}last-line\n`.endsWith(tail));
+
+        yield* withServer(() => nextWake(chat.threadId));
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        assert.include(task?.result ?? "", `last-line\nFull output: ${started.logPath}`);
       }),
   );
 

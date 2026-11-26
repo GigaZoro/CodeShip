@@ -9,6 +9,11 @@ import { enableCliCompileCache } from "./cliCompileCache.ts";
 
 async function main() {
   const command = process.argv[2];
+  if (command === "__command-log") {
+    const { runPosixLogWriter } = await import("./commandRunner/posixLogWriter.ts");
+    runPosixLogWriter(process.argv.slice(3));
+    return;
+  }
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
