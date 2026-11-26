@@ -1,11 +1,12 @@
+import { t } from "~/i18n";
 import { Dialog as SheetPrimitive } from "@base-ui/react/dialog";
+
 import { XIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { ControlledOpenContext, renderRetainedPopup } from "~/components/ui/dialog";
 
-import { t } from "~/i18n";
 function Sheet<Payload>(props: SheetPrimitive.Root.Props<Payload>) {
   return (
     <ControlledOpenContext value={props.open}>

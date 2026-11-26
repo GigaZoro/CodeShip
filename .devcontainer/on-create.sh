@@ -42,5 +42,5 @@ T3.CodeShip devcontainer
   codex login --device-auth
                         sign in to Codex
 
-Details: docs/internals/devcontainer.md
+Details: docs/operations/01_devcontainer.md
 EOF

@@ -1,5 +1,6 @@
-import { RegistryContext } from "@effect/atom-react";
 import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { RegistryContext } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
 import {
@@ -10,9 +11,11 @@ import {
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { AtomRegistry } from "effect/reactivity";
+
 import { useContext } from "react";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+
 import {
   type EnvironmentPresentation,
   useEnvironments,
@@ -26,7 +29,7 @@ function reportScratchFailure(title: string, error: unknown) {
     stackedThreadToast({
       type: "error",
       title,
-      description: error instanceof Error ? error.message : t("An error occurred."),
+      description: thrownErrorMessage(error, t) ?? t("An error occurred."),
     }),
   );
 }

@@ -1,6 +1,8 @@
+import { isSecretsFeatureEnabled } from "../../env";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { cloudSpeechDisclosure } from "@t3tools/shared/speech";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
+import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import {
   configuredSecretSources,
   secretRequestReference,
@@ -12,6 +14,7 @@ import {
 } from "@t3tools/client-runtime/voice-input";
 import {
   AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
   AuthSettingsWriteScope,
   CloudSpeechApiKey,
   CloudSpeechModelId,
@@ -31,7 +34,6 @@ import type { HttpClient } from "effect/http";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 import { t } from "~/i18n";
-import { isSecretsFeatureEnabled } from "../../env";
 import {
   inEnvironmentSpeechRuntime,
   runEnvironmentSpeech,
@@ -126,7 +128,7 @@ function ModelPicker({
         />
         <ComboboxPopup>
           <ComboboxEmpty>{t("No transcription model matches.")}</ComboboxEmpty>
-          <ComboboxList className="max-h-64">
+          <ComboboxList scrollAreaClassName="max-h-64">
             {(model: CloudSpeechModel) => (
               <ComboboxItem key={model.id} value={model}>
                 <span className="flex min-w-0 flex-col">
@@ -173,6 +175,7 @@ export function CloudVoiceConfiguration({
   const prepared = Option.getOrNull(usePreparedConnection(id));
   const canUse = useEnvironmentScope(id, AuthOrchestrationOperateScope);
   const canManage = useEnvironmentScope(id, AuthSettingsWriteScope);
+  const canUseReferences = useEnvironmentScope(id, AuthProvidersManageScope);
   const [presence, refresh] = useCloudRead(canUse ? prepared : null, getCloudSpeechKeys);
   const [models, refreshModels] = useCloudRead(
     routed && canUse ? prepared : null,
@@ -191,7 +194,10 @@ export function CloudVoiceConfiguration({
   const saved = AsyncResult.isSuccess(presence) ? presence.value?.[provider] : undefined;
   const existing = environment.serverConfig?.settings?.cloudSpeechCredentials?.[provider];
   const sources =
-    isSecretsFeatureEnabled && environment.serverConfig?.secretReferences
+    canUseReferences &&
+    isSecretsFeatureEnabled &&
+    hasFeatureFlag(environment.serverConfig, "secretProviders") &&
+    environment.serverConfig?.secretReferences
       ? configuredSecretSources(environment.serverConfig.settings?.secretProviders ?? {})
       : [];
   const reference =

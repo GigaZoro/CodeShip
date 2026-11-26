@@ -2,7 +2,7 @@ import type { NativeStackNavigationOptions } from "@react-navigation/native-stac
 import { Platform } from "react-native";
 
 import { brandTitleOffset, CompactBrandTitle } from "../../../components/CompactBrandTitle";
-import { t } from "../../../lib/i18n";
+import { msg, t, type Message } from "../../../lib/i18n";
 import { WorkspaceConnectionTitle } from "../../home/WorkspaceConnectionTitle";
 
 function renderCompactBrandTitle() {
@@ -11,11 +11,12 @@ function renderCompactBrandTitle() {
 
 export function getCompactBrandHeaderOptions(
   fallbackTitleStyle?: NativeStackNavigationOptions["headerTitleStyle"],
+  resolve: (message: Message) => string = t,
 ): NativeStackNavigationOptions {
   return {
     headerTitle: renderCompactBrandTitle,
     headerTitleStyle: fallbackTitleStyle,
-    title: t("Threads"),
+    title: resolve(msg("Threads")),
     unstable_headerLeftItems: undefined,
   };
 }
@@ -25,11 +26,12 @@ export function getConnectionAwareBrandHeaderOptions(opts: {
   readonly trailingItemCount?: number;
   readonly onOpenEnvironments: () => void;
   readonly fallbackTitleStyle?: NativeStackNavigationOptions["headerTitleStyle"];
+  readonly resolve?: (message: Message) => string;
 }): NativeStackNavigationOptions {
   const maxWidth = Math.max(0, opts.headerWidth - 64 - 44 * (opts.trailingItemCount ?? 1));
 
   return {
-    ...getCompactBrandHeaderOptions(opts.fallbackTitleStyle),
+    ...getCompactBrandHeaderOptions(opts.fallbackTitleStyle, opts.resolve),
     headerTitle: () => (
       <WorkspaceConnectionTitle
         brand={<CompactBrandTitle />}

@@ -1,3 +1,4 @@
+import { t, tn } from "../../lib/i18n";
 import { Button } from "../../components/ui/Button";
 import { QuestionAttachments } from "./QuestionAttachments";
 import type { EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
@@ -36,7 +37,6 @@ import {
   type PendingUserInputDraftAnswer,
 } from "@t3tools/client-runtime/state/pending-user-input";
 import type { PendingUserInput } from "../../lib/threadActivity";
-import { t, tn } from "../../lib/i18n";
 
 export interface PendingUserInputCardProps {
   readonly environmentId: EnvironmentId;
@@ -50,6 +50,7 @@ export interface PendingUserInputCardProps {
   readonly onStopThread?: () => void;
   readonly cardProgress: SharedValue<number>;
   readonly cardCoverage: SharedValue<number>;
+  readonly onLayout?: (event: LayoutChangeEvent) => void;
   readonly onInputFocusChange?: (focused: boolean) => void;
   readonly drafts: Record<string, PendingUserInputDraftAnswer>;
   readonly answers: Record<string, string | ReadonlyArray<string>> | null;
@@ -171,6 +172,16 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
   }));
   const overlayHeightStyle = useAnimatedStyle(() => ({ height: maxHeight.value }));
 
+  const stopButton = props.onStopThread ? (
+    <ControlPill
+      accessibilityLabel={t("Stop")}
+      icon="stop.fill"
+      variant="danger"
+      className="h-9 w-9"
+      disabled={!props.canOperateThread}
+      onPress={props.onStopThread}
+    />
+  ) : null;
   const bar = (
     <View
       onLayout={handleBarLayout}
@@ -203,16 +214,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           type="monochrome"
         />
       </Pressable>
-      {props.onStopThread ? (
-        <ControlPill
-          accessibilityLabel={t("Stop")}
-          icon="stop.fill"
-          variant="danger"
-          className="h-9 w-9"
-          disabled={!props.canOperateThread}
-          onPress={props.onStopThread}
-        />
-      ) : null}
+      {stopButton}
     </View>
   );
   const card = (
@@ -224,29 +226,32 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       className="overflow-hidden gap-2.5 rounded-[20px] border border-border bg-card-alt p-4"
       style={cardAnimatedStyle}
     >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={t("Collapse user input")}
-        onPress={props.onToggleCollapsed}
-        className="flex-row items-start gap-2"
-      >
-        <View className="flex-1 gap-2.5">
-          <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
-            {t("User input needed")}
-          </Text>
-          <Text className="font-t3-bold text-lg text-foreground">
-            {t("Fill in the pending answers")}
-          </Text>
-        </View>
-        <View className="h-8 w-8 items-center justify-center rounded-full bg-subtle-strong">
-          <SymbolView
-            name="chevron.down"
-            size={13}
-            tintColorClassName={"accent-icon-subtle"}
-            type="monochrome"
-          />
-        </View>
-      </Pressable>
+      <View className="flex-row items-start gap-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("Collapse user input")}
+          onPress={props.onToggleCollapsed}
+          className="flex-1 flex-row items-start gap-2"
+        >
+          <View className="flex-1 gap-2.5">
+            <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
+              {t("User input needed")}
+            </Text>
+            <Text className="font-t3-bold text-lg text-foreground">
+              {t("Fill in the pending answers")}
+            </Text>
+          </View>
+          <View className="h-8 w-8 items-center justify-center rounded-full bg-subtle-strong">
+            <SymbolView
+              name="chevron.down"
+              size={13}
+              tintColorClassName={"accent-icon-subtle"}
+              type="monochrome"
+            />
+          </View>
+        </Pressable>
+        {stopButton}
+      </View>
       <ScrollView
         bounces={false}
         className="min-h-0"
@@ -385,6 +390,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
     <Animated.View
       className="relative"
       style={Platform.OS === "android" ? androidBoundsStyle : undefined}
+      onLayout={props.onLayout}
     >
       {bar}
       <Animated.View

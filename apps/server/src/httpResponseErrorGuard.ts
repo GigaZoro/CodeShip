@@ -2,6 +2,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import type * as NodeHttp from "node:http";
 import type * as NodeStream from "node:stream";
+import type { DatabaseMigrationProgress, ServerStartupStatus } from "@t3tools/contracts";
 
 import {
   ENVIRONMENT_DESCRIPTOR_PATH,
@@ -31,7 +32,6 @@ export function guardHttpResponseWriteErrors<T extends NodeHttp.Server>(
 // into a closed connection, and a slow client reconnects in the middle of a connect.
 const HTTP_KEEP_ALIVE_TIMEOUT_MS = 95_000;
 
-/** Install before `rejectRequestsUntilServing`, whose handoff starts at the next request listener. */
 export function keepIdleConnections<T extends NodeHttp.Server>(server: T): T {
   server.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
   // `close` drops only the connections idle at that moment. One that finishes
@@ -53,34 +53,44 @@ export function keepIdleConnections<T extends NodeHttp.Server>(server: T): T {
 }
 
 /**
- * NodeHttpServer listens before serve() attaches its handlers, so requests in between would hang.
- * Install this after the write-error guards so only the serving handlers trigger the handoff.
- * The descriptor path's 503 carries a running migration, so clients can tell busy from dead.
+ * NodeHttpServer listens before serve() attaches its handlers, so requests in
+ * between would hang. Its own pre-listen fallback stays silent while any other
+ * request listener exists, so only a listener added after listening takes over.
  */
 export function rejectRequestsUntilServing<T extends NodeHttp.Server>(
   server: T,
+  migrationProgress: () => DatabaseMigrationProgress | null = () => null,
   startup: () => EnvironmentStartup | undefined = () => undefined,
 ): T {
   const rejectRequest = (request: NodeHttp.IncomingMessage, response: NodeHttp.ServerResponse) => {
-    const status =
-      request.method === "GET" && request.url?.split("?")[0] === ENVIRONMENT_DESCRIPTOR_PATH
-        ? startup()
-        : undefined;
-    if (status === undefined) {
-      response.writeHead(503, { "retry-after": "1", connection: "close" }).end();
-      return;
-    }
-    const body: EnvironmentStartingResponse = { startup: status };
+    const migration = migrationProgress();
+    const descriptor =
+      request.method === "GET" && request.url?.split("?")[0] === ENVIRONMENT_DESCRIPTOR_PATH;
+    const detail = descriptor ? startup() : undefined;
+    const html = request.headers.accept?.includes("text/html") === true;
+    const status: ServerStartupStatus & Partial<EnvironmentStartingResponse> = {
+      status: "starting",
+      migration,
+      ...(detail === undefined ? {} : { startup: detail }),
+    };
+    const message = migration
+      ? `Upgrading database (${migration.current} of ${migration.total})`
+      : "Starting T3.CodeShip…";
+    const body = html
+      ? `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="1"><title>Starting T3.CodeShip</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-content:center;text-align:center;font:16px system-ui}h1{font-size:20px}p{opacity:.7}</style></head><body><h1>${message}</h1><p>The app will open when startup finishes.</p></body></html>`
+      : JSON.stringify(status);
     response
       .writeHead(503, {
         "retry-after": "1",
-        "content-type": "application/json",
-        "cache-control": "no-store",
-        // The router's CORS layer is not running yet; web clients on other origins read progress.
-        "access-control-allow-origin": "*",
         connection: "close",
+        ...(descriptor ? { "access-control-allow-origin": "*" } : {}),
+        "cache-control": "no-store",
+        "content-type": html ? "text/html; charset=utf-8" : "application/json; charset=utf-8",
+        "content-security-policy":
+          "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+        "x-content-type-options": "nosniff",
       })
-      .end(JSON.stringify(body));
+      .end(body);
   };
   const rejectUpgrade = (_request: NodeHttp.IncomingMessage, socket: NodeStream.Duplex) => {
     socket.end(
@@ -91,6 +101,7 @@ export function rejectRequestsUntilServing<T extends NodeHttp.Server>(
   server.on("upgrade", rejectUpgrade);
   // Node emits newListener before adding the handler, making the handoff synchronous.
   server.on("newListener", function onNewListener(event) {
+    if (!server.listening) return;
     if (event === "request") server.off("request", rejectRequest);
     if (event === "upgrade") server.off("upgrade", rejectUpgrade);
     if (

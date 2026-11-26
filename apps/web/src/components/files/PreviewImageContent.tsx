@@ -1,10 +1,11 @@
+import { getFormattingLocale, t } from "~/i18n";
+
 import { useLayoutEffect, useRef, useState } from "react";
 import { MaximizeIcon, MinusIcon, PlusIcon, ScanIcon } from "lucide-react";
 import { ExpandedImageDialog } from "~/components/chat/ExpandedImageDialog";
 import { observeResize } from "~/lib/observeResize";
 import { AttachmentImage } from "../media/AttachmentImage";
 import { FileSurfaceAction, FileSurfaceFailure } from "./fileSurfaceChrome";
-import { getFormattingLocale, t } from "~/i18n";
 
 export default function PreviewImageContent(props: {
   readonly src: string;
@@ -22,7 +23,15 @@ export default function PreviewImageContent(props: {
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
-    const update = () => setViewport({ width: node.clientWidth, height: node.clientHeight });
+    // clientWidth rounds a fractional pane size up, and an image fitted to it overflows the pane.
+    // The computed size keeps the fraction; it reads "auto" while an ancestor is display:none.
+    const update = () => {
+      const size = getComputedStyle(node);
+      setViewport({
+        width: Math.floor(Number.parseFloat(size.width) || 0),
+        height: Math.floor(Number.parseFloat(size.height) || 0),
+      });
+    };
     update();
     return observeResize(node, update);
   }, []);
@@ -96,10 +105,12 @@ export default function PreviewImageContent(props: {
               src={props.src}
               alt={props.name}
               className="block max-w-none"
+              // A cached image has its natural size before onLoad runs, so it stays at 0x0 until the
+              // fit scale is known instead of painting at full size for a frame.
               style={
                 natural.width
                   ? { width: natural.width * scale, height: natural.height * scale }
-                  : { maxWidth: "100%" }
+                  : { width: 0, height: 0 }
               }
               onLoad={(event) =>
                 setNatural({

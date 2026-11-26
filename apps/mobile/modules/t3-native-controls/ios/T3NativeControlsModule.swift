@@ -10,6 +10,7 @@ public final class T3NativeControlsModule: Module {
   private let presentationSources = T3PresentationSources()
   private var videoPresentation: T3NativeVideoPresentation?
   private var filePresentation: T3NativeFilePresentation?
+  private var imageViewer: T3NativeImageViewer?
   /// The last file preview that closed. Written on main, read synchronously from JS.
   private let filePreviewActivity = NSLock()
   private var finishedFilePreview: String?
@@ -21,9 +22,10 @@ public final class T3NativeControlsModule: Module {
         return [
           "supportsWorkspaceColumns": NSClassFromString("RNSSplitHostComponentView") != nil,
           "supportsTasksTab": true,
+          "supportsIssuesTab": true,
         ]
       }
-      return ["supportsWorkspaceColumns": false, "supportsTasksTab": true]
+      return ["supportsWorkspaceColumns": false, "supportsTasksTab": true, "supportsIssuesTab": true]
     }
     View(T3SegmentedControlView.self) {
       ViewName("SegmentedControl")
@@ -42,6 +44,8 @@ public final class T3NativeControlsModule: Module {
       ViewName("SidebarTabBar")
       Events("onSelectionChange", "onCompose")
       Prop("tabs") { (view: T3SidebarTabBarView, value: [String]) in view.tabs = value }
+      Prop("tabTitles") { (view: T3SidebarTabBarView, value: [String: String]) in view.tabTitles = value }
+      Prop("newThreadTitle") { (view: T3SidebarTabBarView, value: String) in view.newThreadTitle = value }
       Prop("selectedTab") { (view: T3SidebarTabBarView, value: String) in view.selectedTab = value }
       Prop("selectedColor") { (view: T3SidebarTabBarView, value: UIColor) in view.selectedColor = value }
       Prop("showsCompose") { (view: T3SidebarTabBarView, value: Bool) in view.showsCompose = value }
@@ -90,13 +94,21 @@ public final class T3NativeControlsModule: Module {
       else {
         throw URLError(.badURL)
       }
-      let file = try self.makeFilePresentation(sourceIdentifiers: sourceIdentifiers, identifier: identifier,
-                                               promise: promise)
-      guard let presenter = self.appContext?.utilities?.currentViewController() else {
-        file.dismiss()
-        return
-      }
-      file.present(urls: urls, titles: titles, selectedIndex: selectedIndex, from: presenter)
+      // A viewer still animating closed must not block the next one, as Quick Look's error alert did.
+      self.imageViewer?.finishImmediately()
+      guard self.filePresentation == nil, self.videoPresentation == nil,
+        let presenter = self.appContext?.utilities?.currentViewController()
+      else { throw URLError(.cannotLoadFromNetwork) }
+      let viewer = T3NativeImageViewer(
+        identifier: identifier, sources: self.presentationSources, sourceIdentifiers: sourceIdentifiers,
+        onFinish: { [weak self] in self?.setFinishedFilePreview(identifier) },
+        completion: { [weak self] error in
+          if self?.imageViewer?.identifier == identifier { self?.imageViewer = nil }
+          if let error { promise.reject(error) } else { promise.resolve(nil) }
+        }
+      )
+      self.imageViewer = viewer
+      viewer.present(urls: urls, titles: titles, selectedIndex: selectedIndex, from: presenter)
     }.runOnQueue(.main)
 
     // A tap can reach JS before the old viewer's close does; this tells it whether that viewer is gone.
@@ -107,15 +119,17 @@ public final class T3NativeControlsModule: Module {
 
     // A nil URL marks the item as one that could not be resolved.
     AsyncFunction("updateFile") { (identifier: String, index: Int, url: URL?) in
-      if self.filePresentation?.identifier == identifier { self.filePresentation?.update(index: index, url: url) }
+      if self.imageViewer?.identifier == identifier { self.imageViewer?.update(index: index, url: url) }
     }.runOnQueue(.main)
 
     OnDestroy {
       let presentation = self.videoPresentation
       let file = self.filePresentation
+      let images = self.imageViewer
       DispatchQueue.main.async {
         presentation?.dismiss()
         file?.dismiss()
+        images?.dismiss()
       }
     }
 
@@ -272,7 +286,7 @@ public final class T3NativeControlsModule: Module {
     let isPlayableURL = url.isFileURL
       ? FileManager.default.isReadableFile(atPath: url.path)
       : (["https", "http"].contains(url.scheme?.lowercased() ?? "") && url.host != nil)
-    guard videoPresentation == nil, filePresentation == nil,
+    guard videoPresentation == nil, filePresentation == nil, imageViewer == nil,
       let presenter = appContext?.utilities?.currentViewController(),
       isPlayableURL
     else {
@@ -300,13 +314,13 @@ public final class T3NativeControlsModule: Module {
     if videoPresentation?.identifier == identifier { videoPresentation?.dismiss() }
   }
 
-  private func makeFilePresentation(sourceIdentifiers: [String], identifier: String,
+  private func makeFilePresentation(sourceIdentifier: String, identifier: String,
                                     promise: Promise) throws -> T3NativeFilePresentation {
-    guard filePresentation == nil, videoPresentation == nil,
+    guard filePresentation == nil, videoPresentation == nil, imageViewer == nil,
       appContext?.utilities?.currentViewController() != nil
     else { throw URLError(.cannotLoadFromNetwork) }
     let file = T3NativeFilePresentation(
-      identifier: identifier, sources: presentationSources, sourceIdentifiers: sourceIdentifiers,
+      identifier: identifier, sources: presentationSources, sourceIdentifier: sourceIdentifier,
       onFinish: { [weak self] in self?.setFinishedFilePreview(identifier) },
       completion: { [weak self] error in
         self?.filePresentation = nil
@@ -323,13 +337,14 @@ public final class T3NativeControlsModule: Module {
 
   private func presentFile(url: URL, title: String, sourceIdentifier: String,
                            identifier: String, promise: Promise) throws {
-    let file = try makeFilePresentation(sourceIdentifiers: [sourceIdentifier], identifier: identifier, promise: promise)
+    let file = try makeFilePresentation(sourceIdentifier: sourceIdentifier, identifier: identifier, promise: promise)
     guard let presenter = appContext?.utilities?.currentViewController() else { file.dismiss(); return }
     file.present(url: url, title: title, from: presenter)
   }
 
   private func dismissFilePresentation(identifier: String) {
     if filePresentation?.identifier == identifier { filePresentation?.dismiss() }
+    if imageViewer?.identifier == identifier { imageViewer?.dismiss() }
   }
 
   private static func saveImageToLibrary(url: URL, mimeType: String, name: String, promise: Promise) {

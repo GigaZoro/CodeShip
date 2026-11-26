@@ -1,11 +1,11 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import type { ThreadTitleRegenerationOutcome } from "@t3tools/contracts";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-
-import { t } from "~/i18n";
 
 import { stackedThreadToast } from "./ui/toast";
 
@@ -15,10 +15,10 @@ function failureMessage(result: TitleRegenerationResult): string | null {
   if (result._tag === "Failure") {
     if (isAtomCommandInterrupted(result)) return null;
     const error = squashAtomCommandFailure(result);
-    return error instanceof Error ? error.message : t("An error occurred.");
+    return thrownErrorMessage(error, t) ?? t(msg("An error occurred."));
   }
   return result.value?.status === "failed"
-    ? (result.value.message ?? t("Title generation failed."))
+    ? (result.value.message ?? t(msg("Title generation failed.")))
     : null;
 }
 
@@ -49,8 +49,8 @@ export function titleRegenerationToast(results: ReadonlyArray<TitleRegenerationR
   if (results.length === 1) {
     return stackedThreadToast({
       type: "info",
-      title: t("Title kept"),
-      description: t("The current title already fits this thread."),
+      title: t(msg("Title kept")),
+      description: t(msg("The current title already fits this thread.")),
     });
   }
   return stackedThreadToast({

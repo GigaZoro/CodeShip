@@ -3,7 +3,7 @@ import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 
 import type { SidebarProjectSnapshot } from "~/sidebarProjectGrouping";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 
 export function ProjectEnvironmentBadge(props: {
   readonly group: Pick<SidebarProjectSnapshot, "memberProjects">;
@@ -25,23 +25,21 @@ export function ProjectEnvironmentBadge(props: {
     ? t("Also on {machines}", { machines: labels })
     : t("On {machines}", { machines: labels });
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            role="img"
-            aria-label={description}
-            className="inline-flex shrink-0 items-center text-muted-foreground"
-          />
-        }
-      >
-        <EnvironmentMachineIcon
-          aria-hidden
-          kind={props.machineByEnvironmentId.get(first.environmentId) ?? "server"}
-          className="size-3.5"
+    <SharedTooltipTrigger
+      render={
+        <span
+          role="img"
+          aria-label={description}
+          className="inline-flex shrink-0 items-center text-muted-foreground"
         />
-      </TooltipTrigger>
-      <TooltipPopup side="top">{description}</TooltipPopup>
-    </Tooltip>
+      }
+      label={description}
+    >
+      <EnvironmentMachineIcon
+        aria-hidden
+        kind={props.machineByEnvironmentId.get(first.environmentId) ?? "server"}
+        className="size-3.5"
+      />
+    </SharedTooltipTrigger>
   );
 }

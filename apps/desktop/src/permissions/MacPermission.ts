@@ -10,8 +10,8 @@ export const MAC_PERMISSION_SETTINGS_URLS = {
 
 export type MacPermission = keyof typeof MAC_PERMISSION_SETTINGS_URLS;
 
-export const MAC_PERMISSION_TITLES: Record<MacPermission, Message> = {
-  "screen-recording": msg("Screen Recording"),
-  accessibility: msg("Accessibility"),
-  "full-disk-access": msg("Full Disk Access"),
+export const MAC_PERMISSION_SETUP_TITLES: Record<MacPermission, Message> = {
+  "screen-recording": msg("Set up Screen Recording"),
+  accessibility: msg("Set up Accessibility"),
+  "full-disk-access": msg("Set up Full Disk Access"),
 };

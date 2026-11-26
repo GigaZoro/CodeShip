@@ -1,9 +1,10 @@
+import { t } from "~/i18n";
 import {
   getClientSettings,
   isClientSettingsHydrated,
   updateClientSettings,
 } from "../hooks/useSettings";
-import { t } from "~/i18n";
+
 import {
   type MicrophoneEntry,
   microphoneOrder,

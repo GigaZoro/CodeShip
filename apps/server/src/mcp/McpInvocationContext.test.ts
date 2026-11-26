@@ -94,6 +94,16 @@ it("acts at an administrator's ceiling for a client approved above it", () => {
   ).toEqual({ runtimeMode: "approval-required", interactionMode: "plan" });
   expect(modes(scope("auto-accept-edits"), "auto").runtimeMode).toBe("auto-accept-edits");
   expect(modes(scope("full-access")).runtimeMode).toBe("full-access");
+  // The scope says what the ceiling is, for a thread caller too.
+  expect(
+    McpInvocationContext.withRuntimeModeCeiling(scope("full-access"), "auto").runtimeModeCeiling,
+  ).toBe("auto");
+  expect(
+    McpInvocationContext.withRuntimeModeCeiling(
+      { ...scope("full-access"), client: undefined },
+      "auto",
+    ).runtimeModeCeiling,
+  ).toBe("auto");
 });
 
 it.effect.each([
@@ -126,6 +136,32 @@ it.effect.each([
       capabilities: new Set<never>(),
       issuedAt: 1,
       ...(linkedEnvironments === undefined ? {} : { linkedEnvironments }),
+    }),
+    Effect.map((shown) => expect(shown).toBe(visible)),
+  ),
+);
+
+it.effect.each([
+  { caller: "parent", visible: true },
+  { caller: "subagent", visible: false },
+  { caller: "outside client", visible: false },
+])("offers user decisions to $caller: $visible", ({ caller, visible }) =>
+  Effect.sync(McpInvocationContext.visibleToParentThread).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, {
+      environmentId: EnvironmentId.make("environment-1"),
+      requestNamespace: "request",
+      thread:
+        caller === "outside client"
+          ? undefined
+          : {
+              threadId: ThreadId.make("thread-1"),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              providerSessionId: "session",
+              subagent: caller === "subagent",
+            },
+      client: undefined,
+      capabilities: new Set<never>(),
+      issuedAt: 1,
     }),
     Effect.map((shown) => expect(shown).toBe(visible)),
   ),

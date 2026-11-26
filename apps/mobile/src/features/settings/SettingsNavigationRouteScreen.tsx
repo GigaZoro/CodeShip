@@ -1,5 +1,5 @@
 import { t } from "../../lib/i18n";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
 import { Platform, View } from "react-native";
@@ -14,7 +14,8 @@ import { IconButton } from "../../components/ui/IconButton";
 import { Button } from "../../components/ui/Button";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
+import { useAtomCommand } from "../../state/use-atom-command";
 import {
   NAVIGATION_TAB_ICONS,
   NAVIGATION_TAB_LABELS,
@@ -38,7 +39,7 @@ export function SettingsNavigationRouteScreen() {
   const preferences = useAtomValue(mobilePreferencesAtom);
   const customizable = navigationCustomizationAvailable();
   const ready = customizable && AsyncResult.isSuccess(preferences) && !preferences.waiting;
-  const save = useAtomSet(updateMobilePreferencesAtom);
+  const save = useAtomCommand(saveMobilePreferences);
   return (
     <SettingsScreen title={t("Navigation tabs")}>
       <ScreenScrollView
@@ -82,7 +83,7 @@ export function SettingsNavigationRouteScreen() {
                 }
                 disabled={!ready}
                 onPress={() =>
-                  save({
+                  void save({
                     transform: (current) => ({
                       hiddenNavigationTabs: toggleNavigationTabVisibility(
                         current.hiddenNavigationTabs,
@@ -97,7 +98,7 @@ export function SettingsNavigationRouteScreen() {
                 accessibilityLabel={t("Move {tab} up", { tab: t(NAVIGATION_TAB_LABELS[tab]) })}
                 disabled={!ready || index === 0}
                 onPress={() =>
-                  save({
+                  void save({
                     transform: (current) => ({
                       navigationTabOrder: moveNavigationTab(
                         resolveWorkspaceTabOrder(current.navigationTabOrder),
@@ -113,7 +114,7 @@ export function SettingsNavigationRouteScreen() {
                 accessibilityLabel={t("Move {tab} down", { tab: t(NAVIGATION_TAB_LABELS[tab]) })}
                 disabled={!ready || index === order.length - 1}
                 onPress={() =>
-                  save({
+                  void save({
                     transform: (current) => ({
                       navigationTabOrder: moveNavigationTab(
                         resolveWorkspaceTabOrder(current.navigationTabOrder),
@@ -131,7 +132,7 @@ export function SettingsNavigationRouteScreen() {
           label={t("Reset tabs")}
           tone="text"
           disabled={!ready}
-          onPress={() => save({ navigationTabOrder: [], hiddenNavigationTabs: [] })}
+          onPress={() => void save({ navigationTabOrder: [], hiddenNavigationTabs: [] })}
         />
       </ScreenScrollView>
     </SettingsScreen>

@@ -241,7 +241,8 @@ export async function downloadComposerAttachment(
 type AttachmentSource = Pick<
   Extract<ComposerContextRecord, { attachmentId: string }>,
   "attachmentId" | "kind" | "name" | "mimeType"
->;
+> &
+  Pick<Extract<ComposerContextRecord, { kind: "image" }>, "source">;
 
 async function persistImportedAttachment(
   record: AttachmentSource,
@@ -268,6 +269,11 @@ async function persistImportedAttachment(
     sizeBytes: new File(fileUri).size,
   };
   return record.kind === "image"
-    ? { ...common, type: "image", previewUri: fileUri }
+    ? {
+        ...common,
+        type: "image",
+        previewUri: fileUri,
+        ...(record.source ? { source: record.source } : {}),
+      }
     : { ...common, type: "file" };
 }

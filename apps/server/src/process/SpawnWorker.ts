@@ -2,6 +2,7 @@
 import * as NodeEvents from "node:events";
 import type * as NodeChildProcess from "node:child_process";
 import * as NodeStream from "node:stream";
+import * as NodeTimers from "node:timers";
 import * as NodeURL from "node:url";
 import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeChildProcessSpawner from "@effect/platform-node-shared/NodeChildProcessSpawner";
@@ -13,6 +14,7 @@ import {
   type WindowsProcessTreeRoot,
   windowsStopTreeArgs,
 } from "@t3tools/shared/windowsProcessTree";
+import { windowsPowerShellPath } from "@t3tools/shared/windowsSystem";
 
 // Windows runs CreateProcess synchronously on the calling thread, and antivirus or a busy disk can
 // hold it for seconds; Linux's spawn waits for chdir and the PATH search, which a hung mount
@@ -69,13 +71,31 @@ type FromWorker =
       readonly id: number;
       readonly code: number | null;
       readonly signal: NodeJS.Signals | null;
+      readonly endedAt: number;
     }
   | { readonly type: "close"; readonly id: number };
 
+// Windows makes a child's stdio pipes inheritable for the length of its CreateProcess, so a child
+// another worker launches meanwhile inherits them and holds the first child's output open. Every
+// pool's workers take this lock around spawn(); it holds the owning worker's threadId.
+const windowsSpawnLock = new Int32Array(new SharedArrayBuffer(4));
+
 // Inline source runs from bundles, asar archives and single-executable builds without module files.
 const workerSource = `
-const { parentPort } = require("node:worker_threads");
+const { parentPort, threadId, workerData } = require("node:worker_threads");
 const { spawn } = require("node:child_process");
+const { lock } = workerData;
+const locked = (launch) => {
+  if (lock === undefined) return launch();
+  // Wait on the owner compareExchange saw: an unlock after it changes the value, so no wakeup is lost.
+  for (let owner; (owner = Atomics.compareExchange(lock, 0, 0, threadId)) !== 0; ) Atomics.wait(lock, 0, owner);
+  try {
+    return launch();
+  } finally {
+    Atomics.store(lock, 0, 0);
+    Atomics.notify(lock, 0, 1);
+  }
+};
 const children = new Map();
 const post = (message, transfer) => parentPort.postMessage(message, transfer);
 const serialize = (error) => {
@@ -88,22 +108,25 @@ const serialize = (error) => {
 parentPort.on("message", (request) => {
   const { id } = request;
   if (request.type === "spawn") {
-    let child;
-    // Measured here, not when the request was queued: a pid's earlier holder may start processes meanwhile.
-    const createdFrom = Date.now();
+    let launch;
     try {
-      child = spawn(request.command, request.args, request.options);
+      launch = locked(() => {
+        // Waiting for the lock must not widen the creation window used to identify the child.
+        const createdFrom = Date.now();
+        const child = spawn(request.command, request.args, request.options);
+        return { child, createdFrom, createdTo: Date.now() };
+      });
     } catch (error) {
       // The caller hears this as a failed launch, which ends with a close like any other.
       post({ type: "error", id, error: serialize(error) });
       post({ type: "close", id });
       return;
     }
-    const createdTo = Date.now();
+    const { child, createdFrom, createdTo } = launch;
     children.set(id, child);
     child.on("spawn", () => post({ type: "spawn", id, pid: child.pid, createdFrom, createdTo }));
     child.on("error", (error) => post({ type: "error", id, error: serialize(error) }));
-    child.on("exit", (code, signal) => post({ type: "exit", id, code, signal }));
+    child.on("exit", (code, signal) => post({ type: "exit", id, code, signal, endedAt: Date.now() }));
     // Output can still arrive after exit; close follows the last of it.
     child.on("close", () => {
       children.delete(id);
@@ -197,6 +220,10 @@ class WorkerChild
   killed = false;
   spawned = false;
   exited = false;
+  stopTreeOnKill = false;
+  isTreeStop = false;
+  #stopTreeRequested = false;
+  #treeStopping: { close?: () => void } | undefined;
   readonly #writes = new Map<number, Array<(error?: Error | null) => void>>();
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
@@ -285,6 +312,14 @@ class WorkerChild
 
   /** Nothing more comes for this child; Node reports its close once every output has ended. */
   closed(): void {
+    if (this.#treeStopping !== undefined) {
+      this.#treeStopping.close = () => this.#emitClose();
+      return;
+    }
+    this.#emitClose();
+  }
+
+  #emitClose(): void {
     // Only 'end' and 'close' listeners, so an error after this close stays the caller's, as in Node.
     const open = this.#outputs().filter((stream) => !stream.readableEnded && !stream.destroyed);
     let remaining = open.length + 1;
@@ -389,6 +424,7 @@ class WorkerChild
     if (this.exited || this.#unreachable()) return false;
     this.killed = true;
     this.worker.post({ type: "kill", id: this.id, signal });
+    if (this.stopTreeOnKill && signal !== 0) this.#stopTreeRequested = true;
     return true;
   }
 
@@ -402,7 +438,7 @@ class WorkerChild
     this.worker.syncRef();
   }
 
-  exit(code: number | null, signal: NodeJS.Signals | null): void {
+  exit(code: number | null, signal: NodeJS.Signals | null, endedAt?: number): void {
     if (this.exited) return;
     this.exited = true;
     this.exitCode = code;
@@ -411,6 +447,23 @@ class WorkerChild
     // Node destroys stdin on exit; the Effect sink may already have removed its error listener.
     this.stdin?.on("error", () => {});
     this.stdin?.destroy();
+    const root = this.treeRoot;
+    if (root !== undefined && endedAt !== undefined) {
+      // After the native exit the walk may stop descendants, but must never reopen the leader.
+      const ended = { ...root, ended: endedAt };
+      this.treeRoot = ended;
+      if (this.#stopTreeRequested) {
+        const stopping: { close?: () => void } = {};
+        this.#treeStopping = stopping;
+        this.worker.pool.killTree(ended, () => {
+          this.#treeStopping = undefined;
+          this.emit("exit", code, signal);
+          stopping.close?.();
+        });
+        process.nextTick(this.#flushOutput);
+        return;
+      }
+    }
     this.emit("exit", code, signal);
     process.nextTick(this.#flushOutput);
   }
@@ -437,16 +490,28 @@ class SpawnWorker {
   readonly worker: NodeWorkerThreads.Worker;
   readonly children = new Map<number, WorkerChild>();
   readonly pool: SpawnWorkerPool;
+  // Node sets worker.threadId to -1 after exit, but the lock still holds its original id.
+  readonly threadId: number;
+  #failure: Error | undefined;
   /** Launches being sent or not yet answered; the worker is inside CreateProcess for one of them. */
   launching = 0;
   closed = false;
 
   constructor(pool: SpawnWorkerPool) {
     this.pool = pool;
-    this.worker = new NodeWorkerThreads.Worker(workerSource, { eval: true });
+    this.worker = new NodeWorkerThreads.Worker(workerSource, {
+      eval: true,
+      workerData: { lock: pool.platform === "win32" ? windowsSpawnLock : undefined },
+    });
+    this.threadId = this.worker.threadId;
     this.worker.on("message", (message: FromWorker) => this.onMessage(message));
-    this.worker.on("error", (error) => this.fail(error));
-    this.worker.on("exit", () => this.fail(new Error("The process launcher thread exited.")));
+    this.worker.on("error", (error) => {
+      this.#failure = error;
+    });
+    // Node emits exit last, after any spawn or exit messages that carry a child's identity.
+    this.worker.on("exit", () =>
+      this.fail(this.#failure ?? new Error("The process launcher thread exited.")),
+    );
     this.worker.unref();
   }
 
@@ -519,7 +584,6 @@ class SpawnWorker {
         child.pid = message.pid;
         if (message.pid !== undefined) {
           const created = { from: message.createdFrom, to: message.createdTo };
-          // fail() stops only a tree whose exit this process has not seen.
           child.treeRoot = { pid: message.pid, since: created.from, created, ended: "running" };
         }
         child.started();
@@ -552,7 +616,7 @@ class SpawnWorker {
         child.onStreamError(message.fd, message.error);
         break;
       case "exit":
-        child.exit(message.code, message.signal);
+        child.exit(message.code, message.signal, message.endedAt);
         break;
       case "close":
         child.closed();
@@ -592,7 +656,7 @@ class SpawnWorker {
         child.exit(null, "SIGKILL");
         end();
       };
-      if (child.treeRoot === undefined) finish();
+      if (child.treeRoot === undefined || child.isTreeStop) finish();
       else this.pool.killTree(child.treeRoot, finish);
     }
     this.children.clear();
@@ -602,7 +666,12 @@ class SpawnWorker {
     if (this.closed) return;
     this.closed = true;
     this.pool.workers.delete(this);
-    void this.worker.terminate();
+    void this.worker.terminate().then(() => {
+      // The thread may have died holding the lock, or between its unlock and notify, or after
+      // a notify woke it: free the lock and wake every waiter so none sleeps on a free lock.
+      Atomics.compareExchange(windowsSpawnLock, 0, this.threadId, 0);
+      Atomics.notify(windowsSpawnLock, 0);
+    });
   }
 }
 
@@ -652,27 +721,39 @@ class SpawnWorkerPool {
       return;
     }
     let settled = false;
-    // With the launcher's handle gone, a bare pid cannot be told from a process that reused it
-    // once the root ended, so only the stop, which checks the root's start time, ends anything.
+    let deadline: NodeJS.Timeout | undefined;
+    // Once the leader's handle is gone, only the walk may signal processes.
     const finish = (failure?: string) => {
       if (settled) return;
       settled = true;
+      NodeTimers.clearTimeout(deadline);
       if (failure !== undefined) {
         this.report(new Error(`Could not stop the process tree of ${root.pid}: ${failure}`));
       }
       done();
     };
+    if (root.created === "unknown") {
+      finish("Process creation time is unavailable");
+      return;
+    }
     let stop: WorkerChild;
     try {
-      stop = this.spawn("powershell.exe", windowsStopTreeArgs(root), {
+      stop = this.spawn(windowsPowerShellPath(process.env), windowsStopTreeArgs(root), {
         stdio: "ignore",
         windowsHide: true,
       });
+      stop.isTreeStop = true;
     } catch (error) {
       // Starting a launcher thread throws when the system refuses one.
       finish(error instanceof Error ? error.message : String(error));
       return;
     }
+    // @effect-diagnostics-next-line globalTimers:off -- the pool has no Effect scope and the cleanup deadline must not keep Node alive.
+    deadline = NodeTimers.setTimeout(() => {
+      stop.kill("SIGKILL");
+      stop.unref();
+      finish("PowerShell did not finish within 30 s");
+    }, 30_000).unref();
     stop
       .on("error", (error: Error) => finish(error.message))
       .on("exit", (code: number | null, signal: NodeJS.Signals | null) =>
@@ -710,16 +791,23 @@ let sharedPool: SpawnWorkerPool | undefined;
 export const spawnPiped = (
   command: string,
   args: ReadonlyArray<string>,
-  options: Omit<NodeChildProcess.SpawnOptions, "stdio">,
-) =>
-  (sharedPool ??= new SpawnWorkerPool("win32")).spawn(command, args, {
-    ...options,
+  options: Omit<NodeChildProcess.SpawnOptions, "stdio"> & {
+    /** Disable this when the caller owns tree cleanup for every exit. */
+    readonly stopTreeOnKill?: boolean;
+  },
+) => {
+  const { stopTreeOnKill = true, ...spawnOptions } = options;
+  const child = (sharedPool ??= new SpawnWorkerPool("win32")).spawn(command, args, {
+    ...spawnOptions,
     stdio: ["pipe", "pipe", "pipe"],
-  }) as WorkerChild & {
+  });
+  child.stopTreeOnKill = stopTreeOnKill && HostProcess.Platform.defaultValue() === "win32";
+  return child as WorkerChild & {
     readonly stdin: NodeStream.Writable;
     readonly stdout: NodeStream.Readable;
     readonly stderr: NodeStream.Readable;
   };
+};
 
 export const layer = Layer.unwrap(
   Effect.gen(function* () {

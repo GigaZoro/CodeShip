@@ -14,7 +14,7 @@ import { CommandPaletteTitleIcon } from "./CommandPaletteResults";
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 
 export function remoteProjectSourceIcon(
   source: AddProjectRemoteSource,
@@ -44,30 +44,28 @@ export function CommandPaletteSubmitButton(props: {
   readonly onSubmit: () => void;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            id={props.id}
-            variant="outline"
-            size="xs"
-            className="absolute inset-e-2.5 top-1/2 -translate-y-1/2"
-            aria-label={props.ariaLabel}
-            disabled={props.disabled}
-            onMouseDown={(event) => {
-              event.preventDefault();
-            }}
-            onClick={props.onSubmit}
-          />
-        }
-      >
-        <span>{props.label}</span>
-        <KbdGroup className="pointer-events-none -me-0.5">
-          <Kbd>{props.shortcutLabel}</Kbd>
-        </KbdGroup>
-      </TooltipTrigger>
-      <TooltipPopup side="top">{props.tooltip}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          id={props.id}
+          variant="outline"
+          size="xs"
+          className="absolute inset-e-2.5 top-1/2 -translate-y-1/2"
+          aria-label={props.ariaLabel}
+          disabled={props.disabled}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
+          onClick={props.onSubmit}
+        />
+      }
+      label={props.tooltip}
+    >
+      <span>{props.label}</span>
+      <KbdGroup className="pointer-events-none -me-0.5">
+        <Kbd>{props.shortcutLabel}</Kbd>
+      </KbdGroup>
+    </SharedTooltipTrigger>
   );
 }
 
@@ -123,33 +121,13 @@ export function NewProjectPublishHostPicker(props: {
   );
 }
 
-function newProjectSummaryText(props: {
-  readonly name: string;
-  readonly pathPreview: string;
-  readonly projectsRoot: string | null;
-  readonly environmentLabel: string | null;
-}): string {
-  const { environmentLabel } = props;
-  if (props.name.length > 0) {
-    return environmentLabel === null
-      ? t("Creates {path}", { path: props.pathPreview })
-      : t("Creates {path} on {environment}", {
-          path: props.pathPreview,
-          environment: environmentLabel,
-        });
-  }
-  const root = String(props.projectsRoot);
-  return environmentLabel === null
-    ? t("Goes in {path}", { path: root })
-    : t("Goes in {path} on {environment}", { path: root, environment: environmentLabel });
-}
-
 export function NewProjectSummary(props: {
   readonly name: string;
   readonly pathPreview: string;
   readonly projectsRoot: string | null;
   readonly environmentLabel: string | null;
 }) {
+  const environment = props.environmentLabel;
   return (
     <div className="p-2 pb-0">
       <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
@@ -161,7 +139,16 @@ export function NewProjectSummary(props: {
             {props.name.length > 0 ? props.name : t("New project")}
           </span>
           <span className="truncate text-muted-foreground/85 text-xs">
-            {newProjectSummaryText(props)}
+            {props.name.length > 0
+              ? environment === null
+                ? t("Creates {path}", { path: props.pathPreview })
+                : t("Creates {path} on {environment}", { path: props.pathPreview, environment })
+              : environment === null
+                ? t("Goes in {root}", { root: String(props.projectsRoot) })
+                : t("Goes in {root} on {environment}", {
+                    root: String(props.projectsRoot),
+                    environment,
+                  })}
           </span>
         </span>
       </div>

@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   legacyThreadPullRequestKey,
   threadPullRequestKeyOf,
@@ -55,7 +56,6 @@ import {
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
 } from "./composerSlashCommandSearch";
-import { t } from "~/i18n";
 
 const COMPOSER_PULL_REQUEST_LIST_LIMIT = 99;
 const COMPOSER_PULL_REQUEST_RESULT_LIMIT = 12;
@@ -124,8 +124,13 @@ export function useComposerMenuItems({
     pullRequestTextQuery === debouncedPullRequestTextQuery ? pullRequestTextQuery : null;
   const isPathTrigger = composerTriggerKind === "path";
   const environmentThreadShells = useVisibleThreadShells(isPathTrigger);
-  // Mounts older settled threads matching the mention, which shells may leave out.
-  useThreadSearch(isPathTrigger ? [environmentId] : [], pathTriggerQuery, { titlesOnly: true });
+  // Mounts older settled threads matching the mention, here and on linked machines, which shells
+  // may leave out.
+  useThreadSearch(
+    isPathTrigger ? [environmentId, ...linkedEnvironments.keys()] : [],
+    pathTriggerQuery,
+    { titlesOnly: true },
+  );
   // The user's machines feed `@` machine matches; the catalog summary is cheap and stable.
   const environmentIdentities = useEnvironmentIdentities();
   const environmentMachines = useEnvironmentMachines();
@@ -134,11 +139,14 @@ export function useComposerMenuItems({
     ...identity,
     machine: environmentMachines.get(identity.environmentId) ?? ("server" as const),
   }));
-  const workspaceEntries = useComposerPathSearch({
-    environmentId,
-    cwd: isPathTrigger ? gitCwd : null,
-    query: isPathTrigger ? pathTriggerQuery : null,
-  });
+  const workspaceEntries = useComposerPathSearch(
+    {
+      environmentId,
+      cwd: isPathTrigger ? gitCwd : null,
+      query: isPathTrigger ? pathTriggerQuery : null,
+    },
+    t,
+  );
 
   const pullRequestListTargets =
     composerTriggerKind !== "pull-request" ||
@@ -202,21 +210,28 @@ export function useComposerMenuItems({
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
       return [
-        ...matchComposerThreadItems({
-          shells: environmentThreadShells,
-          environmentId,
-          linkedEnvironments,
-          excludeThreadId: activeThreadId,
-          query: composerTrigger.query,
-          now,
-        }),
+        ...matchComposerThreadItems(
+          {
+            shells: environmentThreadShells,
+            environmentId,
+            linkedEnvironments,
+            excludeThreadId: activeThreadId,
+            query: composerTrigger.query,
+            now,
+          },
+          t,
+        ),
         // An answer to an agent's question carries thread links, not machines.
         ...(questionAttachmentTarget === null && offersMachines
-          ? matchComposerEnvironmentItems({
-              environments: mentionableEnvironments,
-              environmentId,
-              query: composerTrigger.query,
-            })
+          ? matchComposerEnvironmentItems(
+              {
+                environments: mentionableEnvironments,
+                linkedEnvironments,
+                environmentId,
+                query: composerTrigger.query,
+              },
+              t,
+            )
           : []),
         ...matchComposerModelItems({
           instanceEntries: modelMentions.instanceEntries,
@@ -229,8 +244,10 @@ export function useComposerMenuItems({
           path: entry.path,
           pathKind: entry.kind,
           searchTarget: workspaceEntries.searchedTarget,
-          label: basenameOfPath(entry.path),
-          description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
+          label: basenameOfPath(entry.path).normalize("NFC"),
+          description: entry.path
+            .slice(0, Math.max(0, entry.path.lastIndexOf("/")))
+            .normalize("NFC"),
         })),
       ];
     }

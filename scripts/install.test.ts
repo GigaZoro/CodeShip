@@ -766,3 +766,88 @@ it.runIf(isDarwinHost || isLinuxHost)(
   "restores a damaged same-version install from the verified archive",
   () => verifyBundledRuntimeRepair(),
 );
+
+// regression: #38234
+describe.runIf(
+  isLinuxHost || (isDarwinHost && HostProcess.Architecture.defaultValue() === "arm64"),
+)("concurrent installers", () => {
+  it("publishes one runtime without nesting the other install's staging directory", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-concurrent-"));
+    const version = "1.2.3";
+    const stem = `t3-${version}-${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`;
+    const archiveName = `${stem}.tar.gz`;
+    const target = NodePath.join(root, "home/runtime/versions", version);
+    const waiting: NodeHttp.ServerResponse[] = [];
+    let archiveRequests = 0;
+    const server = NodeHttp.createServer();
+    try {
+      await NodeFSP.mkdir(NodePath.join(root, stem));
+      await NodeFSP.writeFile(NodePath.join(root, stem, "t3"), "#!/bin/sh\necho 't3 v1.2.3'\n", {
+        mode: 0o755,
+      });
+      const archivePath = NodePath.join(root, archiveName);
+      NodeChildProcess.execFileSync("tar", ["-czf", archivePath, "-C", root, stem]);
+      const archive = await NodeFSP.readFile(archivePath);
+      const digest = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+      server.on("request", (request, response) => {
+        if (request.url?.startsWith("/ready/")) {
+          waiting.push(response);
+          if (waiting.length === 2) {
+            for (const ready of waiting) ready.end("go");
+          }
+        } else {
+          if (request.url?.endsWith(archiveName)) archiveRequests++;
+          response.end(
+            request.url?.endsWith("/SHA256SUMS") ? `${digest}  ${archiveName}\n` : archive,
+          );
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+      const origin = `http://127.0.0.1:${address.port}`;
+      // Release both installer processes together, before either can claim the runtime.
+      const install = (id: string) =>
+        new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+          const child = NodeChildProcess.spawn(
+            "sh",
+            [
+              "-c",
+              'curl -fsS "$1/ready/$2" >/dev/null && exec sh "$3"',
+              "concurrent-installer",
+              origin,
+              id,
+              NodePath.join(import.meta.dirname, "install.sh"),
+            ],
+            {
+              env: {
+                ...process.env,
+                HOME: root,
+                T3CODE_VERSION: version,
+                T3CODE_HOME: NodePath.join(root, "home"),
+                T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin", id),
+                T3CODE_RELEASE_BASE_URL: origin,
+              },
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          let output = "";
+          child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+          child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+          child.on("error", reject);
+          child.on("close", (code) => resolve({ code, output }));
+        });
+      const results = await Promise.all([install("first"), install("second")]);
+      for (const result of results) expect(result.code, result.output).toBe(0);
+      expect(archiveRequests).toBe(1);
+      expect(
+        (await NodeFSP.readdir(target)).filter((name) => name.startsWith(".staging-")),
+        "concurrent installs must not leave a nested runtime",
+      ).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
+});

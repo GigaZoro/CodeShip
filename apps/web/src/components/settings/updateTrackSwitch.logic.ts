@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { t } from "~/i18n";
 import type { DesktopBridge, DesktopUpdateChannel, DesktopUpdateState } from "@t3tools/contracts";
 import { acceptsTrackSwitchRelease } from "@t3tools/shared/cliRelease";
@@ -29,7 +30,10 @@ export async function prepareLocalTrackSwitch(
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : t("The update track did not change."),
+      message:
+        error instanceof Error
+          ? (thrownErrorMessage(error) ?? error.message)
+          : t("The update track did not change."),
     };
   }
   if (!input.reinstall) return { ok: true, local: null };

@@ -260,7 +260,7 @@ syncBuiltinESMExports();
           const options = {
             cwd: root,
             env: {
-              PATH: process.env.PATH,
+              PATH: (yield* HostProcess.Environment).PATH,
               T3CODE_HOME: home,
               T3CODE_RELEASE_BASE_URL: release.baseUrl,
               TRACE: trace,
@@ -351,7 +351,7 @@ syncBuiltinESMExports();
           const invoke = run(process.execPath, [path.join(packageDir, "bin/t3.mjs"), "serve"], {
             cwd: root,
             env: {
-              PATH: process.env.PATH,
+              PATH: (yield* HostProcess.Environment).PATH,
               T3CODE_HOME: home,
               T3CODE_RELEASE_BASE_URL: release.baseUrl,
               FIXTURE_PROBE_LOG: probe,
@@ -433,7 +433,7 @@ printf 'ordinary launch\\n' >> "$TRACE"
           const invoke = run(process.execPath, [path.join(packageDir, "bin/t3.mjs"), "serve"], {
             cwd: root,
             env: {
-              PATH: process.env.PATH,
+              PATH: (yield* HostProcess.Environment).PATH,
               T3CODE_HOME: home,
               T3CODE_RELEASE_BASE_URL: release.baseUrl,
               TRACE: trace,
@@ -444,7 +444,7 @@ printf 'ordinary launch\\n' >> "$TRACE"
             const refused = yield* run(
               "sh",
               ["-c", runtimePromotion + '\nt3_runtime_ready "$1" "$2"', "sh", installed, VERSION],
-              { cwd: root, env: { PATH: process.env.PATH, TRACE: trace } },
+              { cwd: root, env: { PATH: (yield* HostProcess.Environment).PATH, TRACE: trace } },
             );
             assert.equal(refused.exitCode, 1, refused.stderr);
           } else {
@@ -470,7 +470,7 @@ printf 'ordinary launch\\n' >> "$TRACE"
             {
               cwd: root,
               env: {
-                PATH: process.env.PATH,
+                PATH: (yield* HostProcess.Environment).PATH,
                 T3CODE_HOME: home,
                 T3CODE_RELEASE_BASE_URL: release.baseUrl,
                 FIXTURE_PROBE_LOG: warmProbe,
@@ -516,7 +516,7 @@ printf 'ordinary launch\\n' >> "$TRACE"
               {
                 cwd: root,
                 env: {
-                  PATH: process.env.PATH,
+                  PATH: (yield* HostProcess.Environment).PATH,
                   T3CODE_HOME: home,
                   T3CODE_RELEASE_BASE_URL: release.baseUrl,
                   FIXTURE_PROBE_VERSION: probeVersion,
@@ -559,7 +559,8 @@ printf 'ordinary launch\\n' >> "$TRACE"
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        // The launcher reports its real path; macOS tmpdir sits behind /var -> /private/var.
+        // macOS temp directories sit under /var, a link to /private/var, and the launcher
+        // reports the resolved path it runs from.
         const root = yield* fs.realPath(
           yield* fs.makeTempDirectoryScoped({ prefix: "t3-npm-launcher-test-" }),
         );
@@ -1037,7 +1038,7 @@ globalThis.fetch = () => { throw new Error("offline fixture"); };
         const result = yield* run(
           process.execPath,
           ["--import", preload, path.join(packageDir, "bin/t3.mjs"), "serve"],
-          { cwd: root, env: { PATH: process.env.PATH, T3CODE_HOME: home } },
+          { cwd: root, env: { PATH: (yield* HostProcess.Environment).PATH, T3CODE_HOME: home } },
         );
         assert.equal(
           yield* fs.readFileString(path.join(root, "probe-result")),

@@ -306,7 +306,7 @@ const session = {
   updatedAt: now,
   lastError: null,
 };
-const completedAssistant: OrchestrationV2TurnItem = {
+const completedAssistant: Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> = {
   ...commandItem,
   type: "assistant_message",
   messageId: MessageId.make("assistant"),
@@ -371,10 +371,13 @@ describe("item capabilities atom", () => {
           return index === 99 ? itemId : TurnItemId.make(`history-${index}`);
         },
       }));
+      const { messageId: _messageId, ...streamingBase } = completedAssistant;
       const streaming: OrchestrationV2TurnItem = {
-        ...completedAssistant,
+        ...streamingBase,
+        ...(type === "assistant_message"
+          ? { type, messageId: completedAssistant.messageId }
+          : { type }),
         id: TurnItemId.make("streaming"),
-        type,
         text: "First",
         streaming: true,
         status: "running",

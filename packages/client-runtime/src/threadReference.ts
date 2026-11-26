@@ -1,3 +1,4 @@
+import { msg, t } from "@t3tools/shared/i18n";
 import type {
   ComposerContextClipboardFragment,
   ScopedThreadRef,
@@ -7,7 +8,6 @@ import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 import { hostedThreadLink } from "@t3tools/shared/threadLinks";
 
 import { resolveThreadCurrentPullRequestLink } from "./threadPullRequests.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export interface ThreadReferenceCopyTarget {
   readonly kind: "pull-request" | "thread";
@@ -30,6 +30,7 @@ export function threadChipCopyTarget(
   threadRef: ScopedThreadRef,
   title: string,
   hostedAppUrl?: string,
+  resolve: typeof t = t,
 ): ThreadReferenceCopyTarget {
   const record = threadContextRecord(threadRef, title);
   return {
@@ -37,21 +38,24 @@ export function threadChipCopyTarget(
     value: hostedThreadLink(threadRef, hostedAppUrl),
     description: record.title,
     fragment: { version: 1, source: { environmentId: threadRef.environmentId }, records: [record] },
-    clipboardTarget: t("thread"),
-    successTitle: t("Thread copied"),
-    failureTitle: t("Failed to copy thread"),
+    clipboardTarget: "thread",
+    successTitle: resolve(msg("Thread copied")),
+    failureTitle: resolve(msg("Failed to copy thread")),
   };
 }
 
-export function resolveThreadReferenceCopyTarget(input: {
-  readonly threadRef: ScopedThreadRef;
-  readonly title: string;
-  /** Undefined means no PR panel; null means its URL is not available yet. */
-  readonly openPanelPullRequestUrl?: string | null | undefined;
-  readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
-  readonly linkedPullRequestUrl?: string | null;
-  readonly hostedAppUrl?: string;
-}): ThreadReferenceCopyTarget | null {
+export function resolveThreadReferenceCopyTarget(
+  input: {
+    readonly threadRef: ScopedThreadRef;
+    readonly title: string;
+    /** Undefined means no PR panel; null means its URL is not available yet. */
+    readonly openPanelPullRequestUrl?: string | null | undefined;
+    readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
+    readonly linkedPullRequestUrl?: string | null;
+    readonly hostedAppUrl?: string;
+  },
+  resolve: typeof t = t,
+): ThreadReferenceCopyTarget | null {
   if (input.openPanelPullRequestUrl === null) return null;
   const pullRequestUrl =
     input.openPanelPullRequestUrl ??
@@ -62,9 +66,9 @@ export function resolveThreadReferenceCopyTarget(input: {
         kind: "pull-request",
         value: pullRequestUrl,
         description: pullRequestUrl,
-        clipboardTarget: t("pull request link"),
-        successTitle: t("PR link copied"),
-        failureTitle: t("Failed to copy PR link"),
+        clipboardTarget: "pull request link",
+        successTitle: resolve(msg("PR link copied")),
+        failureTitle: resolve(msg("Failed to copy PR link")),
       }
-    : threadChipCopyTarget(input.threadRef, input.title, input.hostedAppUrl);
+    : threadChipCopyTarget(input.threadRef, input.title, input.hostedAppUrl, resolve);
 }

@@ -1,5 +1,6 @@
-import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 import { getActiveLanguage, t } from "@t3tools/shared/i18n";
+import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
+
 import type { DesktopUpdateState, EnvironmentStartup } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,7 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import type { BackendStartupFailure } from "../backend/DesktopBackendManager.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -297,12 +299,15 @@ export const listen: Effect.Effect<
     switch (action) {
       case "update": {
         if (current._tag !== "Update") return;
-        const state = yield* updates.getState;
-        if (state.downloadedVersion === null) {
+        let { downloadedVersion } = yield* updates.getState;
+        if (downloadedVersion === null) {
+          // The download re-checks first, so it can fetch a newer build than the one offered.
           const download = yield* updates.download;
           if (!download.completed) return;
+          downloadedVersion = download.state.downloadedVersion;
         }
-        yield* updates.installPrepared(current.version);
+        if (downloadedVersion === null) return;
+        yield* updates.installPrepared(downloadedVersion);
         return;
       }
       case "reinstall":

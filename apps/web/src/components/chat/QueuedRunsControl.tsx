@@ -1,17 +1,24 @@
-import { t, tn } from "~/i18n";
+import { t, msg, tn } from "~/i18n";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { isSlashCommand } from "@t3tools/shared/composerTrigger";
 import {
   isAttachmentOnlyBootstrapPrompt,
   replaceComposerContextReferences,
 } from "@t3tools/shared/composerContextReferences";
-import type {
-  ChatAttachment as ContractChatAttachment,
-  EnvironmentId,
-  MessageId,
-  RunId,
-  ThreadId,
+import { composerFileLinksToPlainText } from "@t3tools/shared/composerInlineTokens";
+import {
+  parseGoalCommand,
+  type ChatAttachment as ContractChatAttachment,
+  type EnvironmentId,
+  type MessageId,
+  type RunId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
@@ -25,6 +32,8 @@ import {
   XIcon,
 } from "lucide-react";
 import * as DateTime from "effect/DateTime";
+
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 
 import { useAssetUrls } from "../../assets/assetUrls";
@@ -37,7 +46,9 @@ import { isImageAttachment, type ChatImageAttachment, type ChatMessage } from ".
 import { cn, newMessageId } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
 import { toastManager } from "../ui/toast";
+
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { GuestMessageName } from "./guestMessageStyle";
 import { TimelineRowTimestamp } from "./TimelineRowParts";
@@ -60,10 +71,6 @@ export interface QueuedRunsControlHandle {
 }
 
 type ThreadQueueProjection = Parameters<typeof deriveThreadQueueWorkflowState>[0];
-
-function withShortcut(text: string, shortcut: string | null | undefined): string {
-  return shortcut ? t("{text} ({shortcut})", { text, shortcut }) : text;
-}
 
 function queuedImageResources(projection: ThreadQueueProjection | undefined) {
   if (!projection) return [];
@@ -115,7 +122,7 @@ export function QueuedRunsControl({
     props.environmentId,
     queuedImageAttachmentResources,
   );
-  const workflow = projection ? deriveThreadQueueWorkflowState(projection) : null;
+  const workflow = projection ? deriveThreadQueueWorkflowState(projection, t) : null;
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
@@ -176,19 +183,30 @@ export function QueuedRunsControl({
     if (!canSendRun(freshContext) || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
-    if (workflow?.canSendNow) {
-      await resume({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, runId: queuedRunId },
-      });
-    } else if (activeRun !== null) {
-      await promote({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
-      });
-    }
+    const result = workflow?.canSendNow
+      ? await resume({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, runId: queuedRunId },
+        })
+      : activeRun !== null
+        ? await promote({
+            environmentId: props.environmentId,
+            input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
+          })
+        : null;
     steerInFlightRef.current = false;
     setBusyRunId(null);
+    if (result?._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: t(msg("Could not send queued message")),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error, t) ?? error.message)
+            : t(msg("An error occurred.")),
+      });
+    }
   };
 
   useImperativeHandle(ref, () => ({
@@ -300,9 +318,14 @@ export function QueuedRunsControl({
           const previewText = isAttachmentOnlyBootstrapPrompt(item.text)
             ? ""
             : assistantCitationsToPlainText(
-                replaceComposerContextReferences(item.text, (reference) => reference.label),
+                composerFileLinksToPlainText(
+                  replaceComposerContextReferences(item.text, (reference) => reference.label),
+                ),
               ).trim();
           const isEditing = item.runId !== null && item.runId === props.editingRunId;
+          // The server decides on the agent's text, and a goal command can stop the turn.
+          const sentText = { text: item.message?.text ?? item.text, attachments: item.attachments };
+          const movesCommandFirst = isSlashCommand(sentText) && parseGoalCommand(sentText) === null;
           return (
             <li
               key={item.key}
@@ -327,33 +350,48 @@ export function QueuedRunsControl({
               >
                 {canSendRun(item.freshContext) && !isEditing ? (
                   <>
-                    <Tooltip>
-                      <TooltipTrigger render={<span className="flex shrink-0" />}>
-                        <Button
-                          size="xs"
-                          variant="ghost-muted"
-                          disabled={item.runId === null || busyRunId !== null}
-                          onClick={() => {
-                            if (item.runId !== null) {
-                              void sendQueuedMessage(item.runId);
-                            }
-                          }}
-                        >
-                          <ArrowUpIcon />
-                          {t("Send now")}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipPopup>
-                        {withShortcut(
-                          workflow?.canSendNow
+                    <SharedTooltipTrigger
+                      render={<span className="flex shrink-0" />}
+                      label={
+                        item.serverIndex === 0 && props.steerShortcutLabel
+                          ? workflow?.canSendNow
+                            ? t("Start a turn with this message ({shortcut})", {
+                                shortcut: props.steerShortcutLabel,
+                              })
+                            : workflow?.promoteSkipsCompaction
+                              ? t("Skip compaction and send this message ({shortcut})", {
+                                  shortcut: props.steerShortcutLabel,
+                                })
+                              : movesCommandFirst
+                                ? t("Move this command to the front of the queue ({shortcut})", {
+                                    shortcut: props.steerShortcutLabel,
+                                  })
+                                : t("Send into the current turn ({shortcut})", {
+                                    shortcut: props.steerShortcutLabel,
+                                  })
+                          : workflow?.canSendNow
                             ? t("Start a turn with this message")
                             : workflow?.promoteSkipsCompaction
                               ? t("Skip compaction and send this message")
-                              : t("Send into the current turn"),
-                          item.serverIndex === 0 ? props.steerShortcutLabel : null,
-                        )}
-                      </TooltipPopup>
-                    </Tooltip>
+                              : movesCommandFirst
+                                ? t("Move this command to the front of the queue")
+                                : t("Send into the current turn")
+                      }
+                    >
+                      <Button
+                        size="xs"
+                        variant="ghost-muted"
+                        disabled={item.runId === null || busyRunId !== null}
+                        onClick={() => {
+                          if (item.runId !== null) {
+                            void sendQueuedMessage(item.runId);
+                          }
+                        }}
+                      >
+                        <ArrowUpIcon />
+                        {t("Send now")}
+                      </Button>
+                    </SharedTooltipTrigger>
                   </>
                 ) : null}
                 {item.pending ? (
@@ -405,30 +443,29 @@ export function QueuedRunsControl({
                       </TooltipTrigger>
                       <TooltipPopup>
                         {props.editBlockedReason ??
-                          withShortcut(
-                            t("Edit in the composer"),
-                            item.serverIndex === queued.length - 1 ? props.editShortcutLabel : null,
-                          )}
+                          (item.serverIndex === queued.length - 1 && props.editShortcutLabel
+                            ? t("Edit in the composer ({shortcut})", {
+                                shortcut: props.editShortcutLabel,
+                              })
+                            : t("Edit in the composer"))}
                       </TooltipPopup>
                     </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button
-                            size="icon-xs"
-                            variant="ghost-muted"
-                            aria-label={t("Remove queued message")}
-                            disabled={item.runId === null || busyRunId !== null}
-                            onClick={() => {
-                              if (item.runId !== null) void remove(item.runId);
-                            }}
-                          />
-                        }
-                      >
-                        <XIcon />
-                      </TooltipTrigger>
-                      <TooltipPopup>{t("Remove from queue")}</TooltipPopup>
-                    </Tooltip>
+                    <SharedTooltipTrigger
+                      render={
+                        <Button
+                          size="icon-xs"
+                          variant="ghost-muted"
+                          aria-label={t("Remove queued message")}
+                          disabled={item.runId === null || busyRunId !== null}
+                          onClick={() => {
+                            if (item.runId !== null) void remove(item.runId);
+                          }}
+                        />
+                      }
+                      label={<>{t("Remove from queue")}</>}
+                    >
+                      <XIcon />
+                    </SharedTooltipTrigger>
                   </>
                 )}
               </QueuedMessage>
@@ -489,18 +526,20 @@ function QueuedMessage(props: {
   const linkedSenderEnvironment = useEnvironment(
     props.message?.linkedSender?.environmentId ?? null,
   );
+  const senderTitle = senderShell?.title.trim() || props.message?.linkedSender?.title.trim();
   const fold =
     attribution === "automation"
       ? {
           icon: CalendarClockIcon,
           label: t("Automation"),
+          fitLabel: true,
           summary: taskTitle ?? props.previewText.split(/\r?\n/, 1)[0] ?? "",
         }
       : attribution === "agent"
         ? {
             icon: MessagesSquareIcon,
-            label:
-              senderShell?.title.trim() || props.message?.linkedSender?.title.trim() || t("Agent"),
+            label: senderTitle || t("Agent"),
+            fitLabel: !senderTitle,
             summary: props.previewText.split(/\r?\n/).find((line) => line.trim()) ?? "",
           }
         : null;
@@ -531,6 +570,7 @@ function QueuedMessage(props: {
           <FoldedMessageHeader
             icon={fold.icon}
             label={fold.label}
+            fitLabel={fold.fitLabel}
             summary={fold.summary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}

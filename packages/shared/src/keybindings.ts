@@ -74,6 +74,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+d", command: "composer.dictation", when: "!terminalFocus" },
   { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
   { key: "mod+w", command: "terminal.close", when: "terminalFocus" },
+  { key: "ctrl+alt+[", command: "terminal.previous", when: "terminalFocus && !isMac" },
+  { key: "ctrl+alt+]", command: "terminal.next", when: "terminalFocus && !isMac" },
   { key: "mod+w", command: "rightPanel.close", when: "!terminalFocus" },
   { key: "mod+shift+t", command: "view.reopenClosed" },
   { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
@@ -135,6 +137,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+[", command: "thread.previous" },
   { key: "mod+shift+]", command: "thread.next" },
   { key: "mod+shift+u", command: "thread.nextNeedsYou", when: "!terminalFocus" },
+  { key: "cmd+shift+[", command: "terminal.previous", when: "terminalFocus && isMac" },
+  { key: "cmd+shift+]", command: "terminal.next", when: "terminalFocus && isMac" },
   { key: "mod+shift+c", command: "thread.copyReference", when: "!terminalFocus" },
   { key: "mod+;", command: "thread.sideChat", when: "!terminalFocus" },
   { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" },
@@ -183,8 +187,10 @@ export function parseKeybindingShortcut(value: string): KeybindingShortcut | nul
     trailingEmptyCount += 1;
     tokens.pop();
   }
-  if (trailingEmptyCount > 0) {
+  if (trailingEmptyCount === 2) {
     tokens.push("+");
+  } else if (trailingEmptyCount !== 0) {
+    return null;
   }
   if (tokens.some((token) => token.length === 0)) {
     return null;

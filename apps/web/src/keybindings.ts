@@ -79,6 +79,7 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
     isWeb: !isElectron,
     isDesktop: isElectron,
     editableFocus: false,
+    isMac: isMacPlatform(resolvePlatform(options)),
     ...options?.context,
   };
 }
@@ -88,7 +89,7 @@ function evaluateWhenNode(node: KeybindingWhenNode, context: ShortcutMatchContex
     case "identifier":
       if (node.name === "true") return true;
       if (node.name === "false") return false;
-      return Boolean(context[node.name]);
+      return Object.hasOwn(context, node.name) && Boolean(context[node.name]);
     case "not":
       return !evaluateWhenNode(node.node, context);
     case "and":
@@ -122,7 +123,10 @@ export function shortcutConflictKey(
   ].join("|");
 }
 
-function shortcutForContext(binding: ResolvedKeybindingRule, context: ShortcutMatchContext) {
+export function shortcutForContext(
+  binding: ResolvedKeybindingRule,
+  context: Partial<ShortcutMatchContext>,
+) {
   const shortcut = binding.shortcut;
   // Resolve persisted Mod+Enter against send preference without rewriting saved shortcuts.
   if (
@@ -247,28 +251,30 @@ export function formatShortcutKeyLabel(key: string): string {
   return key.slice(0, 1).toUpperCase() + key.slice(1);
 }
 
+export function formatShortcutKeyParts(
+  shortcut: KeybindingShortcut,
+  platform = navigator.platform,
+): readonly string[] {
+  const useMetaForMod = isMacPlatform(platform);
+  const showCtrl = shortcut.ctrlKey || (shortcut.modKey && !useMetaForMod);
+  const showAlt = shortcut.altKey;
+  const showShift = shortcut.shiftKey;
+  const showMeta = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
+  const parts: string[] = [];
+  if (showCtrl) parts.push(useMetaForMod ? "\u2303" : "Ctrl");
+  if (showAlt) parts.push(useMetaForMod ? "\u2325" : "Alt");
+  if (showShift) parts.push(useMetaForMod ? "\u21e7" : "Shift");
+  if (showMeta) parts.push(useMetaForMod ? "\u2318" : "Meta");
+  parts.push(formatShortcutKeyLabel(shortcut.key));
+  return parts;
+}
+
 export function formatShortcutLabel(
   shortcut: KeybindingShortcut,
   platform = navigator.platform,
 ): string {
-  const keyLabel = formatShortcutKeyLabel(shortcut.key);
-  const useMetaForMod = isMacPlatform(platform);
-  const showMeta = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
-  const showCtrl = shortcut.ctrlKey || (shortcut.modKey && !useMetaForMod);
-  const showAlt = shortcut.altKey;
-  const showShift = shortcut.shiftKey;
-
-  if (useMetaForMod) {
-    return `${showCtrl ? "\u2303" : ""}${showAlt ? "\u2325" : ""}${showShift ? "\u21e7" : ""}${showMeta ? "\u2318" : ""}${keyLabel}`;
-  }
-
-  const parts: string[] = [];
-  if (showCtrl) parts.push("Ctrl");
-  if (showAlt) parts.push("Alt");
-  if (showShift) parts.push("Shift");
-  if (showMeta) parts.push("Meta");
-  parts.push(keyLabel);
-  return parts.join("+");
+  const parts = formatShortcutKeyParts(shortcut, platform);
+  return isMacPlatform(platform) ? parts.join("") : parts.join("+");
 }
 
 export function shortcutLabelForCommand(
@@ -383,6 +389,15 @@ export function isTerminalNewShortcut(
   return matchesCommandShortcut(event, keybindings, "terminal.new", options);
 }
 
+export function isTerminalCycleShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  const command = resolveShortcutCommand(event, keybindings, options);
+  return command === "terminal.previous" || command === "terminal.next";
+}
+
 export function isTerminalCloseShortcut(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
@@ -397,6 +412,16 @@ export function isDiffToggleShortcut(
   options?: ShortcutMatchOptions,
 ): boolean {
   return matchesCommandShortcut(event, keybindings, "diff.toggle", options);
+}
+
+export function isSidebarToggleShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  // A focused terminal owns Ctrl chords, such as tmux's Ctrl+B prefix; Cmd never reaches it.
+  if (event.ctrlKey && options?.context?.terminalFocus) return false;
+  return matchesCommandShortcut(event, keybindings, "sidebar.toggle", options);
 }
 
 export function isOpenFavoriteEditorShortcut(

@@ -1,7 +1,10 @@
+import { getFormattingLocale, t, tn } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 /* oxlint-disable react/no-array-index-key -- Spreadsheet rows and columns retain their source positions. */
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import type { OfficePreviewKind } from "@t3tools/shared/filePreview";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import VirtualTablePreview from "./VirtualTablePreview";
@@ -16,7 +19,7 @@ import {
 
 import { FileSurfaceAction, FileSurfaceLoading, FileSurfaceNotice } from "./fileSurfaceChrome";
 import { OFFICE_PREVIEW_MAX_BYTES, type OfficeWorkerResult } from "./officePreviewProtocol";
-import { t, tn } from "~/i18n";
+import { previewFailureText } from "./previewFailureMessages";
 
 const DocumentPages = lazy(() => import("./DocumentPages"));
 const NotebookPreview = lazy(() => import("./NotebookPreview"));
@@ -115,7 +118,7 @@ function ExtendedOfficeViewer(props: {
     worker.addEventListener("message", (event: MessageEvent<OfficeWorkerResult>) => {
       if (controller.signal.aborted) return;
       const result = event.data;
-      if (result.type === "error") fail(result.message);
+      if (result.type === "error") fail(previewFailureText(result));
       else if (result.type === "document") {
         if (timerRef.current) clearTimeout(timerRef.current);
         setDocument(result);
@@ -146,7 +149,7 @@ function ExtendedOfficeViewer(props: {
         }
       })
       .catch((cause: unknown) =>
-        fail(cause instanceof Error ? cause.message : t("Could not read this file.")),
+        fail(thrownErrorMessage(cause, t) ?? t("Could not read this file.")),
       );
     return () => {
       controller.abort();
@@ -178,30 +181,43 @@ function ExtendedOfficeViewer(props: {
   const documentPage = previewDocument?.pages[page];
   const navigation = workbook ? "sheet" : (previewDocument?.navigation ?? "slide");
   const documentCount = previewDocument?.pages.length ?? 0;
+  const sheetName = (index: number) =>
+    workbook?.sheets[index]?.name ?? t("Sheet {number}", { number: String(index + 1) });
+  const pageTitle = (index: number) =>
+    previewDocument?.pages[index]?.title ??
+    (navigation === "chapter"
+      ? t("Chapter {number}", { number: String(index + 1) })
+      : t("Page {number}", { number: String(index + 1) }));
   const documentDetails =
     navigation === "chapter"
-      ? t("Chapter {page} of {total}", { page: page + 1, total: documentCount })
+      ? t("Chapter {page} of {count}", { page: String(page + 1), count: String(documentCount) })
       : navigation === "slide"
         ? tn(documentCount, "{count} slide", "{count} slides")
         : navigation === "sheet"
           ? tn(documentCount, "{count} sheet", "{count} sheets")
           : tn(documentCount, "{count} page", "{count} pages");
-  const sizeLabel =
-    fileSize === undefined ? null : fileSize === 0 ? t("0 bytes") : formatAttachmentSize(fileSize);
+  const previousLabel = {
+    sheet: t("Previous sheet"),
+    page: t("Previous page"),
+    slide: t("Previous slide"),
+    chapter: t("Previous chapter"),
+  }[navigation];
+  const nextLabel = {
+    sheet: t("Next sheet"),
+    page: t("Next page"),
+    slide: t("Next slide"),
+    chapter: t("Next chapter"),
+  }[navigation];
+  const sizeDetails =
+    fileSize !== undefined
+      ? ` · ${fileSize === 0 ? t("0 bytes") : formatAttachmentSize(fileSize, t)}`
+      : "";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {count > 0 ? (
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3 text-xs">
           <FileSurfaceAction
-            label={
-              navigation === "slide"
-                ? t("Previous slide")
-                : navigation === "page"
-                  ? t("Previous page")
-                  : navigation === "sheet"
-                    ? t("Previous sheet")
-                    : t("Previous chapter")
-            }
+            label={previousLabel}
             disabled={page === 0}
             onPress={() => selectPage(page - 1)}
           >
@@ -216,12 +232,12 @@ function ExtendedOfficeViewer(props: {
                 }}
               >
                 <SelectTrigger aria-label={t("Sheet")} size="xs">
-                  <SelectValue>{sheet?.name}</SelectValue>
+                  <SelectValue>{sheet ? sheetName(page) : undefined}</SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
                   {workbook.sheets.map((item, index) => (
                     <SelectItem key={index} value={index}>
-                      {item.name}
+                      {item.name ?? sheetName(index)}
                     </SelectItem>
                   ))}
                 </SelectPopup>
@@ -236,12 +252,12 @@ function ExtendedOfficeViewer(props: {
                 }}
               >
                 <SelectTrigger aria-label={t("Chapter")} size="xs">
-                  <SelectValue>{documentPage?.title}</SelectValue>
+                  <SelectValue>{documentPage ? pageTitle(page) : undefined}</SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
                   {previewDocument.pages.map((item, index) => (
                     <SelectItem key={index} value={index}>
-                      {item.title}
+                      {item.title ?? pageTitle(index)}
                     </SelectItem>
                   ))}
                 </SelectPopup>
@@ -250,20 +266,12 @@ function ExtendedOfficeViewer(props: {
           ) : (
             <span className="flex-1 text-center tabular-nums" aria-live="polite">
               {navigation === "slide"
-                ? t("Slide {page} of {total}", { page: page + 1, total: count })
-                : t("Page {page} of {total}", { page: page + 1, total: count })}
+                ? t("Slide {page} of {count}", { page: String(page + 1), count: String(count) })
+                : t("Page {page} of {count}", { page: String(page + 1), count: String(count) })}
             </span>
           )}
           <FileSurfaceAction
-            label={
-              navigation === "slide"
-                ? t("Next slide")
-                : navigation === "page"
-                  ? t("Next page")
-                  : navigation === "sheet"
-                    ? t("Next sheet")
-                    : t("Next chapter")
-            }
+            label={nextLabel}
             disabled={page + 1 === count}
             onPress={() => selectPage(page + 1)}
           >
@@ -276,12 +284,15 @@ function ExtendedOfficeViewer(props: {
           className="flex min-h-10 shrink-0 flex-wrap items-center gap-x-1 border-b border-border/60 px-3 py-2 text-xs text-muted-foreground tabular-nums"
           role="status"
         >
-          {[
-            t("Sheet {page} of {total}", { page: page + 1, total: count }),
-            tn(sheet.rowCount, "{count} row", "{count} rows"),
-            tn(sheet.columns, "{count} column", "{count} columns"),
-            ...(sizeLabel === null ? [] : [sizeLabel]),
-          ].join(" · ")}
+          {t("Sheet {page} of {count}", { page: String(page + 1), count: String(count) })} ·{" "}
+          {tn(sheet.rowCount, "{formatted} row", "{formatted} rows", {
+            formatted: sheet.rowCount.toLocaleString(getFormattingLocale()),
+          })}{" "}
+          ·{" "}
+          {tn(sheet.columns, "{formatted} column", "{formatted} columns", {
+            formatted: sheet.columns.toLocaleString(getFormattingLocale()),
+          })}
+          {sizeDetails}
         </div>
       ) : null}
       {documentPage ? (
@@ -294,29 +305,30 @@ function ExtendedOfficeViewer(props: {
           <Suspense fallback={<FileSurfaceLoading />}>
             <DocumentPages
               html={documentPage.html}
-              name={`${props.name}: ${documentPage.title}`}
-              details={sizeLabel === null ? documentDetails : `${documentDetails} · ${sizeLabel}`}
+              name={`${props.name}: ${pageTitle(page)}`}
+              details={`${documentDetails}${sizeDetails}`}
             />
           </Suspense>
         </>
       ) : sheet ? (
         <>
           <FileSurfaceNotice>
-            {t("Cell values only. Charts, images, and formatting are not shown.")}
             {sheet.truncated
-              ? ` ${
-                  props.kind === "ods"
-                    ? t("Limited to 500 rows and 50 columns.")
-                    : t("Preview limited to 250,000 rows, 1,024 columns, and bounded cell text.")
-                }`
-              : ""}
+              ? props.kind === "ods"
+                ? t(
+                    "Cell values only. Charts, images, and formatting are not shown. Limited to 500 rows and 50 columns.",
+                  )
+                : t(
+                    "Cell values only. Charts, images, and formatting are not shown. Preview limited to 250,000 rows, 1,024 columns, and bounded cell text.",
+                  )
+              : t("Cell values only. Charts, images, and formatting are not shown.")}
           </FileSurfaceNotice>
           {sheet.rowCount === 0 ? (
             <p className="p-6 text-xs text-muted-foreground">{t("This sheet is empty.")}</p>
           ) : (
             <VirtualTablePreview
               key={page}
-              name={`${props.name}: ${sheet.name}`}
+              name={`${props.name}: ${sheetName(page)}`}
               count={sheet.rowCount}
               columns={sheet.columns}
               getRows={(index) => (index === 0 ? sheet.rows : sheetPages.get(`${page}:${index}`))}

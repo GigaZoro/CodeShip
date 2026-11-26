@@ -1,19 +1,21 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
 import {
   type EnvironmentId,
   type ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+
 import { memo, useRef, useState, useSyncExternalStore } from "react";
 import { InfoIcon, XIcon } from "lucide-react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button, InlineButton } from "../ui/button";
+
 import { formatProviderDriverKindLabel } from "../../providerModels";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { RefreshIcon } from "../ui/refresh-icon";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 function getIncompatibleVersion(status: ServerProvider) {
   const compatibility = status.compatibilityAdvisory;
@@ -99,7 +101,7 @@ export function hasProviderSetup(status: ServerProvider): boolean {
   );
 }
 
-export function getProviderStatusMessage(status: ServerProvider): string {
+export function getProviderStatusMessage(status: ServerProvider, resolve: typeof t = t): string {
   if (
     status.auth.status !== "unauthenticated" &&
     status.compatibilityAdvisory?.status === "broken" &&
@@ -110,23 +112,23 @@ export function getProviderStatusMessage(status: ServerProvider): string {
   if (status.message) return status.message;
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
   if (!status.installed && hasProviderSetup(status)) {
-    return t("Open provider setup to install {provider} on this environment.", {
+    return resolve(msg("Open provider setup to install {provider} on this environment."), {
       provider: formatProviderDriverKindLabel(status.driver),
     });
   }
   if (status.auth.status === "unauthenticated") {
     if (hasProviderSetup(status)) {
       return status.driver === "antigravity"
-        ? t("Open provider setup to sign in with Google.")
-        : t("Open provider setup to sign in.");
+        ? resolve(msg("Open provider setup to sign in with Google."))
+        : resolve(msg("Open provider setup to sign in."));
     }
-    return t("Sign in via the CLI to authenticate again.");
+    return resolve(msg("Sign in via the CLI to authenticate again."));
   }
   return status.status === "ready"
-    ? t("No models are available for this provider.")
+    ? resolve(msg("No models are available for this provider."))
     : status.status === "error"
-      ? t("{provider} provider is unavailable.", { provider: providerName })
-      : t("{provider} provider has limited availability.", { provider: providerName });
+      ? resolve(msg("{provider} provider is unavailable."), { provider: providerName })
+      : resolve(msg("{provider} provider has limited availability."), { provider: providerName });
 }
 
 export const ProviderStatusBanner = memo(function ProviderStatusBanner({
@@ -182,7 +184,7 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
             version: status.version ?? "",
           })
       : t("{provider} provider status", { provider: providerName });
-  const message = incompatible?.message ?? getProviderStatusMessage(status);
+  const message = incompatible?.message ?? getProviderStatusMessage(status, t);
   const isWarning =
     incompatible?.status !== "broken" && (status.status === "warning" || incompatible !== null);
 
@@ -198,12 +200,13 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
         <AlertTitle>{title}</AlertTitle>
         <AlertDescription>
           <div className="flex flex-col gap-2">
-            <Tooltip>
-              <TooltipTrigger render={<div className="line-clamp-3" />}>{message}</TooltipTrigger>
-              <TooltipPopup side="top" className="whitespace-pre-wrap">
-                {message}
-              </TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={<div className="line-clamp-3" />}
+              label={message}
+              className="whitespace-pre-wrap"
+            >
+              {message}
+            </SharedTooltipTrigger>
             <div className="flex flex-wrap items-center justify-end gap-3">
               {onOpenProviderSetup && hasProviderSetup(status) ? (
                 <InlineButton onClick={() => onOpenProviderSetup(status.instanceId)}>
@@ -225,10 +228,15 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
         </AlertDescription>
         <AlertAction>
           <Button
-            aria-label={t("Dismiss {provider} provider {status}", {
-              provider: providerName,
-              status: status.status,
-            })}
+            aria-label={
+              status.status === "error"
+                ? t("Dismiss {provider} provider error", { provider: providerName })
+                : status.status === "warning"
+                  ? t("Dismiss {provider} provider warning", { provider: providerName })
+                  : status.status === "ready"
+                    ? t("Dismiss {provider} provider ready", { provider: providerName })
+                    : t("Dismiss {provider} provider disabled", { provider: providerName })
+            }
             onClick={onDismiss}
             size="icon-xs"
             variant="ghost-muted"

@@ -1,4 +1,5 @@
-import { getFormattingLocale, t, tx } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { getFormattingLocale, t, tx, msg } from "~/i18n";
 import type { EnvironmentId, SourceControlSignInPrompt } from "@t3tools/contracts";
 import {
   readHostCredentialSettings,
@@ -29,7 +30,7 @@ type SignInState =
 
 const failureMessage = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error);
 };
 
 const expiryTime = (expiresAt: number) =>
@@ -117,7 +118,11 @@ export function SourceControlAppSignInSettings({
   });
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     timeout: 1500,
-    target: t("sign-in code"),
+    target: {
+      target: "sign-in code",
+      unavailableMessage: msg("Clipboard API is unavailable while copying sign-in code."),
+      failureMessage: msg("Failed to copy sign-in code to the clipboard."),
+    },
   });
   const [state, setState] = useState<SignInState>({ status: "idle" });
 

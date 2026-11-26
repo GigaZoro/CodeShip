@@ -1,6 +1,7 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 
 import { ThreadRouteView } from "../components/ThreadRouteView";
+import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIndicator";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { retainThreadFindForRoute } from "../components/chat/threadFindStore";
 import { ThreadLinkPrompt } from "../components/promptLinks/ThreadLinkPrompt";
@@ -15,6 +16,7 @@ function ChatRouteLayout() {
         <ThreadLinkPrompt threadRef={threadTarget.threadRef} />
       ) : null}
       {threadTarget ? <ThreadRouteView target={threadTarget} /> : <Outlet />}
+      <GlobalVoiceInputIndicator />
     </>
   );
 }

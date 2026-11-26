@@ -1,8 +1,9 @@
+import { tn, t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
+
 import { Undo2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { t } from "~/i18n";
 import {
   threadUndoLabel,
   threadUndoNoticeSummary,
@@ -16,15 +17,29 @@ import { SidebarMenuItem, useSidebarVisibility } from "../ui/sidebar";
 import { toastManager } from "../ui/toast";
 
 /** Sits in the sidebar footer below the list's scroll area, so it never covers a thread. */
+function shortUndoSummary(
+  action: "Settled" | "Snoozed" | "Unpinned" | "Archived" | "Discarded",
+  count: number,
+): string {
+  switch (action) {
+    case "Settled":
+      return tn(count, "Settled", "Settled {count}");
+    case "Snoozed":
+      return tn(count, "Snoozed", "Snoozed {count}");
+    case "Unpinned":
+      return tn(count, "Unpinned", "Unpinned {count}");
+    case "Archived":
+      return tn(count, "Archived", "Archived {count}");
+    case "Discarded":
+      return tn(count, "Discarded", "Discarded {count}");
+  }
+}
+
 export function SidebarThreadUndoNotice() {
   const notice = useThreadUndoNotice((state) => state.notice);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   // Short enough to fit beside an update run; screen readers hear the full summary.
-  const summary = notice
-    ? notice.count === 1
-      ? notice.action
-      : `${notice.action} ${notice.count}`
-    : null;
+  const summary = notice ? shortUndoSummary(notice.action, notice.count) : null;
 
   // Keeps the last text on screen while it fades out, then unmounts on transitionend.
   const [shownSummary, setShownSummary] = useState(summary);
@@ -55,10 +70,10 @@ export function SidebarThreadUndoNotice() {
               clipped space; once the label is too wide it wraps away and the icon shows. */}
           <span className="flex h-6 min-w-0 flex-wrap justify-end overflow-hidden">
             <Undo2Icon className="-ml-4 h-6 w-4 @max-[1rem]:invisible" />
-            <span>{threadUndoLabel(keybindings)}</span>
+            <span>{threadUndoLabel(keybindings, t)}</span>
           </span>
         </InlineButton>
-        <span>{text},</span>
+        <span>{text}</span>
       </div>
     </SidebarMenuItem>
   );

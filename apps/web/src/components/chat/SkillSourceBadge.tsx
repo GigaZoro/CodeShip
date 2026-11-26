@@ -29,6 +29,15 @@ const SKILL_SOURCE_LABEL_BY_KIND: Record<ProviderSkillSourceKind, Message> = {
   other: msg("Provider"),
 };
 
+const SKILL_SOURCE_QUALIFIED_LABEL_BY_KIND: Record<ProviderSkillSourceKind, Message> = {
+  app: msg("App Skill"),
+  repo: msg("Repo Skill"),
+  project: msg("Project Skill"),
+  personal: msg("Personal Skill"),
+  system: msg("System Skill"),
+  other: msg("Provider Skill"),
+};
+
 export function skillSourcePresentation(kind: ProviderSkillSourceKind) {
   return { Icon: SKILL_SOURCE_ICON_BY_KIND[kind], label: t(SKILL_SOURCE_LABEL_BY_KIND[kind]) };
 }
@@ -42,7 +51,7 @@ export function SkillSourceBadge(props: {
   return (
     <Badge className={props.className} variant="secondary">
       <Icon aria-hidden="true" className="text-current" />
-      {props.showSkillSuffix ? t("{source} Skill", { source: label }) : label}
+      {props.showSkillSuffix ? t(SKILL_SOURCE_QUALIFIED_LABEL_BY_KIND[props.kind]) : label}
     </Badge>
   );
 }

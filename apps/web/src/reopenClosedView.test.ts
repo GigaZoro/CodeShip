@@ -108,15 +108,16 @@ describe("reopenClosedView", () => {
     "preserves a hidden root tab with trail $folderTrail (hosted: $hosted)",
     async ({ hosted, folderTrail }) => {
       const panels = useRightPanelStore.getState();
-      panels.openFile(threadRef, "apps/web/src");
-      panels.navigateFolder(threadRef, "file:apps/web/src", "", "apps/web/src");
-      panels.closeSurface(threadRef, "files");
-      const entry = useClosedViewStore.getState().entries[0]!;
       const hostRef = hosted
         ? { ...threadRef, threadId: "host" as ScopedThreadRef["threadId"] }
         : threadRef;
       const unhost = hosted ? hostRightPanel(threadRef, hostRef) : undefined;
       try {
+        panels.openFile(threadRef, "apps/web/src");
+        panels.navigateFolder(threadRef, "file:apps/web/src", "", "apps/web/src");
+        panels.closeSurface(threadRef, "files");
+        const entry = useClosedViewStore.getState().entries[0]!;
+        expect(entry.threadRef).toEqual(hostRef);
         if (folderTrail === undefined) panels.open(threadRef, "files");
         else {
           panels.openFile(threadRef, folderTrail);
@@ -201,7 +202,7 @@ describe("reopenClosedView", () => {
     ).toMatchObject({
       isOpen: true,
       activeSurfaceId: "thread:remote:thread-1",
-      surfaces: [{ kind: "thread", id: "thread:remote:thread-1", threadRef: targetRef }],
+      surfaces: [{ kind: "workspace-thread", id: "thread:remote:thread-1", threadRef: targetRef }],
     });
   });
 

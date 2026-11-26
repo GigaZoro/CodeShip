@@ -1,11 +1,13 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { cloudSpeechDisclosure } from "@t3tools/shared/speech";
 import { setCloudSpeechKey } from "@t3tools/client-runtime/voice-input";
+import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import {
   configuredSecretSources,
   secretRequestReference,
 } from "@t3tools/client-runtime/secret-request";
 import {
+  AuthProvidersManageScope,
   AuthSettingsWriteScope,
   CLOUD_SPEECH_LABELS,
   CLOUD_SPEECH_PROVIDER_NAMES,
@@ -19,7 +21,6 @@ import {
   type VoiceTranscriptionDestination,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import Constants from "expo-constants";
 import { AsyncResult } from "effect/reactivity";
 import { type ReactNode, useState } from "react";
 import { ScrollView, TextInput, View } from "react-native";
@@ -181,6 +182,7 @@ function CloudChoices({ environment, active, onClose }: Props & { onClose: () =>
   const keys = useAtomValue(cloudVoiceKeysAtom(id));
   const reload = useAtomRefresh(cloudVoiceKeysAtom(id));
   const canManage = useEnvironmentScope(id, AuthSettingsWriteScope);
+  const canUseReferences = useEnvironmentScope(id, AuthProvidersManageScope);
   const [editing, setEditing] = useState<{
     provider: CloudSpeechProvider;
     enable: boolean;
@@ -192,7 +194,8 @@ function CloudChoices({ environment, active, onClose }: Props & { onClose: () =>
   const [model, setModel] = useState("");
   const [sourceId, setSourceId] = useState<SecretProviderId | null>(null);
   const sources =
-    Constants.expoConfig?.extra?.secretsFeatureEnabled === true &&
+    canUseReferences &&
+    hasFeatureFlag(environment.serverConfig, "secretProviders") &&
     environment.serverConfig?.secretReferences
       ? configuredSecretSources(environment.serverConfig.settings.secretProviders)
       : [];

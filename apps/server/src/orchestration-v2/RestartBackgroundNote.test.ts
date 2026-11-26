@@ -8,6 +8,7 @@ import {
   ThreadId,
   type OrchestrationV2RestartCancelledBackgroundWork as Work,
   type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -25,6 +26,8 @@ import {
   restartContinuationNote,
   restartDelegatedTasksNote,
   mergeRestartCancelledBackgroundWork,
+  pendingStoppedDelegatedTasks,
+  stoppedDelegatedTasksNote,
 } from "./RestartBackgroundNote.ts";
 
 const claudeThread = ProviderThreadId.make("provider-thread:claude");
@@ -70,7 +73,7 @@ it("keeps the note for the provider thread that lost the work across a provider 
     pendingWork({
       runs,
       providerTurns: runs.filter((source) => source.id !== target.id).map(turnFor),
-      compactionMessageIds: new Set(),
+      compactionMessageIds: () => new Set(),
       run: target,
       attempts: runs.map(attemptFor),
     });
@@ -219,7 +222,7 @@ it("delivers a resumed queued run's note even after a higher-ordinal run", () =>
     pendingWork({
       runs,
       providerTurns: [resumed, ranFirst].map(turnFor),
-      compactionMessageIds: new Set(),
+      compactionMessageIds: () => new Set(),
       run: next,
       attempts: runs.map(attemptFor),
     }),
@@ -264,8 +267,8 @@ it("names a lost subagent by the id the agent resumes it with", () => {
   );
   assert.isFalse(isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "shell-2" })));
   assert.isFalse(isAwaitedWork(cancelledRosterTaskWork({ kind: "monitor", taskId: "watchdog" })));
-  assert.isFalse(
-    isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "dev", awaited: true })),
+  assert.isTrue(
+    isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "build", awaited: true })),
   );
   assert.isTrue(
     isAwaitedWork(cancelledRosterTaskWork({ kind: "background_task", taskId: "tests" })),
@@ -280,7 +283,30 @@ it("names a lost subagent by the id the agent resumes it with", () => {
       title: "Review",
       nativeItemRef: { driver: "claudeAgent", nativeId: "agent-1", strength: "strong" },
     } as never)?.label,
-    "Review (id agent-1)",
+    "Review (id agent-1; resume it with SendMessage to 'agent-1')",
+  );
+  assert.equal(
+    cancelledTurnItemWork(
+      {
+        id: "item-2",
+        type: "subagent",
+        origin: "provider_native",
+        title: "Audit",
+        nativeItemRef: { driver: "codex", nativeId: "call_1:agent", strength: "strong" },
+      } as never,
+      "agent-thread",
+    )?.label,
+    "Audit (id agent-thread)",
+  );
+  assert.equal(
+    cancelledTurnItemWork({
+      id: "item-3",
+      type: "subagent",
+      origin: "provider_native",
+      title: "Lost",
+      nativeItemRef: { driver: "claudeAgent", nativeId: null, strength: "strong" },
+    } as never)?.label,
+    "Lost",
   );
 });
 
@@ -383,7 +409,7 @@ it("does not repeat the note when a steer restarts the run on a new attempt", ()
             ]
           : []),
       ],
-      compactionMessageIds: new Set(),
+      compactionMessageIds: () => new Set(),
       run: steered,
       attempts: runAttemptIds.map((id) => ({ id, runId: steered.id })),
     });
@@ -410,7 +436,7 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
     pendingWork({
       runs: [cut, continuation, later],
       providerTurns: [cutTurn, ...(delivered ? [turnFor(continuation)] : [])],
-      compactionMessageIds: new Set(),
+      compactionMessageIds: () => new Set(),
       run: later,
       attempts: [cut, continuation, later].map(attemptFor),
     });
@@ -436,7 +462,7 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
       pendingWork({
         runs: [cut, unstarted, later],
         providerTurns: turns,
-        compactionMessageIds: new Set(),
+        compactionMessageIds: () => new Set(),
         run: later,
         attempts: [cut, unstarted, later].map(attemptFor),
       }),
@@ -457,10 +483,58 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
     pendingWork({
       runs: [cut, steered, later],
       providerTurns: turns,
-      compactionMessageIds: new Set(),
+      compactionMessageIds: () => new Set(),
       run: later,
       attempts,
     }),
     [],
   );
+});
+
+// regression: #34401 Stop interrupted a parent's delegated tasks without telling its agent
+it("tells the next completed turn about delegated tasks its Stop interrupted, once", () => {
+  const at = (minute: number) => DateTime.makeUnsafe(`2026-10-03T10:0${minute}:00.000Z`);
+  const spawning = run(1, claudeThread, {
+    requestedAt: at(0),
+    delegatedCompletion: { disposition: "stopped", nextGeneration: 1, delivery: null },
+  });
+  const task = (id: string, extra: Partial<OrchestrationV2Subagent> = {}) =>
+    ({
+      id: NodeId.make(id),
+      runId: spawning.id,
+      origin: "app_owned",
+      prompt: `Run ${id}.`,
+      title: null,
+      status: "interrupted",
+      completionDelivery: { state: "disposed", observedByRunId: null },
+      completedAt: at(1),
+      ...extra,
+    }) as OrchestrationV2Subagent;
+  const stopped = task("stopped", { title: "Build A" });
+  const subagents = [
+    stopped,
+    task("cancelled", { cancelledRunId: RunId.make("run:child") }),
+    task("finished", { status: "completed" }),
+    task("delivered", { completionDelivery: { state: "delivered", observedByRunId: null } }),
+  ];
+  const pending = (runs: ReadonlyArray<OrchestrationV2Run>, providerThreadId = claudeThread) =>
+    pendingStoppedDelegatedTasks({
+      providerThreadId,
+      runs,
+      providerTurns: runs.map(turnFor),
+      attempts: runs.map((source) => ({ id: source.activeAttemptId!, runId: source.id })),
+      subagents,
+      compactionMessageIds: new Set(),
+    });
+
+  assert.deepEqual(pending([spawning]), [stopped]);
+  // A /clear turn starts a fresh provider thread that never saw the stopped tasks.
+  assert.deepEqual(pending([spawning], codexThread), []);
+  assert.equal(stoppedDelegatedTasksNote([stopped]).split("\n")[1], "- Build A (task stopped)");
+  // Requested while the task was still settling, so its turn start could not see it.
+  const racing = run(2, claudeThread, { requestedAt: at(0), startedAt: at(2) });
+  assert.deepEqual(pending([spawning, racing]), [stopped]);
+  assert.deepEqual(pending([spawning, racing, run(3, claudeThread, { requestedAt: at(2) })]), []);
+  // A fresh-context turn on another provider thread never carried the note.
+  assert.deepEqual(pending([spawning, run(3, codexThread, { requestedAt: at(2) })]), [stopped]);
 });

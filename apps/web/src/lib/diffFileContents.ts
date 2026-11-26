@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import type { FileDiffContentsLoader, FileDiffMetadata } from "@pierre/diffs";
 import {
   squashAtomCommandFailure,
@@ -128,7 +130,7 @@ function createDiffFileContentsLoader(
     }
     if (!reproducesPatch(fileDiff, contents.oldContents, contents.newContents)) {
       throw new Error(
-        "This file changed since the diff was loaded. Refresh the diff to expand it.",
+        t("This file changed since the diff was loaded. Refresh the diff to expand it."),
       );
     }
     return {

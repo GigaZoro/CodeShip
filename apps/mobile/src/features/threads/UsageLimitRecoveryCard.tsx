@@ -1,5 +1,6 @@
 import { useNavigation } from "@react-navigation/native";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { AsyncResult } from "effect/reactivity";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { limitRecoveryOwnsSnooze } from "@t3tools/client-runtime/state/thread-execution";
@@ -13,7 +14,8 @@ import {
 } from "@t3tools/shared/usageLimits";
 import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -53,6 +55,7 @@ export function UsageLimitRecoveryCard({
     Date.parse(thread.snoozedUntil) > Date.parse(resetAt)
       ? thread.snoozedUntil
       : resetAt;
+  const displayPassed = useDeadlinePassed(displayAt === null ? null : Date.parse(displayAt));
   const [copied, setCopied] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const code = thread.runtime?.lastErrorCode;
@@ -69,19 +72,25 @@ export function UsageLimitRecoveryCard({
   )
     return null;
   const instanceId = thread.runtime.providerInstanceId;
-  const resetDate = displayAt
-    ? new Date(displayAt).toLocaleString(getFormattingLocale(), {
+  const resumes = canSchedule && scheduled;
+  const resumesUpcoming = resumes && !displayPassed;
+  const shownAt = resumesUpcoming ? displayAt : resetAt;
+  const resetDate = shownAt
+    ? new Date(shownAt).toLocaleString(getFormattingLocale(), {
         month: "short",
         day: "numeric",
         hour: "numeric",
         minute: "2-digit",
       })
     : null;
-  const resetText = resetDate
-    ? canSchedule && scheduled
-      ? t("Resumes {date}.", { date: resetDate })
-      : t("Resets {date}.", { date: resetDate })
-    : null;
+  const resetText =
+    resetDate === null
+      ? null
+      : resumesUpcoming
+        ? t("Resumes {date}.", { date: resetDate })
+        : resetPassed
+          ? t("Reset {date}.", { date: resetDate })
+          : t("Resets {date}.", { date: resetDate });
   const snoozed =
     limitRecoveryOwnsSnooze({
       runId,
@@ -111,7 +120,7 @@ export function UsageLimitRecoveryCard({
     setPending(false);
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
-      setError(cause instanceof Error ? cause.message : t("Could not change limit recovery."));
+      setError(errorDisplayMessage(cause) ?? t("Could not change limit recovery."));
     }
   }
   const action = workspaceLimit
@@ -136,10 +145,11 @@ export function UsageLimitRecoveryCard({
         run: () => {
           setError(null);
           setActionPending(true);
-          void Linking.openURL(CHATGPT_USAGE_URL)
-            .catch(() =>
-              setError(t("Could not open ChatGPT. Go to chatgpt.com → Settings → Usage.")),
-            )
+          void tryOpenExternalUrl(CHATGPT_USAGE_URL)
+            .then((opened) => {
+              if (!opened)
+                setError(t("Could not open ChatGPT. Go to chatgpt.com → Settings → Usage."));
+            })
             .finally(() => setActionPending(false));
         },
       };
@@ -225,7 +235,13 @@ export function UsageLimitRecoveryCard({
             {canSchedule ? (
               <>
                 <RecoveryAction
-                  label={scheduled ? t("Cancel auto-resume") : t("Resume at reset")}
+                  label={
+                    scheduled
+                      ? t("Cancel auto-resume")
+                      : resetPassed
+                        ? t("Resume now")
+                        : t("Resume at reset")
+                  }
                   disabled={pending}
                   onPress={() => void toggle("resume")}
                 />

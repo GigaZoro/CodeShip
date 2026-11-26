@@ -11,6 +11,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Hex from "effect/encoding/Hex";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Callback realpath collapses linked parent components before traversal.
 import * as NodeFSP from "node:fs/promises";
+import * as NodeUtil from "node:util";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,20 +40,36 @@ const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 
+const appendDetail = (detail: string, reason: string): string => {
+  let message = reason.trim();
+  if (message.length > MAX_ERROR_MESSAGE_LENGTH) {
+    message = `${message.slice(0, MAX_ERROR_MESSAGE_LENGTH).trimEnd()}…`;
+  }
+  if (message.length === 0) return detail;
+  const trimmed = detail.trimEnd();
+  const prefix = trimmed.endsWith(".") ? `${trimmed} ` : `${trimmed}. `;
+  return `${prefix}${message}`;
+};
+
 export const formatFailureDetail = (detail: string, cause?: unknown): string => {
   const unwrapped = Cause.isCause(cause) ? Cause.squash(cause) : cause;
-  if (isAcpRequestError(unwrapped)) {
-    let message = unwrapped.errorMessage.trim();
-    if (message.length > MAX_ERROR_MESSAGE_LENGTH) {
-      message = `${message.slice(0, MAX_ERROR_MESSAGE_LENGTH).trimEnd()}…`;
-    }
-    if (message.length > 0) {
-      const trimmed = detail.trimEnd();
-      const prefix = trimmed.endsWith(".") ? `${trimmed} ` : `${trimmed}. `;
-      return `${prefix}${message}`;
-    }
-  }
-  return detail;
+  return isAcpRequestError(unwrapped) ? appendDetail(detail, unwrapped.errorMessage) : detail;
+};
+
+const MAX_LOGIN_OUTPUT_LINES = 5;
+
+const lastPrintedLines = (output: string): string => {
+  const lines = NodeUtil.stripVTControlCharacters(output)
+    .split("\n")
+    .map((line) => line.trimEnd())
+    // A carriage return inside a line redraws it, so only the text after the last one is visible.
+    .map((line) => line.slice(line.lastIndexOf("\r") + 1).trim())
+    .filter((line) => line.length > 0)
+    .slice(-MAX_LOGIN_OUTPUT_LINES)
+    .join(" ");
+  return lines.length > MAX_ERROR_MESSAGE_LENGTH
+    ? `…${lines.slice(-MAX_ERROR_MESSAGE_LENGTH).trimStart()}`
+    : lines;
 };
 
 const encodeCommand = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
@@ -87,8 +104,9 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
     const platform = yield* HostProcess.Platform;
     const resolveExecutable = yield* SpawnExecutableResolution;
     const executable =
-      resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd) ??
-      options.settings.commandPath;
+      (yield* Effect.promise(async () =>
+        resolveExecutable(options.settings.commandPath, platform, options.environment, options.cwd),
+      )) ?? options.settings.commandPath;
     const path = yield* Effect.tryPromise(() => NodeFSP.realpath(executable)).pipe(
       Effect.orElseSucceed(() => (platform === "win32" ? executable.toLowerCase() : executable)),
     );
@@ -236,7 +254,10 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
           failure("start", "Could not open the provider sign-in terminal.", cause),
         ),
       );
+    // Kept in the callback so output that arrives just before exit is not lost to the reader.
+    let printed = "";
     const detachData = process.onData((data) => {
+      printed = (printed + data).slice(-4_096);
       Queue.offerUnsafe(output, data.slice(-16_384));
     });
     const detachExit = process.onExit(({ exitCode }) => {
@@ -261,7 +282,8 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
             ? Effect.try({
                 try: () => {
                   if (response.size) process.resize(response.size.cols, response.size.rows);
-                  if (response.data) process.write(response.data);
+                  if (response.data)
+                    process.write(PtyAdapter.ptyInput(response.data, response.binary));
                 },
                 catch: () =>
                   failure("respond", "The provider sign-in terminal is no longer available."),
@@ -279,7 +301,14 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
       Effect.forkScoped,
     );
     if ((yield* Deferred.await(exited)) !== 0)
-      return yield* failure("start", "The provider login command did not finish successfully.");
+      return yield* new ProviderSetupError({
+        instanceId: options.instanceId,
+        operation: "start",
+        detail: appendDetail(
+          "The provider login command did not finish successfully.",
+          lastPrintedLines(printed),
+        ),
+      });
   });
 
   const authenticate = Effect.fn("AcpRegistryAuth.authenticate")(function* (

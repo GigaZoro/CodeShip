@@ -1,4 +1,5 @@
-import { getFormattingLocale, msg, t } from "~/i18n";
+import { getClientSettings } from "../../hooks/useSettings";
+import { msg, t } from "~/i18n";
 import { isListedThreadLineage, isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
@@ -39,12 +40,14 @@ import {
   type RunConditionDraft,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import {
   resolveScheduledTaskDefaultModelSelection,
   type LegacyProjectSettingsFields,
 } from "@t3tools/shared/projectSettings";
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
+import { formatDateTimeTimestamp, formatTimeOfDay } from "../../timestampFormat";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
 import { validateSettingsRouteSearch } from "./settingsScopeNavigation";
@@ -59,19 +62,16 @@ export const WEEKDAY_LABELS = [
   msg("Sat"),
 ] as const;
 
-const formatOnce = (runAt: string) =>
-  new Intl.DateTimeFormat(getFormattingLocale(), {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(runAt));
-
 export function scheduleLabel(
   schedule: ScheduledTaskSchedule,
+  timestampFormat: TimestampFormat = getClientSettings().timestampFormat,
   timeZone?: string,
   runAt?: string | null,
 ): string {
   if (schedule.type === "webhook") return t("On webhook");
-  if (schedule.type === "once") return t("Once, {when}", { when: formatOnce(schedule.runAt) });
+  if (schedule.type === "once") {
+    return t("Once, {time}", { time: formatDateTimeTimestamp(schedule.runAt, timestampFormat) });
+  }
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)
@@ -85,8 +85,9 @@ export function scheduleLabel(
       : weekdays.length === 5 && weekdays.every((day) => day >= 1 && day <= 5)
         ? t("Weekdays")
         : weekdays.map((day) => t(WEEKDAY_LABELS[day]!)).join(", ");
+  const time = formatTimeOfDay(schedule.timeOfDay, timestampFormat);
   const zone = scheduleTimeZoneLabel(timeZone, runAt);
-  const label = t("{days} at {time}", { days, time: schedule.timeOfDay });
+  const label = t("{days} at {time}", { days, time });
   return zone === undefined ? label : `${label} ${zone}`;
 }
 
@@ -166,16 +167,16 @@ export interface DraftState extends PromptFileDraft {
   readonly weekdays: ReadonlySet<number>;
   readonly projectId: string;
   readonly threadId: string;
+  /** The thread the form opened with, so a save can tell a cleared destination from an unbound one. */
+  readonly savedThreadId: string;
   readonly threadMode: ScheduledTaskThreadMode;
   readonly workspaceMode: WorkspaceMode;
   readonly baseRef: string;
   readonly startFromOrigin: boolean;
   readonly existingWorktreePath: string;
-  readonly modelKey: string;
+  readonly modelSelection: ModelSelection | null;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
-  /** Retain the source selection's provider options when the picker leaves instanceId:model unchanged. */
-  readonly baseModelSelection: ModelSelection | null;
   /** Runs the scheduled tasks default model instead of the one picked here. */
   readonly followsDefaultModel: boolean;
   /** Null follows the schedule's default until the user picks. */
@@ -395,9 +396,10 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
+    savedThreadId: task.threadId ?? "",
     threadMode: scheduledTaskThreadMode(task),
     workspaceMode: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
+    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
         ? (task.workspaceStrategy.startFromOrigin ?? false)
@@ -406,10 +408,9 @@ export function taskToDraft(task: ScheduledTask): DraftState {
       task.workspaceStrategy.type === "existing_worktree"
         ? task.workspaceStrategy.worktreePath
         : "",
-    modelKey: `${task.modelSelection.instanceId}:${task.modelSelection.model}`,
+    modelSelection: task.modelSelection,
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
-    baseModelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel === true,
     catchUpMissedRun: task.catchUpMissedRun ?? null,
     runCondition: runConditionDraft(task),

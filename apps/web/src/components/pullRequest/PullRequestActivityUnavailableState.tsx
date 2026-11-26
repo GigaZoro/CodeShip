@@ -1,9 +1,12 @@
+import { t } from "~/i18n";
+
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 
 import { cn } from "~/lib/utils";
 
 import { Button } from "../ui/button";
-import { t } from "~/i18n";
+
+import type { ChangeRequestTermKind } from "./changeRequestTerm";
 
 export function PullRequestActivityUnavailableState({
   error,
@@ -12,8 +15,7 @@ export function PullRequestActivityUnavailableState({
   compact = false,
 }: {
   error: string;
-  /** The host's word for a change request, as in "pull request". */
-  term: string;
+  term: ChangeRequestTermKind;
   onRetry: () => void;
   compact?: boolean;
 }) {
@@ -25,7 +27,11 @@ export function PullRequestActivityUnavailableState({
       )}
     >
       <p className="text-sm font-medium text-foreground">
-        {t("Could not load {term} activity", { term })}
+        {term === "mr"
+          ? t("Could not load merge request activity")
+          : term === "cr"
+            ? t("Could not load change request activity")
+            : t("Could not load pull request activity")}
       </p>
       <p className="max-w-md text-xs text-muted-foreground">{error}</p>
       <Button size="sm" variant="outline" onClick={onRetry}>

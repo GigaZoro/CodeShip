@@ -18,6 +18,7 @@ const receiveInBrowser = (
   receive: (
     authorizationUrl: string,
     openBrowser: (url: string) => Promise<boolean>,
+    signal: AbortSignal,
   ) => Promise<string>,
   failureDetail: string,
 ) =>
@@ -27,7 +28,8 @@ const receiveInBrowser = (
     const context = yield* Effect.context<ElectronShell.ElectronShell>();
     const runPromise = Effect.runPromiseWith(context);
     const callbackUrl = yield* Effect.tryPromise({
-      try: () => receive(authorizationUrl, (url) => runPromise(shell.openExternal(url))),
+      try: (signal) =>
+        receive(authorizationUrl, (url) => runPromise(shell.openExternal(url)), signal),
       catch: () => new LoopbackAuthCallbackError({ detail: failureDetail }),
     });
     const window = yield* windows.currentMainOrFirst;
@@ -40,7 +42,7 @@ export const receiveProviderAuthCallback = DesktopIpc.makeIpcMethod({
   payload: Request,
   result: Schema.String,
   handler: receiveInBrowser(
-    receiveCodexAuthCallback,
+    (url, openBrowser, signal) => receiveCodexAuthCallback(url, openBrowser, undefined, signal),
     t("Could not receive ChatGPT sign-in on this computer. Try again or paste the redirect URL."),
   ),
 });

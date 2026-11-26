@@ -2,10 +2,7 @@ import { t } from "~/i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
 
-import {
-  shouldOpenMarkdownFileLinkInBrowserByDefault,
-  type MarkdownFileLinkMeta,
-} from "../../markdown-links";
+import type { MarkdownFileLinkMeta } from "../../markdown-links";
 import type { RemoteOpenMode } from "../../remoteOpen";
 
 export function canUseMarkdownFileShellActions(
@@ -30,13 +27,20 @@ export function hasMarkdownFilePrimaryAction(input: {
   );
 }
 
+// Diagnostic names stay stable across UI languages.
+export const FILE_PATH_COPY_TARGET = { relative: "Relative path", full: "Full path" };
+
 export function markdownFileCopyMenuItems({
   targetPath,
   workspaceRelativePath,
 }: Pick<MarkdownFileLinkMeta, "targetPath" | "workspaceRelativePath">) {
   const items = [
-    // oxlint-disable-next-line t3code/no-untranslated-text -- clipboard target name for the failure report, never shown
-    { id: "copy-full", label: t("Copy full path"), value: targetPath, title: "Full path" },
+    {
+      id: "copy-full",
+      label: t("Copy full path"),
+      value: targetPath,
+      title: FILE_PATH_COPY_TARGET.full,
+    },
   ];
   if (workspaceRelativePath !== null) {
     const position = targetPath.slice(splitFilePathPosition(targetPath).path.length);
@@ -44,22 +48,16 @@ export function markdownFileCopyMenuItems({
       id: "copy-relative",
       label: t("Copy relative path"),
       value: `${workspaceRelativePath}${position}`,
-      // oxlint-disable-next-line t3code/no-untranslated-text -- clipboard target name for the failure report, never shown
-      title: "Relative path",
+      title: FILE_PATH_COPY_TARGET.relative,
     });
   }
   return items;
 }
 
 export function shouldUseMarkdownFileBrowserPrimaryAction(input: {
-  iconPath: string;
   canOpenInEditor: boolean;
   canOpenInBrowser: boolean;
   canOpenInPanel: boolean;
 }): boolean {
-  return (
-    input.canOpenInBrowser &&
-    (shouldOpenMarkdownFileLinkInBrowserByDefault(input.iconPath) ||
-      (!input.canOpenInEditor && !input.canOpenInPanel))
-  );
+  return input.canOpenInBrowser && !input.canOpenInEditor && !input.canOpenInPanel;
 }

@@ -1,3 +1,6 @@
+import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   getAddProjectInitialQuery,
@@ -24,6 +27,7 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { Atom } from "effect/reactivity";
+
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
@@ -50,7 +54,6 @@ import { suggestAppAccessForRemote } from "../sourceControlAppAccessToast";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { placeLinkedPrompt, warnAboutHiddenCharacters } from "./linkedPrompt";
 
-import { t } from "~/i18n";
 type LinkState =
   | { readonly status: "opening" }
   | { readonly status: "opened" }
@@ -104,6 +107,7 @@ const NO_PULL_REQUEST_THREAD_LOOKUP = Atom.make(null);
 
 export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
   const locationKey = useLocation({ select: (location) => location.state.__TSR_key ?? "" });
+
   const navigate = useNavigate();
   const ready = useAtomValue(allReachableShellsLiveAtom);
   const projects = useProjects();
@@ -244,7 +248,7 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
           stackedThreadToast({
             type: "error",
             title: t("Clone failed"),
-            description: error instanceof Error ? error.message : t("An error occurred."),
+            description: thrownErrorMessage(error, t) ?? t("An error occurred."),
           }),
         );
       }
@@ -416,6 +420,7 @@ function PullRequestLinkCheckout({
       url: promptLinkPullRequestUrl(link.pullRequest),
     },
   });
+
   const warnedRef = useRef(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- shows the hidden-characters warning toast once per linked prompt
   useEffect(() => {

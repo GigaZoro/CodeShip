@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { t, tx } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { useId, useState, type ReactNode } from "react";
@@ -37,7 +38,7 @@ import {
 
 const failureMessage = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error);
 };
 
 /** The gateway each environment's own agent-device points at, if any. */
@@ -119,10 +120,10 @@ export function SimlockDeviceHostEditor(props: {
         type="number"
         min={min}
         max={max}
-        value={draft[field]}
+        value={Number.isNaN(draft[field]) ? "" : draft[field]}
         disabled={props.busy}
         onChange={(event) => {
-          const value = Number(event.target.value);
+          const value = event.target.valueAsNumber;
           setDraft((current) => ({ ...current, [field]: value }));
         }}
       />

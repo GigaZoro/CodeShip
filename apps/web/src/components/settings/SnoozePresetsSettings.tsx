@@ -1,4 +1,4 @@
-import { t, tn } from "~/i18n";
+import { t, tn, getFormattingLocale } from "~/i18n";
 import { useState } from "react";
 import {
   DEFAULT_SNOOZE_PRESETS,
@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import { PlusIcon, XIcon } from "lucide-react";
 
 import { useNowMinute } from "../../hooks/useNowMinute";
+
 import { reconcileSnoozeDraft, sortSnoozeRows } from "./SnoozePresetsSettings.logic";
 import { formatShortTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
@@ -270,14 +271,15 @@ function SnoozePresetList(props: {
   onAdd: () => void;
   onSettle: () => void;
 }) {
+  const locale = getFormattingLocale();
   const nowMinute = useNowMinute();
   const now = new Date(`${nowMinute}Z`);
   const formatTime = (date: Date) =>
-    formatShortTimestamp(date.toISOString(), props.timestampFormat);
+    formatShortTimestamp(date.toISOString(), props.timestampFormat, locale);
   const seenIds = new Set<string>();
   const seenWakes = new Set<string>();
   const previews = props.presets.map((preset) => {
-    const resolved = resolveSnoozePreset(preset, now, formatTime);
+    const resolved = resolveSnoozePreset(preset, now, formatTime, t, locale);
     if (resolved === null) return { tone: "muted", text: t("Passed for today") } as const;
     if (seenIds.has(resolved.id)) {
       return { tone: "muted", text: t("Duplicate of an option above") } as const;
@@ -343,8 +345,9 @@ function SnoozePresetList(props: {
         <Button
           variant="ghost-muted"
           size="compact"
-          disabled={props.presets.length >= MAX_SNOOZE_PRESETS}
-          onClick={props.onAdd}
+          // Not `disabled`: that drops focus, which the list would read as leaving it and sort.
+          aria-disabled={props.presets.length >= MAX_SNOOZE_PRESETS || undefined}
+          onClick={props.presets.length >= MAX_SNOOZE_PRESETS ? undefined : props.onAdd}
         >
           <PlusIcon />
           {t("Add option")}
@@ -506,7 +509,11 @@ function snoozeMenuSummary(
   now: Date,
   formatTime: (date: Date) => string,
 ) {
-  const menuPresets = resolveSnoozePresets(now, { presets: presets, formatTime });
+  const menuPresets = resolveSnoozePresets(now, {
+    presets,
+    formatTime,
+    locale: getFormattingLocale(),
+  });
   const repeatedLabels = new Set(
     menuPresets
       .map((preset) => preset.label)

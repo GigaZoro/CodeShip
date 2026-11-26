@@ -227,6 +227,7 @@ describe("Muse history discovery", () => {
             PATH: "/host/bin",
             XDG_DATA_HOME: xdg ?? "/host/data",
             MUSE_NO_AUTO_UPDATE: "1",
+            MISE_OFFLINE: "1",
           },
           readOnly: true,
           startupTimeoutMs: 5_000,
@@ -260,7 +261,7 @@ describe("Muse history discovery", () => {
       expect(create).not.toHaveBeenCalled();
     }).pipe(
       Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
-      Effect.provideService(SpawnExecutableResolution, () => undefined),
+      Effect.provideService(SpawnExecutableResolution, async () => undefined),
     ),
   );
 

@@ -313,6 +313,7 @@ const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(
   }
   const archiveName = `${input.stem}.tar.gz`;
   const tar = yield* spawner.spawn(
+    // GNU tar reads a drive letter in an absolute archive path as a remote host.
     ChildProcess.make("tar", ["-czf", archiveName, "-C", path.basename(contentRoot), "."], {
       cwd: input.root,
       stdin: "ignore",
@@ -778,6 +779,34 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("packages every platform with Node inspector flags off and run-as-Node left on", () =>
+    Effect.gen(function* () {
+      const fuses = (platform: "mac" | "linux" | "win", target: string, signed: boolean) =>
+        createBuildConfig(platform, target, "0.0.33", signed, false, undefined, undefined).pipe(
+          Effect.map((config) => config.electronFuses),
+        );
+
+      // The desktop app starts its server and the `t3` shim by running its own binary as Node.
+      assert.deepEqual(yield* fuses("linux", "AppImage", false), {
+        enableNodeCliInspectArguments: false,
+        resetAdHocDarwinSignature: false,
+      });
+      assert.deepEqual(yield* fuses("win", "nsis", false), {
+        enableNodeCliInspectArguments: false,
+        resetAdHocDarwinSignature: false,
+      });
+      // Nothing signs an unsigned macOS build after the flip, so the flip re-signs it ad hoc.
+      assert.deepEqual(yield* fuses("mac", "dmg", false), {
+        enableNodeCliInspectArguments: false,
+        resetAdHocDarwinSignature: true,
+      });
+      assert.deepEqual(yield* fuses("mac", "dmg", true), {
+        enableNodeCliInspectArguments: false,
+        resetAdHocDarwinSignature: false,
+      });
+    }),
+  );
+
   it.effect("names updatable AppImages without a version and apart per channel", () =>
     Effect.gen(function* () {
       const appImageName = (version: string) =>
@@ -800,7 +829,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("declares Calendar access for hosted commands in macOS builds", () =>
+  it.effect("declares Calendar and Apple Events access for hosted commands in macOS builds", () =>
     Effect.gen(function* () {
       for (const version of ["0.1.0", "0.1.1-nightly.20261019.1"]) {
         for (const signed of [false, true]) {
@@ -818,6 +847,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             "NSCalendarsUsageDescription",
             "NSCalendarsFullAccessUsageDescription",
             "NSCalendarsWriteOnlyAccessUsageDescription",
+            "NSAppleEventsUsageDescription",
           ]) {
             assert.isString(mac.extendInfo[key], `${version}, signed=${signed}: ${key}`);
             assert.isNotEmpty(mac.extendInfo[key]);
@@ -2125,6 +2155,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.match(
+      entitlements,
+      /<key>com\.apple\.security\.automation\.apple-events<\/key>\s*<true\/>/u,
+    );
     assert.match(entitlements, /<key>com\.apple\.security\.device\.camera<\/key>\s*<true\/>/u);
     assert.match(entitlements, /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/u);
     assert.notInclude(entitlements, "keychain-access-groups");
@@ -2341,7 +2375,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.include(inventoryText, `${NodeCrypto.hash("sha256", "{}")} codex-package.json\n`);
       const expected = NodeCrypto.hash("sha256", inventoryText);
       const verify = () =>
-        Effect.tryPromise(() => verifyCodexMetadataInstallation(stage, expected));
+        Effect.tryPromise({
+          try: () => verifyCodexMetadataInstallation(stage, expected),
+          catch: (cause) => new Error("Could not verify the staged Codex metadata", { cause }),
+        });
       yield* verify();
       yield* fs.remove(inventory);
       assert.isTrue(yield* verify().pipe(Effect.isFailure), "required inventory is missing");

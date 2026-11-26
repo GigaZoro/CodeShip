@@ -1,10 +1,11 @@
+import { t } from "~/i18n";
+
 import { useEffect, useState } from "react";
 
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { observeIntersection } from "~/lib/observeIntersection";
 import { DiffFileHeaderSkeleton } from "../DiffPanelShell";
 
-import { t } from "~/i18n";
 export function DiffFileLoadingBoundary({ load, count }: { load: () => void; count: number }) {
   const [isNear, setIsNear] = useState(false);
   const loadLatest = useStableCallback(load);

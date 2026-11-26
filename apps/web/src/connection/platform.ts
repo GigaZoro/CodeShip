@@ -1,9 +1,10 @@
+import { t } from "~/i18n";
+
 import {
   ClientCapabilities,
   PlatformConnectionSource,
   Persistence,
 } from "@t3tools/client-runtime/platform";
-import { t } from "~/i18n";
 import {
   BearerConnectionCredential,
   BearerConnectionProfile,
@@ -62,6 +63,7 @@ import {
   type DesktopSecondaryBootstrapsRead,
 } from "./desktopLocal";
 import * as ConnectionStorage from "./storage";
+import { browserThreadTriageOutboxStore } from "./threadTriageOutboxStore";
 import { clientPresentationMetadata } from "./clientMetadata";
 
 let nextObservedRpcRequestId = 0;
@@ -193,7 +195,7 @@ function sshPreparationError(cause: unknown) {
   }
   return new ConnectionTransientError({
     reason: "remote-unavailable",
-    detail: t("Could not prepare the SSH environment: {error}", { error: message }),
+    detail: t("Could not prepare the SSH environment: {message}", { message }),
   });
 }
 
@@ -250,10 +252,8 @@ export const provisionDesktopSshEnvironment = Effect.fn(
     return yield* new ConnectionBlockedError({
       reason: "configuration",
       detail: t(
-        "That host reaches {machine}, a different machine. Add it as its own environment instead.",
-        {
-          machine: descriptor.label,
-        },
+        "That host reaches {label}, a different machine. Add it as its own environment instead.",
+        { label: descriptor.label },
       ),
     });
   }
@@ -273,7 +273,7 @@ export const provisionDesktopSshEnvironment = Effect.fn(
       return new ConnectionBlockedError({
         reason: "configuration",
         detail: t(
-          "{label} runs T3.CodeShip {serverVersion}, but this desktop is {appVersion}, and that server could not accept its pairing. Restart the T3.CodeShip server on {label} so it runs {appVersion}, then retry.",
+          "{label} runs T3.CodeShip {serverVersion}, but this desktop is {appVersion}, and that server could not accept its pairing. Restart the T3 server on {label} so it runs {appVersion}, then retry.",
           {
             label: descriptor.label,
             serverVersion: descriptor.serverVersion,
@@ -316,10 +316,8 @@ export const prepareDesktopSshEnvironment = Effect.fn("web.connectionPlatform.ss
         return yield* new ConnectionBlockedError({
           reason: "configuration",
           detail: t(
-            "That host reaches {machine}, a different machine. Add it as its own environment instead.",
-            {
-              machine: descriptor.label,
-            },
+            "That host reaches {label}, a different machine. Add it as its own environment instead.",
+            { label: descriptor.label },
           ),
         });
       }
@@ -404,8 +402,8 @@ const layerCapabilities = Layer.effectContext(
         catch: (cause) =>
           new ConnectionTransientError({
             reason: "remote-unavailable",
-            detail: t("Could not load the desktop primary credential: {error}", {
-              error: String(cause),
+            detail: t("Could not load the desktop primary credential: {cause}", {
+              cause: String(cause),
             }),
           }),
       }).pipe(Effect.map(Option.fromNullishOr)),
@@ -444,8 +442,8 @@ const layerCapabilities = Layer.effectContext(
           catch: (cause) =>
             new ConnectionTransientError({
               reason: "remote-unavailable",
-              detail: t("Could not disconnect the SSH environment: {error}", {
-                error: String(cause),
+              detail: t("Could not disconnect the SSH environment: {cause}", {
+                cause: String(cause),
               }),
             }),
         });
@@ -836,7 +834,11 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
     clear: Effect.fn("Persistence.EnvironmentOwnedDataCleanup.clear")(function (environmentId) {
       return Effect.sync(() => {
         clearComposerDraftsEnvironment(environmentId);
-      });
+      }).pipe(
+        Effect.andThen(
+          Effect.ignore(browserThreadTriageOutboxStore.clearEnvironment(environmentId)),
+        ),
+      );
     }),
   }),
 );

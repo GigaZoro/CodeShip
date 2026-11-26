@@ -1,3 +1,4 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { t } from "../../lib/i18n";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtom, useAtomValue } from "@effect/atom-react";
@@ -15,7 +16,8 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
-import { Linking, View } from "react-native";
+import { View } from "react-native";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -113,9 +115,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
     setPending(null);
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
-      setError(
-        cause instanceof Error ? cause.message : t("The action could not be completed. Try again."),
-      );
+      setError(errorDisplayMessage(cause) ?? t("The action could not be completed. Try again."));
     }
   }
 
@@ -295,7 +295,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       label={t("Get help from {organization}", {
                         organization: managedPolicy.organization,
                       })}
-                      onPress={() => void Linking.openURL(supportUrl).catch(() => undefined)}
+                      onPress={() => void tryOpenExternalUrl(supportUrl)}
                     />
                   ) : null}
                   {updatesDenial ? null : (
@@ -341,7 +341,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                           return;
                         const result = await refreshProviders({
                           environmentId,
-                          input: { reloadSecrets: true },
+                          input: { refreshModels: true, reloadSecrets: true },
                         });
                         if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
                         setNotice(t("Provider status refreshed."));

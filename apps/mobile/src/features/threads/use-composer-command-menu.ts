@@ -14,7 +14,7 @@ import {
   matchComposerThreadItems,
 } from "@t3tools/client-runtime/composerThreadItems";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { t } from "../../lib/i18n";
+import { msg, t } from "../../lib/i18n";
 
 const EMPTY_THREAD_SHELLS: ReadonlyArray<EnvironmentThreadShell> = [];
 const EMPTY_ENVIRONMENTS: ReadonlyArray<ComposerEnvironmentCandidate> = [];
@@ -69,7 +69,7 @@ import {
 } from "../../state/queries";
 import type { ModelOption } from "../../lib/modelOptions";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
-import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
+import { scoreSlashSkillQuery } from "./composerSlashSkillSearch";
 
 const idleWorkspaceSnapshotRefreshAtom: Atom.Atom<unknown> = Atom.make<void>(undefined).pipe(
   Atom.withLabel("mobile:provider-workspace-snapshot-refresh:idle"),
@@ -99,6 +99,12 @@ export function resolveComposerMenuSelection(input: {
   const length = input.draftMessage.length;
   return { start: Math.min(input.local.start, length), end: Math.min(input.local.end, length) };
 }
+
+const PULL_REQUEST_STATE_LABELS = {
+  open: msg("open"),
+  closed: msg("closed"),
+  merged: msg("merged"),
+} as const;
 
 export function buildComposerSlashCommandItems(input: {
   readonly query: string;
@@ -261,6 +267,7 @@ export function useComposerCommandMenu({
   enabled = true,
   onChangeDraftMessage,
   onUsageLimits,
+  onOpenModelPicker,
   modelOptions,
   modelProviders,
   onFreshSession,
@@ -287,6 +294,8 @@ export function useComposerCommandMenu({
   readonly enabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUsageLimits?: () => void;
+  /** `/model` opens this picker instead of inserting text. */
+  readonly onOpenModelPicker: () => void;
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
@@ -350,9 +359,10 @@ export function useComposerCommandMenu({
     cwd: trigger?.kind === "path" ? projectCwd : null,
     query: trigger?.kind === "path" ? trigger.query : null,
   });
-  // Mounts older settled threads matching the mention, which shells may leave out.
+  // Mounts older settled threads matching the mention, here and on linked machines, which shells
+  // may leave out.
   useThreadSearch(
-    trigger?.kind === "path" && environmentId ? [environmentId] : [],
+    trigger?.kind === "path" && environmentId ? [environmentId, ...linkedEnvironments.keys()] : [],
     trigger?.kind === "path" ? trigger.query : "",
     { titlesOnly: true },
   );
@@ -381,7 +391,7 @@ export function useComposerCommandMenu({
           isDraft: entry.isDraft,
         },
         label: `#${entry.number}`,
-        description: `${entry.isDraft ? t("Draft") : entry.state} · ${
+        description: `${entry.isDraft ? t("Draft") : t(PULL_REQUEST_STATE_LABELS[entry.state])} · ${
           entry.repository.toLowerCase() === pullRequestRepository?.toLowerCase()
             ? ""
             : `${entry.repository} · `
@@ -412,8 +422,12 @@ export function useComposerCommandMenu({
       });
 
       const skillItems = visibleSkills
-        .filter((skill) => matchesSlashSkillQuery(skill, q))
-        .map((skill) => ({
+        .flatMap((skill) => {
+          const score = scoreSlashSkillQuery(skill, q);
+          return score === null ? [] : [{ skill, score }];
+        })
+        .sort((left, right) => left.score - right.score)
+        .map(({ skill }) => ({
           id: `skill:${skill.name}`,
           type: "skill" as const,
           skill,
@@ -519,7 +533,12 @@ export function useComposerCommandMenu({
           })
         : [];
       const environmentItems = environmentId
-        ? matchComposerEnvironmentItems({ environments, environmentId, query: trigger.query })
+        ? matchComposerEnvironmentItems({
+            environments,
+            linkedEnvironments,
+            environmentId,
+            query: trigger.query,
+          })
         : [];
       const modelItems =
         modelOptions && modelProviders
@@ -530,7 +549,7 @@ export function useComposerCommandMenu({
         ...environmentItems,
         ...modelItems,
         ...pathSearch.entries.map((entry) => {
-          const parts = entry.path.split("/");
+          const parts = entry.path.normalize("NFC").split("/");
           return {
             id: `path:${entry.path}`,
             type: "path" as const,
@@ -646,11 +665,18 @@ export function useComposerCommandMenu({
       return;
     }
 
-    if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
+    const clearTriggerThen = (action: () => void) => {
       const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
       setSelection({ start: cleared.cursor, end: cleared.cursor });
       onChangeDraftMessage(cleared.text);
-      onFreshSession();
+      action();
+    };
+    if (item.type === "slash-command" && item.command === "model") {
+      clearTriggerThen(onOpenModelPicker);
+      return;
+    }
+    if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
+      clearTriggerThen(onFreshSession);
       return;
     }
     if (
@@ -658,10 +684,7 @@ export function useComposerCommandMenu({
       item.command.name === USAGE_LIMITS_COMMAND.name &&
       onUsageLimits
     ) {
-      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
-      setSelection({ start: cleared.cursor, end: cleared.cursor });
-      onChangeDraftMessage(cleared.text);
-      onUsageLimits();
+      clearTriggerThen(onUsageLimits);
       return;
     }
 

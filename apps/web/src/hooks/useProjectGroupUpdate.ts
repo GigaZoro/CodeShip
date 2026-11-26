@@ -1,5 +1,6 @@
-import { AuthOrchestrationOperateScope, type ProjectIconOverride } from "@t3tools/contracts";
 import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { AuthOrchestrationOperateScope, type ProjectIconOverride } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   mapAtomCommandResult,
@@ -10,6 +11,7 @@ import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+
 import type { SidebarProjectGroupMember } from "../sidebarProjectGrouping";
 import { useProjects, useServerConfigs } from "../state/entities";
 import { readEnvironment } from "../state/environments";
@@ -54,9 +56,11 @@ export function useProjectGroupUpdate() {
     if (unavailable) {
       return failWith(
         failureTitle,
-        t("Connect {environment} and try again.", {
-          environment: unavailable.environmentLabel ?? t("the selected environment"),
-        }),
+        unavailable.environmentLabel == null
+          ? t("Connect the selected environment and try again.")
+          : t("Connect {environment} and try again.", {
+              environment: unavailable.environmentLabel,
+            }),
       );
     }
     for (const member of members) {
@@ -76,10 +80,12 @@ export function useProjectGroupUpdate() {
       if (result._tag === "Failure") {
         reportProjectFailure(
           members.length > 1
-            ? t("{title} on {environment}", {
-                title: failureTitle,
-                environment: member.environmentLabel ?? t("the current environment"),
-              })
+            ? member.environmentLabel == null
+              ? t("{title} on the current environment", { title: failureTitle })
+              : t("{title} on {environment}", {
+                  title: failureTitle,
+                  environment: member.environmentLabel,
+                })
             : failureTitle,
           result,
         );
@@ -142,9 +148,11 @@ export function checkProjectAccess(
   return denied
     ? failWith(
         failureTitle,
-        t("This connection cannot change projects in {environment}.", {
-          environment: denied.environmentLabel ?? t("this environment"),
-        }),
+        denied.environmentLabel == null
+          ? t("This connection cannot change projects in this environment.")
+          : t("This connection cannot change projects in {environment}.", {
+              environment: denied.environmentLabel,
+            }),
       )
     : null;
 }
@@ -156,7 +164,7 @@ export function reportProjectFailure(title: string, result: AtomCommandResult<un
     stackedThreadToast({
       type: "error",
       title,
-      description: error instanceof Error ? error.message : t("An error occurred."),
+      description: thrownErrorMessage(error, t) ?? t("An error occurred."),
     }),
   );
 }

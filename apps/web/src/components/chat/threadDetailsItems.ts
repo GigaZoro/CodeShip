@@ -1,25 +1,37 @@
-import type { ClientSettings } from "@t3tools/contracts";
 import { msg } from "~/i18n";
+import type { ClientSettings } from "@t3tools/contracts";
 
 // Ids are stored in client settings, so never rename one.
 export const THREAD_DETAILS_ITEMS = [
   { id: "environment", label: msg("Environment and worktree"), defaultVisible: true },
   { id: "openIn", label: msg("Open in editor"), defaultVisible: true },
   { id: "scripts", label: msg("Project scripts"), defaultVisible: true },
-  { id: "assistants", label: msg("Web assistants"), defaultVisible: true },
   { id: "branch", label: msg("Branch and pull request"), defaultVisible: true },
-  { id: "gitActions", label: msg("Git actions"), defaultVisible: false },
-  { id: "changes", label: msg("Changes"), defaultVisible: true },
-  { id: "status", label: msg("Agent status"), defaultVisible: true },
-  { id: "context", label: msg("Context window"), defaultVisible: true },
-  { id: "usage", label: msg("Usage limits"), defaultVisible: true },
-  { id: "tasks", label: msg("Tasks"), defaultVisible: true },
-  { id: "lineage", label: msg("Lineage"), defaultVisible: true },
+  { id: "gitActions", label: msg("Git actions"), defaultVisible: true },
+  {
+    id: "changes",
+    label: msg("Changes"),
+    defaultVisible: true,
+  },
+  {
+    id: "servers",
+    label: msg("Servers"),
+    defaultVisible: true,
+  },
+  { id: "automations", label: msg("Automations"), defaultVisible: true },
+  {
+    id: "lineage",
+    label: msg("Lineage"),
+    defaultVisible: true,
+  },
   { id: "sideChats", label: msg("Side chats"), defaultVisible: true },
+  { id: "usage", label: msg("Usage limits"), defaultVisible: false },
+  { id: "context", label: msg("Context window"), defaultVisible: false },
+  { id: "assistants", label: msg("Web assistants"), defaultVisible: true },
+  { id: "status", label: msg("Agent status"), defaultVisible: true },
+  { id: "tasks", label: msg("Tasks"), defaultVisible: true },
   { id: "outline", label: msg("Your prompts"), defaultVisible: true },
   { id: "machineLoad", label: msg("Machine load"), defaultVisible: true },
-  { id: "servers", label: msg("Servers"), defaultVisible: true },
-  { id: "automations", label: msg("Automations"), defaultVisible: true },
   { id: "agentActions", label: msg("Ask the agent"), defaultVisible: false },
 ] as const;
 

@@ -1,5 +1,6 @@
 import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
+
 import * as Schema from "effect/Schema";
 import {
   useEffect,
@@ -21,6 +22,7 @@ import {
 import { getLocalStorageItem, removeLocalStorageItem } from "../hooks/useLocalStorage";
 import {
   isRichTextBoldShortcut,
+  isSidebarToggleShortcut,
   resolveShortcutCommand,
   shortcutLabelForCommand,
 } from "../keybindings";
@@ -67,10 +69,10 @@ import {
   useSidebar,
   useSidebarVisibility,
 } from "./ui/sidebar";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { registerCommands, registerMenuAction } from "../shortcuts/dispatcher";
 import { resolveThreadRouteRef } from "../threadRoutes";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "var(--desktop-window-controls-inset, 90px)";
 
@@ -124,11 +126,11 @@ function readInitialThreadSidebarWidth(): number {
   try {
     return resolveInitialThreadSidebarWidth(
       getLocalStorageItem(THREAD_SIDEBAR_WIDTH_STORAGE_KEY, Schema.Finite),
-      window.innerWidth,
+      readViewportWidth(),
     );
   } catch (error) {
     console.error("Could not read persisted thread sidebar width.", error);
-    return resolveInitialThreadSidebarWidth(null, window.innerWidth);
+    return resolveInitialThreadSidebarWidth(null, readViewportWidth());
   }
 }
 
@@ -348,15 +350,17 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
         // the toggle stays available everywhere else.
         return;
       }
-      const command = resolveShortcutCommand(event, keybindings, {
-        context: {
-          terminalFocus: isTerminalFocused(),
-          previewFocus: isPreviewFocused(),
-          ...readRoutePanelsOpen(router),
-          usagePageOpen,
-        },
-      });
-      if (command !== "sidebar.toggle") return;
+      if (
+        !isSidebarToggleShortcut(event, keybindings, {
+          context: {
+            terminalFocus: isTerminalFocused(),
+            previewFocus: isPreviewFocused(),
+            ...readRoutePanelsOpen(router),
+            usagePageOpen,
+          },
+        })
+      )
+        return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -390,25 +394,24 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
       data-sidebar-control=""
     >
       {showSidebar ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <SidebarTrigger
-                variant={isSidebarVisible && stageBackdropVariant ? "media-navigation" : "ghost"}
-                className={cn(
-                  "pointer-events-auto",
-                  isSidebarVisible && stageBackdropVariant && "relative top-auto translate-y-0",
-                )}
-                aria-label={t("Toggle main sidebar")}
-              />
-            }
-          />
-          <TooltipPopup side="bottom">
-            {shortcutLabel
+        <SharedTooltipTrigger
+          render={
+            <SidebarTrigger
+              variant={isSidebarVisible && stageBackdropVariant ? "media-navigation" : "ghost"}
+              className={cn(
+                "pointer-events-auto",
+                isSidebarVisible && stageBackdropVariant && "relative top-auto translate-y-0",
+              )}
+              aria-label={t("Toggle main sidebar")}
+            />
+          }
+          label={
+            shortcutLabel
               ? t("Toggle main sidebar ({shortcut})", { shortcut: shortcutLabel })
-              : t("Toggle main sidebar")}
-          </TooltipPopup>
-        </Tooltip>
+              : t("Toggle main sidebar")
+          }
+          side="bottom"
+        />
       ) : null}
     </div>
   );
@@ -493,6 +496,7 @@ export function AppSidebarLayout({
               role="navigation"
               aria-label={sidebarLabel}
               resizable={{
+                collapseOnResize: true,
                 maxWidth: sidebarMaximumWidth,
                 minWidth: sidebarMinimumWidth,
                 shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>

@@ -1,6 +1,6 @@
+import { t, getFormattingLocale, tn } from "~/i18n";
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
-import { getFormattingLocale, tn } from "~/i18n";
 
 type ComposerSubmitEvent = { preventDefault: () => void };
 
@@ -10,7 +10,11 @@ type ComposerSubmissionInput = {
   submissionTarget: "provider-turn" | "pending-user-input";
 };
 
-export function getComposerPromptLengthValidationMessage(prompt: string): string | null {
+export function getComposerPromptLengthValidationMessage(
+  prompt: string,
+  _resolve: typeof t = t,
+  locale = getFormattingLocale(),
+): string | null {
   const normalizedPrompt = prompt.trim();
   const inputLength = Math.max(
     normalizedPrompt.length,
@@ -24,17 +28,18 @@ export function getComposerPromptLengthValidationMessage(prompt: string): string
     "Prompt is {excess} character over the {max}-character limit. Shorten or split it before sending.",
     "Prompt is {excess} characters over the {max}-character limit. Shorten or split it before sending.",
     {
-      excess: excessCharacters.toLocaleString(getFormattingLocale()),
-      max: PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString(getFormattingLocale()),
+      excess: excessCharacters.toLocaleString(locale),
+      max: PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString(locale),
     },
   );
 }
 
 export function getComposerSubmissionValidationMessage(
   options: ComposerSubmissionInput,
+  resolve: typeof t = t,
 ): string | null {
   return options.submissionTarget === "provider-turn"
-    ? getComposerPromptLengthValidationMessage(options.providerInput ?? options.prompt)
+    ? getComposerPromptLengthValidationMessage(options.providerInput ?? options.prompt, resolve)
     : null;
 }
 

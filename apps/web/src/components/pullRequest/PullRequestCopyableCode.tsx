@@ -1,8 +1,9 @@
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { t } from "~/i18n";
+
+import { type ClipboardTarget, useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { t } from "~/i18n";
 
 export function PullRequestCopyableCode({
   value,
@@ -14,7 +15,7 @@ export function PullRequestCopyableCode({
   onError,
 }: {
   readonly value: string;
-  readonly target: string;
+  readonly target: ClipboardTarget;
   readonly copyLabel: string;
   readonly copiedLabel: string;
   readonly className?: string;
@@ -60,7 +61,7 @@ export function PullRequestCopyableCode({
         </span>
       </TooltipTrigger>
       <TooltipPopup variant="code" side={tooltipSide}>
-        {t("{label}: {value}", { label: isCopied ? t("Copied") : copyLabel, value })}
+        {`${isCopied ? t("Copied") : copyLabel}: ${value}`}
       </TooltipPopup>
     </Tooltip>
   );

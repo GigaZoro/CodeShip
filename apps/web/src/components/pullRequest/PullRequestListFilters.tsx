@@ -1,3 +1,4 @@
+import { msg, t, tn } from "~/i18n";
 import { Spinner } from "~/components/ui/spinner";
 import type {
   EnvironmentId,
@@ -21,6 +22,7 @@ import {
   TagIcon,
   UserRoundIcon,
 } from "lucide-react";
+
 import { type ElementType, useState } from "react";
 
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
@@ -46,7 +48,6 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   pullRequestAuthorChoices,
   selectedPullRequestAuthor,
@@ -55,9 +56,10 @@ import {
   type PullRequestAuthorFacet,
   type PullRequestLabelFacet,
 } from "./pullRequestList.logic";
+import { resolveFilterOptions } from "./pullRequestListOptions";
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import { PullRequestGlyph } from "./pullRequestIcons";
-import { msg, t, tn, type Message } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export interface PullRequestFilterOption<Value extends string> {
   readonly value: Value;
@@ -65,18 +67,6 @@ export interface PullRequestFilterOption<Value extends string> {
   readonly Icon: ElementType<{ className?: string }>;
   readonly project?: ProjectFaviconProject;
   readonly unavailable?: string | undefined;
-}
-
-export type PullRequestFilterOptionSource<Value extends string> = Omit<
-  PullRequestFilterOption<Value>,
-  "label"
-> & { readonly label: Message };
-
-/** Option tables hold `msg()` labels at module level; translate them where they are shown. */
-export function translatePullRequestFilterOptions<Value extends string>(
-  options: ReadonlyArray<PullRequestFilterOptionSource<Value>>,
-): ReadonlyArray<PullRequestFilterOption<Value>> {
-  return options.map((option) => ({ ...option, label: t(option.label) }));
 }
 
 export function PullRequestFilterOptionIcon<Value extends string>({
@@ -109,11 +99,15 @@ export function pullRequestHostLabel(
 export function PullRequestSearchInput({
   value,
   busy,
+  label,
+  placeholder,
   onChange,
   onSubmit,
 }: {
   value: string;
   busy?: boolean;
+  label: string;
+  placeholder: string;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
 }) {
@@ -123,8 +117,10 @@ export function PullRequestSearchInput({
       <InputGroupAddon>
         {busy ? <Spinner aria-hidden /> : <SearchIcon aria-hidden />}
       </InputGroupAddon>
+      {/* Native search inputs clear on Escape even during IME composition. */}
       <InputGroupInput
-        type="search"
+        type="text"
+        role="searchbox"
         value={draft ?? value}
         onFocus={() => setDraft(value)}
         onBlur={() => setDraft(null)}
@@ -136,12 +132,19 @@ export function PullRequestSearchInput({
           }
         }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-            onSubmit(event.currentTarget.value);
-          }
+          const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+          if (event.key === "Enter" && !composing) onSubmit(event.currentTarget.value);
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          if (!composing && !event.currentTarget.value) return;
+          // The pull requests page leaves on an Escape that reaches it.
+          event.stopPropagation();
+          if (composing) return;
+          setDraft("");
+          onChange("");
         }}
-        placeholder={t("Search pull requests, or label:bug")}
-        aria-label={t("Search pull requests")}
+        placeholder={placeholder}
+        aria-label={label}
       />
     </InputGroup>
   );
@@ -158,24 +161,40 @@ export const pullRequestProjectKey = (project: {
 }) => JSON.stringify([project.environmentId, project.id]);
 
 const DRAFT_OPTIONS = [
-  { value: UNFILTERED_VALUE, label: msg("All"), Icon: LayersIcon },
+  {
+    value: UNFILTERED_VALUE,
+    label: msg("All"),
+    Icon: LayersIcon,
+  },
   { value: "only", label: msg("Drafts only"), Icon: PullRequestGlyph.draft },
   { value: "hide", label: msg("Hide drafts"), Icon: EyeOffIcon },
-] as const satisfies ReadonlyArray<PullRequestFilterOptionSource<string>>;
+] as const satisfies ReadonlyArray<PullRequestFilterOption<string>>;
 
 const REVIEW_OPTIONS = [
-  { value: UNFILTERED_VALUE, label: msg("All"), Icon: LayersIcon },
-  { value: "approved", label: msg("Approved"), Icon: CircleCheckIcon },
+  {
+    value: UNFILTERED_VALUE,
+    label: msg("All"),
+    Icon: LayersIcon,
+  },
+  {
+    value: "approved",
+    label: msg("Approved"),
+    Icon: CircleCheckIcon,
+  },
   { value: "changes-requested", label: msg("Changes requested"), Icon: CircleXIcon },
   { value: "review-required", label: msg("Review required"), Icon: CircleDashedIcon },
   { value: "none", label: msg("No reviews"), Icon: CircleSlashIcon },
-] as const satisfies ReadonlyArray<PullRequestFilterOptionSource<string>>;
+] as const satisfies ReadonlyArray<PullRequestFilterOption<string>>;
 
 const CHECKS_OPTIONS = [
-  { value: UNFILTERED_VALUE, label: msg("All"), Icon: LayersIcon },
+  {
+    value: UNFILTERED_VALUE,
+    label: msg("All"),
+    Icon: LayersIcon,
+  },
   { value: "passing", label: msg("Passing"), Icon: CircleCheckIcon },
   { value: "failing", label: msg("Failing"), Icon: CircleXIcon },
-] as const satisfies ReadonlyArray<PullRequestFilterOptionSource<string>>;
+] as const satisfies ReadonlyArray<PullRequestFilterOption<string>>;
 
 function PullRequestFilterRadioGroup<Value extends string>({
   label,
@@ -207,24 +226,19 @@ function PullRequestFilterRadioGroup<Value extends string>({
             <span className="flex min-w-0 items-center gap-2">
               <PullRequestFilterOptionIcon option={option} />
               <span className="min-w-0 flex-1 truncate">{option.label}</span>
-              {option.unavailable ? <span className="shrink-0">{t("· Unavailable")}</span> : null}
+              {option.unavailable ? <span className="shrink-0">· {t("Unavailable")}</span> : null}
               <MenuRadioItemIndicator />
             </span>
           </MenuRadioItem>
         );
         if (!option.unavailable) return item;
-        return (
-          <Tooltip key={option.value}>
-            <TooltipTrigger render={item} />
-            <TooltipPopup side="top">{option.unavailable}</TooltipPopup>
-          </Tooltip>
-        );
+        return <SharedTooltipTrigger key={option.value} render={item} label={option.unavailable} />;
       })}
     </MenuRadioGroup>
   );
 }
 
-function PullRequestFilterRadioSubmenu<Value extends string>({
+export function PullRequestFilterRadioSubmenu<Value extends string>({
   label,
   value,
   options,
@@ -619,19 +633,19 @@ export function PullRequestFiltersMenu({
         <PullRequestFilterRadioSubmenu
           label={t("Draft")}
           value={filters.draft ?? UNFILTERED_VALUE}
-          options={translatePullRequestFilterOptions(DRAFT_OPTIONS)}
+          options={resolveFilterOptions(DRAFT_OPTIONS, t)}
           onChange={(draft) => updateFilter("draft", draft)}
         />
         <PullRequestFilterRadioSubmenu
           label={t("Review")}
           value={filters.review ?? UNFILTERED_VALUE}
-          options={translatePullRequestFilterOptions(REVIEW_OPTIONS)}
+          options={resolveFilterOptions(REVIEW_OPTIONS, t)}
           onChange={(review) => updateFilter("review", review)}
         />
         <PullRequestFilterRadioSubmenu
           label={t("Checks")}
           value={filters.checks ?? UNFILTERED_VALUE}
-          options={translatePullRequestFilterOptions(CHECKS_OPTIONS)}
+          options={resolveFilterOptions(CHECKS_OPTIONS, t)}
           onChange={(checks) => updateFilter("checks", checks)}
         />
         {hostOptions.length > 2 ? (

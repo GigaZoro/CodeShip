@@ -2,6 +2,7 @@ import { t } from "~/i18n";
 import { collectComposerModelMentions } from "@t3tools/client-runtime/composer-model-mentions";
 import type { EnvironmentId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+
 import { Children, cloneElement, isValidElement, type ReactNode } from "react";
 import { matchInlineSkills } from "@t3tools/shared/inlineSkills";
 
@@ -9,6 +10,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { SKILL_CHIP_ICON_SVG } from "../composerInlineChip";
 import { ContextChipPopover } from "../contextChipParts";
 import { Button } from "../ui/button";
+import { PopoverClose } from "../ui/popover";
 import { ModelMentionChip } from "./ModelMentionChip";
 
 function SkillInlineText(props: {
@@ -136,9 +138,12 @@ export function SkillChipPopover(props: {
         <p className="font-medium">{props.label}</p>
         <p>{props.description || t("No description is available for this skill.")}</p>
         {props.onViewInstructions ? (
-          <Button variant="outline" size="sm" onClick={props.onViewInstructions}>
+          <PopoverClose
+            render={<Button variant="outline" size="sm" />}
+            onClick={props.onViewInstructions}
+          >
             {t("View instructions")}
-          </Button>
+          </PopoverClose>
         ) : null}
       </div>
     </ContextChipPopover>

@@ -30,8 +30,11 @@ export const SelectProviderOptionDescriptor = Schema.Struct({
   options: Schema.Array(ProviderOptionChoice),
   currentValue: Schema.optional(TrimmedNonEmptyString),
   promptInjectedValues: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
-  /** Marks the reasoning control when its id is an agent's own, such as an ACP `thought_level`. */
-  role: Schema.optional(Schema.Literal("reasoning")),
+  /**
+   * `reasoning` marks the reasoning control when its id is an agent's own, such as an ACP
+   * `thought_level`. `mode` marks the agent's own session mode, which can skip approvals.
+   */
+  role: Schema.optional(Schema.Literals(["reasoning", "mode"])),
 });
 export type SelectProviderOptionDescriptor = typeof SelectProviderOptionDescriptor.Type;
 
@@ -39,6 +42,7 @@ export const BooleanProviderOptionDescriptor = Schema.Struct({
   ...ProviderOptionDescriptorBase,
   type: Schema.Literal("boolean"),
   currentValue: Schema.optional(Schema.Boolean),
+  role: Schema.optional(Schema.Literal("mode")),
 });
 export type BooleanProviderOptionDescriptor = typeof BooleanProviderOptionDescriptor.Type;
 
@@ -135,6 +139,7 @@ export const REASONING_EFFORT_OPTION_IDS: ReadonlyArray<string> = [
   "variant",
   "reasoning_effort",
   "thinking_level",
+  "thought_level",
 ];
 
 export const DEFAULT_MODEL = "gpt-6-astra";

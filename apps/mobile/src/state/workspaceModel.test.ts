@@ -49,6 +49,7 @@ function environment(
     },
     serverConfig: null,
     lastSeenAt: null,
+    refusedRouteIds: [],
   };
 }
 

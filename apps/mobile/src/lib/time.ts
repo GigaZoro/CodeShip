@@ -1,3 +1,5 @@
+import { msg, t } from "./i18n";
+
 // Host timestamps may carry UTC offsets or mixed fractions, so text order is not time order.
 export function compareTimestamps(left: string, right: string): number {
   return (Date.parse(left) || 0) - (Date.parse(right) || 0);
@@ -10,23 +12,32 @@ export function byTimestamp(newestFirst: boolean) {
       : compareTimestamps(left.date, right.date);
 }
 
-export function relativeTime(input: string, nowMs: number = Date.now()): string {
+export function relativeTime(
+  input: string,
+  nowMs: number = Date.now(),
+  resolve: typeof t = t,
+): string {
+  const underAMinute = () => resolve(msg("<1m"));
   const timestamp = Date.parse(input);
   if (Number.isNaN(timestamp)) {
-    return "<1m";
+    return underAMinute();
   }
 
   const deltaSeconds = Math.max(0, Math.floor((nowMs - timestamp) / 1000));
-  if (deltaSeconds < 60) return "<1m";
+  if (deltaSeconds < 60) return underAMinute();
 
   const deltaMinutes = Math.floor(deltaSeconds / 60);
-  if (deltaMinutes < 60) return `${deltaMinutes}m`;
+  if (deltaMinutes < 60) {
+    return resolve(msg("{count}m"), { count: String(deltaMinutes) });
+  }
 
   const deltaHours = Math.floor(deltaMinutes / 60);
-  if (deltaHours < 24) return `${deltaHours}h`;
+  if (deltaHours < 24) {
+    return resolve(msg("{count}h"), { count: String(deltaHours) });
+  }
 
   const deltaDays = Math.floor(deltaHours / 24);
-  return `${deltaDays}d`;
+  return resolve(msg("{count}d"), { count: String(deltaDays) });
 }
 
 /** Milliseconds until the relative-time label next changes. */

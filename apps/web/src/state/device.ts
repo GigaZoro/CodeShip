@@ -1,13 +1,11 @@
+import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { createDeviceEnvironmentAtoms } from "@t3tools/client-runtime/state/device";
 import {
   type DeviceHubAccess,
   resolveDeviceHubAccess,
 } from "@t3tools/client-runtime/state/deviceHubAccess";
-import {
-  createEnvironmentRpcQueryAtomFamily,
-  runAtomCommand,
-} from "@t3tools/client-runtime/state/runtime";
+import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
 import {
   type DeviceDetail,
   type DeviceServiceState,
@@ -15,6 +13,7 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
@@ -45,6 +44,7 @@ export function useDeviceState(environmentId: EnvironmentId | null): {
 } {
   const query = useEnvironmentQuery(
     environmentId === null ? null : deviceEnvironment.state({ environmentId, input: {} }),
+    t,
   );
   return {
     state: query.data ?? EMPTY_DEVICE_STATE,
@@ -127,23 +127,21 @@ export const deviceDetailAtom = Atom.family((key: DeviceDetailKey) =>
  */
 export const deviceDetailReadAtom = Atom.family((key: DeviceDetailKey) =>
   Atom.make((get) =>
-    Effect.promise(() =>
-      runAtomCommand(
-        get.registry,
-        deviceEnvironment.detail,
-        { environmentId: key.environmentId, input: { hostId: key.hostId, deviceId: key.deviceId } },
-        { reportFailure: false },
+    deviceEnvironment.detail
+      .run(get.registry, {
+        environmentId: key.environmentId,
+        input: { hostId: key.hostId, deviceId: key.deviceId },
+      })
+      .pipe(
+        Effect.matchCause({
+          onSuccess: (detail) => get.set(deviceDetailAtom(key), { detail, error: null }),
+          onFailure: (cause) =>
+            get.set(deviceDetailAtom(key), {
+              detail: null,
+              error: formatEnvironmentQueryError(cause),
+            }),
+        }),
       ),
-    ).pipe(
-      Effect.map((result) =>
-        get.set(
-          deviceDetailAtom(key),
-          result._tag === "Success"
-            ? { detail: result.value, error: null }
-            : { detail: null, error: formatEnvironmentQueryError(result.cause) },
-        ),
-      ),
-    ),
   ).pipe(Atom.withLabel(`device-detail-read:${key.hostId}:${key.deviceId}`)),
 );
 
@@ -153,14 +151,7 @@ export const deviceDetailReadAtom = Atom.family((key: DeviceDetailKey) =>
  */
 export const deviceHostProbeAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get) =>
-    Effect.promise(() =>
-      runAtomCommand(
-        get.registry,
-        deviceEnvironment.list,
-        { environmentId, input: {} },
-        { reportFailure: false },
-      ),
-    ).pipe(Effect.asVoid),
+    deviceEnvironment.list.run(get.registry, { environmentId, input: {} }).pipe(Effect.ignore),
   ).pipe(Atom.withLabel(`device-host-probe:${environmentId}`)),
 );
 

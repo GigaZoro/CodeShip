@@ -26,10 +26,12 @@ import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 
 import {
   summarizeT3ToolCalls,
+  t3ToolOutcomeLabel,
   t3ToolResultIndicatesFailure,
   type T3ToolSummaryCall,
 } from "@t3tools/client-runtime/t3ToolSummary";
-import { t, tn } from "@t3tools/shared/i18n";
+import { msg, t, tn } from "@t3tools/shared/i18n";
+import { t3ToolSentence } from "./t3ToolSentences.ts";
 
 export type WorkLogToolLifecycleStatus = RuntimeItemStatus | "stopped" | "idle";
 
@@ -70,18 +72,15 @@ export function contextCompactionTokenCounts(
   return { before: formatTokens(item.beforeTokenCount), after: formatTokens(item.afterTokenCount) };
 }
 
-export function contextCompactionLabel(item: CompactionLabelItem): string {
-  if (item.status === "failed") return t("Context compaction failed");
+export function contextCompactionLabel(item: CompactionLabelItem, resolve: typeof t = t): string {
+  if (item.status === "failed") return resolve(msg("Context compaction failed"));
   if (item.status === "cancelled" || item.status === "interrupted")
-    return t("Context compaction stopped");
-  if (isOrchestrationV2WorkActive(item.status)) return t("Compacting context");
+    return resolve(msg("Context compaction stopped"));
+  if (isOrchestrationV2WorkActive(item.status)) return resolve(msg("Compacting context"));
   const tokens = contextCompactionTokenCounts(item);
   return tokens
-    ? t("Context compacted {before} → {after} tokens", {
-        before: tokens.before,
-        after: tokens.after,
-      })
-    : t("Context compacted");
+    ? resolve(msg("Context compacted {before} → {after} tokens"), tokens)
+    : resolve(msg("Context compacted"));
 }
 
 export interface WorkLogPresentationEntry {
@@ -169,25 +168,24 @@ function workEntryToolOutput(
     : (data?.output ?? data?.result ?? data?.rawOutput ?? data?.content);
 }
 
+function t3ToolStatusKey(status: string | undefined) {
+  return status === "inProgress" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "declined" ||
+    status === "stopped"
+    ? status
+    : "other";
+}
+
 function resolveT3McpToolPresentation(
   definition: T3McpToolDefinition | null,
   status: string | undefined,
-  data?: unknown,
+  data: unknown,
+  resolve: typeof t,
 ) {
   if (!definition) return null;
-  const [action, running, completed, detail] = definition.labels;
-  const verb =
-    status === "inProgress"
-      ? running
-      : status === "completed"
-        ? completed
-        : status === "failed"
-          ? t("Failed to {action}", { action: action.toLowerCase() })
-          : status === "declined"
-            ? t("Declined to {action}", { action: action.toLowerCase() })
-            : status === "stopped"
-              ? t("Stopped {action}", { action: running.toLowerCase() })
-              : running;
+  const detail = definition.labels[3];
 
   const actionKind =
     definition.summaryAction === "link-pr" ||
@@ -205,16 +203,41 @@ function resolveT3McpToolPresentation(
   const number = urlTarget?.link.number ?? input?.number;
   const { shortLabel } = (urlTarget?.definition ?? sourceControlClients.get(undefined))
     .changeRequest;
-  const target =
+  const pullRequestNumber =
     actionKind !== undefined &&
     actionKind !== "list-prs" &&
     typeof number === "number" &&
     Number.isSafeInteger(number) &&
     number > 0
-      ? `${shortLabel} #${number}`
-      : detail;
+      ? number
+      : null;
+  const sentence = t3ToolSentence(definition.labels);
+  const statusKey = t3ToolStatusKey(status);
+  // A tool added to the shared table after `t3ToolSentences.ts` was generated.
+  const [action, running, completed] = definition.labels;
+  const fallbackVerb =
+    status === "inProgress"
+      ? running
+      : status === "completed"
+        ? completed
+        : status === "failed"
+          ? `Failed to ${action.toLowerCase()}`
+          : status === "declined"
+            ? `Declined to ${action.toLowerCase()}`
+            : status === "stopped"
+              ? `Stopped ${running.toLowerCase()}`
+              : running;
+  const displayName =
+    sentence === undefined
+      ? `${fallbackVerb} ${pullRequestNumber === null ? detail : `${shortLabel} #${pullRequestNumber}`}`
+      : pullRequestNumber !== null && sentence.changeRequest !== undefined
+        ? resolve(sentence.changeRequest[statusKey], {
+            changeRequest: shortLabel,
+            number: String(pullRequestNumber),
+          })
+        : resolve(sentence.detail[statusKey]);
   return {
-    displayName: t("{verb} {target}", { verb, target }),
+    displayName,
     icon: definition.icon,
     ...(actionKind === undefined ? {} : { action: actionKind }),
   };
@@ -228,23 +251,73 @@ export function liveActivityToolStatus(status: string | undefined, presentTense:
   return "completed";
 }
 
+export function genericCommandStatusLabel(
+  status: ReturnType<typeof liveActivityToolStatus>,
+  resolve: typeof t = t,
+) {
+  return resolve(
+    status === "inProgress"
+      ? msg("Running command")
+      : status === "failed"
+        ? msg("Failed command")
+        : status === "declined"
+          ? msg("Declined command")
+          : status === "stopped"
+            ? msg("Stopped command")
+            : msg("Ran command"),
+  );
+}
+
+const GENERIC_COMMAND_TITLES = new Set(["Ran command", "Run command", "Command"]);
+
+export function commandlessCommandLabel(
+  entry: Pick<
+    WorkLogPresentationEntry,
+    "itemType" | "command" | "toolTitle" | "label" | "structuredPayload"
+  >,
+  status: ReturnType<typeof liveActivityToolStatus>,
+  resolve: typeof t = t,
+): string | null {
+  if (entry.itemType !== "command_execution" || entry.command?.trim()) return null;
+  // The provider's own title, before a client substitutes its translated fallback.
+  const title = (
+    entry.structuredPayload ? entry.structuredPayload.title : entry.toolTitle || entry.label
+  )?.trim();
+  return !title || GENERIC_COMMAND_TITLES.has(normalizeCompactToolLabel(title))
+    ? genericCommandStatusLabel(status, resolve)
+    : null;
+}
+
 export function resolveWorkEntryToolPresentation(
   entry: Pick<
     WorkLogPresentationEntry,
     "label" | "toolTitle" | "toolData" | "toolLifecycleStatus" | "structuredPayload"
   >,
   fallbackStatus?: "inProgress" | "completed",
+  resolve: typeof t = t,
 ) {
   const definition = resolveT3McpToolDefinition(
     workEntryToolName(entry),
     workEntryToolInput(entry),
   );
+  const output = workEntryToolOutput(entry);
+  const failed = definition !== null && t3ToolResultIndicatesFailure(output);
   const status = entry.toolLifecycleStatus ?? fallbackStatus;
-  return resolveT3McpToolPresentation(
+  const presentation = resolveT3McpToolPresentation(
     definition,
-    definition && t3ToolResultIndicatesFailure(workEntryToolOutput(entry)) ? "failed" : status,
+    failed ? "failed" : status,
     entry.toolData,
+    resolve,
   );
+  if (definition === null || presentation === null || failed || status !== "completed") {
+    return presentation;
+  }
+  const outcomeLabel = t3ToolOutcomeLabel(
+    definition.summaryAction,
+    { input: workEntryToolInput(entry), output, outcome: "completed" },
+    resolve,
+  );
+  return outcomeLabel === undefined ? presentation : { ...presentation, displayName: outcomeLabel };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -410,6 +483,13 @@ function computeToolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
 }
 
 export function workEntryViewedImagePath(entry: WorkLogPresentationEntry): string | null {
+  // The file may not exist until the call runs, and an open row never retries a failed asset URL.
+  return entry.toolLifecycleStatus === "failed" || entry.toolLifecycleStatus === "inProgress"
+    ? null
+    : viewedImagePathOf(entry);
+}
+
+function viewedImagePathOf(entry: WorkLogPresentationEntry): string | null {
   const viewedImagePath = entry.viewedImagePath?.trim();
   if (
     viewedImagePath !== undefined &&
@@ -431,7 +511,28 @@ export function workEntryViewedImagePath(entry: WorkLogPresentationEntry): strin
 export function workEntriesViewedImagePaths(
   entries: ReadonlyArray<WorkLogPresentationEntry>,
 ): string[] {
-  return [...new Set(entries.flatMap((entry) => workEntryViewedImagePath(entry) ?? []))];
+  return workEntriesViewedImages(entries).flatMap(({ path, pending }) => (pending ? [] : path));
+}
+
+export interface ViewedImage {
+  readonly path: string;
+  /** Only running Reads opened it, so its file may not exist yet; show a placeholder, not a request. */
+  readonly pending: boolean;
+}
+
+/** {@link workEntriesViewedImagePaths}, plus the images a running Read is opening. */
+export function workEntriesViewedImages(
+  entries: ReadonlyArray<WorkLogPresentationEntry>,
+): ViewedImage[] {
+  const pendingByPath = new Map<string, boolean>();
+  for (const entry of entries) {
+    if (entry.toolLifecycleStatus === "failed") continue;
+    const path = viewedImagePathOf(entry);
+    if (path === null) continue;
+    const pending = entry.toolLifecycleStatus === "inProgress";
+    pendingByPath.set(path, (pendingByPath.get(path) ?? true) && pending);
+  }
+  return [...pendingByPath].map(([path, pending]) => ({ path, pending }));
 }
 
 export interface ViewedImageAsset {
@@ -440,13 +541,22 @@ export interface ViewedImageAsset {
   readonly srcFragment: string;
 }
 
+/**
+ * A tool reports the literal path it read, not a markdown destination. Escape what markdown
+ * resolution would decode or split off, so a name like Grok's `sessions/%2FUsers...` survives.
+ */
+export function viewedImageMarkdownSource(path: string): string {
+  return /^file:/i.test(path) ? path : path.replace(/[%#?]/g, encodeURIComponent);
+}
+
 export function resolveViewedImageAsset(
-  source: string,
+  path: string,
   input: {
     readonly threadId: ThreadId;
     readonly workspaceRoot?: string | null | undefined;
   },
 ): ViewedImageAsset | null {
+  const source = viewedImageMarkdownSource(path);
   const imageSource = classifyMarkdownImageSource(source, input.workspaceRoot ?? ".");
   if (imageSource._tag !== "WorkspaceFile") return null;
   const resolvedFilePath =
@@ -480,7 +590,7 @@ function toolGroupActionCount(
   return changedFiles.size + editsWithoutFileDetails;
 }
 
-function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
+function toolGroupActionLabel(action: ToolGroupAction, count: number, resolve: typeof t): string {
   switch (action) {
     case "link-pr":
       return tn(count, "Linked {count} pull request", "Linked {count} pull requests");
@@ -496,8 +606,12 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
       );
     case "list-prs":
       return count === 1
-        ? t("Checked linked pull requests")
-        : t("Checked linked pull requests {count} times", { count });
+        ? resolve(msg("Checked linked pull requests"))
+        : tn(
+            count,
+            "Checked linked pull requests {count} time",
+            "Checked linked pull requests {count} times",
+          );
     case "read":
       return tn(count, "Read {count} file", "Read {count} files");
     case "edit":
@@ -519,6 +633,17 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
     case "update":
       return tn(count, "Received {count} update", "Received {count} updates");
   }
+}
+
+function joinClauses(items: ReadonlyArray<string>, resolve: typeof t): string {
+  if (items.length < 2) return items[0] ?? "";
+  if (items.length === 2) {
+    return resolve(msg("{first} and {second}"), { first: items[0]!, second: items[1]! });
+  }
+  return resolve(msg("{head}, and {last}"), {
+    head: items.slice(0, -1).join(", "),
+    last: items.at(-1)!,
+  });
 }
 
 function t3ToolSummaryCall(entry: WorkLogPresentationEntry): T3ToolSummaryCall {
@@ -581,14 +706,20 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
   }
 }
 
-export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): {
+export function summarizeToolGroup(
+  entries: ReadonlyArray<WorkLogPresentationEntry>,
+  resolve: typeof t = t,
+): {
   summary: string;
   hasFailure: boolean;
 } {
   const toolEntries = entries.filter((entry) => entry.itemType !== "reasoning");
   if (entries.length > 0 && toolEntries.length === 0) {
     return {
-      summary: entries.length === 1 ? "Thought" : `Thought (×${entries.length})`,
+      summary:
+        entries.length === 1
+          ? resolve(msg("Thought"))
+          : resolve(msg("Thought (×{count})"), { count: entries.length }),
       hasFailure: false,
     };
   }
@@ -622,11 +753,12 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
     count: group.entries.length,
     priority: summaryActionPriority(action),
     ...(group.t3Action
-      ? summarizeT3ToolCalls(group.t3Action, group.entries.map(t3ToolSummaryCall))
+      ? summarizeT3ToolCalls(group.t3Action, group.entries.map(t3ToolSummaryCall), resolve)
       : {
           label: toolGroupActionLabel(
             group.action,
             toolGroupActionCount(group.action, group.entries),
+            resolve,
           ),
           failedCount: group.entries.filter(workEntryDisplayIndicatesToolFailure).length,
         }),
@@ -639,22 +771,14 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   if (sources.size > 0) {
     const sourceValues = [...sources.values()];
     const sourceNames = [...new Set(sourceValues.map((source) => source.name))];
-    const formattedNames =
-      sourceNames.length < 2
-        ? sourceNames[0]!
-        : sourceNames.length === 2
-          ? t("{first} and {second}", { first: sourceNames[0]!, second: sourceNames[1]! })
-          : t("{head}, and {last}", {
-              head: sourceNames.slice(0, -1).join(", "),
-              last: sourceNames.at(-1)!,
-            });
+    const names = joinClauses(sourceNames, resolve);
     const allIntegrations = sourceValues.every((source) => source.kind === "integration");
     labels.unshift(
       allIntegrations
-        ? tn(sourceNames.length, "Used {names} integration", "Used {names} integrations", {
-            names: formattedNames,
-          })
-        : t("Used {names}", { names: formattedNames }),
+        ? sourceNames.length === 1
+          ? resolve(msg("Used {names} integration"), { names })
+          : resolve(msg("Used {names} integrations"), { names })
+        : resolve(msg("Used {names}"), { names }),
     );
   }
   const sourcedCount = entries.filter(
@@ -672,15 +796,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   const sentenceLabels = labels.map((label, index) =>
     index === 0 ? label : label.charAt(0).toLowerCase() + label.slice(1),
   );
-  const summary =
-    sentenceLabels.length < 3
-      ? sentenceLabels.length === 2
-        ? t("{first} and {second}", { first: sentenceLabels[0]!, second: sentenceLabels[1]! })
-        : (sentenceLabels[0] ?? "")
-      : t("{head}, and {last}", {
-          head: sentenceLabels.slice(0, -1).join(", "),
-          last: sentenceLabels.at(-1)!,
-        });
+  const summary = joinClauses(sentenceLabels, resolve);
   return { summary, hasFailure: summaries.some((group) => group.failedCount > 0) };
 }
 
@@ -721,6 +837,7 @@ export function liveThoughtLine(markdown: string): string {
     .replace(/\s+/g, " ")
     .trim();
   if (heading !== undefined) return text;
-  const end = /[.?!]["'”’)]?(?=\s)/.exec(text);
+  // CJK sentences end in full-width marks with no space after them.
+  const end = /[.?!]["'”’)]?(?=\s)|[。！？]["'”’）」』]?/.exec(text);
   return end ? text.slice(0, end.index + end[0].length) : text;
 }

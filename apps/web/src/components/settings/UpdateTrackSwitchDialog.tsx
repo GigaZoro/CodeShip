@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -176,7 +177,11 @@ function SwitchPlan({
     );
     if (result._tag === "Failure") {
       const error = squashAtomCommandFailure(result);
-      fail(error instanceof Error ? error.message : t("An unexpected error occurred."));
+      fail(
+        error instanceof Error
+          ? (thrownErrorMessage(error) ?? error.message)
+          : t("An unexpected error occurred."),
+      );
     }
   };
 

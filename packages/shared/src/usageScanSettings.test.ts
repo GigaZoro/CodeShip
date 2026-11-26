@@ -35,6 +35,7 @@ describe("usageScanSettingsKey", () => {
       },
     ],
     ["a model alias", { ...BASE, usageModelAliases: { "custom-model": "gpt-5" } }],
+    ["retention days", { ...BASE, usageHistoryRetentionDays: "unlimited" }],
     ["the model filter", { ...BASE, usageModelFilter: { exclude: [{ model: "gpt-5" }] } }],
     ["turning a provider off", withClaude({ ...PERSONAL, enabled: false })],
     [

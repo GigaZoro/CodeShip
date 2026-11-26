@@ -1,8 +1,10 @@
-import { findErrorTraceId } from "@t3tools/client-runtime/errors";
+import { t } from "~/i18n";
+import { findErrorTraceId, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+
 import { useState } from "react";
 
 import {
@@ -10,17 +12,17 @@ import {
   unlinkManagedRelayT3ChatCommand,
   useManagedRelayT3ChatLink,
 } from "../../cloud/managedRelayState";
+
 import { readLocalApi } from "../../localApi";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toastManager } from "../ui/toast";
 
-import { t } from "~/i18n";
 function reportFailure(title: string, cause: unknown) {
   const traceId = findErrorTraceId(cause);
   toastManager.add({
     type: "error",
     title,
-    description: cause instanceof Error ? cause.message : t("Try again."),
+    description: thrownErrorMessage(cause, t) ?? t("Try again."),
     data: traceId
       ? {
           secondaryActionProps: {

@@ -1,14 +1,16 @@
+import { t, msg } from "~/i18n";
 import type { VoiceInputState } from "@t3tools/client-runtime/voice-input";
+
 import { CheckIcon, MicIcon, XIcon } from "lucide-react";
 import { useEffect, useState, type PointerEvent, type ReactElement } from "react";
 
 import { VoiceInputErrorPill } from "./VoiceInputErrorPill";
 import { VoiceInputPill, VoiceWaveform } from "./VoiceInputPill";
-import { t } from "~/i18n";
+
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 type DownloadProgress = { downloaded: number; total: number } | null;
 
@@ -18,27 +20,31 @@ const keepFocus = (event: PointerEvent) => event.preventDefault();
 export function resolveSpeechPresentation(
   state: VoiceInputState,
   progress: DownloadProgress,
+  resolve: typeof t = t,
 ): { status: string | null; active: boolean } {
   switch (state.phase) {
     case "idle":
       return { status: null, active: false };
     case "error":
-      return { status: state.error ?? t("Voice input failed"), active: false };
+      return { status: state.error ?? resolve(msg("Voice input failed")), active: false };
     case "preparing":
       return {
         status: progress
-          ? t("Downloading model {percent}%", {
+          ? resolve(msg("Downloading model {percent}%"), {
               percent: Math.round((progress.downloaded / Math.max(1, progress.total)) * 100),
             })
-          : t("Starting…"),
+          : resolve(msg("Starting…")),
         active: true,
       };
     case "recording":
-      return { status: t("Recording"), active: true };
+      return {
+        status: resolve(msg("Recording")),
+        active: true,
+      };
     case "transcribing":
-      return { status: t("Transcribing…"), active: true };
+      return { status: resolve(msg("Transcribing…")), active: true };
     case "post-processing":
-      return { status: t("Cleaning up…"), active: true };
+      return { status: resolve(msg("Cleaning up…")), active: true };
   }
 }
 
@@ -46,24 +52,39 @@ function formatElapsed(seconds: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function RecordingStatus(props: { level: number; recordingLimitSeconds?: number | undefined }) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+function RecordingStatus(props: {
+  level: number;
+  preparing: boolean;
+  recordingStartedAt?: number | null | undefined;
+  recordingLimitSeconds?: number | undefined;
+}) {
+  const { preparing, recordingStartedAt } = props;
+  const [elapsedSeconds, setElapsedSeconds] = useState(() =>
+    recordingStartedAt ? Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1_000)) : 0,
+  );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the timer displaying the native recording duration
   useEffect(() => {
-    const startedAt = Date.now();
+    if (preparing) return;
+    const startedAt = recordingStartedAt ?? Date.now();
     const timer = window.setInterval(
       () => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000)),
       250,
     );
     return () => window.clearInterval(timer);
-  }, []);
+  }, [preparing, recordingStartedAt]);
 
   return (
     <>
-      <span aria-hidden className="size-2 shrink-0 rounded-full bg-destructive" />
+      <span
+        aria-hidden
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          preparing ? "bg-muted-foreground/40" : "bg-destructive",
+        )}
+      />
       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-        {formatElapsed(elapsedSeconds)}
+        {formatElapsed(preparing ? 0 : elapsedSeconds)}
         {props.recordingLimitSeconds !== undefined
           ? ` / ${formatElapsed(props.recordingLimitSeconds)}`
           : ""}
@@ -81,14 +102,15 @@ function ShortcutTooltip(props: {
   children: ReactElement;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger render={props.children} />
-      <TooltipPopup side="top">
-        {props.shortcut
-          ? t("{label} ({shortcut})", { label: props.label, shortcut: props.shortcut })
-          : props.label}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={props.children}
+      label={
+        <>
+          {props.label}
+          {props.shortcut ? ` (${props.shortcut})` : ""}
+        </>
+      }
+    />
   );
 }
 
@@ -129,6 +151,7 @@ export function ComposerSpeechRecordingPill(props: {
   finishShortcutLabel?: string | null;
   cancelShortcutLabel?: string | null;
   level: number;
+  recordingStartedAt?: number | null | undefined;
   recordingLimitSeconds?: number | undefined;
   /** Compact matches the `xs` buttons beside text-field editors. */
   size?: "default" | "compact";
@@ -146,6 +169,7 @@ export function ComposerSpeechRecordingPill(props: {
         size={props.size}
         error={props.state.error}
         errorAction={props.state.errorAction}
+        errorCode={props.state.errorCode}
         disabled={props.disabled ?? false}
         cancelShortcutLabel={props.cancelShortcutLabel ?? null}
         onRetry={props.onStart}
@@ -153,10 +177,12 @@ export function ComposerSpeechRecordingPill(props: {
       />
     );
   }
-  const presentation = resolveSpeechPresentation(props.state, props.progress);
+  const presentation = resolveSpeechPresentation(props.state, props.progress, t);
   if (!presentation.active) return null;
   const recording = phase === "recording";
-  const trailing = recording || phase === "post-processing";
+  const starting = phase === "preparing" && props.progress === null;
+  const showRecordingLayout = starting || recording;
+  const trailing = showRecordingLayout || phase === "post-processing";
 
   return (
     <VoiceInputPill size={props.size}>
@@ -182,11 +208,16 @@ export function ComposerSpeechRecordingPill(props: {
         aria-live={recording ? "off" : "polite"}
         aria-label={presentation.status ?? undefined}
       >
-        {recording ? (
-          <RecordingStatus
-            level={props.level}
-            recordingLimitSeconds={props.recordingLimitSeconds}
-          />
+        {showRecordingLayout ? (
+          <>
+            {starting && <span className="sr-only">{presentation.status}</span>}
+            <RecordingStatus
+              preparing={starting}
+              level={starting ? 0 : props.level}
+              recordingStartedAt={props.recordingStartedAt}
+              recordingLimitSeconds={props.recordingLimitSeconds}
+            />
+          </>
         ) : (
           <>
             <Spinner aria-hidden size="sm" tone="muted" className="shrink-0" />
@@ -207,17 +238,18 @@ export function ComposerSpeechRecordingPill(props: {
         >
           {t("Skip")}
         </Button>
-      ) : recording ? (
+      ) : showRecordingLayout ? (
         <ShortcutTooltip label={t("Finish voice input")} shortcut={props.finishShortcutLabel}>
           <Button
             type="button"
             size={compact ? "icon-xs" : "icon-sm-pill"}
             aria-label={t("Finish voice input")}
+            disabled={starting}
             onPointerDown={keepFocus}
             onClick={props.onStop}
             className="shrink-0"
           >
-            <CheckIcon />
+            {starting ? <Spinner aria-hidden /> : <CheckIcon />}
           </Button>
         </ShortcutTooltip>
       ) : null}

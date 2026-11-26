@@ -1,3 +1,5 @@
+import { tn } from "@t3tools/shared/i18n";
+import { msg, t } from "@t3tools/shared/i18n";
 import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
@@ -92,6 +94,7 @@ export function deriveThreadTurnSubagents(
 
 export function resolveSubagentPillSegment(
   turn: ThreadTurnSubagents | null,
+  resolve: typeof t = t,
 ): SubagentPillSegment | null {
   if (turn === null) return null;
   // Finished agents stay reachable until a later turn replaces them; workflows always stay reachable.
@@ -107,11 +110,14 @@ export function resolveSubagentPillSegment(
   if (turn.liveCount > 0) {
     return {
       label: `${turn.liveCount}/${total}`,
-      accessibilityLabel: `${turn.liveCount} of ${total} agents working`,
+      accessibilityLabel: resolve(msg("{live} of {total} agents working"), {
+        live: turn.liveCount,
+        total,
+      }),
     };
   }
   return {
-    label: `${turn.settledCount} done`,
-    accessibilityLabel: `${turn.settledCount} ${turn.settledCount === 1 ? "agent" : "agents"} done`,
+    label: resolve(msg("{count} done"), { count: turn.settledCount }),
+    accessibilityLabel: tn(turn.settledCount, "{count} agent done", "{count} agents done"),
   };
 }

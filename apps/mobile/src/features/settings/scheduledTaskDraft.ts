@@ -353,7 +353,7 @@ export function createDraft(
     maxLiveRuns: liveRunLimitDraft(null),
     threadMode: "new_thread",
     workspace: "worktree",
-    baseRef: "main",
+    baseRef: "",
     checkoutPath: "",
     enabled: true,
     startFromOrigin: true,
@@ -398,7 +398,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     maxLiveRuns: liveRunLimitDraft(task),
     threadMode: scheduledTaskThreadMode(task),
     workspace: task.workspaceStrategy.type,
-    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
+    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "",
     checkoutPath:
       task.workspaceStrategy.type === "existing_worktree"
         ? task.workspaceStrategy.worktreePath

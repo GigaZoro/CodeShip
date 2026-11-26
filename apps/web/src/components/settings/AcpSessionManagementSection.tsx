@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   AuthOrchestrationOperateScope,
   AuthProvidersManageScope,
@@ -45,7 +46,10 @@ function reportFailure(title: string, result: AtomCommandResult<unknown, unknown
   toastManager.add({
     type: "error",
     title,
-    description: error instanceof Error ? error.message : t("The ACP operation failed."),
+    description:
+      error instanceof Error
+        ? (thrownErrorMessage(error) ?? error.message)
+        : t("The ACP operation failed."),
   });
 }
 
@@ -61,7 +65,10 @@ function parseProviderHeaders(
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : t("Headers must be valid JSON."),
+      error:
+        error instanceof Error
+          ? (thrownErrorMessage(error) ?? error.message)
+          : t("Headers must be valid JSON."),
     };
   }
   if (
@@ -111,10 +118,12 @@ function InstanceSessionManagement(
   const canRead = useEnvironmentScope(props.environmentId, AuthOrchestrationReadScope);
   const { projectId } = props;
   const projectGeneration = useRef(0);
+  const deletionsDuringList = useRef<Set<string> | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Late continuations must not act on a replaced project scope.
   useLayoutEffect(() => {
     return () => {
       projectGeneration.current += 1;
+      deletionsDuringList.current = null;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retiring a project invalidates its pending operations even when the instance stays mounted.
   }, [projectId]);
@@ -182,6 +191,8 @@ function InstanceSessionManagement(
   const loadSessions = async (cursor?: string) => {
     const generation = projectGeneration.current;
     if (projectId === null || loading) return;
+    const deletedSessionIds = new Set<string>();
+    deletionsDuringList.current = deletedSessionIds;
     setLoading(true);
     const result = await listSessions({
       environmentId: props.environmentId,
@@ -192,10 +203,15 @@ function InstanceSessionManagement(
       },
     });
     if (generation !== projectGeneration.current) return;
+    deletionsDuringList.current = null;
     setLoading(false);
     if (result._tag === "Success") {
+      // A pending list can return a snapshot taken before a deletion completed.
+      const listedSessions = result.value.sessions.filter(
+        (session) => !deletedSessionIds.has(session.sessionId),
+      );
       setSessions((current) =>
-        cursor === undefined ? result.value.sessions : [...current, ...result.value.sessions],
+        cursor === undefined ? listedSessions : [...current, ...listedSessions],
       );
       setNextCursor(result.value.nextCursor);
       return;
@@ -267,6 +283,7 @@ function InstanceSessionManagement(
     if (generation !== projectGeneration.current) return;
     setDeletingSessionId(null);
     if (result._tag === "Success") {
+      deletionsDuringList.current?.add(session.sessionId);
       setSessions((current) =>
         current.filter((candidate) => candidate.sessionId !== session.sessionId),
       );

@@ -1,7 +1,8 @@
-import { useAtomValue } from "@effect/atom-react";
 import { t } from "~/i18n";
+import { useAtomValue } from "@effect/atom-react";
+
 import { useAuth } from "@clerk/react";
-import { findErrorTraceId } from "@t3tools/client-runtime/errors";
+import { findErrorTraceId, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { AuthRelayReadScope, AuthRelayWriteScope, type EnvironmentId } from "@t3tools/contracts";
 import { ManagedRelay } from "@t3tools/client-runtime/relay";
 import {
@@ -13,10 +14,15 @@ import * as Schema from "effect/Schema";
 import { useState } from "react";
 
 import { toastManager } from "../components/ui/toast";
+
 import { stackedThreadToast } from "../components/ui/toastHelpers";
 import { relayFailureReason } from "./relayFailureReason";
 import { relayEnvironmentDiscovery } from "../state/relay";
-import { readEnvironmentScope } from "../state/session";
+import {
+  readEnvironmentCanConfigureRelay,
+  readEnvironmentScope,
+  useEnvironmentCanConfigureRelay,
+} from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { isCloudEnvironmentLinkError } from "./linkEnvironment";
 import { refreshManagedTunnelUsage } from "./managedRelayState";
@@ -27,7 +33,7 @@ import {
 } from "./linkEnvironmentAtoms";
 import { readCachedCloudLinkState, useCloudLinkState } from "./cloudLinkState";
 import { resolveRelayClerkTokenOptions } from "./publicConfig";
-import { isManagedTunnelActive } from "./t3ConnectState";
+import { cloudChangeReplacesLink, isManagedTunnelActive } from "./t3ConnectState";
 
 export interface CloudLinkDesiredState {
   readonly managedTunnel: boolean;
@@ -71,8 +77,7 @@ export function useCloudLinkController(environmentId: EnvironmentId | null) {
   const [tunnelLimit, setTunnelLimit] = useState<number | null>(null);
 
   const reportUpdateFailure = (cause: unknown, reason?: string) => {
-    const message =
-      cause instanceof Error ? cause.message : t("Could not update T3 Connect access.");
+    const message = thrownErrorMessage(cause, t) ?? t("Could not update T3 Connect access.");
     const traceId = findErrorTraceId(cause);
     console.error("[t3-connect] Could not update T3 Connect", { message, traceId, cause });
     setOperationError(traceId ? t("{message} Trace ID: {traceId}", { message, traceId }) : message);
@@ -108,6 +113,11 @@ export function useCloudLinkController(environmentId: EnvironmentId | null) {
   const publishAgentActivity = cloudLinkState.data?.publishAgentActivity ?? false;
   const holdWebhooksWhileOffline = cloudLinkState.data?.holdWebhooksWhileOffline ?? false;
   const linked = !linkRevoked && (cloudLinkState.data?.linked ?? false);
+  const canConfigureRelay = useEnvironmentCanConfigureRelay(environmentId);
+  const needsRelayConfiguration = (desired: CloudLinkDesiredState) =>
+    !canConfigureRelay &&
+    linkData !== null &&
+    cloudChangeReplacesLink(linkData, relayProviderKind, desired);
 
   const reconcileCloudState = async (desired: CloudLinkDesiredState): Promise<boolean> => {
     setOperationError(null);
@@ -182,12 +192,17 @@ export function useCloudLinkController(environmentId: EnvironmentId | null) {
         reportUpdateFailure(new Error(t("Sign in to T3 Connect before enabling this.")));
         return false;
       }
-      const currentManagedTunnel = isManagedTunnelActive(currentLinkState, relayProviderKind);
-      if (
-        !currentLinkState.linked ||
-        currentLinkState.linkRevoked === true ||
-        currentManagedTunnel !== desired.managedTunnel
-      ) {
+      if (cloudChangeReplacesLink(currentLinkState, relayProviderKind, desired)) {
+        if (!readEnvironmentCanConfigureRelay(environmentId)) {
+          reportUpdateFailure(
+            new Error(
+              t(
+                "This connection needs the relay configuration permission to configure T3 Connect.",
+              ),
+            ),
+          );
+          return false;
+        }
         const linkResult = await linkEnvironment({
           target,
           clerkToken,
@@ -247,6 +262,7 @@ export function useCloudLinkController(environmentId: EnvironmentId | null) {
     holdWebhooksWhileOffline,
     operationError,
     tunnelLimit,
+    needsRelayConfiguration,
     reconcileCloudState,
   };
 }

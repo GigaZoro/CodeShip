@@ -25,11 +25,13 @@ export function AddUsageLimitSourceDialog({
   environmentId,
   environmentLabel,
   sources,
+  kind = "cliproxy",
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
+  readonly kind?: "cliproxy" | "http";
   readonly sources: UnifiedSettings["usageLimitSources"];
 }) {
   const formId = useId();
@@ -41,7 +43,16 @@ export function AddUsageLimitSourceDialog({
   const [keyValid, setKeyValid] = useState(true);
   const managementKey = typeof keyDraft === "string" ? keyDraft.trim() : keyDraft;
   const trimmedUrl = url.trim();
-  const canSave = keyValid && trimmedUrl.length > 0 && managementKey !== "";
+  const http = kind === "http";
+  const endpoint = URL.parse(trimmedUrl);
+  const canSave =
+    keyValid &&
+    (http
+      ? endpoint !== null &&
+        /^https?:$/.test(endpoint.protocol) &&
+        !endpoint.username &&
+        !endpoint.password
+      : trimmedUrl.length > 0 && managementKey !== "");
 
   const reset = () => {
     setLabel("");
@@ -52,11 +63,11 @@ export function AddUsageLimitSourceDialog({
 
   const save = () => {
     if (!canSave) return;
-    const id = sourceIdFromUrl(trimmedUrl, sources);
+    const id = sourceIdFromUrl(trimmedUrl, sources, kind);
     updateSettings({
       usageLimitSources: {
         [id]: {
-          kind: "cliproxy",
+          kind,
           ...(label.trim() ? { label: label.trim() } : {}),
           url: trimmedUrl,
           managementKey,
@@ -78,12 +89,16 @@ export function AddUsageLimitSourceDialog({
     >
       <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{t("Add a CLIProxyAPI hub")}</DialogTitle>
+          <DialogTitle>
+            {http ? t("Add an HTTP quota source") : t("Add a CLIProxyAPI hub")}
+          </DialogTitle>
           <DialogDescription>
-            {t(
-              "Show the quota of every account the hub pools, next to the providers on {environment}. The key stays on that server.",
-              { environment: environmentLabel },
-            )}
+            {http
+              ? t("Read quotas from an endpoint on {environmentLabel}.", { environmentLabel })
+              : t(
+                  "Show the quota of every account the hub pools, next to the providers on {environmentLabel}. The key stays on that server.",
+                  { environmentLabel },
+                )}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -96,7 +111,7 @@ export function AddUsageLimitSourceDialog({
             }}
           >
             <div className="grid gap-1.5">
-              <Label htmlFor="usage-source-url">{t("Hub URL")}</Label>
+              <Label htmlFor="usage-source-url">{http ? t("Endpoint URL") : t("Hub URL")}</Label>
               <Input
                 id="usage-source-url"
                 placeholder={"https://hub.example.ts.net:8318"}
@@ -106,10 +121,12 @@ export function AddUsageLimitSourceDialog({
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="usage-source-key">{t("Management key")}</Label>
+              <Label htmlFor="usage-source-key">
+                {http ? t("Bearer token (optional)") : t("Management key")}
+              </Label>
               <SecretSourceInput
                 id="usage-source-key"
-                aria-label={t("Management key")}
+                aria-label={http ? t("Bearer token (optional)") : t("Management key")}
                 value={keyDraft}
                 sources={secretSources}
                 environmentId={environmentId}
@@ -140,7 +157,7 @@ export function AddUsageLimitSourceDialog({
             {t("Cancel")}
           </Button>
           <Button type="submit" form={formId} disabled={!canSave}>
-            {t("Add hub")}
+            {http ? t("Add source") : t("Add hub")}
           </Button>
         </DialogFooter>
       </DialogPopup>

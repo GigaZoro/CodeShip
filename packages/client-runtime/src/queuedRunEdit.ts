@@ -1,3 +1,5 @@
+import { msg, t } from "@t3tools/shared/i18n";
+
 /**
  * A queued-message edit ends on save, cancel, or when its run leaves the queue.
  * The store owns one watcher per edit, so "run left the queue" is handled exactly
@@ -6,7 +8,6 @@
  */
 import type { RunId } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/reactivity";
-import { t } from "@t3tools/shared/i18n";
 
 export interface QueuedRunStatus {
   readonly id: RunId;
@@ -67,10 +68,15 @@ export function resolveQueuedEditExit(input: {
  * can. An open question takes the composer over for its answer, so an edit
  * begun then would happen out of sight and could be sent before it is seen.
  */
-export function queuedRunEditBlockedReason(input: {
-  readonly openQuestionCount: number;
-}): string | null {
-  return input.openQuestionCount > 0 ? t("Answer the question to edit queued messages") : null;
+export function queuedRunEditBlockedReason(
+  input: {
+    readonly openQuestionCount: number;
+  },
+  resolve: typeof t = t,
+): string | null {
+  return input.openQuestionCount > 0
+    ? resolve(msg("Answer the question to edit queued messages"))
+    : null;
 }
 
 interface ExitWatch<E> {

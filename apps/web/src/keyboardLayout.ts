@@ -17,23 +17,29 @@ export function getKeyboardLayoutMap() {
 // letter printed on that key without assuming a US physical layout.
 export function trackKeyboardLayout(
   keyboard = (navigator as Navigator & { keyboard?: KeyboardLayoutSource }).keyboard,
+  focusTarget: EventTarget | undefined = typeof window === "undefined" ? undefined : window,
 ) {
   let revision = 0;
-  const refresh = async () => {
+  const refresh = async (clearMap: boolean) => {
     const request = ++revision;
-    keyboardLayoutMap = undefined;
+    if (clearMap) keyboardLayoutMap = undefined;
     try {
       const layout = await keyboard?.getLayoutMap();
       if (request === revision) keyboardLayoutMap = layout;
     } catch {
       // Unsupported or permission-blocked browsers keep the existing fallback.
+      if (request === revision) keyboardLayoutMap = undefined;
     }
   };
-  void refresh();
-  keyboard?.addEventListener?.("layoutchange", refresh);
+  const onLayoutChange = () => void refresh(true);
+  const onFocus = () => void refresh(false);
+  void refresh(true);
+  keyboard?.addEventListener?.("layoutchange", onLayoutChange);
+  focusTarget?.addEventListener("focus", onFocus);
   return () => {
     revision++;
     keyboardLayoutMap = undefined;
-    keyboard?.removeEventListener?.("layoutchange", refresh);
+    keyboard?.removeEventListener?.("layoutchange", onLayoutChange);
+    focusTarget?.removeEventListener("focus", onFocus);
   };
 }

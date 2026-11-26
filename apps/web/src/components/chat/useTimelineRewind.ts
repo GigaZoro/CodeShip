@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import type { EnvironmentThreadShell, ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import type { ComposerThreadTarget } from "../../composerDraftStore";
 import type { ComposerHandleRef } from "../../composerHandleContext";
@@ -18,10 +21,8 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { readLocalApi } from "../../localApi";
-import {
-  findRevertCheckpoint,
-  turnsAfterChangedFiles,
-} from "@t3tools/client-runtime/state/thread-rewind";
+import { turnsAfterChangedFiles } from "@t3tools/client-runtime/state/thread-rewind";
+import { findRevertCheckpoint } from "../../session-logic";
 import { type ChatMessage } from "../../types";
 import { newThreadId } from "~/lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -37,7 +38,7 @@ import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 import { markRetryRewind, takeRetryRewind } from "./timelineRetry";
-import { t } from "~/i18n";
+
 import { toastManager } from "../ui/toast";
 
 interface TimelineRewindInput {
@@ -188,7 +189,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       turnCount,
       restoreFiles,
       // Keep the live checkpoint identity when command context refetches a bounded window.
-      checkpoint: findRevertCheckpoint(serverProjection?.checkpoints ?? [], turnCount),
+      checkpoint: findRevertCheckpoint(serverProjection, turnCount),
       draftTarget: composerDraftTarget,
       composerHasPendingAttachments: composerRef.current?.hasPendingAttachments() === true,
       createAssetUrl: createAttachmentAssetUrl,
@@ -253,7 +254,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
           activeThread.id,
-          error instanceof Error ? error.message : t("Failed to fork this response."),
+          thrownErrorMessage(error, t) ?? t(msg("Failed to fork this response.")),
         );
       }
       return;

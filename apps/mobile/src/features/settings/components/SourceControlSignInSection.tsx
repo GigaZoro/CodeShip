@@ -1,102 +1,32 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { t } from "../../../lib/i18n";
-import type { EnvironmentId, SourceControlSignInPrompt } from "@t3tools/contracts";
+import type { SourceControlSignInPrompt } from "@t3tools/contracts";
 import {
   readHostCredentialSettings,
-  sourceControlClients,
   type SourceControlAppSignIn,
   type SourceControlDefinition,
 } from "@t3tools/client-runtime/source-control-clients";
 import * as Cause from "effect/Cause";
 import * as Clipboard from "expo-clipboard";
 import { useRef, useState } from "react";
-import { Linking } from "react-native";
+import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 
 import * as Dialog from "../../../components/ui/Dialog";
-import { useEnvironmentQuery } from "../../../state/query";
 import { serverEnvironment } from "../../../state/server";
 import { sourceControlEnvironment } from "../../../state/sourceControl";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import type { SettingsTarget } from "../settings-environment-filter";
 import { SettingsRow } from "./SettingsRow";
-import { SettingsSection } from "./SettingsSection";
 
 const failureMessage = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? (errorDisplayMessage(error) ?? error.message) : String(error);
 };
 
-const openUrl = (url: string) => void Linking.openURL(url).catch(() => undefined);
+const openUrl = (url: string) => void tryOpenExternalUrl(url, "provider-auth");
 
-const appSignInHosts = sourceControlClients.definitions.flatMap((definition) =>
-  definition.credentials?.appSignIn === undefined
-    ? []
-    : [{ definition, appSignIn: definition.credentials.appSignIn }],
-);
-
-/**
- * Signing an environment in through a forge's own app, such as T3 Code for GitHub, on servers
- * configured for it.
- */
-export function SourceControlSignInSection(props: {
-  readonly environments: readonly SettingsTarget[];
-  readonly canWrite: (environmentId: EnvironmentId) => boolean;
-}) {
-  return (
-    <>
-      {appSignInHosts.flatMap(({ definition, appSignIn }) =>
-        props.environments.map((environment) => (
-          <OfferedAppSignIn
-            key={`${definition.kind}:${environment.environmentId}`}
-            environment={environment}
-            title={
-              props.environments.length > 1
-                ? t("{provider} · {environment}", {
-                    provider: definition.label,
-                    environment: environment.label,
-                  })
-                : definition.label
-            }
-            definition={definition}
-            appSignIn={appSignIn}
-            disabled={!props.canWrite(environment.environmentId)}
-          />
-        )),
-      )}
-    </>
-  );
-}
-
-function OfferedAppSignIn(props: {
-  readonly environment: SettingsTarget;
-  readonly title: string;
-  readonly definition: SourceControlDefinition;
-  readonly appSignIn: SourceControlAppSignIn;
-  readonly disabled: boolean;
-}) {
-  const discovery = useEnvironmentQuery(
-    sourceControlEnvironment.discovery({
-      environmentId: props.environment.environmentId,
-      input: {},
-    }),
-  );
-  const offered = discovery.data?.sourceControlProviders.some(
-    (item) => item.kind === props.definition.kind && item.appSignIn === true,
-  );
-  if (offered !== true) return null;
-  return (
-    <SettingsSection title={props.title}>
-      <AppSignInRow
-        environment={props.environment}
-        label={props.appSignIn.appName}
-        definition={props.definition}
-        appSignIn={props.appSignIn}
-        disabled={props.disabled}
-      />
-    </SettingsSection>
-  );
-}
-
-function AppSignInRow(props: {
+/** Signs an environment in through a forge's own app, such as T3 Code for GitHub. */
+export function AppSignInRow(props: {
   readonly environment: SettingsTarget;
   readonly label: string;
   readonly definition: SourceControlDefinition;
@@ -127,8 +57,8 @@ function AppSignInRow(props: {
     Dialog.alert(
       prompt.userCode,
       t(
-        "Enter this code on GitHub, then approve {app}. It is copied. The server finishes signing in even if you leave the app.",
-        { app: appSignIn.appName },
+        "Enter this code on {host}, then approve {app}. It is copied. The server finishes signing in even if you leave the app.",
+        { host: "GitHub", app: appSignIn.appName },
       ),
       [
         {
@@ -140,7 +70,10 @@ function AppSignInRow(props: {
             void cancel({ environmentId, input });
           },
         },
-        { text: t("Open GitHub"), onPress: () => openUrl(prompt.verificationUri) },
+        {
+          text: t("Open {host}", { host: "GitHub" }),
+          onPress: () => openUrl(prompt.verificationUri),
+        },
       ],
     );
   };
@@ -182,13 +115,11 @@ function AppSignInRow(props: {
       Dialog.alert(
         appSignIn.appName,
         t(
-          "Signed in. GitHub requests use the app's higher rate limit, in repositories where the app is installed.",
+          "Signed in. {host} requests use the app's higher rate limit, in repositories where the app is installed.",
+          { host: "GitHub" },
         ),
         [
-          {
-            text: t("Install on an organization"),
-            onPress: () => openUrl(appSignIn.installUrl),
-          },
+          { text: t("Install on an organization"), onPress: () => openUrl(appSignIn.installUrl) },
           { text: t("Sign out"), style: "destructive", onPress: signOut },
           { text: t("Cancel"), style: "cancel" },
         ],

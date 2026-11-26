@@ -1,5 +1,6 @@
-import type { RefObject } from "react";
 import { t } from "~/i18n";
+import type { RefObject } from "react";
+
 import { anchoredToastManager } from "./toast";
 
 export const ANCHORED_COPY_TOAST_TIMEOUT_MS = 1000;

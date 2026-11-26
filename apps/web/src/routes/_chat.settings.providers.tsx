@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "~/i18n";
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 
@@ -13,7 +14,6 @@ import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 
-import { msg, t, type Message } from "~/i18n";
 const MACHINE_SECTION_TARGETS: ReadonlySet<string> = new Set([
   "auto-mode",
   "account-failover",

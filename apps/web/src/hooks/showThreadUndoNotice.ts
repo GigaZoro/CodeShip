@@ -1,12 +1,15 @@
+import { t, tn, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { t, tn } from "~/i18n";
+
 import { create } from "zustand";
 
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+
 import { shortcutLabelForCommand } from "../keybindings";
 import { announce, cancelAnnouncement } from "../lib/announce";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -59,9 +62,13 @@ function undoneSummary(action: UndoOptions["action"], count: number): string {
   }
 }
 
-export function threadUndoLabel(keybindings: Parameters<typeof shortcutLabelForCommand>[0]) {
+/** Components pass `useMessages()` so the label follows a language switch. */
+export function threadUndoLabel(
+  keybindings: Parameters<typeof shortcutLabelForCommand>[0],
+  resolve: typeof t = t,
+) {
   const shortcut = shortcutLabelForCommand(keybindings, "thread.undo");
-  return shortcut ? t("{shortcut} to undo", { shortcut }) : t("Undo");
+  return shortcut ? resolve(msg("{shortcut} to undo"), { shortcut }) : resolve(msg("Undo"));
 }
 
 let announcedSummary: string | null = null;
@@ -121,7 +128,7 @@ function refreshNotice() {
               stackedThreadToast({
                 type: "error",
                 title: failureTitle,
-                description: error instanceof Error ? error.message : t("An error occurred."),
+                description: thrownErrorMessage(error, t) ?? t("An error occurred."),
               }),
             );
           };

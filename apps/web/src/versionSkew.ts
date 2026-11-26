@@ -1,10 +1,11 @@
+import { t, msg } from "~/i18n";
 import type {
   EnvironmentId,
   ServerConfig,
   ServerInstallation,
   ServerSelfUpdateCapability,
 } from "@t3tools/contracts";
-import { t } from "~/i18n";
+
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
@@ -48,6 +49,7 @@ function versionCore(version: string): string {
 export function resolveVersionMismatch(
   serverVersion: string | null | undefined,
   clientVersion: string = APP_VERSION,
+  resolve: typeof t = t,
 ): VersionMismatch | null {
   const normalizedClientVersion = normalizeVersion(clientVersion);
   const normalizedServerVersion = normalizeVersion(serverVersion);
@@ -74,14 +76,17 @@ export function resolveVersionMismatch(
   return {
     clientVersion: normalizedClientVersion,
     serverVersion: normalizedServerVersion,
-    hint: t("Version mismatch. Try syncing the client and server to the same T3.CodeShip version."),
+    hint: resolve(
+      msg("Version mismatch. Try syncing the client and server to the same T3.CodeShip version."),
+    ),
   };
 }
 
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
+  resolve: typeof t = t,
 ): VersionMismatch | null {
-  return resolveVersionMismatch(serverConfig?.environment.serverVersion);
+  return resolveVersionMismatch(serverConfig?.environment.serverVersion, APP_VERSION, resolve);
 }
 
 export function resolveServerSelfUpdateCapability(

@@ -13,10 +13,11 @@ import {
   isProviderAvailable,
   PROVIDER_DISPLAY_NAMES,
   type ServerProvider,
-  type ServerProviderResetCredits,
   type ServerProviderUsageLimits,
+  type ServerProviderResetCredits,
   type ServerProviderUsageScope,
   type ServerProviderUsageWindow,
+  type UsageLimitSourceAccount,
   type UsageLimitSourceSnapshot,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
@@ -459,12 +460,12 @@ export const CURSOR_USAGE_WINDOWS = [
   },
 ] as const;
 
-export function cursorUsageWindowDetails(id: string, pool: LimitPool) {
+export function cursorUsageWindowDetails(id: string, pool: LimitPool, resolve: typeof t = t) {
   const window = CURSOR_USAGE_WINDOWS.find((window) => window.id === id);
   const details = window && {
     id: window.id,
-    label: t(window.label),
-    description: t(window.description),
+    label: resolve(window.label),
+    description: resolve(window.description),
   };
   return details &&
     ((pool.windows.length === 1 && id === "totalPercentUsed") || hasDuplicateCursorTotal(pool))
@@ -477,7 +478,9 @@ function cursorUsageWindowRank(id: string): number {
   return rank < 0 ? CURSOR_USAGE_WINDOWS.length : rank;
 }
 
-function providersWithLimits(providers: readonly ServerProvider[]): readonly ServerProvider[] {
+export function providersWithLimits(
+  providers: readonly ServerProvider[],
+): readonly ServerProvider[] {
   return providers.filter(
     (provider) =>
       provider.enabled &&
@@ -507,7 +510,6 @@ function isConnected(presentation: {
   return presentation.connection === undefined || presentation.connection.phase === "connected";
 }
 
-/** One login whose limits another site keeps, with every environment it is signed in on. */
 /** A connected environment where the account can sign in to have its limits read there. */
 export interface LimitsSignInTarget {
   readonly environmentId: EnvironmentId;
@@ -710,6 +712,21 @@ function accountKeyResolver(workspaces: LimitAccountWorkspaces["byLogin"]) {
 
 const hubAccountName = (account: { readonly id: string }) => account.id.replace(/\.json$/i, "");
 
+const nativeRowKey = (
+  resolveKey: ReturnType<typeof accountKeyResolver>,
+  environmentId: EnvironmentId,
+  provider: ServerProvider,
+) => resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`;
+
+const hubRowKey = (
+  resolveKey: ReturnType<typeof accountKeyResolver>,
+  environmentId: EnvironmentId,
+  source: UsageLimitSourceSnapshot,
+  account: UsageLimitSourceAccount,
+) =>
+  resolveKey(account) ??
+  `${hubIdentity(environmentId, source)}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
+
 // Source ids are environment-local, so only a remote endpoint names the same hub across environments.
 function hubIdentity(environmentId: EnvironmentId, source: UsageLimitSourceSnapshot): string {
   // The server supplies canonical endpoints; native URL polyfills can misparse IPv6 hosts.
@@ -744,6 +761,25 @@ export interface LimitAccount {
     readonly input: ProviderConsumeResetCreditInput;
   } | null;
   readonly limits: ServerProviderUsageLimits;
+}
+
+export function collectHttpQuotaSources(presentations: Parameters<typeof collectLimitAccounts>[0]) {
+  return [...presentations].flatMap(([environmentId, presentation]) =>
+    (presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) =>
+      source.kind === "http" && source.quotaAccounts?.length
+        ? [
+            {
+              ...source,
+              key: `${environmentId}:${source.id}`,
+              label:
+                presentations.size > 1
+                  ? `${presentation.entry.target.label} · ${source.label}`
+                  : source.label,
+            },
+          ]
+        : [],
+    ),
+  );
 }
 
 export function collectLimitAccounts(
@@ -925,25 +961,84 @@ export function limitsFreshness(accounts: readonly LimitAccount[]): {
   };
 }
 
-export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
+/** Hub accounts whose read failed and that no other report shows as a row, with their names. */
+export function unshownFailedHubAccounts(
+  presentations: LimitPresentations,
+): ReadonlyMap<UsageLimitSourceAccount, string> {
+  const resolveKey = accountKeyResolver(limitAccountWorkspaces(presentations).byLogin);
+  const shownRows = new Set<string>();
+  for (const [environmentId, presentation] of presentations) {
+    for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
+      if (provider.usageLimits && limitsNotice(provider.usageLimits) === null) {
+        shownRows.add(nativeRowKey(resolveKey, environmentId, provider));
+      }
+    }
+    for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
+      for (const account of source.accounts) {
+        if (limitsNotice(account.usageLimits) === null) {
+          shownRows.add(hubRowKey(resolveKey, environmentId, source, account));
+        }
+      }
+    }
+  }
+  const failed = new Map<UsageLimitSourceAccount, string>();
+  for (const [environmentId, presentation] of presentations) {
+    for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
+      for (const account of source.accounts) {
+        if (account.usageLimits.unavailable?.reason !== "probeFailed") continue;
+        if (shownRows.has(hubRowKey(resolveKey, environmentId, source, account))) continue;
+        failed.set(account, account.email ?? hubAccountName(account));
+      }
+    }
+  }
+  return failed;
+}
+
+export function collectLimitNotices(
+  presentations: LimitPresentations,
+  resolve: typeof t = t,
+): readonly string[] {
   const label = (environmentLabel: string, subject: string) =>
     presentations.size > 1 ? `${environmentLabel} · ${subject}` : subject;
-  const noticeLine = (environmentLabel: string, subject: string, notice: string) =>
-    t("{subject}: {notice}", { subject: label(environmentLabel, subject), notice });
+  const noticeLine = (subject: string, notice: string) =>
+    resolve(msg("{subject}: {notice}"), { subject, notice });
   const notices = new Set<string>();
+  // A failed hub read needs no notice when another report already shows the account's row.
+  const failedAccounts = unshownFailedHubAccounts(presentations);
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
-      const notice = provider.usageLimits ? limitsNotice(provider.usageLimits) : null;
+      const limits = provider.usageLimits;
+      // A bare unsupported means the account has no limits; an external usage link shows its message.
+      if (
+        limits?.unavailable?.reason === "unsupported" &&
+        (!limits.unavailable.message || limits.externalUsage)
+      ) {
+        continue;
+      }
+      const notice = limits ? limitsNotice(limits, resolve) : null;
       const name = provider.displayName?.trim() || String(provider.driver);
-      if (notice) notices.add(noticeLine(environmentLabel, name, notice));
+      if (notice) notices.add(noticeLine(label(environmentLabel, name), notice));
     }
     for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
       if (source.error) {
-        notices.add(noticeLine(environmentLabel, source.label, source.error));
-      } else if (source.accounts.length === 0) {
-        notices.add(noticeLine(environmentLabel, source.label, t("No accounts reported.")));
+        notices.add(noticeLine(label(environmentLabel, source.label), source.error));
+      } else if (
+        (source.kind === "http" ? (source.quotaAccounts?.length ?? 0) : source.accounts.length) ===
+        0
+      ) {
+        notices.add(
+          resolve(msg("{source}: No accounts reported."), {
+            source: label(environmentLabel, source.label),
+          }),
+        );
+      }
+      for (const account of source.accounts) {
+        const name = failedAccounts.get(account);
+        if (name === undefined) continue;
+        const notice = limitsNotice(account.usageLimits, resolve);
+        if (notice !== null)
+          notices.add(noticeLine(`${label(environmentLabel, source.label)} · ${name}`, notice));
       }
     }
   }
@@ -1001,16 +1096,6 @@ function hasDuplicateCursorTotal(pool: LimitPool): boolean {
 }
 
 export function displayLimitWindows(pool: LimitPool) {
-  if (pool.driver === "antigravity") {
-    return [...pool.windows].sort(
-      (left, right) =>
-        Number(!left.id.startsWith("gemini-")) - Number(!right.id.startsWith("gemini-")) ||
-        left.id
-          .replace(/-(5h|weekly|quota)$/, "")
-          .localeCompare(right.id.replace(/-(5h|weekly|quota)$/, "")) ||
-        WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind],
-    );
-  }
   if (pool.driver !== "cursor") return pool.windows;
   const hasAuto = pool.windows.some((window) => window.id === "autoPercentUsed");
   const hasApi = pool.windows.some((window) => window.id === "apiPercentUsed");
@@ -1171,6 +1256,18 @@ function poolMember(account: LimitAccount, reported: ServerProviderUsageWindow, 
   };
 }
 
+/** Neumaier compensated summation. */
+function compensatedSum(values: readonly number[]): number {
+  let sum = 0;
+  let correction = 0;
+  for (const value of values) {
+    const next = sum + value;
+    correction += Math.abs(sum) >= Math.abs(value) ? sum - next + value : value - next + sum;
+    sum = next;
+  }
+  return sum + correction;
+}
+
 function poolWindows(accounts: readonly LimitAccount[], now: number): readonly LimitPoolWindow[] {
   const byKey = new Map<string, LimitPoolMember[]>();
   for (const account of accounts) {
@@ -1197,8 +1294,11 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
       : members.map(() => 1);
     const weightOf = new Map(members.map((m, index) => [m, weights[index]!]));
     const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    // Sum in value order so reset order cannot change the rounded result.
     const usedPercent =
-      members.reduce((sum, m) => sum + m.window.usedPercent * weightOf.get(m)!, 0) / totalWeight;
+      compensatedSum(
+        members.map((m) => m.window.usedPercent * weightOf.get(m)!).sort((a, b) => a - b),
+      ) / totalWeight;
     // Judge pace only for windows with reset clocks; others add spend without elapsed time.
     const timed = members.flatMap((m) => {
       const share = elapsedShare(m.window, now);
@@ -1245,14 +1345,17 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
   return pools.sort((left, right) => WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind]);
 }
 
-export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
+export function limitsNotice(
+  limits: ServerProviderUsageLimits,
+  resolve: typeof t = t,
+): string | null {
   if (limits.unavailable?.reason === "unsupported") {
-    return limits.unavailable.message ?? t("This account has no subscription limits.");
+    return limits.unavailable.message ?? resolve(msg("This account has no subscription limits."));
   }
   if (limits.unavailable?.reason === "probeFailed") {
-    return limits.unavailable.message ?? t("Could not read limits.");
+    return limits.unavailable.message ?? resolve(msg("Could not read limits."));
   }
-  return limits.windows.length === 0 ? t("No limits reported.") : null;
+  return limits.windows.length === 0 ? resolve(msg("No limits reported.")) : null;
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {
@@ -1314,15 +1417,15 @@ function paceOfShares(usedPercent: number, elapsed: number): LimitPace {
 }
 
 /** A time left under a minute reads "<1m", so every countdown and expiry keeps its own sentence. */
-export function formatDuration(ms: number): string {
+export function formatDuration(ms: number, resolve: typeof t = t): string {
   const remaining = Math.max(0, ms);
-  if (remaining < MINUTE) return t("<1m");
+  if (remaining < MINUTE) return resolve(msg("<1m"));
   const days = Math.floor(remaining / DAY);
   const hours = Math.floor((remaining % DAY) / HOUR);
   const minutes = Math.floor((remaining % HOUR) / MINUTE);
-  if (days > 0) return t("{days}d {hours}h", { days, hours });
-  if (hours > 0) return t("{hours}h {minutes}m", { hours, minutes });
-  return t("{minutes}m", { minutes });
+  if (days > 0) return resolve(msg("{days}d {hours}h"), { days, hours });
+  if (hours > 0) return resolve(msg("{hours}h {minutes}m"), { hours, minutes });
+  return resolve(msg("{minutes}m"), { minutes });
 }
 
 /** One redeemable reset as clients offer it; `input` already names the chosen credit. */
@@ -1340,20 +1443,21 @@ export function resetCreditChoices(
   input: ProviderConsumeResetCreditInput,
   now: number,
   compact = false,
+  resolve: typeof t = t,
 ): ReadonlyArray<ResetCreditChoice> {
-  const expiresIn = (at: string | undefined) => (at ? formatDuration(Date.parse(at) - now) : null);
+  const expiresIn = (at: string | undefined) =>
+    at ? formatDuration(Date.parse(at) - now, resolve) : null;
   if (credits.options && "instanceId" in input) {
     return credits.options.map((option) => {
       const expires = expiresIn(option.expiresAt);
+      const values = { label: option.label, count: option.availableCount };
       return {
         key: option.creditId,
-        summary: t("{label} · {count} left{expiry}", {
-          label: option.label,
-          count: option.availableCount,
-          expiry: expires ? t(" · expires in {duration}", { duration: expires }) : "",
-        }),
-        actionLabel: t("Use"),
-        confirmDescription: t("{label}: {description} This cannot be undone.", {
+        summary: expires
+          ? resolve(msg("{label} · {count} left · expires in {expires}"), { ...values, expires })
+          : resolve(msg("{label} · {count} left"), values),
+        actionLabel: resolve(msg("Use")),
+        confirmDescription: resolve(msg("{label}: {description} This cannot be undone."), {
           label: option.label,
           description: option.description,
         }),
@@ -1369,17 +1473,24 @@ export function resetCreditChoices(
       key: "next",
       summary:
         count === 0
-          ? t("No reset credits banked")
+          ? resolve(msg("No reset credits banked"))
           : compact
-            ? t("{count} banked{expiry}", {
-                count,
-                expiry: expires ? t(" · expires in {duration}", { duration: expires }) : "",
-              })
-            : tn(count, "{count} reset credit banked", "{count} reset credits banked") +
-              (expires ? t(" · next expires in {duration}", { duration: expires }) : ""),
-      actionLabel: t("Use reset"),
-      confirmDescription: t(
-        "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
+            ? expires
+              ? resolve(msg("{count} banked · expires in {expires}"), { count, expires })
+              : resolve(msg("{count} banked"), { count })
+            : expires
+              ? tn(
+                  count,
+                  "{count} reset credit banked · next expires in {expires}",
+                  "{count} reset credits banked · next expires in {expires}",
+                  { expires },
+                )
+              : tn(count, "{count} reset credit banked", "{count} reset credits banked"),
+      actionLabel: resolve(msg("Use reset")),
+      confirmDescription: resolve(
+        msg(
+          "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
+        ),
       ),
       availableCount: count,
       input,
@@ -1439,6 +1550,22 @@ export function poolResetSummary(
         resetsAt: null,
       }
     : null;
+}
+
+export type ResetCountdown =
+  | { readonly kind: "now" }
+  | { readonly kind: "momentarily" }
+  | { readonly kind: "in"; readonly ms: number };
+
+export function resetCountdown(
+  window: ServerProviderUsageWindow,
+  now: number,
+): ResetCountdown | null {
+  const resetsAt = resetMillis(window);
+  if (resetsAt === null) return null;
+  if (resetsAt <= now) return { kind: "now" };
+  if (resetsAt - now < MINUTE) return { kind: "momentarily" };
+  return { kind: "in", ms: resetsAt - now };
 }
 
 export const USAGE_LIMITS_COMMAND = {
@@ -1515,14 +1642,64 @@ export function withUsageLimitsCommands(
   });
 }
 
+/** The hubs an instance sends its requests through: those whose address is its endpoint. */
+export function instanceHubs(
+  provider: ServerProvider,
+  sources: UsageLimitSourceSnapshots,
+): UsageLimitSourceSnapshots {
+  const endpoint = provider.auth.endpoint;
+  return endpoint === undefined ? [] : sources.filter((source) => source.origin === endpoint);
+}
+
+/** The hub accounts that serve a model: those that list it, else every account of the driver. */
+export function hubRoutes(
+  sources: UsageLimitSourceSnapshots,
+  driver: ServerProvider["driver"],
+  model: string | null,
+): (account: UsageLimitSourceAccount) => boolean {
+  // Claude Code's 1M-context suffix is not part of the model id a hub routes.
+  const full = model?.replace(/\[1m\]$/i, "");
+  // The hub routes a thinking suffix such as "gpt-5.2(high)" by its base model when one lists it.
+  const base = full?.replace(/\([^)]*\)$/, "");
+  const lists = (id: string | undefined) =>
+    sources.some((source) => source.accounts.some((account) => account.models?.includes(id ?? "")));
+  const slug = lists(base) ? base : full;
+  const listed = (account: UsageLimitSourceAccount) =>
+    slug !== undefined && account.models?.includes(slug) === true;
+  const serving = new Set(
+    sources.flatMap((source) => source.accounts.filter(listed).map((account) => account.driver)),
+  );
+  // Model ids such as "opus" are aliases no hub lists, so no listing falls back to the driver.
+  if (serving.size === 0)
+    return (account) => account.driver === driver && account.models?.length !== 0;
+  // An account whose model list was unreadable may serve the model too.
+  return (account) =>
+    account.models ? listed(account) : serving.has(account.driver) || account.driver === driver;
+}
+
 export function collectProviderUsageLimits(
   instanceId: ProviderInstanceId,
   providers: readonly ServerProvider[],
   sources: UsageLimitSourceSnapshots,
   now: number,
+  model: string | null = null,
 ): UsageLimitsReport | null {
   const selected = providers.find((provider) => provider.instanceId === instanceId);
-  if (!selected || !hasProviderUsageLimits(selected.driver, providers, sources)) return null;
+  if (!selected) return null;
+  // Only an instance sent to a hub is known to reach the accounts that hub routes its model to.
+  const hubs = instanceHubs(selected, sources);
+  const routes =
+    hubs.length > 0
+      ? hubRoutes(hubs, selected.driver, model)
+      : (account: UsageLimitSourceAccount) => account.driver === selected.driver;
+  const shownHubs = hubs.length > 0 ? hubs : sources;
+  const drivers = new Set(
+    shownHubs.flatMap((source) => source.accounts.filter(routes).map((account) => account.driver)),
+  );
+  if (drivers.size === 0) drivers.add(selected.driver);
+  if (![...drivers].some((driver) => hasProviderUsageLimits(driver, providers, sources))) {
+    return null;
+  }
   const resolveKey = accountKeyResolver(
     accountWorkspaces(
       [
@@ -1531,15 +1708,22 @@ export function collectProviderUsageLimits(
       ].flatMap(accountWorkspace),
     ),
   );
+  // Behind a hub, a local login counts only when it is one of the accounts the hub routes to.
+  const routedKeys =
+    hubs.length > 0
+      ? new Set(hubs.flatMap((source) => source.accounts.filter(routes).map(resolveKey)))
+      : null;
   type NativeSnapshot = { provider: ServerProvider; limits: ServerProviderUsageLimits };
   const nativeByAccount = new Map<
     string,
     { usage: NativeSnapshot; credits: NativeSnapshot | null }
   >();
   for (const provider of providersWithLimits(providers)) {
-    if (provider.driver !== selected.driver || !provider.usageLimits) continue;
+    if (!drivers.has(provider.driver) || !provider.usageLimits) continue;
+    const accountKey = resolveKey(nativeReport(provider));
+    if (routedKeys && (accountKey === null || !routedKeys.has(accountKey))) continue;
     const snapshot = { provider, limits: provider.usageLimits };
-    const key = resolveKey(nativeReport(provider)) ?? `instance:${provider.instanceId}`;
+    const key = accountKey ?? `instance:${provider.instanceId}`;
     const previous = nativeByAccount.get(key);
     const previousUsable = previous ? limitsNotice(previous.usage.limits) === null : false;
     const usable = limitsNotice(snapshot.limits) === null;
@@ -1574,7 +1758,8 @@ export function collectProviderUsageLimits(
     credits,
   } of native) {
     const key = resolveKey(nativeReport(provider));
-    const hubCredits = sources
+    // Only a hub this instance reaches may redeem a credit for its thread.
+    const hubCredits = shownHubs
       .flatMap((source) => source.accounts.map((account) => ({ source, account })))
       .filter(
         ({ account }) =>
@@ -1616,8 +1801,8 @@ export function collectProviderUsageLimits(
       limits: shownCredits ? { ...limits, resetCredits: shownCredits } : limits,
     });
   }
-  for (const source of sources) {
-    const matching = source.accounts.filter((account) => account.driver === selected.driver);
+  for (const source of shownHubs) {
+    const matching = source.accounts.filter(routes);
     for (const account of matching) {
       const key = resolveKey(account);
       if (key && nativeAccountKeys.has(key)) continue;

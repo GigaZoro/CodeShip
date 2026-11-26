@@ -5,7 +5,7 @@ import { Platform, View } from "react-native";
 
 import { AppText as Text } from "./ui/AppText";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
-import { resolveMobileStageLabel } from "../lib/mobileBranding";
+import { translateMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 import { CodeShipMark } from "./CodeShipMark";
 import { t } from "../lib/i18n";
@@ -25,7 +25,7 @@ export function CompactBrandTitle(
     readonly fit?: boolean;
   } = {},
 ) {
-  const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
+  const stageLabel = translateMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
   const titleOffset = brandTitleOffset();
   const { scale } = useAndroidControlSizing();
   const [availableWidth, setAvailableWidth] = useState<number | null>(null);

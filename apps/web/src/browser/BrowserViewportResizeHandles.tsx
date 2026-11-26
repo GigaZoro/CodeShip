@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -12,7 +13,6 @@ import {
   type BrowserViewportResizeDirection,
 } from "./browserViewportLayout";
 
-import { t } from "~/i18n";
 interface Props {
   readonly layout: BrowserViewportLayout;
   readonly activeDirection: BrowserViewportResizeDirection | null;
@@ -55,6 +55,7 @@ function ResizeHandle(props: {
     onPointerDown,
     onKeyDown,
   } = props;
+
   return (
     <button
       type="button"

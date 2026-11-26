@@ -76,7 +76,11 @@ export interface IdAllocatorV2Allocate {
     readonly fixtureName: string;
     readonly commandName: string;
   }) => Effect.Effect<CommandId, IdAllocatorV2Error>;
-  readonly event: () => Effect.Effect<EventId, IdAllocatorV2Error>;
+  readonly event: (input?: {
+    readonly threadId?: ThreadId;
+    readonly commandId?: CommandId;
+    readonly providerSessionId?: ProviderSessionId;
+  }) => Effect.Effect<EventId, IdAllocatorV2Error>;
   readonly rawEvent: (input: {
     readonly providerSessionId: ProviderSessionId;
     readonly method: string | null;
@@ -333,14 +337,15 @@ export const layer: Layer.Layer<IdAllocatorV2> = Layer.succeed(
           parts: ["fixture", input.fixtureName, input.commandName],
           make: CommandId.make,
         })(input),
-      event: () =>
-        randomId<EventId, undefined>({
+      // Scope is diagnostic context. The stored event ID stays compact.
+      event: (input) =>
+        randomId<EventId, typeof input>({
           kind: "event",
           prefix: "event",
           parts: [],
           make: EventId.make,
           join: joinId,
-        })(undefined),
+        })(input),
       rawEvent: (input) =>
         randomId<RawEventId, typeof input>({
           kind: "raw_event",

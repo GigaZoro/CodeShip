@@ -1,6 +1,8 @@
+import { t } from "~/i18n";
 import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
+
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
@@ -24,7 +26,6 @@ import {
 } from "./deviceStreamSession";
 import type { DeviceHardwareButton, DeviceScreenSize } from "@t3tools/client-runtime/device/stream";
 import { observeResize } from "~/lib/observeResize";
-import { t } from "~/i18n";
 
 const NO_SESSION_ATOM = Atom.make<DeviceStreamSession | null>(null).pipe(
   Atom.withLabel("device-stream:none"),
@@ -99,6 +100,7 @@ export function DeviceStreamView(props: {
 }) {
   const model = deviceModel(props.platform, props.deviceName ?? "");
   const isDuo = model?.id === "iphone-duo";
+
   const [presentation, setPresentation] = useState<"phone" | "flat">("phone");
   const [keyboardAttached, setKeyboardAttached] = useState(false);
   const cancelPhoneInputRef = useRef<(() => void) | null>(null);
@@ -227,7 +229,7 @@ export function DeviceStreamView(props: {
 
   const phoneUnavailableReason =
     isDuo && !screen?.supportsHingeAngle
-      ? t("iPhone Duo 3D requires Device Hub 0.11.0 or newer")
+      ? t("iPhone Duo 3D requires Device Hub {version} or newer", { version: "0.11.0" })
       : phoneUnavailable
         ? t("3D is unavailable on this browser")
         : mjpegUrl
@@ -449,7 +451,7 @@ export function DeviceStreamView(props: {
               title={phoneUnavailableReason ?? t("Show 3D phone")}
               onClick={() => setPresentation("phone")}
             >
-              {t("3D")}
+              3D
             </Button>
             <Button
               variant={!showPhone ? "secondary" : "ghost"}

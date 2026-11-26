@@ -16,6 +16,7 @@ export function useSidebarProjectGroups() {
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
   const environments = useEnvironmentIdentities();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+
   const labels = new Map(
     environments.map((environment) => [environment.environmentId, environment.label] as const),
   );

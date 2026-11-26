@@ -775,8 +775,10 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
     const now = yield* DateTime.now;
     const first = yield* createThread("shared-first");
     const second = yield* createThread("shared-second", { archivedAt: now });
+    const idleShared = [first, second];
+    const sharedWork = yield* createThread("shared-work");
     const providerSessionId = ProviderSessionId.make("session:recovery:shared");
-    for (const threadId of [first, second]) {
+    for (const threadId of [...idleShared, sharedWork]) {
       yield* projections.apply({
         id: EventId.make(`event:${threadId}:session`),
         type: "provider-session.attached",
@@ -798,6 +800,34 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
         },
       });
     }
+    yield* projections.apply({
+      id: EventId.make("event:recovery:shared-work"),
+      type: "provider-thread.updated",
+      threadId: sharedWork,
+      driver,
+      providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: ProviderThreadId.make("provider-thread:recovery:shared-work"),
+        appThreadId: sharedWork,
+        ownerNodeId: null,
+        driver,
+        providerInstanceId,
+        providerSessionId,
+        nativeThreadRef: { driver, nativeId: "native:shared-work", strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        pendingBackgroundTasks: [
+          { taskId: "awaited", description: "Awaited subagent", kind: "subagent" },
+        ],
+      },
+    });
     const roster = yield* createThread("roster");
     yield* projections.apply({
       id: EventId.make("event:recovery:roster"),
@@ -884,18 +914,21 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
     const unsent = yield* createThread("unsent");
     yield* createRun(unsent, "preparing");
     assert.deepEqual(
-      new Set(yield* projections.getRecoveryThreadIds("runtime")),
-      new Set([first, second, roster, prepared, unsent]),
+      new Set(yield* projections.getRecoveryThreadIds("restart-continuations")),
+      new Set([sharedWork, prepared, unsent]),
     );
-    // A shared Codex session binds every chat that used it; a restart cuts nothing of theirs.
+    // Idle siblings sharing the session stay out of restart holds. Only its chat with a live roster is eligible.
     assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("restart-hold")),
-      new Set([roster, prepared, unsent]),
+      new Set([sharedWork, roster, prepared, unsent]),
     );
+    // One idle bound thread stops the shared session; the rest have nothing to recover.
+    const runtime = yield* projections.getRecoveryThreadIds("runtime");
     assert.deepEqual(
-      new Set(yield* projections.getRecoveryThreadIds("restart-continuations")),
-      new Set([first, second, prepared, unsent]),
+      new Set(runtime.filter((threadId) => !idleShared.includes(threadId))),
+      new Set([sharedWork, roster, prepared, unsent]),
     );
+    assert.equal(runtime.filter((threadId) => idleShared.includes(threadId)).length, 1);
     assert.deepEqual(
       yield* projections.getRecoveryThreadIds("restart-continuations", { include: [] }),
       [],
@@ -912,7 +945,7 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
           include: ["project:recovery"],
         }),
       ),
-      new Set([first, second, prepared, unsent]),
+      new Set([sharedWork, prepared, unsent]),
     );
     const preparedState = yield* projections.getRuntimeRecoveryProjection(prepared);
     assert.deepEqual(
@@ -928,7 +961,7 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
     `;
     assert.deepEqual(
       new Set(yield* projections.getUnreadableThreadIds()),
-      new Set([first, second]),
+      new Set([...idleShared, sharedWork]),
     );
   }).pipe(Effect.provide(layerTest)),
 );
@@ -1156,7 +1189,11 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
     const observe: Statement.Transformer = (statement) => {
       const compiled = statement.compile();
       if (compiled[0].includes("SELECT provider_thread.payload_json")) statements.push(compiled);
-      if (compiled[0].includes("SELECT node.payload_json")) nodeStatements.push(compiled);
+      if (
+        compiled[0].includes("FROM orchestration_v2_projection_nodes AS node") &&
+        compiled[0].includes("INDEXED BY orchestration_v2_projection_nodes_live_idx")
+      )
+        nodeStatements.push(compiled);
       return Effect.succeed(statement);
     };
     const projection = yield* projections

@@ -12,9 +12,9 @@ import {
   useComposerMenuProps,
 } from "./composerEventScope";
 import { ComposerFooterModeControls, ComposerPermissionsSection } from "./ComposerFooterControls";
-import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
+import { resolveRuntimeModeOption, runtimeModeOptions } from "./runtimeModeConfig";
 
-const options = runtimeModeOptions.map((mode) => ({ mode, ...runtimeModeConfig[mode] }));
+const options = runtimeModeOptions.map((mode) => resolveRuntimeModeOption(mode));
 
 // Mirrors the overflow menu, which holds the Permissions section.
 function OverflowMenu() {
@@ -132,4 +132,41 @@ it("returns focus to the editor after picking from the chip", async () => {
   await userEvent.click(page.getByRole("menuitemradio", { name: "Full access" }));
   await vi.waitFor(() => expect(handle.focusAtEnd).toHaveBeenCalled());
   await expect.element(screen.getByRole("button", { name: "Model" })).not.toHaveFocus();
+});
+
+function ContextPermissions() {
+  const [mode, setMode] = useState<RuntimeMode>("full-access");
+  return (
+    <ComposerFooterModeControls
+      runtimeMode={mode}
+      runtimeModeOptions={options.filter(
+        (option) => option.mode === "approval-required" || option.mode === "full-access",
+      )}
+      accessDisplay="label"
+      onRuntimeModeChange={setMode}
+    />
+  );
+}
+
+it("opens permissions directly from the context strip and applies a supported mode", async () => {
+  await using screen = await render(<ContextPermissions />, { router: false }); // no routes involved
+  await userEvent.click(screen.getByRole("button", { name: "Permissions: Full access" }));
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Full access" }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Auto", exact: true }))
+    .not.toBeInTheDocument();
+  await userEvent.click(page.getByRole("menuitemradio", { name: "Supervised" }));
+  const trigger = screen.getByRole("button", { name: "Permissions: Supervised" });
+  await expect.element(trigger).toBeVisible();
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Supervised" }))
+    .not.toBeInTheDocument();
+  await userEvent.click(trigger);
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Supervised" }))
+    .toHaveAttribute("aria-checked", "true");
+  await userEvent.keyboard("{Escape}");
+  await expect.element(trigger).toHaveFocus();
 });

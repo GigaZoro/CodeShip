@@ -1,4 +1,7 @@
+import { msg } from "@t3tools/shared/i18n";
 // @effect-diagnostics globalTimers:off - imperative WebSocket callbacks own and clear their response deadline.
+
+import { translatableError } from "../errors/translatable.ts";
 import {
   SPEECH_STREAM_MAX_CHUNK_BYTES,
   SPEECH_STREAM_MAX_QUEUED_BYTES,
@@ -56,12 +59,15 @@ export function openSpeechStream(input: {
   };
   const armTimeout = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => fail(new Error("Live transcription stopped responding.")), 120_000);
+    timer = setTimeout(
+      () => fail(translatableError(msg("Live transcription stopped responding."))),
+      120_000,
+    );
   };
-  const abort = () => fail(new Error("Voice transcription was cancelled."), false);
+  const abort = () => fail(translatableError(msg("Voice transcription was cancelled.")), false);
   const pump = () => {
     if (!isReady || closed || finishSent) return;
-    if (!input.canSend()) return fail(new Error("Voice consent was revoked."));
+    if (!input.canSend()) return fail(translatableError(msg("Voice consent was revoked.")));
     while (inFlight.length < 2 && queue.length) {
       const chunk = queue.shift()!;
       inFlight.push(chunk.byteLength);
@@ -77,24 +83,24 @@ export function openSpeechStream(input: {
     }
   };
   socket.addEventListener("open", () => {
-    if (!input.canSend()) return fail(new Error("Voice consent was revoked."));
+    if (!input.canSend()) return fail(translatableError(msg("Voice consent was revoked.")));
     if (!closed) socket.send(JSON.stringify({ type: "start", options: input.options }));
   });
   socket.addEventListener("message", (event) => {
     if (closed) return;
-    if (!input.canSend()) return fail(new Error("Voice consent was revoked."));
+    if (!input.canSend()) return fail(translatableError(msg("Voice consent was revoked.")));
     try {
       const message = decodeEvent(event.data);
       switch (message.type) {
         case "ready":
-          if (isReady) throw new Error("Unexpected speech stream response.");
+          if (isReady) throw translatableError(msg("Unexpected speech stream response."));
           isReady = true;
           clearTimeout(timer);
           pump();
           break;
         case "update":
           if (!inFlight.length || message.revision < revision)
-            throw new Error("Unexpected speech stream response.");
+            throw translatableError(msg("Unexpected speech stream response."));
           revision = message.revision;
           inFlightBytes -= inFlight.shift()!;
           clearTimeout(timer);
@@ -103,7 +109,7 @@ export function openSpeechStream(input: {
           if (inFlight.length) armTimeout();
           break;
         case "finished":
-          if (!finishSent) throw new Error("Unexpected speech stream response.");
+          if (!finishSent) throw translatableError(msg("Unexpected speech stream response."));
           closed = true;
           cleanup();
           resolveFinal(message.text);
@@ -113,14 +119,16 @@ export function openSpeechStream(input: {
           fail(new Error(message.message));
       }
     } catch (error) {
-      fail(error instanceof Error ? error : new Error("Invalid speech stream response."));
+      fail(
+        error instanceof Error ? error : translatableError(msg("Invalid speech stream response.")),
+      );
     }
   });
   socket.addEventListener("close", () =>
-    fail(new Error("The voice connection closed. Please record again.")),
+    fail(translatableError(msg("The voice connection closed. Please record again."))),
   );
   socket.addEventListener("error", () =>
-    fail(new Error("Could not connect to live transcription.")),
+    fail(translatableError(msg("Could not connect to live transcription."))),
   );
   input.signal.addEventListener("abort", abort, { once: true });
   armTimeout();
@@ -130,7 +138,7 @@ export function openSpeechStream(input: {
       if (closed || finishing) return;
       const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
       if (queuedBytes + inFlightBytes + bytes.byteLength > SPEECH_STREAM_MAX_QUEUED_BYTES) {
-        fail(new Error("Voice recordings are limited to five minutes."));
+        fail(translatableError(msg("Voice recordings are limited to five minutes.")));
         return;
       }
       let offset = 0;
@@ -155,7 +163,7 @@ export function openSpeechStream(input: {
       try {
         pump();
       } catch {
-        fail(new Error("Could not send microphone audio."));
+        fail(translatableError(msg("Could not send microphone audio.")));
       }
     },
     finish: () => {
@@ -163,7 +171,7 @@ export function openSpeechStream(input: {
       try {
         pump();
       } catch {
-        fail(new Error("Could not finish live transcription."));
+        fail(translatableError(msg("Could not finish live transcription.")));
       }
       return final;
     },

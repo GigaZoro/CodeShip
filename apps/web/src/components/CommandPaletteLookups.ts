@@ -1,5 +1,6 @@
-import { sortProjectGroupsManually } from "@t3tools/client-runtime/state/project-order";
 import { t } from "~/i18n";
+import { sortProjectGroupsManually } from "@t3tools/client-runtime/state/project-order";
+
 import {
   type ClientSettings,
   type EnvironmentId,
@@ -32,7 +33,7 @@ export function useEnvironmentLookups() {
           label: isPrimary
             ? t("Local")
             : isLocal
-              ? t("{environment} (Local)", { environment: environment.label })
+              ? t("{label} (Local)", { label: environment.label })
               : environment.label,
           machine: resolveEnvironmentMachineKind(environment.serverConfig),
         },

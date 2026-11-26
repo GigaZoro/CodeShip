@@ -99,6 +99,25 @@ function fieldAcceptsString(
   return (value) => Option.isSome(decode(value));
 }
 
+/** An unset select shows, and acts as, its first option. */
+function readSelectValue(
+  config: unknown,
+  key: string,
+  options: ReadonlyArray<ProviderSettingsFormOption> | undefined,
+): string {
+  return readProviderConfigString(config, key) || (options?.[0]?.value ?? "");
+}
+
+function hasConfiguredValue(config: unknown, key: string): boolean {
+  if (config === null || typeof config !== "object") return false;
+  const value = (config as Record<string, unknown>)[key];
+  return value !== undefined && value !== "";
+}
+
+/**
+ * Without a `value`, lists every field. With one, a `visibleWhen` field is hidden only while empty:
+ * a leftover value still reaches the server, so it stays visible and clearable.
+ */
 export function deriveProviderSettingsFields(
   definition: SettingsFormDefinition,
   value?: unknown,
@@ -124,6 +143,23 @@ export function deriveProviderSettingsFields(
       const fieldSchema = definition.settingsSchema.fields[key]!;
       const formAnnotation = readProviderSettingsFormAnnotation(fieldSchema);
       if (formAnnotation.hidden) return [];
+      const visibleWhen = formAnnotation.visibleWhen;
+      const controller =
+        visibleWhen === undefined ? undefined : definition.settingsSchema.fields[visibleWhen.field];
+      if (
+        visibleWhen !== undefined &&
+        value !== undefined &&
+        !hasConfiguredValue(value, key) &&
+        !visibleWhen.values.includes(
+          readSelectValue(
+            value,
+            visibleWhen.field,
+            controller && readProviderSettingsFormAnnotation(controller).options,
+          ),
+        )
+      ) {
+        return [];
+      }
       if (isLocalAcp && key !== "source" && key !== "commandPath") return [];
 
       const annotatedTitle = readFieldAnnotationString(fieldSchema, "title");
@@ -422,7 +458,7 @@ function ProviderSettingsSelect({
 }) {
   const options = field.options ?? [];
   const fallback = options[0]?.value ?? "";
-  const current = readProviderConfigString(value, field.key) || fallback;
+  const current = readSelectValue(value, field.key, options);
   const label = options.find((option) => option.value === current)?.label ?? current;
   return (
     <Select
@@ -727,7 +763,7 @@ export function ProviderSettingsForm({
   managed,
   environmentId,
 }: ProviderSettingsFormProps) {
-  const fields = deriveProviderSettingsFields(definition, value);
+  const fields = deriveProviderSettingsFields(definition, value ?? {});
   const isLocalAcp =
     definition.driverKind === "acpRegistry" &&
     readProviderConfigString(value, "source") === "local";

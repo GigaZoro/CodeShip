@@ -1,12 +1,13 @@
+import { t, msg } from "~/i18n";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
-import { t } from "~/i18n";
 
-export type ThreadSyncPhase = "loading" | "syncing";
+export type ThreadSyncPhase = "loading" | "syncing" | "failed";
 
 export function resolveThreadSyncPhase(input: {
   readonly detailExists: boolean;
   readonly shellExists: boolean;
   readonly status: EnvironmentThreadStatus;
+  readonly hasError: boolean;
 }): ThreadSyncPhase | null {
   if (!input.shellExists) {
     return null;
@@ -16,13 +17,21 @@ export function resolveThreadSyncPhase(input: {
     case "empty":
     case "cached":
     case "synchronizing":
-      return input.detailExists ? "syncing" : "loading";
+      if (!input.detailExists) return "loading";
+      return input.hasError ? "failed" : "syncing";
     case "deleted":
     case "live":
       return null;
   }
 }
 
-export function threadSyncLabel(phase: ThreadSyncPhase): string {
-  return phase === "loading" ? t("Loading messages...") : t("Syncing messages...");
+export function threadSyncLabel(phase: ThreadSyncPhase, resolve: typeof t = t): string {
+  switch (phase) {
+    case "loading":
+      return resolve(msg("Loading messages..."));
+    case "syncing":
+      return resolve(msg("Syncing messages..."));
+    case "failed":
+      return resolve(msg("Could not sync messages"));
+  }
 }

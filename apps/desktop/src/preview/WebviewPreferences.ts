@@ -1,4 +1,3 @@
-/** sandbox:true is required with contextIsolation:false or the shared page global would expose Node and IPC. */
-// Electron lacks the browser-owned FedCM dialog; use the sign-in popup fallback.
+/** The picker preload runs in its own JavaScript world; PageWorld.ts holds what must run in the page's. */
 export const PREVIEW_WEBVIEW_PREFERENCES =
-  "contextIsolation=false,sandbox=true,nodeIntegration=false,disableBlinkFeatures=FedCm";
+  "contextIsolation=true,sandbox=true,nodeIntegration=false,disableBlinkFeatures=FedCm";

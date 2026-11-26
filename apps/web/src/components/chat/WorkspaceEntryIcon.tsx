@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 
@@ -28,12 +29,13 @@ export function WorkspaceEntryTooltip(props: {
   cwd?: string | undefined;
 }) {
   const metadata = useFileMetadata(props.environmentId, props.path, props.cwd);
+
   return (
     <>
       {props.label ?? props.path}
       {metadata?.byteLength === undefined
         ? null
-        : ` · ${formatAttachmentSize(metadata.byteLength)}`}
+        : ` · ${formatAttachmentSize(metadata.byteLength, t)}`}
     </>
   );
 }

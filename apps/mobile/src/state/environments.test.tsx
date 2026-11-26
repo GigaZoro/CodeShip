@@ -95,6 +95,7 @@ function presentation(index: number, version = 0): SourcePresentation {
         ? null
         : ({ cwd: `/workspace-${version}` } as NonNullable<SourcePresentation["serverConfig"]>),
     lastSeenAt: null,
+    refusedRouteIds: [],
   };
 }
 

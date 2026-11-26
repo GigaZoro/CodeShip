@@ -26,10 +26,10 @@ export const BROWSER_ASSISTANTS: Readonly<
     { readonly label: string; readonly url: string; readonly Icon: Icon }
   >
 > = {
-  // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
+  // oxlint-disable-next-line t3code/no-untranslated-text, t3code/no-untranslated-copy -- product name, reads the same in every language
   dot: { label: "ChatGPT dot", url: "https://chatgpt.com/dots", Icon: OpenAI },
   // Duet has no page of its own on the web; Anthropic opens it from claude.ai.
-  // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
+  // oxlint-disable-next-line t3code/no-untranslated-text, t3code/no-untranslated-copy -- product name, reads the same in every language
   duet: { label: "Claude Duet", url: "https://claude.ai/", Icon: ClaudeAI },
 };
 

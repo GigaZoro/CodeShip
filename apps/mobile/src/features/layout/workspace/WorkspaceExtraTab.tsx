@@ -2,6 +2,7 @@ import { type NavigationPageTab } from "./navigation-tab-order";
 import { NativeStackScreenOptions } from "../../../native/StackHeader";
 import { ScheduledTasksScreen } from "../../settings/SettingsScheduledTasksRouteScreen";
 import { UsageRouteScreen } from "../../usage/UsageRouteScreen";
+import { WorkflowsScreen } from "../../workflows/WorkflowsScreen";
 
 export function WorkspaceExtraTab(props: { tab: NavigationPageTab }) {
   return props.tab === "scheduledTasks" ? (
@@ -9,7 +10,7 @@ export function WorkspaceExtraTab(props: { tab: NavigationPageTab }) {
   ) : (
     <>
       <NativeStackScreenOptions options={{ headerSearchBarOptions: undefined }} />
-      <UsageRouteScreen workspace />
+      {props.tab === "workflows" ? <WorkflowsScreen /> : <UsageRouteScreen workspace />}
     </>
   );
 }

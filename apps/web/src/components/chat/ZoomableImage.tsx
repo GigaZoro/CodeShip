@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
 import { flushSync } from "react-dom";
 
@@ -7,7 +8,6 @@ import {
 } from "../../lib/windowControlsOverlay";
 
 import { AttachmentImage } from "../media/AttachmentImage";
-import { t } from "~/i18n";
 
 const MAX_ZOOM = 8;
 

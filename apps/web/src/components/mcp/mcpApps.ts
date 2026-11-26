@@ -1,6 +1,4 @@
-import type { Message } from "@t3tools/shared/i18n";
-
-import { msg, t } from "~/i18n";
+import { type Message, msg, t } from "~/i18n";
 import chatgptLogo from "./logos/chatgpt.png";
 import claudeLogo from "./logos/claude.png";
 import geminiLogo from "./logos/gemini.png";
@@ -36,9 +34,9 @@ export interface McpApp {
   readonly name: string;
   readonly logo: string;
   readonly handoff: McpAppHandoff;
-  /** "Set up another way", next to the URL. */
+  /** "Set up another way", next to the URL. `msg()` strings. */
   readonly steps: readonly Message[];
-  /** One line under the primary action. */
+  /** One line under the primary action. A `msg()` string. */
   readonly note?: Message;
   readonly docs?: string;
   /** Kept out of the grid until its sign-in works. */
@@ -181,36 +179,36 @@ export const MCP_APPS: readonly McpApp[] = [
 ];
 
 /** The "Something else…" choice: the URL and general steps only. */
-export const OTHER_MCP_APP_STEPS: readonly Message[] = [msg("Add a remote MCP server with OAuth.")];
+export const OTHER_MCP_APP_STEPS = [msg("Add a remote MCP server with OAuth.")] as const;
 
 /**
  * The primary button for `app`: its label, the https page it opens, and what it copies first.
  * Null for apps set up with commands. It never copies the approval code.
  */
-export function mcpHandoffAction(app: McpApp, mcpUrl: string) {
+export function mcpHandoffAction(app: McpApp, mcpUrl: string, resolve: typeof t = t) {
   const { handoff } = app;
   switch (handoff.kind) {
     case "open":
       return {
-        label: t("Open in {app}", { app: app.name }),
+        label: resolve(msg("Open in {app}"), { app: app.name }),
         link: handoff.link(mcpUrl),
         appLink: null,
         copy: null,
       };
     case "copy-url":
       return {
-        label: t("Copy URL and open {app}", { app: app.name }),
+        label: resolve(msg("Copy URL and open {app}"), { app: app.name }),
         link: handoff.link,
         appLink: null,
-        copy: { text: mcpUrl, title: t("URL copied") },
+        copy: { text: mcpUrl, title: resolve(msg("URL copied")) },
       };
     case "copy-message": {
       const message = handoff.message(mcpUrl);
       return {
-        label: t("Copy message and open {app}", { app: app.name }),
+        label: resolve(msg("Copy message and open {app}"), { app: app.name }),
         link: handoff.link,
         appLink: handoff.appLink?.(message) ?? null,
-        copy: { text: message, title: t("Message copied") },
+        copy: { text: message, title: resolve(msg("Message copied")) },
       };
     }
     case "commands":

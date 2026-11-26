@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItemStatus,
@@ -15,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/state/subagent-display";
 import { getModelSelectionStringOptionValue, resolveSelectableModel } from "@t3tools/shared/model";
 import { getTraitsSpeedDisplay, TraitsSpeedIcon } from "./TraitsSpeed";
+
 import type { ReactNode } from "react";
 import {
   BotIcon,
@@ -30,7 +32,6 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 import { deriveProviderInstanceEntries, shouldShowInstanceBadge } from "../../providerInstances";
-import { t } from "~/i18n";
 
 type SubagentSelectionInput = Pick<
   Parameters<typeof SubagentTooltipContent>[0],
@@ -124,10 +125,17 @@ export function SubagentTooltipContent(props: {
   progress?: string | null | undefined;
 }) {
   const { childSelection, modelSlug, matchingSelection, effort } = resolveSubagentSelection(props);
-  const { modelLabel, workspace: metadata } = resolveSubagentMetadata({
-    ...props,
-    modelSelection: childSelection,
-  });
+  const { modelLabel, workspace: metadata } = resolveSubagentMetadata(
+    {
+      ...props,
+      modelSelection: childSelection,
+    },
+    t,
+  );
+  const hasProjectRow =
+    props.parentThread !== undefined &&
+    props.childProject !== undefined &&
+    props.childProject.id !== props.parentThread.projectId;
   const preview = subagentDetailPreview(props);
   const providerModel = props.provider?.models.find((candidate) => candidate.slug === modelSlug);
   const provider = props.provider;
@@ -140,10 +148,13 @@ export function SubagentTooltipContent(props: {
             descriptor.type === "boolean" &&
             typeof saved?.value === "boolean"
           ) {
-            return getTraitsSpeedDisplay({
-              ...descriptor,
-              currentValue: saved.value,
-            });
+            return getTraitsSpeedDisplay(
+              {
+                ...descriptor,
+                currentValue: saved.value,
+              },
+              t,
+            );
           }
           if (
             descriptor.id === "serviceTier" &&
@@ -151,10 +162,13 @@ export function SubagentTooltipContent(props: {
             typeof saved?.value === "string" &&
             descriptor.options.some((option) => option.id === saved.value)
           ) {
-            return getTraitsSpeedDisplay({
-              ...descriptor,
-              currentValue: saved.value,
-            });
+            return getTraitsSpeedDisplay(
+              {
+                ...descriptor,
+                currentValue: saved.value,
+              },
+              t,
+            );
           }
           return null;
         })
@@ -185,7 +199,7 @@ export function SubagentTooltipContent(props: {
             showBadge={showInstanceBadge && entry?.accentColor !== undefined}
             badgeContent="none"
             badgeClassName="h-2 min-w-2 px-0"
-            iconClassName="size-3 shrink-0 grayscale opacity-60"
+            iconClassName="size-3 shrink-0 opacity-60"
           />
         ) : (
           <BotIcon className="size-3 shrink-0" />
@@ -219,12 +233,29 @@ export function SubagentTooltipContent(props: {
           )}
         >
           <StatusIcon aria-hidden className="size-3 shrink-0" />
-          {props.status.replaceAll("_", " ")}
+          {props.status === "idle"
+            ? t("idle")
+            : props.status === "pending"
+              ? t("pending")
+              : props.status === "running"
+                ? t("running")
+                : props.status === "waiting"
+                  ? t("waiting")
+                  : props.status === "completed"
+                    ? t("completed")
+                    : props.status === "failed"
+                      ? t("failed")
+                      : props.status === "cancelled"
+                        ? t("cancelled")
+                        : props.status === "interrupted"
+                          ? t("interrupted")
+                          : (props.status as string).replaceAll("_", " ")}
         </span>
         {props.elapsed}
       </div>
-      {metadata.map(({ label, value }) => {
-        const Icon = label === "Branch" ? GitBranchIcon : FolderIcon;
+      {metadata.map(({ label, value }, index) => {
+        const Icon =
+          props.childThread?.branch && !(hasProjectRow && index === 0) ? GitBranchIcon : FolderIcon;
         return (
           <div key={label} className="flex min-w-0 items-center gap-2">
             <Icon aria-hidden className="size-3 shrink-0" />

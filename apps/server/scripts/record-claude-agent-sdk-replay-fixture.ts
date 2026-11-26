@@ -10,6 +10,7 @@ import {
   CLAUDE_AGENT_SDK_REPLAY_PROTOCOL,
 } from "../src/orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts";
 import { claudeRuntimeQueryPolicyForRuntimePolicy } from "../src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import type { RuntimeMode } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { RuntimePolicyV2Override } from "../src/orchestration-v2/RuntimePolicy.ts";
 import { makeCheckpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -70,6 +71,8 @@ import {
   TOOL_CALL_DENIED_WRITE_PROMPT,
   TOOL_CALL_DENIED_WRITE_TARGET,
 } from "../src/orchestration-v2/testkit/fixtures/tool_call_denied_write/input.ts";
+import { CLAUDE_AUTO_MODE_PROMPT } from "../src/orchestration-v2/testkit/fixtures/claude_auto_mode/input.ts";
+import { CLAUDE_AUTO_MODE_UNAVAILABLE_WORKSPACE_FILES } from "../src/orchestration-v2/testkit/fixtures/claude_auto_mode_unavailable/input.ts";
 import {
   validateClaudeReplayRecordingSelection,
   type ClaudeRecordingQueryMode,
@@ -84,6 +87,13 @@ const CLAUDE_RECORDINGS = {
   simple: {
     prompts: [SIMPLE_PROMPT],
     defaultTranscriptFile: "fixtures/simple/claude_transcript.ndjson",
+    queryMode: "streaming",
+    enableTools: true,
+  },
+  // Record with ANTHROPIC_BASE_URL at a CLIProxyAPI hub whose upstream accounts answer 429.
+  usage_limit: {
+    prompts: [SIMPLE_PROMPT],
+    defaultTranscriptFile: "fixtures/usage_limit/claude_transcript.ndjson",
     queryMode: "streaming",
     enableTools: true,
   },
@@ -257,6 +267,22 @@ const CLAUDE_RECORDINGS = {
     queryMode: "streaming",
     enableTools: true,
   },
+  // Needs an account and model whose init reports permissionMode "auto".
+  claude_auto_mode: {
+    prompts: [CLAUDE_AUTO_MODE_PROMPT],
+    defaultTranscriptFile: "fixtures/claude_auto_mode/claude_transcript.ndjson",
+    queryMode: "streaming",
+    enableTools: true,
+    runtimeMode: "auto",
+  },
+  claude_auto_mode_unavailable: {
+    prompts: [CLAUDE_AUTO_MODE_PROMPT],
+    defaultTranscriptFile: "fixtures/claude_auto_mode_unavailable/claude_transcript.ndjson",
+    queryMode: "streaming",
+    enableTools: true,
+    runtimeMode: "auto",
+    workspaceFiles: CLAUDE_AUTO_MODE_UNAVAILABLE_WORKSPACE_FILES,
+  },
   subagent: {
     prompts: [SUBAGENT_PROMPT],
     defaultTranscriptFile: "fixtures/subagent/claude_transcript.ndjson",
@@ -383,10 +409,11 @@ async function main() {
 
   function runtimePolicyForRecording(input: {
     readonly cwd: string;
+    readonly runtimeMode?: RuntimeMode;
     readonly override?: RuntimePolicyV2Override;
   }): ProviderAdapter.ProviderAdapterV2RuntimePolicy {
     return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-      runtimeMode: "full-access",
+      runtimeMode: input.runtimeMode ?? "full-access",
       interactionMode: "default",
       cwd: input.override?.cwd ?? input.cwd,
       ...(input.override?.approvalPolicy === undefined
@@ -424,7 +451,10 @@ async function main() {
     configuredCwd ??
     (scenario === "tool_call_read_only"
       ? await makeToolCallReadOnlyRecordingWorkspace()
-      : await makeCheckpointWorkspace(`claude-agent-sdk-record-${scenario}`));
+      : await makeCheckpointWorkspace(
+          `claude-agent-sdk-record-${scenario}`,
+          "workspaceFiles" in recording ? recording.workspaceFiles : undefined,
+        ));
   const shouldRemoveCwd = configuredCwd === undefined;
 
   const expectedAbsentWorkspacePaths =
@@ -483,6 +513,7 @@ async function main() {
   try {
     const runtimePolicy = runtimePolicyForRecording({
       cwd,
+      ...("runtimeMode" in recording ? { runtimeMode: recording.runtimeMode } : {}),
       ...("runtimePolicyOverride" in recording
         ? { override: recording.runtimePolicyOverride }
         : {}),

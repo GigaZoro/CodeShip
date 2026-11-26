@@ -1,4 +1,6 @@
+import { msg, t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
+
 import { useState, type ReactNode } from "react";
 
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
@@ -12,10 +14,10 @@ import { type CommandPaletteActionItem } from "../CommandPalette.logic";
 import { CommandPaletteResults } from "../CommandPaletteResults";
 import {
   getProjectFilePickerMatches,
+  groupMatchRanges,
   PROJECT_FILE_PICKER_RESULT_LIMIT,
 } from "./ProjectFilePicker.logic";
 import { useProjectFilePickerQuery } from "./projectFilesQueryState";
-import { t } from "~/i18n";
 
 interface ProjectFilePickerProps {
   readonly setOpen: (open: boolean) => void;
@@ -29,27 +31,34 @@ function HighlightedFuzzyText(props: {
   if (!props.active) return props.value;
 
   const parts: ReactNode[] = [];
-  let start = 0;
-  for (const index of props.indices) {
-    if (start < index) parts.push(props.value.slice(start, index));
+  let cursor = 0;
+  for (const [start, end] of groupMatchRanges(props.indices)) {
+    if (cursor < start) parts.push(props.value.slice(cursor, start));
     parts.push(
-      <strong className="font-semibold text-foreground" key={index}>
-        {props.value[index]}
+      <strong className="font-semibold text-foreground" key={start}>
+        {props.value.slice(start, end)}
       </strong>,
     );
-    start = index + 1;
+    cursor = end;
   }
-  if (start < props.value.length) parts.push(props.value.slice(start));
+  if (cursor < props.value.length) parts.push(props.value.slice(cursor));
 
   return <span className="text-muted-foreground">{parts}</span>;
 }
 
-function getEmptyStateMessage(query: string, error: string | null, isPending: boolean): string {
+function getEmptyStateMessage(
+  query: string,
+  error: string | null,
+  isPending: boolean,
+  resolve: typeof t,
+): string {
   if (error) return error;
   const isSearching = query.trim().length > 0;
   if (isPending)
-    return isSearching ? t("Searching workspace files…") : t("Indexing workspace files…");
-  return isSearching ? t("No matching files.") : t("No files found.");
+    return isSearching
+      ? resolve(msg("Searching workspace files…"))
+      : resolve(msg("Indexing workspace files…"));
+  return isSearching ? resolve(msg("No matching files.")) : resolve(msg("No files found."));
 }
 
 function EmptyProjectFilePicker() {
@@ -72,6 +81,7 @@ function EmptyProjectFilePicker() {
 
 function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveProjectTarget }) {
   const { target } = props;
+
   const [query, setQuery] = useState("");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const result = useProjectFilePickerQuery(
@@ -79,6 +89,8 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
     target.cwd,
     query,
     PROJECT_FILE_PICKER_RESULT_LIMIT,
+    undefined,
+    t,
   );
   const { resolvedTheme } = useTheme();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -108,7 +120,7 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
     },
   }));
 
-  const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);
+  const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending, t);
 
   return (
     <CommandPaletteContent

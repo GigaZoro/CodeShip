@@ -1,10 +1,11 @@
+import { msg, t } from "../../lib/i18n";
 import type { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import {
   isAttachmentOnlyBootstrapPrompt,
   replaceComposerContextReferences,
 } from "@t3tools/shared/composerContextReferences";
-import { msg, t } from "../../lib/i18n";
+import { composerFileLinksToPlainText } from "@t3tools/shared/composerInlineTokens";
 
 export const REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL = msg("Remove queued message");
 
@@ -43,7 +44,9 @@ export function resolveThreadQueueRowControls(input: {
     displayText: isAttachmentOnlyBootstrapPrompt(input.text)
       ? ""
       : assistantCitationsToPlainText(
-          replaceComposerContextReferences(input.text, (reference) => reference.label),
+          composerFileLinksToPlainText(
+            replaceComposerContextReferences(input.text, (reference) => reference.label),
+          ),
         ).trim(),
     isEditing,
   };

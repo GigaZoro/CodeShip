@@ -1,3 +1,4 @@
+import { t, msg } from "@t3tools/shared/i18n";
 import {
   type ModelCapabilities,
   type ModelSelection,
@@ -11,7 +12,6 @@ import {
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
 } from "@t3tools/shared/model";
-import { t } from "@t3tools/shared/i18n";
 
 const REASONING_DESCRIPTOR_IDS: ReadonlySet<string> = new Set([
   ...REASONING_EFFORT_OPTION_IDS,
@@ -137,13 +137,16 @@ function displaySpeedLabel(speedLabel: string): string {
   return speedLabel;
 }
 
-export function buildTraitsTriggerDisplay(input: {
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>;
-  primarySelectDescriptorId: string | null;
-  ultrathinkPromptControlled: boolean;
-  modelSelection?: ModelSelection | null;
-  reportedModelSelection?: ModelSelection | null | undefined;
-}): {
+export function buildTraitsTriggerDisplay(
+  input: {
+    descriptors: ReadonlyArray<ProviderOptionDescriptor>;
+    primarySelectDescriptorId: string | null;
+    ultrathinkPromptControlled: boolean;
+    modelSelection?: ModelSelection | null;
+    reportedModelSelection?: ModelSelection | null | undefined;
+  },
+  resolve: typeof t = t,
+): {
   label: string;
   /** "Fast" or "Ultrafast" when a speed option is on. */
   speedLabel: string | null;
@@ -183,7 +186,7 @@ export function buildTraitsTriggerDisplay(input: {
               ? "Fast"
               : null;
         fastModeFallbackLabel =
-          descriptor.options.find(({ id }) => id === currentValue)?.label ?? t("Normal");
+          descriptor.options.find(({ id }) => id === currentValue)?.label ?? resolve(msg("Normal"));
         continue;
       }
     }
@@ -192,8 +195,8 @@ export function buildTraitsTriggerDisplay(input: {
         ? "Ultrathink"
         : descriptor.type === "boolean"
           ? descriptor.currentValue === true
-            ? t("{label} On", { label: descriptor.label })
-            : t("{label} Off", { label: descriptor.label })
+            ? resolve(msg("{label} On"), { label: descriptor.label })
+            : resolve(msg("{label} Off"), { label: descriptor.label })
           : (getProviderOptionCurrentLabel(
               descriptor,
               input.modelSelection,

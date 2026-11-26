@@ -58,7 +58,13 @@ describe("closedViewStore", () => {
       id: "bad",
       kind: "panel-tab",
       threadRef: refA,
-      surface: { kind: "side-chat", id: "side-chat:x" },
+      surface: { kind: "thread", id: "thread:x" },
+    },
+    {
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { kind: "linked-thread", id: "linked-thread:x", viaEnvironmentId: "env-1" },
     },
     {
       id: "bad",
@@ -116,12 +122,14 @@ describe("closedViewStore", () => {
     const sideChatId = store.remember({
       kind: "panel-tab",
       threadRef: refA,
-      surface: { id: "side-chat:side", kind: "side-chat", threadId: ThreadId.make("side") },
+      // Saved before a side chat's tab became a `thread` surface.
+      surface: { id: "side-chat:side", kind: "side-chat", threadId: "side" } as never,
     });
     const threadTabId = store.remember({
       kind: "panel-tab",
       threadRef: refA,
-      surface: { kind: "thread", id: "thread:env-2:thread-A", threadRef: refB },
+      // Persisted by the fork before local and linked thread tabs shared this store.
+      surface: { kind: "thread", id: "thread:env-2:thread-A", threadRef: refB } as never,
     });
     const publicId = store.remember(diff(refA));
     const browserId = store.remember({
@@ -156,6 +164,9 @@ describe("closedViewStore", () => {
       threadTabId,
       sideChatId,
     ]);
+    expect(useClosedViewStore.getState().entries.at(-1)).toMatchObject({
+      surface: { id: "thread:side", kind: "thread", threadId: "side" },
+    });
     const saved = JSON.stringify(await storage!.getItem(name!));
     expect(saved).not.toContain("private.example");
     expect(saved).not.toContain("Private page");

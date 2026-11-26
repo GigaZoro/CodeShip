@@ -1,3 +1,4 @@
+import { msg, t, tx } from "~/i18n";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
@@ -19,12 +20,13 @@ import {
   toolGroupAction,
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
+import { t3ToolResultIndicatesFailure } from "@t3tools/client-runtime/t3ToolSummary";
 import {
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { claudeSkillInvocation } from "@t3tools/shared/toolActivity";
-import { memo, use, useState, type KeyboardEvent } from "react";
+import { memo, use, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   workEntryDisplayIndicatesToolFailure,
   workEntrySignalsSevereFailure,
@@ -34,9 +36,18 @@ import ChatMarkdown from "../ChatMarkdown";
 import { ChatMarkdownAssetImage } from "./ChatMarkdownMedia";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { workGroupImageGallery } from "./markdownImageGallery";
-import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon } from "lucide-react";
+import { McpSignInAction } from "./McpSignInAction";
+import * as DateTime from "effect/DateTime";
+import {
+  ChevronRightIcon,
+  CircleAlertIcon,
+  ExternalLinkIcon,
+  XIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
 import { useAssetUrls } from "../../assets/assetUrls";
+import { observeResize } from "../../lib/observeResize";
 import { useThreadShell } from "../../state/entities";
 import {
   threadReadLabelPrefix,
@@ -67,11 +78,9 @@ import {
   workEntryRawCommand,
   buildToolCallExpandedBody,
   workEntryIconName,
-  THINKING_PREVIEW_PLUGINS,
-  THOUGHT_PREVIEW_PLUGINS,
-  THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
+  sliceThoughtPreviewSource,
+  thoughtPreviewMarkdown,
 } from "./TimelineWorkEntryRow.logic";
-import { t } from "~/i18n";
 
 export function useThreadReadTarget(entry: TimelineWorkEntry, environmentId: EnvironmentId) {
   const rawThreadId = threadReadTargetId(entry);
@@ -81,9 +90,51 @@ export function useThreadReadTarget(entry: TimelineWorkEntry, environmentId: Env
   return threadId && title ? { threadId, title } : null;
 }
 
-export function threadReadLabel(label: string, target: ReturnType<typeof useThreadReadTarget>) {
-  const prefix = target && threadReadLabelPrefix(label);
-  return prefix ? { ...target, prefix, text: `${prefix} “${target.title}”` } : null;
+const THREAD_READ_MESSAGES = {
+  inProgress: msg("Reading thread “{title}”"),
+  completed: msg("Read thread “{title}”"),
+  failed: msg("Failed to read thread “{title}”"),
+  declined: msg("Declined to read thread “{title}”"),
+  stopped: msg("Stopped reading thread “{title}”"),
+};
+
+type ThreadReadStatus = keyof typeof THREAD_READ_MESSAGES;
+
+function threadReadStatus(label: string, entry: TimelineWorkEntry): ThreadReadStatus | null {
+  const payload = entry.structuredPayload;
+  if (payload?.type !== "dynamic_tool") return null;
+  if (t3ToolResultIndicatesFailure(payload.output)) return "failed";
+  const status = entry.toolLifecycleStatus;
+  if (
+    status === "inProgress" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "declined" ||
+    status === "stopped"
+  ) {
+    return status;
+  }
+  const storedPrefix = threadReadLabelPrefix(label);
+  return storedPrefix === "Read thread"
+    ? "completed"
+    : storedPrefix === "Reading thread"
+      ? "inProgress"
+      : null;
+}
+
+export function threadReadLabel(
+  label: string,
+  entry: TimelineWorkEntry,
+  target: ReturnType<typeof useThreadReadTarget>,
+  resolve: typeof t,
+) {
+  const status = target && threadReadStatus(label, entry);
+  if (!target || !status) return null;
+  return {
+    ...target,
+    status,
+    text: resolve(THREAD_READ_MESSAGES[status], { title: target.title }),
+  };
 }
 
 export function ThreadReadLabel({
@@ -95,25 +146,20 @@ export function ThreadReadLabel({
   environmentId: EnvironmentId;
   linked: boolean;
 }) {
-  return (
-    <span className="flex min-w-0">
-      <span className="shrink-0">{label.prefix} “</span>
-      {linked ? (
-        <Link
-          to="/$environmentId/$threadId"
-          params={{ environmentId, threadId: label.threadId }}
-          className="min-w-0 truncate rounded-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-          onClick={stopRowToggle}
-          onKeyDown={stopRowToggle}
-        >
-          {label.title}
-        </Link>
-      ) : (
-        <span className="min-w-0 truncate">{label.title}</span>
-      )}
-      <span className="shrink-0">”</span>
-    </span>
+  const title = linked ? (
+    <Link
+      to="/$environmentId/$threadId"
+      params={{ environmentId, threadId: label.threadId }}
+      className="min-w-0 truncate rounded-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+      onClick={stopRowToggle}
+      onKeyDown={stopRowToggle}
+    >
+      {label.title}
+    </Link>
+  ) : (
+    <span className="min-w-0 truncate">{label.title}</span>
   );
+  return <span className="flex min-w-0">{tx(THREAD_READ_MESSAGES[label.status], { title })}</span>;
 }
 
 const toolCallExpandedBodyClassName =
@@ -137,6 +183,7 @@ export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<Time
           threadRef={ctx.threadRef ?? undefined}
           skills={ctx.skills}
           isStreaming={isStreaming(entry)}
+          streamingId={entry.id}
           headingLevelOffset={MESSAGE_HEADING_LEVEL}
           onUseArtifactTemplate={ctx.onUseArtifactTemplate}
           onImageExpand={ctx.onImageExpand}
@@ -186,7 +233,7 @@ export function ViewedImagesTimelineRow({
   if (!threadRef) return null;
   return (
     <div className="flex flex-wrap items-start gap-2 px-0.5" data-image-gallery>
-      {row.paths.map((path) => {
+      {row.images.map(({ path, pending }) => {
         const image = resolveViewedImageAsset(path, {
           threadId: threadRef.threadId,
           workspaceRoot,
@@ -196,6 +243,7 @@ export function ViewedImagesTimelineRow({
             key={path}
             environmentId={threadRef.environmentId}
             resource={image.resource}
+            pending={pending}
             alt={image.alt}
             srcFragment={image.srcFragment}
             workspaceRoot={workspaceRoot}
@@ -211,6 +259,7 @@ export function ViewedImagesTimelineRow({
 function WorkEntryLogRow(props: WorkEntryRowProps) {
   const { workEntry, workspaceRoot, displayLabel } = props;
   const ctx = use(TimelineRowCtx);
+
   const { threadRef, onImageExpand, timestampFormat } = ctx;
   const { retryableWorkspacePreparationRunIds, onRetryWorkspacePreparation } = ctx;
   const threadTarget = useThreadReadTarget(workEntry, ctx.activeThreadEnvironmentId);
@@ -226,6 +275,20 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
   );
+  const noticeMessage =
+    workEntry.structuredPayload?.type === "system_notice"
+      ? workEntry.structuredPayload.message
+      : null;
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const [noticeCutOff, setNoticeCutOff] = useState(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- only layout knows whether a notice fits its row
+  useLayoutEffect(() => {
+    const label = labelRef.current;
+    if (!label || noticeMessage === null) return;
+    const measure = () => setNoticeCutOff(label.scrollWidth > label.clientWidth);
+    measure();
+    return observeResize(label, measure);
+  }, [noticeMessage]);
   const onInitialOutputReady = () => {
     if (groupView) groupView.onContentReady?.(workEntry.id);
     else props.onContentReady?.();
@@ -250,11 +313,12 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   if (failureItem?.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
     const resetAt = failureItem.failure.resetAt;
+    const verificationUrl = failureItem.failure.verificationUrl;
     // The reset time is the viewer's local time; naming the zone keeps it
     // unambiguous. Both read the zone now, since the device's can change.
     const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
     const resetTime = resetAt
-      ? `${formatUpcomingTimestamp(resetAt, timestampFormat, undefined, timeZone)} (${timeZone})`
+      ? `${formatUpcomingTimestamp(resetAt, timestampFormat, undefined, timeZone, t)} (${timeZone})`
       : null;
     const label = warning
       ? resetTime
@@ -300,6 +364,18 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             {failureItem.failure.message}
           </p>
         ) : null}
+        {verificationUrl !== undefined ? (
+          <div className="ms-7 pb-1">
+            <Button
+              size="xs"
+              variant="outline"
+              render={<a href={verificationUrl} target="_blank" rel="noopener noreferrer" />}
+            >
+              {t("Verify Google account")}
+              <ExternalLinkIcon aria-hidden />
+            </Button>
+          </div>
+        ) : null}
         {retryRunId !== null && onRetryWorkspacePreparation ? (
           <div className="ms-7 pb-1">
             <Button
@@ -339,13 +415,25 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       ? workEntry.toolLifecycleStatus === "inProgress"
         ? t("Thinking")
         : t("Thought")
-      : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot));
+      : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot, t));
   const answerPreview =
     workEntry.questionAnswer && hasQuestionAnswer(workEntry.questionAnswer)
       ? getQuestionAnswerPreview(workEntry.questionAnswer)
       : null;
   const viewedImagePath = workEntryViewedImagePath(workEntry);
   const payload = workEntry.structuredPayload;
+  const mcpSignIn =
+    payload?.type === "system_notice" &&
+    payload.mcpSignIn !== undefined &&
+    payload.providerThreadId !== null ? (
+      <McpSignInAction
+        environmentId={ctx.activeThreadEnvironmentId}
+        threadId={payload.threadId}
+        providerThreadId={payload.providerThreadId}
+        server={payload.mcpSignIn.server}
+        noticeAt={DateTime.toEpochMillis(payload.updatedAt)}
+      />
+    ) : null;
   const skill =
     payload?.type === "dynamic_tool"
       ? claudeSkillInvocation(payload.toolName, payload.input)
@@ -389,14 +477,17 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             workspaceRoot,
             previewText,
             viewedImage ? viewedImagePath : null,
+            t,
           )
       : null;
   const plainOutputFetches =
     plainOutput !== undefined &&
     workEntry.projectedItem !== undefined &&
     turnItemNeedsDetailFetch(workEntry.projectedItem.item);
+  // A notice's details repeat its row, so it expands only to show text the row cuts off.
   const canExpandProjectedItem =
-    plainOutput !== undefined
+    (noticeMessage === null || noticeCutOff) &&
+    (plainOutput !== undefined
       ? Boolean(plainOutput || viewedImage || workEntry.questionAnswer || plainOutputFetches)
       : workEntry.projectedItem === undefined
         ? canExpand
@@ -406,7 +497,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               viewedImage ||
               workEntry.questionAnswer ||
               turnItemHasDetail(workEntry.projectedItem.item),
-            );
+            ));
   const iconWrapperClass = cn(
     "flex size-4 items-center justify-center",
     showWarningIndicator
@@ -426,7 +517,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       : workLogEntryIsToolLike(workEntry)
         ? "text-secondary-label"
         : "text-foreground/80";
-  const threadLabel = isReasoning ? null : threadReadLabel(previewText, threadTarget);
+  const threadLabel = isReasoning ? null : threadReadLabel(previewText, workEntry, threadTarget, t);
   const accessiblePreview = [threadLabel?.text ?? previewText, answerPreview]
     .filter(Boolean)
     .join(": ");
@@ -439,7 +530,6 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         tabIndex: 0 as const,
         "aria-label": accessibleDisplayText,
         "aria-expanded": expanded,
-        onClick: toggleExpanded,
         onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
           if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
@@ -447,14 +537,15 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
           }
         },
       }
-    : {};
+    : undefined;
 
   return (
     <WorkLogRow
       data-work-entry-id={workEntry.id}
       data-v2-item-type={workEntry.projectedItem?.item.type}
       data-v2-item-visibility={workEntry.projectedItem?.visibility}
-      {...rowToggleProps}
+      onClick={canExpandProjectedItem ? toggleExpanded : undefined}
+      toggle={rowToggleProps}
       icon={
         <span
           className={iconWrapperClass}
@@ -473,21 +564,23 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         <div className="min-w-0 flex-1 overflow-hidden">
           <p className="flex min-w-0 w-full items-baseline gap-1.5 text-sm leading-relaxed">
             <span
-              className={cn(answerPreview ? "min-w-0" : "min-w-0 flex-1", "truncate", headingClass)}
+              ref={labelRef}
+              className={cn(
+                answerPreview || mcpSignIn ? "min-w-0" : "min-w-0 flex-1",
+                "truncate",
+                headingClass,
+              )}
             >
               {isReasoning && !expanded ? (
                 <ChatMarkdown
                   inline
-                  text={(workEntry.detail ?? previewText).slice(
-                    0,
-                    THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
-                  )}
+                  text={sliceThoughtPreviewSource(workEntry.detail ?? previewText)}
                   cwd={ctx.markdownCwd}
                   parseRawHtml={false}
-                  extraRemarkPlugins={
+                  extensions={
                     workEntry.toolLifecycleStatus === "inProgress"
-                      ? THINKING_PREVIEW_PLUGINS
-                      : THOUGHT_PREVIEW_PLUGINS
+                      ? thoughtPreviewMarkdown(t("Thinking"))
+                      : thoughtPreviewMarkdown(t("Thought"))
                   }
                 />
               ) : threadLabel ? (
@@ -514,16 +607,29 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                 {answerPreview}
               </span>
             ) : null}
+            {mcpSignIn}
           </p>
         </div>
       }
       trailing={
         <>
+          {/* First, so revealing it takes label space instead of moving the controls. Notices
+              skip it, so hovering never changes what fits or moves Sign in. */}
+          {noticeMessage === null ? (
+            <TimelineRowTimestamp
+              createdAt={workEntry.createdAt}
+              timestampFormat={timestampFormat}
+            />
+          ) : null}
           {createdThread ? (
             <button
               type="button"
               className="shrink-0 rounded-sm text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-              aria-label={t("Open {title}", { title: createdThread.title ?? t("created thread") })}
+              aria-label={
+                createdThread.title != null
+                  ? t("Open {title}", { title: createdThread.title })
+                  : t("Open created thread")
+              }
               onClick={(event) => {
                 event.stopPropagation();
                 ctx.onOpenThread(createdThread.targetThreadId);
@@ -560,7 +666,6 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               />
             </span>
           ) : null}
-          <TimelineRowTimestamp createdAt={workEntry.createdAt} timestampFormat={timestampFormat} />
         </>
       }
     >

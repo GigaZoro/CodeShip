@@ -1,8 +1,9 @@
+import { t } from "~/i18n";
 import { type ReactNode } from "react";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export const MESSAGE_HEADING_LEVEL = 3;
 
@@ -22,22 +23,20 @@ export function TimelineRowTimestamp({
   alwaysVisible?: boolean;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            className={cn(
-              "pointer-events-none absolute me-1 shrink-0 whitespace-nowrap rounded-md text-muted-foreground text-xs tabular-nums opacity-0 group-hover/timeline-row:pointer-events-auto group-hover/timeline-row:static group-hover/timeline-row:opacity-100 group-focus-within/timeline-row:pointer-events-auto group-focus-within/timeline-row:static group-focus-within/timeline-row:opacity-100",
-              alwaysVisible && "pointer-events-auto static opacity-100",
-              className,
-            )}
-          />
-        }
-      >
-        {formatDayAwareTimestamp(createdAt, timestampFormat)}
-      </TooltipTrigger>
-      <TooltipPopup>{formatChatTimestampTooltip(createdAt, timestampFormat)}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <span
+          className={cn(
+            "pointer-events-none absolute me-1 shrink-0 whitespace-nowrap rounded-md text-muted-foreground text-xs tabular-nums opacity-0 group-hover/timeline-row:pointer-events-auto group-hover/timeline-row:static group-hover/timeline-row:opacity-100 group-focus-within/timeline-row:pointer-events-auto group-focus-within/timeline-row:static group-focus-within/timeline-row:opacity-100",
+            alwaysVisible && "pointer-events-auto static opacity-100",
+            className,
+          )}
+        />
+      }
+      label={formatChatTimestampTooltip(createdAt, timestampFormat, t)}
+    >
+      {formatDayAwareTimestamp(createdAt, timestampFormat, undefined, undefined, t)}
+    </SharedTooltipTrigger>
   );
 }
 

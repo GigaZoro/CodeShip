@@ -1,5 +1,7 @@
+import { msg, t } from "~/i18n";
 import { useAuth, useClerk } from "@clerk/react";
 import { MessageSquareIcon, ServerIcon, SmartphoneIcon } from "lucide-react";
+
 import { type ReactNode, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -7,7 +9,6 @@ import { MobileClientsUserProfilePage } from "./MobileClientsUserProfilePage";
 import { T3ChatUserProfilePage } from "./T3ChatUserProfilePage";
 import { T3ConnectUserProfilePage } from "./T3ConnectUserProfilePage";
 
-import { msg, t } from "~/i18n";
 export const T3_CONNECT_ACCOUNT_PAGES = [
   {
     label: msg("Mobile clients"),
@@ -40,6 +41,7 @@ export function useT3ConnectAccountPage(): {
 } {
   const clerk = useClerk();
   const { isSignedIn } = useAuth();
+
   const [targets, setTargets] = useState<PortalTargets>({});
 
   const open = (page: T3ConnectAccountPageUrl = "t3-connect") => {

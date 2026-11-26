@@ -1,8 +1,10 @@
 import type { EnvironmentStartup } from "@t3tools/contracts";
 import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
+import * as DatabaseMigrationProgress from "./DatabaseMigrationProgress.ts";
 import {
   DATABASE_MIGRATION_PROGRESS_MESSAGE,
   DATABASE_MIGRATIONS_FINISHED_MESSAGE,
@@ -110,6 +112,31 @@ import Migration0091 from "./Migrations/091_AuthConnectDeniedRequests.ts";
 import Migration0092 from "./Migrations/092_QueuedTurnInputIndexJsonValid.ts";
 import Migration0093 from "./Migrations/093_ProviderTurnAttemptIndex.ts";
 import Migration0094 from "./Migrations/094_TurnItemMessageOrdinalIndex.ts";
+import Migration0095 from "./Migrations/095_TurnItemInlineWorkOutput.ts";
+import Migration0096 from "./Migrations/096_RepairStaleTitleRegeneration.ts";
+import Migration0097 from "./Migrations/097_IssueTrackerBindings.ts";
+import Migration0098 from "./Migrations/098_ActiveShellIndexIndexes.ts";
+import Migration0099 from "./Migrations/099_BackgroundRecoveryIndexes.ts";
+import Migration0100 from "./Migrations/100_TurnStartReadIndexes.ts";
+import Migration0101 from "./Migrations/101_DelegatedTaskReadIndexes.ts";
+import Migration0102 from "./Migrations/102_ThreadItemCounts.ts";
+import Migration0103 from "./Migrations/103_IssueTrackerAdditionalScopes.ts";
+import Migration0104 from "./Migrations/104_ProjectionProjectsTrackedFolders.ts";
+import Migration0105 from "./Migrations/105_TaskFolders.ts";
+import Migration0106 from "./Migrations/106_WorktreePathKeyIndex.ts";
+import Migration0107 from "./Migrations/107_DeferredSlashCommandIndex.ts";
+import Migration0108 from "./Migrations/108_AgentFeedback.ts";
+import Migration0109 from "./Migrations/109_IssueTrackerAccounts.ts";
+import Migration0110 from "./Migrations/110_Workflows.ts";
+import Migration0111 from "./Migrations/111_SupersededRunAttemptIndex.ts";
+import Migration0112 from "./Migrations/112_LayoutCommandApprovals.ts";
+import Migration0113 from "./Migrations/113_WorkflowSkippedRuns.ts";
+import Migration0114 from "./Migrations/114_WorkflowRunIndexes.ts";
+import Migration0115 from "./Migrations/115_WorkflowRunTags.ts";
+import Migration0116 from "./Migrations/116_ForkHistoryMembership.ts";
+import Migration0117 from "./Migrations/117_WorkflowMailSender.ts";
+import Migration0118 from "./Migrations/118_WorkflowPools.ts";
+import Migration0119 from "./Migrations/119_WorkflowRunSubject.ts";
 
 import CodeShipMigration0001 from "./CodeShipMigrations/001_PeerScheduledTaskSnapshots.ts";
 import CodeShipMigration0002 from "./CodeShipMigrations/002_CompletedRunAccountIndex.ts";
@@ -244,6 +271,31 @@ const migrationEntries = [
   [92, "QueuedTurnInputIndexJsonValid", Migration0092],
   [93, "ProviderTurnAttemptIndex", Migration0093],
   [94, "TurnItemMessageOrdinalIndex", Migration0094],
+  [95, "TurnItemInlineWorkOutput", Migration0095],
+  [96, "RepairStaleTitleRegeneration", Migration0096],
+  [97, "IssueTrackerBindings", Migration0097],
+  [98, "ActiveShellIndexIndexes", Migration0098],
+  [99, "BackgroundRecoveryIndexes", Migration0099],
+  [100, "TurnStartReadIndexes", Migration0100],
+  [101, "DelegatedTaskReadIndexes", Migration0101],
+  [102, "ThreadItemCounts", Migration0102],
+  [103, "IssueTrackerAdditionalScopes", Migration0103],
+  [104, "ProjectionProjectsTrackedFolders", Migration0104],
+  [105, "TaskFolders", Migration0105],
+  [106, "WorktreePathKeyIndex", Migration0106],
+  [107, "DeferredSlashCommandIndex", Migration0107],
+  [108, "AgentFeedback", Migration0108],
+  [109, "IssueTrackerAccounts", Migration0109],
+  [110, "Workflows", Migration0110],
+  [111, "SupersededRunAttemptIndex", Migration0111],
+  [112, "LayoutCommandApprovals", Migration0112],
+  [113, "WorkflowSkippedRuns", Migration0113],
+  [114, "WorkflowRunIndexes", Migration0114],
+  [115, "WorkflowRunTags", Migration0115],
+  [116, "ForkHistoryMembership", Migration0116],
+  [117, "WorkflowMailSender", Migration0117],
+  [118, "WorkflowPools", Migration0118],
+  [119, "WorkflowRunSubject", Migration0119],
 ] as const;
 
 const codeShipMigrationEntries = [
@@ -434,20 +486,24 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   const pendingAtStart = yield* hasPendingMigrations();
   // The desktop waits past its readiness budget until the finished line follows this one.
   if (pendingAtStart) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
-  const moved = yield* reconcileCodeShipMigrationLedger();
+  const moved = pendingAtStart ? yield* reconcileCodeShipMigrationLedger() : [];
   if (moved.length > 0)
     yield* Effect.log("Moved CodeShip migration history to its own ledger").pipe(
       Effect.annotateLogs({ migrations: moved.map(({ id, name }) => `${id}_${name}`) }),
     );
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
-  const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
+  const previewMigrations =
+    includesV2 && pendingAtStart ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) yield* assertV2MigrationsCanRun(toMigrationInclusive);
   const progress = yield* Effect.serviceOption(MigrationProgress);
+  const databaseProgress = yield* Effect.serviceOption(
+    DatabaseMigrationProgress.DatabaseMigrationProgress,
+  );
   const report: ReportMigration = (status) =>
     Option.match(progress, { onNone: () => Effect.void, onSome: ({ report }) => report(status) });
   const executedMigrations: Array<readonly [id: number, name: string]> = [...previewMigrations];
-  const runLedger = Effect.fn("runMigrationLedger")(function* (
+  const planLedger = Effect.fn("planMigrationLedger")(function* (
     entries: ReadonlyArray<MigrationEntry>,
     table: string,
     progressTable: string,
@@ -458,55 +514,74 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     const pending = entries.filter(
       ([id]) => id > latestRecordedId && (throughId === undefined || id <= throughId),
     );
-    // Each migration commits separately; resumable migrations also commit their cursor per step.
-    for (const [index, [id, name, migration]] of pending.entries()) {
-      yield* report({ migration: `${id}_${name}` });
-      if (latestRecordedId > 0)
-        yield* Effect.log(DATABASE_MIGRATION_PROGRESS_MESSAGE).pipe(
-          Effect.annotateLogs({
-            migration: `${id}_${name}`,
-            ledger: table,
-            progress: `${index + 1} of ${pending.length}`,
-          }),
-        );
-      if (isResumableMigration(migration)) {
-        yield* runResumableMigration(id, name, migration, report, table, progressTable);
-        executedMigrations.push([id, name]);
-      } else {
-        executedMigrations.push(
-          ...(yield* run({ loader: makeMigrationLoader(entries, id), table })),
-        );
-      }
-    }
-    const manifestNames = new Map<number, string>(entries.map(([id, name]) => [id, name]));
-    const divergent = recorded.flatMap(({ id, name }) => {
-      const expected = manifestNames.get(id);
-      return expected === undefined
-        ? [`${id}:${name} (unknown to this build)`]
-        : expected === name
-          ? []
-          : [`${id}:${name} (this build: ${expected})`];
-    });
-    if (divergent.length > 0)
-      yield* Effect.logWarning(
-        "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
-      ).pipe(Effect.annotateLogs({ ledger: table, divergent }));
+    return { entries, table, progressTable, recorded, latestRecordedId, pending };
   });
-  yield* Effect.gen(function* () {
-    yield* runLedger(
+  const plans = [
+    yield* planLedger(
       migrationEntries,
       "effect_sql_migrations",
       "migration_progress",
       toMigrationInclusive,
-    );
-    if (toMigrationInclusive === undefined) {
-      yield* runLedger(
+    ),
+  ];
+  if (toMigrationInclusive === undefined) {
+    plans.push(
+      yield* planLedger(
         codeShipMigrationEntries,
         "codeship_migrations",
         "codeship_migration_progress",
-      );
+      ),
+    );
+  }
+  const total = plans.reduce((count, plan) => count + plan.pending.length, 0);
+  const upgrading = plans.some((plan) => plan.latestRecordedId > 0);
+  let current = 0;
+  yield* Effect.gen(function* () {
+    for (const { entries, table, progressTable, recorded, pending } of plans) {
+      // Each migration commits separately; resumable migrations also commit their cursor per step.
+      for (const [id, name, migration] of pending) {
+        current += 1;
+        if (Option.isSome(databaseProgress)) {
+          yield* Ref.set(databaseProgress.value.current, { current, total });
+        }
+        yield* report({ migration: `${id}_${name}` });
+        if (upgrading)
+          yield* Effect.log(`${DATABASE_MIGRATION_PROGRESS_MESSAGE} (${current} of ${total})`).pipe(
+            Effect.annotateLogs({
+              migration: `${id}_${name}`,
+              ledger: table,
+              progress: `${current} of ${total}`,
+            }),
+          );
+        if (isResumableMigration(migration)) {
+          yield* runResumableMigration(id, name, migration, report, table, progressTable);
+          executedMigrations.push([id, name]);
+        } else {
+          executedMigrations.push(
+            ...(yield* run({ loader: makeMigrationLoader(entries, id), table })),
+          );
+        }
+      }
+      const manifestNames = new Map<number, string>(entries.map(([id, name]) => [id, name]));
+      const divergent = recorded.flatMap(({ id, name }) => {
+        const expected = manifestNames.get(id);
+        return expected === undefined
+          ? [`${id}:${name} (unknown to this build)`]
+          : expected === name
+            ? []
+            : [`${id}:${name} (this build: ${expected})`];
+      });
+      if (divergent.length > 0)
+        yield* Effect.logWarning(
+          "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
+        ).pipe(Effect.annotateLogs({ ledger: table, divergent }));
     }
-  }).pipe(Effect.ensuring(report(undefined)));
+  }).pipe(
+    Effect.ensuring(report(undefined)),
+    Effect.ensuring(
+      Option.isSome(databaseProgress) ? Ref.set(databaseProgress.value.current, null) : Effect.void,
+    ),
+  );
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0 && !pendingAtStart
     ? Effect.logDebug("Database schema is current")

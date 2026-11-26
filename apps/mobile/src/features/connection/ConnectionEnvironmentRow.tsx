@@ -1,3 +1,5 @@
+import { t } from "../../lib/i18n";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import * as Dialog from "../../components/ui/Dialog";
 import { ConnectionTraceId } from "./ConnectionTraceId";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -24,7 +26,6 @@ import { ConnectionDiagnosisDetails, useConnectionDiagnosis } from "./Connection
 import { ConnectionFormField } from "./ConnectionFormField";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 import { environmentStatusText } from "./environmentStatusText";
-import { t } from "../../lib/i18n";
 
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
   if (!environment.isEnabled && environment.connectionState !== "unsupported") {
@@ -33,6 +34,9 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
   return environmentStatusText({
     phase: environment.connectionState,
     error: environment.connectionError,
+    ...(environment.i18nConnectionError === undefined
+      ? {}
+      : { i18nError: environment.i18nConnectionError }),
     traceId: environment.connectionErrorTraceId,
   });
 }
@@ -87,9 +91,21 @@ export function ConnectionEnvironmentRow(props: {
     const error = Cause.squash(result.cause);
     Dialog.alert(
       t("Could not update environment"),
-      error instanceof Error ? error.message : t("The environment could not be updated."),
+      error instanceof Error
+        ? (errorDisplayMessage(error) ?? error.message)
+        : t("The environment could not be updated."),
     );
   };
+
+  const toggleLabel = props.opensDetails
+    ? t("Manage {name}", { name: props.environment.environmentLabel })
+    : props.expanded
+      ? t("Collapse details for {name}", {
+          name: props.environment.environmentLabel,
+        })
+      : t("Expand details for {name}", {
+          name: props.environment.environmentLabel,
+        });
 
   return (
     <Animated.View layout={LinearTransition.duration(250)} className="bg-grouped-card">
@@ -97,13 +113,7 @@ export function ConnectionEnvironmentRow(props: {
         <Pressable
           className="min-w-0 flex-1 gap-0.5 active:opacity-70"
           accessibilityRole="button"
-          accessibilityLabel={
-            props.opensDetails
-              ? t("Manage {name}", { name: props.environment.environmentLabel })
-              : props.expanded
-                ? t("Collapse details for {name}", { name: props.environment.environmentLabel })
-                : t("Expand details for {name}", { name: props.environment.environmentLabel })
-          }
+          accessibilityLabel={toggleLabel}
           onPress={props.onToggle}
         >
           <View className="flex-row items-center gap-1.5">
@@ -168,21 +178,18 @@ export function ConnectionEnvironmentRow(props: {
         </Pressable>
 
         <ThemedSwitch
-          accessibilityLabel={t("Enable {name}", { name: props.environment.environmentLabel })}
+          accessibilityLabel={t("Enable {name}", {
+            name: props.environment.environmentLabel,
+          })}
           style={{ alignSelf: "center" }}
           disabled={unsupported && !canRetry}
           onValueChange={(next) => props.onSetEnabled(props.environment.environmentId, next)}
           value={enabled}
         />
         <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={
-            props.opensDetails
-              ? t("Manage {name}", { name: props.environment.environmentLabel })
-              : props.expanded
-                ? t("Collapse details for {name}", { name: props.environment.environmentLabel })
-                : t("Expand details for {name}", { name: props.environment.environmentLabel })
-          }
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
           onPress={props.onToggle}
           style={{
             minWidth: 44,
@@ -229,7 +236,7 @@ export function ConnectionEnvironmentRow(props: {
               />
 
               <ConnectionFormField
-                label={t("URL")}
+                label="URL"
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="url"

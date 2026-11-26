@@ -1,4 +1,6 @@
+import { t } from "~/i18n";
 import type { EnvironmentId, PullRequestRef, PullRequestReviewGuide } from "@t3tools/contracts";
+
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
@@ -24,7 +26,6 @@ import {
   stopTitle,
 } from "@t3tools/client-runtime/review-guide-tour";
 import { useGuideDiffFiles } from "./useGuideDiffFiles";
-import { t } from "~/i18n";
 
 export function GuideTour({
   environmentId,
@@ -78,7 +79,8 @@ export function GuideTour({
   const goTo = (next: number) => {
     const focused = document.activeElement;
     if (scrollRef.current?.contains(focused) && !railRef.current?.contains(focused)) {
-      scrollRef.current.focus({ preventScroll: true });
+      // Keeps focus off the unmounting stop; it is not navigation, so no workspace ring.
+      scrollRef.current.focus({ preventScroll: true, focusVisible: false });
     }
     update((current) => ({
       position: next,
@@ -110,6 +112,7 @@ export function GuideTour({
     <div
       ref={scrollRef}
       tabIndex={-1}
+      data-workspace-focus-default
       aria-keyshortcuts="J K"
       className="@container/guide h-full overflow-y-auto scrollbar-gutter-both outline-none"
     >

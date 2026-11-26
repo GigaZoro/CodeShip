@@ -38,6 +38,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -274,7 +275,7 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
         } as ServerProvider),
         refresh: Effect.die("unused"),
         resolveMaintenance: () => Effect.die("unused"),
-        applyUsageLimits: () => Effect.die("unused"),
+        bindUsageLimits: Effect.succeed(() => Effect.die("unused")),
         refreshAfterRedemption: Effect.die("unused"),
         streamChanges: Stream.empty,
       },
@@ -1292,6 +1293,7 @@ layer("ProviderEventIngestorV2", (it) => {
           { key: "answered", responseCapability: { type: "live", providerSessionId } },
           { key: "other-turn", responseCapability: { type: "live", providerSessionId } },
           { key: "approval", responseCapability: { type: "live", providerSessionId } },
+          { key: "retained", responseCapability: { type: "live", providerSessionId } },
         ] as const;
         const fixtures = specs.map((spec, ordinal) => {
           const nodeId = NodeId.make(`${threadId}:${spec.key}`);
@@ -1366,6 +1368,7 @@ layer("ProviderEventIngestorV2", (it) => {
           }
         }
         yield* eventSink.write({ events: seedEvents });
+        const retainedRuntimeRequestIds = [RuntimeRequestId.make(`${threadId}:retained`)];
         const input = {
           providerSessionId,
           providerInstanceId: modelSelection.instanceId,
@@ -1381,10 +1384,12 @@ layer("ProviderEventIngestorV2", (it) => {
                   status: "completed" as const,
                   failure: null,
                   threadDisposition: "reusable" as const,
+                  retainedRuntimeRequestIds,
                 }
               : {
                   type: "provider_turn.updated" as const,
                   driver: CODEX_DRIVER,
+                  retainedRuntimeRequestIds,
                   providerTurn: {
                     id: providerTurnId,
                     providerThreadId,
@@ -1424,9 +1429,12 @@ layer("ProviderEventIngestorV2", (it) => {
           stored.filter((entry) => entry.event.type === "runtime-request.updated").length,
           2,
         );
-        assert.isEmpty(
-          (yield* projectionStore.getPendingNativeUserInputs(threadId, providerTurnId))
-            .runtimeRequests,
+        assert.deepEqual(
+          (yield* projectionStore.getPendingNativeUserInputs(
+            threadId,
+            providerTurnId,
+          )).runtimeRequests.map((request) => request.id),
+          retainedRuntimeRequestIds,
         );
         const replayed = yield* eventStore.read({ threadId }).pipe(Stream.runCollect);
         assert.equal(
@@ -1958,16 +1966,32 @@ layer("ProviderEventIngestorV2", (it) => {
         threadId: rootEvent.threadId,
       });
 
-      const threadEvents = yield* ingestor.normalize({
-        providerSessionId,
-        providerInstanceId: modelSelection.instanceId,
-        threadId: rootEvent.threadId,
-        event: {
-          type: "app_thread.created",
-          driver: CODEX_DRIVER,
-          appThread: childThread,
+      const failedSpans: Array<string> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (time, exit) => {
+            end(time, exit);
+            if (Exit.isFailure(exit)) failedSpans.push(span.name);
+          };
+          return span;
         },
       });
+      const threadEvents = yield* ingestor
+        .normalize({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: rootEvent.threadId,
+          event: {
+            type: "app_thread.created",
+            driver: CODEX_DRIVER,
+            appThread: childThread,
+          },
+        })
+        .pipe(Effect.withTracer(tracer));
+      // A new child's existence check expects a miss; a failed span there reads as an error in Tempo.
+      assert.deepEqual(failedSpans, []);
       const messageEvents = yield* ingestor.normalize({
         providerSessionId,
         providerInstanceId: modelSelection.instanceId,
@@ -2281,6 +2305,60 @@ layer("ProviderEventIngestorV2", (it) => {
         }),
         [],
       );
+    }),
+  );
+
+  it.effect("applies an agent's mode change without undoing newer thread settings", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const rootEvent = yield* threadCreatedEvent(now);
+      if (rootEvent.type !== "thread.created") throw new Error("Expected thread fixture");
+      // Saved mid-turn: a newer model and effort the reporting turn never saw.
+      const saved = {
+        ...modelSelection,
+        model: "gpt-6.1-sol",
+        options: [
+          { id: "effort", value: "high" },
+          { id: "mode", value: "plan" },
+        ],
+      };
+      yield* eventSink.write({
+        events: [{ ...rootEvent, payload: { ...rootEvent.payload, modelSelection: saved } }],
+      });
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: rootEvent.threadId,
+      });
+      const ingest = (instanceId: ProviderInstanceId, from: string) =>
+        ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: rootEvent.threadId,
+          event: {
+            type: "thread_model_selection.updated",
+            driver: CODEX_DRIVER,
+            threadId: rootEvent.threadId,
+            instanceId,
+            changes: [{ id: "mode", from, to: "default" }],
+          },
+        });
+      assert.deepEqual(
+        (yield* ingest(modelSelection.instanceId, "plan")).map((stored) => stored.event.type),
+        ["thread.model-selection-updated"],
+      );
+      assert.deepEqual((yield* projectionStore.getThread(rootEvent.threadId)).modelSelection, {
+        ...saved,
+        options: [
+          { id: "effort", value: "high" },
+          { id: "mode", value: "default" },
+        ],
+      });
+      assert.deepEqual(yield* ingest(modelSelection.instanceId, "plan"), []);
+      assert.deepEqual(yield* ingest(ProviderInstanceId.make("other-instance"), "default"), []);
     }),
   );
 

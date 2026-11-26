@@ -1,8 +1,9 @@
-import { t, tn, tx } from "~/i18n";
+import { t, tn, msg, tx } from "~/i18n";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { EnvironmentId, ServerProvider, UsageLimitsReport } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
-import { limitsNotice } from "@t3tools/shared/usageLimits";
+import { limitsNotice } from "@t3tools/shared/usageLimitsCopy";
+
 import { GaugeIcon } from "lucide-react";
 
 import { ensureLocalApi } from "../../localApi";
@@ -51,6 +52,7 @@ export function usageLimitsBannerItem(
   report: UsageLimitsReport,
   environmentId: EnvironmentId,
   onDismiss: () => void,
+  resolve: typeof t = t,
 ): ComposerBannerStackItem {
   const [first] = report.accounts;
   const single = report.accounts.length === 1 && first ? first : null;
@@ -63,9 +65,9 @@ export function usageLimitsBannerItem(
     id,
     variant: "info",
     icon: <GaugeIcon />,
-    title: t("Usage limits"),
+    title: resolve(msg("Usage limits")),
     description: summary,
-    dismissLabel: t("Dismiss usage limits"),
+    dismissLabel: resolve(msg("Dismiss usage limits")),
     onDismiss,
     children: <UsageLimitsBannerBody report={report} environmentId={environmentId} />,
   };
@@ -164,7 +166,7 @@ function UsageLimitsBannerBody({
           const resetCreditInput =
             account.resetCreditInput ??
             (account.instanceId ? { instanceId: account.instanceId } : undefined);
-          const notice = limitsNotice(account.limits);
+          const notice = limitsNotice(account.limits, t);
           const externalUsage = account.limits.externalUsage;
           return (
             <div key={account.id} className="flex min-w-0 flex-col gap-1">

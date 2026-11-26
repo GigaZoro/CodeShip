@@ -1,5 +1,11 @@
+import { msg, t, tx } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
+import {
+  managedCapabilityDenial,
+  managedRuntimeModeDenial,
+} from "@t3tools/client-runtime/contract-labels";
 import { offersLinkedEnvironments } from "@t3tools/client-runtime/link-request";
 import {
   AuthAccessWriteScope,
@@ -7,8 +13,6 @@ import {
   AuthRelayReadScope,
   type EnvironmentConnectReachability,
   type EnvironmentId,
-  managedCapabilityDenial,
-  managedRuntimeModeDenial,
   mcpClientScopes,
   sessionGrantsScope,
 } from "@t3tools/contracts";
@@ -17,10 +21,8 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import * as Result from "effect/Result";
-import { type ReactNode, useEffect, useEffectEvent, useState } from "react";
-import type { Message } from "@t3tools/shared/i18n";
 
-import { msg, t, tx } from "~/i18n";
+import { type ReactNode, useEffect, useEffectEvent, useState } from "react";
 
 import { checkReachability, readLinkState } from "~/cloud/linkEnvironmentAtoms";
 import { isManagedTunnelActive } from "~/cloud/t3ConnectState";
@@ -30,7 +32,11 @@ import { useCloudLinkController } from "~/cloud/useCloudLinkController";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
 import { useT3ConnectTurnOn } from "~/cloud/useT3ConnectTurnOn";
-import { useCopyToClipboard, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import {
+  namedClipboardTarget,
+  useCopyToClipboard,
+  writeTextToClipboard,
+} from "~/hooks/useCopyToClipboard";
 import { useNowSecond } from "~/hooks/useNowSecond";
 import { readLocalApi } from "~/localApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -79,9 +85,8 @@ export function UseInAnotherAppDialogHost() {
 
 function UseInAnotherAppDialog({ requested }: { readonly requested: EnvironmentId | null }) {
   const { environment, label } = useAccessEnvironment(requested);
-  const title = t("Use T3.CodeShip in another app (MCP) · {label}", {
-    label: label ?? "T3.CodeShip",
-  });
+
+  const title = `${t("Use T3.CodeShip in another app (MCP)")} · ${label ?? "T3.CodeShip"}`;
   return (
     <Dialog open onOpenChange={(open) => (open ? undefined : close())}>
       <WizardPopup>
@@ -106,8 +111,8 @@ function UseInAnotherAppDialog({ requested }: { readonly requested: EnvironmentI
   );
 }
 
-const STEPS: readonly Message[] = [msg("App"), msg("Access"), msg("Connect")];
-const HOSTED_APPROVAL_STEPS: readonly Message[] = [msg("App"), msg("Connect")];
+const STEPS = [msg("App"), msg("Access"), msg("Connect")] as const;
+const HOSTED_APPROVAL_STEPS = [STEPS[0], STEPS[2]] as const;
 type Step = 0 | 1 | 2;
 type Choice = McpApp | "other";
 
@@ -131,7 +136,10 @@ function Wizard({
   const steps = hostedApproval ? HOSTED_APPROVAL_STEPS : STEPS;
   const shownStep = hostedApproval && step === 2 ? 1 : step;
   const next = () => setStep(step === 0 ? (hostedApproval ? 2 : 1) : 2);
-  const appName = choice === null || choice === "other" ? t("the app") : choice.name;
+  const levelsHeading =
+    choice === null || choice === "other"
+      ? t("What can the app do?")
+      : t("What can {app} do?", { app: choice.name });
   return (
     <>
       <WizardHeader title={title}>
@@ -151,9 +159,9 @@ function Wizard({
           <AppStep choice={choice} onChoose={setChoice} />
         ) : step === 1 ? (
           <section className="space-y-3">
-            <h3 className="text-sm font-medium">{t("What can {app} do?", { app: appName })}</h3>
+            <h3 className="text-sm font-medium">{levelsHeading}</h3>
             <RadioGroup
-              aria-label={t("What can {app} do?", { app: appName })}
+              aria-label={levelsHeading}
               value={access}
               onValueChange={(value) => setPicked(value as AuthMcpClientAccess)}
             >
@@ -217,22 +225,25 @@ function useGrantableLevels(environment: EnvironmentPresentation) {
   const session = useEnvironmentSessionState(environmentId).data;
   const canMint = useEnvironmentScope(environmentId, AuthAccessWriteScope);
   const policy = useManagedPolicy(environmentId);
+
   // The server refuses codes for any level when its policy keeps remote clients out.
-  const remoteDenial = managedCapabilityDenial(policy, "remoteClients");
+  const remoteDenial = managedCapabilityDenial(policy, "remoteClients", t);
   return new Map(
     AuthMcpClientAccess.literals.flatMap((level) => {
       const reason =
         remoteDenial ??
         (!canMint
-          ? t("This device needs the Manage access permission on {name}.", {
-              name: environment.label,
+          ? t("This device needs the Manage access permission on {environment}.", {
+              environment: environment.label,
             })
           : session === null ||
               !mcpClientScopes(level).every((scope) => sessionGrantsScope(session, scope))
-            ? t("This device cannot grant this on {name}.", { name: environment.label })
+            ? t("This device cannot grant this on {environment}.", {
+                environment: environment.label,
+              })
             : level === "read-only"
               ? undefined
-              : managedRuntimeModeDenial(policy, level));
+              : managedRuntimeModeDenial(policy, level, t));
       return reason === undefined ? [] : [[level, reason] as const];
     }),
   );
@@ -252,6 +263,7 @@ function useGate(environment: EnvironmentPresentation) {
   });
   const runCheck = useAtomCommand(checkReachability, { reportFailure: false });
   const readState = useAtomCommand(readLinkState, { reportFailure: false });
+
   // The gate opens on a check it ran, or on a newer one the link state reports. A failed run
   // counts only server checks newer than `since` (see afterFailedCheck); null waits for a retry.
   const [check, setCheck] = useState<
@@ -265,34 +277,37 @@ function useGate(environment: EnvironmentPresentation) {
   const serverConfig = environment.serverConfig;
   const connected = environment.connection.phase === "connected";
   const relayEntry = discovery.environments.get(environmentId);
-  const gate = resolveMcpGate({
-    signedIn: isSignedIn,
-    connected,
-    approvalCodes:
-      serverConfig === null
-        ? undefined
-        : serverConfig.environment.capabilities.mcpApprovalCodes === true,
-    canReadRelay,
-    linkState,
-    linkStateError: controller.linkState.error,
-    thisMachine,
-    relay:
-      !discovery.refreshing && (discovery.offline || Option.isSome(discovery.error))
-        ? { status: "failed" }
-        : discovery.listed
-          ? {
-              status: "listed",
-              endpoint: relayEntry?.environment.endpoint,
-              availability: relayEntry?.availability,
-            }
-          : { status: "loading" },
-    reachability:
-      typeof check === "string"
-        ? "checking"
-        : reported !== undefined && check.since !== null && reported.checkedAt > check.since
-          ? reported
-          : check.result,
-  });
+  const gate = resolveMcpGate(
+    {
+      signedIn: isSignedIn,
+      connected,
+      approvalCodes:
+        serverConfig === null
+          ? undefined
+          : serverConfig.environment.capabilities.mcpApprovalCodes === true,
+      canReadRelay,
+      linkState,
+      linkStateError: controller.linkState.error,
+      thisMachine,
+      relay:
+        !discovery.refreshing && (discovery.offline || Option.isSome(discovery.error))
+          ? { status: "failed" }
+          : discovery.listed
+            ? {
+                status: "listed",
+                endpoint: relayEntry?.environment.endpoint,
+                availability: relayEntry?.availability,
+              }
+            : { status: "loading" },
+      reachability:
+        typeof check === "string"
+          ? "checking"
+          : reported !== undefined && check.since !== null && reported.checkedAt > check.since
+            ? reported
+            : check.result,
+    },
+    t,
+  );
   const runReachabilityCheck = async () => {
     setCheck("running");
     // A saved machine's address comes from T3 Connect's list, which can be stale.
@@ -369,6 +384,7 @@ function GateScreen({
   readonly gate: Gate;
 }) {
   const name = environment.label;
+
   const turnOnHere = useT3ConnectTurnOn(environment.environmentId);
   const { openAuthPrompt } = useT3ConnectAuthPrompt();
   const retry = (onClick: () => void) => (
@@ -376,6 +392,8 @@ function GateScreen({
       {t("Check again")}
     </Button>
   );
+  const offlineTitle = t("{environment}'s T3 Connect is offline", { environment: name });
+  const cannotCheckTitle = t("Can't check T3 Connect on {environment}", { environment: name });
   const checkAgain = retry(() => void check());
   switch (gate.kind) {
     case "checking":
@@ -391,13 +409,11 @@ function GateScreen({
           title={t("Sign in to T3 Connect")}
           lines={[
             t(
-              "Apps like Poke and Claude run in the cloud. They need a public address to reach {name}.",
-              {
-                name,
-              },
+              "Apps like Poke and Claude run in the cloud. They need a public address to reach {environment}.",
+              { environment: name },
             ),
-            t("T3 Connect gives {name} that address. Each app still needs your approval.", {
-              name,
+            t("T3 Connect gives {environment} that address. Each app still needs your approval.", {
+              environment: name,
             }),
           ]}
         >
@@ -414,30 +430,30 @@ function GateScreen({
       );
     case "disconnected":
       return gate.relay === null ? (
-        <GateMessage title={t("Connect to {name} first.", { name })} />
+        <GateMessage title={t("Connect to {environment} first.", { environment: name })} />
       ) : (
-        <GateMessage
-          title={
-            gate.relay === "offline"
-              ? t("{name}'s T3 Connect is offline", { name })
-              : t("Can't check T3 Connect on {name}", { name })
-          }
-        >
+        <GateMessage title={gate.relay === "offline" ? offlineTitle : cannotCheckTitle}>
           {retry(refreshList)}
         </GateMessage>
       );
     case "update":
-      return <GateMessage title={t("Update T3.CodeShip on {name}", { name })} />;
+      return (
+        <GateMessage title={t("Update T3.CodeShip on {environment}", { environment: name })} />
+      );
     case "no-relay-read":
       return (
         <GateMessage
-          title={t("Can't check T3 Connect on {name}", { name })}
-          lines={[t("This device needs the View relay permission on {name}.", { name })]}
+          title={cannotCheckTitle}
+          lines={[
+            t("This device needs the View relay permission on {environment}.", {
+              environment: name,
+            }),
+          ]}
         />
       );
     case "error":
       return (
-        <GateMessage title={t("Can't check T3 Connect on {name}", { name })} lines={[gate.message]}>
+        <GateMessage title={cannotCheckTitle} lines={[gate.message]}>
           {checkAgain}
         </GateMessage>
       );
@@ -447,11 +463,7 @@ function GateScreen({
         const reachability = gate.reachability;
         return (
           <GateMessage
-            title={
-              reachability
-                ? t("{name}'s T3 Connect is offline", { name })
-                : t("Can't check T3 Connect on {name}", { name })
-            }
+            title={reachability ? offlineTitle : cannotCheckTitle}
             lines={
               reachability ? [reachability.reason, t("Fix: {fix}", { fix: reachability.fix })] : []
             }
@@ -462,9 +474,11 @@ function GateScreen({
       }
       return (
         <GateMessage
-          title={t("Turn on T3 Connect for {name}", { name })}
+          title={t("Turn on T3 Connect for {environment}", { environment: name })}
           lines={[
-            t("{name} gets a public https address, with no router setup.", { name }),
+            t("{environment} gets a public https address, with no router setup.", {
+              environment: name,
+            }),
             t("Only apps you approve can use it. You can turn it off in Settings."),
           ]}
         >
@@ -581,14 +595,19 @@ function ConnectStep({
   readonly access: AuthMcpClientAccess | null;
 }) {
   const [anotherWay, setAnotherWay] = useState(choice === "other");
+
   const app = choice === "other" ? null : choice;
   const code =
     access === null ? (
       <p className="text-sm text-muted-foreground">
-        {t(
-          "When {app} opens the sign-in page, choose what it may do and approve with your T3 Connect account.",
-          { app: app?.name ?? t("the app") },
-        )}
+        {app === null
+          ? t(
+              "When the app opens the sign-in page, choose what it may do and approve with your T3 Connect account.",
+            )
+          : t(
+              "When {app} opens the sign-in page, choose what it may do and approve with your T3 Connect account.",
+              { app: app.name },
+            )}
       </p>
     ) : (
       <ApprovalCode
@@ -664,13 +683,13 @@ function openLink(url: string) {
       toastManager.add({
         type: "error",
         title: t("Could not open the link"),
-        description: error instanceof Error ? error.message : url,
+        description: thrownErrorMessage(error, t) ?? url,
       }),
     );
 }
 
 function PrimaryAction({ app, mcpUrl }: { readonly app: McpApp; readonly mcpUrl: string }) {
-  const action = mcpHandoffAction(app, mcpUrl);
+  const action = mcpHandoffAction(app, mcpUrl, t);
   const note = app.note ? <p className="text-xs text-muted-foreground">{t(app.note)}</p> : null;
   if (action === null) {
     return (
@@ -700,7 +719,9 @@ function PrimaryAction({ app, mcpUrl }: { readonly app: McpApp; readonly mcpUrl:
   const handOff = async () => {
     if (copy !== null) {
       // The app opens only once the copy lands, so it never gets an older clipboard.
-      const copied = await writeTextToClipboard(copy.text, copy.title).catch(() => false);
+      const copied = await writeTextToClipboard(copy.text, namedClipboardTarget(copy.title)).catch(
+        () => false,
+      );
       if (!copied) {
         toastManager.add({
           type: "error",
@@ -753,6 +774,7 @@ function ApprovalCode({
     readonly credential: string;
     readonly expiresAt: number;
   } | null>(null);
+
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const now = useNowSecond();
@@ -768,7 +790,7 @@ function ApprovalCode({
         expiresAt: result.success.expiresAt.epochMilliseconds,
       });
     } else {
-      setError(t("Could not get a code from {name}. Try again.", { name }));
+      setError(t("Could not get a code from {environment}. Try again.", { environment: name }));
     }
   };
   const left = code === null ? 0 : Math.max(0, Math.floor((code.expiresAt - now) / 1000));
@@ -777,7 +799,7 @@ function ApprovalCode({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-sm">
           {tx("Code to approve {access}", {
-            access: <span className="font-medium">{accessConfig[access].label}</span>,
+            access: <span className="font-medium">{t(accessConfig[access].label)}</span>,
           })}
         </span>
         {live ? null : (
@@ -806,7 +828,11 @@ function ApprovalCode({
 }
 
 function CopyRow({ label, value }: { readonly label: string; readonly value: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ timeout: 1500, target: label });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    timeout: 1500,
+    target: namedClipboardTarget(label),
+  });
+
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2">
       <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
@@ -841,6 +867,7 @@ function LinkedLine({
       : null,
   ).data?.links;
   const identities = useEnvironmentIdentities();
+
   if (!offered || links === undefined || links.length === 0) return null;
   const named = links.map((link) => {
     const name =
@@ -849,11 +876,11 @@ function LinkedLine({
     // A forwarded call keeps the lower of the app's level and the link's own.
     const level =
       access === null || levelRank(link.access) < levelRank(access) ? link.access : access;
-    return `${name} · ${link.status === "expired" ? t("Expired") : accessConfig[level].label}`;
+    return `${name} · ${link.status === "expired" ? t("Expired") : t(accessConfig[level].label)}`;
   });
   return (
     <p className="text-xs text-muted-foreground">
-      {t("Linked: {machines}", { machines: named.join(", ") })}
+      {t("Linked: {environments}", { environments: named.join(", ") })}
     </p>
   );
 }
@@ -867,6 +894,7 @@ function ManageAccessButton({
   readonly label?: string;
 }) {
   const navigate = useNavigate();
+
   return (
     <Button
       variant="ghost"

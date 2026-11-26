@@ -2,7 +2,8 @@ import { t } from "~/i18n";
 import type { ModelSelection, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
 import { createModelSelection } from "@t3tools/shared/model";
-import { type ComponentProps, memo, useId, useRef, useState } from "react";
+
+import { type ComponentProps, memo, use, useId, useRef, useState } from "react";
 
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -12,17 +13,14 @@ import { focusRequestedPermission, useComposerMenuProps } from "./composerEventS
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { ProviderModelPicker } from "./ProviderModelPicker";
-import { runtimeModeConfig } from "./runtimeModeConfig";
+import { resolveRuntimeModeOption } from "./runtimeModeConfig";
 import { useComposerMenuState } from "./useComposerMenuState";
+import {
+  RuntimeModeLimitsTargetContext,
+  useProviderRuntimeModeLimits,
+} from "../../state/runtimeModeLimits";
 
-export type RuntimeModeOption = {
-  mode: RuntimeMode;
-  disabledReason?: string;
-} & (typeof runtimeModeConfig)[RuntimeMode];
-const supervisedRuntimeModeOption: RuntimeModeOption = {
-  mode: "approval-required" as const,
-  ...runtimeModeConfig["approval-required"],
-};
+export type RuntimeModeOption = ReturnType<typeof resolveRuntimeModeOption>;
 export const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
@@ -41,12 +39,12 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
   const permissionsChipRef = useRef<HTMLButtonElement>(null);
   const runtimeModeOption =
     props.runtimeModeOptions.find((option) => option.mode === props.runtimeMode) ??
-    supervisedRuntimeModeOption;
+    resolveRuntimeModeOption("approval-required", t);
   const RuntimeModeIcon = runtimeModeOption.icon;
   // The chip opens the same Permissions toggle used in the model picker and the overflow menu.
   const permissionsTooltip = t("Permissions: {mode}. {description}", {
-    mode: t(runtimeModeOption.label),
-    description: t(runtimeModeOption.description),
+    mode: runtimeModeOption.label,
+    description: runtimeModeOption.description,
   });
   const permissionsChip = (
     <Menu
@@ -67,7 +65,7 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
                   size={size}
                   // Mirrors the model trigger's trailing pe-1 so the gaps on both sides of the chip match.
                   className="ps-1.5"
-                  aria-label={t("Permissions: {mode}", { mode: t(runtimeModeOption.label) })}
+                  aria-label={t("Permissions: {mode}", { mode: runtimeModeOption.label })}
                 />
               }
             />
@@ -83,7 +81,7 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
             data-composer-control-label
             className={accessDisplay === "icon" ? "sr-only" : undefined}
           >
-            {t(runtimeModeOption.label)}
+            {runtimeModeOption.label}
           </span>
         </TooltipTrigger>
         <TooltipPopup side="top">{permissionsTooltip}</TooltipPopup>
@@ -117,8 +115,10 @@ export function ComposerPermissionsSection(props: {
   const shownMode = previewMode ?? props.runtimeMode;
   const shown =
     props.runtimeModeOptions.find((option) => option.mode === shownMode) ??
-    supervisedRuntimeModeOption;
+    resolveRuntimeModeOption("approval-required", t);
   const descriptionId = useId();
+  // Mounted only while a picker is open, so this asks the server again each time one opens.
+  useProviderRuntimeModeLimits(use(RuntimeModeLimitsTargetContext), "picker");
   return (
     <div data-composer-permissions className="grid w-72 gap-1.5 px-2 py-1.5">
       <div className="font-medium text-muted-foreground text-xs">{t("Permissions")}</div>
@@ -150,8 +150,8 @@ export function ComposerPermissionsSection(props: {
               key={option.mode}
               value={option.mode}
               disabled={option.disabledReason !== undefined}
-              label={t(option.label)}
-              aria-label={t(option.label)}
+              label={option.label}
+              aria-label={option.label}
               aria-describedby={`${descriptionId}-${option.mode}`}
               closeOnClick
               onPointerEnter={() => setPreviewMode(option.mode)}
@@ -168,7 +168,7 @@ export function ComposerPermissionsSection(props: {
       {/* Static per-mode descriptions for screen readers; the preview below is visual only. */}
       {props.runtimeModeOptions.map((option) => (
         <span key={option.mode} id={`${descriptionId}-${option.mode}`} className="sr-only">
-          {option.disabledReason ?? t(option.description)}
+          {option.disabledReason ?? option.description}
         </span>
       ))}
       <div className="grid gap-0.5" aria-hidden="true">
@@ -179,11 +179,11 @@ export function ComposerPermissionsSection(props: {
               : "text-muted-foreground text-sm"
           }
         >
-          {t(shown.label)}
+          {shown.label}
         </span>
         {/* Two lines reserved so the menu does not shift while you preview modes. */}
         <span className="min-h-8 text-muted-foreground text-xs leading-4">
-          {shown.disabledReason ?? t(shown.description)}
+          {shown.disabledReason ?? shown.description}
         </span>
       </div>
     </div>
@@ -212,6 +212,7 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   stopShortcutLabel: string | null;
   voiceInputActive?: boolean;
   isSendBusy: boolean;
+  isSendHeld?: boolean;
   sendDisabledReason: string | null;
   isEnvironmentUnavailable: boolean;
   offlineQueueMachine: string | null;
@@ -245,6 +246,7 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
         stopShortcutLabel={props.stopShortcutLabel}
         voiceInputActive={props.voiceInputActive ?? false}
         isSendBusy={props.isSendBusy}
+        isSendHeld={props.isSendHeld ?? false}
         sendDisabledReason={props.sendDisabledReason}
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
         offlineQueueMachine={props.offlineQueueMachine}

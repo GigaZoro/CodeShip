@@ -1,3 +1,4 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { getFormattingLocale, t } from "../../lib/i18n";
 import { providerLoginExpiryText } from "@t3tools/client-runtime/providerLoginExpiryText";
 import { providerAuthMethodText } from "@t3tools/client-runtime/providerAuthMethodText";
@@ -19,7 +20,8 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { Fragment, useRef, useState } from "react";
-import { Linking, Pressable, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { MenuAction } from "@react-native-menu/menu";
@@ -300,9 +302,7 @@ export function ProviderAccount({
     if (result._tag === "Success") return true;
     if (!isAtomCommandInterrupted(result)) {
       const failure = squashAtomCommandFailure(result);
-      setError(
-        failure instanceof Error ? failure.message : t("Could not update provider sign-in."),
-      );
+      setError(errorDisplayMessage(failure) ?? t("Could not update provider sign-in."));
     }
     return false;
   }
@@ -466,9 +466,9 @@ export function ProviderAccount({
       variant="pill"
       label={t("Docs")}
       onPress={() => {
-        void Linking.openURL(provider.setup!.documentationUrl!).catch(() =>
-          setError(t("Could not open the provider docs.")),
-        );
+        void tryOpenExternalUrl(provider.setup!.documentationUrl!).then((opened) => {
+          if (!opened) setError(t("Could not open the provider docs."));
+        });
       }}
     />
   ) : active && state?.flowId ? (
@@ -641,7 +641,8 @@ export function ProviderAccount({
                 !(await send({ type: "browser", action: "accept" }))
               )
                 return;
-              await Linking.openURL(url);
+              if (!(await tryOpenExternalUrl(url, "provider-auth")))
+                setError(t("Could not open the sign-in page."));
             })().catch(() => setError(t("Could not open the sign-in page.")));
           }}
         />

@@ -11,7 +11,7 @@ import {
   VisualStudioWindow,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -37,7 +37,8 @@ const VisualStudioStatusTool = Tool.make("visual_studio_status", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const VisualStudioEvalTool = Tool.make("visual_studio_eval", {
   description:
@@ -51,7 +52,8 @@ const VisualStudioEvalTool = Tool.make("visual_studio_eval", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const VisualStudioControlTool = Tool.make("visual_studio_control", {
   description:
@@ -65,7 +67,8 @@ const VisualStudioControlTool = Tool.make("visual_studio_control", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const VisualStudioAutoContinueTool = Tool.make("visual_studio_auto_continue", {
   description:
@@ -79,7 +82,8 @@ const VisualStudioAutoContinueTool = Tool.make("visual_studio_auto_continue", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 export const VisualStudioToolkit = Toolkit.make(
   VisualStudioStatusTool,

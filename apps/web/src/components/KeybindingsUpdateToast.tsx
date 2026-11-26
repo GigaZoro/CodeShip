@@ -1,4 +1,4 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
 import { appAtomRegistry, subscribeAtomChanges } from "../rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { primaryServerConfigAtom, primaryServerConfigEventAtom } from "../state/server";
@@ -18,7 +18,7 @@ export function startKeybindingsUpdateToasts(): () => void {
     toastManager.add(
       stackedThreadToast({
         type: "warning",
-        title: t("Invalid keybindings configuration"),
+        title: t(msg("Invalid keybindings configuration")),
         description: (
           <KeybindingsConfigWarning
             message={decision.message}

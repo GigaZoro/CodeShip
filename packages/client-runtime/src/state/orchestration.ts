@@ -1,3 +1,6 @@
+import { msg } from "@t3tools/shared/i18n";
+
+import { translatableMessage } from "../errors/translatable.ts";
 import {
   type EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -108,7 +111,7 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
         if (Option.isNone(session)) {
           return yield* new EnvironmentRpcUnavailableError({
             environmentId: supervisor.target.environmentId,
-            message: "The environment has no session.",
+            ...translatableMessage(msg("The environment has no session.")),
           });
         }
         const config = yield* session.value.initialConfig;
@@ -134,7 +137,7 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
         if (Option.isNone(prepared)) {
           return yield* new EnvironmentRpcUnavailableError({
             environmentId: supervisor.target.environmentId,
-            message: "The source environment is not connected.",
+            ...translatableMessage(msg("The source environment is not connected.")),
           });
         }
         return yield* fetchEnvironmentThreadTranscript({

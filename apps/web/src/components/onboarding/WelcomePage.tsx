@@ -1,3 +1,4 @@
+import { getFormattingLocale, msg, t, tn, tx } from "~/i18n";
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -37,10 +38,8 @@ import {
   SmartphoneIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
-import type { Message } from "@t3tools/shared/i18n";
 
-import { getFormattingLocale, msg, t, tn, tx } from "~/i18n";
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
 import { MOBILE_APP_URL } from "../../branding";
@@ -111,16 +110,16 @@ import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { QRCodeSvg } from "../ui/qr-code";
-import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { toastManager } from "../ui/toast";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { cn } from "../../lib/utils";
 import { formatRelativeTime } from "../../timestampFormat";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const AGENT_ONBOARDING_THREAD_ID = ThreadId.make("onboarding-agent-setup");
-const SCAN_LIMIT_MESSAGE: Message = msg(
+const SCAN_LIMIT_MESSAGE = msg(
   "Scan limit reached. Some projects or conversations may be missing.",
 );
 
@@ -136,6 +135,7 @@ export function WelcomePage({
   readonly onDone: (projectRef?: ScopedProjectRef) => void | Promise<void>;
 }) {
   const { environments } = useEnvironments();
+
   const label =
     environments.find((environment) => environment.environmentId === environmentId)?.label ??
     t("this computer");
@@ -268,7 +268,7 @@ export function WelcomePage({
 
   return (
     <SidebarInset
-      {...workspaceAreaProps("home", 1, "Welcome")}
+      {...workspaceAreaProps("home", 1, t("Welcome"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
     >
@@ -339,22 +339,42 @@ export function WelcomePage({
 }
 
 function TelemetryNotice({ environmentId }: { readonly environmentId: EnvironmentId }) {
-  const telemetryOff = managedTelemetryOffMessage(useManagedPolicy(environmentId));
+  const telemetryOff = managedTelemetryOffMessage(useManagedPolicy(environmentId), t);
   return (
     <p className="mt-auto pt-12 text-2xs leading-relaxed text-muted-foreground/70">
-      {telemetryOff ?? t("T3.CodeShip collects anonymous usage data to improve the app.")}{" "}
-      {tx(telemetryOff === undefined ? "To opt out, see the {policy}." : "See the {policy}.", {
-        policy: (
-          <a
-            className="underline decoration-current/40 underline-offset-2 hover:text-muted-foreground"
-            href={PRIVACY_POLICY_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-          >
-            {t("privacy policy")}
-          </a>
-        ),
-      })}
+      {telemetryOff === undefined ? (
+        tx(
+          "T3.CodeShip collects anonymous usage data to improve the app. To opt out, see the {policy}.",
+          {
+            policy: (
+              <a
+                className="underline decoration-current/40 underline-offset-2 hover:text-muted-foreground"
+                href={PRIVACY_POLICY_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                {t("privacy policy")}
+              </a>
+            ),
+          },
+        )
+      ) : (
+        <>
+          {telemetryOff}{" "}
+          {tx("See the {policy}.", {
+            policy: (
+              <a
+                className="underline decoration-current/40 underline-offset-2 hover:text-muted-foreground"
+                href={PRIVACY_POLICY_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                {t("privacy policy")}
+              </a>
+            ),
+          })}
+        </>
+      )}
     </p>
   );
 }
@@ -432,6 +452,7 @@ function AgentsSection({
   readonly onImportSourceEnabled: () => void;
 }) {
   const { providers, serverConfig, checking, found, available } = useWelcomeAgents(environmentId);
+
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -534,7 +555,7 @@ function AgentsSection({
         const cause = squashAtomCommandFailure(result);
         toastManager.add({
           type: "error",
-          title: t("Could not turn on {name}", { name: agentName(provider) }),
+          title: t("Could not turn on {agent}", { agent: agentName(provider) }),
           ...(cause instanceof Error ? { description: cause.message } : {}),
         });
       }
@@ -552,7 +573,7 @@ function AgentsSection({
       <Button
         size="xs"
         variant="outline"
-        aria-label={t("{action}: {name}", { action: actionLabel, name })}
+        aria-label={t("{action}: {agent}", { action: actionLabel, agent: name })}
         render={
           <Link
             to="/settings/providers"
@@ -568,7 +589,7 @@ function AgentsSection({
         <Button
           size="xs"
           variant="outline"
-          aria-label={t("Turn on: {name}", { name })}
+          aria-label={t("Turn on: {agent}", { agent: name })}
           disabled={!canManageProviders || serverConfig === null}
           onClick={() => void turnOn(provider)}
         >
@@ -584,7 +605,7 @@ function AgentsSection({
         <Button
           size="xs"
           variant="outline"
-          aria-label={t("Set up: {name}", { name })}
+          aria-label={t("Set up: {agent}", { agent: name })}
           aria-expanded={open}
           onClick={() => setCodexSetupId(open ? null : provider.instanceId)}
         >
@@ -777,6 +798,7 @@ function ProjectsSection({
   readonly projectImport: ReturnType<typeof useProjectImport>;
   readonly isImporting: boolean;
 }) {
+  const importSourcesLabel = getImportSourcesLabel();
   const [reviewing, setReviewing] = useState(false);
   const {
     canWrite,
@@ -793,7 +815,7 @@ function ProjectsSection({
     return (
       <WelcomeSection title={t("Projects")}>
         <p className="text-sm leading-10 text-muted-foreground">
-          {t("Looking for projects in your {sources} history…", { sources: importSourcesLabel() })}
+          {t("Looking for projects in your {importSourcesLabel} history…", { importSourcesLabel })}
         </p>
       </WelcomeSection>
     );
@@ -861,7 +883,7 @@ function ProjectsSection({
                 : t("Import projects and their threads")}
             </span>
             <span className="block text-xs text-muted-foreground">
-              {t("From your {sources} history", { sources: importSourcesLabel() })}
+              {t("From your {importSourcesLabel} history", { importSourcesLabel })}
             </span>
           </span>
         </label>
@@ -932,7 +954,7 @@ function ProjectsSection({
         </div>
       ) : null}
       {visibleImportError ? (
-        <p className="pt-1 pl-8 text-sm text-destructive">{visibleImportError}</p>
+        <p className="pt-1 pl-8 text-sm text-destructive-foreground">{t(visibleImportError)}</p>
       ) : null}
     </WelcomeSection>
   );
@@ -995,6 +1017,7 @@ function PhoneStep({ step, children }: { readonly step: number; readonly childre
 
 function PhoneConnectLink({ environmentId }: { readonly environmentId: EnvironmentId }) {
   const { isLoaded, isSignedIn, userId } = useAuth({ treatPendingAsSignedOut: false });
+
   const loadFailed = useClerkLoadFailed();
   const { openAuthPrompt } = useT3ConnectAuthPrompt();
   const linkState = useCloudLinkState(environmentId);
@@ -1157,7 +1180,7 @@ function TerminalAction({
     <Button
       size="xs"
       variant="outline"
-      aria-label={t("{action}: {name}", { action: label, name })}
+      aria-label={t("{action}: {agent}", { action: label, agent: name })}
       disabled={disabled}
       onClick={onClick}
     >
@@ -1180,6 +1203,7 @@ function AgentRow({
   readonly compact?: boolean;
 }) {
   const name = agentName(provider);
+
   // Claude Code and Codex tiles show Install or Set up; other agents that are on say why not.
   const brokenMessage = isBrokenVersion(provider)
     ? (provider.compatibilityAdvisory?.message ?? null)
@@ -1243,6 +1267,7 @@ function AgentInstallTerminal({
 }) {
   const { command, cwd, driver, environmentId, keybindings, providerInstanceId } = session;
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
+
   const [advancedTypography] = useLocalStorage(
     TYPOGRAPHY_ADVANCED_STORAGE_KEY,
     false,
@@ -1393,7 +1418,7 @@ function AgentInstallTerminal({
             threadRef={threadRef}
             threadId={AGENT_ONBOARDING_THREAD_ID}
             terminalId={terminalId}
-            terminalLabel={t("Install {driver}", { driver })}
+            terminalLabel={t("Install {agent}", { agent: driver })}
             cwd={cwd}
             providerInstanceId={providerInstanceId}
             advancedTypography={advancedTypography}
@@ -1408,9 +1433,7 @@ function AgentInstallTerminal({
   );
 }
 
-const IMPORT_PERMISSION_MESSAGE: Message = msg(
-  "This connection cannot import projects or thread history.",
-);
+const IMPORT_PERMISSION_MESSAGE = msg("This connection cannot import projects or thread history.");
 
 // Creates the selected projects, then imports each one's agent history. Owns retry state so a
 // second Start resumes instead of recreating projects.
@@ -1437,6 +1460,7 @@ function useProjectImport({
   ) => Promise<boolean>;
 }) {
   const writableEnvironments = useEnvironmentsWithScope(scans, AuthOrchestrationOperateScope);
+
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const importThreads = useAtomCommand(agentSessionImport, { reportFailure: false });
   const importWarningRef = useRef("");
@@ -1467,7 +1491,7 @@ function useProjectImport({
       })),
     ),
   );
-  // Projects already in T3.CodeShip stay in the list, but reopening the page does not import their
+  // Projects already in T3 Code stay in the list, but reopening the page does not import their
   // history again unless the user picks them. The scan can be 30 s old, so the live list decides.
   const projects = useProjects();
   const isNewProject = isNewOnboardingProject(projects);
@@ -1495,7 +1519,7 @@ function useProjectImport({
   const canImport = selected.every((candidate) =>
     writableEnvironments.has(candidate.environmentId),
   );
-  const visibleImportError = canWrite && canImport ? "" : t(IMPORT_PERMISSION_MESSAGE);
+  const visibleImportError = canWrite && canImport ? null : IMPORT_PERMISSION_MESSAGE;
 
   const importedThreadTotal = () =>
     lastImportSelectionRef.current.reduce(
@@ -1656,7 +1680,11 @@ function useProjectImport({
           "{count} threads could not be imported.",
         );
       } else if (importedThreadCount > 0) {
-        importWarningRef.current = `${tn(importedThreadCount, "Imported {count} thread.", "Imported {count} threads.")} ${t("Some thread history could not be imported.")}`;
+        importWarningRef.current = tn(
+          importedThreadCount,
+          "Imported {count} thread. Some thread history could not be imported.",
+          "Imported {count} threads. Some thread history could not be imported.",
+        );
       } else {
         importWarningRef.current = t("Could not import thread history.");
       }
@@ -1849,22 +1877,19 @@ function ImportCandidateRow({
       )}
     >
       <Checkbox checked={checked} onCheckedChange={(value) => onCheckedChange(value === true)} />
-      <Tooltip>
-        <TooltipTrigger
-          render={<span className="flex min-w-0 flex-1 items-baseline gap-2 truncate" />}
-        >
-          {label !== undefined ? (
-            <span className="truncate text-sm font-medium">{label}</span>
-          ) : null}
-          {path !== undefined ? (
-            <ProjectPathText
-              path={path}
-              className={label === undefined ? "text-xs" : "text-2xs text-muted-foreground"}
-            />
-          ) : null}
-        </TooltipTrigger>
-        <TooltipPopup variant="code">{candidate.path}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={<span className="flex min-w-0 flex-1 items-baseline gap-2 truncate" />}
+        label={candidate.path}
+        variant="code"
+      >
+        {label !== undefined ? <span className="truncate text-sm font-medium">{label}</span> : null}
+        {path !== undefined ? (
+          <ProjectPathText
+            path={path}
+            className={label === undefined ? "text-xs" : "text-2xs text-muted-foreground"}
+          />
+        ) : null}
+      </SharedTooltipTrigger>
       <ImportRowMeta
         sources={nested ? null : candidate.sources}
         threadCount={candidate.threadCount}
@@ -1879,10 +1904,11 @@ const IMPORT_SOURCE_NAMES: Record<AgentSessionSource, string> = {
   codex: "Codex",
   pi: "Pi",
 };
-const importSourcesLabel = () =>
-  new Intl.ListFormat(getFormattingLocale(), { type: "conjunction" }).format(
+function getImportSourcesLabel() {
+  return new Intl.ListFormat(getFormattingLocale(), { type: "conjunction" }).format(
     AgentSessionSource.literals.map((source) => IMPORT_SOURCE_NAMES[source]),
   );
+}
 
 function ImportRowMeta({
   sources,
@@ -1893,7 +1919,7 @@ function ImportRowMeta({
   readonly threadCount: number;
   readonly lastActiveAt: string | null;
 }) {
-  const relative = lastActiveAt === null ? null : formatRelativeTime(lastActiveAt);
+  const relative = lastActiveAt === null ? null : formatRelativeTime(lastActiveAt, undefined, t);
   const age = relative === null ? "" : relative.suffix === null ? t("now") : relative.value;
   return (
     <span className="ml-auto grid shrink-0 grid-cols-[1rem_1rem_1rem_2.5rem_2.25rem] items-center gap-x-1 text-xs text-muted-foreground tabular-nums">
@@ -1930,10 +1956,10 @@ function CliPathSetup() {
         {setup.added
           ? tx("Added to {file}. Open a new terminal to use {command}.", {
               file: setup.file,
-              command: <code className="font-mono">{"t3"}</code>,
+              command: <code className="font-mono">t3</code>,
             })
           : tx("Use {command} from any terminal. Adds one line to {file}.", {
-              command: <code className="font-mono">{"t3"}</code>,
+              command: <code className="font-mono">t3</code>,
               file: setup.file,
             })}
       </p>

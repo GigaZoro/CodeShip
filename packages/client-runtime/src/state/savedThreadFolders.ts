@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import type { EnvironmentId, ServerSettings } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -57,35 +59,35 @@ export function createSavedThreadFolders(
   ): C {
     return {
       ...command,
-      run: async (registry, target) => {
-        const pending = pendingAtom(target.environmentId);
-        const source = sourceAtom(target.environmentId);
-        const change = (folders: SavedFolders) => apply(folders, target.input);
-        const seen: SavedFolders[] = [registry.get(source)];
-        let replied = false;
-        const finish = () => {
-          unsubscribe();
-          registry.update(pending, (current) => current.filter((item) => item !== change));
-        };
-        const unsubscribe = registry.subscribe(source, (folders) => {
-          if (replied) finish();
-          else seen.push(folders);
-        });
-        registry.update(pending, (current) => [...current, change]);
-        try {
-          const result = await command.run(registry, target);
-          if (result._tag !== "Success") {
-            finish();
-            return result;
-          }
-          replied = true;
-          if (seen.some((folders) => sameFolders(folders, result.value.folders))) finish();
-          return result;
-        } catch (cause) {
-          finish();
-          throw cause;
-        }
-      },
+      run: (registry, target) =>
+        Effect.suspend(() => {
+          const pending = pendingAtom(target.environmentId);
+          const source = sourceAtom(target.environmentId);
+          const change = (folders: SavedFolders) => apply(folders, target.input);
+          const seen: SavedFolders[] = [registry.get(source)];
+          let replied = false;
+          const finish = () => {
+            unsubscribe();
+            registry.update(pending, (current) => current.filter((item) => item !== change));
+          };
+          const unsubscribe = registry.subscribe(source, (folders) => {
+            if (replied) finish();
+            else seen.push(folders);
+          });
+          registry.update(pending, (current) => [...current, change]);
+          return command.run(registry, target).pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (Exit.isFailure(exit)) {
+                  finish();
+                  return;
+                }
+                replied = true;
+                if (seen.some((folders) => sameFolders(folders, exit.value.folders))) finish();
+              }),
+            ),
+          );
+        }),
     };
   }
 

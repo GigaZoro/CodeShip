@@ -6,7 +6,7 @@ import { hexToHsv, hsvToHex, type HsvColor } from "../../lib/color";
 import { ColorHueSlider, ColorSaturationValuePlane } from "../ui/color-picker";
 import { Input } from "../ui/input";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 export function getThemeRoleLabel(role: ThemeColorRole): string {
   const labels: Partial<Record<ThemeColorRole, string>> = {
     canvas: t("Background"),
@@ -61,6 +61,10 @@ function themeRgbToHex(value: string): string | null {
   }
 
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function isShortHexColor(value: string): boolean {
+  return /^#[0-9a-f]{3,4}$/i.test(value.trim());
 }
 
 function themeRgbValue(hex: string) {
@@ -262,6 +266,15 @@ function ThemeColorPicker({
   return (
     <Popover
       onOpenChange={(open, eventDetails) => {
+        // Base UI's dismiss skips composing keys but not a bare keyCode 229 from an IME.
+        if (
+          !open &&
+          eventDetails.reason === "escape-key" &&
+          eventDetails.event instanceof KeyboardEvent &&
+          eventDetails.event.keyCode === 229
+        ) {
+          return eventDetails.cancel();
+        }
         cancelledRef.current = !open && eventDetails.reason === "escape-key";
         if (open) {
           onEditStart?.();
@@ -271,29 +284,27 @@ function ThemeColorPicker({
         if (cancelledRef.current) onEditCancel?.();
       }}
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <PopoverTrigger
-              render={
-                <button
-                  aria-label={t("Choose {color} color", { color: label })}
-                  className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border border-foreground/30 transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
-                  onFocus={onInteract}
-                  onPointerDown={onInteract}
-                  type="button"
-                >
-                  <span
-                    className="absolute inset-0 rounded-full shadow-sm"
-                    style={{ backgroundColor: value }}
-                  />
-                </button>
-              }
-            />
-          }
-        />
-        <TooltipPopup side="top">{t("Choose {color} color", { color: label })}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <PopoverTrigger
+            render={
+              <button
+                aria-label={t("Choose {label} color", { label })}
+                className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border border-foreground/30 transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                onFocus={onInteract}
+                onPointerDown={onInteract}
+                type="button"
+              >
+                <span
+                  className="absolute inset-0 rounded-full shadow-sm"
+                  style={{ backgroundColor: value }}
+                />
+              </button>
+            }
+          />
+        }
+        label={t("Choose {label} color", { label })}
+      />
       <PopoverPopup
         align="end"
         padding="none"
@@ -341,6 +352,10 @@ export const ThemeColorField = memo(function ThemeColorField({
   const editorValue = value.trim().toLowerCase().startsWith("oklch(")
     ? (themeColorToHex(value) ?? value)
     : value;
+  // While focused the input shows the typed text, not the committed value: a guided palette
+  // rewrites the committed color, and echoing that mid-edit would replace the user's keystrokes.
+  const [hexDraft, setHexDraft] = useState<string | null>(null);
+  const hexText = hexDraft ?? editorValue;
 
   return (
     <div
@@ -350,30 +365,26 @@ export const ThemeColorField = memo(function ThemeColorField({
       )}
       data-theme-color-role={role}
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              aria-label={
-                selected
-                  ? t("Hide {color} usage", { color: label })
-                  : t("Show {color} usage", { color: label })
-              }
-              aria-pressed={selected}
-              className="flex min-w-0 flex-1 cursor-pointer items-center rounded-md text-left text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-              onClick={() => onToggleSelected?.(role)}
-              type="button"
-            >
-              <span className="min-w-0 flex-1 truncate">{label}</span>
-            </button>
-          }
-        />
-        <TooltipPopup side="top">
-          {selected
-            ? t("Hide where {color} is used", { color: label })
-            : t("Show where {color} is used", { color: label })}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <button
+            aria-label={
+              selected ? t("Hide {label} usage", { label }) : t("Show {label} usage", { label })
+            }
+            aria-pressed={selected}
+            className="flex min-w-0 flex-1 cursor-pointer items-center rounded-md text-left text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            onClick={() => onToggleSelected?.(role)}
+            type="button"
+          >
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+          </button>
+        }
+        label={
+          selected
+            ? t("Hide where {label} is used", { label })
+            : t("Show where {label} is used", { label })
+        }
+      />
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <ThemeColorPicker
           label={label}
@@ -384,17 +395,29 @@ export const ThemeColorField = memo(function ThemeColorField({
           value={swatchValue}
         />
         <Input
-          aria-invalid={!isColorValue}
+          aria-invalid={!isThemeColor(hexText)}
           aria-label={t("{color} hex value", { color: label })}
           className="w-28 shrink-0"
           font="mono"
           id={`${role}-hex`}
           nativeInput
-          onChange={(event) => onChange(role, event.currentTarget.value)}
-          onFocus={() => onSelect?.(role)}
+          onBlur={() => {
+            if (hexDraft !== null && isShortHexColor(hexDraft)) onChange(role, hexDraft);
+            setHexDraft(null);
+          }}
+          onChange={(event) => {
+            const nextValue = event.currentTarget.value;
+            setHexDraft(nextValue);
+            // Shorthand is usually a longer hex mid-deletion, so commit it on blur instead.
+            if (!isShortHexColor(nextValue)) onChange(role, nextValue);
+          }}
+          onFocus={() => {
+            setHexDraft(editorValue);
+            onSelect?.(role);
+          }}
           onPointerDown={() => onSelect?.(role)}
           size="compact"
-          value={editorValue}
+          value={hexText}
         />
       </div>
     </div>

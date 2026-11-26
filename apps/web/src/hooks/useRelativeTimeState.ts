@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import { useSyncExternalStore } from "react";
 
 import {
@@ -27,5 +29,5 @@ export function useRelativeTimeState(isoDate: string | null): RelativeTimeState 
 
   if (isoDate === null) return { status: "missing" };
   if (elapsedMs === null) return { status: "invalid" };
-  return { status: "relative", ...formatRelativeElapsed(elapsedMs) };
+  return { status: "relative", ...formatRelativeElapsed(elapsedMs, t) };
 }

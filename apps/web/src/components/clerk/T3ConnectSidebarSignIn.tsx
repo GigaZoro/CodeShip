@@ -1,4 +1,6 @@
+import { t } from "~/i18n";
 import { UserButton, useAuth } from "@clerk/react";
+
 import { LogInIcon, RotateCwIcon } from "lucide-react";
 
 import { hasCloudPublicConfig } from "../../cloud/publicConfig";
@@ -7,7 +9,6 @@ import { retryClerkLoad, useClerkLoadFailed } from "./clerkLoadFailure";
 import { T3_CONNECT_ACCOUNT_PAGES } from "./T3ConnectAccountPages";
 import { useT3ConnectAuthPrompt } from "./useT3ConnectAuthPrompt";
 
-import { t } from "~/i18n";
 export function T3ConnectSidebarSignIn() {
   if (!hasCloudPublicConfig()) return null;
 

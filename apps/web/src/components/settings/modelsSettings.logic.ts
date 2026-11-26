@@ -95,7 +95,9 @@ export function autoModeModelChoices(
   const sameSlug = (left: { slug: string }, right: { slug: string }) => left.slug === right.slug;
   return {
     entry: {
-      ...(sources.find(isProviderInstancePickerReady) ?? sources[0]!),
+      ...(sources.find((entry) => entry.status === "ready") ??
+        sources.find(isProviderInstancePickerReady) ??
+        sources[0]!),
       // The picker lists only a ready entry's models, and Auto also runs on an account whose
       // check only warned.
       ...(runnable.length > 0 ? { status: "ready" as const } : {}),

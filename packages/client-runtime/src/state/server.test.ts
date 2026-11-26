@@ -71,6 +71,7 @@ import {
   resolveServerUpdateProgressResult,
   serverUpdateStateForProgressEvent,
   serverUpdateStateAtom,
+  serverUpdateFailureText,
   serverUpdateStateForServerVersion,
   timeoutUnlessStartupAdvances,
   validateServerUpdateReadyEvent,
@@ -78,6 +79,8 @@ import {
   waitForDesktopUpdateTarget,
   runDesktopCommitWithReconnectObserver,
 } from "./server.ts";
+import { errorDisplayMessage, errorI18nMessage } from "../errors/translatable.ts";
+import { runAtomCommand } from "./runtime.ts";
 import { applyServerConfigProjection } from "./serverConfigProjection.ts";
 
 const CONFIG = {
@@ -361,14 +364,21 @@ describe("accepted server update recovery", () => {
     { loss: "interrupt", resumes: true },
     { loss: "socket", resumes: true },
     { loss: "server_error", resumes: false },
+    { loss: "track_mismatch", method: "desktop-managed", resumes: false },
+    { loss: "track_mismatch", method: "desktop-managed", unary: true, resumes: false },
     { loss: "no_progress", resumes: false },
     { loss: "cancel", resumes: false },
     { loss: "socket", method: "respawn", resumes: true },
     { loss: "socket", method: "desktop-managed", resumes: false },
-  ] as const)("handles $loss with $method and recovery=$resumes", (scenario) =>
+  ] as const)("handles $loss with $method, unary=$unary and recovery=$resumes", (scenario) =>
     Effect.gen(function* () {
       const { loss, resumes } = scenario;
       const method = "method" in scenario ? scenario.method : "boot-service";
+      const trackMismatch = new ServerSelfUpdateError({
+        reason:
+          "This Stable build can't update from the Nightly track on its own. Switch the update track back to Stable, or use Review beside Update track to retry the switch to Nightly.",
+        trackMismatch: { buildChannel: "latest", savedChannel: "nightly" },
+      });
       const observing = yield* Deferred.make<void>();
       const cancelFiber = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
       const oldReadyObserved = yield* Deferred.make<void>();
@@ -379,7 +389,10 @@ describe("accepted server update recovery", () => {
         environment: {
           ...CONFIG.environment,
           serverVersion: "0.0.30",
-          capabilities: { serverSelfUpdate: method, serverSelfUpdateProgress: true },
+          capabilities: {
+            serverSelfUpdate: method,
+            serverSelfUpdateProgress: !("unary" in scenario),
+          },
         },
       } as ServerConfig;
       const ready = (serverVersion: string) =>
@@ -405,6 +418,7 @@ describe("accepted server update recovery", () => {
                 ),
               )
             : Stream.make(ready("0.0.30")).pipe(Stream.concat(Stream.never)),
+        [WS_METHODS.serverUpdateServer]: () => Effect.fail(trackMismatch),
         [WS_METHODS.serverUpdateServerWithProgress]: () =>
           Stream.unwrap(
             Effect.sync(() => {
@@ -428,9 +442,11 @@ describe("accepted server update recovery", () => {
                           ? new ServerSelfUpdateError({
                               reason: "Archive verification failed.",
                             })
-                          : new RpcClientError.RpcClientError({
-                              reason: new Socket.SocketCloseError({ code: 1006 }),
-                            }),
+                          : loss === "track_mismatch"
+                            ? trackMismatch
+                            : new RpcClientError.RpcClientError({
+                                reason: new Socket.SocketCloseError({ code: 1006 }),
+                              }),
                       ),
               ),
             ),
@@ -473,10 +489,14 @@ describe("accepted server update recovery", () => {
       const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
         Effect.sync(() => value.dispose()),
       );
-      const pending = atoms.updateServer.run(registry, {
-        environmentId: TARGET.environmentId,
-        input: { targetVersion: "0.0.31" },
-      });
+      // The registry drops an unmounted atom's value while the update is still running.
+      yield* AtomRegistry.mount(registry, serverUpdateStateAtom(TARGET.environmentId));
+      const pending = runAtomCommand(
+        registry,
+        atoms.updateServer,
+        { environmentId: TARGET.environmentId, input: { targetVersion: "0.0.31" } },
+        { reportFailure: false, reportDefect: false },
+      );
       if (loss === "cancel") {
         yield* Fiber.interrupt(yield* Deferred.await(cancelFiber));
         const cancelled = yield* Effect.promise(() => pending);
@@ -495,10 +515,22 @@ describe("accepted server update recovery", () => {
       );
       if (!resumes) {
         expect(first).toBe("settled");
-        expect(AsyncResult.isFailure(yield* Effect.promise(() => pending))).toBe(true);
-        expect(registry.get(serverUpdateStateAtom(TARGET.environmentId))).toMatchObject({
-          status: "failed",
-        });
+        const failure = yield* Effect.promise(() => pending);
+        expect(AsyncResult.isFailure(failure)).toBe(true);
+        const failed = registry.get(serverUpdateStateAtom(TARGET.environmentId));
+        expect(failed).toMatchObject({ status: "failed" });
+        if (
+          loss === "track_mismatch" &&
+          AsyncResult.isFailure(failure) &&
+          failed.status === "failed"
+        ) {
+          const cause = Cause.squash(failure.cause);
+          const marked = errorI18nMessage(cause);
+          expect(marked).toHaveLength(2);
+          expect(failed.i18nMessage).toEqual(marked);
+          expect(errorDisplayMessage(cause)).toBe(trackMismatch.message);
+          expect(serverUpdateFailureText(failed)).toBe(trackMismatch.message);
+        }
         return;
       }
       expect(first).toBe("observing");
@@ -940,6 +972,18 @@ describe("server state projection", () => {
       stage: "resuming",
       fromVersion: "0.0.30",
       targetVersion: "0.0.31",
+    });
+    expect(
+      serverUpdateStateForProgressEvent("0.0.30", "0.0.31", {
+        type: "complete",
+        result: { targetVersion: "0.0.31", method: "boot-service", updateId: "update-1" },
+      }),
+    ).toEqual({
+      status: "running",
+      stage: "resuming",
+      fromVersion: "0.0.30",
+      targetVersion: "0.0.31",
+      updateId: "update-1",
     });
     expect(
       serverUpdateStateForProgressEvent("0.0.30", "0.0.31", {
@@ -1409,6 +1453,16 @@ describe("server state projection", () => {
       ).providers[0]?.workspaceSnapshots,
     ).toBeUndefined();
 
+    // A server rescan that changed the skills retires the snapshot fetched before it.
+    expect(
+      withFetchedWorkspaceSnapshots(
+        configWith(true, [
+          { ...provider(claude), workspaceRescannedAt: "2026-10-25T00:09:00.000Z" },
+        ] as unknown as ServerConfig["providers"]),
+        fetched,
+      ).providers[0]?.workspaceSnapshots,
+    ).toBeUndefined();
+
     // A catalog digest stands for the lists: loading them keeps the snapshot, a new digest retires it.
     const digested = (catalogDigest: string, slashCommands: ReadonlyArray<{ name: string }> = []) =>
       ({ ...provider(claude, undefined, slashCommands), catalogDigest }) as ReturnType<
@@ -1671,13 +1725,18 @@ describe("server config commands", () => {
           Effect.sync(() => registry.dispose()),
         );
 
-        const update = atoms.updateProvider.run(registry, {
-          environmentId: TARGET.environmentId,
-          input: { provider: ProviderDriverKind.make("codex") },
-        });
+        const update = yield* Effect.forkChild(
+          Effect.exit(
+            atoms.updateProvider.run(registry, {
+              environmentId: TARGET.environmentId,
+              input: { provider: ProviderDriverKind.make("codex") },
+            }),
+          ),
+          { startImmediately: true },
+        );
         yield* Deferred.await(updateStarted);
         // The provider update RPC stays pending for the whole install and verification.
-        const toggle = yield* Effect.promise(() =>
+        const toggle = yield* Effect.exit(
           atoms.mutateProviderInstance.run(registry, {
             environmentId: TARGET.environmentId,
             input: { patch: {} },
@@ -1686,7 +1745,7 @@ describe("server config commands", () => {
         expect(toggle._tag).toBe("Success");
 
         yield* Deferred.succeed(finishUpdate, undefined);
-        expect((yield* Effect.promise(() => update))._tag).toBe("Success");
+        expect((yield* Fiber.join(update))._tag).toBe("Success");
       }),
     ),
   );
@@ -1820,11 +1879,13 @@ describe("launcher update resume", () => {
     const updateStateAtom = serverUpdateStateAtom(TARGET.environmentId);
     yield* AtomRegistry.mount(registry, updateStateAtom);
 
-    yield* Effect.promise(() =>
-      atoms.updateServer.run(registry, {
-        environmentId: TARGET.environmentId,
-        input: { targetVersion: "0.0.31" },
-      }),
+    yield* Effect.promise((signal) =>
+      runAtomCommand(
+        registry,
+        atoms.updateServer,
+        { environmentId: TARGET.environmentId, input: { targetVersion: "0.0.31" } },
+        { reportFailure: false, reportDefect: false, signal },
+      ),
     ).pipe(Effect.forkScoped);
     return {
       // The host saw its first call: the update request or a lifecycle subscription.
@@ -1979,25 +2040,28 @@ describe("provider setup commands", () => {
         Effect.sync(() => registry.dispose()),
       );
       const install = (instanceId: string) =>
-        atoms.startProviderInstall.run(registry, {
-          environmentId: TARGET.environmentId,
-          input: { instanceId: ProviderInstanceId.make(instanceId) },
-        });
+        Effect.forkChild(
+          Effect.exit(
+            atoms.startProviderInstall.run(registry, {
+              environmentId: TARGET.environmentId,
+              input: { instanceId: ProviderInstanceId.make(instanceId) },
+            }),
+          ),
+          { startImmediately: true },
+        );
 
-      const codex = install("codex");
+      const codex = yield* install("codex");
       expect(yield* Queue.take(requested)).toBe("codex");
-      const duplicateCodex = install("codex");
-      const antigravity = install("antigravity");
+      const duplicateCodex = yield* install("codex");
+      const antigravity = yield* install("antigravity");
       yield* Deferred.succeed(release, undefined);
 
-      expect(yield* Effect.promise(() => codex)).toMatchObject({
+      expect(yield* Fiber.join(codex)).toMatchObject({
         _tag: "Success",
         value: { driver: "codex" },
       });
-      expect(yield* Effect.promise(() => duplicateCodex)).toEqual(
-        yield* Effect.promise(() => codex),
-      );
-      expect(yield* Effect.promise(() => antigravity)).toMatchObject({
+      expect(yield* Fiber.join(duplicateCodex)).toEqual(yield* Fiber.join(codex));
+      expect(yield* Fiber.join(antigravity)).toMatchObject({
         _tag: "Success",
         value: { driver: "antigravity" },
       });
@@ -2047,22 +2111,28 @@ describe("provider setup commands", () => {
         Effect.sync(() => registry.dispose()),
       );
 
-      void atoms.updateProvider.run(registry, {
-        environmentId: TARGET.environmentId,
-        input: { provider: ProviderDriverKind.make("opencode") },
-      });
+      yield* Effect.forkChild(
+        atoms.updateProvider.run(registry, {
+          environmentId: TARGET.environmentId,
+          input: { provider: ProviderDriverKind.make("opencode") },
+        }),
+        { startImmediately: true },
+      );
       yield* Deferred.await(updateStarted);
-      void atoms.mutateProviderInstance.run(registry, {
-        environmentId: TARGET.environmentId,
-        input: {
-          patch: {},
-          providerInstanceMutation: {
-            operation: "upsert",
-            instanceId: ProviderInstanceId.make("codex"),
-            instance: { driver: ProviderDriverKind.make("codex"), enabled: false },
+      yield* Effect.forkChild(
+        atoms.mutateProviderInstance.run(registry, {
+          environmentId: TARGET.environmentId,
+          input: {
+            patch: {},
+            providerInstanceMutation: {
+              operation: "upsert",
+              instanceId: ProviderInstanceId.make("codex"),
+              instance: { driver: ProviderDriverKind.make("codex"), enabled: false },
+            },
           },
-        },
-      });
+        }),
+        { startImmediately: true },
+      );
 
       const saved = yield* Deferred.await(settingsSaved).pipe(
         Effect.as(true),

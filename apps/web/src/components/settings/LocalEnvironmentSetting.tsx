@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useState } from "react";
 
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
@@ -32,7 +33,11 @@ export function LocalEnvironmentSetting() {
     try {
       await setEnabled(!enabled);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Couldn't change this setting."));
+      setError(
+        cause instanceof Error
+          ? (thrownErrorMessage(cause) ?? cause.message)
+          : t("Couldn't change this setting."),
+      );
       setIsUpdating(false);
     }
   };

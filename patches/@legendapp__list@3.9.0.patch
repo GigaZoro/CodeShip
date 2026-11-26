@@ -1,0 +1,402 @@
+diff --git a/react-native.js b/react-native.js
+index 785118ab1ac204e831ea6167331a6e8dbc34ed98..65bb90f7d24261be39f8f54c64fbcf248db3327b 100644
+--- a/react-native.js
++++ b/react-native.js
+@@ -1344,7 +1344,8 @@ function checkAtBottom(ctx, allowedEdge, allowGateCreatedInCurrentCheck) {
+     return;
+   }
+   if (contentSize > 0 && queuedInitialLayout) {
+-    const isContentLess = contentSize < scrollLength;
++    // T3 patch: a top inset (e.g. a translucent header) shrinks the room content has to fit in.
++    const isContentLess = contentSize + getContentInsetTop(ctx) < scrollLength;
+     const isAtEnd = isContentLess || distanceFromEnd <= EDGE_POSITION_EPSILON;
+     const deferEndExit = !isAtEnd && state.measuringContainersInLayout && (maintainingScrollAtEnd === "pending-instant" || maintainingScrollAtEnd === "pending-animated") && !state.endFollowInterrupted && peek$(ctx, "isAtEnd");
+     if (!deferEndExit) set$(ctx, "isAtEnd", isAtEnd);
+@@ -3549,7 +3550,8 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The stored bootstrap offset can predate the layout of rows added since it re-armed.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+@@ -8288,7 +8290,10 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+       contentLength: getContentSize(ctx),
+       data: state.props.data,
+       dataKey: state.props.dataKey,
+-      distanceFromEnd: Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength),
++      // T3 patch: computed on read; the scroll read forces a layout every getState() caller paid for.
++      get distanceFromEnd() {
++        return Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength);
++      },
+       elementAtIndex: (index) => {
+         var _a3;
+         return (_a3 = ctx.viewRefs.get(findContainerId(ctx, getId(state, index)))) == null ? void 0 : _a3.current;
+diff --git a/react-native.mjs b/react-native.mjs
+index 8aae009e1fcd890150e5f216c488ef8ee1747940..edff6dabafb237b6e444f7d5fc92d2c86329a42a 100644
+--- a/react-native.mjs
++++ b/react-native.mjs
+@@ -1323,7 +1323,8 @@ function checkAtBottom(ctx, allowedEdge, allowGateCreatedInCurrentCheck) {
+     return;
+   }
+   if (contentSize > 0 && queuedInitialLayout) {
+-    const isContentLess = contentSize < scrollLength;
++    // T3 patch: a top inset (e.g. a translucent header) shrinks the room content has to fit in.
++    const isContentLess = contentSize + getContentInsetTop(ctx) < scrollLength;
+     const isAtEnd = isContentLess || distanceFromEnd <= EDGE_POSITION_EPSILON;
+     const deferEndExit = !isAtEnd && state.measuringContainersInLayout && (maintainingScrollAtEnd === "pending-instant" || maintainingScrollAtEnd === "pending-animated") && !state.endFollowInterrupted && peek$(ctx, "isAtEnd");
+     if (!deferEndExit) set$(ctx, "isAtEnd", isAtEnd);
+@@ -3528,7 +3529,8 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The stored bootstrap offset can predate the layout of rows added since it re-armed.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+@@ -8267,7 +8269,10 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+       contentLength: getContentSize(ctx),
+       data: state.props.data,
+       dataKey: state.props.dataKey,
+-      distanceFromEnd: Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength),
++      // T3 patch: computed on read; the scroll read forces a layout every getState() caller paid for.
++      get distanceFromEnd() {
++        return Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength);
++      },
+       elementAtIndex: (index) => {
+         var _a3;
+         return (_a3 = ctx.viewRefs.get(findContainerId(ctx, getId(state, index)))) == null ? void 0 : _a3.current;
+diff --git a/react-native.web.js b/react-native.web.js
+index ca0217afce6086dcd0bb6d50492abd7a624cd2ae..a65cf77f659aabdaa5a2ffe66760373436d9eb44 100644
+--- a/react-native.web.js
++++ b/react-native.web.js
+@@ -3606,7 +3606,8 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The stored bootstrap offset can predate the layout of rows added since it re-armed.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+@@ -9024,7 +9025,10 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+       contentLength: getContentSize(ctx),
+       data: state.props.data,
+       dataKey: state.props.dataKey,
+-      distanceFromEnd: Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength),
++      // T3 patch: computed on read; the scroll read forces a layout every getState() caller paid for.
++      get distanceFromEnd() {
++        return Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength);
++      },
+       elementAtIndex: (index) => {
+         var _a3;
+         return (_a3 = ctx.viewRefs.get(findContainerId(ctx, getId(state, index)))) == null ? void 0 : _a3.current;
+diff --git a/react-native.web.mjs b/react-native.web.mjs
+index 801cd3d7ab65c0abe63f7ceedac69a524d283fe8..ab66451e9cd8d7e34afa1e5994b2cf7d89094a0f 100644
+--- a/react-native.web.mjs
++++ b/react-native.web.mjs
+@@ -3585,7 +3585,8 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The stored bootstrap offset can predate the layout of rows added since it re-armed.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+@@ -9003,7 +9004,10 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+       contentLength: getContentSize(ctx),
+       data: state.props.data,
+       dataKey: state.props.dataKey,
+-      distanceFromEnd: Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength),
++      // T3 patch: computed on read; the scroll read forces a layout every getState() caller paid for.
++      get distanceFromEnd() {
++        return Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength);
++      },
+       elementAtIndex: (index) => {
+         var _a3;
+         return (_a3 = ctx.viewRefs.get(findContainerId(ctx, getId(state, index)))) == null ? void 0 : _a3.current;
+diff --git a/react.js b/react.js
+index ca0217afce6086dcd0bb6d50492abd7a624cd2ae..76411b25231c52629eaa8a56285ae34cf5efb393 100644
+--- a/react.js
++++ b/react.js
+@@ -3606,7 +3606,8 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The stored bootstrap offset can predate the layout of rows added since it re-armed.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+@@ -6415,7 +6416,8 @@ function useOnLayoutSync({
+   onLayoutProp,
+   onLayoutChange,
+   webLayoutResync,
+-  webExternalScroll = false
++  webExternalScroll = false,
++  measureNowRef
+ }, deps) {
+   const callbacks = useLatestRef({ onLayoutChange, onLayoutProp, webLayoutResync });
+   const onExternalLayout = React3.useCallback(
+@@ -6448,7 +6450,7 @@ function useOnLayoutSync({
+       emit(toLayout(rect), true);
+       prevRect = rect;
+     }
+-    return createResizeObserver(element, (entry) => {
++    const disconnectResizeObserver = createResizeObserver(element, (entry) => {
+       var _a4, _b2, _c;
+       const target = entry.target instanceof HTMLElement ? entry.target : void 0;
+       const borderBoxSize = Array.isArray(entry.borderBoxSize) ? entry.borderBoxSize[0] : entry.borderBoxSize;
+@@ -6466,7 +6468,30 @@ function useOnLayoutSync({
+         emit(toLayout(rectObserved), false);
+       }
+     });
+-  }, [callbacks, measureInLayoutEffect, webExternalScroll, ...deps || []]);
++    if (!measureNowRef) return disconnectResizeObserver;
++    // T3 patch: measure on demand through the observer's own baseline, so a
++    // forced read and a later observer delivery never disagree about the size.
++    const measureNow = () => {
++      const rect = element.getBoundingClientRect();
++      if (rect.height === 0 && rect.width === 0) return;
++      const previousRect = prevRect != null ? prevRect : getContainerLayoutBaseline(element);
++      if (previousRect !== void 0 && rect.width === previousRect.width && rect.height === previousRect.height) return;
++      prevRect = rect;
++      emit(toLayout(rect), true);
++      // The browser only reports sizes that differ from its last delivery. Re-observe so a
++      // return to that size is still reported against the baseline this read just moved.
++      if (typeof ResizeObserver !== "undefined" && callbackMap.has(element)) {
++        const observer = getGlobalResizeObserver();
++        observer.unobserve(element);
++        observer.observe(element, { box: "border-box" });
++      }
++    };
++    measureNowRef.current = measureNow;
++    return () => {
++      if (measureNowRef.current === measureNow) measureNowRef.current = void 0;
++      disconnectResizeObserver();
++    };
++  }, [callbacks, measureInLayoutEffect, measureNowRef, webExternalScroll, ...deps || []]);
+   return webExternalScroll ? { onLayout: onExternalLayout } : {};
+ }
+ function toLayout(rect) {
+@@ -7842,10 +7867,10 @@ function useStableRenderComponent(renderComponent, mapProps) {
+     [mapPropsRef, renderComponentRef]
+   );
+ }
+-var LayoutView = ({ onLayoutChange, refView, children, ...rest }) => {
++var LayoutView = ({ onLayoutChange, refView, measureRef, children, ...rest }) => {
+   const localRef = React3.useRef(null);
+   const ref = refView != null ? refView : localRef;
+-  useOnLayoutSync({ onLayoutChange, ref });
++  useOnLayoutSync({ onLayoutChange, ref, measureNowRef: measureRef });
+   return /* @__PURE__ */ React3__namespace.createElement("div", { ...rest, ref }, children);
+ };
+ var subscribeScreenReader = () => () => {
+@@ -7922,6 +7947,16 @@ var ListComponent = typedMemo(function ListComponent2({
+   );
+   const ScrollComponent = renderScrollComponent ? CustomScrollComponent : ListComponentScrollView;
+   const SnapOrScroll = snapToIndices ? SnapWrapper : ScrollComponent;
++  // T3 patch: header and footer sizes otherwise arrive from a resize observer
++  // after layout, so a scroll to the end right after a commit that changed them
++  // (a thread switch) computed its target from the previous sizes.
++  const measureHeaderRef = React3.useRef(void 0);
++  const measureFooterRef = React3.useRef(void 0);
++  ctx.state.measureHeaderAndFooter = () => {
++    var _a3, _b;
++    (_a3 = measureHeaderRef.current) == null ? void 0 : _a3.call(measureHeaderRef);
++    (_b = measureFooterRef.current) == null ? void 0 : _b.call(measureFooterRef);
++  };
+   const updateFooterSize = React3.useCallback(
+     (size, afterSizeUpdate) => {
+       var _a4;
+@@ -7976,7 +8011,7 @@ var ListComponent = typedMemo(function ListComponent2({
+     },
+     [horizontal, onLayoutFooter, updateFooterSize]
+   );
+-  const footer = ListFooterComponent && /* @__PURE__ */ React3__namespace.createElement(LayoutView, { onLayoutChange: onLayoutFooterInternal, style: ListFooterComponentStyle }, getComponent(ListFooterComponent));
++  const footer = ListFooterComponent && /* @__PURE__ */ React3__namespace.createElement(LayoutView, { measureRef: measureFooterRef, onLayoutChange: onLayoutFooterInternal, style: ListFooterComponentStyle }, getComponent(ListFooterComponent));
+   const renderRows = canRender && !ListEmptyComponent;
+   const extentFooter = void 0;
+   return /* @__PURE__ */ React3__namespace.createElement(
+@@ -8000,7 +8035,7 @@ var ListComponent = typedMemo(function ListComponent2({
+       style: autoOtherAxisStyle ? [autoOtherAxisStyle, style] : style
+     },
+     Platform.OS !== "web",
+-    ListHeaderComponent && /* @__PURE__ */ React3__namespace.createElement(LayoutView, { onLayoutChange: onLayoutHeader, style: ListHeaderComponentStyle }, getComponent(ListHeaderComponent)),
++    ListHeaderComponent && /* @__PURE__ */ React3__namespace.createElement(LayoutView, { measureRef: measureHeaderRef, onLayoutChange: onLayoutHeader, style: ListHeaderComponentStyle }, getComponent(ListHeaderComponent)),
+     ListEmptyComponent && getComponent(ListEmptyComponent),
+     shouldRenderAlignItemsAtEndSpacer && /* @__PURE__ */ React3__namespace.createElement(AlignItemsAtEndSpacer, { horizontal }),
+     (renderRows || extentFooter) && /* @__PURE__ */ React3__namespace.createElement(
+@@ -8909,7 +8944,12 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+         runScrollRequest(
+           pendingScroll.token,
+           state.pendingScrollResolve,
+-          () => state.props.data.length === 0 ? "unreachable" : scrollToEnd(ctx, pendingScroll.options),
++          () => {
++            var _a3;
++            if (state.props.data.length === 0) return "unreachable";
++            (_a3 = state.measureHeaderAndFooter) == null ? void 0 : _a3.call(state);
++            return scrollToEnd(ctx, pendingScroll.options);
++          },
+           () => isScrollToIndexReady(state.props.data.length - 1, true)
+         );
+       }
+@@ -9024,7 +9064,10 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+       contentLength: getContentSize(ctx),
+       data: state.props.data,
+       dataKey: state.props.dataKey,
+-      distanceFromEnd: Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength),
++      // T3 patch: computed on read; the scroll read forces a layout every getState() caller paid for.
++      get distanceFromEnd() {
++        return Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength);
++      },
+       elementAtIndex: (index) => {
+         var _a3;
+         return (_a3 = ctx.viewRefs.get(findContainerId(ctx, getId(state, index)))) == null ? void 0 : _a3.current;
+diff --git a/react.mjs b/react.mjs
+index 801cd3d7ab65c0abe63f7ceedac69a524d283fe8..db3c99bdf018e673a8f9070ebf1bd3328e8150f0 100644
+--- a/react.mjs
++++ b/react.mjs
+@@ -3585,7 +3585,8 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      // The stored bootstrap offset can predate the layout of rows added since it re-armed.
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
+@@ -6394,7 +6395,8 @@ function useOnLayoutSync({
+   onLayoutProp,
+   onLayoutChange,
+   webLayoutResync,
+-  webExternalScroll = false
++  webExternalScroll = false,
++  measureNowRef
+ }, deps) {
+   const callbacks = useLatestRef({ onLayoutChange, onLayoutProp, webLayoutResync });
+   const onExternalLayout = useCallback(
+@@ -6427,7 +6429,7 @@ function useOnLayoutSync({
+       emit(toLayout(rect), true);
+       prevRect = rect;
+     }
+-    return createResizeObserver(element, (entry) => {
++    const disconnectResizeObserver = createResizeObserver(element, (entry) => {
+       var _a4, _b2, _c;
+       const target = entry.target instanceof HTMLElement ? entry.target : void 0;
+       const borderBoxSize = Array.isArray(entry.borderBoxSize) ? entry.borderBoxSize[0] : entry.borderBoxSize;
+@@ -6445,7 +6447,30 @@ function useOnLayoutSync({
+         emit(toLayout(rectObserved), false);
+       }
+     });
+-  }, [callbacks, measureInLayoutEffect, webExternalScroll, ...deps || []]);
++    if (!measureNowRef) return disconnectResizeObserver;
++    // T3 patch: measure on demand through the observer's own baseline, so a
++    // forced read and a later observer delivery never disagree about the size.
++    const measureNow = () => {
++      const rect = element.getBoundingClientRect();
++      if (rect.height === 0 && rect.width === 0) return;
++      const previousRect = prevRect != null ? prevRect : getContainerLayoutBaseline(element);
++      if (previousRect !== void 0 && rect.width === previousRect.width && rect.height === previousRect.height) return;
++      prevRect = rect;
++      emit(toLayout(rect), true);
++      // The browser only reports sizes that differ from its last delivery. Re-observe so a
++      // return to that size is still reported against the baseline this read just moved.
++      if (typeof ResizeObserver !== "undefined" && callbackMap.has(element)) {
++        const observer = getGlobalResizeObserver();
++        observer.unobserve(element);
++        observer.observe(element, { box: "border-box" });
++      }
++    };
++    measureNowRef.current = measureNow;
++    return () => {
++      if (measureNowRef.current === measureNow) measureNowRef.current = void 0;
++      disconnectResizeObserver();
++    };
++  }, [callbacks, measureInLayoutEffect, measureNowRef, webExternalScroll, ...deps || []]);
+   return webExternalScroll ? { onLayout: onExternalLayout } : {};
+ }
+ function toLayout(rect) {
+@@ -7821,10 +7846,10 @@ function useStableRenderComponent(renderComponent, mapProps) {
+     [mapPropsRef, renderComponentRef]
+   );
+ }
+-var LayoutView = ({ onLayoutChange, refView, children, ...rest }) => {
++var LayoutView = ({ onLayoutChange, refView, measureRef, children, ...rest }) => {
+   const localRef = useRef(null);
+   const ref = refView != null ? refView : localRef;
+-  useOnLayoutSync({ onLayoutChange, ref });
++  useOnLayoutSync({ onLayoutChange, ref, measureNowRef: measureRef });
+   return /* @__PURE__ */ React3.createElement("div", { ...rest, ref }, children);
+ };
+ var subscribeScreenReader = () => () => {
+@@ -7901,6 +7926,16 @@ var ListComponent = typedMemo(function ListComponent2({
+   );
+   const ScrollComponent = renderScrollComponent ? CustomScrollComponent : ListComponentScrollView;
+   const SnapOrScroll = snapToIndices ? SnapWrapper : ScrollComponent;
++  // T3 patch: header and footer sizes otherwise arrive from a resize observer
++  // after layout, so a scroll to the end right after a commit that changed them
++  // (a thread switch) computed its target from the previous sizes.
++  const measureHeaderRef = useRef(void 0);
++  const measureFooterRef = useRef(void 0);
++  ctx.state.measureHeaderAndFooter = () => {
++    var _a3, _b;
++    (_a3 = measureHeaderRef.current) == null ? void 0 : _a3.call(measureHeaderRef);
++    (_b = measureFooterRef.current) == null ? void 0 : _b.call(measureFooterRef);
++  };
+   const updateFooterSize = useCallback(
+     (size, afterSizeUpdate) => {
+       var _a4;
+@@ -7955,7 +7990,7 @@ var ListComponent = typedMemo(function ListComponent2({
+     },
+     [horizontal, onLayoutFooter, updateFooterSize]
+   );
+-  const footer = ListFooterComponent && /* @__PURE__ */ React3.createElement(LayoutView, { onLayoutChange: onLayoutFooterInternal, style: ListFooterComponentStyle }, getComponent(ListFooterComponent));
++  const footer = ListFooterComponent && /* @__PURE__ */ React3.createElement(LayoutView, { measureRef: measureFooterRef, onLayoutChange: onLayoutFooterInternal, style: ListFooterComponentStyle }, getComponent(ListFooterComponent));
+   const renderRows = canRender && !ListEmptyComponent;
+   const extentFooter = void 0;
+   return /* @__PURE__ */ React3.createElement(
+@@ -7979,7 +8014,7 @@ var ListComponent = typedMemo(function ListComponent2({
+       style: autoOtherAxisStyle ? [autoOtherAxisStyle, style] : style
+     },
+     Platform.OS !== "web",
+-    ListHeaderComponent && /* @__PURE__ */ React3.createElement(LayoutView, { onLayoutChange: onLayoutHeader, style: ListHeaderComponentStyle }, getComponent(ListHeaderComponent)),
++    ListHeaderComponent && /* @__PURE__ */ React3.createElement(LayoutView, { measureRef: measureHeaderRef, onLayoutChange: onLayoutHeader, style: ListHeaderComponentStyle }, getComponent(ListHeaderComponent)),
+     ListEmptyComponent && getComponent(ListEmptyComponent),
+     shouldRenderAlignItemsAtEndSpacer && /* @__PURE__ */ React3.createElement(AlignItemsAtEndSpacer, { horizontal }),
+     (renderRows || extentFooter) && /* @__PURE__ */ React3.createElement(
+@@ -8888,7 +8923,12 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+         runScrollRequest(
+           pendingScroll.token,
+           state.pendingScrollResolve,
+-          () => state.props.data.length === 0 ? "unreachable" : scrollToEnd(ctx, pendingScroll.options),
++          () => {
++            var _a3;
++            if (state.props.data.length === 0) return "unreachable";
++            (_a3 = state.measureHeaderAndFooter) == null ? void 0 : _a3.call(state);
++            return scrollToEnd(ctx, pendingScroll.options);
++          },
+           () => isScrollToIndexReady(state.props.data.length - 1, true)
+         );
+       }
+@@ -9003,7 +9043,10 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+       contentLength: getContentSize(ctx),
+       data: state.props.data,
+       dataKey: state.props.dataKey,
+-      distanceFromEnd: Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength),
++      // T3 patch: computed on read; the scroll read forces a layout every getState() caller paid for.
++      get distanceFromEnd() {
++        return Math.max(0, getContentSize(ctx) - getObservedScrollOffset(ctx) - state.scrollLength);
++      },
+       elementAtIndex: (index) => {
+         var _a3;
+         return (_a3 = ctx.viewRefs.get(findContainerId(ctx, getId(state, index)))) == null ? void 0 : _a3.current;

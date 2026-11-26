@@ -52,6 +52,7 @@ export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
   threadFamilies.snapshotAtom,
   serverEnvironment.settingsValueAtom,
+  environmentShell.statusAtom,
 );
 /** The folders saved on every machine, in sidebar order. */
 export const savedThreadFoldersAtom = createAllSavedThreadFoldersAtom({

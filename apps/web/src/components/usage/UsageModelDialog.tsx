@@ -1,3 +1,5 @@
+import { getFormattingLocale, t, tx } from "~/i18n";
+
 import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 
@@ -25,7 +27,6 @@ import {
   tokenTypeSegments,
 } from "./usageBreakdown";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
-import { t, tx } from "~/i18n";
 
 export interface UsageChartWindow {
   readonly chartType: "area" | "bar";
@@ -56,6 +57,7 @@ export function UsageModelDialog({
   readonly status?: string | undefined;
   readonly onClose: () => void;
 }) {
+  const locale = getFormattingLocale();
   const usage = mergeAnsweredUsage(
     environments,
     (bucket) => bucket.provider === model.provider && bucket.model === model.model,
@@ -66,9 +68,11 @@ export function UsageModelDialog({
   const hitRate = cacheHitRate(model);
   const perMillion = costPerMillionTokens(model);
   const stats = [
-    { label: t("Cost"), value: costUnknown ? t("Unpriced") : formatUsd(model.costUsd) },
+    { label: t("Cost"), value: costUnknown ? t("Unpriced") : formatUsd(model.costUsd, locale) },
     { label: t("Tokens"), value: formatTokens(model.totalTokens) },
-    perMillion === null ? null : { label: t("Per 1M tokens"), value: formatUsd(perMillion) },
+    perMillion === null
+      ? null
+      : { label: t("Per 1M tokens"), value: formatUsd(perMillion, locale) },
     hitRate === null ? null : { label: t("Cache hit"), value: formatPercent(hitRate) },
   ].filter((stat) => stat !== null);
 
@@ -90,12 +94,10 @@ export function UsageModelDialog({
             <DialogTitle>{model.model}</DialogTitle>
           </div>
           <DialogDescription>
+            {presentation.label}
             {costUnknown
-              ? presentation.label
-              : t("{provider} · {percent} of cost", {
-                  provider: presentation.label,
-                  percent: formatPercent(model.costShare),
-                })}
+              ? ""
+              : ` · ${t("{share} of cost", { share: formatPercent(model.costShare) })}`}
           </DialogDescription>
         </DialogHeader>
         {status !== undefined || readOnly ? (
@@ -103,14 +105,14 @@ export function UsageModelDialog({
         ) : null}
         <DialogPanel>
           <div className="flex flex-col gap-8">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
               {stats.map((stat) => (
                 <div key={stat.label} className="flex min-w-0 flex-col gap-0.5">
-                  <span className="text-xs text-muted-foreground">{stat.label}</span>
-                  <span className="text-2xl font-semibold text-foreground">{stat.value}</span>
+                  <dt className="text-xs text-muted-foreground">{stat.label}</dt>
+                  <dd className="text-2xl font-semibold text-foreground">{stat.value}</dd>
                 </div>
               ))}
-            </div>
+            </dl>
 
             {/* Unpriced cost is unknown, not zero, so its trend shows tokens. */}
             <UsageProviderChart
@@ -132,7 +134,7 @@ export function UsageModelDialog({
                 <UsageShareBar
                   label={t("Cost by type")}
                   segments={costTypeSegments(usage.categoryCost)}
-                  format={formatUsd}
+                  format={(value: number) => formatUsd(value, locale)}
                   recordedUsage={usage}
                   metric="cost"
                 />
@@ -148,7 +150,7 @@ export function UsageModelDialog({
                 <UsageShareBar
                   label={t("Cost by speed")}
                   segments={speedCostSegments(usage.speedCost)}
-                  format={formatUsd}
+                  format={(value: number) => formatUsd(value, locale)}
                   recordedUsage={usage}
                   metric="cost"
                   aside={<SpeedPremium premiumUsd={usage.speedCost.premium} />}
@@ -180,10 +182,13 @@ export function UsageModelDialog({
 }
 
 export function SpeedPremium({ premiumUsd }: { readonly premiumUsd: number }) {
+  const locale = getFormattingLocale();
   return (
     <span className="text-xs text-muted-foreground">
       {tx("Premium {amount}", {
-        amount: <span className="text-foreground tabular-nums">{formatUsd(premiumUsd)}</span>,
+        amount: (
+          <span className="text-foreground tabular-nums">{formatUsd(premiumUsd, locale)}</span>
+        ),
       })}
     </span>
   );

@@ -4,7 +4,6 @@ import { useState } from "react";
 
 import {
   CODE_BLOCK_LANGUAGES,
-  type CodeBlockLanguage,
   codeLanguageEntry,
   codeLanguageLabel,
 } from "~/composer-code-languages";
@@ -37,9 +36,13 @@ export function ComposerCodeBlockLanguagePicker(props: {
 }) {
   const [query, setQuery] = useState("");
   const current = codeLanguageEntry(props.language)?.id ?? props.language;
-  const items: CodeBlockLanguage[] = CODE_BLOCK_LANGUAGES.some((entry) => entry.id === current)
-    ? [...CODE_BLOCK_LANGUAGES]
-    : [{ id: current, label: current }, ...CODE_BLOCK_LANGUAGES];
+  const languages = CODE_BLOCK_LANGUAGES.map((entry) => ({
+    ...entry,
+    label: codeLanguageLabel(entry.id),
+  }));
+  const items = languages.some((entry) => entry.id === current)
+    ? languages
+    : [{ id: current, label: current }, ...languages];
   const needle = query.trim().toLowerCase();
   const filteredItems = needle
     ? items.filter(
@@ -75,13 +78,13 @@ export function ComposerCodeBlockLanguagePicker(props: {
               size="xs"
               disabled={props.disabled}
               aria-label={t("Code language: {language}", {
-                language: codeLanguageLabel(props.language),
+                language: codeLanguageLabel(props.language, t),
               })}
             />
           }
         >
           <LanguageIcon language={current} theme={props.theme} />
-          <span className="max-w-40 truncate">{codeLanguageLabel(props.language)}</span>
+          <span className="max-w-40 truncate">{codeLanguageLabel(props.language, t)}</span>
           <ChevronDownIcon className="opacity-60" />
         </ComboboxTrigger>
         <ComboboxPopup align="start" className="w-56">
@@ -93,7 +96,7 @@ export function ComposerCodeBlockLanguagePicker(props: {
           />
           <ComboboxEmpty>{t("No matching languages.")}</ComboboxEmpty>
           <ComboboxList>
-            {(entry: CodeBlockLanguage) => (
+            {(entry: { id: string; label: string }) => (
               <ComboboxItem key={entry.id || "plain"} value={entry}>
                 <LanguageIcon language={entry.id} theme={props.theme} />
                 <span className="min-w-0 flex-1 truncate">{codeLanguageLabel(entry.id)}</span>

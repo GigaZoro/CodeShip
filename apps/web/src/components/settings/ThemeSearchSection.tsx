@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { getFormattingLocale, msg, t, tn, type Message } from "~/i18n";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -136,7 +137,11 @@ export function createThemeSearch(
           if (controller.signal.aborted) return;
           view.setResults(null);
           shownKey = null;
-          view.setError(cause instanceof Error ? cause.message : t("Open VSX search failed."));
+          view.setError(
+            cause instanceof Error
+              ? (thrownErrorMessage(cause) ?? cause.message)
+              : t("Open VSX search failed."),
+          );
         },
       )
       .then(() => {
@@ -265,7 +270,11 @@ export function ThemeSearchSection({
     try {
       installedCollection = getStoredCustomThemeCollection(extension.collectionId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Installed themes could not be read."));
+      setError(
+        cause instanceof Error
+          ? (thrownErrorMessage(cause) ?? cause.message)
+          : t("Installed themes could not be read."),
+      );
       return;
     }
     const updated = installedCollection.length > 0;
@@ -286,7 +295,11 @@ export function ThemeSearchSection({
       }
     } catch (cause) {
       if (!installSignal.aborted) {
-        setError(cause instanceof Error ? cause.message : t("That theme could not be added."));
+        setError(
+          cause instanceof Error
+            ? (thrownErrorMessage(cause) ?? cause.message)
+            : t("That theme could not be added."),
+        );
       }
     }
     if (themeSearch.endInstall(installSignal)) setInstallingId(null);
@@ -306,18 +319,25 @@ export function ThemeSearchSection({
         <InputGroupAddon>
           {isSearching ? <Spinner aria-hidden /> : <SearchIcon aria-hidden />}
         </InputGroupAddon>
+        {/* Native search inputs clear on Escape even during IME composition. */}
         <InputGroupInput
           aria-label={t("Search Open VSX themes")}
           autoFocus
           onChange={(event) => changeQuery(event.currentTarget.value)}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === "Escape" && (query || event.repeat)) {
+              event.preventDefault();
+              event.stopPropagation();
+              changeQuery("");
+            }
             if (event.key === "Enter" && !isSearching && installingId === null)
               themeSearch.searchNow();
           }}
           placeholder={t("Search themes...")}
+          role="searchbox"
           size="lg"
-          type="search"
+          type="text"
           value={query}
         />
       </InputGroup>

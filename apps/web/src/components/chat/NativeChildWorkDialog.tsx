@@ -6,6 +6,7 @@ import type {
   OrchestrationV2NativeChildWork,
   ThreadId,
 } from "@t3tools/contracts";
+
 import { ListTreeIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -89,9 +90,11 @@ function NativeChildWorkContent(props: {
 
 function NativeChild(props: { readonly child: OrchestrationV2NativeChildWork }) {
   const { child } = props;
+
+  const role = child.role || t("Subagent");
   return (
-    <section aria-label={child.role || t("Subagent")} className="flex min-w-0 flex-col gap-2">
-      <h3 className="text-sm font-medium text-foreground">{child.role || t("Subagent")}</h3>
+    <section aria-label={role} className="flex min-w-0 flex-col gap-2">
+      <h3 className="text-sm font-medium text-foreground">{role}</h3>
       <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">
         {child.prompt}
       </p>

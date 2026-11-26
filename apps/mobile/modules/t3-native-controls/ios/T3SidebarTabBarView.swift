@@ -43,6 +43,15 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   var tabs = ["threads", "scheduledTasks", "pullRequests", "usage", "settings"] {
     didSet { if tabs != oldValue { updateItems() } }
   }
+  var tabTitles: [String: String] = [:] {
+    didSet {
+      if tabTitles != oldValue {
+        prepareItems()
+        updateItems()
+      }
+    }
+  }
+  var newThreadTitle = "New thread" { didSet { composeButton.accessibilityLabel = newThreadTitle } }
   var selectedTab = "threads" { didSet { updateSelection() } }
   var selectedColor: UIColor = .systemBlue { didSet { tabBar.tintColor = selectedColor } }
   var compact = false {
@@ -56,6 +65,9 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
       composeButton.isHidden = !showsCompose
       tabBarTrailing.constant = showsCompose ? (compact ? -64 : -76) : 0
       setNeedsLayout()
+      // JS moves this view's edge by the same amount, so the bar keeps its frame and won't lay
+      // itself out; compose is placed only from that layout.
+      tabBar.setNeedsLayout()
     }
   }
   var appearance = "light" {
@@ -81,7 +93,7 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
     // UIKit's floating row changes with window geometry. Follow its laid-out items
     // instead of estimating their position from a second set of safe-area updates.
     tabBar.onContentLayout = { [weak self] frame in self?.layoutCompose(alongside: frame) }
-    composeButton.accessibilityLabel = "New chat"
+    composeButton.accessibilityLabel = newThreadTitle
     composeButton.addAction(UIAction { [weak self] _ in self?.onCompose() }, for: .touchUpInside)
     composeButton.isHidden = true
     addSubview(composeButton)
@@ -106,12 +118,19 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private func prepareItems() {
     let iconBundle = Bundle(for: Self.self).url(forResource: "T3NativeControlIcons", withExtension: "bundle").flatMap(Bundle.init(url:))
     let pullRequestIcon = UIImage(named: "pull-request", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
-    let labels = ["threads": "Threads", "scheduledTasks": "Tasks", "pullRequests": "PRs", "usage": "Usage", "settings": "Settings"]
-    let symbols = ["threads": "text.bubble", "scheduledTasks": "clock", "usage": "chart.bar.xaxis", "settings": "gearshape"]
+    let labels = [
+      "threads": "Threads", "scheduledTasks": "Tasks", "pullRequests": "PRs", "issues": "Issues", "workflows": "Workflows",
+      "usage": "Usage", "settings": "Settings",
+    ]
+    let issueIcon = UIImage(named: "issue", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
+    let symbols = [
+      "threads": "text.bubble", "scheduledTasks": "clock", "workflows": "point.3.connected.trianglepath.dotted",
+      "usage": "chart.bar.xaxis", "settings": "gearshape",
+    ]
     for (tab, label) in labels {
-      let icon = tab == "pullRequests" ? pullRequestIcon : UIImage(systemName: symbols[tab] ?? "circle")
+      let icon = tab == "pullRequests" ? pullRequestIcon : tab == "issues" ? issueIcon : UIImage(systemName: symbols[tab] ?? "circle")
       let item = UITabBarItem(title: nil, image: tabIcon(icon), tag: 0)
-      item.accessibilityLabel = label
+      item.accessibilityLabel = tabTitles[tab] ?? label
       item.accessibilityIdentifier = "workspace-tab-\(tab)"
       if tab == "threads" { item.selectedImage = tabIcon(UIImage(systemName: "text.bubble.fill")) }
       itemsByTab[tab] = item

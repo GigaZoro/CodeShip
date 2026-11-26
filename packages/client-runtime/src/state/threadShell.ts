@@ -1,3 +1,5 @@
+import { t, tn } from "@t3tools/shared/i18n";
+
 import type {
   EnvironmentId,
   OrchestrationV2ShellSnapshot,
@@ -35,7 +37,6 @@ import {
   threadKey,
   threadRefsEqual,
 } from "./entities.ts";
-import { t, tn } from "@t3tools/shared/i18n";
 
 const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([]);
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -55,9 +56,7 @@ const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
 // parent is no longer waiting on the answer, so it stops counting as input.
 // The activity run stays set when a follow-up is queued behind a blocked run;
 // older servers omit it, so fall back to the latest run's status.
-const isChildRunLive = (
-  thread: Pick<OrchestrationV2ThreadShell, "activityRunStatus" | "status">,
-) =>
+const isChildRunLive = (thread: Pick<OrchestrationV2ThreadShell, "activityRunStatus" | "status">) =>
   thread.activityRunStatus !== undefined
     ? thread.activityRunStatus !== null
     : thread.status === "preparing" ||
@@ -77,6 +76,46 @@ export function isShownUnderParent(
   delegatedUnderParent: ReadonlySet<string>,
 ): boolean {
   return !isListedThreadLineage(lineage) || delegatedUnderParent.has(threadKey(ref));
+}
+
+// Subagents, side chats and tasks delegated from a listed parent have no list row,
+// so an open one is represented by its nearest listed ancestor. A broken chain
+// (missing or archived parent, cycle) resolves to the thread itself, which then matches no row.
+export function resolveListedAncestorThreadRef(
+  ref: ScopedThreadRef,
+  threads: readonly Pick<
+    EnvironmentThreadShell,
+    "id" | "environmentId" | "lineage" | "delegatedFrom" | "archivedAt"
+  >[],
+): ScopedThreadRef {
+  const findThread = (target: ScopedThreadRef) =>
+    threads.find(
+      (thread) => thread.id === target.threadId && thread.environmentId === target.environmentId,
+    );
+  const visited = new Set<string>();
+  let current = ref;
+  let thread = findThread(current);
+  while (thread !== undefined) {
+    let parent: ScopedThreadRef;
+    if (!isListedThreadLineage(thread.lineage)) {
+      if (thread.lineage.parentThreadId === null) return ref;
+      parent = { environmentId: thread.environmentId, threadId: thread.lineage.parentThreadId };
+    } else if (thread.delegatedFrom != null) {
+      parent = {
+        environmentId: thread.delegatedFrom.environmentId,
+        threadId: thread.delegatedFrom.threadId,
+      };
+      // Mirrors delegatedUnderParent: a task whose parent is not listed keeps its own row.
+      if (findThread(parent)?.archivedAt !== null) return current;
+    } else {
+      return current;
+    }
+    if (visited.has(threadKey(current))) return ref;
+    visited.add(threadKey(current));
+    current = parent;
+    thread = findThread(current);
+  }
+  return ref;
 }
 
 /** Provider-native
@@ -114,6 +153,9 @@ function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
   }
   return kind === "user_input" ? "user_input" : "approval";
 }
+
+const asksParent = (thread: OrchestrationV2ThreadShell) =>
+  subagentRequest(thread) !== null || sideChatRequest(thread) !== null;
 
 /**
  * The threads to flag for a subagent's live approval, up its
@@ -171,6 +213,7 @@ const sameRequests = (
 
 export function childThreadInputsTitle(
   children: ReadonlyArray<Pick<EnvironmentThreadShell, "hasPendingApprovals" | "lineage">>,
+  resolve: typeof t = t,
 ): string {
   const approvals = children.filter((child) => child.hasPendingApprovals).length;
   const need = approvals === 0 ? "input" : approvals === children.length ? "approval" : "you";
@@ -182,11 +225,11 @@ export function childThreadInputsTitle(
     const sideChat = noun === "side chat";
     switch (need) {
       case "input":
-        return sideChat ? t("Side chat needs input") : t("Subagent needs input");
+        return sideChat ? resolve("Side chat needs input") : resolve("Subagent needs input");
       case "approval":
-        return sideChat ? t("Side chat needs approval") : t("Subagent needs approval");
+        return sideChat ? resolve("Side chat needs approval") : resolve("Subagent needs approval");
       case "you":
-        return sideChat ? t("Side chat needs you") : t("Subagent needs you");
+        return sideChat ? resolve("Side chat needs you") : resolve("Subagent needs you");
     }
   }
   switch (noun) {
@@ -505,16 +548,10 @@ export function createEnvironmentThreadShellAtoms(input: {
 
   const hasChildThreadInputsAtom = Atom.make((get) => {
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
-      if (
-        get(environmentThreadsAtom(environmentId)).some(
-          (thread) => subagentRequest(thread) !== null || sideChatRequest(thread) !== null,
-        )
-      ) {
-        return true;
-      }
+      if (get(environmentThreadsAtom(environmentId)).some(asksParent)) return true;
     }
     return false;
-  });
+  }).pipe(Atom.withLabel("environment-has-child-thread-inputs"));
 
   // Child approvals and questions are hidden with their sidebar rows. Read their
   // shell summaries, without subscribing to every child transcript. A task
@@ -561,7 +598,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           if (seen.has(childKey)) continue;
           seen.add(childKey);
           pending.push(childKey);
-          if (subagentRequest(thread) !== null || sideChatRequest(thread) !== null) {
+          if (asksParent(thread)) {
             next.push(
               scopedThread(environmentId, thread, get(pendingSubagentRequestsAtom(environmentId))),
             );

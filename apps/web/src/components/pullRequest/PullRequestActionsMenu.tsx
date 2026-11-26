@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
   canEditPullRequestMaintainerEdits,
@@ -26,10 +27,12 @@ import {
   ScrollTextIcon,
   Trash2Icon,
 } from "lucide-react";
+
 import { useId, useState } from "react";
 
+import { useOpenLink } from "~/browser/useOpenLink";
+
 import { shortcutLabelForCommand } from "~/keybindings";
-import { readLocalApi } from "~/localApi";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -47,7 +50,6 @@ import {
 } from "../ui/menu";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ActOnEnvironmentPicker, type PerformPullRequestAction } from "./PullRequestDetailActions";
 import {
   PULL_REQUEST_MERGE_METHOD_LABELS,
@@ -58,7 +60,9 @@ import { PullRequestGlyph } from "./pullRequestIcons";
 import type { PickableEnvironment } from "./pullRequestProjectAssignment.logic";
 import { PullRequestThreadLinks } from "./PullRequestThreadLinks";
 import { useInlineActionConfirm } from "./useInlineActionConfirm";
-import { t } from "~/i18n";
+
+import { changeRequestTermKind } from "./changeRequestTerm";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 /** Everything else the reader can do with the pull request, behind the header's overflow button. */
 export function PullRequestActionsMenu({
@@ -66,7 +70,9 @@ export function PullRequestActionsMenu({
   reference,
   pullRequestKey,
   detail,
+  observedAt,
   terminology,
+  threadRef,
   linkThreadRef,
   onThreadPickerOpenChange,
   refreshing,
@@ -116,9 +122,11 @@ export function PullRequestActionsMenu({
     | "capabilities"
     | "viewerPermissions"
     | "maintainerCanModify"
-    | "observedAt"
   >;
+  /** When the detail was last read; the detail itself keeps its older stamp across refreshes. */
+  observedAt: number | undefined;
   terminology: ChangeRequestTerminology;
+  threadRef: ScopedThreadRef | null;
   linkThreadRef: ScopedThreadRef | null;
   onThreadPickerOpenChange: (open: boolean) => void;
   refreshing: boolean;
@@ -154,8 +162,10 @@ export function PullRequestActionsMenu({
   pendingAction: PullRequestAction | null;
   perform: PerformPullRequestAction;
   openOnHostText: string;
-  copyReference: (value: string, label: string) => void;
+  copyReference: (value: string, failureTitle: string) => void;
 }) {
+  const openLink = useOpenLink(threadRef);
+
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const inlineConfirm = useInlineActionConfirm(pullRequestKey);
   const actionPending = pendingAction !== null;
@@ -170,7 +180,7 @@ export function PullRequestActionsMenu({
   const maintainerEditsChoiceKept = maintainerEditsChoiceInForce(
     maintainerEditsChoice,
     pullRequestKey,
-    detail.observedAt,
+    observedAt,
     maintainerEditsSaving,
   );
   if (maintainerEditsChoiceKept !== maintainerEditsChoice) {
@@ -182,7 +192,7 @@ export function PullRequestActionsMenu({
   const saveMaintainerEdits = async (value: boolean) => {
     if (!canSaveMaintainerEdits) return;
     const previousChoice = maintainerEditsChoice;
-    setMaintainerEditsChoice({ key: pullRequestKey, observedAt: detail.observedAt, value });
+    setMaintainerEditsChoice({ key: pullRequestKey, observedAt, value });
     setMaintainerEditsSaving(true);
     const result = await updatePullRequest({
       environmentId,
@@ -202,36 +212,50 @@ export function PullRequestActionsMenu({
   };
   return (
     <Menu>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <MenuTrigger
-              render={
-                <Button
-                  aria-label={
-                    refreshing
-                      ? t("Refreshing {term}", { term: terminology.singular })
-                      : t("More {term} actions", { term: terminology.singular })
-                  }
-                  size="icon-xs"
-                  variant="ghost-muted"
-                />
-              }
-            >
-              {refreshing ? (
-                <RefreshIcon refreshing size="md" />
-              ) : (
-                <MoreHorizontalIcon className="size-4" />
-              )}
-            </MenuTrigger>
-          }
-        />
-        <TooltipPopup>
-          {refreshing
-            ? t("Refreshing {term}", { term: terminology.singular })
-            : t("More {term} actions", { term: terminology.singular })}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <MenuTrigger
+            render={
+              <Button
+                aria-label={
+                  refreshing
+                    ? changeRequestTermKind(terminology) === "mr"
+                      ? t("Refreshing merge request")
+                      : changeRequestTermKind(terminology) === "cr"
+                        ? t("Refreshing change request")
+                        : t("Refreshing pull request")
+                    : changeRequestTermKind(terminology) === "mr"
+                      ? t("More merge request actions")
+                      : changeRequestTermKind(terminology) === "cr"
+                        ? t("More change request actions")
+                        : t("More pull request actions")
+                }
+                size="icon-xs"
+                variant="ghost-muted"
+              />
+            }
+          >
+            {refreshing ? (
+              <RefreshIcon refreshing size="md" />
+            ) : (
+              <MoreHorizontalIcon className="size-4" />
+            )}
+          </MenuTrigger>
+        }
+        label={
+          refreshing
+            ? changeRequestTermKind(terminology) === "mr"
+              ? t("Refreshing merge request")
+              : changeRequestTermKind(terminology) === "cr"
+                ? t("Refreshing change request")
+                : t("Refreshing pull request")
+            : changeRequestTermKind(terminology) === "mr"
+              ? t("More merge request actions")
+              : changeRequestTermKind(terminology) === "cr"
+                ? t("More change request actions")
+                : t("More pull request actions")
+        }
+      />
       <MenuPopup align="end" side="bottom">
         <PullRequestThreadLinks
           display="menu-item"
@@ -251,10 +275,16 @@ export function PullRequestActionsMenu({
             <span>{handoff === "ask" ? t("Opening...") : t("Ask a question")}</span>
             <span className="text-xs text-muted-foreground">
               {attachesToComposer
-                ? t("Adds the {term} to this thread's composer.", { term: terminology.singular })
-                : t("Opens a thread that knows which {term} you mean.", {
-                    term: terminology.singular,
-                  })}
+                ? changeRequestTermKind(terminology) === "mr"
+                  ? t("Adds the merge request to this thread's composer.")
+                  : changeRequestTermKind(terminology) === "cr"
+                    ? t("Adds the change request to this thread's composer.")
+                    : t("Adds the pull request to this thread's composer.")
+                : changeRequestTermKind(terminology) === "mr"
+                  ? t("Opens a thread that knows which merge request you mean.")
+                  : changeRequestTermKind(terminology) === "cr"
+                    ? t("Opens a thread that knows which change request you mean.")
+                    : t("Opens a thread that knows which pull request you mean.")}
             </span>
           </span>
         </MenuItem>
@@ -264,7 +294,11 @@ export function PullRequestActionsMenu({
             <span>
               {handoff === "explain"
                 ? t("Opening...")
-                : t("Explain this {term}", { term: terminology.shortLabel })}
+                : changeRequestTermKind(terminology) === "mr"
+                  ? t("Explain this MR")
+                  : changeRequestTermKind(terminology) === "cr"
+                    ? t("Explain this change request")
+                    : t("Explain this PR")}
             </span>
             <span className="text-xs text-muted-foreground">
               {t("A walk through the diff and what to read closely.")}
@@ -405,13 +439,20 @@ export function PullRequestActionsMenu({
             ) : null}
           </>
         ) : null}
-        <MenuItem onClick={() => void readLocalApi()?.shell.openExternal(detail.url)}>
+        <MenuItem onClick={(event) => void openLink(detail.url, { event }).catch(console.error)}>
           <ArrowUpRightIcon className="size-3.5" />
           {openOnHostText}
         </MenuItem>
         <MenuItem
           onClick={() =>
-            copyReference(detail.url, t("{term} link", { term: terminology.shortLabel }))
+            copyReference(
+              detail.url,
+              changeRequestTermKind(terminology) === "mr"
+                ? t("Failed to copy MR link")
+                : changeRequestTermKind(terminology) === "cr"
+                  ? t("Failed to copy change request link")
+                  : t("Failed to copy PR link"),
+            )
           }
         >
           <LinkIcon className="size-3.5" />
@@ -424,12 +465,20 @@ export function PullRequestActionsMenu({
           onClick={() =>
             copyReference(
               `#${reference.number}`,
-              t("{term} number", { term: terminology.shortLabel }),
+              changeRequestTermKind(terminology) === "mr"
+                ? t("Failed to copy MR number")
+                : changeRequestTermKind(terminology) === "cr"
+                  ? t("Failed to copy change request number")
+                  : t("Failed to copy PR number"),
             )
           }
         >
           <CopyIcon className="size-3.5" />
-          {t("Copy {term} number", { term: terminology.shortLabel })}
+          {changeRequestTermKind(terminology) === "mr"
+            ? t("Copy MR number")
+            : changeRequestTermKind(terminology) === "cr"
+              ? t("Copy change request number")
+              : t("Copy PR number")}
           <MenuShortcut>
             {shortcutLabelForCommand(keybindings, "pullRequest.copyNumber")}
           </MenuShortcut>
@@ -442,7 +491,11 @@ export function PullRequestActionsMenu({
               aria-label={
                 inlineConfirm.isArmed("close")
                   ? t("Confirm close?")
-                  : t("Close {term}", { term: terminology.singular })
+                  : changeRequestTermKind(terminology) === "mr"
+                    ? t("Close merge request")
+                    : changeRequestTermKind(terminology) === "cr"
+                      ? t("Close change request")
+                      : t("Close pull request")
               }
               variant="destructive"
               disabled={actionPending}
@@ -451,7 +504,11 @@ export function PullRequestActionsMenu({
               <PullRequestGlyph.closed className="size-3.5" />
               {inlineConfirm.isArmed("close")
                 ? t("Confirm close?")
-                : t("Close {term}", { term: terminology.singular })}
+                : changeRequestTermKind(terminology) === "mr"
+                  ? t("Close merge request")
+                  : changeRequestTermKind(terminology) === "cr"
+                    ? t("Close change request")
+                    : t("Close pull request")}
             </MenuItem>
           </>
         ) : detail.state === "closed" && can("reopen") ? (
@@ -459,7 +516,11 @@ export function PullRequestActionsMenu({
             <MenuSeparator />
             <MenuItem disabled={actionPending} onClick={() => void perform("reopen")}>
               <PullRequestGlyph.reopen className="size-3.5" />
-              {t("Reopen {term}", { term: terminology.singular })}
+              {changeRequestTermKind(terminology) === "mr"
+                ? t("Reopen merge request")
+                : changeRequestTermKind(terminology) === "cr"
+                  ? t("Reopen change request")
+                  : t("Reopen pull request")}
             </MenuItem>
           </>
         ) : detail.state === "merged" && can("revert") ? (

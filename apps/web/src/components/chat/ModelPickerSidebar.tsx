@@ -1,4 +1,4 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
 import { Toolbar } from "@base-ui/react/toolbar";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from "react";
@@ -6,17 +6,18 @@ import { RouteIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 
-function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
+function describeUnavailableInstance(entry: ProviderInstanceEntry, resolve: typeof t): string {
   const label = entry.displayName;
   // An unavailable instance (a driver this build lacks or the policy leaves out) says why instead.
   if ((!entry.enabled && entry.isAvailable) || entry.status === "disabled") {
-    return t("{label}: Disabled in settings.", { label });
+    return resolve(msg("{label}: Disabled in settings."), { label });
   }
   if (entry.status === "ready" && entry.isAvailable) {
     return label;
@@ -27,9 +28,9 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
       : entry.status === "warning"
         ? t("Limited")
         : t("Not ready");
-  const msg = entry.snapshot.message?.trim();
-  return msg
-    ? t("{label}: {kind}. {message}", { label, kind, message: msg })
+  const message = entry.snapshot.message?.trim();
+  return message
+    ? t("{label}: {kind}. {message}", { label, kind, message })
     : t("{label}: {kind}.", { label, kind });
 }
 
@@ -107,7 +108,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     }
     setSelectedIndicatorTop(selectedItem.offsetTop + selectedItem.offsetHeight / 2 - 10);
   }, [
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Adding, removing or reordering providers moves the selected item, so the indicator re-measures.
+    // Adding, removing or reordering providers moves the selected item, so the indicator re-measures.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- these inputs change the dimensions measured from the DOM
     props.instanceEntries,
     props.selectedInstanceId,
     showFavorites,
@@ -174,7 +176,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const showInstanceBadge = shouldShowInstanceBadge(entry, props.instanceEntries);
 
             const tooltip = isUnavailable
-              ? describeUnavailableInstance(entry)
+              ? describeUnavailableInstance(entry, t)
               : isContextDisabled
                 ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)
                 : entry.displayName;

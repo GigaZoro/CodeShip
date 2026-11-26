@@ -1,3 +1,4 @@
+import { msg, t } from "../../lib/i18n";
 import { useSyncExternalStore } from "react";
 import type { OrchestrationMessageContext } from "@t3tools/contracts";
 import {
@@ -210,7 +211,7 @@ export function formatReviewSelectedRangeLabel(target: ReviewCommentTarget): str
   const firstNumber = getReviewUnifiedLineNumber(firstLine);
   const lastNumber = getReviewUnifiedLineNumber(lastLine);
 
-  if (firstNumber === null || lastNumber === null) {
+  if (firstNumber === null || lastNumber === null || firstNumber > lastNumber) {
     return lines.length === 1 ? "line" : `${lines.length} lines`;
   }
 
@@ -309,12 +310,13 @@ function parseReviewInlineComment(
   rawAttributes: string,
   rawBody: string,
   index: number,
+  resolve: typeof t,
 ): ReviewInlineComment | null {
   const attributes = readReviewCommentAttributes(rawAttributes);
   const startIndex = readNonNegativeInteger(attributes.startIndex);
   const endIndex = readNonNegativeInteger(attributes.endIndex);
-  const filePath = attributes.filePath?.trim();
-  const sectionId = attributes.sectionId?.trim();
+  const filePath = attributes.filePath;
+  const sectionId = attributes.sectionId;
   if (!filePath || !sectionId || startIndex === null || endIndex === null) {
     return null;
   }
@@ -323,11 +325,11 @@ function parseReviewInlineComment(
   return {
     id: `review-comment:${index}:${sectionId}:${filePath}:${startIndex}:${endIndex}`,
     sectionId,
-    sectionTitle: attributes.sectionTitle?.trim() || "Review",
+    sectionTitle: attributes.sectionTitle?.trim() || resolve(msg("Review")),
     filePath,
     startIndex: Math.min(startIndex, endIndex),
     endIndex: Math.max(startIndex, endIndex),
-    rangeLabel: attributes.rangeLabel?.trim() || "line",
+    rangeLabel: attributes.rangeLabel?.trim() || resolve(msg("line")),
     text: body.text,
     diff: body.contents,
     fenceLanguage: body.language,
@@ -364,6 +366,7 @@ export function formatReviewCommentContext(target: ReviewCommentTarget, comment:
 export function parseReviewInlineComments(
   value: string,
   context?: OrchestrationMessageContext,
+  resolve: typeof t = t,
 ): ReadonlyArray<ReviewInlineComment> {
   const comments: ReviewInlineComment[] = [];
   // Mask chip delimiters: labels containing </review_comment> would otherwise truncate the block.
@@ -381,6 +384,7 @@ export function parseReviewInlineComments(
       raw.slice(attributeStart, attributeEnd),
       raw.slice(attributeEnd + 1, -"</review_comment>".length),
       index,
+      resolve,
     );
     if (!comment) {
       continue;
@@ -420,6 +424,7 @@ export function parseReviewInlineComments(
 
 export function parseReviewCommentMessageSegments(
   value: string,
+  resolve: typeof t = t,
 ): ReadonlyArray<ReviewCommentMessageSegment> {
   const segments: ReviewCommentMessageSegment[] = [];
   let cursor = 0;
@@ -445,6 +450,7 @@ export function parseReviewCommentMessageSegments(
       raw.slice(attributeStart, attributeEnd),
       raw.slice(attributeEnd + 1, -"</review_comment>".length),
       parsedCommentIndex,
+      resolve,
     );
     if (comment) {
       segments.push({ kind: "review-comment", comment });

@@ -14,6 +14,7 @@ import type {
 } from "@t3tools/contracts";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import { cn } from "../../lib/utils";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -32,9 +33,9 @@ import {
 } from "../ui/empty";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 import { GitIcon, JujutsuIcon, type Icon } from "../Icons";
+import { IssueTrackerSettings } from "./IssueTrackerSettings";
 import { SourceControlHostSettings } from "./SourceControlHostSettings";
 import { SourceControlAccountSettings } from "./SourceControlAccountSettings";
 import { SourceControlAppSignInSettings } from "./SourceControlAppSignInSettings";
@@ -55,6 +56,7 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { isSourceControlProviderOffered } from "@t3tools/client-runtime/operations/projects";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { sourceControlIcon } from "~/sourceControlPresentation";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
   versionControlSystems: [],
@@ -294,23 +296,19 @@ function DiscoveryItemRow({
               </Button>
             ) : null}
             {offered ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Switch
-                      checked={offered.checked}
-                      disabled={offered.disabled}
-                      onCheckedChange={offered.onChange}
-                      aria-label={t("Offer {host} when adding or publishing a project", {
-                        host: item.label,
-                      })}
-                    />
-                  }
-                />
-                <TooltipPopup side="top">
-                  {t("Offer when adding or publishing a project")}
-                </TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Switch
+                    checked={offered.checked}
+                    disabled={offered.disabled}
+                    onCheckedChange={offered.onChange}
+                    aria-label={t("Offer {label} when adding or publishing a project", {
+                      label: item.label,
+                    })}
+                  />
+                }
+                label={<>{t("Offer when adding or publishing a project")}</>}
+              />
             ) : !isVcsNotReady(item) ? (
               <Switch
                 checked={item.status === "available"}
@@ -433,6 +431,18 @@ export function SourceControlSettingsPanel() {
   const handleScan = () => {
     discovery.refresh();
   };
+  // A CLI login on the server host changes nothing the client reads, so returning to the window
+  // asks again. Discovery runs every hosting CLI, too costly for a timer nobody asked for.
+  useLiveRefresh(
+    () => {
+      if (!discovery.isPending) discovery.refresh();
+    },
+    {
+      enabled: environmentId !== null,
+      key: `source-control-discovery:${environmentId}`,
+      intervalMs: null,
+    },
+  );
   const offeredProviders = environment?.serverConfig?.settings.offeredSourceControlProviders;
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "save source control providers",
@@ -498,22 +508,20 @@ export function SourceControlSettingsPanel() {
     );
   };
   const scanButton = (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="icon-xs"
-            variant="ghost-muted"
-            onClick={handleScan}
-            disabled={discovery.isPending}
-            aria-label={t("Rescan server environment")}
-          >
-            <RefreshIcon refreshing={discovery.isPending} />
-          </Button>
-        }
-      />
-      <TooltipPopup side="top">{t("Rescan Git and hosting integrations")}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          size="icon-xs"
+          variant="ghost-muted"
+          onClick={handleScan}
+          disabled={discovery.isPending}
+          aria-label={t("Rescan server environment")}
+        >
+          <RefreshIcon refreshing={discovery.isPending} />
+        </Button>
+      }
+      label={<>{t("Rescan Git and hosting integrations")}</>}
+    />
   );
 
   return (
@@ -590,6 +598,9 @@ export function SourceControlSettingsPanel() {
           isPending={discovery.isPending}
           onScan={handleScan}
         />
+      )}
+      {environmentId === null ? null : (
+        <IssueTrackerSettings key={environmentId} environmentId={environmentId} />
       )}
 
       <SourceControlWritingSettingsSection />

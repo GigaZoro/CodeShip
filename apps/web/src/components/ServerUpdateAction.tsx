@@ -1,11 +1,12 @@
-import { msg, t, type Message } from "~/i18n";
+import { type Message, msg, t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthEnvironmentMaintainScope,
   type AuthSessionState,
   sessionGrantsScope,
 } from "@t3tools/contracts";
-import { managedUpdatesDenial } from "@t3tools/shared/managedPolicyMessages";
+import { managedUpdatesDenial } from "@t3tools/client-runtime/contract-labels";
 import type { AsyncResult } from "effect/reactivity";
 import { environmentSession } from "~/state/session";
 import type {
@@ -16,6 +17,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   decideRestartHold,
+  serverUpdateFailureText,
   type ServerUpdateStage,
   type ServerUpdateState,
 } from "@t3tools/client-runtime/state/server";
@@ -41,7 +43,7 @@ import { manualServerUpdateCommand } from "~/versionSkew";
 import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 
 const UPDATE_STAGE_LABELS: Record<ServerUpdateStage, Message> = {
   downloading: msg("Downloading…"),
@@ -51,8 +53,8 @@ const UPDATE_STAGE_LABELS: Record<ServerUpdateStage, Message> = {
 };
 const pendingUpdateEnvironmentIds = new Set<EnvironmentId>();
 
-export function serverUpdateStageLabel(stage: ServerUpdateStage): string {
-  return t(UPDATE_STAGE_LABELS[stage]);
+export function serverUpdateStageLabel(stage: ServerUpdateStage, resolve: typeof t = t): string {
+  return resolve(UPDATE_STAGE_LABELS[stage]);
 }
 
 /** Why the environment's policy refuses server updates, read outside render. */
@@ -60,6 +62,7 @@ function readUpdatesDenial(environmentId: EnvironmentId): string | undefined {
   return managedUpdatesDenial(
     appAtomRegistry.get(environmentPresentations.serverConfigsAtom).get(environmentId)
       ?.managedPolicy,
+    t,
   );
 }
 
@@ -87,7 +90,7 @@ function CrossTrackNote() {
 }
 
 function updateFailureMessage(error: unknown): string {
-  return error instanceof Error ? error.message : t("Server update failed.");
+  return thrownErrorMessage(error, t) ?? t(msg("Server update failed."));
 }
 
 export interface ServerUpdateTarget {
@@ -178,7 +181,7 @@ export function useServerUpdate() {
 
 export function ServerUpdatesAction({
   targets,
-  label = t("Update all"),
+  label,
   variant = "outline",
   size = "xs",
   className,
@@ -193,7 +196,8 @@ export function ServerUpdatesAction({
     (target) =>
       target.selfUpdate !== null &&
       (target.selfUpdate !== "desktop-managed" || target.desktopAppUpdate) &&
-      managedUpdatesDenial(serverConfigs.get(target.environmentId)?.managedPolicy) === undefined &&
+      managedUpdatesDenial(serverConfigs.get(target.environmentId)?.managedPolicy, t) ===
+        undefined &&
       !refusedCrossing(target, serverConfigs.get(target.environmentId)?.environment.serverVersion),
   );
   const handleUpdate = async () => {
@@ -229,7 +233,7 @@ export function ServerUpdatesAction({
       disabled={isPending || eligible.length === 0}
       onClick={() => void handleUpdate()}
     >
-      {label}
+      {label ?? t("Update all")}
     </Button>
   );
 }
@@ -255,10 +259,10 @@ export function ServerUpdateProgress({
         role="alert"
       >
         <span className="size-1.5 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
-        <Tooltip>
-          <TooltipTrigger render={<span className="min-w-0 truncate">{state.message}</span>} />
-          <TooltipPopup side="top">{state.message}</TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={<span className="min-w-0 truncate">{serverUpdateFailureText(state, t)}</span>}
+          label={serverUpdateFailureText(state, t)}
+        />
       </div>
     );
   }
@@ -267,14 +271,14 @@ export function ServerUpdateProgress({
     return (
       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
         <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
-        <Tooltip>
-          <TooltipTrigger render={<span>{waitingOnWorkLabel(work.length)}</span>} />
-          {work.length > 0 ? (
-            <TooltipPopup side="top">
+        <SharedTooltipTrigger
+          render={<span>{waitingOnWorkLabel(work.length)}</span>}
+          label={
+            work.length > 0 ? (
               <span className="whitespace-pre-line">{restartHoldWorkLines(work)}</span>
-            </TooltipPopup>
-          ) : null}
-        </Tooltip>
+            ) : null
+          }
+        />
         <Button
           size="xs"
           variant="outline"
@@ -295,7 +299,7 @@ export function ServerUpdateProgress({
   return (
     <div className="mt-1 flex items-center gap-2 text-xs font-medium text-foreground">
       <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
-      <span>{serverUpdateStageLabel(state.stage)}</span>
+      <span>{serverUpdateStageLabel(state.stage, t)}</span>
     </div>
   );
 }
@@ -309,7 +313,7 @@ export function ServerUpdateAction({
   desktopAppUpdate = false,
   targetVersion,
   channel,
-  label = t("Update"),
+  label,
   variant = "outline",
   size = "xs",
   className,
@@ -319,12 +323,22 @@ export function ServerUpdateAction({
   const serverVersion = useServerConfigs().get(environmentId)?.environment.serverVersion;
   const sessionStateAtom = environmentSession.sessionStateAtom(environmentId);
   const canUpdate = useAtomValue(sessionStateAtom, canUpdateServer);
-  const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId));
+  const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId), t);
   const update = useServerUpdate();
   const updatesInstall =
     installation?.kind === "npm-global" || installation?.kind === "t3-launcher";
   const { copyToClipboard } = useCopyToClipboard<{ command: string }>({
-    target: updatesInstall ? t("update command") : t("relaunch command"),
+    target: updatesInstall
+      ? {
+          target: "update command",
+          unavailableMessage: msg("Clipboard API is unavailable while copying update command."),
+          failureMessage: msg("Failed to copy update command to the clipboard."),
+        }
+      : {
+          target: "relaunch command",
+          unavailableMessage: msg("Clipboard API is unavailable while copying relaunch command."),
+          failureMessage: msg("Failed to copy relaunch command to the clipboard."),
+        },
     onCopy: ({ command }) => {
       toastManager.add({
         type: "success",
@@ -410,7 +424,7 @@ export function ServerUpdateAction({
       ? updatesInstall
         ? t("Copy update command")
         : t("Copy relaunch command")
-      : label;
+      : (label ?? t("Update"));
   const onClick =
     manualCommand !== null
       ? () => copyToClipboard(manualCommand, { command: manualCommand })
@@ -418,23 +432,21 @@ export function ServerUpdateAction({
 
   if (appearance === "icon") {
     return (
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              size="icon-xs"
-              variant="ghost-muted"
-              className={className}
-              aria-label={t("{action} for {server}", { action: actionLabel, server: serverLabel })}
-              disabled={manualCommand === null && !canUpdate}
-              onClick={onClick}
-            />
-          }
-        >
-          <CircleArrowUpIcon className="size-3.5" />
-        </TooltipTrigger>
-        <TooltipPopup side="top">{actionLabel}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            className={className}
+            aria-label={t("{action} for {serverLabel}", { action: actionLabel, serverLabel })}
+            disabled={manualCommand === null && !canUpdate}
+            onClick={onClick}
+          />
+        }
+        label={actionLabel}
+      >
+        <CircleArrowUpIcon className="size-3.5" />
+      </SharedTooltipTrigger>
     );
   }
 
@@ -457,7 +469,7 @@ export function OutdatedServerUpdateAction({
   serverLabel,
   fromVersion,
   targetVersion,
-  label = t("Update"),
+  label,
 }: {
   readonly environmentId: EnvironmentId;
   readonly serverLabel: string;
@@ -495,7 +507,7 @@ export function OutdatedServerUpdateAction({
   }
   return (
     <Button size="xs" variant="outline" onClick={() => void handleUpdate()}>
-      {label}
+      {label ?? t("Update")}
     </Button>
   );
 }

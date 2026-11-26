@@ -1,3 +1,4 @@
+import { errorDisplayMessage, type MarkedText } from "@t3tools/client-runtime/errors";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import * as Dialog from "../../components/ui/Dialog";
@@ -67,6 +68,7 @@ import {
   useFocusEffect,
   useNavigation,
   usePreventRemove,
+  useRoute,
   type NavigationState,
   type ParamListBase,
 } from "@react-navigation/native";
@@ -103,11 +105,14 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import {
+  chooserDraftKey,
   isMissingCloneParentBrowseFailure,
   resolveAddProjectEnvironment,
 } from "./AddProjectScreen.logic";
+import { readNewTaskFlowState } from "../threads/new-task-flow-state";
 import {
   createNewTaskDraft,
+  retargetSavedNewTaskDraft,
   setComposerDraftText,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
@@ -122,6 +127,7 @@ interface EnvironmentOption {
   readonly newProjectsRoot: string | null;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
+  readonly i18nConnectionError?: MarkedText;
   readonly connectionErrorTraceId: string | null;
   readonly ghqCloneLayout: boolean;
   readonly offeredSourceControlProviders: OfferedSourceControlProviders | undefined;
@@ -144,9 +150,7 @@ function platformFromOs(os: string | null | undefined): string {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.trim().length > 0
-    ? error.message
-    : t("An error occurred.");
+  return errorDisplayMessage(error) ?? t("An error occurred.");
 }
 
 function stringParam(value: string | string[] | undefined): string | null {
@@ -205,6 +209,31 @@ function ListSection(props: { readonly children: ReactNode }) {
     >
       {props.children}
     </View>
+  );
+}
+
+function EnvironmentOptionRow(
+  props: Omit<Parameters<typeof ListRow>[0], "subtitle"> & {
+    readonly environment: EnvironmentOption;
+  },
+) {
+  const { environment, ...row } = props;
+  return (
+    <ListRow
+      {...row}
+      subtitle={
+        canCreateProjectInEnvironment(environment.connectionState)
+          ? undefined
+          : connectionStatusText({
+              phase: environment.connectionState,
+              error: environment.connectionError,
+              ...(environment.i18nConnectionError === undefined
+                ? {}
+                : { i18nError: environment.i18nConnectionError }),
+              traceId: environment.connectionErrorTraceId,
+            })
+      }
+    />
   );
 }
 
@@ -439,6 +468,9 @@ function useEnvironmentOptions(
         newProjectsRoot: config?.newProjectsRoot ?? null,
         connectionState: runtime?.connectionState ?? "available",
         connectionError: runtime?.connectionError ?? null,
+        ...(runtime?.i18nConnectionError === undefined
+          ? {}
+          : { i18nConnectionError: runtime.i18nConnectionError }),
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
         ghqCloneLayout: config?.settings.ghqCloneLayout === true,
         offeredSourceControlProviders: config?.settings.offeredSourceControlProviders,
@@ -583,7 +615,7 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
           input: {},
         }),
   );
-  const readiness = buildAddProjectRemoteSourceReadiness(discoveryState.data);
+  const readiness = buildAddProjectRemoteSourceReadiness(discoveryState.data, t);
 
   return (
     <AddProjectShell title={t("Add project")}>
@@ -594,18 +626,10 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
           <SectionTitle>{t("Environments")}</SectionTitle>
           <ListSection>
             {environmentOptions.map((environment, index) => (
-              <ListRow
+              <EnvironmentOptionRow
                 key={environment.environmentId}
+                environment={environment}
                 title={environment.label}
-                subtitle={
-                  canCreateProjectInEnvironment(environment.connectionState)
-                    ? undefined
-                    : connectionStatusText({
-                        phase: environment.connectionState,
-                        error: environment.connectionError,
-                        traceId: environment.connectionErrorTraceId,
-                      })
-                }
                 icon={
                   <EnvironmentMachineSymbol
                     kind={environment.machine}
@@ -704,7 +728,7 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
                   !canCloneProject
                     ? t("This connection cannot clone projects.")
                     : readiness(candidate).ready
-                      ? addProjectRemoteSourcePathHint(candidate)
+                      ? addProjectRemoteSourcePathHint(candidate, t)
                       : (readiness(candidate).hint ?? "")
                 }
                 isFirst={false}
@@ -727,10 +751,24 @@ function getActiveRoute(navigation: {
   return state?.routes[state.index];
 }
 
+function isActiveRoute(
+  navigation: Parameters<typeof getActiveRoute>[0],
+  originRoute: ReturnType<typeof getActiveRoute>,
+): boolean {
+  const activeRoute = getActiveRoute(navigation);
+  // A warm link can change the task without replacing its native route key.
+  return (
+    originRoute !== undefined &&
+    activeRoute?.key === originRoute.key &&
+    activeRoute.name === originRoute.name &&
+    activeRoute.params === originRoute.params
+  );
+}
+
 function useOpenNewTaskDraft() {
   const navigation = useNavigation<NativeStackNavigationProp<ReactNavigation.RootParamList>>();
   const selectDetail = useSelectWorkspaceDetail();
-  return (
+  return async (
     params: {
       environmentId: EnvironmentId;
       projectId: ProjectId;
@@ -740,16 +778,25 @@ function useOpenNewTaskDraft() {
     },
     originRoute: NavigationState<ParamListBase>["routes"][number] | undefined,
   ) => {
-    const activeRoute = getActiveRoute(navigation);
-    // A warm link can change the task without replacing its native route key.
-    if (
-      !originRoute ||
-      activeRoute?.key !== originRoute.key ||
-      activeRoute.name !== originRoute.name ||
-      activeRoute.params !== originRoute.params
-    )
-      return;
-    selectDetail({ name: "Thread", params: { draft: params } });
+    if (!isActiveRoute(navigation, originRoute)) return;
+    const chooserDraft =
+      params.draftId === undefined
+        ? chooserDraftKey(
+            navigation.getState()?.routes ?? [],
+            (flowKey) => readNewTaskFlowState(flowKey).draftKey,
+          )
+        : null;
+    const carried =
+      chooserDraft !== null &&
+      (await retargetSavedNewTaskDraft(chooserDraft, {
+        environmentId: params.environmentId,
+        projectId: params.projectId,
+      }).catch(() => false));
+    if (!isActiveRoute(navigation, originRoute)) return;
+    selectDetail({
+      name: "Thread",
+      params: { draft: carried ? { ...params, draftId: chooserDraft } : params },
+    });
   };
 }
 
@@ -811,7 +858,7 @@ function useOpenExistingProject(environment: EnvironmentOption | null) {
         ? existing.title
         : t("{title} is still archived. Try again later.", { title: existing.title }),
     );
-    openNewTaskDraft(
+    void openNewTaskDraft(
       {
         environmentId: existing.environmentId,
         projectId: existing.id,
@@ -886,7 +933,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
       );
       return result;
     }
-    openNewTaskDraft(
+    void openNewTaskDraft(
       {
         environmentId: environment.environmentId,
         projectId,
@@ -912,7 +959,7 @@ interface ResolvedRepository {
   readonly repositoryName: string;
 }
 
-function AddProjectRepositoryScreen(props: {
+export function AddProjectRepositoryScreen(props: {
   readonly environmentId?: string | string[];
   readonly source?: string | string[];
   readonly onResolved: (repository: ResolvedRepository) => void;
@@ -920,14 +967,21 @@ function AddProjectRepositoryScreen(props: {
   const lookupRepositoryQuery = useAtomQueryRunner(sourceControlEnvironment.repository, {
     reportFailure: false,
   });
+  const navigation = useNavigation();
+  const originRoute = useRoute();
   const environment = useEnvironmentFromParam(props.environmentId);
   const source = sourceFromParam(props.source);
   const [repositoryInput, setRepositoryInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingLookup = useRef<AbortController | null>(null);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels the repository lookup when its screen unmounts
+  useEffect(() => () => pendingLookup.current?.abort(), []);
 
   const lookupRepository = async () => {
-    if (!environment || repositoryInput.trim().length === 0 || isSubmitting) return;
+    if (!environment || repositoryInput.trim().length === 0 || pendingLookup.current) return;
+    if (!isActiveRoute(navigation, originRoute)) return;
     const incompleteOwnerMessage = githubIncompleteOwnerRepositoryMessage(source, repositoryInput);
     if (incompleteOwnerMessage) {
       setError(incompleteOwnerMessage);
@@ -947,13 +1001,22 @@ function AddProjectRepositoryScreen(props: {
       return;
     }
 
-    const result = await lookupRepositoryQuery({
-      environmentId: environment.environmentId,
-      input: {
-        provider,
-        repository: repositoryInput.trim(),
+    const lookup = new AbortController();
+    pendingLookup.current = lookup;
+    const result = await lookupRepositoryQuery(
+      {
+        environmentId: environment.environmentId,
+        input: {
+          provider,
+          repository: repositoryInput.trim(),
+        },
       },
-    });
+      { signal: lookup.signal },
+    );
+    if (lookup.signal.aborted) return;
+    pendingLookup.current = null;
+    setIsSubmitting(false);
+    if (!isActiveRoute(navigation, originRoute)) return;
     if (AsyncResult.isFailure(result)) {
       setError(errorMessage(Cause.squash(result.cause)));
     } else {
@@ -964,7 +1027,6 @@ function AddProjectRepositoryScreen(props: {
         repositoryName: getCloneDirectoryName(repository.nameWithOwner),
       });
     }
-    setIsSubmitting(false);
   };
 
   return (
@@ -1260,7 +1322,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
       );
       return;
     }
-    openNewTaskDraft(
+    void openNewTaskDraft(
       {
         environmentId: environment.environmentId,
         projectId,
@@ -1572,7 +1634,7 @@ export function AddProjectDestinationScreen(props: {
           ),
         );
       } else {
-        openNewTaskDraft(
+        void openNewTaskDraft(
           {
             environmentId: environment.environmentId,
             projectId,

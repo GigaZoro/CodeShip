@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useAuth, useClerk } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
@@ -8,9 +9,9 @@ import {
 import { type AuthMcpApprovalDetails, EnvironmentId } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 
-import { t } from "~/i18n";
 import { isElectron } from "../../env";
 import { runConnectMcpApproval } from "../../state/connectMcpApproval";
 import { resolveClerkSignInProps } from "../clerk/authRedirect";

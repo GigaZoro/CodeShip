@@ -1,5 +1,6 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import * as Dialog from "../../components/ui/Dialog";
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import type { PullRequestDetail, PullRequestMergeMethod } from "@t3tools/contracts";
@@ -11,7 +12,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { SplitButton } from "../../components/ui/SplitButton";
 import { useEnvironmentServerConfig } from "../../state/entities";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { composerPullRequests } from "../../state/pull-requests";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -44,7 +45,7 @@ export function PullRequestMergeControls(props: {
   const stateAction = usePullRequestAction(props.params, pr);
   const preferences = useAtomValue(mobilePreferencesAtom);
   const serverSettings = useEnvironmentServerConfig(target.environmentId)?.settings;
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const runAction = useAtomCommand(composerPullRequests.runAction, { reportFailure: false });
   const refreshDetail = useAtomRefresh(composerPullRequests.detail(target));
   const refreshActivity = useAtomRefresh(composerPullRequests.activity(target));
@@ -129,13 +130,23 @@ export function PullRequestMergeControls(props: {
                   ? { label: t("Checking stack…"), icon: PullRequestGlyph.merged }
                   : null;
   const autoAction = pr.autoMergeEnabled ? "disable-auto-merge" : "enable-auto-merge";
+  // A stack auto-merge request on this layer also covers the open layers below it.
+  const stackAutoMerge =
+    stack.stack !== null &&
+    stack.supportsStackActions &&
+    stack.isFresh &&
+    pr.capabilities.stackAutoMerge === true;
   const canAutoMerge =
     !busy &&
-    (autoAction === "disable-auto-merge" || (!stack.stack && canMergeSingle)) &&
+    (autoAction === "disable-auto-merge" ||
+      (stack.stack ? stackAutoMerge && scope !== null && !scope.reason : canMergeSingle)) &&
     permissions.canWrite &&
     canPerformPullRequestAction(pr, autoAction);
 
-  const perform = async (action: "merge" | "enable-auto-merge" | "disable-auto-merge") => {
+  const perform = async (
+    action: "merge" | "enable-auto-merge" | "disable-auto-merge",
+    shownHeadSha: string | undefined,
+  ) => {
     if (
       pending.current ||
       (action !== "disable-auto-merge" && !method) ||
@@ -149,30 +160,44 @@ export function PullRequestMergeControls(props: {
       input: {
         ...target.input,
         action,
-        ...(action === "merge" && method && stack.stack && scope
-          ? {
-              stackNumber: stack.stack.number,
-              expectedStackHeads: scope.heads,
-              mergeMethod: method,
-            }
-          : action === "merge" && method
+        // A merge lands the head on screen and refuses one that moved; a stack pins its other layers.
+        ...(action !== "disable-auto-merge" && shownHeadSha
+          ? { expectedHeadSha: shownHeadSha }
+          : {}),
+        // A cancel needs no pinned heads, so it keeps the stack scope even while the stack refreshes.
+        ...(stack.stack &&
+        ((action === "enable-auto-merge" && stackAutoMerge) ||
+          (action === "disable-auto-merge" &&
+            stack.supportsStackActions &&
+            pr.capabilities.stackAutoMerge === true))
+          ? { stackNumber: stack.stack.number }
+          : {}),
+        ...(action === "enable-auto-merge" && method && stackAutoMerge && scope
+          ? { expectedStackHeads: scope.heads, mergeMethod: method }
+          : action === "merge" && method && stack.stack && scope
             ? {
-                resolveMergeMethod: (fresh) => {
-                  if (
-                    !canPerformPullRequestAction(fresh, "merge") ||
-                    !allowedMergeMethods(fresh).includes(method)
-                  )
-                    throw new Error(
-                      t("The {term} changed. Refresh before merging.", {
-                        term: terminology.singular,
-                      }),
-                    );
-                  return method;
-                },
+                stackNumber: stack.stack.number,
+                expectedStackHeads: scope.heads,
+                mergeMethod: method,
               }
-            : action === "enable-auto-merge" && method
-              ? { mergeMethod: method }
-              : {}),
+            : action === "merge" && method
+              ? {
+                  resolveMergeMethod: (fresh) => {
+                    if (
+                      !canPerformPullRequestAction(fresh, "merge") ||
+                      !allowedMergeMethods(fresh).includes(method)
+                    )
+                      throw new Error(
+                        t("The {term} changed. Refresh before merging.", {
+                          term: terminology.singular,
+                        }),
+                      );
+                    return method;
+                  },
+                }
+              : action === "enable-auto-merge" && method
+                ? { mergeMethod: method }
+                : {}),
       },
     });
     // A stack can partly merge before the provider reports a failure.
@@ -185,12 +210,13 @@ export function PullRequestMergeControls(props: {
       const cause = squashAtomCommandFailure(response);
       Dialog.alert(
         t("Couldn't complete the merge action"),
-        cause instanceof Error ? cause.message : t("Try again."),
+        cause instanceof Error ? (errorDisplayMessage(cause) ?? cause.message) : t("Try again."),
       );
     }
   };
   const confirm = (action: "merge" | "enable-auto-merge" | "disable-auto-merge") => {
-    const methodName = String(method);
+    const shownHeadSha = pr.headSha;
+    const methodName = method ?? "";
     const title =
       action === "merge"
         ? scope && scope.layers.length > 1
@@ -207,25 +233,39 @@ export function PullRequestMergeControls(props: {
             method: methodName,
             number: pr.number,
           })
-        : action === "enable-auto-merge"
+        : action === "enable-auto-merge" && stackAutoMerge && scope
           ? t(
-              "Merge #{number} using {method} when its requirements are met. This may happen immediately.",
-              { number: pr.number, method: methodName },
-            )
-          : action === "disable-auto-merge"
-            ? t("Stop the provider from automatically merging this {term}.", {
-                term: terminology.singular,
-              })
-            : t("Merge #{number} into {base} using {method}.", {
-                number: pr.number,
-                base: pr.baseBranch,
+              "Merge {layers} into {base} using {method} once their requirements are met. This may happen immediately.",
+              {
+                layers: scope.layers.map((layer) => `#${layer.number}`).join(" → "),
+                base: stack.stack?.base ?? "",
                 method: methodName,
-              });
+              },
+            )
+          : action === "enable-auto-merge"
+            ? t(
+                "Merge #{number} using {method} when its requirements are met. This may happen immediately.",
+                { number: pr.number, method: methodName },
+              )
+            : action === "disable-auto-merge"
+              ? t("Stop the provider from automatically merging this {term}.", {
+                  term: terminology.singular,
+                })
+              : t("Merge #{number} into {base} using {method}.", {
+                  number: pr.number,
+                  base: pr.baseBranch,
+                  method: methodName,
+                });
     Dialog.alert(title, message, [
       { text: t("Cancel"), style: "cancel" },
       {
-        text: action === "merge" ? label : title.replace("?", ""),
-        onPress: () => void perform(action),
+        text:
+          action === "merge"
+            ? label
+            : action === "enable-auto-merge"
+              ? t("Enable auto-merge")
+              : t("Disable auto-merge"),
+        onPress: () => void perform(action, shownHeadSha),
       },
     ]);
   };
@@ -284,7 +324,7 @@ export function PullRequestMergeControls(props: {
           const selected = methods.find((method) => method === id);
           if (selected) {
             setSelectedMethod(selected);
-            savePreferences({ pullRequestMergeMethod: selected });
+            void savePreferences({ pullRequestMergeMethod: selected });
           } else if (id === autoAction && canAutoMerge) confirm(autoAction);
         }}
       />

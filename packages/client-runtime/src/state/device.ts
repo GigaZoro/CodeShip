@@ -1,3 +1,4 @@
+import { msg, t } from "@t3tools/shared/i18n";
 import { type DeviceToolVersions, WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -7,7 +8,6 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
-import { msg, t } from "@t3tools/shared/i18n";
 
 export function createDeviceEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -94,23 +94,28 @@ export function createDeviceEnvironmentAtoms<R, E>(
   };
 }
 
-export function deviceToolVersionLabels(tools: DeviceToolVersions | undefined) {
-  if (!tools) return [t("Device tool versions have not been checked.")];
+export function deviceToolVersionLabels(
+  tools: DeviceToolVersions | undefined,
+  resolve: typeof t = t,
+) {
+  if (!tools) return [resolve(msg("Device tool versions have not been checked."))];
   return (
     [
-      [t("Device hub"), tools.hub],
-      [t("Agent tools"), tools.agent],
+      [resolve(msg("Device hub")), tools.hub],
+      [resolve(msg("Agent tools")), tools.agent],
     ] as const
   ).map(([name, tool]) => {
-    const installed = tool.installedVersions.length ? tool.installedVersions.join(", ") : t("none");
+    const installed = tool.installedVersions.length
+      ? tool.installedVersions.join(", ")
+      : resolve(msg("none"));
     return tool.runningVersion
-      ? t("{name}: installed {installed}; required {required}; running {running}.", {
+      ? resolve(msg("{name}: installed {installed}; required {required}; running {running}."), {
           name,
           installed,
           required: tool.requiredVersion,
           running: tool.runningVersion,
         })
-      : t("{name}: installed {installed}; required {required}.", {
+      : resolve(msg("{name}: installed {installed}; required {required}."), {
           name,
           installed,
           required: tool.requiredVersion,
@@ -118,18 +123,26 @@ export function deviceToolVersionLabels(tools: DeviceToolVersions | undefined) {
   });
 }
 
-export function deviceToolUpdatePolicy(tools: DeviceToolVersions | undefined) {
-  if (!tools) return t("Versions have not been checked. Reconnect the host and check versions.");
+export function deviceToolUpdatePolicy(
+  tools: DeviceToolVersions | undefined,
+  resolve: typeof t = t,
+) {
+  if (!tools)
+    return resolve(msg("Versions have not been checked. Reconnect the host and check versions."));
   const outdated = [tools.hub, tools.agent].filter(
     (tool) =>
       tool.installedVersions.length > 0 && !tool.installedVersions.includes(tool.requiredVersion),
   );
   return outdated.length > 0
-    ? t(
-        "Update pending. Required tools will install automatically when next used. The host needs network access; an older install is not used as a fallback.",
+    ? resolve(
+        msg(
+          "Update pending. Required tools will install automatically when next used. The host needs network access; an older install is not used as a fallback.",
+        ),
       )
-    : t(
-        "Required tools are installed automatically when needed. Checking versions does not install or start anything.",
+    : resolve(
+        msg(
+          "Required tools are installed automatically when needed. Checking versions does not install or start anything.",
+        ),
       );
 }
 export const deviceToolUpdateOwnership = msg(

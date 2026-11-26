@@ -2,13 +2,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
-import { assert, describe, it } from "@effect/vitest";
+import { afterAll, assert, describe, it } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -19,6 +21,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import {
   checkPortAvailabilityOnHosts,
@@ -35,6 +38,7 @@ import {
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
 const netServiceLayer = Layer.succeed(NetService.NetService, {
   canListenOnHost: () => Effect.succeed(true),
+  probeListenOnHost: () => Effect.succeed(true),
   isPortAvailableOnLoopback: () => Effect.succeed(true),
   hasListenerOnHost: () => Effect.succeed(false),
   reserveLoopbackPort: () => Effect.succeed(49_152),
@@ -60,9 +64,13 @@ function mockProcess(exit: number | PlatformError.PlatformError) {
   });
 }
 
+// The runner locks its home on disk, so tests never point it at a shared path.
+const devServerHome = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-dev-runner-"));
+afterAll(() => NodeFS.rmSync(devServerHome, { recursive: true, force: true }));
+
 const devServerInput = {
   mode: "dev:server",
-  t3Home: "/tmp/t3code-dev-runner",
+  t3Home: devServerHome,
   browser: undefined,
   autoBootstrapProjectFromCwd: undefined,
   logWebSocketEvents: undefined,
@@ -475,6 +483,34 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(offset, 833);
       }),
     );
+
+    it.effect.each(["EPERM", "EACCES"])(
+      "stops at the first port when binding is denied with %s",
+      (code) =>
+        Effect.gen(function* () {
+          let listenCalls = 0;
+          const spy = vi.spyOn(NodeNet.Server.prototype, "listen").mockImplementation(function (
+            this: NodeNet.Server,
+          ) {
+            listenCalls += 1;
+            process.nextTick(() => this.emit("error", Object.assign(new Error(code), { code })));
+            return this;
+          });
+          const exit = yield* findFirstAvailableOffset({
+            startOffset: 0,
+            requireServerPort: true,
+            requireWebPort: true,
+          }).pipe(Effect.provide(NetService.layer), Effect.exit);
+          spy.mockRestore();
+
+          assert.isTrue(exit._tag === "Failure");
+          const cause = exit._tag === "Failure" ? Cause.pretty(exit.cause) : "";
+          assert.notInclude(cause, "DevRunnerPortExhaustedError");
+          assert.include(cause, code);
+          assert.include(cause, "13773");
+          assert.isBelow(listenCalls, 10);
+        }),
+    );
   });
 
   describe("checkPortAvailabilityOnHosts", () => {
@@ -738,6 +774,9 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(yield* homeFor("~someone/t3-dev"), path.resolve("~someone/t3-dev"));
         assert.equal(yield* homeFor("relative/t3-dev"), path.resolve("relative/t3-dev"));
         assert.equal(yield* homeFor("/tmp/t3-dev"), path.resolve("/tmp/t3-dev"));
+        // An explicit ~/.t3 would put state in the live userdata; leaving it implicit selects ~/.t3/dev.
+        assert.equal(yield* homeFor("~/.t3"), undefined);
+        assert.equal(yield* homeFor("/home/dev/.t3/"), undefined);
       }),
     );
 
@@ -984,7 +1023,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
             Effect.provideService(HostProcess.Platform, "linux"),
             Effect.provideService(HostProcess.WorkingDirectory, input.cwd),
             // No ~/.t3 here, so these runs never seed from this machine's install.
-            Effect.provideService(HostProcess.HomeDirectory, input.cwd),
+            Effect.provideService(HostProcess.HomeDirectory, NodePath.join(input.cwd, "home")),
             Effect.provideService(
               HostProcess.Environment,
               input.ambientHome === undefined ? {} : { T3CODE_HOME: input.ambientHome },
@@ -999,11 +1038,11 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           const path = yield* Path.Path;
           const root = yield* makeWorktree;
           const home = yield* spawnedHome({
-            t3Home: "/tmp/explicit-home",
+            t3Home: path.join(root, "explicit-home"),
             cwd: root,
-            ambientHome: "/home/user/.t3",
+            ambientHome: path.join(root, "ambient-home"),
           });
-          assert.equal(home, path.resolve("/tmp/explicit-home"));
+          assert.equal(home, path.join(path.resolve(root), "explicit-home"));
         }).pipe(Effect.scoped),
       );
 
@@ -1014,7 +1053,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           const home = yield* spawnedHome({
             t3Home: "   ",
             cwd: root,
-            ambientHome: "/home/user/.t3",
+            ambientHome: path.join(root, "ambient-home"),
           });
           assert.equal(home, path.join(path.resolve(root), ".t3"));
         }).pipe(Effect.scoped),
@@ -1027,7 +1066,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           const home = yield* spawnedHome({
             t3Home: undefined,
             cwd: root,
-            ambientHome: "/home/user/.t3",
+            ambientHome: path.join(root, "ambient-home"),
           });
           assert.equal(home, path.join(path.resolve(root), ".t3"));
         }).pipe(Effect.scoped),
@@ -1059,6 +1098,8 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
                 Effect.provideService(HostProcess.WorkingDirectory, root),
                 Effect.provideService(HostProcess.HomeDirectory, home),
                 Effect.provideService(HostProcess.Environment, {}),
+                // Each run is its own runner process, which releases the state directory lock.
+                Effect.scoped,
               );
               return spawned.filter((args) =>
                 args.some((arg) => arg.endsWith("migrate-dev-db.ts")),
@@ -1157,9 +1198,8 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       it.effect("falls back to an ambient T3CODE_HOME outside a worktree", () =>
         Effect.gen(function* () {
           const path = yield* Path.Path;
-          const fileSystem = yield* FileSystem.FileSystem;
-          // A real folder: the run creates its isolated provider homes under the T3 home.
-          const ambientHome = path.join(yield* fileSystem.makeTempDirectoryScoped(), ".t3");
+          const root = yield* makeWorktree;
+          const ambientHome = path.join(root, "ambient-home");
           const home = yield* spawnedHome({
             t3Home: undefined,
             cwd: NodeOS.tmpdir(),

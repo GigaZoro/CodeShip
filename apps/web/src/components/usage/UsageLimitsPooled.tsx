@@ -1,8 +1,10 @@
+import { t, tn } from "~/i18n";
 import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 import {
   type AccountFailoverEntry,
   CHATGPT_USAGE_URL,
   collectLimitAccounts,
+  collectHttpQuotaSources,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -59,7 +61,6 @@ import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } fr
 import { AccountFailoverNotice, LimitsFreshness, formatCheckedAgo } from "./UsageLimitsStatus";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ProviderHolds } from "./UsageHolds";
-import { t, tn } from "~/i18n";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -416,7 +417,8 @@ function SegmentTriggers({
                 className="absolute inset-y-0 right-0 opacity-20"
                 style={{
                   width: `${Math.min(100 - remaining, refillPercent)}%`,
-                  backgroundImage: `repeating-linear-gradient(135deg, ${color} 0 1px, transparent 1px 5px)`,
+                  backgroundImage: `repeating-linear-gradient(135deg, transparent 0 1px, ${color} 1px 2px, transparent 2px 50%)`,
+                  backgroundSize: "7px 7px",
                 }}
               />
             ) : null}
@@ -896,6 +898,7 @@ export function UsageLimitsPooled({
   const failover = getFailover?.(now) ?? [];
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
+  const quotaSources = collectHttpQuotaSources(presentations);
   const environments = new Map(
     [...presentations].map(([id, presentation]) => [id, presentation.entry.target.label]),
   );
@@ -907,11 +910,39 @@ export function UsageLimitsPooled({
   ];
   return (
     <div className="flex flex-col gap-8">
-      {pools.length === 0 && notices.length === 0 && externalLinks.length === 0 ? (
+      {pools.length === 0 &&
+      notices.length === 0 &&
+      externalLinks.length === 0 &&
+      quotaSources.length === 0 ? (
         <p role="status" className="text-sm text-muted-foreground">
           {emptyMessage}
         </p>
       ) : null}
+      {quotaSources.map((source) => (
+        <section key={source.key} className="space-y-3 rounded-xl border p-4">
+          <h2 className="text-sm font-medium">{source.label}</h2>
+          {source.quotaAccounts?.map((account) => (
+            <div key={account.id} className="space-y-1">
+              <h3 className="text-sm font-medium">{account.label}</h3>
+              {account.windows.map((window) => {
+                const reset = formatResetsIn(window, now);
+                return (
+                  <div
+                    key={window.id}
+                    className="flex justify-between gap-3 text-sm text-muted-foreground"
+                  >
+                    <span>{window.label}</span>
+                    <span>
+                      {t("{remaining}% left", { remaining: remainingPercent(window) })}
+                      {reset ? ` · ${reset}` : ""}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </section>
+      ))}
       <SegmentPopoverContext value={segmentPopover}>
         {sections.map((section) => (
           <Fragment key={section.driver}>

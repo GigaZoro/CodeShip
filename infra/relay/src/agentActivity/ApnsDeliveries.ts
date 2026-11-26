@@ -486,6 +486,68 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const stateIdentityIsCurrent = Effect.fnUntraced(function* (input: {
+    readonly userId: string;
+    readonly environmentId: string;
+    readonly threadId: string;
+    readonly phase: RelayAgentActivityAggregateState["activities"][number]["phase"];
+    readonly updatedAt: string;
+  }) {
+    return yield* activityRows
+      .getForUserThread({
+        userId: input.userId,
+        environmentId: input.environmentId,
+        threadId: input.threadId,
+      })
+      .pipe(
+        Effect.map(
+          (current) =>
+            current !== null &&
+            current.phase === input.phase &&
+            current.updatedAt === input.updatedAt,
+        ),
+        // Fail closed: this recheck is what stops a transferred environment's
+        // content from reaching the previous owner's devices.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("agent-activity state recheck failed; skipping queued delivery", {
+            cause,
+            environmentId: input.environmentId,
+            threadId: input.threadId,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+  });
+
+  const aggregateRowsAreCurrent = Effect.fnUntraced(function* (input: {
+    readonly userId: string;
+    readonly aggregate: RelayAgentActivityAggregateState;
+  }) {
+    return yield* activityRows.listForUser({ userId: input.userId }).pipe(
+      Effect.map((currentStates) => {
+        const currentByThread = new Map(
+          currentStates.map((current) => [
+            `${current.environmentId}\u0000${current.threadId}`,
+            current,
+          ]),
+        );
+        return input.aggregate.activities.every((row) => {
+          const current = currentByThread.get(`${row.environmentId}\u0000${row.threadId}`);
+          return (
+            current !== undefined &&
+            current.phase === row.phase &&
+            current.updatedAt === row.updatedAt
+          );
+        });
+      }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("agent-activity aggregate recheck failed; skipping queued delivery", {
+          cause,
+          userId: input.userId,
+        }).pipe(Effect.as(false)),
+      ),
+    );
+  });
+
   const refreshAggregate = Effect.fnUntraced(function* (input: {
     readonly userId: string;
     readonly aggregate: RelayAgentActivityAggregateState;
@@ -655,7 +717,11 @@ const make = Effect.gen(function* () {
       });
       return staleJobResult({ deviceId: input.target.device_id, kind: input.kind });
     }
-    if (input.aggregate !== null && aggregate === null) {
+    if (
+      input.aggregate !== null &&
+      (aggregate === null ||
+        !(yield* aggregateRowsAreCurrent({ userId: input.target.user_id, aggregate })))
+    ) {
       yield* attempts.completeSourceJob({
         sourceJobId: input.sourceJobId,
         apnsReason: "Stale agent activity state skipped.",
@@ -782,6 +848,13 @@ const make = Effect.gen(function* () {
     // Legacy jobs lack an activity identity. Match their content against work that existed when queued.
     const verified =
       current !== null &&
+      (yield* stateIdentityIsCurrent({
+        userId: input.target.user_id,
+        environmentId: current.environmentId,
+        threadId: current.threadId,
+        phase: current.phase,
+        updatedAt: current.updatedAt,
+      })) &&
       ((notification.phase !== undefined && notification.updatedAt !== undefined) ||
         (current.updatedAt <= input.createdAt &&
           currentNotification?.title === notification.title &&

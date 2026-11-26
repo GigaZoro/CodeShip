@@ -15,6 +15,7 @@ import {
   effectiveShortcutsForCommand,
   formatShortcutLabel,
   isRichTextBoldShortcut,
+  isSidebarToggleShortcut,
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
   resolveChatShortcutCommand,
@@ -661,6 +662,21 @@ describe("resolveChatShortcutCommand", () => {
 });
 
 describe("resolveShortcutCommand", () => {
+  it.each(["constructor", "!constructor"])(
+    "treats inherited object properties in when-condition %s as unset",
+    (when) => {
+      const keybindings = compileResolvedKeybindingsConfig([
+        { key: "mod+j", command: "terminal.toggle", when },
+      ]);
+      assert.strictEqual(
+        resolveShortcutCommand(event({ code: "KeyJ", ctrlKey: true }), keybindings, {
+          platform: "Linux",
+        }),
+        when.startsWith("!") ? "terminal.toggle" : null,
+      );
+    },
+  );
+
   it("routes mod+w to the terminal while focused and to the right panel otherwise", () => {
     const closeEvent = event({ key: "w", metaKey: true });
     assert.strictEqual(
@@ -679,7 +695,7 @@ describe("resolveShortcutCommand", () => {
     );
   });
 
-  it("navigates history with mod+[ and mod+] outside the terminal", () => {
+  it("uses terminal cycling shortcuts without changing bracket history shortcuts", () => {
     const back = event({ key: "[", code: "BracketLeft", metaKey: true });
     const forward = event({ key: "]", code: "BracketRight", ctrlKey: true });
     assert.strictEqual(
@@ -690,12 +706,58 @@ describe("resolveShortcutCommand", () => {
       resolveShortcutCommand(forward, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "Linux" }),
       "navigation.forward",
     );
-    assert.isNull(
-      resolveShortcutCommand(back, DEFAULT_RESOLVED_KEYBINDINGS, {
-        platform: "MacIntel",
-        context: { terminalFocus: true },
-      }),
-    );
+    for (const platform of ["MacIntel", "Win32", "Linux"]) {
+      const mac = platform === "MacIntel";
+      for (const [key, shiftedKey, code, direction] of [
+        ["[", "{", "BracketLeft", "previous"],
+        ["]", "}", "BracketRight", "next"],
+      ] as const) {
+        const shortcut = event({
+          key: mac ? shiftedKey : key,
+          code,
+          metaKey: mac,
+          ctrlKey: !mac,
+          altKey: !mac,
+          shiftKey: mac,
+        });
+        assert.strictEqual(
+          resolveShortcutCommand(shortcut, DEFAULT_RESOLVED_KEYBINDINGS, {
+            platform,
+            context: { terminalFocus: true },
+          }),
+          `terminal.${direction}`,
+        );
+        if (mac) {
+          assert.strictEqual(
+            resolveShortcutCommand(shortcut, DEFAULT_RESOLVED_KEYBINDINGS, {
+              platform,
+              context: { terminalFocus: false },
+            }),
+            `thread.${direction}`,
+          );
+        }
+      }
+      if (mac) {
+        for (const key of ["[", "]"]) {
+          const command = resolveShortcutCommand(
+            event({ key, metaKey: true }),
+            DEFAULT_RESOLVED_KEYBINDINGS,
+            {
+              platform,
+              context: { terminalFocus: true },
+            },
+          );
+          assert.notStrictEqual(command, "terminal.previous");
+          assert.notStrictEqual(command, "terminal.next");
+        }
+      }
+      assert.isNull(
+        resolveShortcutCommand(event({ key: "[", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform,
+          context: { terminalFocus: true },
+        }),
+      );
+    }
   });
 
   it("matches punctuation shortcuts by physical key across keyboard layouts", () => {
@@ -916,6 +978,33 @@ describe("isRichTextBoldShortcut", () => {
     const modB = event({ key: "b", metaKey: true });
     assert.isFalse(isRichTextBoldShortcut(modB, { isCollapsed: true }));
     assert.isFalse(isRichTextBoldShortcut(modB, null));
+  });
+});
+
+describe("isSidebarToggleShortcut", () => {
+  it("leaves Ctrl+B to a focused terminal, where it is the tmux prefix", () => {
+    const ctrlB = event({ key: "b", ctrlKey: true });
+    assert.isFalse(
+      isSidebarToggleShortcut(ctrlB, DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: true },
+      }),
+    );
+    assert.isTrue(
+      isSidebarToggleShortcut(ctrlB, DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+    );
+  });
+
+  it("keeps Cmd+B toggling the sidebar from a focused terminal on macOS", () => {
+    assert.isTrue(
+      isSidebarToggleShortcut(event({ key: "b", metaKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+    );
   });
 });
 

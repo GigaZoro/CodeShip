@@ -1,3 +1,4 @@
+import { t, tx } from "~/i18n";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogButton, WorkLogIcon, WorkLogList, WorkLogRow } from "./WorkLog";
 import { WorkingSpark } from "./WorkingSpark";
@@ -41,6 +42,7 @@ import {
   type TimelineWorkEntry,
   type TimelineRow,
 } from "./timelineRowContext";
+import { ProviderStartingIcon } from "./ProviderStartingIcon";
 import { TimelineRowTimestamp, ActivityShimmerOverlay } from "./TimelineRowParts";
 import {
   failedToolIconClassName,
@@ -56,14 +58,12 @@ import {
   SimpleWorkEntryRow,
 } from "./TimelineWorkEntryRow";
 import {
-  THINKING_PREVIEW_PLUGINS,
-  THOUGHT_PREVIEW_PLUGINS,
-  THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
+  sliceThoughtPreviewSource,
+  thoughtPreviewMarkdown,
   toolGroupSummaryIconName,
   workEntryIconName,
 } from "./TimelineWorkEntryRow.logic";
 import { formatWorkingTimerNow } from "./TimelineWorkGroupRows.logic";
-import { t, tx } from "~/i18n";
 
 export const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
@@ -85,6 +85,7 @@ export const WorkGroupSection = memo(function WorkGroupSection({
     onWorkEntryContentReady,
     pendingApprovals,
   } = use(TimelineRowCtx);
+
   const nonEmptyEntries = groupedEntries.filter((entry) => {
     const item = entry.projectedItem?.item;
     return (
@@ -146,6 +147,8 @@ function useWorkGroupViewedImages(
   groupedEntries: ReadonlyArray<TimelineWorkEntry>,
 ): ReadonlyArray<WorkGroupViewedImage> {
   const { threadRef, workspaceRoot, activeThreadEnvironmentId } = use(TimelineRowCtx);
+
+  const fallbackName = t("image");
   const viewed = threadRef
     ? workEntriesViewedImagePaths(groupedEntries).flatMap((path) => {
         const asset = resolveViewedImageAsset(path, {
@@ -164,7 +167,7 @@ function useWorkGroupViewedImages(
     const url = urls[index];
     if (!url) return { path, item: null };
     const src = url + asset.srcFragment;
-    const name = asset.alt.trim() || "image";
+    const name = asset.alt.trim() || fallbackName;
     return {
       path,
       item: {
@@ -174,7 +177,7 @@ function useWorkGroupViewedImages(
           environmentId,
           resource: asset.resource,
           kind: "image",
-          name: asset.alt || "image",
+          name: asset.alt || fallbackName,
           src,
           workspaceRoot,
         }),
@@ -201,6 +204,7 @@ function ExpandedWorkGroupEntries({
     onToggleWorkEntry,
     onWorkEntryContentReady,
   } = use(TimelineRowCtx);
+
   const [initialScrollIndex] = useState(() =>
     resolveWorkGroupScrollIndex(entries, viewState.scrollPositions.get(anchorKey)),
   );
@@ -390,6 +394,7 @@ export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: 
 
 function BackgroundWorktreeSetupChip({ snapshot }: { snapshot: WorktreeSetupSnapshot }) {
   const ctx = use(TimelineRowCtx);
+
   const terminalId = snapshot.setupScript?.terminalId ?? null;
   const openTerminal = ctx.onOpenWorktreeSetupTerminal;
   const onOpenTerminal = openTerminal && terminalId ? () => openTerminal(terminalId) : null;
@@ -441,8 +446,14 @@ function CompactingLabel({ createdAt }: { createdAt: string | null }) {
 
 export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "thinking" }> }) {
   const ctx = use(TimelineRowCtx);
-  const { isCompacting, isPreparingWorktree, liveAnswerPreview, providerStartingLabel } =
-    use(TimelineRowActivityCtx);
+
+  const {
+    isCompacting,
+    isPreparingWorktree,
+    liveAnswerPreview,
+    providerStartingLabel,
+    providerStarting,
+  } = use(TimelineRowActivityCtx);
   if (isPreparingWorktree || isCompacting) return <WorkLogRow label="" />;
   // A failed group keeps this disclosure while an approval waits, but nothing is thinking then.
   const live = ctx.pendingApprovals.size === 0;
@@ -450,6 +461,15 @@ export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind:
     <LiveActivityRow
       label={providerStartingLabel ?? row.label ?? liveAnswerPreview ?? t("Thinking")}
       iconName="brain"
+      iconNode={
+        providerStarting === null ? undefined : (
+          <ProviderStartingIcon
+            environmentId={ctx.activeThreadEnvironmentId ?? null}
+            instanceId={providerStarting.instanceId}
+            driver={providerStarting.driver}
+          />
+        )
+      }
       active={live}
       shimmer={live}
     />
@@ -471,6 +491,7 @@ export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind:
 function LiveActivityRow({
   label,
   iconName,
+  iconNode,
   toolIcon,
   failed = false,
   active = false,
@@ -478,6 +499,8 @@ function LiveActivityRow({
 }: {
   label: ReactNode;
   iconName?: WorkEntryIconName;
+  /** Replaces the named icon. */
+  iconNode?: ReactNode;
   toolIcon?: ToolActivityIcon | undefined;
   failed?: boolean;
   active?: boolean;
@@ -493,6 +516,7 @@ function LiveActivityRow({
       <LiveActivityContent
         label={label}
         iconName={iconName}
+        iconNode={iconNode}
         toolIcon={toolIcon}
         failed={failed}
         announceFailure={failed}
@@ -500,7 +524,13 @@ function LiveActivityRow({
       />
       {showShimmer ? (
         <ActivityShimmerOverlay>
-          <LiveActivityContent label={label} iconName={iconName} toolIcon={toolIcon} highlighted />
+          <LiveActivityContent
+            label={label}
+            iconName={iconName}
+            iconNode={iconNode}
+            toolIcon={toolIcon}
+            highlighted
+          />
         </ActivityShimmerOverlay>
       ) : null}
     </div>
@@ -510,6 +540,7 @@ function LiveActivityRow({
 function LiveActivityContent({
   label,
   iconName,
+  iconNode,
   toolIcon,
   failed = false,
   announceFailure = false,
@@ -518,6 +549,7 @@ function LiveActivityContent({
 }: {
   label: ReactNode;
   iconName: WorkEntryIconName | undefined;
+  iconNode?: ReactNode;
   toolIcon?: ToolActivityIcon | undefined;
   failed?: boolean;
   announceFailure?: boolean;
@@ -543,12 +575,16 @@ function LiveActivityContent({
             role={announceFailure ? "img" : undefined}
             aria-label={announceFailure ? t("Tool call failed") : undefined}
           >
-            <ToolActivityIconView
-              icon={toolIcon}
-              fallbackName={iconName}
-              className="block size-4 shrink-0 stroke-2"
-              muted={!highlighted}
-            />
+            {iconNode ? (
+              <span className={cn("flex", !highlighted && "opacity-70")}>{iconNode}</span>
+            ) : (
+              <ToolActivityIconView
+                icon={toolIcon}
+                fallbackName={iconName}
+                className="block size-4 shrink-0 stroke-2"
+                muted={!highlighted}
+              />
+            )}
           </span>
         ) : null
       }
@@ -578,9 +614,10 @@ export function LiveWorkEntryTimelineRow({
   row: Extract<TimelineRow, { kind: "work-live" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+
   const threadTarget = useThreadReadTarget(row.entry, ctx.activeThreadEnvironmentId);
-  const label = liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active);
-  const threadLabel = threadReadLabel(label, threadTarget);
+  const label = liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active, t);
+  const threadLabel = threadReadLabel(label, row.entry, threadTarget, t);
 
   const item = row.entry.projectedItem?.item;
   const pendingApproval =
@@ -590,7 +627,7 @@ export function LiveWorkEntryTimelineRow({
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
   const thoughtLine =
     row.thought && !row.expanded
-      ? liveThoughtLine((row.thought.detail ?? "").slice(0, THOUGHT_PREVIEW_SOURCE_MAX_LENGTH))
+      ? liveThoughtLine(sliceThoughtPreviewSource(row.thought.detail ?? ""))
       : "";
   const thoughtIsStatus = thoughtLine !== "" && row.entry === row.thought;
 
@@ -630,7 +667,7 @@ export function LiveWorkEntryTimelineRow({
                 text={thoughtLine}
                 cwd={ctx.markdownCwd}
                 parseRawHtml={false}
-                extraRemarkPlugins={THOUGHT_PREVIEW_PLUGINS}
+                extensions={thoughtPreviewMarkdown(t("Thought"))}
               />
             </span>
           }
@@ -648,10 +685,14 @@ export function LiveWorkEntryTimelineRow({
           ) : row.entry.itemType === "reasoning" ? (
             <ChatMarkdown
               inline
-              text={(row.entry.detail ?? label).slice(0, THOUGHT_PREVIEW_SOURCE_MAX_LENGTH)}
+              text={sliceThoughtPreviewSource(row.entry.detail ?? label)}
               cwd={ctx.markdownCwd}
               parseRawHtml={false}
-              extraRemarkPlugins={row.active ? THINKING_PREVIEW_PLUGINS : THOUGHT_PREVIEW_PLUGINS}
+              extensions={
+                row.active
+                  ? thoughtPreviewMarkdown(t("Thinking"))
+                  : thoughtPreviewMarkdown(t("Thought"))
+              }
             />
           ) : threadLabel ? (
             <ThreadReadLabel

@@ -1,14 +1,16 @@
+import { t } from "~/i18n";
+
 import { ChevronDownIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   PullRequestFilterOptionIcon,
   type PullRequestFilterOption,
 } from "./PullRequestListFilters";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export function PullRequestCompactFilterMenu<Value extends string>({
   label,
@@ -36,8 +38,10 @@ export function PullRequestCompactFilterMenu<Value extends string>({
   return (
     <Menu>
       <MenuTrigger
-        aria-label={triggerLabel || iconOnly ? `${label}: ${current.label}` : label}
-        title={iconOnly ? `${label}: ${current.label}` : undefined}
+        aria-label={
+          triggerLabel || iconOnly ? t("{label}: {value}", { label, value: current.label }) : label
+        }
+        title={iconOnly ? t("{label}: {value}", { label, value: current.label }) : undefined}
         render={
           outlined ? (
             <Button variant="outline" size={iconOnly ? "icon" : "default"} />
@@ -80,10 +84,12 @@ export function PullRequestCompactFilterMenu<Value extends string>({
             return option.unavailable === undefined ? (
               item
             ) : (
-              <Tooltip key={option.value}>
-                <TooltipTrigger render={item} />
-                <TooltipPopup side="right">{option.unavailable}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                key={option.value}
+                render={item}
+                label={option.unavailable}
+                side="right"
+              />
             );
           })}
         </MenuRadioGroup>

@@ -17,7 +17,9 @@ import {
   movedSettingsPath,
   consolidatedSettingsAnchor,
   searchSettings,
+  settingsNavGroups,
   SETTINGS_SEARCH_ITEMS,
+  settingsSearchItemTitle,
   sourceControlHostSearchItems,
   sourceControlHostSettingsSearchId,
   type SettingsSearchItem,
@@ -134,15 +136,55 @@ describe("searchSettings", () => {
     vi.stubEnv("T3CODE_FEATURE_SECRETS", flag);
 
     try {
-      const { SETTINGS_NAV_GROUPS, searchSettings } = await import("./settingsSearch");
+      const { settingsNavGroups, filterAvailableSettingsSearchItems } =
+        await import("./settingsSearch");
 
       expect({
-        navigation: SETTINGS_NAV_GROUPS.some((group) => group.paths.includes("/settings/secrets")),
-        search: searchSettings("1password").some((item) => item.to === "/settings/secrets"),
+        navigation: settingsNavGroups(true).some((group) =>
+          group.paths.includes("/settings/secrets"),
+        ),
+        search: filterAvailableSettingsSearchItems({
+          hasEnvironment: true,
+          hasCloudPublicConfig: false,
+          hasProviderSettingsEnvironment: true,
+          canManageLocalBackend: false,
+          isWslSettingsRowVisible: false,
+          hasThreadAutoSettlement: false,
+          hasSecretProvidersEnvironment: true,
+        }).some((item) => item.to === "/settings/secrets"),
       }).toEqual({ navigation: visible, search: visible });
     } finally {
       vi.unstubAllEnvs();
       vi.resetModules();
+    }
+  });
+
+  it("shows the Secrets page in nav and search only when an environment enables secret providers", () => {
+    const availability = {
+      hasCloudPublicConfig: false,
+      hasEnvironment: true,
+      hasProviderSettingsEnvironment: true,
+      canManageLocalBackend: false,
+      isWslSettingsRowVisible: false,
+      hasThreadAutoSettlement: false,
+    };
+    for (const enabled of [false, true]) {
+      const navPaths = settingsNavGroups(enabled).flatMap((group) => group.paths);
+      const searchPaths = searchSettings(
+        "1password",
+        filterAvailableSettingsSearchItems({
+          ...availability,
+          hasSecretProvidersEnvironment: enabled,
+        }),
+      ).map((item) => item.to);
+      expect(navPaths.includes("/settings/secrets")).toBe(enabled);
+      expect(searchPaths.includes("/settings/secrets")).toBe(enabled);
+    }
+  });
+
+  it("finds where subagents and side chats open by any of its names", () => {
+    for (const query of ["side panel", "subagent", "side chat", "linked thread", "middle click"]) {
+      expect(searchSettings(query).map((item) => item.id)).toContain("side-thread-open-target");
     }
   });
 
@@ -215,6 +257,7 @@ describe("searchSettings", () => {
       "auto-settle-scheduled-threads",
       "days-before-auto-settle",
       "linked-environments",
+      "agent-feedback",
     ]);
     expect(available.map((item) => item.id).filter((id) => gatedIds.has(id))).toEqual([]);
   });
@@ -421,7 +464,7 @@ describe("source control host search items", () => {
 
   it("lists a host by its label, its keywords, and its settings fields", () => {
     const items = sourceControlHostSearchItems([UNKNOWN_SOURCE_CONTROL_CLIENT, definition]);
-    expect(items.map((item) => item.title)).toEqual(["Example credentials"]);
+    expect(items.map(settingsSearchItemTitle)).toEqual(["Example credentials"]);
     expect(searchSettings("sample apitoken", items).map((item) => item.id)).toEqual([
       sourceControlHostSettingsSearchId("example"),
     ]);
@@ -441,7 +484,7 @@ describe("source control host search items", () => {
         },
       },
     ]);
-    expect(items.map((item) => item.title)).toEqual(["Example accounts and token"]);
+    expect(items.map(settingsSearchItemTitle)).toEqual(["Example accounts and token"]);
     expect(searchSettings("ex switch accounts", items)).toHaveLength(1);
   });
 

@@ -1,4 +1,9 @@
-import { selectedNavigationTab, visibleNavigationTabs } from "./navigation-tab-order";
+import { msg, t } from "../../../lib/i18n";
+import {
+  NAVIGATION_TAB_LABELS,
+  selectedNavigationTab,
+  visibleNavigationTabs,
+} from "./navigation-tab-order";
 import { requireNativeView } from "expo";
 import { CommonActions, useNavigation } from "@react-navigation/native";
 import {
@@ -35,6 +40,9 @@ interface NativeNavigationProps extends ViewProps {
   readonly rail: boolean;
   readonly floating: boolean;
   readonly tabs: readonly string[];
+  readonly tabTitles: Readonly<Record<string, string>>;
+  readonly expandedTabTitles: Readonly<Record<string, string>>;
+  readonly newThreadTitle: string;
   readonly selectedTab: AndroidWorkspaceNavigationTab;
   readonly dark: boolean;
   readonly textScale: number;
@@ -54,6 +62,11 @@ interface NativeNavigationProps extends ViewProps {
   readonly onNewThread: () => void;
   readonly onOverlayChange: (event: NativeSyntheticEvent<{ readonly overlay: boolean }>) => void;
 }
+
+const TAB_TITLES = {
+  ...NAVIGATION_TAB_LABELS,
+  settings: msg("Settings"),
+};
 
 const NativeNavigation = requireNativeView<NativeNavigationProps>("T3WorkspaceNavigation");
 
@@ -87,7 +100,7 @@ export function AndroidWorkspaceNavigation(props: {
   const window = useWindowDimensions();
   const rail = Boolean(props.rail);
   const floating = !rail && Boolean(props.floating);
-  const tabs = [...visibleNavigationTabs(order, hidden, rail ? 5 : 4), "settings"];
+  const tabs = [...visibleNavigationTabs(order, hidden, rail ? 5 : 4), "settings" as const];
   const { containerColor, indicatorColor, selectedColor, unselectedColor } =
     androidWorkspaceNavigationColors(colors, rail, floating);
   const selectedTab = selectedNavigationTab(
@@ -120,6 +133,9 @@ export function AndroidWorkspaceNavigation(props: {
         rail={rail}
         floating={floating}
         tabs={tabs}
+        tabTitles={Object.fromEntries(tabs.map((tab) => [tab, t(TAB_TITLES[tab])]))}
+        expandedTabTitles={{ pullRequests: t("Pull requests") }}
+        newThreadTitle={t("New thread")}
         selectedTab={selectedTab}
         dark={themeAppearance === "dark"}
         textScale={scale}

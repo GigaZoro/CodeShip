@@ -1,12 +1,13 @@
+import { t } from "~/i18n";
 import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
   DesktopAppActivationPlatform,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { FolderPlusIcon } from "lucide-react";
+
 import { useState, type DragEvent, type ReactNode } from "react";
 
-import { t } from "~/i18n";
 import { useOpenLocalWorkspace } from "../../hooks/useOpenLocalWorkspace";
 import { randomUUID } from "../../lib/utils";
 import { resolveDroppedFolderPath } from "../chat/folderDrop";

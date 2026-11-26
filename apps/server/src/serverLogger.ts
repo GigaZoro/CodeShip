@@ -6,6 +6,7 @@ import * as References from "effect/References";
 import * as OtlpLogger from "effect/observability/OtlpLogger";
 
 import * as ServerConfig from "./config.ts";
+import * as OtlpExportFailures from "./observability/OtlpExportFailures.ts";
 
 export const layer = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
@@ -21,10 +22,12 @@ export const layer = Effect.gen(function* () {
           exportInterval: `${logs.exportIntervalMs} millis`,
           headers: logs.headers,
           resource: ServerConfig.otlpResource(config, hostName),
-        });
+        }).pipe(Effect.provide(SharedObservability.layerOtlpSerialization(logs.protocol)));
 
   return Layer.mergeAll(
-    SharedObservability.layerRedactedLoggers(otlpLogger, logs.protocol),
+    SharedObservability.layerRedactedLoggers(otlpLogger, logs.protocol).pipe(
+      Layer.provide(OtlpExportFailures.layer("logs")),
+    ),
     layerMinimumLogLevel,
-  );
+  ).pipe(Layer.provide(SharedObservability.layerOtlpSerialization(logs.protocol)));
 }).pipe(Layer.unwrap);

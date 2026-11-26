@@ -1,10 +1,11 @@
+import { t } from "~/i18n";
+
 import { type CSSProperties, type ReactNode, useState } from "react";
 
 import { RightPanelResizeHandle } from "~/components/preview/RightPanelResizeHandle";
 import { RESIZABLE_WIDTH_PROPERTY, useResizableWidth } from "~/hooks/useResizableWidth";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
-import { t } from "~/i18n";
 
 const MIN_WIDTH = 160;
 const MAX_WIDTH = 560;

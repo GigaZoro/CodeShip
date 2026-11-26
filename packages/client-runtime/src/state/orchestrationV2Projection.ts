@@ -316,6 +316,7 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.active-reordered":
     case "thread.metadata-updated":
     case "thread.pull-request-synced":
+    case "thread.issue-synced":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
     case "thread.model-selection-updated":
@@ -345,16 +346,21 @@ export function applyOrchestrationV2ProjectionEvent(
       };
     case "run.created":
     case "run.updated": {
-      const current = base.runs.find((run) => run.id === event.payload.id);
-      // Only run.delegated-completion-updated changes a cohort; run.updated no longer carries one.
-      const run =
-        event.payload.delegatedCompletion === undefined &&
-        current?.delegatedCompletion !== undefined
-          ? { ...event.payload, delegatedCompletion: current.delegatedCompletion }
-          : event.payload;
+      const known = base.runs.find((run) => run.id === event.payload.id);
+      // Output and delegated completion arrive on separate events and survive sparse lifecycle updates.
+      const run = {
+        ...event.payload,
+        ...(event.payload.output === undefined && known?.output !== undefined
+          ? { output: known.output }
+          : {}),
+        ...(event.payload.delegatedCompletion === undefined &&
+        known?.delegatedCompletion !== undefined
+          ? { delegatedCompletion: known.delegatedCompletion }
+          : {}),
+      };
       const next = { ...base, runs: upsertEntity(base.runs, run) };
       const visible = { ...next, visibleTurnItems: activeVisibleTurnItems(next) };
-      return current?.status === "queued" && run.status !== "queued"
+      return known?.status === "queued" && run.status !== "queued"
         ? { ...visible, visibleTurnItems: restoreQueuedUserItems(visible, run.id) }
         : visible;
     }
@@ -377,6 +383,13 @@ export function applyOrchestrationV2ProjectionEvent(
                 restartCancelledBackgroundWork: event.payload.restartCancelledBackgroundWork,
               }
             : run,
+        ),
+      };
+    case "run.output-submitted":
+      return {
+        ...base,
+        runs: base.runs.map((run) =>
+          run.id === event.payload.runId ? { ...run, output: event.payload.output } : run,
         ),
       };
     case "run-attempt.created":

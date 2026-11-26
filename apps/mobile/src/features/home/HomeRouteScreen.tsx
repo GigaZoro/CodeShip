@@ -3,13 +3,10 @@ import { ThreadUndoNotice } from "./ThreadUndoNotice";
 import { use } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { NativePrimaryColumnContext } from "../../native/v5-workspace-context";
-import * as Arr from "effect/Array";
-import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState } from "react";
 import { Platform } from "react-native";
 
-import { distinctEnvironmentLabels } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 
@@ -46,7 +43,11 @@ import { WorkspaceListEmptyDetail } from "../layout/workspace/WorkspaceListEmpty
 import { WorkspaceListHeader } from "../layout/workspace/WorkspaceListHeader";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
-import { buildHomeListFilterMenuItems, threadListRefinementFilters } from "./home-list-filter-menu";
+import {
+  buildHomeListFilterMenuItems,
+  homeListFilterEnvironments,
+  threadListRefinementFilters,
+} from "./home-list-filter-menu";
 import { t } from "../../lib/i18n";
 
 export function HomeRouteScreen() {
@@ -119,26 +120,7 @@ export function HomeRouteScreen() {
   const { grouping, setProjectGrouping, toggleMachineGrouping } = useThreadListV2ShelfPreferences();
   const { openPendingTask, confirmDeletePendingTask } =
     usePendingTaskListActions(selectThreadRoute);
-  const connectionStateByEnvironmentId = new Map(
-    workspaceEnvironments.map(
-      (environment) => [environment.environmentId, environment.connectionState] as const,
-    ),
-  );
-  const savedConnections = Object.values(savedConnectionsById);
-  const environmentLabels = distinctEnvironmentLabels(
-    savedConnections.map((connection) => ({
-      label: connection.environmentLabel,
-      displayUrl: connection.displayUrl,
-    })),
-  );
-  const environments = Arr.sort(
-    savedConnections.map((connection, index) => ({
-      environmentId: connection.environmentId,
-      label: environmentLabels[index] ?? connection.environmentLabel,
-      connectionState: connectionStateByEnvironmentId.get(connection.environmentId) ?? "available",
-    })),
-    Order.mapInput(Order.String, (environment: { readonly label: string }) => environment.label),
-  );
+  const environments = homeListFilterEnvironments(workspaceEnvironments);
   const availableEnvironmentIds = useMemo(
     () => new Set(environments.map((environment) => environment.environmentId)),
     [environments],

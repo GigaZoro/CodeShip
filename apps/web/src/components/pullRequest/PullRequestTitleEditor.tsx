@@ -1,22 +1,22 @@
+import { t } from "~/i18n";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, PullRequestDetail, PullRequestRef } from "@t3tools/contracts";
+
 import { useState } from "react";
-import {
-  capitalizeTerm,
-  sourceControlClients,
-} from "@t3tools/client-runtime/source-control-clients";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { PullRequestDetailTitleRow } from "./PullRequestDetailLayout";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 import { readableFailure } from "./pullRequestDetail.logic";
 import { canEditPullRequestChangeRequest } from "@t3tools/client-runtime/pull-request-editing";
-import { t } from "~/i18n";
+
+import { changeRequestTermKind } from "./changeRequestTerm";
 
 /** The pull request title, which the reader can rename in place when the host allows it. */
 export function PullRequestTitleEditor({
@@ -38,6 +38,7 @@ export function PullRequestTitleEditor({
     readonly text: string;
   } | null>(null);
   const titleDraft = titleScope?.pullRequestKey === pullRequestKey ? titleScope.text : null;
+
   const [titleSaving, setTitleSaving] = useState(false);
 
   const saveTitle = async (next: string) => {
@@ -68,16 +69,14 @@ export function PullRequestTitleEditor({
   if (titleDraft === null) {
     return (
       <PullRequestDetailTitleRow className="group gap-1">
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <h1 className="min-w-0 flex-1 truncate text-base font-semibold leading-snug">
-                {detail.title}
-              </h1>
-            }
-          />
-          <TooltipPopup side="top">{detail.title}</TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={
+            <h1 className="min-w-0 flex-1 truncate text-base font-semibold leading-snug">
+              {detail.title}
+            </h1>
+          }
+          label={detail.title}
+        />
         {canEditPullRequestChangeRequest(detail) ? (
           <PullRequestEditButton
             aria-label={t("Edit title")}
@@ -94,9 +93,14 @@ export function PullRequestTitleEditor({
         size="sm"
         disabled={titleSaving}
         value={titleDraft}
-        aria-label={t("{term} title", {
-          term: capitalizeTerm(sourceControlClients.get(detail.provider).changeRequest.singular),
-        })}
+        aria-label={
+          changeRequestTermKind(sourceControlClients.get(detail.provider).changeRequest) === "mr"
+            ? t("Merge request title")
+            : changeRequestTermKind(sourceControlClients.get(detail.provider).changeRequest) ===
+                "cr"
+              ? t("Change request title")
+              : t("Pull request title")
+        }
         onChange={(event) => setTitleScope({ pullRequestKey, text: event.target.value })}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -105,6 +109,7 @@ export function PullRequestTitleEditor({
             void saveTitle(titleDraft);
           } else if (event.key === "Escape") {
             event.preventDefault();
+            event.stopPropagation();
             setTitleScope(null);
           }
         }}

@@ -1,3 +1,5 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   type EnvironmentId,
   type ProjectId,
@@ -10,13 +12,14 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+
 import { useEffect, useRef } from "react";
+
 import { selectActiveRightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useLinkedThreadPullRequest } from "../ThreadStatusIndicators";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { t } from "~/i18n";
 
 /** Relink replaced closed/merged requests to the newer open request on the same branch, moving its panel. */
 export function useThreadLinkedPullRequest(input: {
@@ -90,8 +93,8 @@ export function useThreadLinkedPullRequest(input: {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: t("Unable to update the thread pull request"),
-          description: error instanceof Error ? error.message : t("An error occurred."),
+          title: t(msg("Unable to update the thread pull request")),
+          description: thrownErrorMessage(error, t) ?? t(msg("An error occurred.")),
         }),
       );
     });

@@ -10,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
+import * as TestConsole from "effect/testing/TestConsole";
 
 import * as BootService from "../cloud/bootService.ts";
 import { runDoctor } from "./doctor.ts";
@@ -73,6 +74,7 @@ const doctor = (input: {
               reclaimableBytes: 1000,
               fragmentedBytes: 0,
               incrementalVacuumEnabled: false,
+              legacyOnlyRecords: null,
               legacyDatabaseBytes: 4000,
             }),
           compact: (_path, options) =>
@@ -193,6 +195,7 @@ it.effect(
                     fragmentedBytes: 0,
                     incrementalVacuumEnabled: false,
                     legacyDatabaseBytes: 4000,
+                    legacyOnlyRecords: { projects: 0, threads: 0 },
                   }),
                 compact: () =>
                   startServer.pipe(
@@ -242,6 +245,39 @@ it.effect(
     }).pipe(Effect.provide(layerHost)),
 );
 
+it.effect("reports sizes just under the next unit in that unit", () =>
+  Effect.gen(function* () {
+    yield* runDoctor(
+      {
+        baseDir: "/test",
+        settingsPath: "/test/settings.json",
+        dbPath: "/test/statev2.sqlite",
+        serverRuntimeStatePath: "/test/server-runtime.json",
+      },
+      { fix: false, dryRun: true },
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(BootService.BootService)({}),
+          Layer.mock(DatabaseMaintenance)({
+            inspect: () =>
+              Effect.succeed({
+                databaseBytes: 1024 ** 3 - 4096,
+                reclaimableBytes: 1024 ** 2 - 512,
+                fragmentedBytes: 0,
+                incrementalVacuumEnabled: true,
+                legacyDatabaseBytes: null,
+                legacyOnlyRecords: null,
+              }),
+          }),
+        ),
+      ),
+    );
+    const [summary] = yield* TestConsole.logLines;
+    assert.strictEqual(summary, "Database: 1.00 GiB, 1.0 MiB reclaimable.");
+  }).pipe(Effect.provide(Layer.merge(layerHost, TestConsole.layer))),
+);
+
 it.effect("warns how long reclaiming can take and reports each step with its elapsed time", () =>
   Effect.gen(function* () {
     const output: string[] = [];
@@ -280,6 +316,7 @@ it.effect("warns how long reclaiming can take and reports each step with its ela
                 fragmentedBytes: 0,
                 incrementalVacuumEnabled: false,
                 legacyDatabaseBytes: null,
+                legacyOnlyRecords: null,
               }),
             compact: (_databasePath, _options, onStep) =>
               Effect.gen(function* () {

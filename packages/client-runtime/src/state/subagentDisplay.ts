@@ -1,3 +1,4 @@
+import { msg, t, tn } from "@t3tools/shared/i18n";
 import type {
   ModelSelection,
   OrchestrationV2TurnItemStatus,
@@ -6,10 +7,9 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
-import { fileBasename } from "@t3tools/shared/path";
+import { fileDisplayName } from "@t3tools/shared/path";
 import { resolveModelShortName } from "../providerClients.ts";
 import { isTerminalSubagentStatus } from "./subagentRuntime.ts";
-import { msg, t, tn } from "@t3tools/shared/i18n";
 
 export function subagentGroupSummary(
   members: ReadonlyArray<{ readonly status: OrchestrationV2TurnItemStatus }>,
@@ -36,6 +36,7 @@ const SUBAGENT_STATUS_COUNTS = {
 
 export function summarizeSubagentStatuses(
   statuses: ReadonlyArray<OrchestrationV2TurnItemStatus>,
+  resolve: typeof t = t,
 ): string {
   const counts = { working: 0, done: 0, failed: 0, stopped: 0, idle: 0 };
   for (const status of statuses) {
@@ -47,7 +48,7 @@ export function summarizeSubagentStatuses(
   }
   return (Object.keys(counts) as Array<keyof typeof counts>)
     .filter((key) => counts[key] > 0)
-    .map((key) => t(SUBAGENT_STATUS_COUNTS[key], { count: counts[key] }))
+    .map((key) => resolve(SUBAGENT_STATUS_COUNTS[key], { count: counts[key] }))
     .join(" · ");
 }
 
@@ -60,24 +61,27 @@ export function formatSubagentDisplayTitle(title: string): string {
   return name.replace(/(^|\s)\S/gu, (letter) => letter.toUpperCase()) || displayTitle;
 }
 
-export function resolveSubagentMetadata(input: {
-  readonly model: string | null;
-  readonly modelSelection?: Pick<ModelSelection, "model"> | undefined;
-  readonly provider?: Pick<ServerProvider, "driver" | "models"> | null | undefined;
-  readonly parentThread?:
-    | Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath">
-    | null
-    | undefined;
-  readonly childThread?:
-    | Pick<OrchestrationV2ThreadShell, "branch" | "worktreePath">
-    | null
-    | undefined;
-  readonly parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | null | undefined;
-  readonly childProject?:
-    | Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot">
-    | null
-    | undefined;
-}) {
+export function resolveSubagentMetadata(
+  input: {
+    readonly model: string | null;
+    readonly modelSelection?: Pick<ModelSelection, "model"> | undefined;
+    readonly provider?: Pick<ServerProvider, "driver" | "models"> | null | undefined;
+    readonly parentThread?:
+      | Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath">
+      | null
+      | undefined;
+    readonly childThread?:
+      | Pick<OrchestrationV2ThreadShell, "branch" | "worktreePath">
+      | null
+      | undefined;
+    readonly parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | null | undefined;
+    readonly childProject?:
+      | Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot">
+      | null
+      | undefined;
+  },
+  resolve: typeof t = t,
+) {
   const model = input.model?.trim() || input.modelSelection?.model.trim();
   const slug = input.provider
     ? resolveSelectableModel(input.provider.driver, model, input.provider.models)
@@ -87,7 +91,7 @@ export function resolveSubagentMetadata(input: {
     ? (resolveModelShortName(catalogModel, input.provider?.driver) ?? catalogModel.name)
     : model
       ? formatModelSlugName(model)
-      : t("Not reported");
+      : resolve(msg("Not reported"));
   const qualifier = catalogModel?.subProvider?.trim();
   const modelLabel = qualifier
     ? reportedLabel
@@ -106,17 +110,23 @@ export function resolveSubagentMetadata(input: {
     ...(input.parentThread &&
     input.childProject &&
     input.childProject.id !== input.parentThread.projectId
-      ? [{ kind: "project" as const, label: t("Project"), value: input.childProject.title }]
+      ? [
+          {
+            kind: "project" as const,
+            label: resolve(msg("Project")),
+            value: input.childProject.title,
+          },
+        ]
       : []),
     ...(parentWorkspace && childWorkspace && parentWorkspace !== childWorkspace
       ? [
           {
             ...(input.childThread?.branch
-              ? { kind: "branch" as const, label: t("Branch") }
+              ? { kind: "branch" as const, label: resolve(msg("Branch")) }
               : input.childThread?.worktreePath
-                ? { kind: "worktree" as const, label: t("Worktree") }
-                : { kind: "workspace" as const, label: t("Workspace") }),
-            value: input.childThread?.branch ?? fileBasename(childWorkspace),
+                ? { kind: "worktree" as const, label: resolve(msg("Worktree")) }
+                : { kind: "workspace" as const, label: resolve(msg("Workspace")) }),
+            value: input.childThread?.branch ?? fileDisplayName(childWorkspace),
           },
         ]
       : []),

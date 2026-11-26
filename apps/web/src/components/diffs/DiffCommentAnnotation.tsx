@@ -1,4 +1,7 @@
+import { t } from "~/i18n";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+
+import { reviewCommentRangeText } from "~/lib/composerContextRecords";
 import { MessageCircle, Trash2 } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
@@ -16,7 +19,6 @@ import { textDirection } from "~/textDirection";
 
 import { isCommentSubmitShortcut } from "./commentSubmitShortcut";
 
-import { t } from "~/i18n";
 interface DiffCommentSecondaryAction {
   readonly label: string;
   readonly icon?: ReactNode;
@@ -56,8 +58,8 @@ export function DiffCommentAnnotation({
   onCancel,
   onComment,
   onDelete,
-  placeholder = t("Add a comment…"),
-  submitLabel = t("Comment"),
+  placeholder,
+  submitLabel,
   pending = false,
   secondaryAction,
   focusOnMount = true,
@@ -136,16 +138,24 @@ export function DiffCommentAnnotation({
         size="sm"
         value={displayedText}
         dir={textDirection(displayedText)}
-        placeholder={placeholder}
-        aria-label={t("Comment on lines {rangeLabel}", { rangeLabel })}
+        placeholder={placeholder ?? t("Add a comment…")}
+        aria-label={t("Comment on lines {rangeLabel}", {
+          rangeLabel: reviewCommentRangeText(rangeLabel, t),
+        })}
         onValueChange={onTextChange ?? setLocalDraftText}
         onFocus={(event) => {
           const end = event.currentTarget.value.length;
           event.currentTarget.setSelectionRange(end, end);
         }}
         onKeyDown={(event) => {
+          // Unclaimed, an IME Escape would close the right panel sheet or leave the pull requests page.
+          if (event.nativeEvent.isComposing || event.keyCode === 229) {
+            event.stopPropagation();
+            return;
+          }
           if (event.key === "Escape") {
             event.preventDefault();
+            event.stopPropagation();
             if (speech && speech.state.phase !== "idle") speech.cancel();
             else onCancel();
           }
@@ -183,7 +193,7 @@ export function DiffCommentAnnotation({
           disabled={speech?.preparing || pending || (!speech?.blocksSubmission && !trimmedText)}
           onClick={() => submit(speech, onComment)}
         >
-          {submitLabel}
+          {submitLabel ?? t("Comment")}
         </Button>
       </div>
     </div>

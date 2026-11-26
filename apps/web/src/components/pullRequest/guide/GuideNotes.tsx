@@ -1,9 +1,10 @@
+import { t, tn } from "~/i18n";
+
 import type { PullRequestReviewGuideNote } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
 
 import { GuideProse } from "./GuideProse";
-import { t, tn } from "~/i18n";
 
 export function GuideNoteMarker({ marker }: { marker: string }) {
   return (

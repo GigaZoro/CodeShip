@@ -17,6 +17,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  canRemoveRoute,
   type ConnectionRoute,
   connectionRouteAddress,
   connectionRouteId,
@@ -35,7 +36,7 @@ import type { EnvironmentPresentation } from "~/state/environments";
 import { usePreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { t } from "~/i18n";
 
 export function EnvironmentRoutesList({
@@ -118,7 +119,8 @@ export function EnvironmentRoutesList({
                 route={route}
                 position={index + 1}
                 inUse={connectionRouteId(route.target) === activeRouteId}
-                removable={routes.length > 1 && !isLearned(route)}
+                refused={environment.refusedRouteIds.includes(connectionRouteId(route.target))}
+                removable={canRemoveRoute(routes, route)}
                 onRemove={() => void confirmRemove(route)}
               />
             ))}
@@ -139,12 +141,14 @@ function SortableRouteRow({
   route,
   position,
   inUse,
+  refused,
   removable,
   onRemove,
 }: {
   readonly route: ConnectionRoute;
   readonly position: number;
   readonly inUse: boolean;
+  readonly refused: boolean;
   readonly removable: boolean;
   readonly onRemove: () => void;
 }) {
@@ -178,11 +182,21 @@ function SortableRouteRow({
               {t("In use")}
             </span>
           ) : null}
+          {refused ? (
+            <span className="rounded-sm bg-destructive/8 px-1 text-2xs font-normal text-destructive-foreground">
+              {t("Sign-in refused")}
+            </span>
+          ) : null}
         </p>
         {address !== null ? (
           <p className="truncate text-2xs text-muted-foreground">
             {address}
             {isLearned(route) ? ` · ${t("found automatically")}` : ""}
+          </p>
+        ) : null}
+        {refused && address !== null ? (
+          <p className="text-2xs text-muted-foreground">
+            {t("The host refused this device's sign-in. Pair this address again with Add route.")}
           </p>
         ) : null}
       </div>
@@ -197,22 +211,20 @@ function SortableRouteRow({
         <GripVerticalIcon className="size-3.5" />
       </button>
       {removable ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost-muted"
-                size="icon-xs"
-                aria-label={t("Remove {route} route", { route: label })}
-                onClick={onRemove}
-              />
-            }
-          >
-            <XIcon className="size-3" />
-          </TooltipTrigger>
-          <TooltipPopup side="top">{t("Remove route")}</TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost-muted"
+              size="icon-xs"
+              aria-label={t("Remove {route} route", { route: label })}
+              onClick={onRemove}
+            />
+          }
+          label={<>{t("Remove route")}</>}
+        >
+          <XIcon className="size-3" />
+        </SharedTooltipTrigger>
       ) : null}
     </li>
   );

@@ -3,10 +3,9 @@ import type { Messages } from "./en";
 export const ja: Messages = {
   layout: {
     defaultTitle: "T3.CodeShip",
-    defaultDescription:
-      "T3.CodeShip。コーディングエージェントのためのオープンソースのコントロールプレーン。",
+    defaultDescription: "T3.CodeShip。オープンソースのコーディングエージェント制御プレーン。",
     socialImageAlt:
-      "T3.CodeShip：コーディングエージェントのためのオープンソースのコントロールプレーン。Claude Code、Codex、Cursor、OpenCode、Grok、Antigravity に対応。",
+      "T3.CodeShip：オープンソースのコーディングエージェント制御プレーン。Claude Code、Codex、Cursor、OpenCode、Grok、Antigravity に対応。",
     homeLabel: "T3.CodeShip ホーム",
     download: "ダウンロード",
     starsLabel: "GitHub で T3.CodeShip にスターを付ける（{stars} スター）",
@@ -20,10 +19,9 @@ export const ja: Messages = {
     security: "セキュリティ",
   },
   home: {
-    title: "T3.CodeShip | コーディングエージェントのためのオープンソースのコントロールプレーン",
-    description:
-      "T3.CodeShip。コーディングエージェントのためのオープンソースのコントロールプレーン。",
-    heroTitle: ["コーディングエージェントの", "オープンソース", "コントロールプレーン。"],
+    title: "T3.CodeShip | オープンソースのコーディングエージェント制御プレーン",
+    description: "T3.CodeShip。オープンソースのコーディングエージェント制御プレーン。",
+    heroTitle: ["オープンソースの", "コーディングエージェント", "制御プレーン。"],
     heroSub:
       "Claude Code、Codex、Antigravity、OpenCode、Cursor、Grok をひとつの画面からオーケストレーション。サブスクリプションは手持ちのものをそのまま。まるごとフォークも自由です。",
     downloadForMac: "macOS 版をダウンロード",
@@ -35,16 +33,16 @@ export const ja: Messages = {
     alsoOnPhone: "スマホでも使えます：",
     screenshotAlt:
       "ひとつのスレッドで Claude、Codex、Muse、Gemini のサブエージェントを動かす T3.CodeShip",
-    endorsementsTitle: "{users} 人以上の開発者が我慢して使っています",
-    endorsementsSub: "ツイートまでしてくれた人もいます。",
+    endorsementsTitle: "{users}人以上の開発者たちが「悪くない」と言っています",
+    endorsementsSub: "温かいツイートまでいただいています。",
     endorsementsLabel: "開発者の声",
     readPost: "X で {handle} の投稿を読む",
     harnessTitle: "サブスクは持ち込みで",
     harnessBody:
-      "T3.CodeShip はトークンを転売しません。Claude Code、Codex、Antigravity、OpenCode、Cursor、Grok を、すでに持っている認証情報でつなぐだけ。オーケストレーションは私たちに任せて、プランは今のままで。",
+      "T3.CodeShip はトークンの上乗せ販売を行いません。すでにお持ちの認証情報で、Claude Code、Codex、Antigravity、OpenCode、Cursor、Grok をつなぐだけ。T3.CodeShip は制御プレーンのみを提供。プランは今のままで。",
     googleSignIn: "Google でサインイン",
     harnessPoints: [
-      "キーの転売なし。使用量の上限なし。",
+      "キーの再販なし。使用量の上限なし。",
       "スレッドの途中でモデルを切り替え。",
       "対応エージェントは毎週追加。",
     ],
@@ -76,9 +74,9 @@ export const ja: Messages = {
     stars: "{stars} スター",
     forkOnGithub: "GitHub でフォーク",
     browseSource: "ソースを見る",
-    ctaTitle: "あなたのエージェントに、ターミナルだけではもったいない。",
+    ctaTitle: "あなたのエージェントに、ターミナルよりふさわしい場所を。",
     ctaSub:
-      "T3.CodeShip は無料、オープンソース、そして高速。インストールして、契約中のツールをつなぐだけ。あとはエージェントにおまかせ。",
+      "T3.CodeShip は無料、オープンソースで、高速です。インストールしたら、お使いのハーネスをつなぐだけ。すぐに仕事に取り掛かれます。",
     otherPlatforms: "ほかのプラットフォーム",
   },
   download: {
@@ -97,7 +95,7 @@ export const ja: Messages = {
     iphoneIpad: "iPhone と iPad",
     terminal: "ターミナル",
     tryOnce: "インストールせずに試すなら：",
-    allBuilds: "すべてのビルドは {link} にあります",
+    allBuilds: "すべてのビルド：{link}",
     releasesPage: "GitHub のリリースページ",
     builtAgo: "{age}にビルド",
     releasesFallback: "リリース",

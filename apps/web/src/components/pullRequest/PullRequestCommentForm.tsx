@@ -1,7 +1,9 @@
+import { t } from "~/i18n";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { useAtomCommand } from "~/state/use-atom-command";
 import type { EnvironmentId, PullRequestDetailView, PullRequestRef } from "@t3tools/contracts";
 import { SendIcon } from "lucide-react";
+
 import { useEffect, useState, type RefObject } from "react";
 
 import { TextFieldSpeechControls, useTextFieldSpeech } from "~/speech/useTextFieldSpeech";
@@ -16,7 +18,8 @@ import {
 } from "./PullRequestMarkdownTextarea";
 import { pullRequestReviewKey } from "./pullRequestReviewStore";
 import { useInlineActionConfirm } from "./useInlineActionConfirm";
-import { t } from "~/i18n";
+
+import { changeRequestTermKind } from "./changeRequestTerm";
 
 export function PullRequestCommentForm({
   environmentId,
@@ -121,9 +124,14 @@ export function PullRequestCommentForm({
         value={body}
         rows={3}
         placeholder={t("Leave a comment")}
-        aria-label={t("Comment on this {term}", {
-          term: sourceControlClients.get(detail.provider).changeRequest.singular,
-        })}
+        aria-label={
+          changeRequestTermKind(sourceControlClients.get(detail.provider).changeRequest) === "mr"
+            ? t("Comment on this merge request")
+            : changeRequestTermKind(sourceControlClients.get(detail.provider).changeRequest) ===
+                "cr"
+              ? t("Comment on this change request")
+              : t("Comment on this pull request")
+        }
         onValueChange={setBody}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;

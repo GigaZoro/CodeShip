@@ -1,3 +1,4 @@
+import { msg, t } from "~/i18n";
 import type {
   EnvironmentId,
   ProjectId,
@@ -15,11 +16,11 @@ import {
   type PullRequestCompletionSupport,
   type PullRequestComposerTrigger,
 } from "@t3tools/shared/pullRequestComposerTrigger";
+
 import { CircleCheckIcon, CircleDotIcon } from "lucide-react";
 import { useId, useState, type Ref } from "react";
 import { flushSync } from "react-dom";
 
-import { msg, t } from "~/i18n";
 import { cn } from "~/lib/utils";
 import { usePullRequestFilterOptions } from "~/state/pullRequests";
 import { useDebouncedValue } from "~/state/queries";
@@ -98,7 +99,7 @@ function useCompletions(
 function ReferenceStateIcon({ candidate }: { candidate: PullRequestReferenceCandidate }) {
   const presentation =
     candidate.kind === "change-request"
-      ? resolvePullRequestState({ state: candidate.state, isDraft: false })
+      ? resolvePullRequestState({ state: candidate.state, isDraft: false }, t)
       : candidate.state === "open"
         ? {
             label: t("Open issue"),

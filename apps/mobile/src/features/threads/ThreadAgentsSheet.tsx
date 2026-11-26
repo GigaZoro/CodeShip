@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
   deriveWorkflowGroups,
@@ -10,7 +11,8 @@ import {
   type OrchestrationV2Subagent,
   type ThreadId,
 } from "@t3tools/contracts";
-import { deriveSubagentElapsedMs, formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
+import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
@@ -22,16 +24,16 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { AppText as Text } from "../../components/ui/AppText";
 import { environmentThreadDetails } from "../../state/threads";
-import { useEnvironments } from "../../state/environments";
 import { SubagentRow } from "./SubagentRow";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { SubagentStopButton } from "./SubagentStopButton";
 import { ThreadWorkflowGroup } from "./ThreadWorkflowGroup";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import { subagentThreadTarget } from "./threadAgentsPresentation";
+import { subagentThreadTarget, type SubagentThreadTarget } from "./threadAgentsPresentation";
+import { useLinkedThreadReach } from "../../state/linkedThread";
 
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
-import { t } from "../../lib/i18n";
+import { useOpenLinkedThreadRead } from "./useOpenLinkedThread";
 
 type AgentsTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
 
@@ -51,6 +53,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const target = route.params;
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
+  const openLinkedRead = useOpenLinkedThreadRead();
   const insets = useSafeAreaInsets();
   const turn = useThreadTurnSubagents(target);
   const subagents = turn?.subagents ?? [];
@@ -58,7 +61,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const workflowGroups = useMemo(
     () =>
       new Map(
-        deriveWorkflowGroups(projectedSubagentsToRuntime(subagents)).map((group) => [
+        deriveWorkflowGroups(projectedSubagentsToRuntime(subagents), t).map((group) => [
           group.workflow.id,
           group,
         ]),
@@ -66,8 +69,12 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
     [subagents],
   );
 
-  const openChildThread = (child: { environmentId: EnvironmentId; threadId: ThreadId }) => {
+  const openChildThread = (child: SubagentThreadTarget, title: string | null = null) => {
     void Haptics.selectionAsync();
+    if (child.linked !== undefined) {
+      openLinkedRead(child, child.linked, title, { source: target, replace: true });
+      return;
+    }
     if (
       openInspector(target, {
         type: "thread",
@@ -138,12 +145,15 @@ function AgentRow(props: {
   readonly environmentId: EnvironmentId;
   readonly subagent: OrchestrationV2Subagent;
   readonly tickSeconds: boolean;
-  readonly onOpen: (child: { environmentId: EnvironmentId; threadId: ThreadId }) => void;
+  readonly onOpen: (child: SubagentThreadTarget, title: string | null) => void;
 }) {
   const { subagent } = props;
-  const { presentationById } = useEnvironments();
-  const target = subagentThreadTarget(subagent, props.environmentId, (id) =>
-    presentationById.has(id),
+  const reach = useLinkedThreadReach(props.environmentId, [subagent]);
+  const target = subagentThreadTarget(
+    subagent,
+    props.environmentId,
+    reach.ownConnection,
+    reach.isLinked,
   );
 
   const row = (
@@ -175,8 +185,14 @@ function AgentRow(props: {
     ) : (
       <Pressable
         accessibilityRole="link"
-        accessibilityHint={t("Opens this agent's thread")}
-        onPress={() => props.onOpen(target)}
+        accessibilityHint={
+          target.linked === undefined
+            ? t("Opens this agent's thread")
+            : t("Opens a read-only view of this agent's thread on {label}", {
+                label: target.linked.label,
+              })
+        }
+        onPress={() => props.onOpen(target, subagent.title)}
         className="min-w-0 flex-1 active:opacity-70"
       >
         {row}
@@ -215,5 +231,5 @@ function useSubagentElapsed(
     },
     nowMs,
   );
-  return elapsedMs === null || elapsedMs === 0 ? null : formatDuration(elapsedMs);
+  return elapsedMs === null || elapsedMs === 0 ? null : formatDuration(elapsedMs, t);
 }

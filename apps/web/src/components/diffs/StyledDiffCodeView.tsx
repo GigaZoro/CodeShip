@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 /* oxlint-disable eslint/no-restricted-imports -- This is the single styled adapter around Pierre's raw viewer. */
 import {
   CodeView,
@@ -7,6 +8,7 @@ import {
   type UncontrolledCodeViewProps,
 } from "@pierre/diffs/react";
 /* oxlint-enable eslint/no-restricted-imports */
+
 import type { Ref } from "react";
 
 import { DIFF_SURFACE_THEME_UNSAFE_CSS } from "~/lib/diffRendering";
@@ -235,6 +237,13 @@ export function StyledDiffCodeView<LAnnotation = undefined>({
   unsafeCSSExtra,
   ...props
 }: StyledDiffCodeViewProps<LAnnotation>) {
+  // The change bars are colour alone; this names each changed line for screen readers.
+  const lineKindCss = `[data-indicators="bars"] [data-line][data-line-type="change-deletion"]::before {
+  content: "" / ${JSON.stringify(t("Removed"))};
+}
+[data-indicators="bars"] [data-line][data-line-type="change-addition"]::before {
+  content: "" / ${JSON.stringify(t("Added"))};
+}`;
   return (
     <DiffWorkerPoolProvider>
       <CodeView<LAnnotation>
@@ -248,8 +257,8 @@ export function StyledDiffCodeView<LAnnotation = undefined>({
         options={{
           ...options,
           unsafeCSS: unsafeCSSExtra
-            ? `${DIFF_VIEW_UNSAFE_CSS}\n${unsafeCSSExtra}`
-            : DIFF_VIEW_UNSAFE_CSS,
+            ? `${DIFF_VIEW_UNSAFE_CSS}\n${lineKindCss}\n${unsafeCSSExtra}`
+            : `${DIFF_VIEW_UNSAFE_CSS}\n${lineKindCss}`,
           itemMetrics: {
             diffHeaderHeight: 32,
             hunkSeparatorHeight: 24,

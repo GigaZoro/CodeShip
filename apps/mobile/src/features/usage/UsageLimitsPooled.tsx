@@ -14,6 +14,7 @@ import {
   CHATGPT_USAGE_URL,
   collectAccountFailover,
   collectLimitAccounts,
+  collectHttpQuotaSources,
   showsRelativeLimitTimes,
   collectExternalUsageLinks,
   collectLimitNotices,
@@ -41,7 +42,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { useNowMinuteMs } from "../../lib/clock";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -215,7 +218,7 @@ function ExternalUsageAccounts({
       <Pressable
         accessibilityRole="link"
         className="min-h-11 justify-center"
-        onPress={() => void Linking.openURL(link.url).catch(() => undefined)}
+        onPress={() => void tryOpenExternalUrl(link.url)}
       >
         <Text className="text-sm font-t3-medium text-primary">
           {chatGpt ? t("Open ChatGPT usage") : t("Manage usage")}
@@ -418,7 +421,9 @@ function PoolWindowCard({
             <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
               {pool.remainingPercent}%
             </Text>
-            <Text className="text-sm text-foreground-muted">{t("left")}</Text>
+            <Text className="text-sm leading-(--text-3xl--line-height) text-foreground-muted">
+              {t("left")}
+            </Text>
           </View>
         </View>
         {pool.pace ? (
@@ -452,6 +457,9 @@ function PoolWindowCard({
             accessibilityRole="button"
             accessibilityLabel={segmentAccessibilityLabel(index, account, window, [
               timeLeft === null ? null : t("{percent}% of the window left", { percent: timeLeft }),
+              credits
+                ? tn(credits, "{count} reset credit banked", "{count} reset credits banked")
+                : null,
             ])}
             accessibilityHint={t("Show account details")}
             onPress={() => openAccount(account)}
@@ -666,6 +674,7 @@ export function UsageLimitsSection({
   const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
+  const quotaSources = collectHttpQuotaSources(selected);
   const colors = useProviderColors();
   const heldEnvironments = new Map(
     [...selected].map(([id, presentation]) => [
@@ -684,13 +693,35 @@ export function UsageLimitsSection({
       {pools.length === 0 &&
       notices.length === 0 &&
       failedLabels.length === 0 &&
-      externalLinks.length === 0 ? (
+      externalLinks.length === 0 &&
+      quotaSources.length === 0 ? (
         <Text className="py-12 text-center text-base text-foreground-muted">
           {selected.size === 0
             ? t("Select an environment to see limits.")
             : t("No provider on the selected environments reports subscription limits.")}
         </Text>
       ) : null}
+      {quotaSources.map((source) => (
+        <View key={source.key} className="gap-3 rounded-[24px] bg-grouped-card p-4">
+          <Text className="text-base font-t3-medium text-foreground">{source.label}</Text>
+          {source.quotaAccounts?.map((account) => (
+            <View key={account.id} className="gap-1">
+              <Text className="text-sm font-t3-medium text-foreground">{account.label}</Text>
+              {account.windows.map((window) => (
+                <View key={window.id} className="flex-row justify-between gap-3">
+                  <Text className="shrink text-sm text-foreground-muted">{window.label}</Text>
+                  <Text className="text-sm text-foreground-muted">
+                    {t("{percent}% left", { percent: remainingPercent(window) })}
+                    {formatResetsIn(window, now, "duration") ? (
+                      <Text>{` · ${formatResetsIn(window, now, "duration")}`}</Text>
+                    ) : null}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ))}
+        </View>
+      ))}
       {sections.map(({ driver, pool }) => (
         <Fragment key={driver}>
           <View className="gap-3">
@@ -801,7 +832,8 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
       : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
   const workspaces = useAtomValue(accountWorkspacesAtom);
   const accounts = collectLimitAccounts(selected, workspaces);
-  const now = useUsageLimitNow((at) => {
+  const nowMinute = useNowMinuteMs();
+  const nowAtReset = useUsageLimitNow((at) => {
     const reading = findLimitAccountWindow(
       collectLimitPools(accounts, at),
       accountKey,
@@ -815,6 +847,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
       (reading?.reset?.at ?? -Infinity) > at || (expires !== undefined && Date.parse(expires) > at)
     );
   });
+  const now = Math.max(nowMinute, nowAtReset);
   const detail = findLimitAccountWindow(
     collectLimitPools(accounts, now),
     accountKey,

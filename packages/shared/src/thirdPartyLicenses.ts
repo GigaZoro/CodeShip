@@ -33,9 +33,11 @@ function isHttpUrl(value: unknown): value is string {
   }
 }
 
-function decodeEntry(value: unknown, index: number): ThirdPartyLicenseEntry {
+function decodeEntry(value: unknown, index: number, resolve: typeof t): ThirdPartyLicenseEntry {
   if (!isRecord(value)) {
-    throw new Error(`License entry ${String(index + 1)} is not an object.`);
+    throw new Error(
+      resolve(msg("License entry {number} is not an object."), { number: String(index + 1) }),
+    );
   }
   if (
     !isStringArray(value.bundles) ||
@@ -47,7 +49,9 @@ function decodeEntry(value: unknown, index: number): ThirdPartyLicenseEntry {
     (value.sourceUrl !== null && !isHttpUrl(value.sourceUrl)) ||
     (value.version !== null && typeof value.version !== "string")
   ) {
-    throw new Error(`License entry ${String(index + 1)} has an invalid shape.`);
+    throw new Error(
+      resolve(msg("License entry {number} has an invalid shape."), { number: String(index + 1) }),
+    );
   }
   return {
     bundles: value.bundles,
@@ -60,16 +64,21 @@ function decodeEntry(value: unknown, index: number): ThirdPartyLicenseEntry {
   };
 }
 
-export function decodeThirdPartyLicenseManifest(value: unknown): ThirdPartyLicenseManifest {
+export function decodeThirdPartyLicenseManifest(
+  value: unknown,
+  resolve: typeof t = t,
+): ThirdPartyLicenseManifest {
   if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.entries)) {
-    throw new Error("The open-source license manifest has an unsupported format.");
+    throw new Error(resolve(msg("The open-source license manifest has an unsupported format.")));
   }
-  const entries = value.entries.map(decodeEntry);
+  const entries = value.entries.map((entry, index) => decodeEntry(entry, index, resolve));
   const entryKeys = new Set<string>();
   for (const entry of entries) {
     const key = thirdPartyLicenseEntryKey(entry);
     if (entryKeys.has(key)) {
-      throw new Error(`The open-source license manifest contains a duplicate entry: ${key}`);
+      throw new Error(
+        resolve(msg("The open-source license manifest contains a duplicate entry: {key}"), { key }),
+      );
     }
     entryKeys.add(key);
   }
@@ -109,11 +118,14 @@ const BUNDLE_LABELS: Readonly<Record<string, Message>> = {
   web: msg("Web"),
 };
 
-export function formatLicenseBundles(bundles: ReadonlyArray<string>): string {
+export function formatLicenseBundles(
+  bundles: ReadonlyArray<string>,
+  resolve: typeof t = t,
+): string {
   return bundles
     .map((bundle) =>
       Object.prototype.hasOwnProperty.call(BUNDLE_LABELS, bundle)
-        ? t(BUNDLE_LABELS[bundle]!)
+        ? resolve(BUNDLE_LABELS[bundle]!)
         : bundle,
     )
     .join(", ");

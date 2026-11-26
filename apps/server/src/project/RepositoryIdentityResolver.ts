@@ -1,7 +1,9 @@
 import type { RepositoryIdentity, SourceControlProviderError } from "@t3tools/contracts";
 import { parseGitRemoteHost } from "@t3tools/source-control-core/shared/definition";
 import { repositoryPathFromRemoteUrl } from "@t3tools/source-control-core/server/SourceControlProvider";
+import { withoutRemoteUrlCredentials } from "@t3tools/shared/cloneUrl";
 import { canonicalRepositoryPath, normalizeGitRemoteUrl } from "@t3tools/shared/git";
+import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -107,14 +109,35 @@ function isLocalRemoteUrl(url: string): boolean {
   return colonIndex === -1 || (slashIndex !== -1 && slashIndex < colonIndex);
 }
 
-function parseRemoteFetchUrls(stdout: string): Map<string, string> {
+// `git remote -v` applies url.*.insteadOf, which can point a GitHub remote at a proxy or mirror.
+// A configured URL that names a forge wins; a shorthand like `gh:` is known only once rewritten.
+function parseConfiguredRemoteUrls(config: string): Map<string, string> {
+  const urls = new Map<string, string>();
+  for (const line of config.split("\n")) {
+    const match = /^remote\.(\S+)\.url (.+)$/u.exec(line);
+    // Git fetches from the first of several configured URLs.
+    if (match?.[1] && match[2] && !urls.has(match[1])) urls.set(match[1], match[2]);
+  }
+  return urls;
+}
+
+function parseRemoteFetchUrls(
+  stdout: string,
+  configuredUrls: ReadonlyMap<string, string>,
+): Map<string, string> {
   const remotes = new Map<string, string>();
   for (const line of stdout.split(/\r?\n/)) {
     // Git uses a tab before the URL and one space before the direction; both can occur in URLs.
     // Partial clones append the promisor filter, e.g. `(fetch) [blob:none]`.
     const match = /^(\S+)\t(.+) \((fetch|push)\)(?:\s+\[[^\]]+\])?$/.exec(line);
     if (!match) continue;
-    const [, remoteName = "", remoteUrl = "", direction = ""] = match;
+    const [, remoteName = "", fetchUrl = "", direction = ""] = match;
+    const configuredUrl = configuredUrls.get(remoteName);
+    const remoteUrl =
+      configuredUrl !== undefined &&
+      (sourceControlDefinitions.recognizeRemote(configuredUrl)?.kind ?? "unknown") !== "unknown"
+        ? configuredUrl
+        : fetchUrl;
     if (
       direction !== "fetch" ||
       remoteName.length === 0 ||
@@ -123,7 +146,8 @@ function parseRemoteFetchUrls(stdout: string): Map<string, string> {
     ) {
       continue;
     }
-    remotes.set(remoteName, remoteUrl);
+    // The identity names the remote, not the login used to reach it.
+    remotes.set(remoteName, withoutRemoteUrlCredentials(remoteUrl));
   }
   return remotes;
 }
@@ -189,12 +213,58 @@ function repositoryPathOf(canonicalKey: string, remoteUrl: string): string {
   );
 }
 
+// A leading `-` on the user or host would be read by ssh as an option.
+const SSH_REMOTE = /^((?:ssh:\/\/)?)((?:[^-@/:][^@/:]*@)?)([A-Za-z0-9][A-Za-z0-9._-]*)([:/].*)$/su;
+const SSH_HOST_NAME = /^[a-z0-9][a-z0-9.-]*$/u;
+const IPV4 = /^[\d.]+$/u;
+
+// Keys an SSH remote by the host its ssh config alias (`Host github.com-personal`) points at.
+// A dotted host may be a forge whose SSH endpoint has another name, so only a public forge
+// replaces it. `ssh -G` prints the configuration it would use and opens no connection.
+const sshResolvedRemoteUrl = Effect.fn("RepositoryIdentityResolver.sshResolvedRemoteUrl")(
+  function* (remoteUrl: string) {
+    const match = isSshRemoteUrl(remoteUrl) ? SSH_REMOTE.exec(remoteUrl.trim()) : null;
+    if (!match) return remoteUrl;
+    const [, scheme = "", user = "", host = "", rest = ""] = match;
+    if (sourceControlDefinitions.findByPublicHost(host)) return remoteUrl;
+    const processRunner = yield* ProcessRunner.ProcessRunner;
+    const result = yield* processRunner
+      .run({
+        command: "ssh",
+        args: ["-G", `${user}${host}`],
+        timeout: Duration.seconds(5),
+        maxOutputBytes: 64_000,
+        outputMode: "truncate",
+        timeoutBehavior: "timedOutResult",
+      })
+      .pipe(Effect.option);
+    if (result._tag === "None" || result.value.code !== 0) return remoteUrl;
+    const hostName = result.value.stdout
+      .split("\n")
+      .find((line) => line.startsWith("hostname "))
+      ?.slice("hostname ".length)
+      .trim()
+      .toLowerCase();
+    if (
+      hostName === undefined ||
+      !SSH_HOST_NAME.test(hostName) ||
+      IPV4.test(hostName) ||
+      hostName === host.toLowerCase() ||
+      (host.includes(".") && !sourceControlDefinitions.findByPublicHost(hostName))
+    ) {
+      return remoteUrl;
+    }
+    return `${scheme}${user}${hostName}${rest}`;
+  },
+);
+
 function buildRepositoryOrigin(
   originUrl: string | undefined,
+  originKeyUrl: string | undefined,
   canonicalKey: string,
 ): RepositoryIdentity["origin"] {
   if (!originUrl) return undefined;
-  const originKey = sourceControlDefinitions.repositoryKeyFromRemote(originUrl);
+  const originKey = sourceControlDefinitions.repositoryKeyFromRemote(originKeyUrl ?? originUrl);
   if (originKey === canonicalKey) return undefined;
   const displayName = repositoryPathOf(originKey, originUrl);
   return { canonicalKey: originKey, remoteUrl: originUrl, ...(displayName ? { displayName } : {}) };
@@ -203,16 +273,18 @@ function buildRepositoryOrigin(
 function buildRepositoryIdentity(input: {
   readonly remoteName: string;
   readonly remoteUrl: string;
+  readonly keyUrl: string;
   readonly originUrl: string | undefined;
+  readonly originKeyUrl: string | undefined;
   readonly rootPath: string;
 }): RepositoryIdentity {
-  const canonicalKey = sourceControlDefinitions.repositoryKeyFromRemote(input.remoteUrl);
+  const canonicalKey = sourceControlDefinitions.repositoryKeyFromRemote(input.keyUrl);
   const sourceControlProvider = sourceControlDefinitions.recognizeRemote(input.remoteUrl);
   const repositoryPath = repositoryPathOf(canonicalKey, input.remoteUrl);
   const repositoryPathSegments = repositoryPath.split("/").filter((segment) => segment.length > 0);
   const [owner] = repositoryPathSegments;
   const repositoryName = repositoryPathSegments.at(-1);
-  const origin = buildRepositoryOrigin(input.originUrl, canonicalKey);
+  const origin = buildRepositoryOrigin(input.originUrl, input.originKeyUrl, canonicalKey);
 
   return {
     canonicalKey,
@@ -255,7 +327,7 @@ const resolveRepositoryIdentityCacheKey = Effect.fn("RepositoryIdentityResolver.
 
     const topLevelResult = yield* runLookupGit(cwd, "find-root", ["rev-parse", "--show-toplevel"]);
     if (topLevelResult.code === 0) {
-      const rootPath = topLevelResult.stdout.replace(/\r?\n$/, "");
+      const rootPath = topLevelResult.stdout.replace(/\n$/, "");
       return rootPath.length > 0
         ? new RepositoryIdentityCacheKey({ rootPath, isBare: false })
         : null;
@@ -289,7 +361,8 @@ const resolveRepositoryIdentityCacheKey = Effect.fn("RepositoryIdentityResolver.
       ]);
       if (bareResult.code !== 0) continue;
 
-      const [isBare, rootPath = ""] = bareResult.stdout.split(/\r?\n/);
+      const [isBare, ...rootLines] = bareResult.stdout.split("\n");
+      const rootPath = rootLines.join("\n").replace(/\n$/, "");
       // A checkout's .git directory contains remotes but is not a project root.
       return isBare === "true" && rootPath.length > 0
         ? new RepositoryIdentityCacheKey({ rootPath, isBare: true })
@@ -321,21 +394,30 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn(
       outcome: "failed",
     });
 
-  const remotes = parseRemoteFetchUrls(remoteResult.stdout);
   const marks = yield* runLookupGit(cacheKey.rootPath, "list-remotes", [
     ...(cacheKey.isBare ? ["--git-dir=."] : []),
     "config",
     "--get-regexp",
-    "^remote\\..*\\.gh-resolved$",
+    "^remote\\..*\\.(url|gh-resolved)$",
   ]);
-  const remote = pickPrimaryRemote(remotes, marks.code === 0 ? marks.stdout : "");
-  return remote
-    ? buildRepositoryIdentity({
-        ...remote,
-        originUrl: remotes.get("origin"),
-        rootPath: cacheKey.rootPath,
-      })
-    : null;
+  // Exits 1 when no key matches.
+  const resolved = marks.code === 0 ? marks.stdout : "";
+  const remotes = parseRemoteFetchUrls(remoteResult.stdout, parseConfiguredRemoteUrls(resolved));
+  const remote = pickPrimaryRemote(remotes, resolved);
+  if (!remote) return null;
+  const originUrl = remotes.get("origin");
+  const keyUrl = yield* sshResolvedRemoteUrl(remote.remoteUrl);
+  const originKeyUrl =
+    originUrl === undefined || originUrl === remote.remoteUrl
+      ? keyUrl
+      : yield* sshResolvedRemoteUrl(originUrl);
+  return buildRepositoryIdentity({
+    ...remote,
+    keyUrl,
+    originUrl,
+    originKeyUrl,
+    rootPath: cacheKey.rootPath,
+  });
 });
 
 export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (

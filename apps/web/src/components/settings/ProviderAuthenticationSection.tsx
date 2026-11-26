@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -27,10 +28,10 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsRow } from "./settingsLayout";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
-import { getFormattingLocale, t, tx } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { getFormattingLocale, t, tx, msg } from "~/i18n";
 
 const formatLoginDate = (iso: string) =>
   new Intl.DateTimeFormat(getFormattingLocale(), { dateStyle: "medium" }).format(new Date(iso));
@@ -146,7 +147,9 @@ export function ProviderAuthenticationSection({
       else if (!isAtomCommandInterrupted(result)) {
         const failure = squashAtomCommandFailure(result);
         setError(
-          failure instanceof Error ? failure.message : t("Provider sign-in failed. Try again."),
+          failure instanceof Error
+            ? (thrownErrorMessage(failure) ?? failure.message)
+            : t("Provider sign-in failed. Try again."),
         );
       }
     } catch {
@@ -170,7 +173,7 @@ export function ProviderAuthenticationSection({
   async function openBrowser() {
     if (!url || readOnly) return;
     if (!isWebUrl(url)) {
-      setError("This sign-in link is not a web address, so it was not opened.");
+      setError(t("This sign-in link is not a web address, so it was not opened."));
       return;
     }
     const requiresConsent = interaction?.type === "browser" && interaction.requiresConsent;
@@ -274,31 +277,37 @@ export function ProviderAuthenticationSection({
               >
                 {t("Open browser")}
               </Button>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      aria-label={t("Copy sign-in link")}
-                      size="icon-sm"
-                      variant="ghost-muted"
-                      disabled={disabled}
-                      onClick={() => {
-                        // Copy during the click to retain clipboard activation; consent must still be
-                        // recorded before use.
-                        const copied = writeTextToClipboard(url, "Provider sign-in link");
-                        void (async () => {
-                          await copied;
-                          if (interaction?.type === "browser" && interaction.requiresConsent)
-                            await send({ type: "browser", action: "accept" });
-                        })().catch(() => setError(t("Could not copy the sign-in link.")));
-                      }}
-                    >
-                      <CopyIcon />
-                    </Button>
-                  }
-                />
-                <TooltipPopup>{t("Copy sign-in link")}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    aria-label={t("Copy sign-in link")}
+                    size="icon-sm"
+                    variant="ghost-muted"
+                    disabled={disabled}
+                    onClick={() => {
+                      // Copy during the click to retain clipboard activation; consent must still be
+                      // recorded before use.
+                      const copied = writeTextToClipboard(url, {
+                        target: "Provider sign-in link",
+                        unavailableMessage: msg(
+                          "Clipboard API is unavailable while copying Provider sign-in link.",
+                        ),
+                        failureMessage: msg(
+                          "Failed to copy Provider sign-in link to the clipboard.",
+                        ),
+                      });
+                      void (async () => {
+                        await copied;
+                        if (interaction?.type === "browser" && interaction.requiresConsent)
+                          await send({ type: "browser", action: "accept" });
+                      })().catch(() => setError(t("Could not copy the sign-in link.")));
+                    }}
+                  >
+                    <CopyIcon />
+                  </Button>
+                }
+                label={<>{t("Copy sign-in link")}</>}
+              />
             </>
           ) : null}
           <>

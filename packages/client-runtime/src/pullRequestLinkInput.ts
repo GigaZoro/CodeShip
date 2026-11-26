@@ -1,8 +1,8 @@
+import { msg, t } from "@t3tools/shared/i18n";
 import type { RepositoryIdentity } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 
 import { sourceControlClients, type ChangeRequestTerminology } from "./sourceControlClients.ts";
-import { t } from "@t3tools/shared/i18n";
 
 const PULL_REQUEST_NUMBER_PATTERN = /^#?(\d+)$/;
 
@@ -67,16 +67,19 @@ interface ResolvedLink {
   readonly url: string;
 }
 
-export function resolveLinkPullRequestInput(input: {
-  readonly reference: string;
-  readonly project: {
-    readonly host: string;
-    readonly repository: string;
-    readonly terminology: ChangeRequestTerminology;
-    readonly webUrl: (number: number) => string | null;
-  } | null;
-  readonly hasProject: (reference: ResolvedLink) => boolean;
-}): { link: ResolvedLink } | { error: string } | null {
+export function resolveLinkPullRequestInput(
+  input: {
+    readonly reference: string;
+    readonly project: {
+      readonly host: string;
+      readonly repository: string;
+      readonly terminology: ChangeRequestTerminology;
+      readonly webUrl: (number: number) => string | null;
+    } | null;
+    readonly hasProject: (reference: ResolvedLink) => boolean;
+  },
+  resolve: typeof t = t,
+): { link: ResolvedLink } | { error: string } | null {
   const parsed =
     sourceControlClients.parseChangeRequestUrl(input.reference.trim()) !== null
       ? input.reference.trim()
@@ -86,7 +89,7 @@ export function resolveLinkPullRequestInput(input: {
   if (url !== undefined) {
     if (!input.hasProject({ ...url, url: parsed })) {
       return {
-        error: t("No project in this environment can read {host}/{repository}.", {
+        error: resolve(msg("No project in this environment can read {host}/{repository}."), {
           host: url.host,
           repository: url.repository,
         }),
@@ -105,8 +108,10 @@ export function resolveLinkPullRequestInput(input: {
   if (!Number.isSafeInteger(number) || number < 1) return null;
   if (input.project === null) {
     return {
-      error: t(
-        "Paste the full pull request URL; this thread has no repository to resolve the number against.",
+      error: resolve(
+        msg(
+          "Paste the full pull request URL; this thread has no repository to resolve the number against.",
+        ),
       ),
     };
   }
@@ -115,9 +120,10 @@ export function resolveLinkPullRequestInput(input: {
     webUrl === null ? undefined : sourceControlClients.parseChangeRequestUrl(webUrl)?.link;
   if (webUrl === null || webReference === undefined) {
     return {
-      error: t("Paste a full URL; this project's host has no known {singular} URL.", {
-        singular: input.project.terminology.singular,
-      }),
+      error: resolve(
+        msg("Paste a full URL; this project's host has no known {changeRequest} URL."),
+        { changeRequest: input.project.terminology.singular },
+      ),
     };
   }
   return {

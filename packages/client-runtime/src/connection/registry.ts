@@ -1,3 +1,6 @@
+import { msg } from "@t3tools/shared/i18n";
+import { markMessage } from "@t3tools/shared/markedMessage";
+import { translatableDetail } from "../errors/translatable.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -55,7 +58,6 @@ import {
   upsertRoute,
   type ReportedEndpoint,
 } from "./routes.ts";
-import { t } from "@t3tools/shared/i18n";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
 
@@ -554,9 +556,13 @@ export const make = Effect.gen(function* () {
     ) {
       return yield* new ConnectionBlockedError({
         reason: "configuration",
-        detail: t(
-          "That address claims to be {label}, which is already saved. Add it as a route from that environment's settings instead.",
-          { label: saved.target.label },
+        ...translatableDetail(
+          markMessage(
+            msg(
+              "That address claims to be {host}, which is already saved. Add it as a route from that environment's settings instead.",
+            ),
+            { host: saved.target.label },
+          ),
         ),
       });
     }
@@ -724,7 +730,11 @@ export const make = Effect.gen(function* () {
 
           yield* installEntryLocked(entry, { retainEquivalentRuntime: true });
 
-          if (bearerReplaced && registration._tag === "BearerConnectionRegistration") {
+          if (
+            bearerReplaced &&
+            registration._tag === "BearerConnectionRegistration" &&
+            registration.credential._tag === "BearerConnectionCredential"
+          ) {
             const scope = (yield* SubscriptionRef.get(serviceScopes)).get(target.environmentId);
             if (scope !== undefined) {
               const state = yield* SubscriptionRef.get(scope.supervisor.state);
@@ -1020,7 +1030,7 @@ export const make = Effect.gen(function* () {
         if (reordered.length !== routes.length || new Set(routeIds).size !== routes.length) {
           return yield* new ConnectionBlockedError({
             reason: "configuration",
-            detail: t("The route order must list every saved route once."),
+            ...translatableDetail(msg("The route order must list every saved route once.")),
           });
         }
         if (reordered.every((route, index) => route === routes[index])) return;

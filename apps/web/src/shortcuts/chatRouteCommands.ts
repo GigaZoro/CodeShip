@@ -1,14 +1,18 @@
-import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
 import { t } from "~/i18n";
+import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
+
 import { resolveSidebarGrouping } from "@t3tools/contracts/settings";
 import type { AnyRouter } from "@tanstack/react-router";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+
 import { isPreviewAvailableFor } from "../browser/previewRuntime";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { dispatchPreviewAction, type PreviewAction } from "../components/preview/previewActionBus";
 import { newThreadAsksForProject } from "../components/Sidebar.logic";
+import { isAppModalPage } from "../components/sidebar/mainAppLocation";
+import { isBrowserSurfaceFocused } from "../lib/previewFocus";
 import {
   createNewThreadHandler,
   readLastUsedProjectKey,
@@ -87,6 +91,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         readProjects(),
         lastUsedProjectKey,
         appAtomRegistry.get(defaultProjectFallbackReadyAtom(lastUsedProjectKey)),
+        selectProjectGroupingSettings(getClientSettings()),
       ),
       handleNewThread,
     };
@@ -130,6 +135,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
   };
   const isLive = () =>
     router.state.matches.some((match) => match.routeId === CHAT_ROUTE_ID) &&
+    !router.state.matches.some((match) => isAppModalPage(match.pathname)) &&
     !isCommandPaletteOpen();
 
   const previewCommand =
@@ -138,6 +144,13 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       claim(event);
       const environmentId = readRouteEnvironmentId();
       if (environmentId && canOperatePreview(environmentId)) dispatchPreviewAction(action);
+    };
+  // Unclaimed, zoom keys reach the desktop menu accelerators or the browser's own zoom.
+  const zoomCommand =
+    (action: PreviewAction): CommandHandler =>
+    (event) => {
+      if (!isBrowserSurfaceFocused()) return false;
+      previewCommand(action)(event);
     };
 
   const disposeMenuAction = registerMenuAction("chat.new", () => {
@@ -182,10 +195,16 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       },
       "preview.refresh": previewCommand("refresh"),
       "preview.focusUrl": previewCommand("focus-url"),
-      "preview.zoomIn": previewCommand("zoom-in"),
-      "preview.zoomOut": previewCommand("zoom-out"),
-      "preview.resetZoom": previewCommand("reset-zoom"),
-      "preview.find": previewCommand("find"),
+      "preview.zoomIn": zoomCommand("zoom-in"),
+      "preview.zoomOut": zoomCommand("zoom-out"),
+      "preview.resetZoom": zoomCommand("reset-zoom"),
+      // Unclaimed, the browser's own find runs when no thread handles panel find.
+      "preview.find": (event) => {
+        const environmentId = readRouteEnvironmentId();
+        if (!environmentId || !canOperatePreview(environmentId)) return false;
+        claim(event);
+        dispatchPreviewAction("find");
+      },
     },
     {
       when: isLive,

@@ -1,3 +1,4 @@
+import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -423,7 +424,7 @@ describe("VcsProcess.run", () => {
       yield* Fiber.join(burst);
       expect(yield* Ref.get(runner.total)).toBe(24 + 4 * 2);
       expect(yield* Ref.get(runner.peak)).toBe(2);
-    }),
+    }).pipe(Effect.provide(FeatureFlags.layerTest())),
   );
 
   it.effect("leaves git a slot while slow forge CLI processes are running", () =>

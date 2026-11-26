@@ -1,7 +1,7 @@
 import { useAndroidFloatingTabs } from "../../settings/appearance/AppearancePreferencesProvider";
 import { WorkspaceNoTabs } from "./WorkspaceNoTabs";
 import { useEnabledNavigationTabs } from "./navigation-tabs";
-import { NAVIGATION_TAB_ORDER, isNavigationPageTab } from "./navigation-tab-order";
+import { NAVIGATION_TAB_ORDER } from "./navigation-tab-order";
 import { WorkspaceExtraTab } from "./WorkspaceExtraTab";
 import type { ReactNode } from "react";
 import { View } from "react-native";
@@ -13,7 +13,8 @@ import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { useAndroidControlSizing } from "../../../components/ui/useAndroidControlSizing";
 import { HomeRouteScreen } from "../../home/HomeRouteScreen";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
-import { PullRequestToolbar } from "./PullRequestToolbar.android";
+import { ListSearchToolbar } from "./ListSearchToolbar.android";
+import { IssuesScreen } from "../../issues/IssuesScreen";
 import { useAdaptiveWorkspaceLayout } from "../AdaptiveWorkspaceLayout";
 import { WorkspaceSettledContentWidthContext } from "../workspace-content-width";
 import { AndroidWorkspaceNavigation, FloatingWorkspaceTabs } from "./AndroidWorkspaceNavigation";
@@ -23,7 +24,7 @@ import { WorkspaceTabPanes } from "./WorkspaceTabPanes";
 import { WorkspaceAppBarScope } from "../../../components/ui/WorkspaceAppBar.android";
 import { usePaneRole } from "../../../components/ui/Pane";
 import { AndroidWorkspaceSidebar } from "./AndroidWorkspaceSidebar.android";
-import type { WorkspaceTab } from "./workspace-tabs-state";
+import { workspaceUsesColumns, type WorkspaceTab } from "./workspace-tabs-state";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
 import { useHardwareBack } from "../../../lib/backHandler";
 import { t } from "../../../lib/i18n";
@@ -76,7 +77,7 @@ function WorkspaceRoot() {
             layout.usesSplitView
               ? insets
               : floatingTabsEnabled
-                ? isNavigationPageTab(tab)
+                ? !workspaceUsesColumns(tab)
                   ? { ...insets, bottom: context.bottomClearance }
                   : insets
                 : { ...insets, bottom: 0 }
@@ -96,21 +97,33 @@ function WorkspaceRoot() {
                 renderTab={(tab) =>
                   tab === "threads" ? (
                     <HomeRouteScreen />
-                  ) : tab !== "pullRequests" ? (
+                  ) : tab === "usage" || tab === "workflows" ? (
                     <WorkspacePageFrame width={workspacePageWidth ?? null}>
                       <WorkspaceExtraTab tab={tab} />
                     </WorkspacePageFrame>
                   ) : layout.usesSplitView ? (
                     <>
                       <NativeStackScreenOptions options={{ headerShown: false }} />
-                      <AppBar embedded title={t("Pull requests")} />
-                      <WorkspaceEmptyDetail tab="pullRequests" />
+                      <AppBar
+                        embedded
+                        title={tab === "issues" ? t("Issues") : t("Pull requests")}
+                      />
+                      <WorkspaceEmptyDetail tab={tab} />
                     </>
+                  ) : tab === "issues" ? (
+                    <IssuesScreen
+                      renderFrame={(filters, list) => (
+                        <>
+                          <ListSearchToolbar tab="issues" filters={filters} />
+                          <ScreenContent>{list}</ScreenContent>
+                        </>
+                      )}
+                    />
                   ) : (
                     <PullRequestsScreen
                       renderFrame={(filters, list) => (
                         <>
-                          <PullRequestToolbar filters={filters} />
+                          <ListSearchToolbar tab="pullRequests" filters={filters} />
                           <ScreenContent>{list}</ScreenContent>
                         </>
                       )}

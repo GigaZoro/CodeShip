@@ -1,4 +1,3 @@
-/* oxlint-disable t3code/no-untranslated-text -- preset labels are copied into the user's saved model definition, so they stay stored English */
 import { t } from "~/i18n";
 import {
   type ModelCapabilities,
@@ -38,6 +37,7 @@ export interface DescriptorPreset {
   readonly choices?: ReadonlyArray<{ id: string; label: string; isDefault?: boolean }>;
 }
 
+/* oxlint-disable t3code/no-untranslated-text, t3code/no-untranslated-copy -- model presets seed user-editable definitions stored in English */
 const EFFORT_CHOICES = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium", isDefault: true },
@@ -113,6 +113,8 @@ export const DESCRIPTOR_PRESETS_BY_KIND: Partial<
     },
   ],
 };
+
+/* oxlint-enable t3code/no-untranslated-text, t3code/no-untranslated-copy */
 
 let nextKey = 0;
 function newEditorKey(): string {

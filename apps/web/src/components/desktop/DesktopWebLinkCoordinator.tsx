@@ -1,3 +1,6 @@
+import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
@@ -11,6 +14,7 @@ import { useRouter } from "@tanstack/react-router";
 import * as Effect from "effect/Effect";
 import { AtomRegistry } from "effect/reactivity";
 import * as Stream from "effect/Stream";
+
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { openFileInPreview, openUrlInPreview } from "../../browser/openFileInPreview";
@@ -35,7 +39,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
-import { t } from "~/i18n";
 /** A link handed over by the OS is a plain click: nothing about it asks for the browser. */
 const externalClick = {
   preventDefault() {},
@@ -81,6 +84,7 @@ function threadShowingBrowser(
 
 export function DesktopWebLinkCoordinator() {
   const router = useRouter();
+
   const primaryEnvironment = usePrimaryEnvironment();
   const openPullRequestsInApp = useClientSettings((settings) => settings.pullRequestLinksOpenInApp);
   const openChangeRequest = useOpenChangeRequestLink();
@@ -116,7 +120,7 @@ export function DesktopWebLinkCoordinator() {
       stackedThreadToast({
         type: "error",
         title: t("Could not add backend"),
-        description: error instanceof Error ? error.message : t("Failed to add backend."),
+        description: thrownErrorMessage(error, t) ?? t("Failed to add backend."),
       }),
     );
 
@@ -154,7 +158,7 @@ export function DesktopWebLinkCoordinator() {
       reportFailure(url);
       return null;
     }
-    const project = await openScratchProject(environmentId, "Could not open the link");
+    const project = await openScratchProject(environmentId, t("Could not open the link"));
     if (!project) return null;
     const opened = await openThread(scopeProjectRef(project.environmentId, project.id));
     if (!opened) {
@@ -198,7 +202,7 @@ export function DesktopWebLinkCoordinator() {
     }
     if (result._tag === "Failure") {
       const error = squashAtomCommandFailure(result);
-      reportFailure(url, error instanceof Error ? error.message : url);
+      reportFailure(url, thrownErrorMessage(error, t) ?? url);
     }
   });
 

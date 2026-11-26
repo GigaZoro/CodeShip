@@ -3,9 +3,34 @@ import { describe, expect, it } from "vite-plus/test";
 import { DEFAULT_TERMINAL_ID, TerminalOpenInput } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { activateLanguage } from "./i18n.ts";
+import { TEST_LANGUAGE } from "./testing/locale.ts";
 import { getTerminalLabel, nextTerminalId } from "./terminalLabels.ts";
+import { resolveTerminalSessionLabel } from "./terminalLabelsCopy.ts";
 
 const decodeTerminalOpen = Schema.decodeUnknownSync(TerminalOpenInput);
+
+describe("resolveTerminalSessionLabel", () => {
+  it("translates idle defaults and agent ownership while keeping command names", () => {
+    activateLanguage({
+      language: "uk",
+      catalog: { "Terminal {number}": "Термінал {number}", "{label} · agent": "{label} · агент" },
+      formattingLocale: "uk",
+    });
+    try {
+      const resolve = (label: string, hasRunningSubprocess: boolean, agentInput = false) =>
+        resolveTerminalSessionLabel("term-2", { label, hasRunningSubprocess, agentInput });
+      expect(getTerminalLabel("term-2")).toBe("Terminal 2");
+      expect(resolve("Terminal 2", false)).toBe("Термінал 2");
+      expect(resolve(" ", false)).toBe("Термінал 2");
+      expect(resolve("sleep", true)).toBe("sleep");
+      expect(resolve("Terminal 2", true)).toBe("Terminal 2");
+      expect(resolve("sleep", true, true)).toBe("sleep · агент");
+    } finally {
+      activateLanguage(TEST_LANGUAGE);
+    }
+  });
+});
 
 describe("nextTerminalId", () => {
   it("skips over taken term-N slots", () => {

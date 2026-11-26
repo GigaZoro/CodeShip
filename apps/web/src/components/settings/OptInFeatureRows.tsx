@@ -1,3 +1,11 @@
+import { commitNumberFieldOnEnter } from "./commitNumberFieldOnEnter";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
+import {
+  AgentFeedbackMode,
+  DEFAULT_WORKFLOW_SKIPPED_RUNS_KEPT,
+  MAX_WORKFLOW_SKIPPED_RUNS_KEPT,
+} from "@t3tools/contracts";
 import { useAuth } from "@clerk/react";
 import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
 
@@ -6,12 +14,16 @@ import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
-import { SettingsRow } from "./settingsLayout";
+import { SettingsRow, SettingResetButton } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import {
+  useScopedSettings,
+  useUpdateScopedSettings,
+  useScopedSettingsMixed,
+} from "./useScopedSettings";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { firstManagedDenial, usePrimaryManagedPolicy } from "~/state/managedPolicy";
-import { t, tx } from "~/i18n";
+import { t, tx, msg, type Message } from "~/i18n";
 
 /** Opt-in features that used to live in Labs, now shown on the page they belong to. */
 export function GuestLinksSetting() {
@@ -25,6 +37,7 @@ export function BoringSidebarMultilineRow() {
   return (
     <SettingsRow
       {...searchableSetting("boring-sidebar-multiline")}
+      devicePreference
       description={t(
         "When the sidebar groups threads into folders, show them on two lines: the title, then the branch, pull request, and agent.",
       )}
@@ -244,6 +257,152 @@ export function FastWorktreeCheckoutRow() {
           onCheckedChange={(checked) => updateSettings({ fastWorktreeCheckout: Boolean(checked) })}
           aria-label={t("Fast worktree checkout")}
         />
+      }
+    />
+  );
+}
+
+export function WorkflowsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("workflows-beta")}
+      settingKeys={["workflowsEnabled"]}
+      description={t(
+        "Run multi-step workflows from files in the workflows folder of this server's T3 home. Open them from the command palette. While off, nothing in that folder runs; runs wait until it is on again.",
+      )}
+      control={
+        <ScopedSwitch
+          settingKeys={["workflowsEnabled"]}
+          checked={settings.workflowsEnabled}
+          onCheckedChange={(checked) => updateSettings({ workflowsEnabled: Boolean(checked) })}
+          aria-label={t("Workflows")}
+        />
+      }
+    />
+  );
+}
+
+const NO_GROUPING: Intl.NumberFormatOptions = { useGrouping: false };
+
+export function WorkflowSkippedRunsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["workflowSkippedRunsKept"]);
+
+  if (!settings.workflowsEnabled) return null;
+  const kept = settings.workflowSkippedRunsKept;
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("workflow-skipped-runs")}
+      settingKeys={["workflowSkippedRunsKept"]}
+      description={t(
+        "How many skipped runs each workflow keeps in its history. Older skipped runs are deleted; runs that did something are always kept.",
+      )}
+      resetAction={
+        mixed || kept !== DEFAULT_WORKFLOW_SKIPPED_RUNS_KEPT ? (
+          <SettingResetButton
+            label={t("skipped runs kept")}
+            onClick={() =>
+              updateSettings({ workflowSkippedRunsKept: DEFAULT_WORKFLOW_SKIPPED_RUNS_KEPT })
+            }
+          />
+        ) : null
+      }
+      control={
+        <div className="w-24">
+          <NumberField
+            value={mixed ? null : kept}
+            min={0}
+            max={MAX_WORKFLOW_SKIPPED_RUNS_KEPT}
+            format={NO_GROUPING}
+            size="sm"
+            onValueCommitted={(value) => {
+              if (value === null || !Number.isInteger(value) || (!mixed && value === kept)) return;
+              updateSettings({ workflowSkippedRunsKept: value });
+            }}
+          >
+            <NumberFieldGroup>
+              <NumberFieldInput
+                aria-label={t("Skipped runs kept")}
+                placeholder={mixed ? t("Mixed") : undefined}
+                onKeyDown={commitNumberFieldOnEnter}
+              />
+            </NumberFieldGroup>
+          </NumberField>
+        </div>
+      }
+    />
+  );
+}
+
+const AGENT_FEEDBACK_MODES = AgentFeedbackMode.literals;
+const AGENT_FEEDBACK_MODE_LABELS: Record<AgentFeedbackMode, Message> = {
+  off: msg("Off"),
+  "on-request": msg("When I ask"),
+  auto: msg("Automatic"),
+};
+const AGENT_FEEDBACK_MODE_DESCRIPTIONS: Record<AgentFeedbackMode, Message> = {
+  off: msg("Agents send no feedback to the T3 team."),
+  "on-request": msg(
+    "When you ask, agents show you a short report about T3.CodeShip and send it to the T3 team if you approve.",
+  ),
+  auto: msg(
+    "Agents also report T3.CodeShip problems they hit on their own, such as a T3 tool that failed.",
+  ),
+};
+
+export function AgentFeedbackRow() {
+  const { scope, connectedEnvironments } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+
+  const mixed = useScopedSettingsMixed(["agentFeedback"]);
+  if (
+    scope.kind === "project" ||
+    scope.kind === "checkout" ||
+    connectedEnvironments.length === 0 ||
+    connectedEnvironments.some(
+      (environment) => environment.serverConfig?.environment.capabilities.agentFeedback !== true,
+    )
+  )
+    return null;
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("agent-feedback")}
+      settingKeys={["agentFeedback"]}
+      description={
+        mixed
+          ? t("The selected machines use different agent feedback modes.")
+          : t(AGENT_FEEDBACK_MODE_DESCRIPTIONS[settings.agentFeedback.mode])
+      }
+      control={
+        <Select
+          value={mixed ? null : settings.agentFeedback.mode}
+          onValueChange={(mode) => {
+            if (mode !== null) updateSettings({ agentFeedback: { mode } });
+          }}
+        >
+          <SelectTrigger size="sm" className="w-full sm:w-40" aria-label={t("Agent feedback")}>
+            <SelectValue>
+              {(mode: AgentFeedbackMode | null) =>
+                mode === null ? t("Mixed") : t(AGENT_FEEDBACK_MODE_LABELS[mode])
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {AGENT_FEEDBACK_MODES.map((mode) => (
+              <SelectItem key={mode} hideIndicator value={mode}>
+                {t(AGENT_FEEDBACK_MODE_LABELS[mode])}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
       }
     />
   );

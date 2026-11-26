@@ -1,3 +1,5 @@
+import { t } from "../../lib/i18n";
+
 import {
   throwIfVoiceTranscriptionAborted,
   type VoiceRecorder,
@@ -120,7 +122,7 @@ export function createLazyVoiceRecorder<TStatus, TRecorderState>(input: {
       );
     },
     record(options) {
-      if (!recorder) throw new Error("The voice recorder isn’t ready. Try again.");
+      if (!recorder) throw new Error(t("The voice recorder isn’t ready. Try again."));
       recorder.record(options);
     },
     stop() {

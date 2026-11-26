@@ -1,3 +1,4 @@
+import { t, tn } from "../../lib/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -23,15 +24,15 @@ import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { subagentCardElapsed } from "./subagent-card-presentation";
-import { useEnvironments } from "../../state/environments";
 import { useServerConfigs } from "../../state/entities";
 import { SubagentRow } from "./SubagentRow";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { subagentThreadTarget } from "./threadAgentsPresentation";
+import { useLinkedThreadReach } from "../../state/linkedThread";
 import { WorkLogBlock } from "./work-log-layout";
 
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
-import { t } from "../../lib/i18n";
+import { useOpenLinkedThreadRead } from "./useOpenLinkedThread";
 
 type SubagentItem = Extract<OrchestrationV2TurnItem, { type: "subagent" }>;
 type AgentTiming = Pick<OrchestrationV2Subagent, "status" | "startedAt" | "completedAt">;
@@ -39,7 +40,7 @@ type AgentTiming = Pick<OrchestrationV2Subagent, "status" | "startedAt" | "compl
 function SubagentElapsed({ agents }: { readonly agents: ReadonlyArray<AgentTiming> }) {
   const live = agents.some((agent) => isActiveSubagentStatus(agent.status));
   const nowMs = useVisibleSecondClock(live);
-  const elapsed = subagentCardElapsed(agents, nowMs);
+  const elapsed = subagentCardElapsed(agents, nowMs, t);
   return elapsed ? (
     <Text className="shrink-0 text-xs tabular-nums text-foreground-muted">{elapsed}</Text>
   ) : null;
@@ -110,6 +111,7 @@ export function ThreadSubagentGroup(props: {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
+  const openLinkedRead = useOpenLinkedThreadRead();
   const members = props.activities.flatMap(({ projectedItem }) =>
     projectedItem.item.type === "subagent" ? [projectedItem.item] : [],
   );
@@ -117,7 +119,6 @@ export function ThreadSubagentGroup(props: {
     environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, members[0]!.threadId)),
     (thread) => thread?.projection.subagents,
   );
-  const { presentationById } = useEnvironments();
   const agents = members.map((item) => {
     const live = liveAgents?.find((agent) => agent.id === item.subagentId);
     return {
@@ -132,8 +133,9 @@ export function ThreadSubagentGroup(props: {
       modelSelection: live?.modelSelection,
     };
   });
+  const reach = useLinkedThreadReach(props.environmentId, agents);
   const grouped = agents.length > 1;
-  const label = `${agents.length} subagents`;
+  const label = tn(agents.length, "{count} subagent", "{count} subagents");
   const summary = summarizeSubagentStatuses(agents.map((agent) => agent.status));
   const expanded = props.expandedRows[props.anchorKey] ?? false;
   const serverConfigs = useServerConfigs();
@@ -145,7 +147,7 @@ export function ThreadSubagentGroup(props: {
       {grouped ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${label}, ${summary}`}
+          accessibilityLabel={t("{label}, {summary}", { label, summary })}
           accessibilityState={{ expanded }}
           onPress={() => props.onToggleRow(props.anchorKey, props.anchorKey)}
           className="min-h-14 flex-row items-center gap-3 rounded-lg py-2 active:bg-subtle"
@@ -191,8 +193,11 @@ export function ThreadSubagentGroup(props: {
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
             // A task in a linked environment opens there, if this app is connected to it.
-            const target = subagentThreadTarget(agent, props.environmentId, (id) =>
-              presentationById.has(id),
+            const target = subagentThreadTarget(
+              agent,
+              props.environmentId,
+              reach.ownConnection,
+              reach.isLinked,
             );
             return (
               <Pressable
@@ -200,15 +205,26 @@ export function ThreadSubagentGroup(props: {
                 accessible
                 accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
-                  target !== null
-                    ? t("Opens this agent's thread")
-                    : agent.remoteChild !== undefined
-                      ? t("Runs on {machine}", { machine: agent.remoteChild.label })
-                      : t("Provider-managed agent")
+                  target === null
+                    ? t("Provider-managed agent")
+                    : target.linked === undefined
+                      ? t("Opens this agent's thread")
+                      : t("Opens a read-only view of this agent's thread on {label}", {
+                          label: target.linked.label,
+                        })
                 }
                 disabled={target === null}
                 onPress={() => {
                   if (target === null) return;
+                  if (target.linked !== undefined) {
+                    openLinkedRead(target, target.linked, agent.title, {
+                      source: {
+                        environmentId: props.environmentId,
+                        threadId: members[0]!.threadId,
+                      },
+                    });
+                    return;
+                  }
                   if (
                     openInspector(
                       { environmentId: props.environmentId, threadId: members[0]!.threadId },

@@ -48,6 +48,7 @@ export function pullRequestAgentThreadActions(
   ];
 }
 
+/* oxlint-disable t3code/no-untranslated-copy -- The following instructions are sent to the model. */
 export function pullRequestAgentPrompt(
   task: PullRequestAgentTask,
   terminology: ChangeRequestTerminology,
@@ -66,6 +67,8 @@ export function pullRequestAgentPrompt(
       return `Watch this ${singular} for check results, new feedback, and conflicts using T3.CodeShip's pull request watch. End the turn once the watch is armed. When it wakes you, assess what changed and report what needs attention.`;
   }
 }
+
+/* oxlint-enable t3code/no-untranslated-copy */
 
 export function pullRequestAgentActions(pr: PullRequestDetail, canWatch: boolean) {
   const { shortLabel } = sourceControlClients.get(pr.provider).changeRequest;

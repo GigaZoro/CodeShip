@@ -1,3 +1,6 @@
+import { isSecretsFeatureEnabled } from "../../env";
+import { t } from "~/i18n";
+import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import { AuthEnvironmentMaintainScope } from "@t3tools/contracts";
 
 import { usePrimaryCloudLinkState } from "~/cloud/cloudLinkState";
@@ -15,6 +18,15 @@ import {
   filterAvailableSettingsSearchItems,
   getThreadAutoSettlementSearchAvailability,
 } from "./settingsSearch";
+
+/** Any environment whose server enables secret providers; gates the Secrets page, nav and search. */
+export function useHasSecretProvidersEnvironment() {
+  const { environments } = useEnvironments();
+  return (
+    isSecretsFeatureEnabled &&
+    environments.some((environment) => hasFeatureFlag(environment.serverConfig, "secretProviders"))
+  );
+}
 
 export function useAvailableSettingsSearchItems() {
   const { environments } = useEnvironments();
@@ -35,12 +47,19 @@ export function useAvailableSettingsSearchItems() {
         environment.connection.phase === "connected" &&
         environment.serverConfig?.environment.capabilities.fastWorktreeCheckout === true,
     ) === true;
+  const hasAgentFeedbackEnvironment =
+    environments.some(
+      (environment) =>
+        environment.connection.phase === "connected" &&
+        environment.serverConfig?.environment.capabilities.agentFeedback === true,
+    ) === true;
   const hasTextGeneratorsEnvironment =
     environments.some(
       (environment) =>
         environment.serverConfig !== null &&
         environment.serverConfig.managedPolicy?.limits?.providers?.allowedDrivers === undefined,
     ) === true;
+  const hasSecretProvidersEnvironment = useHasSecretProvidersEnvironment();
   const hasThreadAutoSettlement =
     getThreadAutoSettlementSearchAvailability(environments).eligibleEnvironmentIds.length > 0;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -55,6 +74,7 @@ export function useAvailableSettingsSearchItems() {
   const canManageLocalBackend = !localEnvironmentDisabled && canMaintain;
   const desktopWsl = useEnvironmentQuery(
     isElectron && canManageLocalBackend ? desktopWslStateAtom : null,
+    t,
   );
   const cloudPublicConfig = hasCloudPublicConfig() === true;
   const wslSettingsRowVisible =
@@ -71,7 +91,9 @@ export function useAvailableSettingsSearchItems() {
     managedTunnelActive,
     hasPeerLinkHost,
     hasFastWorktreeCheckoutEnvironment,
+    hasAgentFeedbackEnvironment,
     hasTextGeneratorsEnvironment,
     hasPrimaryEnvironment: primaryEnvironmentId !== null,
+    hasSecretProvidersEnvironment,
   });
 }

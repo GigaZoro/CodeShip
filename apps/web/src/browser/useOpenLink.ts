@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -16,7 +17,6 @@ import {
 } from "./browserLinkTarget";
 import { isBrowserSettingsReadError, openUrlInPreview } from "./openFileInPreview";
 
-import { t } from "~/i18n";
 const NO_MODIFIER = { metaKey: false, ctrlKey: false } as const;
 
 /** Rejects on settings read failure without opening a browser, or if the system-browser fallback fails. */

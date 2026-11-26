@@ -75,7 +75,12 @@ describe("connection routes", () => {
     expect(connectionRouteKind(PUBLIC)).toBe("public");
     expect(connectionRouteKind(direct("lo", "http://127.0.0.1:3773/"))).toBe("loopback");
     expect(connectionRouteKind(direct("ts6", "http://[fd7a:115c:a1e0::1]:3773/"))).toBe("tailnet");
-    expect(connectionRouteLabel(TAILNET)).toBe("Tailscale");
+    expect(connectionRouteLabel(direct("ts-ip", "http://[fd7a:115c:a1e0::1]:3773/"))).toBe(
+      "Tailscale",
+    );
+    expect(connectionRouteLabel(direct("ts-serve", "https://box.tail1234.ts.net/"))).toBe(
+      "Tailscale HTTPS",
+    );
     expect(connectionRouteLabel(RELAY)).toBe("T3 Connect");
   });
 
@@ -226,7 +231,11 @@ describe("learned routes", () => {
       reported: [tailscale, mesh],
       allowInsecure: true,
     })!;
-    expect(first.map(connectionRouteLabel)).toEqual(["Tailscale", "VPN", "T3 Connect"]);
+    expect(first.map((route) => connectionRouteLabel(route))).toEqual([
+      "Tailscale",
+      "VPN",
+      "T3 Connect",
+    ]);
 
     const corrected = mergeLearnedRoutes({
       entry: entryWithRoutes(relayOnly, first),
@@ -235,7 +244,11 @@ describe("learned routes", () => {
       allowInsecure: true,
     })!;
     expect(ids(corrected)).toEqual(ids(first));
-    expect(corrected.map(connectionRouteLabel)).toEqual(["VPN", "VPN", "T3 Connect"]);
+    expect(corrected.map((route) => connectionRouteLabel(route))).toEqual([
+      "VPN",
+      "VPN",
+      "T3 Connect",
+    ]);
     expect(
       mergeLearnedRoutes({
         entry: entryWithRoutes(relayOnly, corrected),

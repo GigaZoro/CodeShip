@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { EnvironmentRegistry, removedWithRelay } from "@t3tools/client-runtime/connection";
 import { createRuntimeCommand } from "@t3tools/client-runtime/state/runtime";
 import * as Effect from "effect/Effect";
@@ -5,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
+
 import { archiveCloudComposerDrafts } from "../../state/use-composer-drafts";
 
 export class CloudDraftArchiveError extends Schema.TaggedError<CloudDraftArchiveError>()(
@@ -16,7 +18,9 @@ export class CloudDraftArchiveError extends Schema.TaggedError<CloudDraftArchive
   },
 ) {
   override get message(): string {
-    return `Could not preserve local drafts for ${this.environmentCount} cloud environments before sign-out.`;
+    return t("Could not preserve local drafts for {count} cloud environments before sign-out.", {
+      count: this.environmentCount,
+    });
   }
 }
 

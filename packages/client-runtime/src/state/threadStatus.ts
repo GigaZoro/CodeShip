@@ -140,7 +140,10 @@ export const THREAD_LIST_STATUS_LABELS = {
 export type ProjectThreadState = "attention" | "working" | "done" | "quiet";
 
 type ThreadCompletionInput = {
-  readonly latestRun: Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "completedAt"> | null;
+  readonly latestRun:
+    | (Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "completedAt"> &
+        Partial<Pick<NonNullable<EnvironmentThreadShell["latestRun"]>, "status">>)
+    | null;
   readonly lastVisitedAt?: string | null | undefined;
 };
 
@@ -148,6 +151,9 @@ type ThreadListStatusInput = ThreadStatusInput & ThreadCompletionInput;
 
 export function hasUnseenCompletion(thread: ThreadCompletionInput): boolean {
   if (!thread.latestRun?.completedAt) return false;
+  if (thread.latestRun.status === "interrupted" || thread.latestRun.status === "cancelled") {
+    return false;
+  }
   const completedAt = Date.parse(thread.latestRun.completedAt);
   if (Number.isNaN(completedAt) || !thread.lastVisitedAt) return false;
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);

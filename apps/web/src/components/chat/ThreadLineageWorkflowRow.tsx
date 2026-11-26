@@ -1,9 +1,13 @@
+import { msg, t, tn } from "~/i18n";
 import {
   workflowMemberModelSelection,
   type SubagentWorkflowGroup,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
+import { useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
 import type { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
+
 import { ChevronDownIcon, SquareIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 
@@ -15,13 +19,13 @@ import type { ProviderInstanceEntry } from "../../providerInstances";
 import { cn } from "../../lib/utils";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { CollapsibleSectionHeader, SectionHeaderStatus } from "../ui/collapsible-section-header";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { Spinner } from "../ui/spinner";
 import {
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
-import { msg, t, tn } from "~/i18n";
 
 function phaseElapsed(phase: SubagentWorkflowGroup["phases"][number]) {
   const instants = (key: "startedAt" | "completedAt") =>
@@ -75,8 +79,9 @@ function WorkflowMemberRow({
   providers: ReadonlyArray<ServerProvider> | undefined;
   providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   driver: ProviderDriverKind | undefined;
-  onOpen: (threadId: string) => void;
+  onOpen: (threadId: string, intent: SideThreadOpenIntent) => void;
 }) {
+  const trigger = useSideThreadTrigger();
   const threadId = member.childThreadId;
   const canOpen = threadId !== null;
   const detailId = useId();
@@ -92,7 +97,7 @@ function WorkflowMemberRow({
               aria-label={t("Open {title} chat", { title: member.title })}
               aria-describedby={detailId}
               disabled={!canOpen}
-              onClick={() => canOpen && onOpen(threadId)}
+              {...(canOpen ? trigger((intent) => onOpen(threadId, intent)) : {})}
             />
           }
         >
@@ -161,7 +166,7 @@ export function ThreadLineageWorkflowRow({
   readonly providers: ReadonlyArray<ServerProvider> | undefined;
   readonly providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   readonly driver: ProviderDriverKind | undefined;
-  readonly onOpenThread: (threadId: string) => void;
+  readonly onOpenThread: (threadId: string, intent: SideThreadOpenIntent) => void;
   readonly onStop?: (() => void) | undefined;
   readonly stopping: boolean;
   readonly stopDisabled: boolean;
@@ -176,28 +181,27 @@ export function ThreadLineageWorkflowRow({
         {header}
         {onStop ? (
           <div className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <ThreadDetailsControl
-                    size="icon-xs"
-                    variant="ghost"
-                    part="icon"
-                    tone="destructive"
-                    aria-label={t("Stop workflow {label}", { label })}
-                    disabled={stopDisabled}
-                    onClick={onStop}
-                  />
-                }
-              >
-                {stopping ? (
-                  <Spinner aria-hidden size="xs" />
-                ) : (
-                  <SquareIcon aria-hidden className="size-3 fill-current" />
-                )}
-              </TooltipTrigger>
-              <TooltipPopup side="left">{t("Stop entire workflow")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <ThreadDetailsControl
+                  size="icon-xs"
+                  variant="ghost"
+                  part="icon"
+                  tone="destructive"
+                  aria-label={t("Stop workflow {label}", { label })}
+                  disabled={stopDisabled}
+                  onClick={onStop}
+                />
+              }
+              label={<>{t("Stop entire workflow")}</>}
+              side="left"
+            >
+              {stopping ? (
+                <Spinner aria-hidden size="xs" />
+              ) : (
+                <SquareIcon aria-hidden className="size-3 fill-current" />
+              )}
+            </SharedTooltipTrigger>
           </div>
         ) : null}
         <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />

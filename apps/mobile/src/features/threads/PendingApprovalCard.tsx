@@ -6,15 +6,19 @@ import type {
   RuntimeRequestId,
 } from "@t3tools/contracts";
 import {
+  approvalTextParts,
+  type ApprovalTextPart,
   FULL_ACCESS_OVERRIDE_QUESTION,
+  PUSH_HOOKS_APPROVAL_QUESTION,
+  pushHooksApprovalRows,
   fullAccessOverrideExplanation,
 } from "@t3tools/client-runtime/state/thread-requests";
-import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { useRef, useState, type ComponentRef } from "react";
+import { Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import type { PendingApproval } from "../../lib/threadActivity";
-import { msg, t } from "../../lib/i18n";
+import { msg, t, tn } from "../../lib/i18n";
 
 export interface PendingApprovalCardProps {
   readonly canOperateThread: boolean;
@@ -61,11 +65,13 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const disabled = !canRespond || props.respondingApprovalId === props.approval.requestId;
   const [explanationOpen, setExplanationOpen] = useState(false);
   const [detailExpanded, setDetailExpanded] = useState(false);
-  const detail = props.approval.detail;
+  const { detail: rawDetail, pushHooks } = props.approval;
+  const detail = !pushHooks && rawDetail ? approvalTextParts(rawDetail) : null;
   const detailCollapsible =
-    detail !== undefined &&
-    (detail.split("\n").length > COLLAPSED_DETAIL_LINES ||
-      detail.length > COLLAPSED_DETAIL_CHARACTERS);
+    detail !== null &&
+    rawDetail !== undefined &&
+    (rawDetail.split("\n").length > COLLAPSED_DETAIL_LINES ||
+      rawDetail.length > COLLAPSED_DETAIL_CHARACTERS);
   const monospaceDetail = MONOSPACE_DETAIL_KINDS.has(props.approval.requestKind);
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
@@ -73,12 +79,43 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         {t("Approval needed")}
       </Text>
       <Text className="font-t3-bold text-lg text-foreground">
-        {t(APPROVAL_TITLES[props.approval.requestKind])}
+        {pushHooks
+          ? t(PUSH_HOOKS_APPROVAL_QUESTION)
+          : t(APPROVAL_TITLES[props.approval.requestKind])}
       </Text>
       {props.approval.appName ? (
         <Text className="font-sans text-sm text-foreground-muted">{props.approval.appName}</Text>
       ) : null}
-      {detail ? (
+      {pushHooks ? (
+        <View className="gap-1.5">
+          {pushHooksApprovalRows(pushHooks).map((row, index) => (
+            // oxlint-disable-next-line react/no-array-index-key -- rows never reorder and two hooks may read alike
+            <View key={index} className="gap-0.5">
+              <Text className="font-sans text-xs text-foreground-muted">{row.label}</Text>
+              <Text selectable className="font-sans text-sm leading-normal text-foreground">
+                {row.name ? `${row.name}  ` : null}
+                <Text className="font-mono text-sm text-foreground">
+                  {approvalTextParts(row.code)
+                    .parts.map((part) => part.text)
+                    .join("")}
+                </Text>
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : detail && detail.hiddenLength > 0 ? (
+        <>
+          <ApprovalTextScroll parts={detail.parts} />
+          <Text className="font-sans text-xs leading-normal text-warning-foreground">
+            {tn(
+              detail.hiddenLength,
+              "… {count} character in the middle is not shown. The text ends with:",
+              "… {count} characters in the middle are not shown. The text ends with:",
+            )}
+          </Text>
+          <ApprovalTextScroll parts={detail.tail} fromEnd />
+        </>
+      ) : detail ? (
         <View className="gap-1">
           <Text
             selectable
@@ -91,7 +128,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
                 : "font-sans text-sm leading-normal text-foreground-secondary"
             }
           >
-            {detail}
+            <ApprovalTextParts parts={detail.parts} />
           </Text>
           {detailCollapsible ? (
             <Pressable
@@ -132,7 +169,9 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       ) : null}
       {!canRespond ? (
         <Text className="font-sans text-sm leading-5 text-foreground-muted">
-          {t("The agent's process has ended, so this request can't be answered.")}
+          {t(
+            "The provider process for this request is no longer available. Interrupt or restart the run to continue.",
+          )}
         </Text>
       ) : null}
       {!canRespond && props.onStopThread ? (
@@ -170,5 +209,49 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         </Text>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * One end of text too long to show in full, in a box that scrolls on its own, so the note, the
+ * other end and the buttons stay within reach. The end opens on its last line.
+ */
+function ApprovalTextScroll(props: {
+  readonly parts: ReadonlyArray<ApprovalTextPart>;
+  readonly fromEnd?: boolean;
+}) {
+  const box = useRef<ComponentRef<typeof ScrollView>>(null);
+  return (
+    <ScrollView
+      ref={box}
+      className="max-h-40"
+      nestedScrollEnabled
+      onContentSizeChange={
+        props.fromEnd ? () => box.current?.scrollToEnd({ animated: false }) : undefined
+      }
+    >
+      <Text selectable className="font-sans text-sm leading-normal text-foreground-secondary">
+        <ApprovalTextParts parts={props.parts} />
+      </Text>
+    </ScrollView>
+  );
+}
+
+function ApprovalTextParts(props: { readonly parts: ReadonlyArray<ApprovalTextPart> }) {
+  return (
+    <>
+      {props.parts.map((part, index) =>
+        part.named ? (
+          // Tinted only: a second font inside wrapped lines makes Android lay the text out shorter
+          // than it draws, which cuts off its last lines.
+          // oxlint-disable-next-line react/no-array-index-key -- parts never reorder and two may read alike
+          <Text key={index} className="text-warning-foreground">
+            {part.text}
+          </Text>
+        ) : (
+          part.text
+        ),
+      )}
+    </>
   );
 }

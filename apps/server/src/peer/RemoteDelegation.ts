@@ -55,9 +55,12 @@ import {
   advertisedSlug,
   overrideOptions,
   requireOfferedOptions,
+  providerOptionDescriptors,
+  refuseAgentModePick,
   resolveInteractionMode,
   resolveRuntimeMode,
   taskPrompt,
+  withoutAgentModePicks,
 } from "../mcp/delegatedTaskModes.ts";
 import { followUpOwnerRun } from "../orchestration-v2/CommandPolicy.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -194,6 +197,7 @@ const make = Effect.gen(function* () {
   );
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectService.ProjectService;
@@ -201,7 +205,6 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const digest = yield* Digest.Digest;
   const git = yield* GitVcsDriver.GitVcsDriver;
-  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
@@ -428,7 +431,8 @@ const make = Effect.gen(function* () {
             });
       // An alias can name another model on the other machine, so the parent's model goes there
       // by its slug here, and only that name carries the parent's options.
-      const parentProvider = (yield* providerRegistry.getProviders).find(
+      const providers = yield* providerRegistry.getProviders;
+      const parentProvider = providers.find(
         (provider) => provider.instanceId === inherited.instanceId,
       );
       const parentModel = advertisedSlug(parentProvider, inherited.model);
@@ -449,10 +453,32 @@ const make = Effect.gen(function* () {
             ?.optionDescriptors ?? [])
         : [];
       const given = withLegacyUltracodeEffort(descriptors, target.options) ?? undefined;
+      const link = yield* links.get(target.environmentId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+      const selectionMode =
+        parent.thread.runtimeMode !== "full-access"
+          ? parent.thread.runtimeMode
+          : link?.access === "full-access"
+            ? "full-access"
+            : "approval-required";
+      const modeDescriptors = providerOptionDescriptors(
+        providers.find((provider) => provider.instanceId === instanceId),
+      );
+      yield* refuseAgentModePick({
+        callerRuntimeMode: selectionMode,
+        picked: given,
+        held: undefined,
+        descriptors: modeDescriptors,
+      });
+      const inheritedOptions = inherits
+        ? (withLegacyUltracodeEffort(descriptors, inherited.options) ?? undefined)
+        : undefined;
       const options = overrideOptions(
-        inherits
-          ? (withLegacyUltracodeEffort(descriptors, inherited.options) ?? undefined)
-          : undefined,
+        selectionMode === "full-access"
+          ? inheritedOptions
+          : withoutAgentModePicks(inheritedOptions, modeDescriptors),
         given,
       );
       // The other side checks the options against its own catalog: those the agent named must be
@@ -501,10 +527,6 @@ const make = Effect.gen(function* () {
       );
       const keyDigest = yield* digest.digest(Digest.sha256, keyBytes).pipe(Effect.orDie);
       const remoteThreadId = ThreadId.make(`remote-delegate:${Hex.encode(keyDigest)}`);
-      const link = yield* links.get(target.environmentId).pipe(
-        Effect.map(Option.getOrUndefined),
-        Effect.orElseSucceed(() => undefined),
-      );
       const requestedChild: OrchestrationV2RemoteTaskChild = {
         environmentId: target.environmentId,
         threadId: remoteThreadId,
@@ -846,6 +868,7 @@ const make = Effect.gen(function* () {
     stoppedThere: "ran-out" | "stopped" | undefined,
     stopCount?: number,
     stopKey?: string,
+    executedModel?: string,
   ) {
     const attempt = yield* random.uuidV4();
     yield* threads
@@ -859,6 +882,7 @@ const make = Effect.gen(function* () {
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
         ...(stopKey === undefined ? {} : { stopKey }),
+        ...(executedModel === undefined ? {} : { executedModel }),
       })
       .pipe(Effect.asVoid);
   });
@@ -962,11 +986,14 @@ const make = Effect.gen(function* () {
     };
     let replies: ReplyScan = { reply: undefined, undecided: [] };
     let error: OrchestratorMcpThreadTimelineItem | undefined;
-    let afterPosition: number | undefined;
-    let remainingItems = 0;
+    // Linked peers read newest first without a cursor, so this scan runs forward. It starts
+    // after position 0, the message that started the thread, which no run's reply can precede;
+    // older peers refuse -1.
+    let afterPosition = 0;
     let wholePageItems = 0;
-    let tailProbed = false;
     let run: OrchestratorMcpThreadRun | undefined;
+    let remainingItems = 0;
+    let tailProbed = false;
     while (true) {
       // Keep the first and expected final activity pages whole; a result on a middle page then
       // needs an extra text read. A whole page ends at the result budget, so the last one read
@@ -978,7 +1005,7 @@ const make = Effect.gen(function* () {
         limit: 100,
         runLimit: 50,
         maxCharsPerItem: truncated ? 1 : 20_000,
-        ...(afterPosition === undefined ? {} : { afterPosition }),
+        afterPosition,
       });
       if (!truncated) wholePageItems = read.items.length;
       run ??= read.recentRuns?.find((candidate) => candidate.runId === runId);
@@ -1020,15 +1047,17 @@ const make = Effect.gen(function* () {
       afterPosition = read.nextPosition;
       remainingItems = read.thread.itemCount - afterPosition - 1;
     }
-    const describe = (text: string) =>
-      run === undefined ? text : withExecutedModelNote(text, run.model, run.executedModel);
+    const describe = (text: string) => ({
+      text: run === undefined ? text : withExecutedModelNote(text, run.model, run.executedModel),
+      executedModel: run?.executedModel ?? undefined,
+    });
     if (error !== undefined) return describe(yield* readWholeText(scope, remote, error));
     for (const item of replies.undecided.toReversed()) {
       const text = yield* readWholeText(scope, remote, item);
       if (text.trim().length > 0) return describe(text);
     }
     return replies.reply === undefined
-      ? undefined
+      ? { text: undefined, executedModel: run?.executedModel ?? undefined }
       : describe(yield* readWholeText(scope, remote, replies.reply));
   });
 
@@ -1275,8 +1304,8 @@ const make = Effect.gen(function* () {
       yield* complete(
         parentThreadId,
         taskId,
-        reply === undefined ? "failed" : "completed",
-        reply ?? "The thread in the linked environment has no run to follow.",
+        reply.text === undefined ? "failed" : "completed",
+        reply.text ?? "The thread in the linked environment has no run to follow.",
         "ran-out",
       );
       return yield* settled(parentThreadId, taskId);
@@ -1318,8 +1347,11 @@ const make = Effect.gen(function* () {
       parentThreadId,
       taskId,
       terminalStatus(resultRun.status),
-      result ?? noReply,
+      result.text ?? noReply,
       "ran-out",
+      undefined,
+      undefined,
+      result.executedModel,
     );
     if (resultRun.status === "completed") {
       yield* settleThere(scope, remote, parentThreadId, taskId, resultRun.runId);

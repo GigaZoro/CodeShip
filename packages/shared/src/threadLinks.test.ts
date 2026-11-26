@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { t } from "./i18n.ts";
 
 import {
   formatHostedThreadLink,
@@ -7,10 +8,11 @@ import {
   guessThreadLinkRef,
   hostedThreadLink,
   parseThreadLinkHref,
-  relabelThreadLinks,
+  replaceThreadLinks,
   threadLinkCandidates,
   threadLinkRefs,
 } from "./threadLinks.ts";
+import { relabelThreadLinks } from "./threadLinksCopy.ts";
 
 const ref = (environmentId: string, threadId = "chat-1") => ({
   environmentId: EnvironmentId.make(environmentId),
@@ -22,6 +24,8 @@ const titlesIn =
   (titles: Record<string, Record<string, string>>) =>
   ({ environmentId, threadId }: ScopedThreadRef) =>
     titles[environmentId]?.[threadId];
+const japanese: typeof t = (key, values) =>
+  key === "Thread no longer available" ? "スレッドは利用できなくなりました" : t(key, values);
 
 describe("thread link destinations", () => {
   it("names a v1 link's thread in the message's environment, as written and then decoded", () => {
@@ -140,6 +144,9 @@ describe("thread links", () => {
     expect(relabelThreadLinks("[Old](t3-thread://v1/t1)", local, () => undefined)).toBe(
       "[Old](t3-thread://v1/t1)",
     );
+    expect(relabelThreadLinks("See <t3-thread://v1/gone>", local, () => undefined, japanese)).toBe(
+      "See スレッドは利用できなくなりました",
+    );
   });
 
   it("leaves links inside code spans and fences as written", () => {
@@ -159,6 +166,85 @@ describe("thread links", () => {
         "After [New](t3-thread://v2/local/t1)",
       ].join("\n"),
     );
+    const nested = [
+      "> > ```md",
+      ">> <t3-thread://v2/local/t1>",
+      ">>```",
+      "> > <t3-thread://v2/local/t1>",
+    ];
+    expect(relabelThreadLinks(nested.join("\n"), local, () => "New")).toBe(
+      [...nested.slice(0, 3), "> > [New](t3-thread://v2/local/t1)"].join("\n"),
+    );
+    const labels: Array<string | undefined> = [];
+    const separated = "[Label\u2028> > example](t3-thread://v1/t1)";
+    expect(replaceThreadLinks(separated, (_link, label) => void labels.push(label))).toBe(
+      separated,
+    );
+    expect(labels).toEqual(["Label\u2028> > example"]);
+    for (const escaped of ["\\``<t3-thread://v2/env-1/t1>`", "\\```<t3-thread://v2/env-1/t1>``"]) {
+      expect(threadLinkRefs(escaped, local)).toEqual([]);
+    }
+  });
+
+  it("ends code where CommonMark does, so a link after it stays live", () => {
+    const after = "See <t3-thread://v2/env-1/t1>";
+    const hidden = "<t3-thread://v2/local/in-code>";
+    for (const markdown of [
+      ["```ts", 'const fence = "```";', hidden, "```", after],
+      ["> ```ts", '> const fence = "```";', `> ${hidden}`, "> ```", `> ${after}`],
+      ["> ```", ` > ${hidden}`, "> ```", after],
+      ["- ```bash", "  echo hi", "  ```", "", after],
+      ["- > ```md", `  > ${hidden}`, "  > ```", "", after],
+      [">> ```md", `> > ${hidden}`, ">> ```", `> ${after}`],
+      ["> > ~~~", `>> ${hidden}`, ">> ~~~", after],
+      ["1. Run:", "", "    ```bash", '    echo "```"', `    ${hidden}`, "    ```", "", after],
+      ["````md", "```", hidden, "````", after],
+      ["Use ~~~ to mark it.", after],
+      ["```" + hidden + "``` then", after],
+      ["Use ```example", hidden, "end``` then", after],
+      ["Stray ` tick", "", after, "and `code`"],
+      ["Stray ` tick", `# ${after}`, "and `code`"],
+      ["Stray ` tick", `- ${after}`, "and `code`"],
+      ["Stray ` tick", `> ${after} and \`code\``],
+      ["> Stray ` tick", `> > ${after} and \`code\``],
+      ["- Stray ` tick", `  > ${after} and \`code\``],
+      ["> Use `example", `> ${hidden} end\``, `> ${after}`],
+      ["> > Use `example", `> > ${hidden} end\``, `> > ${after}`],
+      ["> Use `example", `${hidden} end\``, after],
+      ["Use `example", `    > ${hidden} end\``, after],
+      ["> Use `example", `>     > ${hidden} end\``, `> ${after}`],
+      ["> Intro", "Use `example", `> ${hidden} end\``, `> ${after}`],
+      ["> > Intro", "> Use `example", `> > ${hidden} end\``, `> > ${after}`],
+      ["1. Stray ` tick", `    > ${after} and \`code\``],
+      ["1. Intro", "", "    Stray ` tick", `    > ${after} and \`code\``],
+      ["- Intro", "", "Use `example", `    > ${hidden} end\``, after],
+      ...["- - -", "* \t* *", "___", "===", "-"].flatMap((boundary) => [
+        ["Stray ` tick", boundary, `${after} and \`code\``],
+        ["> Stray ` tick", `> ${boundary}`, `> ${after} and \`code\``],
+      ]),
+      ["Stray ` tick\r", "  ---\r", `${after} and \`code\``],
+      ["> Stray ` tick", "---", `${after} and \`code\``],
+      ["Use `example", "```" + hidden + "`", after],
+      ["\\\\``" + after + "`"],
+    ]) {
+      const joined = markdown.join("\n");
+      expect(threadLinkRefs(joined, local)).toEqual([ref("env-1", "t1")]);
+      expect(relabelThreadLinks(joined, local, () => "New")).toBe(
+        joined.replace("<t3-thread://v2/env-1/t1>", "[New](t3-thread://v2/env-1/t1)"),
+      );
+    }
+  });
+
+  it("keeps multiline code literal when a line only resembles a block boundary", () => {
+    for (const markdown of [
+      ...["--- text", "== =", "-_*", "    ==="].map((line) => ["Use `example", line]),
+      ["> Use `example", ">     ---"],
+      ["> Use `example", "==="],
+    ]) {
+      const source = [...markdown, "<t3-thread://v2/local/t1> end`"].join("\n");
+      expect(threadLinkRefs(source, local)).toEqual([]);
+      expect(relabelThreadLinks(source, local, () => "New")).toBe(source);
+    }
   });
 
   it("lists the threads a message's links can name, outside code", () => {

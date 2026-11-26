@@ -1,7 +1,9 @@
+import { t } from "~/i18n";
 import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
 import { pullRequestReviewGuideInput } from "@t3tools/client-runtime/state/pull-requests";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
+
 import { useState } from "react";
 
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -11,7 +13,6 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { toastManager } from "../../ui/toast";
 import { readableFailure } from "../pullRequestDetail.logic";
 import { guideRunKey, useGuideRunStore } from "./guideRunStore";
-import { t } from "~/i18n";
 
 export function useReviewGuideWriter({
   environmentId,
@@ -59,7 +60,7 @@ export function useReviewGuideWriter({
         title: t("Could not start a review guide"),
         description: readableFailure(
           squashAtomCommandFailure(result),
-          t("Check the review guide model in Settings → Source control."),
+          t("Check the review guide model in Settings → Source control & issues."),
         ),
       });
     }

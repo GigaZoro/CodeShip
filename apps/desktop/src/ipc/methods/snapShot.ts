@@ -1,5 +1,4 @@
 import { t } from "@t3tools/shared/i18n";
-
 import {
   DesktopPendingSnapShot,
   DesktopSnapShot as DesktopSnapShotSchema,
@@ -16,11 +15,13 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
 import type * as Electron from "electron";
 
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as DesktopSnapShot from "../../snapShot/DesktopSnapShot.ts";
+
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 

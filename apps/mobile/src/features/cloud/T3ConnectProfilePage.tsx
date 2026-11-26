@@ -1,3 +1,5 @@
+import { getFormattingLocale, t } from "../../lib/i18n";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { findErrorTraceId } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
@@ -21,7 +23,6 @@ import {
   deregisterManagedRelayEnvironmentCommand,
   useManagedRelayEnvironments,
 } from "./managedRelayState";
-import { getFormattingLocale, t } from "../../lib/i18n";
 
 function linkedAtLabel(value: string): string {
   const linkedAt = new Date(value);
@@ -86,13 +87,16 @@ export function T3ConnectProfilePage() {
         return { accountId, linkedAtById };
       });
       environmentsState.refresh();
-      void refreshRelayEnvironments();
+      void refreshRelayEnvironments(undefined);
       return;
     }
     if (isAtomCommandInterrupted(result)) return;
 
     const cause = squashAtomCommandFailure(result);
-    const message = cause instanceof Error ? cause.message : t("Could not deregister the server.");
+    const message =
+      cause instanceof Error
+        ? (errorDisplayMessage(cause) ?? cause.message)
+        : t("Could not deregister the server.");
     const traceId = findErrorTraceId(cause);
     console.error("[t3-connect] Could not deregister environment", {
       environmentId: environment.environmentId,
@@ -126,6 +130,14 @@ export function T3ConnectProfilePage() {
   const isInitialLoad =
     !environmentsState.accountId || (environmentsState.data === null && !environmentsState.error);
   const errorTraceId = environmentsState.errorTraceId;
+  const environmentMenuActions = [
+    {
+      id: "deregister",
+      title: t("Deregister"),
+      image: "trash",
+      attributes: { destructive: true },
+    },
+  ] satisfies MenuAction[];
 
   return (
     <ScrollView
@@ -174,29 +186,33 @@ export function T3ConnectProfilePage() {
                   size="small"
                 />
               ) : (
-                <Menu
-                  actions={ENVIRONMENT_MENU_ACTIONS}
-                  isAnchoredToRight
-                  onPressAction={() =>
-                    confirmDeregister(environment, () => void handleDeregister(environment))
-                  }
-                >
-                  <Pressable
-                    accessibilityLabel={t("Actions for {name}", { name: environment.label })}
-                    accessibilityRole="button"
-                    disabled={deregisteringEnvironmentId !== null}
-                    className="size-[30px] items-center justify-center active:opacity-60 disabled:opacity-50"
+                <View pointerEvents={deregisteringEnvironmentId === null ? "auto" : "none"}>
+                  <Menu
+                    actions={environmentMenuActions}
+                    isAnchoredToRight
+                    onPressAction={() =>
+                      confirmDeregister(environment, () => void handleDeregister(environment))
+                    }
                   >
-                    <View className="rotate-90">
-                      <SymbolView
-                        name="ellipsis"
-                        size={18}
-                        tintColorClassName={"accent-clerk-foreground-muted"}
-                        type="monochrome"
-                      />
-                    </View>
-                  </Pressable>
-                </Menu>
+                    <Pressable
+                      accessibilityLabel={t("Actions for {environment}", {
+                        environment: environment.label,
+                      })}
+                      accessibilityRole="button"
+                      disabled={deregisteringEnvironmentId !== null}
+                      className="size-[30px] items-center justify-center active:opacity-60 disabled:opacity-50"
+                    >
+                      <View className="rotate-90">
+                        <SymbolView
+                          name="ellipsis"
+                          size={18}
+                          tintColorClassName={"accent-clerk-foreground-muted"}
+                          type="monochrome"
+                        />
+                      </View>
+                    </Pressable>
+                  </Menu>
+                </View>
               )
             }
           />
@@ -214,17 +230,6 @@ export function T3ConnectProfilePage() {
     </ScrollView>
   );
 }
-
-const ENVIRONMENT_MENU_ACTIONS = [
-  {
-    id: "deregister",
-    get title() {
-      return t("Deregister");
-    },
-    image: "trash",
-    attributes: { destructive: true },
-  },
-] satisfies MenuAction[];
 
 function ClerkSectionHeader(props: { readonly children: string }) {
   return (

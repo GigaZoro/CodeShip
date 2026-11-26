@@ -1,12 +1,18 @@
+import { t } from "~/i18n";
 import type { GitStatusEntry } from "@pierre/trees";
 import { FileTree, useFileTree } from "@pierre/trees/react";
+
 import { ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
-import { PIERRE_TREE_UNSAFE_CSS, pierreTreeStyle } from "~/pierre-tree-theme";
+import {
+  PIERRE_TREE_UNSAFE_CSS,
+  pierreTreeStyle,
+  titleClippedPierreTreeRow,
+} from "~/pierre-tree-theme";
 
 import {
   areAllDirectoriesExpanded,
@@ -14,17 +20,16 @@ import {
   subscribeOncePerTask,
 } from "../files/fileTreeExpansion";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   buildDiffFileTreeUpdates,
   compareDiffFileTreeEntries,
   collectDirectoryPaths,
   diffFileTreeModel,
-  diffFileTreePositions,
   type DiffFileTreeEntry,
 } from "./diffFileTree.logic";
+import { diffFileTreePositions } from "@t3tools/client-runtime/diff-file-order";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
-import { t } from "~/i18n";
 export type { DiffFileTreeEntry } from "./diffFileTree.logic";
 
 interface DiffFileTreeProps {
@@ -195,32 +200,28 @@ export function DiffFileTree({
         <span className="ml-auto tabular-nums">{entries.length}</span>
         {headerAccessory}
         {directoryPaths.length > 0 ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="ghost"
-                  aria-label={
-                    allDirectoriesExpanded ? t("Collapse all folders") : t("Expand all folders")
-                  }
-                  onClick={() =>
-                    setAllDirectoriesExpanded(model, directoryPaths, !allDirectoriesExpanded)
-                  }
-                />
-              }
-            >
-              {allDirectoriesExpanded ? (
-                <ChevronsDownUpIcon className="size-3.5" />
-              ) : (
-                <ChevronsUpDownIcon className="size-3.5" />
-              )}
-            </TooltipTrigger>
-            <TooltipPopup>
-              {allDirectoriesExpanded ? t("Collapse all folders") : t("Expand all folders")}
-            </TooltipPopup>
-          </Tooltip>
+          <SharedTooltipTrigger
+            render={
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label={
+                  allDirectoriesExpanded ? t("Collapse all folders") : t("Expand all folders")
+                }
+                onClick={() =>
+                  setAllDirectoriesExpanded(model, directoryPaths, !allDirectoriesExpanded)
+                }
+              />
+            }
+            label={allDirectoriesExpanded ? t("Collapse all folders") : t("Expand all folders")}
+          >
+            {allDirectoriesExpanded ? (
+              <ChevronsDownUpIcon className="size-3.5" />
+            ) : (
+              <ChevronsUpDownIcon className="size-3.5" />
+            )}
+          </SharedTooltipTrigger>
         ) : null}
       </div>
       <FileTree
@@ -250,6 +251,7 @@ export function DiffFileTree({
         }}
         className="min-h-0 flex-1 overflow-hidden"
         style={pierreTreeStyle(resolvedTheme)}
+        onPointerOver={titleClippedPierreTreeRow}
       />
       {footer}
     </div>

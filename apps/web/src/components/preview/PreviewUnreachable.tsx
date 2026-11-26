@@ -1,9 +1,10 @@
+import { t, tx } from "~/i18n";
+
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
 
 import { describePreviewError } from "./errorCodeMessages";
-import { t, tx } from "~/i18n";
 
 interface Props {
   url: string;
@@ -57,7 +58,7 @@ export function PreviewFileNotShown({
 export function PreviewUnreachable({ url, code, description, onReload, move }: Props) {
   const [showDetails, setShowDetails] = useState(false);
   const host = safeHost(url) ?? url;
-  const friendly = describePreviewError(description);
+  const friendly = describePreviewError(description, t);
   const errorLabel = description.length > 0 ? description : `ERR_${Math.abs(code) || "FAILED"}`;
 
   return (

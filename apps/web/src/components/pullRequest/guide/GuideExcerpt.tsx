@@ -1,3 +1,4 @@
+import { t, tx } from "~/i18n";
 import type {
   DiffLineAnnotation,
   FileDiffContentsLoader,
@@ -7,6 +8,7 @@ import type {
 import { FileDiff } from "@pierre/diffs/react";
 import type { PullRequestReviewGuideExcerpt, PullRequestReviewPosition } from "@t3tools/contracts";
 import { ArrowUpRightIcon } from "lucide-react";
+
 import { useState } from "react";
 
 import { useRenderedAppearance } from "~/hooks/useTheme";
@@ -18,6 +20,7 @@ import {
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import {
   buildDiffReviewComment,
+  diffReviewSelectionId,
   resolveDiffReviewAnchor,
   type ReviewCommentContext,
 } from "~/reviewCommentContext";
@@ -36,7 +39,6 @@ import type { PullRequestCompletionScope } from "../PullRequestMarkdownTextarea"
 import { excerptLoader } from "./GuideExcerpt.logic";
 import { GuideNoteMarker } from "./GuideNotes";
 import { GuideProse } from "./GuideProse";
-import { t, tx } from "~/i18n";
 
 const EXCERPT_UNSAFE_CSS = `${DIFF_VIEW_UNSAFE_CSS}
 [data-code]::-webkit-scrollbar-thumb {
@@ -73,7 +75,7 @@ interface ExcerptAnnotation {
   readonly draft: boolean;
 }
 
-interface ExcerptDraft {
+export interface CommentDraft {
   readonly range: SelectedLineRange;
   readonly position: PullRequestReviewPosition;
   readonly startPosition?: PullRequestReviewPosition;
@@ -117,7 +119,7 @@ export function GuideExcerpt({
   onOpenFile: (path: string) => void;
 }) {
   // Keep selections outside ExcerptDiff to survive head reloads.
-  const [draft, setDraft] = useState<ExcerptDraft | null>(null);
+  const [draft, setDraft] = useState<CommentDraft | null>(null);
   const slice = excerptSlice(file, excerpt);
 
   return (
@@ -175,8 +177,8 @@ function ExcerptDiff({
   excerpt: PullRequestReviewGuideExcerpt;
   file: FileDiffMetadata;
   slice: ExcerptSlice;
-  draft: ExcerptDraft | null;
-  setDraft: (draft: ExcerptDraft | null) => void;
+  draft: CommentDraft | null;
+  setDraft: (draft: CommentDraft | null) => void;
   loadDiffFiles: FileDiffContentsLoader;
   notes: ReadonlyArray<ExcerptNoteMarker>;
   commenting: ExcerptCommenting | null;
@@ -232,27 +234,11 @@ function ExcerptDiff({
   })();
 
   const beginComment = (range: SelectedLineRange | null) => {
-    if (range === null) return;
-    const anchor = resolveDiffReviewAnchor(file, range, commenting?.rangeComments === true);
-    if (anchor === null) return;
-    setDraft({ range, ...anchor });
+    const next = commentDraftFor(file, range, commenting);
+    if (next !== null) setDraft(next);
   };
+
   const interactive = commenting !== null && draft === null;
-  const onAskAgent = commenting?.onAskAgent ?? null;
-  const askAgent = (request: string) => {
-    if (draft === null || onAskAgent === null) return;
-    const comment = buildDiffReviewComment({
-      id: `pull-request-guide:${excerpt.path}:${draft.range.start}:${draft.range.end}`,
-      sectionId: `pull-request-guide:${excerpt.path}`,
-      sectionTitle: "Review guide",
-      filePath: excerpt.path,
-      fileDiff: file,
-      range: draft.range,
-      text: request,
-    });
-    setDraft(null);
-    if (comment !== null) onAskAgent(comment, request);
-  };
 
   const options = {
     diffStyle: "unified" as const,
@@ -299,40 +285,12 @@ function ExcerptDiff({
               />
             ))}
             {annotation.metadata.draft && draft !== null && commenting !== null ? (
-              <DiffCommentAnnotation
-                kind="draft"
-                rangeLabel={`${excerpt.path}:${getReviewPositionAnchor(draft.position).line}`}
-                text=""
-                completionScope={commenting.canComment ? commenting.completionScope : null}
-                placeholder={
-                  commenting.canComment
-                    ? t("Add a comment…")
-                    : t("Ask the agent about these lines…")
-                }
-                submitLabel={commenting.canComment ? t("Add to review") : t("Ask agent")}
-                {...(commenting.canComment && onAskAgent !== null
-                  ? {
-                      secondaryAction: {
-                        label: t("Ask agent"),
-                        onAction: (text: string) => askAgent(text),
-                      },
-                    }
-                  : {})}
-                onCancel={() => setDraft(null)}
-                onComment={(body) => {
-                  if (!commenting.canComment) {
-                    askAgent(body);
-                    return;
-                  }
-                  commenting.onComment({
-                    path: excerpt.path,
-                    oldPath: previousPathOf(file, excerpt.path),
-                    position: draft.position,
-                    startPosition: draft.startPosition,
-                    body,
-                  });
-                  setDraft(null);
-                }}
+              <GuideCommentDraft
+                path={excerpt.path}
+                file={file}
+                draft={draft}
+                commenting={commenting}
+                onClose={() => setDraft(null)}
               />
             ) : null}
           </div>
@@ -368,4 +326,80 @@ function ExcerptDiff({
 function previousPathOf(file: FileDiffMetadata, path: string): string | null {
   const previous = resolveFileDiffPreviousPath(file);
   return previous === path ? null : previous;
+}
+
+export function commentDraftFor(
+  file: FileDiffMetadata,
+  range: SelectedLineRange | null,
+  commenting: ExcerptCommenting | null,
+): CommentDraft | null {
+  if (range === null || commenting === null) return null;
+  const anchor = resolveDiffReviewAnchor(file, range, commenting.rangeComments);
+  return anchor === null ? null : { range, ...anchor };
+}
+
+export function GuideCommentDraft({
+  path,
+  file,
+  draft,
+  commenting,
+  onClose,
+}: {
+  path: string;
+  file: FileDiffMetadata;
+  draft: CommentDraft;
+  commenting: ExcerptCommenting;
+  onClose: () => void;
+}) {
+  const onAskAgent = commenting.onAskAgent;
+  const askAgent = (request: string) => {
+    if (onAskAgent === null) return;
+    const comment = buildDiffReviewComment({
+      id: `pull-request-guide:${diffReviewSelectionId(path, draft.range)}`,
+      sectionId: `pull-request-guide:${path}`,
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- context title sent to the agent
+      sectionTitle: "Review guide",
+      filePath: path,
+      fileDiff: file,
+      range: draft.range,
+      text: request,
+    });
+    onClose();
+    if (comment !== null) onAskAgent(comment, request);
+  };
+  return (
+    <DiffCommentAnnotation
+      kind="draft"
+      rangeLabel={`${path}:${getReviewPositionAnchor(draft.position).line}`}
+      text=""
+      completionScope={commenting.canComment ? commenting.completionScope : null}
+      placeholder={
+        commenting.canComment ? t("Add a comment…") : t("Ask the agent about these lines…")
+      }
+      submitLabel={commenting.canComment ? t("Add to review") : t("Ask agent")}
+      {...(commenting.canComment && onAskAgent !== null
+        ? {
+            secondaryAction: {
+              label: t("Ask agent"),
+              onAction: (text: string) => askAgent(text),
+            },
+          }
+        : {})}
+      onCancel={onClose}
+      onComment={(body) => {
+        if (!commenting.canComment) {
+          askAgent(body);
+          return;
+        }
+        commenting.onComment({
+          path,
+          oldPath: previousPathOf(file, path),
+          position: draft.position,
+          startPosition: draft.startPosition,
+          body,
+        });
+        onClose();
+      }}
+    />
+  );
 }

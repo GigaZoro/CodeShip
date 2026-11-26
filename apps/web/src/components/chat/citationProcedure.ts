@@ -1,13 +1,15 @@
+import { type Message, msg, t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
-import { type AtomCommandSuccess, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { sentMessageFromToolItem } from "@t3tools/shared/toolOutput";
+import type * as Effect from "effect/Effect";
 import { Atom, type AtomRegistry } from "effect/reactivity";
+
 import type { TimelineEntry } from "../../session-logic";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { toastManager } from "../ui/toast";
 import type { AssistantCitationRequest } from "./AssistantCitationSource";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-import { t } from "~/i18n";
 
 /** Whether the cited response is in the loaded history, after paging toward it. */
 export type CitedHistory =
@@ -29,30 +31,30 @@ export interface CitedThreadSnapshot {
 
 export type CitedHistoryOutcome =
   | { readonly _tag: "found" }
-  | { readonly _tag: "failed"; readonly title: string; readonly description: string }
+  | { readonly _tag: "failed"; readonly title: Message; readonly description: Message }
   | { readonly _tag: "aborted" };
 
-type HistoryPageResult = AtomCommandSuccess<
-  Awaited<ReturnType<typeof threadEnvironment.loadEarlierHistory.run>>
+type HistoryPageResult = Effect.Success<
+  ReturnType<typeof threadEnvironment.loadEarlierHistory.run>
 >;
 
 const MAX_CITATION_PAGES = 20;
+// oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic label for an atom command
+const HISTORY_COMMAND_LABEL = "load cited thread history";
 
-const couldNotLoad = () =>
-  ({
-    _tag: "failed",
-    title: t("Could not load the cited response"),
-    description: t(
-      "Load earlier turns, then click the citation to try again. Your saved quote is unchanged.",
-    ),
-  }) as const;
+const COULD_NOT_LOAD = {
+  _tag: "failed",
+  title: msg("Could not load the cited response"),
+  description: msg(
+    "Load earlier turns, then click the citation to try again. Your saved quote is unchanged.",
+  ),
+} as const;
 
-const unavailable = () =>
-  ({
-    _tag: "failed",
-    title: t("The cited response is unavailable"),
-    description: t("It may have been removed. The selected text is still saved in your citation."),
-  }) as const;
+const UNAVAILABLE = {
+  _tag: "failed",
+  title: msg("The cited response is unavailable"),
+  description: msg("It may have been removed. The selected text is still saved in your citation."),
+} as const;
 
 /**
  * Pages history toward the cited message until it is loaded, the thread runs
@@ -68,23 +70,23 @@ export async function loadCitedHistory(input: {
   for (let attempts = 0; ; attempts += 1) {
     const thread = await input.readThread();
     if (thread === null || input.signal.aborted) return { _tag: "aborted" };
-    if (thread.loadFailed) return couldNotLoad();
+    if (thread.loadFailed) return COULD_NOT_LOAD;
     if (thread.message === "assistant") return { _tag: "found" };
     if (thread.message === "other") {
       return {
         _tag: "failed",
-        title: t("The citation does not refer to an assistant response"),
-        description: t("The selected text is still saved in your citation."),
+        title: msg("The citation does not refer to an assistant response"),
+        description: msg("The selected text is still saved in your citation."),
       };
     }
-    if (!thread.hasMoreHistory) return unavailable();
-    if (attempts >= MAX_CITATION_PAGES) return couldNotLoad();
+    if (!thread.hasMoreHistory) return UNAVAILABLE;
+    if (attempts >= MAX_CITATION_PAGES) return COULD_NOT_LOAD;
     const result = await input.loadThrough();
     if (input.signal.aborted) return { _tag: "aborted" };
-    if (result._tag === "error") return couldNotLoad();
+    if (result._tag === "error") return COULD_NOT_LOAD;
     // A noop page means the store has nothing older to load (no cursor, or the
     // thread is gone), so re-reading would only spin on the same snapshot.
-    if (result._tag === "noop") return unavailable();
+    if (result._tag === "noop") return UNAVAILABLE;
   }
 }
 
@@ -215,7 +217,7 @@ const citedHistoryAtom = Atom.family(
             get.registry,
             threadEnvironment.loadEarlierHistory,
             { environmentId, input: { threadId, throughEntryId: messageId } },
-            { label: "load cited thread history", reportFailure: false },
+            { label: HISTORY_COMMAND_LABEL, reportFailure: false },
           );
           return result._tag === "Success"
             ? result.value
@@ -226,8 +228,8 @@ const citedHistoryAtom = Atom.family(
         if (outcome._tag === "failed") {
           toastManager.add({
             type: "warning",
-            title: outcome.title,
-            description: outcome.description,
+            title: t(outcome.title),
+            description: t(outcome.description),
           });
         }
         get.setSelf({ _tag: outcome._tag });

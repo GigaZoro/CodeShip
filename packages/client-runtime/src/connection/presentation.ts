@@ -1,10 +1,11 @@
+import { msg, t } from "@t3tools/shared/i18n";
 import type { ServerConfig } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
+import { type MarkedText, resolveMarkedText } from "../errors/translatable.ts";
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import type { ConnectionTarget, SupervisorConnectionState } from "./model.ts";
 import { connectionRouteId, connectionRoutes, routeHttpBaseUrl } from "./routes.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export type EnvironmentConnectionPhase =
   | "available"
@@ -18,6 +19,8 @@ export type EnvironmentConnectionPhase =
 export interface EnvironmentConnectionPresentation {
   readonly phase: EnvironmentConnectionPhase;
   readonly error: string | null;
+  /** `error` as marked text, when the failure carries it. Read both through `connectionErrorText`. */
+  readonly i18nError?: MarkedText;
   readonly traceId: string | null;
   /**
    * Set while reconnecting because the host has not approved this device yet. `error` then
@@ -37,6 +40,8 @@ export interface EnvironmentPresentation {
   readonly entry: ConnectionCatalogEntry;
   readonly connection: EnvironmentConnectionPresentation;
   readonly serverConfig: EnvironmentServerConfig | null;
+  /** See `SupervisorConnectionState.refusedRouteIds`. */
+  readonly refusedRouteIds: ReadonlyArray<string>;
   /**
    * When this client last had the machine connected, in epoch ms. Null while it is connected and
    * before this client reached it at all; it is not persisted across app restarts.
@@ -87,6 +92,16 @@ export function machineAvailabilityLabel(availability: MachineAvailability): str
   }
 }
 
+function failureError(
+  failure: SupervisorConnectionState["lastFailure"],
+): Pick<EnvironmentConnectionPresentation, "error" | "i18nError" | "traceId"> {
+  return {
+    error: failure?.message ?? null,
+    ...(failure?.i18nMessage !== undefined ? { i18nError: failure.i18nMessage } : {}),
+    traceId: failure?.traceId ?? null,
+  };
+}
+
 export function presentConnectionState(
   state: SupervisorConnectionState,
 ): EnvironmentConnectionPresentation {
@@ -96,8 +111,7 @@ export function presentConnectionState(
   ) {
     return {
       phase: "reconnecting",
-      error: state.lastFailure.message,
-      traceId: state.lastFailure.traceId ?? null,
+      ...failureError(state.lastFailure),
       awaitingApproval: true,
     };
   }
@@ -109,49 +123,61 @@ export function presentConnectionState(
     case "connecting":
       return {
         phase: state.attempt <= 1 && state.lastFailure === null ? "connecting" : "reconnecting",
-        error: state.lastFailure?.message ?? null,
-        traceId: state.lastFailure?.traceId ?? null,
+        ...failureError(state.lastFailure),
       };
     case "connected":
       return { phase: "connected", error: null, traceId: null };
     case "backoff":
       return {
         phase: "reconnecting",
-        error: state.lastFailure?.message ?? null,
-        traceId: state.lastFailure?.traceId ?? null,
+        ...failureError(state.lastFailure),
       };
     case "blocked":
       return {
         phase: state.lastFailure?.reason === "unsupported" ? "unsupported" : "error",
-        error: state.lastFailure?.message ?? null,
-        traceId: state.lastFailure?.traceId ?? null,
+        ...failureError(state.lastFailure),
       };
   }
 }
 
-export function connectionStatusText(connection: EnvironmentConnectionPresentation): string {
+/** The connection's error in the active language, or null when it has none. */
+export function connectionErrorText(
+  connection: Pick<EnvironmentConnectionPresentation, "error" | "i18nError">,
+  resolve: typeof t = t,
+): string | null {
+  if (connection.error === null) return null;
+  return connection.i18nError !== undefined
+    ? resolveMarkedText(connection.i18nError, resolve)
+    : connection.error;
+}
+
+export function connectionStatusText(
+  connection: EnvironmentConnectionPresentation,
+  resolve: typeof t = t,
+): string {
+  const error = connectionErrorText(connection, resolve);
   switch (connection.phase) {
     case "available":
-      return t("Available");
+      return resolve(msg("Available"));
     case "offline":
-      return t("Offline");
+      return resolve(msg("Offline"));
     case "connecting":
-      return t("Connecting...");
+      return resolve(msg("Connecting..."));
     case "reconnecting":
       if (connection.awaitingApproval) {
-        return connection.error ?? "Waiting for approval on the host";
+        return error ?? resolve(msg("Waiting for approval on the host"));
       }
-      return connection.error
-        ? t("Failed to connect. Reconnecting... Reason: {error}", { error: connection.error })
-        : t("Reconnecting...");
+      return error
+        ? resolve(msg("Failed to connect. Reconnecting... Reason: {error}"), { error })
+        : resolve(msg("Reconnecting..."));
     case "connected":
-      return t("Connected");
+      return resolve(msg("Connected"));
     case "unsupported":
-      return t("Client not supported");
+      return resolve(msg("Client not supported"));
     case "error":
-      return connection.error
-        ? t("Connection failed. Reason: {error}", { error: connection.error })
-        : t("Connection failed");
+      return error
+        ? resolve(msg("Connection failed. Reason: {error}"), { error })
+        : resolve(msg("Connection failed"));
   }
 }
 
@@ -165,14 +191,17 @@ export function connectionCanRetry(phase: EnvironmentConnectionPhase): boolean {
   return phase !== "connected" && phase !== "available" && phase !== "unsupported";
 }
 
-export function connectionStatusTitle(connection: EnvironmentConnectionPresentation): string {
+export function connectionStatusTitle(
+  connection: EnvironmentConnectionPresentation,
+  resolve: typeof t = t,
+): string {
   if (connection.awaitingApproval) {
-    return "Waiting for approval";
+    return resolve(msg("Waiting for approval"));
   }
   if (connection.phase === "reconnecting" && connection.error) {
-    return t("Failed to connect. Reconnecting...");
+    return resolve(msg("Failed to connect. Reconnecting..."));
   }
-  return connectionStatusText({ ...connection, error: null });
+  return connectionStatusText({ ...connection, error: null }, resolve);
 }
 
 /**

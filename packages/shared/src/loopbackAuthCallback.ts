@@ -125,8 +125,11 @@ export async function receiveLoopbackAuthCallback(options: {
       }
     }
     if (abort.signal.aborted) throw new Error(CANCELLED);
-    if (!(await options.openBrowser(request.authorizationUrl)))
-      throw new Error("Could not open your sign-in browser.");
+    const opened = await Promise.race([
+      options.openBrowser(request.authorizationUrl),
+      callback.promise,
+    ]);
+    if (!opened) throw new Error("Could not open your sign-in browser.");
     return await callback.promise;
   } finally {
     clearTimeout(timer);

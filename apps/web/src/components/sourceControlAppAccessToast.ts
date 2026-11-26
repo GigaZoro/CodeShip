@@ -2,6 +2,7 @@ import { t } from "~/i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { appSignInTargetForRemote } from "@t3tools/client-runtime/source-control-clients";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { toastManager } from "./ui/toast";
@@ -26,7 +27,7 @@ export async function suggestAppAccessForRemote(
   const owner = target.input.repository.split("/")[0] ?? target.input.repository;
   const id = toastManager.add({
     type: "info",
-    title: t("Give {app} access to {owner}", { app: target.appSignIn.appName, owner }),
+    title: t("Give {appName} access to {owner}", { appName: target.appSignIn.appName, owner }),
     description: t(
       "It isn't installed there, so GitHub requests for {repository} use your own login and its lower rate limit.",
       { repository: target.input.repository },

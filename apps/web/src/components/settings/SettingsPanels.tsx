@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { ThreadPageTokenSettings } from "./ThreadPageTokenSettings";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -140,7 +141,13 @@ import { AgentActionsSettings } from "./AgentActionsSettings";
 import { ThreadDetailsItemsRow } from "./ThreadDetailsItemsRow";
 import { SnapShotSettings } from "./SnapShotSettings";
 import { useOpenSetupWizard } from "../../onboarding/setupRerun";
-import { BoringSidebarMultilineRow, PromptSuggestionsRow } from "./OptInFeatureRows";
+import {
+  BoringSidebarMultilineRow,
+  PromptSuggestionsRow,
+  WorkflowsRow,
+  WorkflowSkippedRunsRow,
+  AgentFeedbackRow,
+} from "./OptInFeatureRows";
 import { StorageCleanupSections } from "./StorageSettings";
 import { UpdateTrackSwitchDialog } from "./UpdateTrackSwitchDialog";
 import { environmentIdsKey } from "~/state/environmentAtomList";
@@ -276,7 +283,10 @@ function AboutVersionSection() {
           stackedThreadToast({
             type: "error",
             title: t("Could not confirm update"),
-            description: error instanceof Error ? error.message : t("Update confirmation failed."),
+            description:
+              error instanceof Error
+                ? (thrownErrorMessage(error) ?? error.message)
+                : t("Update confirmation failed."),
           }),
         );
         return;
@@ -286,6 +296,7 @@ function AboutVersionSection() {
         return;
       }
       void installLocalUpdate(bridge).finally(() => setIsUpdateActionPending(false));
+      return;
     }
   };
 
@@ -725,6 +736,7 @@ export function GeneralSettingsPanel() {
         </EveryMachineSettingsScope>
         <SettingsRow
           {...searchableSetting("sidebar-grouping")}
+          devicePreference
           description={t(
             "Put active threads in a folder for each project. Working threads show in their folder and in Working; Pinned, Snoozed, and Settled stay shared.",
           )}
@@ -848,6 +860,31 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="confirmations" title={t("Confirmations")}>
+        <SettingsRow
+          {...searchableSetting("terminal-close-confirmation")}
+          description={t("Ask before closing terminals and stopping their running processes.")}
+          resetAction={
+            settings.confirmTerminalClose !== DEFAULT_UNIFIED_SETTINGS.confirmTerminalClose ? (
+              <SettingResetButton
+                label={t("terminal close confirmation")}
+                onClick={() =>
+                  updateSettings({
+                    confirmTerminalClose: DEFAULT_UNIFIED_SETTINGS.confirmTerminalClose,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.confirmTerminalClose}
+              onCheckedChange={(checked) =>
+                updateSettings({ confirmTerminalClose: Boolean(checked) })
+              }
+              aria-label={t("Confirm terminal closing")}
+            />
+          }
+        />
         <SettingsRow
           {...searchableSetting("unpin-confirmation")}
           description={t("Ask before unpinning a thread from the pinned section.")}
@@ -1337,6 +1374,59 @@ export function ChatSettingsPanel() {
       </SettingsSection>
 
       <DiffsSettingsSections />
+
+      <SettingsSection id="side-threads" title={t("Subagents and side chats")}>
+        <SettingsRow
+          {...searchableSetting("side-thread-open-target")}
+          description={
+            settings.sideThreadOpenTarget === "panel"
+              ? t(
+                  "Where a click opens a subagent, a side chat, or a thread on a linked environment. {modifier}-click or middle-click opens it in the main view instead.",
+                  { modifier: modifierLabel },
+                )
+              : t(
+                  "Where a click opens a subagent, a side chat, or a thread on a linked environment. {modifier}-click or middle-click opens it in the side panel instead.",
+                  { modifier: modifierLabel },
+                )
+          }
+          resetAction={
+            settings.sideThreadOpenTarget !== DEFAULT_UNIFIED_SETTINGS.sideThreadOpenTarget ? (
+              <SettingResetButton
+                label={t("where subagents and side chats open")}
+                onClick={() =>
+                  updateSettings({
+                    sideThreadOpenTarget: DEFAULT_UNIFIED_SETTINGS.sideThreadOpenTarget,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sideThreadOpenTarget}
+              onValueChange={(value) => {
+                if (value === "panel" || value === "main") {
+                  updateSettings({ sideThreadOpenTarget: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-auto min-w-0"
+                aria-label={t("Open subagents and side chats in")}
+              >
+                <SelectValue>
+                  {settings.sideThreadOpenTarget === "panel" ? t("Side panel") : t("Main view")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem value="panel">{t("Side panel")}</SelectItem>
+                <SelectItem value="main">{t("Main view")}</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+      </SettingsSection>
 
       <SettingsSection id="activity" title={t("Activity")}>
         <ToolCallVisibilityRow />
@@ -2284,6 +2374,9 @@ export function MaintenanceSettingsPanel() {
 
           <SettingsSection id="background" title={t("Background activity")}>
             <BackgroundActivitySettingsRow />
+            <WorkflowsRow />
+            <WorkflowSkippedRunsRow />
+            <AgentFeedbackRow />
             <AutomatedStartMemoryGuardRow />
             <AdvancedSettings
               targetIds={[

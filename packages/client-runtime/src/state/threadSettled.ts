@@ -1,10 +1,10 @@
+import { getFormattingLocale, msg, t, tn } from "@t3tools/shared/i18n";
 // @effect-diagnostics globalDate:off -- UI snooze presets use local calendar boundaries and Intl labels.
 import * as DateTime from "effect/DateTime";
 import { DEFAULT_SNOOZE_PRESETS, type SnoozePresetSetting } from "@t3tools/contracts/settings";
 import type { VcsStatusResult, VcsUnmergedWorkResult } from "@t3tools/contracts";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
-import { getFormattingLocale, msg, t, tn } from "@t3tools/shared/i18n";
 
 interface SettlementRunLike {
   readonly turnId?: unknown;
@@ -219,6 +219,7 @@ export interface SnoozePreset {
 export interface SnoozePresetOptions {
   readonly presets?: ReadonlyArray<SnoozePresetSetting>;
   readonly formatTime?: (date: Date) => string;
+  readonly locale?: string | undefined;
 }
 
 function snoozeTimeOfDayLabel(date: Date): string {
@@ -286,6 +287,8 @@ export function resolveSnoozePreset(
   setting: SnoozePresetSetting,
   now: Date,
   formatTime: (date: Date) => string = snoozeTimeOfDayLabel,
+  resolve: typeof t = t,
+  locale?: string,
 ): SnoozePreset | null {
   let wake: Date;
   let daysAhead = 0;
@@ -308,8 +311,8 @@ export function resolveSnoozePreset(
     whenLabel:
       labelNamesDay || wake.toDateString() === now.toDateString()
         ? time
-        : t("{weekday} {time}", {
-            weekday: wake.toLocaleDateString(getFormattingLocale(), { weekday: "short" }),
+        : resolve("{weekday} {time}", {
+            weekday: wake.toLocaleDateString(locale ?? getFormattingLocale(), { weekday: "short" }),
             time,
           }),
     snoozedUntil: wake.toISOString(),
@@ -320,6 +323,7 @@ export function resolveSnoozePreset(
 export function resolveSnoozePresets(
   now: Date,
   options: SnoozePresetOptions = {},
+  resolve: typeof t = t,
 ): ReadonlyArray<SnoozePreset> {
   // By minute, so a duration (which keeps the clock's seconds) and a set time in the same
   // minute tie, and the stable sort keeps whichever comes first in settings.
@@ -327,7 +331,10 @@ export function resolveSnoozePresets(
   const seen = new Set<number>();
   return (
     (options.presets ?? DEFAULT_SNOOZE_PRESETS)
-      .flatMap((setting) => resolveSnoozePreset(setting, now, options.formatTime) ?? [])
+      .flatMap(
+        (setting) =>
+          resolveSnoozePreset(setting, now, options.formatTime, resolve, options.locale) ?? [],
+      )
       // flatMap returned a new array; Hermes has no `toSorted`.
       .sort((a, b) => wakeMinute(a) - wakeMinute(b))
       .filter((preset) => {
@@ -348,6 +355,8 @@ export function pickSnoozePreset(input: {
   readonly now: Date;
   readonly presets?: ReadonlyArray<SnoozePresetSetting>;
   readonly formatTime?: (date: Date) => string;
+  readonly locale?: string | undefined;
+  readonly resolve?: typeof t;
 }): SnoozePreset | undefined {
   const original = input.shown.find((preset) => preset.id === input.id);
   const ahead =
@@ -355,19 +364,30 @@ export function pickSnoozePreset(input: {
   const setting = (input.presets ?? DEFAULT_SNOOZE_PRESETS).find(
     (candidate) => candidate.kind === "after" && snoozePresetId(candidate) === input.id,
   );
-  return (setting && resolveSnoozePreset(setting, input.now, input.formatTime)) ?? ahead;
+  return (
+    (setting &&
+      resolveSnoozePreset(setting, input.now, input.formatTime, input.resolve, input.locale)) ??
+    ahead
+  );
 }
 
-export function snoozeWakeLabel(snoozedUntil: string, options: { readonly now: string }): string {
+export function snoozeWakeLabel(
+  snoozedUntil: string,
+  options: { readonly now: string },
+  resolve: typeof t = t,
+): string {
   const wakeMs = Date.parse(snoozedUntil);
   const nowMs = Date.parse(options.now);
-  if (Number.isNaN(wakeMs) || Number.isNaN(nowMs)) return "now";
-  if (wakeMs <= nowMs) return "now";
+  const now = () => resolve(msg("now"));
+  if (Number.isNaN(wakeMs) || Number.isNaN(nowMs)) return now();
+  if (wakeMs <= nowMs) return now();
   // Count clock minutes: callers pass a minute-floored or live `now`, and durations keep seconds.
   const minutes = Math.max(1, Math.floor(wakeMs / 60_000) - Math.floor(nowMs / 60_000));
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 24 * 60) return `${Math.ceil(minutes / 60)}h`;
-  return `${Math.ceil(minutes / (24 * 60))}d`;
+  if (minutes < 60) return resolve(msg("{minutes}m"), { minutes: String(minutes) });
+  if (minutes < 24 * 60) {
+    return resolve(msg("{hours}h"), { hours: String(Math.ceil(minutes / 60)) });
+  }
+  return resolve(msg("{days}d"), { days: String(Math.ceil(minutes / (24 * 60))) });
 }
 
 export type CustomSnoozeInput =

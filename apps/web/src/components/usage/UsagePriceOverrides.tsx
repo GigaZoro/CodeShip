@@ -1,7 +1,9 @@
+import { msg, t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { AuthSettingsWriteScope, type EnvironmentId, sessionGrantsScope } from "@t3tools/contracts";
 import { ChevronDownIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
 import { AsyncResult, Atom } from "effect/reactivity";
+
 import { useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -35,14 +37,9 @@ import {
   type UsagePriceDraft,
   type UsagePriceField,
 } from "./usagePriceTable";
-import {
-  writeUsagePrices,
-  type UsagePriceTarget,
-  type UsagePriceWriteResult,
-} from "./usagePriceTargets";
-import { t, tn } from "~/i18n";
+import { writeUsagePrices, type UsagePriceWriteResult } from "./usagePriceTargets";
 
-const priceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[] =>
+const priceTargetsAtom = Atom.make((get) =>
   [...get(environmentPresentations.presentationsAtom)].map(([environmentId, environment]) => {
     const settings = get(serverEnvironment.settingsValueAtom(environmentId));
     const session = get(environmentSession.sessionStateAtom(environmentId));
@@ -67,13 +64,13 @@ const priceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[] =>
           : null,
       unavailable:
         environment.connection.phase !== "connected"
-          ? t("Offline")
+          ? msg("Offline")
           : settings === null
-            ? t("Prices not loaded")
+            ? msg("Prices not loaded")
             : access === "pending"
-              ? t("Checking permissions…")
+              ? msg("Checking permissions…")
               : access === "denied"
-                ? t("Read-only access")
+                ? msg("Read-only access")
                 : null,
     };
   }),
@@ -102,7 +99,9 @@ export function UsagePriceOverrides({
   readonly initialModel?: string | undefined;
   readonly onOpenChange: (open: boolean) => void;
 }) {
-  const environments = useAtomValue(priceTargetsAtom);
+  const environments = useAtomValue(priceTargetsAtom).map((target) =>
+    target.unavailable === null ? target : { ...target, unavailable: t(target.unavailable) },
+  );
   const [selectedIds, setSelectedIds] = useState(initialSelectedEnvironmentIds);
   const selected = environments.filter(
     (environment) => selectedIds === null || selectedIds.has(environment.environmentId),
@@ -158,7 +157,7 @@ export function UsagePriceOverrides({
     ...drafts.filter((draft) => draft.isNew),
   ];
   const stagedDrafts = drafts.filter((draft) => !isEmptyUsagePriceDraft(draft));
-  const errors = usagePriceTableErrors(selected, stagedDrafts);
+  const errors = usagePriceTableErrors(selected, stagedDrafts, t);
   // New rows still block Save, but show a price error only once a price or mapping is typed.
   const awaitingPrice = new Set<string>();
   for (const draft of stagedDrafts) {
@@ -185,7 +184,7 @@ export function UsagePriceOverrides({
   const destinationLabel =
     selected.length === 1
       ? selected[0]!.label
-      : tn(selected.length, "{count} environment", "{count} environments");
+      : t("{count} environments", { count: selected.length });
   const selectionLabel = selectedIds === null ? t("All environments") : destinationLabel;
   const discard = () => {
     setDrafts([]);
@@ -219,14 +218,19 @@ export function UsagePriceOverrides({
   };
   const editCell = (row: UsagePriceDraft, field: UsagePriceField, value: string) => {
     const values = { ...row.values, [field]: value };
-    const original = usagePriceCell(selected, row.model, field);
+    const original = usagePriceCell(selected, row.model, field, t);
     if (matchesSaved(row, original, value)) delete values[field];
     updateOrDropDraft({ ...row, values });
   };
   const editAlias = (row: UsagePriceDraft, value: string) => {
     const { alias: _alias, ...rest } = row;
-    const original = usageAliasCell(selected, row.model);
-    updateOrDropDraft(matchesSaved(row, original, value) ? rest : { ...rest, alias: value });
+    const original = usageAliasCell(selected, row.model, t);
+    updateOrDropDraft(
+      matchesSaved(row, original, value)
+        ? // A restored mapping hides the price inputs, so their typed values go too.
+          { ...rest, values: value === "" ? rest.values : {} }
+        : { ...rest, alias: value },
+    );
   };
   const save = async (retry = false) => {
     if (pending) return;
@@ -237,10 +241,15 @@ export function UsagePriceOverrides({
       (destination) =>
         environments.find(
           (environment) => environment.environmentId === destination.environmentId,
-        ) ?? { ...destination, prices: null, aliases: null, unavailable: t("Environment removed") },
+        ) ?? {
+          ...destination,
+          prices: null,
+          aliases: null,
+          unavailable: t("Environment removed"),
+        },
     );
     const changes = new Map(
-      targets.map((target) => [target.environmentId, usagePriceTableChanges(target, edits)]),
+      targets.map((target) => [target.environmentId, usagePriceTableChanges(target, edits, t)]),
     );
     setPending(true);
     setAttempt((previous) => ({
@@ -400,7 +409,7 @@ export function UsagePriceOverrides({
                       </TableRow>
                     ) : (
                       rows.map((row) => {
-                        const aliasCell = usageAliasCell(selected, row.model);
+                        const aliasCell = usageAliasCell(selected, row.model, t);
                         const alias = (row.alias ?? aliasCell.value).trim();
                         const error = awaitingPrice.has(row.id) ? undefined : errors.get(row.id);
                         return (
@@ -417,9 +426,7 @@ export function UsagePriceOverrides({
                                     }
                                   }}
                                   aria-label={t("New model ID")}
-                                  aria-invalid={
-                                    (row.model.trim() !== "" && error !== undefined) || undefined
-                                  }
+                                  aria-invalid={error !== undefined || undefined}
                                   list="usage-price-models"
                                   placeholder={t("Model ID")}
                                   autoComplete="off"
@@ -439,9 +446,7 @@ export function UsagePriceOverrides({
                                   {row.model}
                                 </span>
                               )}
-                              {error !== undefined &&
-                              (row.model.trim() !== "" ||
-                                Object.values(row.values).some((value) => value !== "")) ? (
+                              {error !== undefined ? (
                                 <p
                                   role="alert"
                                   className="mt-1 text-xs text-destructive-foreground"
@@ -476,12 +481,12 @@ export function UsagePriceOverrides({
                             {row.removed ? null : alias !== "" ? (
                               <TableCell colSpan={4} className="whitespace-normal">
                                 <span className="break-all text-muted-foreground">
-                                  {t("Counted as {model}", { model: alias })}
+                                  {t("Counted as {alias}", { alias })}
                                 </span>
                               </TableCell>
                             ) : (
                               USAGE_PRICE_FIELDS.map((field) => {
-                                const cell = usagePriceCell(selected, row.model, field.key);
+                                const cell = usagePriceCell(selected, row.model, field.key, t);
                                 const value =
                                   row.values[field.key] ?? (row.isNew ? "" : cell.value);
                                 return (

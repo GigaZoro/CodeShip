@@ -1,9 +1,10 @@
-import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
-import { MessageId, type RunId, type TurnItemId } from "@t3tools/contracts";
+import { t } from "~/i18n";
+import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/assistantInsights";
+import { MessageId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { agentWorkingDirectories } from "@t3tools/client-runtime/workspace-basename-lookup";
-import { memo, use, useState } from "react";
-import { type ChatMessage, type TurnDiffSummary } from "../../types";
+import { use, useState } from "react";
+import { type ChatMessage } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   ChevronDownIcon,
@@ -19,37 +20,24 @@ import { Button } from "../ui/button";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { McpAppFrame } from "./McpAppFrame";
-import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
-import { ChangedFilesCard } from "./ChangedFilesTree";
-import { useFileContextMenuHandler } from "../../fileContextMenu";
-import {
-  readResponseSubagents,
-  useAssistantMessageText,
-  useProject,
-  useQuietThreadShell,
-} from "../../state/entities";
+import { readResponseSubagents, useAssistantMessageText } from "../../state/entities";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { MessageStarButton, MessageStarMarker } from "./MessageStarButton";
 import { AssistantCitationSource } from "./AssistantCitationSource";
 import { resolveAssistantMessageCopyState } from "./MessagesTimeline.logic";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-import { useUiStateStore } from "~/uiStateStore";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { readThreadTurnItems } from "../../state/entities";
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts";
 import { markRetryRewind } from "./timelineRetry";
-import { t } from "~/i18n";
-import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult, Atom } from "effect/reactivity";
-import { vcsEnvironment } from "../../state/vcs";
-
-const NO_VCS_STATUS = Atom.make(AsyncResult.initial());
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+
   // The timeline holds a streaming message's row while only its text grows.
   const liveText = useAssistantMessageText(
     row.message.streaming ? ctx.threadRef : null,
@@ -90,6 +78,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
               }
               threadRef={ctx.threadRef ?? undefined}
               isStreaming={Boolean(row.message.streaming)}
+              streamingId={row.message.id}
               lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
               skills={ctx.skills}
               headingLevelOffset={MESSAGE_HEADING_LEVEL}
@@ -99,14 +88,6 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             />
           </AssistantCitationSource>
         </div>
-        {ctx.onOpenTurnDiff ? (
-          <AssistantChangedFilesSection
-            turnSummary={row.assistantTurnDiffSummary}
-            routeThreadKey={ctx.routeThreadKey}
-            resolvedTheme={ctx.resolvedTheme}
-            onOpenTurnDiff={ctx.onOpenTurnDiff}
-          />
-        ) : null}
         {!row.showAssistantMeta && row.projectedItem?.item.status === "interrupted" ? (
           <div className="mt-1.5 flex">
             <AssistantStatusBadge status="interrupted" />
@@ -167,6 +148,7 @@ function AssistantForkButton({
   readonly projectedItem: NonNullable<Extract<TimelineRow, { kind: "message" }>["projectedItem"]>;
 }) {
   const ctx = use(TimelineRowCtx);
+
   const [busy, setBusy] = useState(false);
   const support = useV2ItemSupport({
     environmentId: ctx.activeThreadEnvironmentId,
@@ -183,28 +165,26 @@ function AssistantForkButton({
   const runId = projectedItem.item.runId;
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId }).finally(
-                () => setBusy(false),
-              );
-            }}
-            aria-label={t("Fork from this response")}
-          />
-        }
-      >
-        {busy ? <Spinner size="xs" aria-hidden /> : <GitForkIcon className="size-3" />}
-      </TooltipTrigger>
-      <TooltipPopup side="top">{t("Fork from this response")}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId }).finally(
+              () => setBusy(false),
+            );
+          }}
+          aria-label={t("Fork from this response")}
+        />
+      }
+      label={<>{t("Fork from this response")}</>}
+    >
+      {busy ? <Spinner size="xs" aria-hidden /> : <GitForkIcon className="size-3" />}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -309,14 +289,12 @@ function AssistantMessageMeta({
         <AssistantReplyButton message={message} itemId={projectedItem.sourceItemId} />
       ) : null}
       {!message.streaming && (
-        <Tooltip>
-          <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
-            {formatDayAwareTimestamp(message.updatedAt, ctx.timestampFormat)}
-          </TooltipTrigger>
-          <TooltipPopup>
-            {formatChatTimestampTooltip(message.updatedAt, ctx.timestampFormat)}
-          </TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={<p className="text-muted-foreground text-xs tabular-nums" />}
+          label={formatChatTimestampTooltip(message.updatedAt, ctx.timestampFormat, t)}
+        >
+          {formatDayAwareTimestamp(message.updatedAt, ctx.timestampFormat, undefined, undefined, t)}
+        </SharedTooltipTrigger>
       )}
     </div>
   );
@@ -324,6 +302,7 @@ function AssistantMessageMeta({
 
 function AssistantReplyButton({ message, itemId }: { message: ChatMessage; itemId: TurnItemId }) {
   const ctx = use(TimelineRowCtx);
+
   const { threadRef, onReplyToResponse } = ctx;
   if (!threadRef || !onReplyToResponse || !message.text.trim()) return null;
 
@@ -349,22 +328,20 @@ function AssistantReplyButton({ message, itemId }: { message: ChatMessage; itemI
   };
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost-muted"
-            onClick={reply}
-            aria-label={t("Reply to this response")}
-          />
-        }
-      >
-        <ReplyIcon className="size-3" />
-      </TooltipTrigger>
-      <TooltipPopup side="top">{t("Reply to this response")}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost-muted"
+          onClick={reply}
+          aria-label={t("Reply to this response")}
+        />
+      }
+      label={<>{t("Reply to this response")}</>}
+    >
+      <ReplyIcon className="size-3" />
+    </SharedTooltipTrigger>
   );
 }
 
@@ -442,7 +419,7 @@ export function HtmlRenderTimelineRow({
     );
 
   return (
-    <div className="min-w-0 px-1">
+    <div className={cn("min-w-0 px-1", ctx.renderHtmlRender === undefined && "html-preview-lane")}>
       {row.replaced ? (
         <button
           type="button"
@@ -485,102 +462,5 @@ export function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
         onFullscreenChange={(fullscreen) => ctx.onAppFullscreenChange(row.id, fullscreen)}
       />
     </div>
-  );
-}
-
-/** Subscribes directly to the UI state store for expand/collapse state,
- *  so toggling re-renders only this component — not the entire list. */
-const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection({
-  turnSummary,
-  routeThreadKey,
-  resolvedTheme,
-  onOpenTurnDiff,
-}: {
-  turnSummary: TurnDiffSummary | undefined;
-  routeThreadKey: string;
-  resolvedTheme: "light" | "dark";
-  displayThreadKey?: string;
-  onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-}) {
-  if (!turnSummary) return null;
-  const checkpointFiles = turnSummary.files;
-  if (checkpointFiles.length === 0) return null;
-
-  return (
-    <AssistantChangedFilesSectionInner
-      turnSummary={turnSummary}
-      checkpointFiles={checkpointFiles}
-      routeThreadKey={routeThreadKey}
-      resolvedTheme={resolvedTheme}
-      onOpenTurnDiff={onOpenTurnDiff}
-    />
-  );
-});
-
-function AssistantChangedFilesSectionInner({
-  turnSummary,
-  checkpointFiles,
-  routeThreadKey,
-  resolvedTheme,
-  onOpenTurnDiff,
-}: {
-  turnSummary: TurnDiffSummary;
-  checkpointFiles: TurnDiffSummary["files"];
-  routeThreadKey: string;
-  resolvedTheme: "light" | "dark";
-  displayThreadKey?: string;
-  onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-}) {
-  const ctx = use(TimelineRowCtx);
-  const persistedExpanded = useUiStateStore(
-    (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.runId],
-  );
-  const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
-  const allDirectoriesExpanded = persistedExpanded ?? false;
-
-  const thread = useQuietThreadShell(ctx.threadRef);
-  const activeProject = useProject(
-    thread && thread.projectId
-      ? { environmentId: thread.environmentId, projectId: thread.projectId }
-      : null,
-  );
-  const onFileContextMenu = useFileContextMenuHandler(ctx.activeThreadEnvironmentId);
-  const repositoryRoot = useAtomValue(
-    ctx.workspaceRoot
-      ? vcsEnvironment.status({
-          environmentId: ctx.activeThreadEnvironmentId,
-          input: { cwd: ctx.workspaceRoot },
-        })
-      : NO_VCS_STATUS,
-    (status) => AsyncResult.getOrElse(status, () => null)?.workingTree.rootPath,
-  );
-
-  return (
-    <ChangedFilesCard
-      runId={turnSummary.runId}
-      files={checkpointFiles}
-      totals={checkpointFileTotals(turnSummary)}
-      allDirectoriesExpanded={allDirectoriesExpanded}
-      resolvedTheme={resolvedTheme}
-      onToggleAllDirectories={() =>
-        setExpanded(routeThreadKey, turnSummary.runId, !allDirectoriesExpanded)
-      }
-      onOpenTurnDiff={onOpenTurnDiff}
-      onFileContextMenu={(filePath, event) =>
-        onFileContextMenu(
-          {
-            environmentId: ctx.activeThreadEnvironmentId,
-            filePath,
-            workspaceRoot: ctx.workspaceRoot,
-            repositoryRoot:
-              repositoryRoot ??
-              (thread?.worktreePath == null
-                ? activeProject?.repositoryIdentity?.rootPath
-                : undefined),
-          },
-          event,
-        )
-      }
-    />
   );
 }

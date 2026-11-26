@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import { useAtomValue } from "@effect/atom-react";
 import {
   type AssetUrlState as RuntimeAssetUrlState,
@@ -31,7 +33,7 @@ export function useAssetUrlState(
   resource: AssetResource | null,
   revision?: string | null,
 ): AssetUrlState {
-  const blocked = blockedAssetUrlState(resource, useFilesystemReadAccess(environmentId));
+  const blocked = blockedAssetUrlState(resource, useFilesystemReadAccess(environmentId, t));
   const preparedConnection = usePreparedConnection(environmentId);
   const result = useAtomValue(
     blocked !== null || environmentId === null || resource === null

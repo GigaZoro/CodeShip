@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { createCanvasFrameSink } from "@t3tools/client-runtime/device/frame";
 import type { DuoControlState } from "@t3tools/client-runtime/device/duo-control";
 import {
@@ -118,6 +119,7 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
         onInputConnected: (connected, detail) =>
           update({ input: { connected, ...(detail ? { detail } : {}) } }),
       },
+      t,
     );
     session = {
       stream: client,

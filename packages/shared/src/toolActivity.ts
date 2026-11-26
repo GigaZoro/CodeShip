@@ -1,6 +1,6 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
 
-import { t } from "./i18n.ts";
+import { msg, t } from "./i18n.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -46,25 +46,52 @@ export function dynamicToolSurface(toolName: string | null | undefined, input: u
     : undefined;
 }
 
-export function dynamicToolTitle(
+export type DynamicToolTitle =
+  | { readonly kind: "title"; readonly title: string }
+  | { readonly kind: "computer-use" }
+  | { readonly kind: "run-javascript" }
+  | { readonly kind: "skill"; readonly name: string };
+
+export function describeDynamicToolTitle(
   toolName: string | null | undefined,
   input: unknown,
   retainedTitle?: string | null,
-): string | undefined {
+): DynamicToolTitle | undefined {
   if (isJavaScriptReplTool(toolName)) {
     const title = asTrimmedString(retainedTitle);
     const meaningfulTitle =
       title && title.toLowerCase() !== "js" && title.toLowerCase() !== toolName?.toLowerCase()
         ? title
         : undefined;
-    return (
-      asTrimmedString(asRecord(input)?.title) ??
-      meaningfulTitle ??
-      (dynamicToolSurface(toolName, input) === "computer" ? t("Computer use") : t("Run JavaScript"))
-    );
+    const shown = asTrimmedString(asRecord(input)?.title) ?? meaningfulTitle;
+    if (shown) return { kind: "title", title: shown };
+    return dynamicToolSurface(toolName, input) === "computer"
+      ? { kind: "computer-use" }
+      : { kind: "run-javascript" };
   }
   const skill = claudeSkillInvocation(toolName, input);
-  return skill === undefined ? undefined : t("Skill: {name}", { name: skill.name });
+  return skill === undefined ? undefined : { kind: "skill", name: skill.name };
+}
+
+export function dynamicToolTitle(
+  toolName: string | null | undefined,
+  input: unknown,
+  retainedTitle?: string | null,
+  resolve: typeof t = t,
+): string | undefined {
+  const title = describeDynamicToolTitle(toolName, input, retainedTitle);
+  switch (title?.kind) {
+    case undefined:
+      return undefined;
+    case "title":
+      return title.title;
+    case "computer-use":
+      return resolve(msg("Computer use"));
+    case "run-javascript":
+      return resolve(msg("Run JavaScript"));
+    case "skill":
+      return resolve(msg("Skill: {name}"), { name: title.name });
+  }
 }
 
 function recordHasKeys(
@@ -366,39 +393,40 @@ function searchTargetName(value: string | undefined): string | undefined {
   return value.split(/[\\/]/u).findLast((part) => part.length > 0 && part !== ".");
 }
 
+export function searchToolLabelParts(data: Record<string, unknown> | undefined) {
+  const input = searchInputRecord(data);
+  return {
+    query: firstInputString(input, SEARCH_QUERY_KEYS),
+    glob: firstInputString(input, SEARCH_GLOB_KEYS),
+    target: searchTargetName(firstInputString(input, SEARCH_TARGET_KEYS)),
+  };
+}
+
+/** @public */
 export function formatSearchToolLabel(
   data: Record<string, unknown> | undefined,
+  resolve: typeof t = t,
 ): string | undefined {
-  const input = searchInputRecord(data);
-  const query = firstInputString(input, SEARCH_QUERY_KEYS);
-  const glob = firstInputString(input, SEARCH_GLOB_KEYS);
-  const target = searchTargetName(firstInputString(input, SEARCH_TARGET_KEYS));
-  if (query && target) {
-    return t("Searched {query} in {target}", { query, target });
-  }
-  if (glob && target) {
-    return t("Searched files {glob} in {target}", { glob, target });
-  }
-  if (glob) {
-    return t("Searched files {glob}", { glob });
-  }
-  if (query) {
-    return t("Searched {query}", { query });
-  }
-  if (target) {
-    return t("Searched in {target}", { target });
-  }
+  const { query, glob, target } = searchToolLabelParts(data);
+  if (query && target) return resolve(msg("Searched {query} in {target}"), { query, target });
+  if (glob && target) return resolve(msg("Searched files {glob} in {target}"), { glob, target });
+  if (glob) return resolve(msg("Searched files {glob}"), { glob });
+  if (query) return resolve(msg("Searched {query}"), { query });
+  if (target) return resolve(msg("Searched in {target}"), { target });
   return undefined;
 }
 
-export function formatReadToolLabel(path: string, extraCount = 0): string {
+/** @public */
+export function formatReadToolLabel(path: string, extraCount = 0, resolve: typeof t = t): string {
   const trimmed = path.trim();
   if (!trimmed) {
-    return extraCount > 0 ? t("Read file +{count} more", { count: extraCount }) : t("Read file");
+    return extraCount > 0
+      ? resolve(msg("Read file +{count} more"), { count: extraCount })
+      : resolve(msg("Read file"));
   }
   return extraCount > 0
-    ? t("Read {path} +{count} more", { path: trimmed, count: extraCount })
-    : t("Read {path}", { path: trimmed });
+    ? resolve(msg("Read {path} +{count} more"), { path: trimmed, count: extraCount })
+    : resolve(msg("Read {path}"), { path: trimmed });
 }
 
 export interface ToolActivityPresentationInput {

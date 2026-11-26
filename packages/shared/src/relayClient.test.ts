@@ -598,6 +598,67 @@ describe("RelayClient", () => {
     }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
   );
 
+  it.effect.skipIf(windowsHost)(
+    "removes a staged client whose rename lands after cancellation",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const scope = yield* Effect.scope;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-cloudflared-test-",
+        });
+        const directory = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64`;
+        const renamePending = yield* Deferred.make<void>();
+        const allowRename = yield* Deferred.make<void>();
+        const renameFinished = yield* Deferred.make<void, PlatformError.PlatformError>();
+        const manager = yield* RelayClient.makeCloudflaredRelayClient({
+          baseDir,
+          releaseAsset: testReleaseAsset,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fileSystem,
+            // Like Node's rename, the staging rename completes even if its caller is interrupted.
+            rename: (from, to) =>
+              to.endsWith(".tmp")
+                ? Effect.forkIn(
+                    Deferred.complete(
+                      renameFinished,
+                      Deferred.await(allowRename).pipe(Effect.andThen(fileSystem.rename(from, to))),
+                    ),
+                    scope,
+                  ).pipe(
+                    Effect.andThen(Deferred.succeed(renamePending, undefined)),
+                    Effect.andThen(Deferred.await(renameFinished)),
+                  )
+                : fileSystem.rename(from, to),
+            // Land the rename before the install temp directory is removed.
+            remove: (path, options) =>
+              path.endsWith(".tmp")
+                ? fileSystem
+                    .remove(path, options)
+                    .pipe(
+                      Effect.andThen(Deferred.succeed(allowRename, undefined)),
+                      Effect.andThen(Deferred.await(renameFinished)),
+                    )
+                : fileSystem.remove(path, options),
+          }),
+        );
+
+        const installing = yield* manager.install.pipe(Effect.forkChild);
+        yield* Deferred.await(renamePending);
+        yield* Effect.yieldNow;
+        const cancelling = yield* Fiber.interrupt(installing).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(allowRename, undefined);
+        yield* Fiber.join(cancelling);
+        yield* Deferred.await(renameFinished);
+
+        expect(yield* fileSystem.readDirectory(directory)).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(layerInstallRuntime("linux"))),
+  );
+
   it.effect("downloads, verifies, validates, and atomically installs the managed executable", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -894,7 +955,6 @@ describe("RelayClient", () => {
           }),
         ),
     );
-
     it.effect(
       "rejects a downloaded binary whose version command prints the pin and exits nonzero",
       () =>
@@ -928,8 +988,7 @@ describe("RelayClient", () => {
           }),
         ),
     );
-
-    it.effect("skips a PATH binary older than the minimum version", () => {
+    it.effect("skips binaries older than the minimum version", () => {
       const versions: Record<string, string> = {};
       return run(
         (baseDir) =>
@@ -939,11 +998,14 @@ describe("RelayClient", () => {
             const newPath = paths.join(baseDir, "new", executableName);
             yield* writeExecutable(oldPath);
             yield* writeExecutable(newPath);
-            versions[oldPath] = "2023.8.2";
-            versions[newPath] = RelayClient.CLOUDFLARED_MIN_VERSION;
+            const managed = managedPathFor(yield* Path.Path, baseDir, "2026.10.0", hostPlatform);
+            yield* writeExecutable(managed);
+            versions[managed] = "2026.10.0";
+            versions[oldPath] = "2026.10.2";
+            versions[newPath] = "2026.10.3";
             const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
             const env = {
-              PATH: [paths.join(baseDir, "old"), paths.join(baseDir, "new")].join(pathDelimiter),
+              PATH: [paths.dirname(oldPath), paths.dirname(newPath)].join(pathDelimiter),
             };
             expect(
               yield* manager.resolve.pipe(
@@ -963,6 +1025,44 @@ describe("RelayClient", () => {
         { versions },
       );
     });
+    it.effect.skipIf(windowsHost)(
+      "finds a PATH binary through an empty entry by its absolute path",
+      () =>
+        run((baseDir) =>
+          Effect.gen(function* () {
+            const cwd = `${baseDir}/work`;
+            const inCwd = `${cwd}/cloudflared`;
+            yield* writeExecutable(inCwd);
+            const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
+            const resolveWith = (searchPath: string) => {
+              const env = { PATH: searchPath };
+              return manager.resolve.pipe(
+                Effect.provideService(
+                  ConfigProvider.ConfigProvider,
+                  ConfigProvider.fromEnv({ env }),
+                ),
+                Effect.provideService(HostProcess.Environment, env),
+                Effect.provideService(HostProcess.WorkingDirectory, cwd),
+              );
+            };
+            const found = {
+              status: "available",
+              executablePath: inCwd,
+              source: "path",
+              version: RelayClient.CLOUDFLARED_VERSION,
+            };
+
+            expect(yield* resolveWith(`:${baseDir}/missing`)).toEqual(found);
+            expect(yield* resolveWith(`${baseDir}/missing:`)).toEqual(found);
+            const missing = { status: "missing", version: RelayClient.CLOUDFLARED_VERSION };
+            // An empty PATH searches nothing, not even the working directory.
+            expect(yield* resolveWith("")).toEqual(missing);
+            // A whitespace entry is not an empty one.
+            expect(yield* resolveWith(` :${baseDir}/missing`)).toEqual(missing);
+            expect(yield* resolveWith(`${baseDir}/missing: `)).toEqual(missing);
+          }),
+        ),
+    );
 
     it.effect("reuses an existing pinned install in the legacy directory", () =>
       run((baseDir) =>
@@ -995,7 +1095,7 @@ describe("RelayClient", () => {
       ),
     );
 
-    it.effect.each([RelayClient.CLOUDFLARED_VERSION, "2026.1.0"])(
+    it.effect.each([RelayClient.CLOUDFLARED_VERSION, RelayClient.CLOUDFLARED_MIN_VERSION])(
       "reuses the previous install layout from release folder %s while offline",
       (folder) =>
         run((baseDir) =>
@@ -1066,7 +1166,7 @@ describe("RelayClient", () => {
               const fallback = managedPathFor(
                 paths,
                 baseDir,
-                "2026.1.0",
+                RelayClient.CLOUDFLARED_MIN_VERSION,
                 hostPlatform,
                 otherLayout,
               );
@@ -1075,7 +1175,7 @@ describe("RelayClient", () => {
               yield* writeExecutable(fallback);
               versions[exact] = pinned;
               versions[sibling] = "2025.9.0";
-              versions[fallback] = "2026.1.0";
+              versions[fallback] = RelayClient.CLOUDFLARED_MIN_VERSION;
               const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
               const selected = { source: "managed", version: pinned, executablePath: exact };
 
@@ -1091,9 +1191,9 @@ describe("RelayClient", () => {
     );
 
     it.effect.each([
-      ["2025.6.1", "2026.1.0", "legacy"],
-      ["2026.1.0", "2025.6.1", "current"],
-      ["2026.1.0", "2026.1.0", "current"],
+      ["2025.6.1", RelayClient.CLOUDFLARED_MIN_VERSION, "legacy"],
+      [RelayClient.CLOUDFLARED_MIN_VERSION, "2025.6.1", "current"],
+      [RelayClient.CLOUDFLARED_MIN_VERSION, RelayClient.CLOUDFLARED_MIN_VERSION, "current"],
       ["2025.6.1", "2025.9.0", "current"],
     ] as const)(
       "selects the compatible fallback for current %s and legacy %s from the %s layout",
@@ -1103,8 +1203,19 @@ describe("RelayClient", () => {
           (baseDir) =>
             Effect.gen(function* () {
               const paths = yield* Path.Path;
-              const current = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
-              const legacy = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform, "legacy");
+              const current = managedPathFor(
+                paths,
+                baseDir,
+                RelayClient.CLOUDFLARED_MIN_VERSION,
+                hostPlatform,
+              );
+              const legacy = managedPathFor(
+                paths,
+                baseDir,
+                RelayClient.CLOUDFLARED_MIN_VERSION,
+                hostPlatform,
+                "legacy",
+              );
               yield* writeExecutable(current);
               yield* writeExecutable(legacy);
               versions[current] = currentVersion;
@@ -1130,7 +1241,7 @@ describe("RelayClient", () => {
             const paths = yield* Path.Path;
             const overridePath = paths.join(baseDir, "override", executableName);
             yield* writeExecutable(overridePath);
-            versions[overridePath] = "2025.6.0";
+            versions[overridePath] = "2026.10.2";
             const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
             const env = { PATH: "", T3CODE_CLOUDFLARED_PATH: overridePath };
             const withEnv = Effect.provideService(
@@ -1162,14 +1273,14 @@ describe("RelayClient", () => {
               const managed = (version: string) =>
                 managedPathFor(paths, baseDir, version, hostPlatform);
               const older = managed("2025.9.0");
-              const newer = managed("2026.1.0");
+              const newer = managed(RelayClient.CLOUDFLARED_MIN_VERSION);
               const pinned = managed(RelayClient.CLOUDFLARED_VERSION);
               const newerServer = managed("2099.1.0");
               versions[newerServer] = "2099.1.0";
               yield* writeExecutable(newerServer);
-              versions[pathBinary] = "2026.9.3";
+              versions[pathBinary] = "2026.10.3";
               versions[older] = "2025.9.0";
-              versions[newer] = "2026.1.0";
+              versions[newer] = "2026.10.3";
               yield* writeExecutable(pathBinary);
               yield* writeExecutable(older);
               yield* writeExecutable(newer);
@@ -1182,7 +1293,7 @@ describe("RelayClient", () => {
                 Effect.provideService(HostProcess.Environment, { PATH: binDir }),
               );
 
-              expect(yield* resolveWith).toMatchObject({ source: "managed", version: "2026.1.0" });
+              expect(yield* resolveWith).toMatchObject({ source: "managed", version: "2026.10.3" });
 
               yield* writeExecutable(pinned);
               expect(yield* resolveWith).toMatchObject({
@@ -1196,12 +1307,16 @@ describe("RelayClient", () => {
                 (yield* fileSystem.readDirectory(
                   paths.join(baseDir, "tools", "cloudflared", "install"),
                 )).sort(),
-              ).toEqual(["2026.1.0", RelayClient.CLOUDFLARED_VERSION, "2099.1.0"]);
+              ).toEqual([
+                RelayClient.CLOUDFLARED_MIN_VERSION,
+                RelayClient.CLOUDFLARED_VERSION,
+                "2099.1.0",
+              ]);
 
               yield* fileSystem.remove(pinned);
-              expect(yield* resolveWith).toMatchObject({ source: "managed", version: "2026.1.0" });
+              expect(yield* resolveWith).toMatchObject({ source: "managed", version: "2026.10.3" });
               yield* fileSystem.remove(newer);
-              expect(yield* resolveWith).toMatchObject({ source: "path", version: "2026.9.3" });
+              expect(yield* resolveWith).toMatchObject({ source: "path", version: "2026.10.3" });
             }),
           { versions },
         );
@@ -1221,7 +1336,7 @@ describe("RelayClient", () => {
             const legacyPin = managed(pinned, "legacy");
             const currentFallback = managed(pinned);
             const legacyOld = managed("2025.9.0", "legacy");
-            const rollback = managed("2026.1.0");
+            const rollback = managed(RelayClient.CLOUDFLARED_MIN_VERSION);
             const old = managed("2025.9.0");
             const relocatedPin = managed("2025.8.0");
             const upgraded = managed("2025.7.0");
@@ -1247,7 +1362,7 @@ describe("RelayClient", () => {
             ];
             versions[legacyOld] = "2025.9.0";
             versions[currentFallback] = "2026.9.3";
-            versions[rollback] = "2026.1.0";
+            versions[rollback] = RelayClient.CLOUDFLARED_MIN_VERSION;
             versions[old] = "2025.9.0";
             versions[upgraded] = "2099.1.0";
             versions[unreadableVersion] = "unparseable";
@@ -1275,7 +1390,12 @@ describe("RelayClient", () => {
             const fs = yield* FileSystem.FileSystem;
             const paths = yield* Path.Path;
             const old = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform);
-            const rollback = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+            const rollback = managedPathFor(
+              paths,
+              baseDir,
+              RelayClient.CLOUDFLARED_MIN_VERSION,
+              hostPlatform,
+            );
             yield* writeExecutable(old);
             yield* writeExecutable(rollback);
 
@@ -1283,7 +1403,10 @@ describe("RelayClient", () => {
             let oldProbes = 0;
             const spawner = yield* versionProcess((executable) => {
               if (executable === rollback) {
-                return { output: "cloudflared version 2026.1.0", exitCode: 0 };
+                return {
+                  output: `cloudflared version ${RelayClient.CLOUDFLARED_MIN_VERSION}`,
+                  exitCode: 0,
+                };
               }
               expect(executable).toBe(old);
               oldProbes++;
@@ -1321,9 +1444,14 @@ describe("RelayClient", () => {
               const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
               const root = paths.join(baseDir, "tools", "cloudflared", "install");
               const old = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform);
-              const rollback = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+              const rollback = managedPathFor(
+                paths,
+                baseDir,
+                RelayClient.CLOUDFLARED_MIN_VERSION,
+                hostPlatform,
+              );
               versions[old] = "2025.9.0";
-              versions[rollback] = "2026.1.0";
+              versions[rollback] = RelayClient.CLOUDFLARED_MIN_VERSION;
               yield* writeExecutable(old);
               yield* writeExecutable(rollback);
 
@@ -1390,9 +1518,14 @@ describe("RelayClient", () => {
             const paths = yield* Path.Path;
             const pinned = RelayClient.CLOUDFLARED_VERSION;
             const currentPin = managedPathFor(paths, baseDir, pinned, hostPlatform);
-            const rollback = managedPathFor(paths, baseDir, "2026.1.0", hostPlatform);
+            const rollback = managedPathFor(
+              paths,
+              baseDir,
+              RelayClient.CLOUDFLARED_MIN_VERSION,
+              hostPlatform,
+            );
             const old = managedPathFor(paths, baseDir, "2025.9.0", hostPlatform);
-            versions[rollback] = "2026.1.0";
+            versions[rollback] = RelayClient.CLOUDFLARED_MIN_VERSION;
             versions[old] = "2025.9.0";
             yield* writeExecutable(rollback);
             yield* writeExecutable(old);
@@ -1455,7 +1588,7 @@ describe("RelayClient", () => {
             RelayClient.CLOUDFLARED_VERSION,
             hostPlatform,
           );
-          yield* writeExecutable(pinned, "cloudflared version 2026.9.3");
+          yield* writeExecutable(pinned, "cloudflared version 2026.10.3");
           const bytes = new TextEncoder().encode(
             `cloudflared version ${RelayClient.CLOUDFLARED_VERSION}`,
           );
@@ -1481,7 +1614,7 @@ describe("RelayClient", () => {
             status: "available",
             executablePath: pinned,
             source: "managed",
-            version: "2026.9.3",
+            version: "2026.10.3",
           });
           expect(
             resolved.status === "available" && RelayClient.isPinnedManagedRelayClient(resolved),

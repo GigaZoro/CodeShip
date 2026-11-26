@@ -311,6 +311,8 @@ function UpdateEverythingDialogContent({
 function RunningThreads({ environmentId }: { readonly environmentId: EnvironmentId }) {
   const count = useAtomValue(runningThreadCountAtom(environmentId));
   return count > 0 ? (
-    <span className="whitespace-nowrap text-warning">{t("{count} running", { count })}</span>
+    <span className="whitespace-nowrap text-warning">
+      {tn(count, "{count} running", "{count} running")}
+    </span>
   ) : null;
 }

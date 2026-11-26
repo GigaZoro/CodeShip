@@ -157,7 +157,7 @@ agent is also told it may have it already, so it does not repeat work; a `/goal`
 command in that state is not sent again, so send it yourself if you still need it.
 Messages you queued behind a resumed turn follow once it finishes; if it fails,
 they wait for you, as after any failure.
-A thread that finished its turn to wait on a subagent, a background task, or a
+A thread that finished its turn to wait on a subagent, a background task, a Claude monitor or `sleep` timer, or another
 command or monitor the agent said it was waiting on is woken and told that this work
 stopped. The same happens when the agent's own process ends while it waits, or its session
 fails or is closed after a long time without activity, even if the server keeps running.

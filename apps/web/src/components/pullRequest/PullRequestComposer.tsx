@@ -1,9 +1,12 @@
+import { changeRequestTermKind } from "./changeRequestTerm";
+import { tn, t } from "~/i18n";
 import {
   capitalizeTerm,
   sourceControlClients,
 } from "@t3tools/client-runtime/source-control-clients";
 import type { EnvironmentId, PullRequestDetailView, PullRequestRef } from "@t3tools/contracts";
 import { MessageSquareIcon, Trash2Icon, XIcon } from "lucide-react";
+
 import { useRef, useState } from "react";
 
 import { Button } from "../ui/button";
@@ -16,13 +19,14 @@ import {
   usePendingReviewComments,
   usePullRequestReviewStore,
 } from "./pullRequestReviewStore";
-import { t, tn } from "~/i18n";
+
 import { pullRequestCompletionScope } from "./PullRequestMarkdownTextarea";
 
 export function PullRequestComposer({
   environmentId,
   reference,
   detail,
+  shownHeadSha,
   actionPending,
   onCommentAction,
   onCommented,
@@ -32,6 +36,8 @@ export function PullRequestComposer({
   environmentId: EnvironmentId;
   reference: PullRequestRef;
   detail: PullRequestDetailView;
+  /** The head the reader was shown, which a background refresh of `detail` can run ahead of. */
+  shownHeadSha: string | undefined;
   actionPending: boolean;
   onCommentAction: (
     body: string,
@@ -41,7 +47,8 @@ export function PullRequestComposer({
   onReviewSubmitted: () => void;
   openReviewRequest?: number | undefined;
 }) {
-  const term = sourceControlClients.get(detail.provider).changeRequest.singular;
+  const terminology = sourceControlClients.get(detail.provider).changeRequest;
+  const term = terminology.singular;
   const [open, setOpen] = useState(false);
   const [reviewPending, setReviewPending] = useState(false);
   const [requestedMode, setRequestedMode] = useState<"comment" | "review">("comment");
@@ -163,8 +170,9 @@ export function PullRequestComposer({
               active={open && mode === "review"}
               environmentId={environmentId}
               reference={reference}
+              headSha={shownHeadSha}
               completionScope={pullRequestCompletionScope(detail, environmentId, reference)}
-              term={term}
+              term={changeRequestTermKind(terminology)}
               verdicts={verdicts}
               requestChangesSummaryRequired={sourceControlClients
                 .get(detail.provider)
@@ -176,6 +184,8 @@ export function PullRequestComposer({
                 setOpen(false);
                 onReviewSubmitted();
               }}
+              // A refusal usually means new commits, so show what the host has now.
+              onRefused={onReviewSubmitted}
             />
           </div>
         ) : null}

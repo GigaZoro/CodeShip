@@ -1,4 +1,6 @@
+import { getFormattingLocale, t, tn } from "~/i18n";
 import type { PullRequestUpdateMethod } from "@t3tools/contracts";
+
 import { TriangleAlertIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -6,9 +8,8 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { PullRequestGlyph } from "./pullRequestIcons";
-import { getFormattingLocale, t, tn } from "~/i18n";
 
 interface BaseFreshness {
   readonly behindBy: number | null;
@@ -37,9 +38,9 @@ function PullRequestBaseFreshnessWarning({
       ? t("This branch is out-of-date with {baseBranch}.", { baseBranch })
       : tn(
           freshness.behindBy,
-          "This branch is out-of-date with {baseBranch} by {count} commit.",
-          "This branch is out-of-date with {baseBranch} by {count} commits.",
-          { baseBranch, count: freshness.behindBy.toLocaleString(getFormattingLocale()) },
+          "This branch is out-of-date with {baseBranch} by {formatted} commit.",
+          "This branch is out-of-date with {baseBranch} by {formatted} commits.",
+          { baseBranch, formatted: freshness.behindBy.toLocaleString(getFormattingLocale()) },
         );
   return (
     <Popover>
@@ -131,17 +132,11 @@ export function PullRequestBaseBranch({
     );
   }
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span className="inline-flex min-w-0 max-w-[40%] shrink-0 items-center gap-1">
-            {label}
-          </span>
-        }
-      />
-      <TooltipPopup side="top">
-        {stacked ? t("Stacked on {baseBranch}", { baseBranch }) : baseBranch}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <span className="inline-flex min-w-0 max-w-[40%] shrink-0 items-center gap-1">{label}</span>
+      }
+      label={stacked ? t("Stacked on {baseBranch}", { baseBranch }) : baseBranch}
+    />
   );
 }

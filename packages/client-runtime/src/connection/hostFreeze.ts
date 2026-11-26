@@ -1,5 +1,5 @@
+import { msg, t } from "@t3tools/shared/i18n";
 import type { ServerEventLoopStall } from "@t3tools/contracts";
-import { t } from "@t3tools/shared/i18n";
 
 export interface HostFreezeNotice {
   readonly title: string;
@@ -13,20 +13,21 @@ export interface HostFreezeNotice {
 export function hostFreezeNotice(
   hostLabel: string,
   stall: ServerEventLoopStall | undefined,
+  resolve: typeof t = t,
 ): HostFreezeNotice | null {
   if (stall === undefined) return null;
   const { loadAverage, cpuCount } = stall;
   return {
-    title: t("{hostLabel} froze for {seconds}s", {
-      hostLabel,
+    title: resolve(msg("{host} froze for {seconds}s"), {
+      host: hostLabel,
       seconds: Math.round(stall.durationMs / 1000),
     }),
     description:
       loadAverage !== undefined && loadAverage > cpuCount
-        ? t("Its CPU is overloaded (load {load} on {cpuCount} cores).", {
+        ? resolve(msg("Its CPU is overloaded (load {load} on {cpuCount} cores)."), {
             load: Math.round(loadAverage),
             cpuCount,
           })
-        : t("T3.CodeShip on {hostLabel} was too busy to answer.", { hostLabel }),
+        : resolve(msg("T3.CodeShip on {host} was too busy to answer."), { host: hostLabel }),
   };
 }

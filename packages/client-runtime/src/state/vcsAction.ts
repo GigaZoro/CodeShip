@@ -1,3 +1,7 @@
+import { markMessage } from "@t3tools/shared/markedMessage";
+import { msg, t } from "@t3tools/shared/i18n";
+
+import { type MarkedText, markedTextEnglish, resolveMarkedText } from "../errors/translatable.ts";
 import {
   EnvironmentId,
   type EnvironmentId as EnvironmentIdType,
@@ -31,7 +35,6 @@ import { createCommandPermissions } from "./commandPermissions.ts";
 import { describeGitActionProgress } from "./gitActions.ts";
 import { vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import { invalidateCachedVcsRefs } from "./vcsRefInvalidation.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export const VcsActionOperation = Schema.Literals([
   "refresh_status",
@@ -98,7 +101,15 @@ export class VcsActionUnavailableError extends Schema.TaggedError<VcsActionUnava
   },
 ) {
   override get message(): string {
-    return `Source control operation '${this.operation.replaceAll("_", " ")}' is unavailable.`;
+    return markedTextEnglish(this.i18nMessage);
+  }
+
+  get i18nMessage(): MarkedText {
+    return [
+      markMessage(msg("Source control operation '{operation}' is unavailable."), {
+        operation: this.operation.replaceAll("_", " "),
+      }),
+    ];
   }
 }
 
@@ -115,8 +126,20 @@ export class VcsActionRemoteFailureError extends Schema.TaggedError<VcsActionRem
   },
 ) {
   override get message(): string {
-    const phase = this.phase === null ? "execution" : this.phase;
-    return `Source control action '${this.action}' failed during ${phase}.`;
+    return markedTextEnglish(this.i18nMessage);
+  }
+
+  get i18nMessage(): MarkedText {
+    return [
+      this.phase === null
+        ? markMessage(msg("Source control action '{action}' failed during execution."), {
+            action: this.action,
+          })
+        : markMessage(msg("Source control action '{action}' failed during {phase}."), {
+            action: this.action,
+            phase: this.phase,
+          }),
+    ];
   }
 }
 
@@ -131,7 +154,15 @@ export class VcsActionMissingTerminalEventError extends Schema.TaggedError<VcsAc
   },
 ) {
   override get message(): string {
-    return `Source control action '${this.action}' ended without a terminal result.`;
+    return markedTextEnglish(this.i18nMessage);
+  }
+
+  get i18nMessage(): MarkedText {
+    return [
+      markMessage(msg("Source control action '{action}' ended without a terminal result."), {
+        action: this.action,
+      }),
+    ];
   }
 }
 
@@ -227,6 +258,38 @@ export function beginVcsActionState(
   };
 }
 
+const RUN_ACTION_LABEL = msg("Running source control action");
+const ACTION_FAILED_ERROR = msg("Source control action failed.");
+
+function hookRunningText(hookName: string): string {
+  return markMessage(msg("Running {hook}..."), { hook: hookName });
+}
+
+/**
+ * The action's progress label in the active language. Labels this module wrote translate;
+ * phase labels from the server stay as they are.
+ * @public
+ */
+export function vcsActionLabelText(
+  state: Pick<VcsActionState, "currentLabel" | "hookName">,
+  resolve: typeof t = t,
+): string | null {
+  const label = state.currentLabel;
+  if (label === RUN_ACTION_LABEL) return resolve(RUN_ACTION_LABEL);
+  if (state.hookName !== null && label === markedTextEnglish([hookRunningText(state.hookName)])) {
+    return resolveMarkedText([hookRunningText(state.hookName)], resolve);
+  }
+  return label;
+}
+
+/** @public The action's error in the active language; messages from the server stay as they are. */
+export function vcsActionErrorText(
+  state: Pick<VcsActionState, "error">,
+  resolve: typeof t = t,
+): string | null {
+  return state.error === ACTION_FAILED_ERROR ? resolve(ACTION_FAILED_ERROR) : state.error;
+}
+
 function failVcsActionState(
   operation: VcsActionOperation,
   actionId: string,
@@ -236,7 +299,7 @@ function failVcsActionState(
     ...EMPTY_VCS_ACTION_STATE,
     operation,
     actionId,
-    error: error instanceof Error ? error.message : t("Source control action failed."),
+    error: error instanceof Error ? error.message : ACTION_FAILED_ERROR,
   };
 }
 
@@ -370,7 +433,7 @@ export function applyVcsActionProgressEvent(
         actionId: event.actionId,
         action: event.action,
         operation: "run_change_request",
-        currentLabel: t("Running {hookName}...", { hookName: event.hookName }),
+        currentLabel: markedTextEnglish([hookRunningText(event.hookName)]),
         hookName: event.hookName,
         hookStartedAtMs: now,
         lastOutputLine: null,
@@ -468,7 +531,7 @@ export function createVcsActionManager<R, E>(
           stateAtom,
           beginVcsActionState({
             operation: "run_change_request",
-            label: t("Running source control action"),
+            label: RUN_ACTION_LABEL,
             actionId: input.actionId,
           }),
         );

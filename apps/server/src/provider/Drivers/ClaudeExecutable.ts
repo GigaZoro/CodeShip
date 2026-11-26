@@ -56,7 +56,10 @@ export const resolveClaudeSdkExecutablePath = Effect.fn("resolveClaudeSdkExecuta
 
     const resolveExecutable = yield* SpawnExecutableResolution;
     const isFile = yield* ClaudeExecutableFileCheck;
-    const resolved = resolveExecutable(binaryPath, platform, environment, cwd) ?? binaryPath;
+    const resolved =
+      (yield* Effect.promise(async () =>
+        resolveExecutable(binaryPath, platform, environment, cwd),
+      )) ?? binaryPath;
     const extension = NodePath.win32.extname(resolved).toLowerCase();
     if (!WINDOWS_SHIM_EXTENSIONS.has(extension)) {
       return resolved;
@@ -98,3 +101,33 @@ export const runClaudeCli = Effect.fn("runClaudeCli")(function* (input: {
     }),
   );
 });
+
+/**
+ * Returns an effect reading the real path of the installed Claude binary.
+ * Updates repoint the installed link to a new version file, so comparing this
+ * detects when a live CLI process was started from an older version.
+ */
+export const claudeProgramReader = Effect.fn("claudeProgramReader")(function* (
+  binaryPath: string,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<Effect.Effect<string | undefined>> {
+  const platform = yield* HostProcess.Platform;
+  const resolveExecutable = yield* SpawnExecutableResolution;
+  return Effect.promise(async () => {
+    try {
+      const resolved = await resolveExecutable(binaryPath, platform, environment);
+      return resolved === undefined ? undefined : await NodeFS.promises.realpath(resolved);
+    } catch {
+      return undefined;
+    }
+  });
+});
+
+/**
+ * Reports whether an update replaced the program a live CLI process started
+ * from. An unreadable path on either side reports no update.
+ */
+export const claudeProgramWasReplaced = (
+  startedFrom: string | undefined,
+  now: string | undefined,
+): boolean => startedFrom !== undefined && now !== undefined && startedFrom !== now;

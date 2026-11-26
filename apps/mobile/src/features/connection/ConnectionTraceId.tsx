@@ -15,7 +15,8 @@ export function ConnectionTraceId({
   const copy = () => copyTextWithHaptic(traceId, { target: "connection-trace-id" });
   return (
     <>
-      {" Trace ID: "}
+      {" "}
+      {t("Trace ID:")}{" "}
       <Text
         accessibilityHint={
           activation === "longPress"

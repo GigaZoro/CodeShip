@@ -1,8 +1,9 @@
+import { t } from "~/i18n";
+
 import { useState } from "react";
 
 import { MermaidDiagram } from "../chat/MermaidDiagram";
 import { ExpandedImageDialog } from "../chat/ExpandedImageDialog";
-import { t } from "~/i18n";
 
 export default function MermaidViewer(props: { readonly text: string }) {
   const [expanded, setExpanded] = useState<string | null>(null);

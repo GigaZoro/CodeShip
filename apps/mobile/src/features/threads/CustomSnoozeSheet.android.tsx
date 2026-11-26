@@ -37,6 +37,7 @@ import {
   applySnoozePickerDate,
   applySnoozePickerTime,
   snoozeDateToPickerDate,
+  snoozePickerLabels,
 } from "./customSnoozeDate";
 import { getFormattingLocale, msg, t } from "../../lib/i18n";
 
@@ -80,6 +81,7 @@ export function CustomSnoozeSheet(props: Props) {
   const [amount, setAmount] = useState(2);
   const [unit, setUnit] = useState<"minutes" | "hours" | "days">("hours");
   const [error, setError] = useState<string | null>(null);
+  const pickerLabels = snoozePickerLabels(date, getFormattingLocale(), is24Hour);
   const submit = () => {
     const input: CustomSnoozeInput =
       mode === "date"
@@ -164,21 +166,8 @@ export function CustomSnoozeSheet(props: Props) {
                     <SegmentedControl
                       variant="card"
                       options={[
-                        {
-                          value: "date",
-                          label: date.toLocaleDateString(getFormattingLocale(), {
-                            month: "short",
-                            day: "numeric",
-                          }),
-                        },
-                        {
-                          value: "time",
-                          label: date.toLocaleTimeString(getFormattingLocale(), {
-                            hour: "numeric",
-                            minute: "2-digit",
-                            hourCycle: is24Hour ? "h23" : "h12",
-                          }),
-                        },
+                        { value: "date", label: pickerLabels.date },
+                        { value: "time", label: pickerLabels.time },
                       ]}
                       selected={picker}
                       onSelect={setPicker}

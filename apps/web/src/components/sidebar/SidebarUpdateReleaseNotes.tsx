@@ -1,14 +1,16 @@
+import { t, msg, tn } from "~/i18n";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
+
 import { ExternalLinkIcon } from "lucide-react";
 
 import {
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
 } from "../desktopUpdate.logic";
+
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { openDesktopUpdateReleaseNotes } from "../desktopUpdate.toast";
 
-import { t, tn } from "~/i18n";
 type DesktopUpdateShell = Pick<DesktopBridge, "openExternal">;
 
 function keyReleaseNoteItems(items: ReadonlyArray<string>) {
@@ -21,15 +23,15 @@ function keyReleaseNoteItems(items: ReadonlyArray<string>) {
 }
 
 /** Feed times read "3h ago"; build days from a prerelease version read "today" or "2d ago". */
-function formatReleaseAge(releasedAt: string): string {
+function formatReleaseAge(releasedAt: string, resolve: typeof t = t): string {
   const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(releasedAt);
-  if (!day) return formatRelativeTimeLabel(releasedAt);
+  if (!day) return formatRelativeTimeLabel(releasedAt, undefined, resolve);
   const now = new Date();
   const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const days = Math.round(
     (today - Date.UTC(Number(day[1]), Number(day[2]) - 1, Number(day[3]))) / 86_400_000,
   );
-  return days <= 0 ? t("today") : t("{days}d ago", { days });
+  return days <= 0 ? resolve(msg("today")) : resolve(msg("{days}d ago"), { days });
 }
 
 function ReleaseLink({

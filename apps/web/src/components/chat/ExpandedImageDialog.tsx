@@ -1,13 +1,8 @@
 import { t } from "~/i18n";
 import { memo, useRef, useState, type ReactNode, type KeyboardEvent } from "react";
 import { flushSync } from "react-dom";
-import {
-  ArrowLeftIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  ImageIcon,
-  TextIcon,
-} from "lucide-react";
+
+import { ChevronLeftIcon, ChevronRightIcon, ImageIcon, TextIcon, XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import type { ExpandedImageItem, ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -19,10 +14,10 @@ import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { isContextMenuOpen } from "../../contextMenuFallback";
 import {
   SnapShotAccessibilityData,
+  SnapShotCopyButton,
   SnapShotContentsButton,
   snapShotAccessibilityDetails,
 } from "./SnapShotAttachmentDetails";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ZoomableImage, type ZoomableImageHandle } from "./ZoomableImage";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import { useAtomValue } from "@effect/atom-react";
@@ -32,6 +27,7 @@ import { expandedImageKey } from "./ExpandedImagePreview";
 import { registerThreadOverlay } from "./threadOverlayRetention";
 import { mediaReferenceFileName } from "@t3tools/client-runtime/media-reference";
 import { mediaMimeType, mediaMimeTypeFromExtension } from "@t3tools/shared/mediaPreview";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 interface ExpandedImageDialogProps {
   preview: ExpandedImagePreview;
@@ -198,14 +194,13 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         <Button
           type="button"
           ref={closeButtonRef}
-          size="sm"
+          size="icon"
           variant="media-close"
-          className="absolute left-0 top-0 z-20 max-[8rem]:left-1/2 max-[8rem]:-translate-x-1/2"
+          className="absolute end-0 top-0 z-20 max-[8rem]:end-auto max-[8rem]:left-1/2 max-[8rem]:-translate-x-1/2"
           onClick={close}
-          aria-label={isVideo ? t("Back, close video preview") : t("Back, close image preview")}
+          aria-label={isVideo ? t("Close video preview") : t("Close image preview")}
         >
-          <ArrowLeftIcon aria-hidden="true" />
-          {t("Back")}
+          <XIcon aria-hidden="true" />
         </Button>
         {preview.images.length > 1 && (
           <Button
@@ -255,31 +250,34 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                 {preview.images.length > 1 ? ` (${index + 1}/${preview.images.length})` : ""}
               </span>
               {accessibilityDetails && item.source ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        aria-label={contentsLabel}
-                        aria-pressed={showingAccessibilityDetails}
-                        onClick={() =>
-                          setAccessibilityDetailsSrc(showingAccessibilityDetails ? null : item.src)
-                        }
-                        size="icon-micro"
-                        variant="overlay"
-                      />
-                    }
-                  >
-                    {showingAccessibilityDetails ? (
-                      <ImageIcon className="size-3" aria-hidden="true" />
-                    ) : (
-                      <TextIcon className="size-3" aria-hidden="true" />
-                    )}
-                  </TooltipTrigger>
-                  <TooltipPopup side="top">{contentsLabel}</TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger
+                  render={
+                    <Button
+                      aria-label={contentsLabel}
+                      aria-pressed={showingAccessibilityDetails}
+                      onClick={() =>
+                        setAccessibilityDetailsSrc(showingAccessibilityDetails ? null : item.src)
+                      }
+                      size="icon-micro"
+                      variant="overlay"
+                    />
+                  }
+                  label={contentsLabel}
+                >
+                  {showingAccessibilityDetails ? (
+                    <ImageIcon className="size-3" aria-hidden="true" />
+                  ) : (
+                    <TextIcon className="size-3" aria-hidden="true" />
+                  )}
+                </SharedTooltipTrigger>
               ) : item.source ? (
                 <SnapShotContentsButton source={item.source} side="top" />
               ) : null}
+              {item.onCopySnapshot && (
+                <div className="-my-1.5">
+                  <SnapShotCopyButton onCopy={item.onCopySnapshot} />
+                </div>
+              )}
             </div>
           </div>
         </MediaActions>

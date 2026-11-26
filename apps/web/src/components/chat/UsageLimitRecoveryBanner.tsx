@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import {
   type EnvironmentId,
   type ProviderInstanceId,
@@ -26,7 +29,6 @@ import { toastManager } from "../ui/toast";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import { RetryAccountButton } from "./RetryAccountButton";
 import { copyAdminRequest } from "./ThreadErrorBanner";
-import { t } from "~/i18n";
 
 type RecoveryProps = {
   runId: RunId;
@@ -38,6 +40,8 @@ type RecoveryProps = {
   snoozedUntil: string | null;
   recovery: OrchestrationV2LimitRecovery | null;
   timestampFormat: TimestampFormat;
+  resetPassed?: boolean;
+  displayPassed?: boolean;
   onChange: (recovery: OrchestrationV2LimitRecoveryUpdate) => Promise<void>;
   /** Ends the account's hold so its next turn tries it again; absent when the account is unknown. */
   onRetryAccount?: () => Promise<ProviderRetryUsageLimitResult>;
@@ -45,43 +49,86 @@ type RecoveryProps = {
   signInSettings?: { environmentId: EnvironmentId; instanceId: ProviderInstanceId };
 };
 
-export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBannerStackItem {
-  const {
-    runId,
-    errorCode,
-    resetAt,
-    stoppedAt,
-    settled,
-    requestPending,
-    snoozedUntil,
-    timestampFormat,
-  } = props;
+function parseEpochMs(isoDate: string | null): number | null {
+  if (isoDate === null) return null;
+  const parsed = Date.parse(isoDate);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function limitRecoveryScheduleState(
+  props: Pick<
+    RecoveryProps,
+    "runId" | "resetAt" | "stoppedAt" | "settled" | "requestPending" | "recovery" | "snoozedUntil"
+  >,
+) {
   // The server refuses recovery changes while a request is pending.
   const canSchedule =
-    !settled && !requestPending && resetAt !== null && Date.parse(resetAt) > Date.parse(stoppedAt);
-  const resumes = canSchedule && resumeScheduled(props);
+    !props.settled &&
+    !props.requestPending &&
+    props.resetAt !== null &&
+    Date.parse(props.resetAt) > Date.parse(props.stoppedAt);
+  const resumes =
+    canSchedule &&
+    props.recovery?.runId === props.runId &&
+    props.recovery.resetAt === props.resetAt &&
+    props.recovery.autoResume;
+  const displayAt =
+    resumes &&
+    props.resetAt &&
+    props.snoozedUntil &&
+    Date.parse(props.snoozedUntil) > Date.parse(props.resetAt)
+      ? props.snoozedUntil
+      : props.resetAt;
+  return { canSchedule, resumes, displayAt };
+}
+
+export function useUsageLimitRecoveryBannerItem(
+  props: RecoveryProps | null,
+  resolve: typeof t = t,
+): ComposerBannerStackItem | null {
+  const displayAt = props === null ? null : limitRecoveryScheduleState(props).displayAt;
+  const resetPassed = useDeadlinePassed(props === null ? null : parseEpochMs(props.resetAt));
+  const displayPassed = useDeadlinePassed(parseEpochMs(displayAt));
+  if (props === null) return null;
+  return usageLimitRecoveryBannerItem({ ...props, resetPassed, displayPassed }, resolve);
+}
+
+export function usageLimitRecoveryBannerItem(
+  props: RecoveryProps,
+  resolve: typeof t = t,
+): ComposerBannerStackItem {
+  const { runId, errorCode, resetAt, timestampFormat } = props;
+  const { canSchedule, resumes, displayAt } = limitRecoveryScheduleState(props);
+  const resetAtMs = parseEpochMs(resetAt);
+  const displayAtMs = parseEpochMs(displayAt);
+  const resetPassed = props.resetPassed ?? (resetAtMs !== null && resetAtMs <= Date.now());
+  const displayPassed = props.displayPassed ?? (displayAtMs !== null && displayAtMs <= Date.now());
   const workspaceLimit = errorCode === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
   const appCap = errorCode === CHATGPT_APP_CAP_CODE;
   const chatGptLimit = workspaceLimit || appCap || errorCode === CHATGPT_USAGE_LIMIT_CODE;
   const recoveryActions = canSchedule ? (
     <RecoveryActions key={`${runId}:${resetAt}`} {...props} />
   ) : null;
-  const displayAt =
-    resumes && resetAt && snoozedUntil && Date.parse(snoozedUntil) > Date.parse(resetAt)
-      ? snoozedUntil
-      : resetAt;
-  const resetDescription = displayAt
-    ? resumes
-      ? t("Resumes {time}", { time: formatUpcomingTimestamp(displayAt, timestampFormat) })
-      : t("Resets {time}", { time: formatUpcomingTimestamp(displayAt, timestampFormat) })
-    : t("Reset time unavailable; retry manually");
+  const resumesUpcoming = resumes && !displayPassed;
+  const shownAt = resumesUpcoming ? displayAt : resetAt;
+  const formattedTime = shownAt
+    ? formatUpcomingTimestamp(shownAt, timestampFormat, undefined, undefined, resolve)
+    : null;
+  const resetDescription =
+    formattedTime !== null
+      ? resumesUpcoming
+        ? resolve(msg("Resumes {time}"), { time: formattedTime })
+        : resetPassed
+          ? resolve(msg("Reset {time}"), { time: formattedTime })
+          : resolve(msg("Resets {time}"), { time: formattedTime })
+      : resolve(msg("Reset time unavailable; retry manually"));
   if (!chatGptLimit) {
     return {
       id: `usage-limit-recovery:${runId}`,
       variant: "warning",
       group: "environment",
       icon: <GaugeIcon />,
-      title: t("Usage limit reached"),
+      title: resolve(msg("Usage limit reached")),
       description: resetDescription,
       actions: recoveryActions,
     };
@@ -102,7 +149,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
             <RetryAccountButton
               onRetry={props.onRetryAccount}
               formatTime={(isoDate) => formatUpcomingTimestamp(isoDate, timestampFormat)}
-              resumes={resumeScheduled(props) && !snoozedUntilReset(props)}
+              resumes={resumesUpcoming && !limitRecoveryOwnsSnooze(props)}
             />
           ) : null}
           {props.signInSettings ? (
@@ -125,9 +172,11 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
     variant: "warning",
     group: "environment",
     icon: <OpenAI aria-hidden="true" />,
-    title: t("ChatGPT usage limit reached"),
+    title: resolve(msg("ChatGPT usage limit reached")),
     description: workspaceLimit
-      ? t("You've reached your workspace's limit for using your ChatGPT plan in other apps.")
+      ? resolve(
+          msg("You've reached your workspace's limit for using your ChatGPT plan in other apps."),
+        )
       : resetDescription,
     actions: (
       <>
@@ -144,31 +193,23 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
   };
 }
 
-function resumeScheduled({ runId, resetAt, recovery }: RecoveryProps): boolean {
-  return recovery?.runId === runId && recovery.resetAt === resetAt && recovery.autoResume;
-}
-
-/** A snooze holds the chat until the reset, even when its account has room sooner. */
-function snoozedUntilReset({ runId, resetAt, recovery, snoozedUntil }: RecoveryProps): boolean {
-  return limitRecoveryOwnsSnooze({ runId, resetAt, recovery, snoozedUntil });
-}
-
-function RecoveryActions(props: RecoveryProps) {
-  const { runId, resetAt, onChange } = props;
+function RecoveryActions({ runId, resetAt, recovery, snoozedUntil, onChange }: RecoveryProps) {
   const [pending, setPending] = useState(false);
 
-  const scheduled = resumeScheduled(props);
+  const scheduled =
+    recovery?.runId === runId && recovery.resetAt === resetAt && recovery.autoResume;
   // The server leaves snoozedUntil in place after the timer wakes the thread,
   // so a snooze whose reset has passed is no longer active.
   const resetPassed = useDeadlinePassed(resetAt === null ? null : Date.parse(resetAt));
-  const snoozed = snoozedUntilReset(props) && !resetPassed;
+  const snoozed =
+    limitRecoveryOwnsSnooze({ runId, resetAt, recovery, snoozedUntil }) && !resetPassed;
   async function toggle(action: "resume" | "snooze") {
     if (resetAt === null) return;
     if (action === "snooze" && !snoozed && Date.parse(resetAt) <= Date.now()) {
       toastManager.add({
         type: "error",
-        title: t("Could not snooze thread"),
-        description: t("The reset time has passed. Retry the thread manually."),
+        title: t(msg("Could not snooze thread")),
+        description: t(msg("The reset time has passed. Retry the thread manually.")),
       });
       // The deadline timer can lag after a throttled tab or sleep; disable now.
       deadlineStore(Date.parse(resetAt)).refresh();
@@ -185,8 +226,10 @@ function RecoveryActions(props: RecoveryProps) {
       toastManager.add({
         type: "error",
         title:
-          action === "resume" ? t("Could not change auto-resume") : t("Could not snooze thread"),
-        description: cause instanceof Error ? cause.message : t("An error occurred."),
+          action === "resume"
+            ? t(msg("Could not change auto-resume"))
+            : t(msg("Could not snooze thread")),
+        description: thrownErrorMessage(cause, t) ?? t(msg("An error occurred.")),
       });
     }
     setPending(false);
@@ -195,7 +238,13 @@ function RecoveryActions(props: RecoveryProps) {
   return (
     <span className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
       <InlineButton touchTarget="padded" disabled={pending} onClick={() => void toggle("resume")}>
-        {pending ? t("Saving...") : scheduled ? t("Cancel auto-resume") : t("Resume at reset")}
+        {pending
+          ? t("Saving...")
+          : scheduled
+            ? t("Cancel auto-resume")
+            : resetPassed
+              ? t("Resume now")
+              : t("Resume at reset")}
       </InlineButton>
       <InlineButton
         touchTarget="padded"

@@ -1,5 +1,7 @@
+import { msg, t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import type { PullRequestAction, PullRequestSummary } from "@t3tools/contracts";
+
 import { createContext, use, type ReactNode } from "react";
 import type { ChangeRequestTerminology } from "@t3tools/client-runtime/source-control-clients";
 
@@ -8,7 +10,6 @@ import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useUiStateStore } from "~/uiStateStore";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { resolvePullRequestMergeMethod } from "./pullRequestDetail.logic";
 import { PullRequestGlyph } from "./pullRequestIcons";
 import { pullRequestQuickActions, type EnvironmentPullRequestEntry } from "./pullRequestList.logic";
@@ -16,7 +17,9 @@ import {
   usePullRequestActionRunner,
   usePullRequestDefaultMergeMethodResolver,
 } from "./usePullRequestActions";
-import { msg, t } from "~/i18n";
+
+import { changeRequestTermKind } from "./changeRequestTerm";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 type PullRequestSpeedActionEntry = Pick<
   EnvironmentPullRequestEntry,
@@ -85,43 +88,49 @@ export function PullRequestSpeedActions<Entry extends PullRequestSpeedActionEntr
     <SpeedModeGroup
       busy={busy}
       pending={actionPending || closing}
-      label={t("Quick actions for {term} #{number}", {
-        term: terminology.singular,
-        number: entry.number,
-      })}
+      label={
+        changeRequestTermKind(terminology) === "mr"
+          ? t("Quick actions for merge request #{number}", { number: entry.number })
+          : changeRequestTermKind(terminology) === "cr"
+            ? t("Quick actions for change request #{number}", { number: entry.number })
+            : t("Quick actions for pull request #{number}", { number: entry.number })
+      }
     >
       {actions.map((action) => {
         const label = t(ACTIONS[action].label);
         const Icon = ACTIONS[action].Icon;
         return (
-          <Tooltip key={action}>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant={action === "close" ? "destructive-outline" : "outline"}
-                  size="xs"
-                  disabled={!canWrite || busy || (action === "merge" && entry.stack !== undefined)}
-                  aria-label={t("{label} #{number}", { label, number: entry.number })}
-                  onClick={() => void perform(action)}
-                  onPointerDown={(event) => {
-                    if (action !== "close" || !event.isPrimary || event.button !== 0) return;
-                    event.stopPropagation();
-                    onCloseSweepStart?.(entry, event.nativeEvent);
-                  }}
-                />
-              }
-            >
-              {busy ? <Spinner size="xs" /> : <Icon aria-hidden className="size-3" />}
-              {label}
-            </TooltipTrigger>
-            <TooltipPopup>
-              {action === "merge" && entry.stack
-                ? t("Open this {term} to merge its stack", { term: terminology.singular })
+          <SharedTooltipTrigger
+            key={action}
+            render={
+              <Button
+                variant={action === "close" ? "destructive-outline" : "outline"}
+                size="xs"
+                disabled={!canWrite || busy || (action === "merge" && entry.stack !== undefined)}
+                aria-label={t(ACTIONS[action].numbered, { number: entry.number })}
+                onClick={() => void perform(action)}
+                onPointerDown={(event) => {
+                  if (action !== "close" || !event.isPrimary || event.button !== 0) return;
+                  event.stopPropagation();
+                  onCloseSweepStart?.(entry, event.nativeEvent);
+                }}
+              />
+            }
+            label={
+              action === "merge" && entry.stack
+                ? changeRequestTermKind(terminology) === "mr"
+                  ? t("Open this merge request to merge its stack")
+                  : changeRequestTermKind(terminology) === "cr"
+                    ? t("Open this change request to merge its stack")
+                    : t("Open this pull request to merge its stack")
                 : action === "close" && onCloseSweepStart
                   ? t("Close immediately, or drag across rows to close several")
-                  : t("{label} immediately", { label })}
-            </TooltipPopup>
-          </Tooltip>
+                  : t(ACTIONS[action].immediate)
+            }
+          >
+            {busy ? <Spinner size="xs" /> : <Icon aria-hidden className="size-3" />}
+            {label}
+          </SharedTooltipTrigger>
         );
       })}
     </SpeedModeGroup>
@@ -168,8 +177,28 @@ function SpeedModeGroup({
 }
 
 const ACTIONS = {
-  close: { label: msg("Close"), Icon: PullRequestGlyph.closed },
-  merge: { label: msg("Merge"), Icon: PullRequestGlyph.merged },
-  ready: { label: msg("Ready for review"), Icon: PullRequestGlyph.pullRequest },
-  reopen: { label: msg("Reopen"), Icon: PullRequestGlyph.reopen },
+  close: {
+    label: msg("Close"),
+    numbered: msg("Close #{number}"),
+    immediate: msg("Close immediately"),
+    Icon: PullRequestGlyph.closed,
+  },
+  merge: {
+    label: msg("Merge"),
+    numbered: msg("Merge #{number}"),
+    immediate: msg("Merge immediately"),
+    Icon: PullRequestGlyph.merged,
+  },
+  ready: {
+    label: msg("Ready for review"),
+    numbered: msg("Ready for review #{number}"),
+    immediate: msg("Ready for review immediately"),
+    Icon: PullRequestGlyph.pullRequest,
+  },
+  reopen: {
+    label: msg("Reopen"),
+    numbered: msg("Reopen #{number}"),
+    immediate: msg("Reopen immediately"),
+    Icon: PullRequestGlyph.reopen,
+  },
 } as const;

@@ -1,3 +1,5 @@
+import { msg, t } from "../../lib/i18n";
+import { resolveLinkedThreadOpen } from "@t3tools/client-runtime/linked-thread";
 import {
   formatSubagentDisplayTitle,
   resolveSubagentMetadata,
@@ -6,6 +8,7 @@ import {
 } from "@t3tools/client-runtime/state/subagent-display";
 import {
   isActiveSubagentStatus,
+  promptTitle,
   type RuntimeSubagent,
   type SubagentWorkflowGroup,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -17,10 +20,6 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
-
-import { t } from "../../lib/i18n";
-
-const PROMPT_TITLE_LIMIT = 80;
 
 export type SubagentRowTone = "working" | "completed" | "failed" | "stopped";
 
@@ -35,33 +34,52 @@ export interface SubagentRowPresentation {
   readonly runsOn: string | null;
 }
 
+export interface SubagentThreadTarget {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  /** Set when the thread is read through the environment that links to it, not opened there. */
+  readonly linked?: { readonly viaEnvironmentId: EnvironmentId; readonly label: string };
+}
+
 /**
- * Where an agent's thread opens: here, or in the linked environment that runs
- * it. Null when there is no thread, or this app is not connected to that
- * environment.
+ * Where an agent's thread opens: here, in the linked environment that runs it when this app is
+ * connected there, or read-only through this environment's link. Once the link is gone a saved
+ * environment opens in place, where the app can reconnect to it; with neither, the read-only view
+ * says what to link again. Null when there is no thread.
  */
 export function subagentThreadTarget(
   subagent: Pick<OrchestrationV2Subagent, "childThreadId" | "remoteChild">,
   environmentId: EnvironmentId,
-  isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
-): { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null {
+  ownConnection: (environmentId: EnvironmentId) => { readonly connected: boolean } | undefined,
+  /** Whether `environmentId` still holds a link to the given environment. */
+  isLinked: (environmentId: EnvironmentId) => boolean,
+): SubagentThreadTarget | null {
   if (subagent.childThreadId !== null) {
     return { environmentId, threadId: subagent.childThreadId };
   }
   const remote = subagent.remoteChild;
-  return remote !== undefined && isKnownEnvironment(remote.environmentId)
-    ? { environmentId: remote.environmentId, threadId: remote.threadId }
-    : null;
+  if (remote === undefined) return null;
+  const target = { environmentId: remote.environmentId, threadId: remote.threadId };
+  const open = resolveLinkedThreadOpen({
+    environmentId: remote.environmentId,
+    viaEnvironmentId: environmentId,
+    own: ownConnection(remote.environmentId),
+    linked: isLinked(remote.environmentId),
+  });
+  return open === "direct"
+    ? target
+    : { ...target, linked: { viaEnvironmentId: environmentId, label: remote.label } };
 }
 
-function rowTitle(subagent: Pick<OrchestrationV2Subagent, "title" | "prompt">): string {
+function rowTitle(
+  subagent: Pick<OrchestrationV2Subagent, "title" | "prompt">,
+  resolve: typeof t,
+): string {
   const title = subagent.title?.trim();
   if (title) return formatSubagentDisplayTitle(title);
   const prompt = subagent.prompt.trim();
-  if (prompt.length === 0) return t("Subagent");
-  return prompt.length > PROMPT_TITLE_LIMIT
-    ? `${prompt.slice(0, PROMPT_TITLE_LIMIT - 3)}...`
-    : prompt;
+  if (prompt.length === 0) return resolve(msg("Subagent"));
+  return promptTitle(prompt);
 }
 
 function rowTone(status: OrchestrationV2Subagent["status"]): SubagentRowTone {
@@ -71,23 +89,23 @@ function rowTone(status: OrchestrationV2Subagent["status"]): SubagentRowTone {
   return "stopped";
 }
 
-function rowStatusLabel(status: OrchestrationV2Subagent["status"]): string {
+function rowStatusLabel(status: OrchestrationV2Subagent["status"], resolve: typeof t): string {
   switch (status) {
     case "pending":
     case "running":
-      return t("Working");
+      return resolve(msg("Working"));
     case "waiting":
-      return t("Waiting");
+      return resolve(msg("Waiting"));
     case "idle":
-      return t("Idle");
+      return resolve(msg("Idle"));
     case "completed":
-      return t("Completed");
+      return resolve(msg("Completed"));
     case "failed":
-      return t("Failed");
+      return resolve(msg("Failed"));
     case "cancelled":
-      return t("Cancelled");
+      return resolve(msg("Cancelled"));
     case "interrupted":
-      return t("Interrupted");
+      return resolve(msg("Interrupted"));
   }
 }
 
@@ -97,12 +115,13 @@ export function resolveSubagentRowPresentation(
     "title" | "prompt" | "status" | "progress" | "result" | "childThreadId" | "remoteChild"
   >,
   canOpenRemote = false,
+  resolve: typeof t = t,
 ): SubagentRowPresentation {
   const live = isActiveSubagentStatus(subagent.status);
   return {
-    title: rowTitle(subagent),
+    title: rowTitle(subagent, resolve),
     detail: subagentDetailPreview(subagent),
-    statusLabel: rowStatusLabel(subagent.status),
+    statusLabel: rowStatusLabel(subagent.status, resolve),
     tone: rowTone(subagent.status),
     live,
     canOpenThread:
@@ -130,7 +149,10 @@ function railTone(members: ReadonlyArray<RuntimeSubagent>): WorkflowRailTone {
   return members.every((member) => member.status === "completed") ? "completed" : "stopped";
 }
 
-export function workflowRail(group: SubagentWorkflowGroup): ReadonlyArray<WorkflowRailItem> {
+export function workflowRail(
+  group: SubagentWorkflowGroup,
+  resolve: typeof t = t,
+): ReadonlyArray<WorkflowRailItem> {
   const items = group.phases.map((phase) => ({
     key: String(phase.index),
     title: phase.title,
@@ -139,7 +161,7 @@ export function workflowRail(group: SubagentWorkflowGroup): ReadonlyArray<Workfl
   if (group.unphasedMembers.length > 0) {
     items.push({
       key: "unphased",
-      title: items.length === 0 ? t("Agents") : t("Other"),
+      title: items.length === 0 ? resolve(msg("Agents")) : resolve(msg("Other")),
       members: group.unphasedMembers,
     });
   }
@@ -175,9 +197,10 @@ function capitalize(value: string): string {
 export function workflowMemberMetadata(
   member: Pick<RuntimeSubagent, "model" | "effort" | "speed">,
   provider: Pick<ServerProvider, "driver" | "models"> | undefined,
+  resolve: typeof t = t,
 ) {
   const model = member.model?.trim()
-    ? resolveSubagentMetadata({ model: member.model, provider }).modelLabel
+    ? resolveSubagentMetadata({ model: member.model, provider }, resolve).modelLabel
     : null;
   const slug = provider
     ? resolveSelectableModel(provider.driver, member.model, provider.models)
@@ -185,7 +208,8 @@ export function workflowMemberMetadata(
   const effortChoice = provider?.models
     .find((candidate) => candidate.slug === slug)
     ?.capabilities?.optionDescriptors?.flatMap((descriptor) =>
-      descriptor.type === "select" && REASONING_EFFORT_OPTION_IDS.includes(descriptor.id)
+      descriptor.type === "select" &&
+      (descriptor.role === "reasoning" || REASONING_EFFORT_OPTION_IDS.includes(descriptor.id))
         ? descriptor.options
         : [],
     )

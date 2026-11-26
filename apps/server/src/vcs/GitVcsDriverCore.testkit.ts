@@ -185,8 +185,10 @@ const seedRepository = Effect.runSync(
 
 export const initRepoWithCommit = (cwd: string) =>
   Effect.gen(function* () {
-    const seed = yield* seedRepository;
     const fileSystem = yield* FileSystem.FileSystem;
+    if ((yield* fileSystem.exists(cwd)) && (yield* fileSystem.readDirectory(cwd)).length > 0)
+      return yield* commitInitialRepo(cwd);
+    const seed = yield* seedRepository;
     yield* fileSystem.copy(seed.directory, cwd);
     return { initialBranch: seed.initialBranch };
   });

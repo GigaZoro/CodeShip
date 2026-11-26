@@ -5,6 +5,7 @@ import {
   ProviderSetupError,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
+import type * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -12,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -28,6 +30,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import {
   claudeFlagSettings,
   createClaudeAdapterV2,
+  resolveClaudeModeAvailability,
   type ClaudeAdapterV2DriverEnv,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
@@ -61,7 +64,10 @@ import {
 import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
-import { resolveClaudeModelCatalog } from "../ClaudeModelCatalog.ts";
+import {
+  resolveClaudeModelCatalog,
+  scopeClaudeUpgradeMessageToChannel,
+} from "../ClaudeModelCatalog.ts";
 import {
   makeClaudeCodeModelRoutes,
   resolveClaudeModelSettingsKey,
@@ -158,6 +164,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverSettings = yield* ServerSettingsService;
+
+    const host = yield* ProviderHost.ProviderHost;
     // The server cwd is $HOME in packaged desktop builds, and `claude`
     // wrappers that scope themselves to their cwd refuse to run there.
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -254,15 +262,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         Effect.provideService(Path.Path, path),
       );
     if (loginHome) yield* prepareLoginHome(loginHome);
+    const homeDirectory = yield* HostProcess.HomeDirectory;
     const effectiveConfig = {
       ...config,
       enabled,
-      binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      binaryPath: expandHomePath(config.binaryPath, homeDirectory),
       homePath: loginHome ?? accountHome ?? config.homePath,
     } satisfies ClaudeSettings;
     const resolveMaintenance = yield* makeClaudeMaintenanceResolution({
       binaryPath: effectiveConfig.binaryPath,
       env: processEnv,
+      npmCacheDir: path.join(host.paths.providerStatusCacheDir, "npm"),
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -459,6 +469,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
       stateDir,
     );
+    // Retain reports until the registry subscribes; end its listener on teardown.
+    const workspaceRescans = yield* Queue.unbounded<string, Cause.Done>();
+    yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -489,6 +502,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
         ),
+        onSessionInit: (cwd) => Queue.offer(workspaceRescans, cwd).pipe(Effect.asVoid),
         modelCatalog,
         routeModelCatalog: modelRoutes.route,
         prepareHome: copyMcpServers.pipe(
@@ -633,6 +647,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
             enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
               enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
             }),
+          ),
+          Effect.flatMap((enrichedSnapshot) =>
+            modelCatalog.pipe(
+              Effect.map((catalog) =>
+                scopeClaudeUpgradeMessageToChannel(catalog, enrichedSnapshot),
+              ),
+            ),
           ),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
@@ -810,6 +831,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         Effect.provideService(Path.Path, path),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),
+      workspaceRescans: Stream.fromQueue(workspaceRescans),
+      // Unreadable settings report no limit; the thread's own notice covers a refused mode.
+      runtimeModeLimitsForCwd: (cwd: string) =>
+        resolveClaudeModeAvailability({
+          settings: effectiveConfig,
+          homePath: configDir,
+          customHome: Boolean(
+            effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim(),
+          ),
+          environment: processEnv,
+          cwd,
+          fileSystem,
+          path,
+        }).pipe(
+          Effect.map((availability) =>
+            availability.autoDisabledBy === undefined
+              ? []
+              : [{ mode: "auto" as const, reason: availability.autoDisabledBy }],
+          ),
+          Effect.orElseSucceed(() => []),
+          Effect.provideService(HostProcess.HomeDirectory, homeDirectory),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
       snapshotForCwd: (cwd: string) =>
         snapshot.getSnapshot.pipe(
           Effect.flatMap((machineSnapshot) =>

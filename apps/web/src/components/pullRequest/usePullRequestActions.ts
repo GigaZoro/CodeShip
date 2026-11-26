@@ -1,3 +1,4 @@
+import { t, tn } from "~/i18n";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -14,9 +15,10 @@ import type {
   PullRequestSummary,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+
 import { useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
-  capitalizeTerm,
   sourceControlClients,
   type ChangeRequestTerminology,
 } from "@t3tools/client-runtime/source-control-clients";
@@ -34,6 +36,7 @@ import { usePrimaryEnvironmentId } from "~/state/environments";
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { usePreparePullRequestThreadAction } from "~/state/sourceControlActions";
+import { trackPendingDraftCheckout } from "~/lib/draftWorkspaceDefaults";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 
@@ -42,10 +45,12 @@ import { offHeadPullRequestCheckoutToast } from "./pullRequestCheckoutToast";
 import {
   checkoutFailureDescription,
   appendHandoff,
+  mergeHeadPin,
   readableFailure,
 } from "./pullRequestDetail.logic";
 import { pullRequestEntryKey, type EnvironmentPullRequestEntry } from "./pullRequestList.logic";
-import { t, tn } from "~/i18n";
+
+import { changeRequestTermKind, type ChangeRequestTermKind } from "./changeRequestTerm";
 
 export function usePullRequestDefaultMergeMethodResolver(
   environmentId: EnvironmentId,
@@ -77,35 +82,70 @@ export function usePullRequestDefaultMergeMethodResolver(
   };
 }
 
-const actionSuccessLabels = (term: string): Record<PullRequestAction, string> => ({
+const actionSuccessLabels = (term: ChangeRequestTermKind): Record<PullRequestAction, string> => ({
   merge: t("Merge requested"),
   ready: t("Marked ready for review"),
   draft: t("Converted to draft"),
-  close: t("{term} closed", { term: capitalizeTerm(term) }),
-  reopen: t("{term} reopened", { term: capitalizeTerm(term) }),
+  close:
+    term === "mr"
+      ? t("Merge request closed")
+      : term === "cr"
+        ? t("Change request closed")
+        : t("Pull request closed"),
+  reopen:
+    term === "mr"
+      ? t("Merge request reopened")
+      : term === "cr"
+        ? t("Change request reopened")
+        : t("Pull request reopened"),
   "update-branch": t("Branch updated with the base branch"),
   "enable-auto-merge": t("Auto-merge enabled"),
   "disable-auto-merge": t("Auto-merge disabled"),
-  revert: t("Revert {term} opened", { term }),
+  revert:
+    term === "mr"
+      ? t("Revert merge request opened")
+      : term === "cr"
+        ? t("Revert change request opened")
+        : t("Revert pull request opened"),
   "delete-branch": t("Branch deleted"),
   "approve-workflows": t("Workflows approved"),
 });
 
-const actionFailureLabels = (term: string): Record<PullRequestAction, string> => ({
-  merge: t("Could not merge this {term}", { term }),
+const actionFailureLabels = (term: ChangeRequestTermKind): Record<PullRequestAction, string> => ({
+  merge:
+    term === "mr"
+      ? t("Could not merge this merge request")
+      : term === "cr"
+        ? t("Could not merge this change request")
+        : t("Could not merge this pull request"),
   ready: t("Could not mark this ready for review"),
   draft: t("Could not convert this to a draft"),
-  close: t("Could not close this {term}", { term }),
-  reopen: t("Could not reopen this {term}", { term }),
+  close:
+    term === "mr"
+      ? t("Could not close this merge request")
+      : term === "cr"
+        ? t("Could not close this change request")
+        : t("Could not close this pull request"),
+  reopen:
+    term === "mr"
+      ? t("Could not reopen this merge request")
+      : term === "cr"
+        ? t("Could not reopen this change request")
+        : t("Could not reopen this pull request"),
   "update-branch": t("Could not update this branch"),
   "enable-auto-merge": t("Could not enable auto-merge"),
   "disable-auto-merge": t("Could not disable auto-merge"),
-  revert: t("Could not open a revert {term}", { term }),
+  revert:
+    term === "mr"
+      ? t("Could not open a revert merge request")
+      : term === "cr"
+        ? t("Could not open a revert change request")
+        : t("Could not open a revert pull request"),
   "delete-branch": t("Could not delete this branch"),
   "approve-workflows": t("Could not approve workflows"),
 });
 
-const actionFailureHints = (term: string): Record<PullRequestAction, string> => ({
+const actionFailureHints = (term: ChangeRequestTermKind): Record<PullRequestAction, string> => ({
   merge: t(
     "The host refused the merge. Check that you have write access, that the checks it requires have passed, and that the branch is not conflicting.",
   ),
@@ -124,10 +164,18 @@ const actionFailureHints = (term: string): Record<PullRequestAction, string> => 
   "disable-auto-merge": t(
     "The host refused it. Check that you have write access to this repository.",
   ),
-  revert: t(
-    "The host refused it. Check that you have write access and that this {term} was merged on the host.",
-    { term },
-  ),
+  revert:
+    term === "mr"
+      ? t(
+          "The host refused it. Check that you have write access and that this merge request was merged on the host.",
+        )
+      : term === "cr"
+        ? t(
+            "The host refused it. Check that you have write access and that this change request was merged on the host.",
+          )
+        : t(
+            "The host refused it. Check that you have write access and that this pull request was merged on the host.",
+          ),
   "delete-branch": t(
     "The host refused it. Check that you have write access to the source repository and that the branch has not moved since this page loaded.",
   ),
@@ -139,12 +187,17 @@ const actionFailureHints = (term: string): Record<PullRequestAction, string> => 
 export function usePullRequestActionRunner({
   environmentId,
   reference,
+  headSha,
   terminology,
   onSuccess,
+  onFailure,
   resolveMergeMethod,
 }: {
   environmentId: EnvironmentId;
   reference: PullRequestRef | null;
+  /** The head on screen, which a merge is pinned to. */
+  headSha?: string | undefined;
+  onFailure?: (action: PullRequestAction) => void;
   terminology: ChangeRequestTerminology;
   onSuccess?: (action: PullRequestAction, reply: PullRequestSummary | undefined) => void;
   /** Resolve repository settings on click to avoid per-row reads. */
@@ -153,49 +206,58 @@ export function usePullRequestActionRunner({
   const runAction = useAtomCommand(pullRequestEnvironment.runAction, {
     reportFailure: false,
   });
-  const pendingRef = useRef(new Set<string>());
-  const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const pendingRef = useRef(new Map<string, PullRequestAction>());
+  const [pendingActions, setPendingActions] = useState<ReadonlyMap<string, PullRequestAction>>(
+    () => new Map(),
+  );
   const actionKey =
     reference === null
       ? null
       : JSON.stringify([
           environmentId,
+          reference.projectId,
           reference.host ?? null,
           reference.repository,
           reference.number,
         ]);
-  const actionPending = actionKey !== null && pendingKeys.has(actionKey);
+  const pendingAction = actionKey === null ? null : (pendingActions.get(actionKey) ?? null);
+  const actionPending = pendingAction !== null;
 
   const perform = async (action: PullRequestAction, method?: PullRequestMergeMethod) => {
     if (actionKey === null || reference === null || pendingRef.current.has(actionKey)) return;
-    pendingRef.current.add(actionKey);
-    setPendingKeys(new Set(pendingRef.current));
+    pendingRef.current.set(actionKey, action);
+    setPendingActions(new Map(pendingRef.current));
     const result = await runAction({
       environmentId,
       input: {
         ...reference,
         action,
+        ...mergeHeadPin(action, headSha),
         ...(method ? { mergeMethod: method } : resolveMergeMethod ? { resolveMergeMethod } : {}),
       },
     });
     pendingRef.current.delete(actionKey);
-    setPendingKeys(new Set(pendingRef.current));
+    setPendingActions(new Map(pendingRef.current));
     if (result._tag === "Failure") {
       toastManager.add({
         type: "error",
-        title: actionFailureLabels(terminology.singular)[action],
+        title: actionFailureLabels(changeRequestTermKind(terminology))[action],
         description: readableFailure(
           squashAtomCommandFailure(result),
-          actionFailureHints(terminology.singular)[action],
+          actionFailureHints(changeRequestTermKind(terminology))[action],
         ),
       });
+      onFailure?.(action);
       return;
     }
-    toastManager.add({ type: "success", title: actionSuccessLabels(terminology.singular)[action] });
+    toastManager.add({
+      type: "success",
+      title: actionSuccessLabels(changeRequestTermKind(terminology))[action],
+    });
     onSuccess?.(action, result.value);
   };
 
-  return { actionPending, perform };
+  return { actionPending, pendingAction, perform };
 }
 
 export function usePullRequestCloseBatch(
@@ -230,7 +292,7 @@ export function usePullRequestCloseBatch(
         setClosingKeys(new Set(pending.current));
         if (result._tag === "Failure") {
           failures.push(
-            `#${entry.number}: ${readableFailure(squashAtomCommandFailure(result), actionFailureHints(sourceControlClients.get(entry.provider).changeRequest.singular).close)}`,
+            `#${entry.number}: ${readableFailure(squashAtomCommandFailure(result), actionFailureHints(changeRequestTermKind(sourceControlClients.get(entry.provider).changeRequest)).close)}`,
           );
           return;
         }
@@ -268,6 +330,39 @@ export function writeHandoffToComposer(
   );
   store.setPrompt(target, next.prompt);
   store.setReviewComments(target, next.reviewComments);
+}
+
+type PreparedCheckout = Awaited<
+  ReturnType<ReturnType<typeof usePreparePullRequestThreadAction>["run"]>
+>;
+
+/**
+ * Moves the draft opened for a checkout onto it once it is ready, keeping whatever the user
+ * typed meanwhile. A send from that draft waits for this so it starts in the checkout.
+ */
+export function prepareDraftCheckout(
+  draftId: DraftId,
+  checkout: Promise<PreparedCheckout>,
+  isCancelled: () => boolean = () => false,
+): Promise<PreparedCheckout> {
+  const pointed = checkout.then((prepared) => {
+    if (isCancelled() || prepared._tag === "Failure") return prepared;
+    const { branch, worktreePath, pullRequest } = prepared.value;
+    // A waiting send resumes right after this and must render the checkout first.
+    flushSync(() =>
+      useComposerDraftStore.getState().setDraftThreadContext(draftId, {
+        branch,
+        worktreePath,
+        envMode: worktreePath === null ? "local" : "worktree",
+        workspaceExplicit: true,
+        // The draft carries the pull request until its first send makes it a thread, which links it.
+        checkoutPullRequest: { url: pullRequest.url, branch },
+      }),
+    );
+    return prepared;
+  });
+  trackPendingDraftCheckout(draftId, pointed);
+  return pointed;
 }
 
 export type PullRequestHandoffDetail = Pick<
@@ -333,9 +428,11 @@ export function usePullRequestHandoffs({
       description:
         task.prompt.length > 0
           ? t("The question is in the composer. Read it over, then send.")
-          : t("The {term} is in the composer. Type your question, then send.", {
-              term: terminology.singular,
-            }),
+          : changeRequestTermKind(terminology) === "mr"
+            ? t("The merge request is in the composer. Type your question, then send.")
+            : changeRequestTermKind(terminology) === "cr"
+              ? t("The change request is in the composer. Type your question, then send.")
+              : t("The pull request is in the composer. Type your question, then send."),
     });
   };
 
@@ -351,7 +448,12 @@ export function usePullRequestHandoffs({
     // Explicit timeouts survive toast updates and would pin the result after loading.
     const toastId = toastManager.add({
       type: "loading",
-      title: t("Preparing the {term} checkout...", { term: terminology.singular }),
+      title:
+        changeRequestTermKind(terminology) === "mr"
+          ? t("Preparing the merge request checkout...")
+          : changeRequestTermKind(terminology) === "cr"
+            ? t("Preparing the change request checkout...")
+            : t("Preparing the pull request checkout..."),
       data: {
         onClose: () => {
           cancelled = true;
@@ -377,11 +479,15 @@ export function usePullRequestHandoffs({
       });
       return;
     }
-    const prepared = await prepareThread.run({
-      reference: detail.url,
-      mode,
-      threadId: opened.threadId,
-    });
+    const prepared = await prepareDraftCheckout(
+      opened.draftId,
+      prepareThread.run({
+        reference: detail.url,
+        mode,
+        threadId: opened.threadId,
+      }),
+      () => cancelled,
+    );
     if (cancelled) {
       setHandoff(null);
       return;
@@ -390,44 +496,18 @@ export function usePullRequestHandoffs({
       setHandoff(null);
       toastManager.update(toastId, {
         type: "error",
-        title: t("Could not prepare the {term} checkout", { term: terminology.singular }),
+        title:
+          changeRequestTermKind(terminology) === "mr"
+            ? t("Could not prepare the merge request checkout")
+            : changeRequestTermKind(terminology) === "cr"
+              ? t("Could not prepare the change request checkout")
+              : t("Could not prepare the pull request checkout"),
         description: checkoutFailureDescription(
           isAtomCommandInterrupted(prepared) ? undefined : squashAtomCommandFailure(prepared),
         ),
       });
       return;
     }
-    const pointed = await newThread(projectRef, {
-      branch: prepared.value.branch,
-      worktreePath: prepared.value.worktreePath,
-      envMode: prepared.value.worktreePath === null ? "local" : "worktree",
-    }).then(
-      (session) => session,
-      () => null,
-    );
-    if (cancelled) {
-      setHandoff(null);
-      return;
-    }
-    if (pointed === null) {
-      setHandoff(null);
-      toastManager.update(toastId, {
-        type: "error",
-        title: t("Checked out, but the thread stayed where it was"),
-        description: t(
-          "The checkout is ready on `{branch}`. Point a thread at it from the branch picker, then ask again.",
-          { branch: prepared.value.branch },
-        ),
-      });
-      return;
-    }
-    // The draft carries the pull request until its first send makes it a thread, which links it.
-    useComposerDraftStore.getState().setDraftThreadContext(pointed.draftId, {
-      checkoutPullRequest: {
-        url: prepared.value.pullRequest.url,
-        branch: prepared.value.branch,
-      },
-    });
     setHandoff(null);
     if (task === null) {
       toastManager.update(
@@ -438,20 +518,28 @@ export function usePullRequestHandoffs({
               title: mode === "local" ? t("Checked out here") : t("Checked out"),
               description:
                 mode === "local"
-                  ? t("This repository is on the {term}'s branch, with a thread open on it.", {
-                      term: terminology.singular,
-                    })
-                  : t("The {term} is in its own worktree, with a thread open on it.", {
-                      term: terminology.singular,
-                    }),
+                  ? changeRequestTermKind(terminology) === "mr"
+                    ? t(
+                        "This repository is on the merge request's branch, with a thread open on it.",
+                      )
+                    : changeRequestTermKind(terminology) === "cr"
+                      ? t(
+                          "This repository is on the change request's branch, with a thread open on it.",
+                        )
+                      : t(
+                          "This repository is on the pull request's branch, with a thread open on it.",
+                        )
+                  : changeRequestTermKind(terminology) === "mr"
+                    ? t("The merge request is in its own worktree, with a thread open on it.")
+                    : changeRequestTermKind(terminology) === "cr"
+                      ? t("The change request is in its own worktree, with a thread open on it.")
+                      : t("The pull request is in its own worktree, with a thread open on it."),
             }
           : offHeadPullRequestCheckoutToast(terminology),
       );
       return;
     }
-    // The task goes on the checkout draft: if the user typed into `opened` while the
-    // checkout ran, that is no longer the draft the user is looking at.
-    await openThreadWithTask(projectRef, task, pointed);
+    await openThreadWithTask(projectRef, task, opened);
     toastManager.update(
       toastId,
       prepared.value.isOnPullRequestHead

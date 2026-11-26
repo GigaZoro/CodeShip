@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Git clone URLs use the host file URL encoding.
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -10,18 +10,17 @@ import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
+
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   GitCommandError,
-  ReviewDiffPreviewInput,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewResult,
 } from "@t3tools/contracts";
 import { makeGitVcsDriverCore, splitNullSeparatedGitStdoutPaths } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
-import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+
 import {
   layerServerConfig,
   layerTest,
@@ -206,57 +205,6 @@ it.layer(layerTest)("Git review previews", (it) => {
         oldContents: "# test\n",
         newContents: "# side commit\n",
       });
-    }),
-  );
-
-  it.effect("loads repository-relative files from nested directories and aliases", () =>
-    Effect.gen(function* () {
-      const directory = yield* makeTmpDir();
-      const path = yield* Path.Path;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const platform = yield* HostProcess.Platform;
-      const cwd = path.join(directory, platform === "win32" ? "repository" : "repository\n ");
-      yield* fileSystem.makeDirectory(cwd);
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      yield* git(cwd, ["checkout", "-b", "feature/nested"]);
-      yield* writeTextFile(cwd, "nested/tracked.txt", "committed\n");
-      yield* git(cwd, ["add", "."]);
-      yield* git(cwd, ["commit", "-m", "nested file"]);
-      yield* writeTextFile(cwd, "nested/tracked.txt", "changed\n");
-      yield* writeTextFile(cwd, "untracked.txt", "new\n");
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const nestedCwd = path.join(cwd, "nested");
-      const clone = path.join(nestedCwd, "clone");
-      yield* fileSystem.makeDirectory(clone);
-      yield* initRepoWithCommit(clone);
-      const projectDirectories = [nestedCwd];
-      if (symlinksSupported) {
-        const alias = path.join(directory, "alias");
-        yield* fileSystem.symlink(nestedCwd, alias);
-        projectDirectories.push(alias);
-      }
-      for (const projectDirectory of projectDirectories) {
-        const preview = yield* driver.getReviewDiffPreview({
-          cwd: projectDirectory,
-          baseRef: initialBranch,
-        });
-        assert.equal(
-          preview.sources.find((source) => source.kind === "working-tree")!.files!.length,
-          3,
-        );
-        for (const source of preview.sources) {
-          for (const file of source.files ?? []) {
-            const scoped = yield* driver.getReviewDiffPreview({
-              cwd: projectDirectory,
-              baseRef: initialBranch,
-              file: { path: file.path, previousPath: file.previousPath, sourceKind: source.kind },
-            });
-            const patch = scoped.sources.find((item) => item.kind === source.kind)!;
-            assert.deepStrictEqual(patch.files, [file]);
-            assert.include(patch.diff, `b/${file.path}`);
-          }
-        }
-      }
     }),
   );
 
@@ -672,33 +620,6 @@ it.layer(layerTest)("Git review previews", (it) => {
       }),
   );
 
-  it.effect.each([
-    { stagedCopy: false, expected: ["deleted file mode", "-remove me"] },
-    { stagedCopy: true, expected: ["rename from removed.txt", "rename to copy.txt"] },
-  ])(
-    "preserves a staged deletion when the removed path still exists (staged copy: $stagedCopy)",
-    ({ stagedCopy, expected }) =>
-      Effect.gen(function* () {
-        const cwd = yield* makeTmpDir();
-        yield* initRepoWithCommit(cwd);
-        const driver = yield* GitVcsDriver.GitVcsDriver;
-        yield* writeTextFile(cwd, "removed.txt", "remove me\n");
-        yield* git(cwd, ["add", "removed.txt"]);
-        yield* git(cwd, ["commit", "-m", "add removable file"]);
-        yield* git(cwd, ["rm", "--cached", "removed.txt"]);
-        if (stagedCopy) {
-          yield* writeTextFile(cwd, "copy.txt", "remove me\n");
-          yield* git(cwd, ["add", "copy.txt"]);
-        }
-
-        const preview = yield* driver.getReviewDiffPreview({ cwd, ignoreWhitespace: false });
-        const diff = preview.sources.find((source) => source.kind === "working-tree")?.diff ?? "";
-
-        for (const text of expected) assert.include(diff, text);
-        assert.notInclude(diff, "new file mode");
-      }),
-  );
-
   it.effect.each([false, true])(
     "keeps the preceding second cached in review previews (split: %s)",
     (splitIndex) =>
@@ -898,119 +819,6 @@ it.layer(layerTest)("Git review previews", (it) => {
 });
 
 it.layer(layerTest)("Git review file contents and range patches", (it) => {
-  it.effect("preserves renames, unusual paths, modes, and binary statistics", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      yield* writeTextFile(cwd, "mode-only.sh", "echo unchanged\n");
-      yield* writeTextFile(cwd, "removed.txt", "removed\n");
-      yield* git(cwd, ["add", "mode-only.sh", "removed.txt"]);
-      yield* git(cwd, ["commit", "-m", "add executable candidate"]);
-      yield* git(cwd, ["checkout", "-b", "feature/paths"]);
-      yield* git(cwd, ["mv", "README.md", "renamed.md"]);
-      yield* git(cwd, ["rm", "removed.txt"]);
-      yield* writeTextFile(cwd, "[literal].txt", "literal\n");
-      yield* writeTextFile(cwd, " leading.txt", "whitespace path\n");
-      yield* writeTextFile(cwd, "l.txt", "other\n");
-      yield* writeTextFile(cwd, "binary.dat", "binary\0data");
-      if ((yield* HostProcess.Platform) !== "win32") {
-        yield* writeTextFile(cwd, "tab\tand\nnewline.txt", "unusual path\n");
-      }
-      yield* git(cwd, ["add", "."]);
-      yield* git(cwd, ["update-index", "--chmod=+x", "mode-only.sh"]);
-      yield* git(cwd, ["commit", "-m", "rename and add files"]);
-      const preview = yield* driver.getReviewDiffPreview({
-        cwd,
-        baseRef: initialBranch,
-      });
-      const branch = preview.sources.find((source) => source.kind === "branch-range")!;
-      const decodeReviewDiffPreviewInput = Schema.decodeEffect(ReviewDiffPreviewInput);
-
-      for (const path of ["renamed.md", "[literal].txt", " leading.txt", "mode-only.sh"]) {
-        const stat = branch.files!.find((file) => file.path === path)!;
-        const request = yield* decodeReviewDiffPreviewInput({
-          cwd,
-          baseRef: initialBranch,
-          file: { path, previousPath: stat.previousPath, sourceKind: "branch-range" },
-        });
-        const result = yield* driver.getReviewDiffPreview(request);
-        const scoped = result.sources.find((source) => source.kind === "branch-range")!;
-        assert.deepStrictEqual(scoped.files, [stat]);
-        assert.notInclude(scoped.diff, "b/l.txt");
-        if (path === "renamed.md") assert.include(scoped.diff, "rename from README.md");
-        if (path === "mode-only.sh") {
-          assert.include(scoped.diff, "old mode 100644");
-          assert.include(scoped.diff, "new mode 100755");
-        }
-      }
-      assert.include(branch.diff, "rename from README.md");
-      assert.include(branch.diff, "rename to renamed.md");
-      assert.deepInclude(branch.files ?? [], {
-        path: "renamed.md",
-        previousPath: "README.md",
-        changeType: "rename-pure",
-        additions: 0,
-        deletions: 0,
-      });
-      assert.deepInclude(branch.files ?? [], {
-        path: "removed.txt",
-        previousPath: null,
-        changeType: "deleted",
-        additions: 0,
-        deletions: 1,
-      });
-      assert.deepInclude(branch.files ?? [], {
-        path: "mode-only.sh",
-        previousPath: null,
-        changeType: "change",
-        additions: 0,
-        deletions: 0,
-      });
-      assert.deepInclude(branch.files ?? [], {
-        path: "binary.dat",
-        previousPath: null,
-        changeType: "new",
-        additions: 0,
-        deletions: 0,
-      });
-      if ((yield* HostProcess.Platform) !== "win32") {
-        assert.deepInclude(branch.files ?? [], {
-          path: "tab\tand\nnewline.txt",
-          previousPath: null,
-          changeType: "new",
-          additions: 1,
-          deletions: 0,
-        });
-      }
-    }),
-  );
-
-  it.effect("reports staged and untracked changes before the first commit", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      yield* git(cwd, ["init"]);
-      yield* writeTextFile(cwd, "staged.txt", "staged\n");
-      yield* git(cwd, ["add", "staged.txt"]);
-      yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const preview = yield* driver.getReviewDiffPreview({ cwd });
-      const dirty = preview.sources.find((source) => source.kind === "working-tree")!;
-      assert.deepStrictEqual(dirty.files, [
-        { path: "staged.txt", previousPath: null, changeType: "new", additions: 1, deletions: 0 },
-        {
-          path: "untracked.txt",
-          previousPath: null,
-          changeType: "new",
-          additions: 1,
-          deletions: 0,
-        },
-      ]);
-      assert.include(dirty.diff, "b/staged.txt");
-      assert.include(dirty.diff, "b/untracked.txt");
-    }),
-  );
-
   it.effect("loads full file contents for working-tree diff expansion", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();

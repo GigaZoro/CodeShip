@@ -1,5 +1,6 @@
 import { msg, t } from "~/i18n";
 import { BUILT_IN_THEMES } from "@t3tools/shared/themePalettes";
+
 import { MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "lucide-react";
 
 import { useCustomThemes } from "../hooks/useCustomThemes";
@@ -20,7 +21,7 @@ import {
 } from "./settings/ThemePreviewCircles";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
-const APPEARANCE_OPTIONS = [
+export const APPEARANCE_OPTIONS = [
   { mode: "system", label: msg("System"), icon: MonitorIcon },
   { mode: "light", label: msg("Light"), icon: SunIcon },
   { mode: "dark", label: msg("Dark"), icon: MoonIcon },
@@ -83,7 +84,11 @@ export function useCommandPaletteThemeItems() {
           value: id === null ? "theme:standard" : `theme:palette:${id}`,
           title: label,
           description:
-            previews.length === 1 ? t("For {mode} mode", { mode: previews[0]!.mode }) : undefined,
+            previews.length === 1
+              ? previews[0]!.mode === "light"
+                ? t("For light mode")
+                : t("For dark mode")
+              : undefined,
           searchTerms: [label, "theme", "appearance"],
           icon: <PaletteIcon className={ITEM_ICON_CLASS} />,
           titleTrailingContent: (
@@ -131,7 +136,7 @@ export function useCommandPaletteThemeItems() {
           kind: "action",
           value: `appearance:${mode}`,
           title: t(label),
-          searchTerms: [label, t(label), "appearance", "mode"],
+          searchTerms: [t(label), label, "appearance", "mode"],
           icon: <Icon className={ITEM_ICON_CLASS} />,
           titleTrailingContent:
             appearanceMode === mode ? (

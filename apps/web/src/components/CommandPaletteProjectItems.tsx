@@ -20,13 +20,6 @@ export interface CommandPaletteProjectLocation {
   readonly machine: EnvironmentMachineKind;
 }
 
-const UNKNOWN_PROJECT_LOCATION: CommandPaletteProjectLocation = {
-  kind: "remote",
-  // oxlint-disable-next-line t3code/no-untranslated-text -- sentinel fallback; the render path shows t("Remote") for it
-  label: "Remote",
-  machine: "server",
-};
-
 interface ProjectItemsInput {
   readonly projects: ReadonlyArray<CommandPaletteProject>;
   readonly projectGroupByTargetKey: ReadonlyMap<string, SidebarProjectSnapshot>;
@@ -40,7 +33,7 @@ function projectFaviconIcon(project: Project) {
 }
 
 /** Projects as root search results; a grouped project matches on every member. */
-export function buildProjectSearchItems(input: ProjectItemsInput) {
+export function buildProjectSearchItems(input: ProjectItemsInput, resolve: typeof t = t) {
   const membersOf = (project: CommandPaletteProject) =>
     input.projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`)?.memberProjects ?? [
       project,
@@ -49,16 +42,22 @@ export function buildProjectSearchItems(input: ProjectItemsInput) {
     projects: input.projects,
     valuePrefix: "project",
     searchTerms: (project) =>
-      buildCommandPaletteProjectMetadata({
-        projects: membersOf(project),
-        locationByEnvironmentId: input.locationByEnvironmentId,
-      }).searchTerms,
+      buildCommandPaletteProjectMetadata(
+        {
+          projects: membersOf(project),
+          locationByEnvironmentId: input.locationByEnvironmentId,
+        },
+        resolve,
+      ).searchTerms,
     renderDescription: (project) => {
       const members = membersOf(project);
-      const metadata = buildCommandPaletteProjectMetadata({
-        projects: members,
-        locationByEnvironmentId: input.locationByEnvironmentId,
-      });
+      const metadata = buildCommandPaletteProjectMetadata(
+        {
+          projects: members,
+          locationByEnvironmentId: input.locationByEnvironmentId,
+        },
+        resolve,
+      );
       return members.length > 1 ? (
         <span className="truncate">{metadata.environmentLabels.join(" · ")}</span>
       ) : (
@@ -107,7 +106,11 @@ function ProjectLocationDescription(props: {
   readonly workspaceRoot: string;
   readonly current?: boolean;
 }) {
-  const location = props.location ?? UNKNOWN_PROJECT_LOCATION;
+  const location: CommandPaletteProjectLocation = props.location ?? {
+    kind: "remote",
+    label: t("Remote"),
+    machine: "server",
+  };
   return (
     <span className="flex min-w-0 items-center gap-1">
       {props.current ? (
@@ -124,9 +127,7 @@ function ProjectLocationDescription(props: {
             className={COMMAND_PALETTE_META_ICON_CLASS}
           />
         ) : null}
-        <span className="truncate">
-          {location === UNKNOWN_PROJECT_LOCATION ? t("Remote") : location.label}
-        </span>
+        <span className="truncate">{location.label}</span>
       </span>
       <CommandPaletteMetaDot />
       <span className="min-w-0 flex-1 truncate">{props.workspaceRoot}</span>

@@ -1,5 +1,8 @@
+import { t, msg } from "~/i18n";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { TriangleAlertIcon } from "lucide-react";
+
 import { type ComponentProps, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -15,6 +18,7 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateInstallConfirmationMessage,
   getSafeUpdateButtonTooltip,
+  installDesktopUpdate,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdatePendingAction,
   shouldShowArm64IntelBuildWarning,
@@ -62,7 +66,6 @@ import {
 } from "./updateEverythingRun";
 import { type ReportLocalUpdateError, useUpdateEverything } from "./useUpdateEverything";
 
-import { t } from "~/i18n";
 type SidebarUpdatePopoverChangeDetails = Parameters<
   NonNullable<ComponentProps<typeof Popover>["onOpenChange"]>
 >[1];
@@ -125,8 +128,9 @@ export function SidebarUpdateArchitectureWarning() {
 
 function SidebarUpdateArchitectureWarningContent() {
   const state = useDesktopUpdateState();
+
   const visible = shouldShowArm64IntelBuildWarning(state);
-  const description = state && visible ? getArm64IntelBuildWarningDescription(state) : null;
+  const description = state && visible ? getArm64IntelBuildWarningDescription(state, t) : null;
 
   if (!visible || !description) return null;
 
@@ -158,12 +162,12 @@ export async function downloadLocalUpdate(
     const actionError = shouldToastDesktopUpdateActionResult(result)
       ? getDesktopUpdateActionError(result)
       : null;
-    if (actionError) reportError(t("Could not download update"), actionError);
+    if (actionError) reportError(t(msg("Could not download update")), actionError);
     return result.completed;
   } catch (error) {
     reportError(
-      t("Could not start update download"),
-      error instanceof Error ? error.message : t("An unexpected error occurred."),
+      t(msg("Could not start update download")),
+      thrownErrorMessage(error, t) ?? t(msg("An unexpected error occurred.")),
     );
     return false;
   }
@@ -175,8 +179,7 @@ export async function installLocalUpdate(
   expectedVersion?: string,
 ): Promise<boolean> {
   try {
-    // Every install started here resumes running threads, whatever the restart setting says.
-    const result = await bridge.installUpdate(expectedVersion, { resumeThreads: true });
+    const result = await installDesktopUpdate(bridge, expectedVersion, { resumeThreads: true });
     if (!result.accepted) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
       return false;
@@ -185,12 +188,12 @@ export async function installLocalUpdate(
       ? getDesktopUpdateActionError(result)
       : null;
     if (!actionError) return true;
-    reportError(t("Could not install update"), actionError);
+    reportError(t(msg("Could not install update")), actionError);
     return false;
   } catch (error) {
     reportError(
-      t("Could not install update"),
-      error instanceof Error ? error.message : t("An unexpected error occurred."),
+      t(msg("Could not install update")),
+      thrownErrorMessage(error, t) ?? t(msg("An unexpected error occurred.")),
     );
     return false;
   }
@@ -365,7 +368,7 @@ function SidebarUpdateControl() {
         stackedThreadToast({
           type: "error",
           title: t("Could not confirm update"),
-          description: error instanceof Error ? error.message : t("Update confirmation failed."),
+          description: thrownErrorMessage(error, t) ?? t("Update confirmation failed."),
         }),
       );
       return;
@@ -401,7 +404,7 @@ function SidebarUpdateControl() {
         stackedThreadToast({
           type: "error",
           title: t("Could not update everything"),
-          description: error instanceof Error ? error.message : t("An unexpected error occurred."),
+          description: thrownErrorMessage(error, t) ?? t("An unexpected error occurred."),
         }),
       );
     }
@@ -534,6 +537,7 @@ function SidebarUpdateControl() {
         </Tooltip>
         {showReleaseNotesPopover && state ? (
           <PopoverPopup
+            align="center"
             aria-label={t("Update release notes")}
             initialFocus={false}
             onKeyDownCapture={(event) => {
@@ -565,6 +569,7 @@ function SidebarUpdateControl() {
 export function SidebarUpdateRunCapsule() {
   const state = useDesktopUpdateState();
   const run = useUpdateEverythingRun();
+  const { machines } = useUpdateEverything(null);
   if (run === null) return null;
 
   const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
@@ -585,9 +590,10 @@ export function SidebarUpdateRunCapsule() {
         : { status: "waiting" };
 
   return (
-    <SidebarMenuItem className="ml-auto flex flex-1">
+    <SidebarMenuItem className="@container/sidebar-update ml-auto flex min-w-8 flex-1">
       <SidebarUpdateCapsule
         run={run}
+        current={machines}
         local={local}
         icon={
           <DesktopUpdateStatusIcon

@@ -86,7 +86,7 @@ import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import { useEnvironmentScope } from "../../state/session";
+import { useEnvironmentScope, useEnvironmentScopeDenied } from "../../state/session";
 import { useThreadShell } from "../../state/entities";
 import { useThreadFolderNames } from "../../state/thread-folders";
 import {
@@ -116,9 +116,9 @@ import {
   threadRowAccessibilityLabel,
 } from "../home/thread-row-accessibility";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
-import { useCanShareWithGuest } from "./ThreadGuestShareSheet";
 import { canTurnThreadIntoProject, turnThreadIntoProject } from "./turnThreadIntoProject";
 import { threadCanArchive } from "../home/threadArchive";
+import { useCanShareWithGuest } from "./useCanShareWithGuest";
 import {
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   resolveThreadListV2SnoozeGateExpiryMs,
@@ -389,6 +389,8 @@ type ThreadListV2ShelfHeaderProps = {
   readonly onToggle: () => void;
   readonly pane?: "screen" | "sidebar";
 };
+
+const TRIAGE_MENU_ACTION_IDS = new Set(["settle", "snooze", "unsettle", "unsnooze"]);
 
 const SHELF_LABEL = {
   working: msg("Working"),
@@ -919,6 +921,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
         enableTrackpadSwipe
         fullSwipeAction="primary"
         fullSwipeWidth={props.fullSwipeWidth ?? windowWidth - 32}
+        listAnimatesLayout
         onDelete={handleDelete}
         onSwipeableClose={props.onSwipeableClose}
         onSwipeableWillOpen={props.onSwipeableWillOpen}
@@ -1118,7 +1121,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
-  const statusLabel =
+  const statusEntry =
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
       ? { ...workingLabel, label: THREAD_STATUS_DISPLAY.goal.label }
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
@@ -1132,7 +1135,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   });
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const hasScheduledTask = useThreadHasScheduledTask(thread.environmentId, thread.id);
-  const timeLabel = props.timeLabel;
+  const statusLabel = statusEntry;
+  const pendingSync = useAtomValue(
+    threadEnvironment.pendingSyncAtom(thread.environmentId),
+    (threads) => threads.has(thread.id),
+  );
+  const timeLabel = pendingSync ? t("Waiting to sync") : props.timeLabel;
+  const snoozeWakeLabelText = props.snoozeWakeLabelText;
   // Working and waiting rows show only an icon and a duration, so name them for speech.
   const statusText = statusLabel
     ? t(
@@ -1186,7 +1195,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             lastKnownMachine: null,
             woke: false,
             time:
-              snoozedRow && props.snoozeWakeLabelText !== undefined
+              snoozedRow && !pendingSync && props.snoozeWakeLabelText !== undefined
                 ? props.snoozeWakeLabelText
                 : timeLabel,
             error: null,
@@ -1219,6 +1228,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const exportThreadMarkdown = useExportThreadMarkdown();
+  const markThreadUnread = useAtomCommand(threadEnvironment.markUnread, { reportFailure: false });
   const handleAcknowledgeWoke = useCallback(() => {
     if (props.wokeAt === null) return;
     void visitThread({
@@ -1230,6 +1240,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
+  const canTriage = !useEnvironmentScopeDenied(thread.environmentId, AuthOrchestrationOperateScope);
+  const triageOnly = canTriage && !canOperateThread;
   const canEditTags = useAtomValue(
     orchestrationEnvironment.v2.dispatchCommand.permissionAtom(thread.environmentId, {
       type: "thread.tag.set",
@@ -1289,11 +1301,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     snoozable: canSnooze(thread, { now: snoozeGateNow }),
     snoozed: snoozedRow,
   });
-  const snoozePresets = resolveThreadListV2SnoozePresets({
-    secondary: swipeActions.secondary,
-    now: props.snoozePresetMinute || snoozeGateNow,
-    presets: props.snoozePresets,
-  });
+  const snoozePresets = resolveThreadListV2SnoozePresets(
+    {
+      secondary: swipeActions.secondary,
+      now: props.snoozePresetMinute || snoozeGateNow,
+      presets: props.snoozePresets,
+    },
+    t,
+  );
   const snoozePresetActions = useMemo<MenuAction[]>(
     () => [
       ...snoozePresets.map((preset) => ({
@@ -1418,6 +1433,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         supported: props.titleRegenerationSupported,
         isRegenerating: isRegeneratingTitle,
       }),
+      ...(thread.latestRun?.completedAt != null && threadCanArchive(thread.runtime)
+        ? [{ id: "mark-unread", title: t("Mark unread"), image: "envelope.badge" }]
+        : []),
       ...(canTurnIntoProject
         ? [
             {
@@ -1429,7 +1447,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           ]
         : []),
     ],
-    [canTurnIntoProject, props.titleRegenerationSupported, thread.runtime, isRegeneratingTitle],
+    [
+      canTurnIntoProject,
+      props.titleRegenerationSupported,
+      thread.latestRun,
+      thread.runtime,
+      isRegeneratingTitle,
+    ],
   );
   const readOnlyMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -1589,10 +1613,18 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "rename") handleRename();
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
       if (nativeEvent.event === "turn-into-project") void turnThreadIntoProject(thread);
+      if (nativeEvent.event === "mark-unread") {
+        void markThreadUnread({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id },
+        });
+      }
       if (nativeEvent.event === "copy-thread") {
         const target = threadChipCopyTarget(
           { environmentId: thread.environmentId, threadId: thread.id },
           thread.title,
+          undefined,
+          t,
         );
         void copyThreadReference(target).then((didCopy) => {
           if (!didCopy) Dialog.alert(target.failureTitle, t("Try copying this thread again."));
@@ -1660,6 +1692,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleUnpin,
       handleUnsettle,
       handleUnsnooze,
+      markThreadUnread,
       setCustomSnoozeOpen,
       snoozePresets,
       props.snoozePresets,
@@ -1724,6 +1757,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : null,
     [handleMenuAction, snoozePresetActions, swipeActions.secondary, thread.title],
   );
+  const canSwipe =
+    canOperateThread || (triageOnly && TRIAGE_MENU_ACTION_IDS.has(primaryAction.kind));
   const tagChips = tags?.length ? (
     <View className="max-w-[34%] shrink flex-row items-center gap-1">
       {tags.slice(0, 2).map((tag) => (
@@ -1750,6 +1785,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     () =>
       threadRowAccessibilityActions({
         canOperate: canOperateThread,
+        canTriage,
         primary: primaryAction,
         snoozePresets: secondaryAction === null ? null : snoozePresets,
         pullRequest: variant === "card" ? prBadgeLabel : null,
@@ -1757,6 +1793,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       }),
     [
       canOperateThread,
+      canTriage,
       prBadgeLabel,
       primaryAction,
       secondaryAction,
@@ -2191,18 +2228,26 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             )}
             style={{ fontFamily: MONO_FONT }}
           >
-            {snoozedRow && props.snoozeWakeLabelText !== undefined
-              ? props.snoozeWakeLabelText
+            {!pendingSync && snoozedRow && snoozeWakeLabelText !== undefined
+              ? snoozeWakeLabelText
               : timeLabel}
           </Text>
         </View>
       </RowPressable>
     );
 
-  if (!canOperateThread)
+  const availableMenuActions = canOperateThread
+    ? menuActions
+    : triageOnly
+      ? [
+          ...readOnlyMenuActions,
+          ...menuActions.filter((action) => TRIAGE_MENU_ACTION_IDS.has(action.id ?? "")),
+        ]
+      : readOnlyMenuActions;
+  if (!canSwipe)
     return (
       <View style={rowAppearance.swipeContainerStyle}>
-        <Menu actions={readOnlyMenuActions} onPressAction={handleMenuAction} shouldOpenOnLongPress>
+        <Menu actions={availableMenuActions} onPressAction={handleMenuAction} shouldOpenOnLongPress>
           {rowContent(() => {})}
         </Menu>
       </View>
@@ -2222,6 +2267,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         enableTrackpadSwipe
         fullSwipeAction="primary"
         fullSwipeWidth={props.fullSwipeWidth ?? windowWidth - 32}
+        listAnimatesLayout
         onDelete={handleDelete}
         onSwipeableClose={props.onSwipeableClose}
         onSwipeableWillOpen={props.onSwipeableWillOpen}
@@ -2234,7 +2280,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {(close) => (
           <Menu
             accessibilityLabel={rowAccessibilityLabel}
-            actions={menuActions}
+            actions={availableMenuActions}
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress
           >

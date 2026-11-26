@@ -9,7 +9,7 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 
-import { constrainAuxiliaryPaneWidth, type WorkspacePaneLayout } from "../../lib/layout";
+import type { WorkspacePaneLayout } from "../../lib/layout";
 import { WORKSPACE_PANE_TIMING } from "./workspace-pane-animation";
 import { WorkspacePaneDivider } from "./workspace-pane-divider";
 import { t } from "../../lib/i18n";
@@ -85,12 +85,7 @@ export function WorkspaceInspectorPane(props: {
     setResizing(true);
   };
   const resizeBy = (delta: number) => {
-    setAuxiliaryPaneWidth(
-      constrainAuxiliaryPaneWidth({
-        preferredWidth: resizeStartWidth.current + delta,
-        availableWidth: panes.contentPaneWidth,
-      }),
-    );
+    setAuxiliaryPaneWidth(resizeStartWidth.current + delta);
   };
   const endResize = () => {
     setResizing(false);

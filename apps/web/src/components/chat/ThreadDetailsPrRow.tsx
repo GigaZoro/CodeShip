@@ -1,8 +1,8 @@
+import { msg, t, tn } from "~/i18n";
 import { resolvePullRequestDetailChecks } from "@t3tools/client-runtime/pull-request-checks";
-import {
-  capitalizeTerm,
-  sourceControlClients,
-} from "@t3tools/client-runtime/source-control-clients";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import { changeRequestTermKind } from "../pullRequest/changeRequestTerm";
+
 import { PullRequestChangeBreakdownRows } from "../pullRequest/PullRequestChangeBreakdownStat";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
@@ -75,17 +75,38 @@ import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_LABEL_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
-import { t, tn } from "~/i18n";
 
 // A null checks response is settled; polling cannot find checks.
 const isSettledWithoutChecks = (result: AsyncResult.AsyncResult<unknown, unknown>) =>
   result._tag === "Success" && result.value === null;
+
+const TERM_A11Y_COPY = {
+  mr: [
+    msg("Merge request #{number}, {state}: {title}"),
+    msg("Merge request #{number}, {state}"),
+    msg("Merge request #{number}: {title}"),
+    msg("Merge request #{number}"),
+  ],
+  cr: [
+    msg("Change request #{number}, {state}: {title}"),
+    msg("Change request #{number}, {state}"),
+    msg("Change request #{number}: {title}"),
+    msg("Change request #{number}"),
+  ],
+  pr: [
+    msg("Pull request #{number}, {state}: {title}"),
+    msg("Pull request #{number}, {state}"),
+    msg("Pull request #{number}: {title}"),
+    msg("Pull request #{number}"),
+  ],
+} as const;
 
 export function ThreadDetailsPrRow({
   environmentId,
@@ -95,7 +116,6 @@ export function ThreadDetailsPrRow({
   status,
   project,
   label,
-  openAriaLabel,
   onOpen,
   onActed,
   onStopWatching,
@@ -108,7 +128,6 @@ export function ThreadDetailsPrRow({
   status: PrStatusIndicator | null;
   project: EnvironmentProject | null;
   label: string;
-  openAriaLabel: string;
   onOpen: (event: ReactMouseEvent<HTMLElement>) => void;
   onActed?: () => void;
   onStopWatching?: (() => void) | undefined;
@@ -150,6 +169,7 @@ export function ThreadDetailsPrRow({
   const terminology = sourceControlClients.get(
     detail?.provider ?? project?.repositoryIdentity?.provider,
   ).changeRequest;
+  const term = changeRequestTermKind(terminology);
   const open = reference !== null && (detail?.state ?? pr?.state) === "open";
   const refreshKey = `${environmentId}:${project?.id}:${reference?.host}:${reference?.repository}:${number}`;
   useLiveRefresh(
@@ -167,14 +187,19 @@ export function ThreadDetailsPrRow({
     checks: detail?.checks ?? [],
   });
 
-  const { actionPending, perform } = usePullRequestActionRunner({
+  const [armedMergeHead, setArmedMergeHead] = useState<string>();
+  const { actionPending, pendingAction, perform } = usePullRequestActionRunner({
     environmentId,
     reference,
+    // The row shows no diff, so a merge lands the head it had when the confirmation opened.
+    headSha: armedMergeHead ?? detail?.headSha,
     terminology,
     onSuccess: () => {
       checksQuery.refresh();
       onActed?.();
     },
+    // A refused merge usually means the row is stale, so show what the host has now.
+    onFailure: () => detailQuery.refresh(),
   });
   const { handoff, startHandoff } = usePullRequestHandoffs({ environmentId, detail });
   const lastSelectedMergeMethod = useUiStateStore((state) => state.pullRequestMergeMethod);
@@ -184,7 +209,10 @@ export function ThreadDetailsPrRow({
   );
   const [confirmingMerge, setConfirmingMerge] = useState(false);
 
-  const rowAction = resolveThreadPanelPullRequestAction(detail);
+  const rowAction =
+    pendingAction === "ready" || pendingAction === "merge"
+      ? pendingAction
+      : resolveThreadPanelPullRequestAction(detail);
   if (confirmingMerge && rowAction !== "merge") {
     setConfirmingMerge(false);
   }
@@ -197,6 +225,12 @@ export function ThreadDetailsPrRow({
     resolveProjectDefaultMergeMethod(),
     lastSelectedMergeMethod,
   );
+  const mergeMethodLabel = {
+    merge: t("merge"),
+    squash: t("squash"),
+    rebase: t("rebase"),
+    "fast-forward": t("fast-forward"),
+  }[selectedMergeMethod];
 
   const handOff = (kind: "conflicts" | "findings", task: PullRequestThreadTask) => {
     if (composerTarget === undefined) {
@@ -248,10 +282,13 @@ export function ThreadDetailsPrRow({
   const statePresentation =
     detail === null
       ? null
-      : resolvePullRequestState({
-          state: detail.state,
-          isDraft: detail.isDraft,
-        });
+      : resolvePullRequestState(
+          {
+            state: detail.state,
+            isDraft: detail.isDraft,
+          },
+          t,
+        );
   const icon = statePresentation ? (
     <statePresentation.Icon
       aria-hidden
@@ -266,10 +303,27 @@ export function ThreadDetailsPrRow({
     <PullRequestGlyph.pullRequest className={THREAD_DETAILS_PANEL_ICON_CLASS} />
   );
 
+  const stateLabel = (
+    statePresentation ??
+    (pr ? resolvePullRequestState({ state: pr.state, isDraft: pr.isDraft === true }, t) : null)
+  )?.label.toLowerCase();
+  const title = (detail?.title ?? pr?.title)?.trim();
+  const openAriaLabel =
+    stateLabel && title
+      ? t(TERM_A11Y_COPY[term][0], { number, state: stateLabel, title })
+      : stateLabel
+        ? t(TERM_A11Y_COPY[term][1], { number, state: stateLabel })
+        : title
+          ? t(TERM_A11Y_COPY[term][2], { number, title })
+          : t(TERM_A11Y_COPY[term][3], { number });
+
   const rowTooltip =
     detail === null || statePresentation === null ? (
       <TooltipPopup side="top">
-        {status?.tooltip ?? `${capitalizeTerm(terminology.singular)} #${number}`}
+        {status?.tooltip ??
+          t(TERM_A11Y_COPY[term][3], {
+            number,
+          })}
       </TooltipPopup>
     ) : (
       <TooltipPopup
@@ -310,7 +364,7 @@ export function ThreadDetailsPrRow({
                   }
                 />
                 <div className="min-w-0 truncate text-foreground/75">
-                  {describePullRequestChecks(detail.checks)}
+                  {describePullRequestChecks(detail.checks, t)}
                 </div>
               </div>
             ) : null}
@@ -394,11 +448,18 @@ export function ThreadDetailsPrRow({
                 pending: actionPending,
                 destructive: false,
                 suffix: null,
-                tooltip: t("Merge this {term} ({method})", {
-                  term: terminology.singular,
-                  method: selectedMergeMethod,
-                }),
-                onClick: () => setConfirmingMerge(true),
+                tooltip: t(
+                  term === "mr"
+                    ? msg("Merge this merge request ({method})")
+                    : term === "cr"
+                      ? msg("Merge this change request ({method})")
+                      : msg("Merge this pull request ({method})"),
+                  { method: mergeMethodLabel },
+                ),
+                onClick: () => {
+                  setArmedMergeHead(detail?.headSha);
+                  setConfirmingMerge(true);
+                },
               }
             : null;
 
@@ -406,38 +467,35 @@ export function ThreadDetailsPrRow({
     onStopWatching !== undefined && (detail?.state ?? pr?.state ?? "open") === "open";
   const watchControl = (part: "secondary" | "icon") =>
     watching ? (
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <ThreadDetailsControl
-              type="button"
-              variant="ghost"
-              size="sm"
-              part={part}
-              className="group/watch"
-              aria-label={t("Stop watching #{number}", { number })}
-              onClick={onStopWatching}
-            />
-          }
-        >
-          <EyeIcon
-            aria-hidden
-            className={cn(part === "icon" ? "size-3.5" : "size-4", "group-hover/watch:hidden")}
+      <SharedTooltipTrigger
+        render={
+          <ThreadDetailsControl
+            type="button"
+            variant="ghost"
+            size="sm"
+            part={part}
+            className="group/watch"
+            aria-label={t("Stop watching #{number}", { number })}
+            onClick={onStopWatching}
           />
-          <EyeOffIcon
-            aria-hidden
-            className={cn(
-              part === "icon" ? "size-3.5" : "size-4",
-              "hidden group-hover/watch:block",
+        }
+        label={
+          <>
+            {t(
+              "Watching: the agent wakes when checks finish, someone comments, or the branch conflicts. Click to stop.",
             )}
-          />
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          {t(
-            "Watching: the agent wakes when checks finish, someone comments, or the branch conflicts. Click to stop.",
-          )}
-        </TooltipPopup>
-      </Tooltip>
+          </>
+        }
+      >
+        <EyeIcon
+          aria-hidden
+          className={cn(part === "icon" ? "size-3.5" : "size-4", "group-hover/watch:hidden")}
+        />
+        <EyeOffIcon
+          aria-hidden
+          className={cn(part === "icon" ? "size-3.5" : "size-4", "hidden group-hover/watch:block")}
+        />
+      </SharedTooltipTrigger>
     ) : null;
 
   // The title row wraps to two lines; a conventional-commit prefix eats most of one line.
@@ -480,7 +538,9 @@ export function ThreadDetailsPrRow({
         <div className="pb-1.5">
           {openRow(detail.title, "row", true)}
           <div className="flex h-5 min-w-0 items-center gap-0.5 ps-9 pe-2.5 text-xs text-muted-foreground">
-            <span className="me-1 shrink-0 tabular-nums">#{number}</span>
+            <span aria-hidden className="me-1 shrink-0 tabular-nums">
+              #{number}
+            </span>
             {showChecks && checksRollup !== null ? (
               <PullRequestChecksPopover
                 checksState={checksRollup}
@@ -492,25 +552,23 @@ export function ThreadDetailsPrRow({
             {watchControl("icon")}
             <span className="flex-1" />
             {trailingAction ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <ThreadDetailsControl
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      part="meta"
-                      tone={trailingAction.destructive ? "destructive" : "primary"}
-                      disabled={actionPending || handoff !== null}
-                      onClick={trailingAction.onClick}
-                    />
-                  }
-                >
-                  {trailingAction.pending ? trailingAction.pendingLabel : trailingAction.label}
-                  {trailingAction.suffix}
-                </TooltipTrigger>
-                <TooltipPopup side="top">{trailingAction.tooltip}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <ThreadDetailsControl
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    part="meta"
+                    tone={trailingAction.destructive ? "destructive" : "primary"}
+                    disabled={actionPending || handoff !== null}
+                    onClick={trailingAction.onClick}
+                  />
+                }
+                label={trailingAction.tooltip}
+              >
+                {trailingAction.pending ? trailingAction.pendingLabel : trailingAction.label}
+                {trailingAction.suffix}
+              </SharedTooltipTrigger>
             ) : null}
           </div>
         </div>
@@ -533,7 +591,7 @@ export function ThreadDetailsPrRow({
               <AlertDialogDescription>
                 {t("This merges #{number} using {method}.", {
                   number,
-                  method: selectedMergeMethod,
+                  method: mergeMethodLabel,
                 })}
               </AlertDialogDescription>
             </AlertDialogHeader>

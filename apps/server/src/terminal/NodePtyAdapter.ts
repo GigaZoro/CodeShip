@@ -77,11 +77,10 @@ const ensureNodePtySpawnHelperExecutable = Effect.fn(function* () {
   if (didEnsureSpawnHelperExecutable) return;
 
   const helperPath = yield* resolveNodePtySpawnHelperPath;
-  if (!helperPath) return;
-  if (yield* fs.exists(helperPath)) {
+  if (helperPath && (yield* fs.exists(helperPath))) {
     yield* fs.chmod(helperPath, 0o755).pipe(Effect.orElseSucceed(() => undefined));
   }
-  // Set only once done: an interrupted check runs again on the next spawn.
+  // Set only after the repair finishes, so a check cut off by the spawn deadline runs again.
   didEnsureSpawnHelperExecutable = true;
 });
 
@@ -188,7 +187,7 @@ class NodePtyProcess implements PtyAdapter.PtyProcess {
     return this.process.pid;
   }
 
-  write(data: string): void {
+  write(data: string | Buffer): void {
     this.process.write(data);
   }
 
@@ -242,20 +241,21 @@ const make = Effect.fn("NodePtyAdapter.make")(function* () {
       }),
   }).pipe(Effect.orDie);
 
-  const ensureNodePtySpawnHelperExecutableCached = yield* Effect.cached(
-    ensureNodePtySpawnHelperExecutable().pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(HostProcess.Platform, platform),
-      Effect.provideService(HostProcess.Architecture, architecture),
-      Effect.orElseSucceed(() => undefined),
-    ),
+  const ensureSpawnHelperExecutable = ensureNodePtySpawnHelperExecutable().pipe(
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
+    Effect.provideService(HostProcess.Platform, platform),
+    Effect.provideService(HostProcess.Architecture, architecture),
+    Effect.orElseSucceed(() => undefined),
+    // Terminal startup runs uninterruptibly; a stalled helper check must not hold its locks.
+    Effect.interruptible,
+    Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.void }),
   );
 
   return PtyAdapter.PtyAdapter.of({
     spawn: Effect.fn("NodePtyAdapter.spawn")(function* (input) {
       // No process exists yet, so this file check stays interruptible inside a caller's masked start.
-      yield* Effect.interruptible(ensureNodePtySpawnHelperExecutableCached);
+      yield* Effect.interruptible(ensureSpawnHelperExecutable);
       // ConPTY ignores node-pty's name option for TERM; set it explicitly to avoid missing/16-color values.
       const env =
         platform === "win32" && input.env["TERM"] === undefined

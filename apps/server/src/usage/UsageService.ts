@@ -49,7 +49,12 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
-import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
+import {
+  canonicalModelFilter,
+  resolveModelAliases,
+  usageTimestampFilter,
+  UsageAggregator,
+} from "./usageAggregation.ts";
 import {
   createOverrideRateTable,
   parseRateTable,
@@ -61,7 +66,7 @@ import {
   DESKTOP_HOST_SCOPE_ENV,
   isGone,
   listTranscriptFiles,
-  PathCallPendingError,
+  isPathCallPending,
   readDirectoryVolumeId,
   readPhysicalSourceId,
   readTranscriptRecords,
@@ -104,7 +109,14 @@ const RATES_REFRESH_FLOOR_MS = 60 * 1000;
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-const CACHE_RETENTION_MS = 92 * 24 * 60 * 60 * 1000;
+const usageRetentionCutoff = (
+  settings: Pick<UsageScanSettings, "usageHistoryRetentionDays">,
+  nowMs: number,
+) =>
+  settings.usageHistoryRetentionDays === "unlimited"
+    ? 0
+    : Math.max(0, nowMs - settings.usageHistoryRetentionDays * 24 * 60 * 60 * 1000);
+
 // A check on a hung network mount can only be abandoned, not cancelled, so the pass stops
 // waiting at its limit and leaves an abandoned path alone for the backoff.
 const EXPIRED_FILE_CHECKS_TIMEOUT_MS = 5_000;
@@ -509,7 +521,8 @@ export const make = Effect.gen(function* () {
             ([filePath, entry]) =>
               entry.provider === provider &&
               isRetained(entry, retentionCutoffMs) &&
-              (entry.records.length + entry.tailRecords.length > 0 || entry.malformedRecords > 0) &&
+              (entry.records.length + entry.tailRecords.length > 0 ||
+                entry.malformedRecords.length > 0) &&
               isWithinDirectory(filePath, dir),
           );
         const volumeId =
@@ -822,9 +835,11 @@ export const make = Effect.gen(function* () {
    */
   const dropExpired = Effect.fn("UsageService.dropExpired")(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
+    const latest = yield* settingsService.getSettings.pipe(Effect.option);
+    const cutoff = Option.isSome(latest) ? usageRetentionCutoff(latest.value, nowMs) : 0;
     for (const [filePath, entry] of fileCache) {
       const { missingSinceMs, presentSinceMs, ...contents } = entry;
-      if (missingSinceMs !== undefined && missingSinceMs < nowMs - CACHE_RETENTION_MS) {
+      if (missingSinceMs !== undefined && missingSinceMs < cutoff) {
         fileCache.delete(filePath);
       } else if ((missingSinceMs ?? 0) > nowMs || (presentSinceMs ?? 0) > nowMs) {
         fileCache.set(
@@ -1234,7 +1249,7 @@ export const make = Effect.gen(function* () {
     onProgress: () => void,
   ): Effect.fn.Return<{
     readonly records: readonly UsageRecord[];
-    readonly malformedRecords: number;
+    readonly malformedRecords: readonly number[];
     readonly failure?: TranscriptPathFailure;
     readonly update?: Omit<CachedFile, "observedAtMs">;
   }> {
@@ -1276,7 +1291,7 @@ export const make = Effect.gen(function* () {
     if (read._tag === "Failure") {
       const kept = {
         records: cached?.provider === provider ? [...cached.records, ...cached.tailRecords] : [],
-        malformedRecords: cached?.provider === provider ? cached.malformedRecords : 0,
+        malformedRecords: cached?.provider === provider ? cached.malformedRecords : [],
       };
       // A file removed since the listing is gone, not unreadable; the next listing marks it missing.
       if (isGone(read.failure.cause)) return kept;
@@ -1365,7 +1380,7 @@ export const make = Effect.gen(function* () {
       | readonly {
           readonly path: string;
           readonly records: readonly UsageRecord[];
-          readonly malformedRecords: number;
+          readonly malformedRecords: readonly number[];
         }[]
       | null;
 
@@ -1428,7 +1443,7 @@ export const make = Effect.gen(function* () {
     const unreadable = new Map<string, LoggedFailure>();
     for (const { path: failedPath, cause } of failures) {
       const before = unreadable.get(failedPath) ?? logged?.get(failedPath);
-      const now: LoggedFailure = cause instanceof PathCallPendingError ? "pending" : "failed";
+      const now: LoggedFailure = isPathCallPending(cause) ? "pending" : "failed";
       if (before === undefined || (before === "pending" && now === "failed")) {
         yield* Effect.logError("Could not read transcript usage", { path: failedPath, cause });
       }
@@ -1606,7 +1621,7 @@ export const make = Effect.gen(function* () {
                   : Effect.succeed<[string, string | undefined]>([volumeId, undefined]),
                 ([resolved, sourceId]): ScannedDir => ({
                   ...source,
-                  files: source.files?.map((file) => ({ ...file, malformedRecords: 0 })) ?? null,
+                  files: source.files?.map((file) => ({ ...file, malformedRecords: [] })) ?? null,
                   provider: reader.provider,
                   volumeId: resolved,
                   ...(sourceId === undefined ? {} : { physicalSourceId: sourceId }),
@@ -1694,7 +1709,7 @@ export const make = Effect.gen(function* () {
     const windowStartMs =
       (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
-    const retentionCutoffMs = startedAtMs - CACHE_RETENTION_MS;
+    const retentionCutoffMs = usageRetentionCutoff(settings, startedAtMs);
 
     const completedProviders = new Map<UsageProviderKind, readonly ScannedDir[]>();
     const rateLoad = yield* ensureRates(false).pipe(Effect.forkChild);
@@ -1764,7 +1779,10 @@ export const make = Effect.gen(function* () {
     const transcripts = yield* Effect.forEach(dirs, (dir) =>
       scanTranscriptDir(dir, windowStartMs, scanListings, onProgress),
     );
-    yield* checkExpiredFiles(retentionCutoffMs);
+    const latestRetention = yield* settingsService.getSettings.pipe(Effect.option);
+    if (Option.isSome(latestRetention)) {
+      yield* checkExpiredFiles(usageRetentionCutoff(latestRetention.value, startedAtMs));
+    }
 
     yield* Fiber.join(rateLoad);
     const window = makeWindow();
@@ -1850,6 +1868,7 @@ export const make = Effect.gen(function* () {
     flight?: ScanFlight,
   ) {
     const { hourlyWindow, windowStartMs, retentionCutoffMs, startedAtMs, fromMemory } = window;
+    const inWindow = usageTimestampFilter({ ...input, ...hourlyWindow });
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
     const filesByDir = scannedDirs.map(({ provider, dir, files }) => {
       const retainedFiles = [...(files ?? [])];
@@ -1869,7 +1888,16 @@ export const make = Effect.gen(function* () {
           malformedRecords: entry.malformedRecords,
         });
       }
-      return retainedFiles;
+      return retainedFiles.flatMap((file) => {
+        // A keyed copy outside the window still claims its key, so a later copy is not counted.
+        const records = file.records.filter(
+          (record) => record.dedupeKey !== null || inWindow(record.timestampMs),
+        );
+        const malformedRecords = file.malformedRecords.filter(inWindow);
+        return records.length === 0 && malformedRecords.length === 0
+          ? []
+          : [{ ...file, records, malformedRecords }];
+      });
     });
     const modelAliases = resolveModelAliases(settings.usageModelAliases);
     const priceOverrides = createOverrideRateTable(settings.usagePriceOverrides);
@@ -1930,7 +1958,7 @@ export const make = Effect.gen(function* () {
       for (const { file, source } of orderedFiles) {
         const count = counts[source]!;
         const { dir } = scannedDirs[source]!;
-        count.malformedRecords += file.malformedRecords;
+        count.malformedRecords += file.malformedRecords.length;
         if (file.records.length === 0) {
           count.skippedFiles++;
           continue;

@@ -1,4 +1,6 @@
+import { t } from "~/i18n";
 import type { RelayClientDeviceRecord } from "@t3tools/contracts/relay";
+
 import { SmartphoneIcon } from "lucide-react";
 
 import { useManagedRelayDevices } from "../../cloud/managedRelayState";
@@ -17,7 +19,6 @@ import {
   ClerkUserProfileRow,
 } from "./ClerkUserProfilePage";
 
-import { t } from "~/i18n";
 const MOBILE_CLIENT_SKELETON_ROWS = ["primary", "secondary"] as const;
 
 function MobileClientStatusBadge({
@@ -47,7 +48,7 @@ function MobileClientRow({ device }: { readonly device: RelayClientDeviceRecord 
           </p>
         </div>
         <p className="shrink-0 text-2xs leading-4 text-muted-foreground/75">
-          {mobileClientUpdatedAtLabel(device.updatedAt)}
+          {mobileClientUpdatedAtLabel(device.updatedAt, t)}
         </p>
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -61,7 +62,7 @@ function MobileClientRow({ device }: { readonly device: RelayClientDeviceRecord 
         />
       </div>
       <p className="mt-1.5 text-xs leading-4.5 text-muted-foreground/80">
-        {mobileClientNotificationDetail(device)}
+        {mobileClientNotificationDetail(device, t)}
       </p>
     </ClerkUserProfileRow>
   );
@@ -109,6 +110,7 @@ function EmptyMobileClients() {
 
 export function MobileClientsUserProfilePage() {
   const devicesState = useManagedRelayDevices();
+
   const devices = devicesState.data ?? [];
   const isInitialLoad =
     !devicesState.accountId || (devicesState.data === null && !devicesState.error);

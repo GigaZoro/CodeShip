@@ -1,3 +1,6 @@
+import { t } from "~/i18n";
+import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
+import { useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isTerminalSubagentStatus,
@@ -26,7 +29,6 @@ import { findRevealRef } from "./markdownFindContext";
 import { useTallEnoughToFold } from "./useTallEnoughToFold";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { EnvironmentSubagentAvatar } from "./V2LifecycleRow";
-import { t } from "~/i18n";
 
 const FOLDED_SCRIPT_MASK = "linear-gradient(to bottom, black calc(100% - 1.75rem), transparent)";
 
@@ -39,11 +41,12 @@ function scriptMarkdown(script: string) {
 export function WorkflowOpeningBlock(props: {
   readonly opening: WorkflowOpening;
   readonly environmentId: EnvironmentId;
-  readonly onOpenThread: (threadId: string) => void;
+  readonly onOpenThread: (threadId: string, intent?: SideThreadOpenIntent) => void;
 }) {
   const { opening } = props;
+
   const providers = useAtomValue(providersIgnoringCheckedAtAtom(props.environmentId));
-  const headline = workflowOpeningHeadline(opening);
+  const headline = workflowOpeningHeadline(opening, t);
   const phases = opening.group?.phases.filter((phase) => phase.members.length > 0) ?? [];
   const memberRow = (member: RuntimeSubagent) =>
     opening.providerInstanceId === null ? null : (
@@ -109,8 +112,9 @@ function WorkflowMemberRow(props: {
   readonly providerInstanceId: ProviderInstanceId;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly driver: ProviderDriverKind | undefined;
-  readonly onOpenThread: (threadId: string) => void;
+  readonly onOpenThread: (threadId: string, intent?: SideThreadOpenIntent) => void;
 }) {
+  const trigger = useSideThreadTrigger();
   const { member } = props;
   const threadId = member.childThreadId;
   const failed = member.status === "failed";
@@ -137,7 +141,7 @@ function WorkflowMemberRow(props: {
                 type="button"
                 aria-label={t("Open {title}", { title: member.title })}
                 aria-description={member.status}
-                onClick={() => props.onOpenThread(threadId)}
+                {...trigger((intent) => props.onOpenThread(threadId, intent))}
                 className={cn(
                   className,
                   "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",

@@ -43,6 +43,7 @@ import {
 import { installNeedsYouBadge } from "./features/agent-awareness/needsYouBadge";
 import {
   installAppShortcuts,
+  republishAppShortcuts,
   recordAppShortcutNavigationState,
 } from "./features/shortcuts/appShortcutsRuntime";
 import {
@@ -112,6 +113,7 @@ import {
 import { pruneNewTaskFlowStates } from "./features/threads/new-task-flow-state";
 import { pruneNewTaskBranchCheckouts } from "./features/threads/NewTaskDraftRouteScreen";
 import { installAppUpdateChecks } from "./features/updates/app-updates";
+import { perfProbe } from "./features/development/perf-probe-hooks";
 
 import "../global.css";
 
@@ -223,6 +225,9 @@ const appServiceDisposers = [
   installNeedsYouBadge(),
   installAppShortcuts(linkToAppPath),
   onLanguageApplied(setAndroidAgentNotificationLanguage),
+  onLanguageApplied(() => {
+    if (Platform.OS === "android") republishAppShortcuts();
+  }),
   installAppUpdateChecks(),
   installShowcaseCapture(rootPathnameFromState),
 ];
@@ -305,7 +310,13 @@ function AppContent() {
       <SubscriptionUsageCoordinator />
       <ConnectDeviceApprovalCoordinator />
       {isReady ? (
-        <GestureHandlerRootView key={languageVersion} className="flex-1">
+        <GestureHandlerRootView
+          key={languageVersion}
+          className="flex-1"
+          onTouchStartCapture={perfProbe?.touchStart}
+          onTouchEndCapture={perfProbe?.touchEnd}
+          onTouchCancelCapture={perfProbe?.touchEnd}
+        >
           <KeyboardProvider statusBarTranslucent>
             <SafeAreaProvider>
               <StatusBar barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"} />

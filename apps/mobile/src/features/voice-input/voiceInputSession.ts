@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import {
   VOICE_RECORDING_LIMIT_SECONDS,
   VoiceInputController,
@@ -86,6 +87,7 @@ export class VoiceInputSession {
   constructor(dependencies: VoiceInputSessionDependencies) {
     this.dependencies = dependencies;
     this.controller = new VoiceInputController({
+      resolve: t,
       ...dependencies,
       onStateChange: (state) => this.handleStateChange(state),
       // The target's selection is fixed at start, so a draft changed since refuses the transcript.

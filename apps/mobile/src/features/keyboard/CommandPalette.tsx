@@ -9,8 +9,9 @@ import {
   type EnvironmentThreadSearchMatch,
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
+import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { sortProjectGroupsManually } from "@t3tools/client-runtime/state/project-order";
-import { isListedThreadLineage, THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
+import { THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,
@@ -19,6 +20,7 @@ import {
   pickedQuery,
   threadRecentUse,
 } from "@t3tools/shared/paletteSearch";
+import { searchMatchHintLabel } from "@t3tools/shared/paletteSearchCopy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
@@ -44,6 +46,7 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useNativeLayoutMetrics } from "../../native/native-layout-metrics";
 import { T3KeyboardCommands } from "../../native/T3KeyboardCommands";
 import {
+  useDelegatedUnderParent,
   useProjects,
   useServerConfigs,
   useThreadShell,
@@ -51,7 +54,7 @@ import {
 } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
-import { useCanShareWithGuest } from "../threads/ThreadGuestShareSheet";
+import { useCanShareWithGuest } from "../threads/useCanShareWithGuest";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -177,8 +180,8 @@ function PaletteRow(props: {
               lives, unless the hint already names it. */}
           {(props.searchMatch ||
             (props.item.matchHint &&
-              props.item.matchHint.label !== "Project" &&
-              props.item.matchHint.label !== "Environment")) &&
+              props.item.matchHint.field !== "project" &&
+              props.item.matchHint.field !== "environment")) &&
           props.item.detail ? (
             <Text
               numberOfLines={1}
@@ -197,7 +200,7 @@ function PaletteRow(props: {
           />
         ) : props.item.matchHint ? (
           <Text numberOfLines={1} className={cn("text-sm", mutedForegroundClassName)}>
-            {props.item.matchHint.label}:{" "}
+            {searchMatchHintLabel(props.item.matchHint.field, t)}:{" "}
             {splitSearchText(props.item.matchHint.text, props.item.matchHint.ranges).map((part) => (
               <Text key={part.start} className={cn("text-sm", part.highlighted && "font-t3-bold")}>
                 {part.text}
@@ -237,6 +240,7 @@ export function CommandPalette(props: {
   const runCommand = props.onCommand;
   const projects = useProjects();
   const threads = useVisibleThreadShells();
+  const delegatedUnderParent = useDelegatedUnderParent();
   const activeThreadRef = parseActiveThreadPath(props.pathname);
   const activeThread = useThreadShell(activeThreadRef);
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
@@ -384,14 +388,16 @@ export function CommandPalette(props: {
       },
     ];
     if (canTriage) {
+      const triageEnvironmentLabel = savedConnectionsById[triageEnvironmentId]?.environmentLabel;
       actions.push({
         key: "triage",
         kind: "action",
         title: t("Triage an issue"),
         // Mobile has no triage hero, so name the machine before it starts.
-        detail: t("On {name}", {
-          name: savedConnectionsById[triageEnvironmentId]?.environmentLabel ?? t("this machine"),
-        }),
+        detail:
+          triageEnvironmentLabel !== undefined
+            ? t("On {environment}", { environment: triageEnvironmentLabel })
+            : t("On this machine"),
         searchTerms: ["triage", "bug", "issue", "report", "broken", "debug", "help", "support"],
         run: () => void startTriage(triageEnvironmentId),
       });
@@ -493,7 +499,15 @@ export function CommandPalette(props: {
         }),
     }));
     const threadItems: CommandPaletteItem[] = threads
-      .filter((thread) => thread.archivedAt === null && isListedThreadLineage(thread.lineage))
+      .filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          !isShownUnderParent(
+            { environmentId: thread.environmentId, threadId: thread.id },
+            thread.lineage,
+            delegatedUnderParent,
+          ),
+      )
       .map((thread) => {
         const project = projectByKey.get(scopedProjectKey(thread.environmentId, thread.projectId));
         const environment =
@@ -545,6 +559,7 @@ export function CommandPalette(props: {
     selectDetail,
     startTriage,
     threads,
+    delegatedUnderParent,
     triageEnvironmentId,
   ]);
   const rankedMessageKeys = useMemo(() => {
@@ -753,7 +768,11 @@ export function CommandPalette(props: {
                 contentContainerStyle={{ paddingBottom: 8 }}
                 ListEmptyComponent={
                   <Text className="p-5 text-center text-foreground-muted">
-                    {search.isPending ? t("Searching…") : t("No results")}
+                    {search.isPending
+                      ? t("Searching…")
+                      : search.failed
+                        ? t("Couldn't search messages")
+                        : t("No results")}
                   </Text>
                 }
                 // Message results from slower environments may still arrive below.

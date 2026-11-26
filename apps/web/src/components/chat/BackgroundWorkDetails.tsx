@@ -1,13 +1,15 @@
+import { t } from "~/i18n";
 import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
   ThreadId,
 } from "@t3tools/contracts";
 import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+
 import { useState } from "react";
 
-import { t } from "~/i18n";
-import { InlineButton } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import {
   Dialog,
   DialogHeader,
@@ -26,6 +28,20 @@ export function BackgroundWorkDetails(props: {
   readonly turnItems: ThreadStructure["turnItems"];
   readonly onOpenThread: (threadId: ThreadId) => void;
 }) {
+  const kindLabel = (kind: string) => {
+    switch (kind) {
+      case "subagent":
+        return t("subagent");
+      case "command":
+        return t("command");
+      case "monitor":
+        return t("monitor");
+      case "background_task":
+        return t("background task");
+      default:
+        return kind.replaceAll("_", " ");
+    }
+  };
   const [open, setOpen] = useState(false);
   const streamsOutput = useCommandOutputStreaming(props.environmentId);
   return (
@@ -51,7 +67,7 @@ export function BackgroundWorkDetails(props: {
                   ? description
                   : command
                     ? t("Command")
-                    : task.kind.replaceAll("_", " ");
+                    : kindLabel(task.kind);
               const itemId =
                 task.itemId ?? (item?.type === "command_execution" ? item.id : undefined);
               const childThreadId = task.kind === "subagent" ? task.childThreadId : undefined;
@@ -60,7 +76,7 @@ export function BackgroundWorkDetails(props: {
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-medium">{title}</h3>
                     <span className="shrink-0 text-xs text-muted-foreground">
-                      {task.awaited ? t("Waiting") : t("Running")}
+                      {backgroundWorkHoldsCompletion([task]) ? t("Waiting") : t("Running")}
                     </span>
                   </div>
                   {command ? (
@@ -78,14 +94,16 @@ export function BackgroundWorkDetails(props: {
                     </div>
                   ) : null}
                   {childThreadId ? (
-                    <InlineButton
+                    <Button
+                      size="sm"
+                      variant="outline"
                       onClick={() => {
                         setOpen(false);
                         props.onOpenThread(childThreadId);
                       }}
                     >
-                      {t("Open thread")}
-                    </InlineButton>
+                      {t("Open subagent")}
+                    </Button>
                   ) : null}
                 </section>
               );

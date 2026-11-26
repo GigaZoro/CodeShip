@@ -1,3 +1,9 @@
+## 2026-11-26 — Updates from T3 Code
+
+- The Issues page brings issues from configured trackers into one list. You can narrow it by project or status.
+- Chat timestamps follow system time-zone changes while the app is open. Scheduled times update when you change zones, too.
+- Pair existing linked environments again after upgrading. Renewed links now keep access to the threads they started, and unlinking a machine revokes its renewed credentials.
+
 ## 2026-11-26 — More precise provider quota readings
 
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.

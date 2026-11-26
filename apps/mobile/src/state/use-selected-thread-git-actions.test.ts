@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
     expectedBranch?: string | null;
   }[],
   threadBranchMoved: false,
+  actionCwds: [] as (string | null)[],
+  repositoryActions: [] as { cwd: string }[],
   results: [] as { type: string; description?: string }[],
   resultTargets: [] as unknown[],
   afterGitAction: undefined as (() => void) | undefined,
@@ -72,10 +74,18 @@ vi.mock("./use-remote-environment-registry", () => ({
   setPendingConnectionError: () => {},
 }));
 vi.mock("./use-vcs-action-state", () => ({
-  showGitActionResult: (target: unknown, result: { type: string; description?: string }) => {
-    state.resultTargets.push(target);
+  showGitActionResult: ({
+    threadRef,
+    ...result
+  }: {
+    type: string;
+    description?: string;
+    threadRef: unknown;
+  }) => {
+    state.resultTargets.push(threadRef);
     state.results.push(result);
   },
+  noteRepositoryGitAction: (action: { cwd: string }) => state.repositoryActions.push(action),
   pullSuccess: () => ({ type: "success", title: "Pulled" }),
   stackedActionSuccess: () => ({ type: "success", title: "Done" }),
 }));
@@ -144,20 +154,23 @@ vi.mock("./vcs", () => ({
   },
   vcsActionManager: {
     track: (_registry: unknown, _target: unknown, _operation: unknown, run: () => unknown) => run(),
-    runStackedAction: () => async (input: { action: string; featureBranch?: boolean }) => {
-      if (input.featureBranch) state.branch = "feature";
-      if (input.action === "commit") state.commits += 1;
-      if (input.action === "push") state.pushes += 1;
-      state.afterGitAction?.();
-      return AsyncResult.success({
-        branch: input.featureBranch
-          ? { status: "created", name: "feature" }
-          : { status: "skipped_not_requested" },
-        commit: { status: input.action === "commit" ? "created" : "skipped_not_requested" },
-        push: { status: input.action === "push" ? "pushed" : "skipped_not_requested" },
-        pr: { status: "skipped_not_requested" },
-      });
-    },
+    runStackedAction:
+      (target: { cwd: string | null }) =>
+      async (input: { action: string; featureBranch?: boolean }) => {
+        state.actionCwds.push(target.cwd);
+        if (input.featureBranch) state.branch = "feature";
+        if (input.action === "commit") state.commits += 1;
+        if (input.action === "push") state.pushes += 1;
+        state.afterGitAction?.();
+        return AsyncResult.success({
+          branch: input.featureBranch
+            ? { status: "created", name: "feature" }
+            : { status: "skipped_not_requested" },
+          commit: { status: input.action === "commit" ? "created" : "skipped_not_requested" },
+          push: { status: input.action === "push" ? "pushed" : "skipped_not_requested" },
+          pr: { status: "skipped_not_requested" },
+        });
+      },
   },
 }));
 
@@ -174,6 +187,8 @@ describe("thread Git mutation permissions", () => {
     state.thread.runtime = null;
     state.commits = 0;
     state.pushes = 0;
+    state.actionCwds = [];
+    state.repositoryActions = [];
     state.metadataRequests = [];
     state.threadBranchMoved = false;
     state.results = [];
@@ -209,8 +224,8 @@ describe("thread Git mutation permissions", () => {
     expect(state.thread.branch).toBe("main");
     expect(state.metadataRequests).toEqual([]);
     expect(state.resultTargets).toEqual([
-      { environmentId: "environment", cwd: "/repo" },
-      { environmentId: "environment", cwd: "/repo" },
+      { environmentId: "environment", threadId: "thread" },
+      { environmentId: "environment", threadId: "thread" },
     ]);
   });
 
@@ -286,6 +301,31 @@ describe("thread Git mutation permissions", () => {
       ]);
     },
   );
+
+  it("runs a tracked repository's actions in its folder without touching the thread", async () => {
+    const actions = useSelectedThreadGitActions({
+      key: "/repo/api",
+      cwd: "/repo/api",
+      name: "api",
+    });
+    expect(actions.canChangeThreadBranch).toBe(false);
+    expect(actions.canCreateFeatureBranch).toBe(true);
+    expect(
+      await actions.onRunSelectedThreadGitAction({ action: "commit", featureBranch: true }),
+    ).not.toBeNull();
+    expect(await actions.onCreateSelectedThreadBranch("feature/api")).toEqual({
+      refName: "feature/api",
+    });
+    expect(
+      await actions.onCreateSelectedThreadWorktree({ baseBranch: "main", newBranch: "feature" }),
+    ).toBeNull();
+    expect(state.actionCwds).toEqual(["/repo/api"]);
+    expect(state.repositoryActions.map((action) => action.cwd)).toEqual(["/repo/api", "/repo/api"]);
+    expect(state.worktrees).toEqual([]);
+    expect(state.thread.branch).toBe("main");
+    expect(state.metadataRequests).toEqual([]);
+    expect(state.results.map((result) => result.type)).toEqual(["success"]);
+  });
 
   it("refreshes the worktree status when the metadata update is denied after checkout", async () => {
     state.scopes.add(AuthOrchestrationOperateScope);
@@ -387,7 +427,12 @@ describe("automatic feature branch refs", () => {
     );
     expect(await useSelectedThreadGitActions().refreshSelectedThreadBranches()).toBeNull();
     expect(state.results).toEqual([
-      { type: "error", title: "Git action failed", description: "Cannot list refs" },
+      {
+        threadRef: { environmentId: "environment", threadId: "thread" },
+        type: "error",
+        title: "Git action failed",
+        description: "Cannot list refs",
+      },
     ]);
   });
 });

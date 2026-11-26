@@ -1,6 +1,8 @@
+import { t } from "~/i18n";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
+
 import { useContext } from "react";
 
 import { agentSessionScan } from "../state/agentSessions";
@@ -18,7 +20,7 @@ export function useProjectScans(environmentIds: readonly EnvironmentId[]) {
     return {
       environmentId,
       data: AsyncResult.getOrElse(result, () => null),
-      error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
+      error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause, t) : null,
       isPending: result.waiting || result._tag === "Initial",
       refresh: () => registry.refresh(scanAtom(environmentId)),
     };

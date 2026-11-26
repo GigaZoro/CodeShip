@@ -1,4 +1,5 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { useAtomValue } from "@effect/atom-react";
 import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
 import { useNavigation } from "@react-navigation/native";
 import {
@@ -26,7 +27,7 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useThreadShell } from "../../state/entities";
 import { useManualStepReview, useManualSteps } from "../../state/manualSteps";
 import { openSettings } from "../settings/settings-navigation";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import {
   THREAD_LIST_V2_ROW_DIVIDERS,
   getThreadListV2RowAppearance,
@@ -313,12 +314,12 @@ const SignInAllRow = memo(function SignInAllRow(props: {
 
 function useManualStepsExpanded() {
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const loaded = AsyncResult.isSuccess(preferences);
   const expanded = !loaded || preferences.value.threadListManualStepsExpanded !== false;
   const toggle = () => {
     if (!loaded) return;
-    savePreferences({
+    void savePreferences({
       transform: (current) => ({
         threadListManualStepsExpanded: current.threadListManualStepsExpanded === false,
       }),

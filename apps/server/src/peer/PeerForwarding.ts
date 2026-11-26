@@ -130,6 +130,23 @@ const linkStorageFailure = (error: PeerLinkError) =>
 export const remoteTarget = (scope: Scope, environmentId: EnvironmentId | undefined) =>
   environmentId === scope.environmentId ? undefined : environmentId;
 
+// Older peers reject beforePosition during parameter validation.
+const BEFORE_POSITION_REFUSAL =
+  /^Invalid parameters for tool 't3_thread_read': Unknown arguments? (?:"[^"]+", )*"beforePosition"(?:, "[^"]+")*\. Accepted arguments: /;
+export const refusesBeforePosition = (failure: {
+  readonly code: string;
+  readonly message: string;
+}) => failure.code === "invalid_request" && BEFORE_POSITION_REFUSAL.test(failure.message);
+
+/** A newest-page read, retried as the peer always served it when the peer refuses the cursor. */
+export const readNewestOrRetry = Effect.fn("PeerForwarding.readNewestOrRetry")(function* <A>(
+  read: (args: unknown) => Effect.Effect<A, OrchestratorMcpFailure>,
+  newest: unknown,
+  params: unknown,
+) {
+  return yield* read(newest).pipe(Effect.catchIf(refusesBeforePosition, () => read(params)));
+});
+
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
@@ -293,6 +310,15 @@ const make = Effect.gen(function* () {
     Effect.flatMap((enabled) => (enabled ? Effect.void : Effect.fail(linkedEnvironmentsOff))),
   );
 
+  // Older peers page some cursorless reads forward; ask for the newest page, as a read here gets.
+  const newestPage = (toolName: string, params: unknown) => {
+    if (toolName !== "t3_thread_read") return undefined;
+    const input = params as OrchestratorMcpThreadReadInput;
+    return input.afterPosition === undefined && input.beforePosition === undefined
+      ? { ...input, beforePosition: Number.MAX_SAFE_INTEGER }
+      : undefined;
+  };
+
   const call: PeerForwarding["Service"]["call"] = (
     scope,
     tool,
@@ -300,6 +326,19 @@ const make = Effect.gen(function* () {
     params,
     ignorableArguments,
   ) => {
+    const forwardTool = (
+      args: unknown,
+    ): Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure> =>
+      forward(
+        scope,
+        tool.name,
+        tool.parametersSchema,
+        tool.successSchema,
+        environmentId,
+        args,
+        ignorableArguments,
+      );
+    const newest = newestPage(tool.name, params);
     const forwarded: Effect.Effect<
       Tool.Success<typeof tool>,
       OrchestratorMcpFailure
@@ -309,15 +348,9 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(
-          scope,
-          tool.name,
-          tool.parametersSchema,
-          tool.successSchema,
-          environmentId,
-          params,
-          ignorableArguments,
-        );
+      : newest === undefined
+        ? forwardTool(params)
+        : readNewestOrRetry(forwardTool, newest, params);
     return Effect.andThen(requireEnabled, forwarded);
   };
 

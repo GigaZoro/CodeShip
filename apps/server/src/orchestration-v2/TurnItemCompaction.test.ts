@@ -33,6 +33,7 @@ import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 
 const database = SqlitePersistence.layerMemory;
@@ -43,6 +44,7 @@ const layerTest = Layer.mergeAll(
   stores,
   EventSink.layer.pipe(Layer.provide(stores)),
   ProjectionMaintenance.layer.pipe(Layer.provide(stores)),
+  ProjectionReplay.layer.pipe(Layer.provide(stores)),
 );
 
 const providerDriver = ProviderDriverKind.make("codex");
@@ -857,8 +859,8 @@ it.effect(
       assert.deepEqual(yield* historyEventIds(brief.id), keptHistoryEventIds(brief.id, 3));
       assert.deepEqual(yield* historyEventIds(long.id), keptHistoryEventIds(long.id, 40));
       assert.deepEqual(yield* projected, before);
-      assert.isTrue((yield* maintenance.verify).valid);
-      assert.isTrue((yield* maintenance.rebuild).valid);
+      assert.isTrue((yield* (yield* ProjectionReplay.ProjectionReplay).verify).valid);
+      assert.isTrue((yield* (yield* ProjectionReplay.ProjectionReplay).rebuild).valid);
       assert.deepEqual(yield* projected, before);
 
       // The mark skips a compacted chat until it has new events.
@@ -973,7 +975,7 @@ it.effect("stops compacting when the family reopens mid-pass and finishes once i
       deletedEventCount: supersededHistoryEventCount(20) - 40,
     });
     assert.deepEqual(yield* historyEventIds(source.id), keptHistoryEventIds(source.id, 20));
-    assert.isTrue((yield* maintenance.rebuild).valid);
+    assert.isTrue((yield* (yield* ProjectionReplay.ProjectionReplay).rebuild).valid);
     assert.deepEqual(yield* projections.getThreadProjection(source.id), before);
   }).pipe(Effect.provide(layerTest)),
 );

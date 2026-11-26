@@ -3,6 +3,9 @@
 Customize shortcuts in **Settings → Keybindings** on web and desktop. That page
 also lists the command IDs and defaults available in your version.
 
+To free a default shortcut for another command, choose **Unassign** from its row's
+actions menu. **Reset to default** brings it back.
+
 ## Composer controls
 
 `mod+shift+d` starts dictation in the focused editor, or the composer, and finishes it on the next press;
@@ -130,12 +133,14 @@ Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`.
 
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`,
 `previewOpen`, `rightPanelOpen`, `modelPickerOpen`, `usagePageOpen`, `diffFocus`, `composerFocus`,
-`draftThreadRoute`, `turnRunning`, `approvalPending`, `editableFocus`, `isWeb`, and `isDesktop`.
+`draftThreadRoute`, `turnRunning`, `composerEmpty`, `approvalPending`, `editableFocus`, `isWeb`, and `isDesktop`.
 `diffFocus` is true while the keyboard is in the Diff panel.
 `approvalPending` is true while the open thread shows an approval you can answer.
 In a thread, `rightPanelOpen` is true while its right panel is open; the default
 `mod+t` uses it to open the panel's new-tab menu.
 `draftThreadRoute` is true on a draft thread, including a restored draft, until it is first sent.
+`composerEmpty` is true while the composer has no text, attachments, or context, and is not
+editing a queued message or answering a question.
 `editableFocus` is true while a text field, the composer, or another editor has
 the keyboard. `isWeb` is true in a browser tab. `isDesktop` is true in the
 desktop app. Unknown keys evaluate to `false`.
@@ -231,6 +236,8 @@ if the browser takes it first.
 
 Many defaults include `!terminalFocus` so they do not intercept terminal input.
 Keep that condition when remapping them if you want the same behavior.
+`sidebar.toggle` never takes a Ctrl chord from a focused terminal, so tmux's `Ctrl+B`
+prefix reaches it. On macOS, `Cmd+B` still toggles the sidebar there.
 
 ## Desktop quit shortcut
 

@@ -1,3 +1,4 @@
+import { t, tn } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { useState } from "react";
@@ -24,7 +25,6 @@ import { InlineButton } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
-import { t, tn } from "~/i18n";
 
 export function useAutoBalanceUpdateBanner(
   environments: readonly EnvironmentPresentation[],
@@ -42,7 +42,7 @@ export function useAutoBalanceUpdateBanner(
     () => new Set(),
   );
   const machines = states.flatMap(({ environment, state }) => {
-    const mismatch = resolveServerConfigVersionMismatch(environment.serverConfig);
+    const mismatch = resolveServerConfigVersionMismatch(environment.serverConfig, t);
     const dismissKey = mismatch
       ? buildVersionMismatchDismissalKey(environment.environmentId, mismatch)
       : null;

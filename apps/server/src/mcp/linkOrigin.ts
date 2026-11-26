@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 
 import { clientModeCeiling, type McpInvocationScope } from "./McpInvocationContext.ts";
 
-import type { Caller } from "./threadAccess.ts";
+import { assertFullAccess, type Caller } from "./threadAccess.ts";
 
 /**
  * Below full access, work a link starts here (all of it carries that session in `linkOrigin`)
@@ -38,10 +38,13 @@ export const fencingLinkOrigin = (caller: Pick<Caller, "scope" | "caller">) => {
   return origin !== undefined && linkOriginIsFenced(origin) ? origin : undefined;
 };
 
+const outsideLinkMessage = (origin: OrchestrationV2LinkOrigin, message: string) =>
+  `This work was started from ${origin.label} through a linked environment, so ${message} A link paired with full access is not limited this way.`;
+
 const outsideLink = (origin: OrchestrationV2LinkOrigin, message: string) =>
   new OrchestratorMcpFailure({
     code: "capability_denied",
-    message: `This work was started from ${origin.label} through a linked environment, so ${message} A link paired with full access is not limited this way.`,
+    message: outsideLinkMessage(origin, message),
   });
 
 /** A thread a fenced caller may change: one its own link started. */
@@ -98,4 +101,18 @@ export const assertMayLinkBack = (
     );
   }
   return Effect.void;
+};
+
+/** A fenced caller is held below full access by its link, not its thread, so the refusal names the link. */
+export const assertFullAccessNamingLink = (caller: Caller, message: string, what: string) => {
+  const origin = fencingLinkOrigin(caller);
+  return assertFullAccess(
+    caller,
+    origin === undefined
+      ? message
+      : outsideLinkMessage(
+          origin,
+          `it has that link's ${origin.access === undefined ? "" : `${origin.access} `}access, which is below the full access needed to ${what}.`,
+        ),
+  );
 };

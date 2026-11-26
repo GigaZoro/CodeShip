@@ -1224,7 +1224,7 @@ export const claudeWorkspaceFunding = Effect.fn("ClaudeProvider.workspaceFunding
       effective.ANTHROPIC_AUTH_TOKEN ||
       effective.ANTHROPIC_CUSTOM_HEADERS ||
       tiers.value.some(
-        (tier) =>
+        ({ settings: tier }) =>
           tier.apiKeyHelper ||
           (tier.forceLoginMethod && tier.forceLoginMethod !== "claudeai") ||
           (tier.forceLoginOrgUUID &&

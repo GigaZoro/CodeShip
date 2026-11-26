@@ -5,12 +5,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import type { DesktopUpdateChannel } from "@t3tools/contracts";
 import * as Electron from "electron";
 
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
@@ -64,6 +66,9 @@ const runMainContentsCommand = Effect.fn("desktop.menu.runMainContentsCommand")(
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   yield* desktopWindow.runMainContentsCommand(command);
 });
+
+const trackLabel = (channel: DesktopUpdateChannel) =>
+  channel === "nightly" ? t("Nightly") : t("Stable");
 
 const checkForUpdatesFromMenu = Effect.gen(function* () {
   const updates = yield* DesktopUpdates.DesktopUpdates;
@@ -127,7 +132,16 @@ const checkForUpdatesFromMenu = Effect.gen(function* () {
       type: "warning",
       title: t("Update check failed"),
       message: t("Could not check for updates."),
-      detail: updateState.message ?? t("An unknown error occurred. Please try again later."),
+      detail:
+        updateState.trackMismatch !== undefined
+          ? t(
+              "This {build} build can't update from the {saved} track on its own. Switch the update track back to {build}, or use Review beside Update track to retry the switch to {saved}.",
+              {
+                build: trackLabel(updateState.trackMismatch.buildChannel),
+                saved: trackLabel(updateState.channel),
+              },
+            )
+          : (updateState.message ?? t("An unknown error occurred. Please try again later.")),
       buttons: [t("OK")],
     });
   }
@@ -163,6 +177,7 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const context = yield* Effect.context<DesktopApplicationMenuRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
+  const runSync = Effect.runSyncWith(context);
 
   const runMenuEffect = <E>(
     action: string,
@@ -203,7 +218,14 @@ export const make = Effect.gen(function* () {
       _window: Electron.BaseWindow | undefined,
       event: Electron.KeyboardEvent,
     ) => {
-      if (event.triggeredByAccelerator === true) return;
+      if (event.triggeredByAccelerator === true) {
+        // Chromium pastes this chord itself except on macOS. Paste synchronously there:
+        // a renderer round trip can land after the terminal's own clipboard read.
+        if (environment.platform === "darwin") {
+          runSync(electronMenu.pasteAndMatchStyle);
+        }
+        return;
+      }
       runMenuEffect("paste-as-text", dispatchMenuAction("paste-as-text"));
     };
     const zoomClick = (direction: DesktopWindow.MainWindowZoomDirection) => () => {
@@ -230,11 +252,11 @@ export const make = Effect.gen(function* () {
             click: settingsClick,
           },
           { type: "separator" },
-          { role: "services" },
+          { role: "services", label: t("Services") },
           { type: "separator" },
           { role: "hide", label: t("Hide {name}", { name: environment.displayName }) },
-          { role: "hideOthers" },
-          { role: "unhide" },
+          { role: "hideOthers", label: t("Hide Others") },
+          { role: "unhide", label: t("Show All") },
           { type: "separator" },
           { role: "quit", label: t("Quit {name}", { name: environment.displayName }) },
         ],
@@ -272,32 +294,35 @@ export const make = Effect.gen(function* () {
           // Cmd/Ctrl+W belongs to the renderer's tab close; it must never close the window.
           environment.platform === "darwin"
             ? { label: t("Close Window"), click: (_item, window) => window?.close() }
-            : { role: "quit" },
+            : { role: "quit", label: environment.platform === "win32" ? t("Exit") : t("Quit") },
         ],
       },
       {
         label: t("Edit"),
         submenu: [
-          { role: "undo" },
-          { role: "redo" },
+          { role: "undo", label: t("Undo") },
+          { role: "redo", label: t("Redo") },
           { type: "separator" },
-          { role: "cut" },
-          { role: "copy" },
-          { role: "paste" },
+          { role: "cut", label: t("Cut") },
+          { role: "copy", label: t("Copy") },
+          { role: "paste", label: t("Paste") },
           {
             label: t("Paste as Text"),
             accelerator: "CmdOrCtrl+Shift+V",
             click: pasteAsTextClick,
           },
-          { role: "delete" },
+          { role: "delete", label: t("Delete") },
           { type: "separator" },
-          { role: "selectAll" },
+          { role: "selectAll", label: t("Select All") },
           ...(environment.platform === "darwin"
             ? [
                 { type: "separator" as const },
                 {
                   label: t("Speech"),
-                  submenu: [{ role: "startSpeaking" as const }, { role: "stopSpeaking" as const }],
+                  submenu: [
+                    { role: "startSpeaking" as const, label: t("Start Speaking") },
+                    { role: "stopSpeaking" as const, label: t("Stop Speaking") },
+                  ],
                 },
               ]
             : []),
@@ -358,22 +383,30 @@ export const make = Effect.gen(function* () {
             click: zoomClick("out"),
           },
           { type: "separator" },
-          { role: "togglefullscreen" },
+          { role: "togglefullscreen", label: t("Toggle Full Screen") },
         ],
       },
       {
         // Electron's default Window submenu adds a Ctrl+W close role off macOS.
         role: "windowMenu",
+        label: t("Window"),
         submenu: [
-          { role: "minimize" },
-          { role: "zoom" },
+          { role: "minimize", label: t("Minimize") },
+          {
+            role: "zoom",
+            label: t("Zoom"),
+          },
           ...(environment.platform === "darwin"
-            ? [{ type: "separator" as const }, { role: "front" as const }]
+            ? [
+                { type: "separator" as const },
+                { role: "front" as const, label: t("Bring All to Front") },
+              ]
             : []),
         ],
       },
       {
         role: "help",
+        label: t("Help"),
         submenu: [
           { label: t("Keybindings"), click: keybindingsClick },
           // macOS keeps this in the app menu.
@@ -390,9 +423,7 @@ export const make = Effect.gen(function* () {
     yield* electronMenu.setApplicationMenu(template);
   }).pipe(Effect.withSpan("desktop.menu.configure"));
 
-  return DesktopApplicationMenu.of({
-    configure,
-  });
+  return DesktopApplicationMenu.of({ configure });
 });
 
 export const layer = Layer.effect(DesktopApplicationMenu, make);

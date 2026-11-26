@@ -1,18 +1,20 @@
+import { t, msg } from "~/i18n";
 import { EraserIcon } from "lucide-react";
-
-import { t } from "~/i18n";
 
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
 /** Shown while `/clear` is armed; dismissing it keeps the current conversation. */
-export function freshSessionBannerItem(onUndo: () => void): ComposerBannerStackItem {
+export function freshSessionBannerItem(
+  onUndo: () => void,
+  resolve: typeof t = t,
+): ComposerBannerStackItem {
   return {
     id: "fresh-session",
     variant: "info",
     icon: <EraserIcon />,
-    title: t("Your next message starts a fresh session"),
-    description: t("The agent won't see earlier messages in this thread."),
-    dismissLabel: t("Keep the current session"),
+    title: resolve(msg("Your next message starts a fresh session")),
+    description: resolve(msg("The agent won't see earlier messages in this thread.")),
+    dismissLabel: resolve(msg("Keep the current session")),
     onDismiss: onUndo,
   };
 }

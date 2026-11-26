@@ -1,5 +1,7 @@
+import { t, tx } from "~/i18n";
 import { T3CHAT_PLAN_TUNNEL_LIMITS, type RelayT3ChatLink } from "@t3tools/contracts/relay";
 import { MessageSquareIcon } from "lucide-react";
+
 import type { ReactNode } from "react";
 
 import { useManagedTunnelUsage } from "../../cloud/managedRelayState";
@@ -12,37 +14,38 @@ import {
 } from "./ClerkUserProfilePage";
 import { useT3ChatLink } from "./useT3ChatLink";
 
-import { t, tn, tx } from "~/i18n";
 function planLabel(link: RelayT3ChatLink): ReactNode {
-  const upgradeLink = (
-    <a
-      className="underline"
-      href={T3CHAT_SUBSCRIPTION_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      {t("Upgrade on T3 Chat")}
-    </a>
-  );
   switch (link.plan) {
     case "premier":
-      return tn(
-        T3CHAT_PLAN_TUNNEL_LIMITS.premier,
-        "Premier · up to {count} tunnel",
-        "Premier · up to {count} tunnels",
-      );
+      return t("Premier · up to {premier} tunnels", { premier: T3CHAT_PLAN_TUNNEL_LIMITS.premier });
     case "pro":
-      return tx("{pro} {upgradeLink} to Premier for {premier}.", {
-        pro: tn(
-          T3CHAT_PLAN_TUNNEL_LIMITS.pro,
-          "Pro · up to {count} tunnel.",
-          "Pro · up to {count} tunnels.",
+      return tx("Pro · up to {pro} tunnels. {upgradeLink} to Premier for {premier}.", {
+        pro: T3CHAT_PLAN_TUNNEL_LIMITS.pro,
+        upgradeLink: (
+          <a
+            className="underline"
+            href={T3CHAT_SUBSCRIPTION_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t("Upgrade on T3 Chat")}
+          </a>
         ),
-        upgradeLink,
         premier: T3CHAT_PLAN_TUNNEL_LIMITS.premier,
       });
     case "free":
-      return tx("{upgradeLink} for more tunnels", { upgradeLink });
+      return tx("{upgradeLink} for more tunnels", {
+        upgradeLink: (
+          <a
+            className="underline"
+            href={T3CHAT_SUBSCRIPTION_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t("Upgrade on T3 Chat")}
+          </a>
+        ),
+      });
   }
 }
 
@@ -100,7 +103,7 @@ export function T3ChatUserProfilePage() {
                               target="_blank"
                               rel="noopener noreferrer"
                             >
-                              {"t3.chat"}
+                              {t("t3.chat")}
                             </a>
                           ),
                         })

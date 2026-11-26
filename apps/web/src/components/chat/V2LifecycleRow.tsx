@@ -1,11 +1,12 @@
+import { t, type Message, msg } from "~/i18n";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { ReactNode } from "react";
+import { use, type ReactNode } from "react";
 import { useThreadShell, useProject } from "../../state/entities";
-import { useEnvironment } from "../../state/environments";
-import { buildThreadRouteParams } from "../../threadRoutes";
-import { useNavigate } from "@tanstack/react-router";
+import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
+import { SideThreadsOpenContext, useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
+import { useLinkedThreadOpener } from "../../state/linkedThreadView";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -51,7 +52,8 @@ import {
   MessageSquareIcon,
 } from "lucide-react";
 
-import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { Tooltip, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import {
   applyProviderInstanceSettings,
   brandProviderInstanceEntries,
@@ -68,7 +70,6 @@ import { TimelineSystemDivider } from "./TimelineSystemDivider";
 import { subagentResumedSince } from "./V2LifecycleRow.logic";
 import { Button, InlineButton } from "../ui/button";
 import { CodeShipMark } from "../CodeShipMark";
-import { msg, t, type Message } from "~/i18n";
 
 export type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
 
@@ -77,9 +78,14 @@ export function V2LifecycleRow(props: {
   readonly environmentId: EnvironmentId;
   readonly resourceSummary?: boolean | undefined;
   readonly runs: ReadonlyArray<HandoffTimelineRun>;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (
+    threadId: ThreadId,
+    environmentId?: EnvironmentId,
+    intent?: SideThreadOpenIntent,
+  ) => void;
 }) {
   const { item } = props;
+
   if (item.type === "run_interrupt_result") {
     return (
       <TimelineSystemDivider
@@ -351,7 +357,11 @@ export function SubagentNotificationLink(props: {
   readonly outcome: OrchestrationV2Notification["outcome"];
   readonly createdAt: string;
   readonly timestampFormat: TimestampFormat;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (
+    threadId: ThreadId,
+    environmentId?: EnvironmentId,
+    intent?: SideThreadOpenIntent,
+  ) => void;
   readonly fallback: ReactNode;
 }) {
   // Follow-up tasks share a child conversation; this notice reports a particular task result.
@@ -411,7 +421,11 @@ function SubagentTimelineLink(props: {
   readonly threadId: ThreadId | null;
   /** The thread in a linked environment that runs this task, when it runs there. */
   readonly remote?: OrchestrationV2RemoteTaskChild | undefined;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (
+    threadId: ThreadId,
+    environmentId?: EnvironmentId,
+    intent?: SideThreadOpenIntent,
+  ) => void;
   readonly event?: {
     readonly status: OrchestrationV2TurnItem["status"] | null;
     readonly label: Message;
@@ -423,23 +437,22 @@ function SubagentTimelineLink(props: {
     (thread) => thread?.projection.subagents.find((agent) => agent.id === props.subagentId) ?? null,
   );
   const remote = props.remote ?? agent?.remoteChild;
-  const remoteEnvironment = useEnvironment(remote?.environmentId ?? null);
-  const navigate = useNavigate();
+
   const threadId = props.threadId;
-  // A task in a linked environment opens there, if this client is connected to it.
-  const open =
-    threadId !== null
-      ? () => props.onOpenThread(threadId)
-      : remote !== undefined && remoteEnvironment !== null
-        ? () =>
-            void navigate({
-              to: "/$environmentId/$threadId",
-              params: buildThreadRouteParams(scopeThreadRef(remote.environmentId, remote.threadId)),
-            })
-        : null;
+  // A task in a linked environment opens there, or read-only through this one.
+  const remoteOpener = useLinkedThreadOpener(props.parentRef, remote, props.title);
+  const trigger = useSideThreadTrigger();
+  const canOpen = use(SideThreadsOpenContext);
+  const open = !canOpen
+    ? null
+    : threadId !== null
+      ? (intent: SideThreadOpenIntent) => props.onOpenThread(threadId, undefined, intent)
+      : (remoteOpener?.open ?? null);
+  // A task on a connected linked environment opens there, on the main screen only.
+  const panel = threadId !== null || remoteOpener?.mode === "linked";
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
-  const statusLabel = t(props.event?.label ?? subagentStatusVisual(liveStatus).label);
+  const statusLabel = props.event?.label ?? t(subagentStatusVisual(liveStatus).label);
   const result = (agent?.result ?? props.result)?.trim();
   const progress = (agent?.progress ?? props.progress)?.trim();
   const settled = SETTLED_SUBAGENT_STATUSES.has(status ?? liveStatus);
@@ -524,7 +537,7 @@ function SubagentTimelineLink(props: {
               data-v2-item-type="subagent"
               aria-label={t("Open {title}", { title: props.title })}
               aria-description={statusLabel}
-              onClick={open}
+              {...trigger(open, { panel })}
               className={cn(
                 className,
                 "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
@@ -701,36 +714,36 @@ function HandoffEndpoint(props: {
     entry?.driverKind ?? ProviderDriverKind.make(props.instanceId),
   );
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
+    <SharedTooltipTrigger
+      render={
+        <span
+          tabIndex={0}
+          className="inline-flex min-w-0 items-center gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <ProviderInstanceIcon
+            driverKind={entry?.driverKind ?? ProviderDriverKind.make(props.instanceId)}
+            displayName={entry?.displayName ?? props.instanceId}
+            accentColor={entry?.accentColor}
+            acpRegistryAgentId={entry?.acpRegistryAgentId}
+            acpRegistryIconUrl={entry?.acpRegistryIconUrl}
+            showBadge={showBadge}
+            size="compact"
+            iconClassName={cn(showBadge && "opacity-60")}
+            indicatorBackground="var(--background)"
+          />
           <span
-            tabIndex={0}
-            className="inline-flex min-w-0 items-center gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className={cn("truncate font-medium", labelColor.className)}
+            style={labelColor.style}
           >
-            <ProviderInstanceIcon
-              driverKind={entry?.driverKind ?? ProviderDriverKind.make(props.instanceId)}
-              displayName={entry?.displayName ?? props.instanceId}
-              accentColor={entry?.accentColor}
-              acpRegistryAgentId={entry?.acpRegistryAgentId}
-              acpRegistryIconUrl={entry?.acpRegistryIconUrl}
-              showBadge={showBadge}
-              size="compact"
-              iconClassName={cn(showBadge && "opacity-60")}
-              indicatorBackground="var(--background)"
-            />
-            <span
-              className={cn("truncate font-medium", labelColor.className)}
-              style={labelColor.style}
-            >
-              {label}
-            </span>
+            {label}
           </span>
-        }
-      />
-      <TooltipPopup>
-        {entry?.displayName ?? props.instanceId} · {label}
-      </TooltipPopup>
-    </Tooltip>
+        </span>
+      }
+      label={
+        <>
+          {entry?.displayName ?? props.instanceId} · {label}
+        </>
+      }
+    />
   );
 }

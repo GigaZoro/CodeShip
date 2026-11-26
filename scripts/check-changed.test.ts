@@ -752,11 +752,13 @@ describe("check:changed", () => {
   const fakeGit = (reply: (args: ReadonlyArray<string>) => GitReply) =>
     ChildProcessSpawner.make((command) =>
       Effect.sync(() => {
-        const {
-          exitCode,
-          stdout = "",
-          stderr = "",
-        } = reply(ChildProcess.isStandardCommand(command) ? command.args : []);
+        const args = ChildProcess.isStandardCommand(command) ? command.args : [];
+        const literalArgs = args.map((arg) => {
+          if (typeof arg !== "string")
+            throw new Error("The Git test double expects literal arguments");
+          return arg;
+        });
+        const { exitCode, stdout = "", stderr = "" } = reply(literalArgs);
         return ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1),
           exitCode,
@@ -1374,6 +1376,8 @@ describe("check:changed", () => {
   it.each([
     "packages/shared/src/testing/longTempDir.ts",
     "packages/shared/src/testing/providerEnv.ts",
+    "packages/shared/src/testing/gitEnv.ts",
+    "packages/shared/src/testing/gitRepositoryEnv.ts",
   ])("tests every package when the shared test setup file %s changes", (file) => {
     assert.strictEqual(decide([file], readWorkspace(), false).outputs.test_packages, "");
   });

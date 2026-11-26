@@ -1,3 +1,5 @@
+import { t, msg } from "@t3tools/shared/i18n";
+import { thrownErrorMessage } from "../errors/translatable.ts";
 import { MessageId, type ProviderUploadFeedbackResult } from "@t3tools/contracts";
 
 import {
@@ -5,7 +7,6 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "./runtime.ts";
-import { t } from "@t3tools/shared/i18n";
 
 type CodexFeedbackSubmissionDetails = {
   readonly id: MessageId;
@@ -29,20 +30,20 @@ export function parseCodexFeedbackCommand(text: string): { readonly reason?: str
   return reason ? { reason } : {};
 }
 
-export function codexFeedbackNotice(submission: CodexFeedbackSubmission) {
+export function codexFeedbackNotice(submission: CodexFeedbackSubmission, resolve: typeof t = t) {
   switch (submission.status) {
     case "interrupted":
       return null;
     case "uploading":
-      return { title: t("Sending feedback to OpenAI..."), description: undefined };
+      return { title: resolve("Sending feedback to OpenAI..."), description: undefined };
     case "sent":
       return {
-        title: t("Feedback sent to OpenAI"),
-        description: t("Thread ID: {id}", { id: submission.feedbackId }),
+        title: resolve("Feedback sent to OpenAI"),
+        description: resolve("Thread ID: {id}", { id: submission.feedbackId }),
       };
     case "failed":
       return {
-        title: t("Could not send feedback to OpenAI"),
+        title: resolve("Could not send feedback to OpenAI"),
         description: submission.errorMessage,
       };
   }
@@ -61,15 +62,18 @@ export interface LocalChatMessage {
 export function codexFeedbackMessage(
   submission: CodexFeedbackSubmission,
   role: "user" | "assistant" = "user",
+  resolve: typeof t = t,
 ): LocalChatMessage {
   const text =
     role === "user"
       ? submission.command
       : submission.status === "sent"
-        ? t("Feedback sent to OpenAI.\n\nThread ID: `{id}`", { id: submission.feedbackId })
+        ? resolve("Feedback sent to OpenAI.\n\nThread ID: `{id}`", { id: submission.feedbackId })
         : submission.status === "failed"
-          ? t("Could not send feedback to OpenAI.\n\n{error}", { error: submission.errorMessage })
-          : t("Sending feedback to OpenAI...");
+          ? resolve("Could not send feedback to OpenAI.\n\n{error}", {
+              error: submission.errorMessage,
+            })
+          : resolve("Sending feedback to OpenAI...");
 
   return {
     id: role === "user" ? submission.id : MessageId.make(`${submission.id}:feedback`),
@@ -82,12 +86,15 @@ export function codexFeedbackMessage(
   };
 }
 
-export async function submitCodexFeedback<E>(input: {
-  readonly submission: CodexFeedbackSubmissionDetails;
-  readonly clearDraft: () => void;
-  readonly onUpdate: (submission: CodexFeedbackSubmission) => void;
-  readonly upload: () => Promise<AtomCommandResult<ProviderUploadFeedbackResult, E>>;
-}): Promise<AtomCommandResult<ProviderUploadFeedbackResult, E>> {
+export async function submitCodexFeedback<E>(
+  input: {
+    readonly submission: CodexFeedbackSubmissionDetails;
+    readonly clearDraft: () => void;
+    readonly onUpdate: (submission: CodexFeedbackSubmission) => void;
+    readonly upload: () => Promise<AtomCommandResult<ProviderUploadFeedbackResult, E>>;
+  },
+  resolve: typeof t = t,
+): Promise<AtomCommandResult<ProviderUploadFeedbackResult, E>> {
   input.onUpdate({ ...input.submission, status: "uploading" });
   input.clearDraft();
 
@@ -105,7 +112,10 @@ export async function submitCodexFeedback<E>(input: {
     input.onUpdate({
       ...input.submission,
       status: "failed",
-      errorMessage: error instanceof Error ? error.message : t("An error occurred."),
+      errorMessage:
+        error instanceof Error
+          ? (thrownErrorMessage(error, resolve) ?? error.message)
+          : resolve(msg("An error occurred.")),
     });
   }
 

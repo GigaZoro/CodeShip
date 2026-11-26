@@ -1,56 +1,8 @@
-# Server updates
+# CodeShip updates and recovery
 
-A [stable launcher](../../apps/server/src/serviceLauncher.ts) owns the runtime
-selected by systemd, launchd, or Task Scheduler. It is the only runtime writer of durable service
-state. Server children request updates over inherited IPC; they never rewrite
-their service definition or select their own replacement. Local service commands
-may replace the launcher and state, optionally deferring the restart. Foreground
-CLI processes do not self-update.
+See [07 · server-updates](07_server-updates.md) for the shared architecture and procedures.
 
-Both writers serialize state and unit writes through
-[file leases](../../apps/server/src/cloud/serviceSelectionLock.ts). The installer
-takes the state lease before the unit lease; the launcher never holds both, so a
-unit failure cannot block a durable commit. Manager stop/start commands run outside
-both leases, since stopping a launcher that waits on a lease would deadlock. A
-running launcher refuses further updates once a local command changes its selection.
-A protocol-3 launcher takes no lease, so a local command can still race its updates.
-
-Exact-version installs keep restarts independent of npm cache eviction or a moving
-release tag. Installation and preflight happen in staging before publishing an
-immutable runtime. Preflight checks the launcher protocol because a target that
-needs new rollback guarantees cannot safely run under an older launcher. A remote
-update replaces only the child, so upgrading the launcher requires a local service
-update with a restart. Every installed launcher is therefore one protocol behind
-after a bump, and a target that refuses the previous protocol stops remote updates
-for every existing service. Refuse it only when the child cannot work under it.
-Protocol 4 changed the launcher alone, so its runtime still runs under protocol 3.
-The server names its launcher's protocol to preflight, not its own, since the two differ
-after the first such update.
-
-A client can stage the target early with `stageOnly`, which installs and preflights the
-runtime and restarts nothing. "Update everything" does this while provider installs run,
-because a restart would kill them. A server without the `serverUpdateStaging` capability
-ignores the flag and runs the whole update, so send it only to a server that advertises it.
-
-After a commit or rollback the launcher points the unit at the selected runtime and
-reloads the manager, so the next service start runs that version's launcher; the
-protocol check is what makes that safe. Each start after a finished update retries this, because
-a previous reload may have failed, and leaves a unit naming a newer runtime or another
-T3 home alone. A protocol-3 launcher does none of this: its unit keeps naming the
-runtime that installed it. Until a deferred local upgrade restarts, systemd (before
-daemon-reload) and launchd (before bootstrap) can respawn the old launcher, which
-rejects the state the new installer wrote.
-
-Task Scheduler tracks only the console host it started, not the launcher. `schtasks /End`
-kills that host and nothing else; the launcher takes its closed console as SIGTERM. The task
-reads as stopped at once, and `/Run` then starts a second launcher beside the first, so a
-Windows launcher holds a lock file for as long as it runs. A replacement waits for that lock,
-and the CLI treats its release as the stop having finished.
-
-Task Scheduler also runs its own copy of the task, and registering one enables it. So every
-write of the task file registers it, including an install that defers its restart. The CLI
-disables the task under the unit lease, and a registration under that lease keeps a disabled
-task disabled, so the repeating trigger cannot restart a service the CLI is holding stopped.
+## Launcher compatibility
 
 Within one protocol, launcher fixes arrive with updates: at start and after a
 commit, the launcher the service manager started hands the service to the active
@@ -64,29 +16,6 @@ process of the service. The launcher above it therefore exits 0, which every
 launcher since the hand-off takes as done, so the exit reaches the service
 manager and the service restarts. A launcher that reads the failure marker then
 skips that release's launcher; an installed one from before hand-back does not.
-
-## Commit boundary
-
-The launcher durably records the pending update before acknowledging it, then
-stops the old child and starts the target as a trial. Service-state writes use
-same-directory replacement with file and directory fsync. Invalid state stops
-startup rather than guessing which runtime to boot.
-
-The trial must finish migrations, acquire dependencies, bind HTTP, and park every
-long-running root at the activation gate before reporting `prepared`. The launcher
-then commits the target version durably and replies `committed`. Only then may the
-child release its gates, accept commands, and publish ready. Keep fallible startup
-acquisitions before this boundary. A listener alone does not prove the runtime is
-ready to commit.
-
-A failed or timed-out trial returns to the old version. After commit, the target
-is authoritative and the service manager's ordinary restart policy applies.
-
-The prepared deadline is long because migrations can scale with the database
-and block the trial's main thread, so it cannot report progress. A missed
-deadline restores the snapshot, and the retry pays the same cost again. A
-crashed trial is caught when it exits; the deadline bounds only a stuck one.
-Client update waits must outlast the deadline, or a slow update shows as failed.
 
 ## Database rollback
 
@@ -126,20 +55,6 @@ Restoring with no snapshot leaves the database as the trial left it: the previou
 schema, and little else written, because the trial accepts no commands and runs no
 background work before commit. Attachments and other files outside SQLite are outside this
 rollback boundary.
-
-## Client acknowledgement
-
-An accepted update is still pending. Clients correlate the launcher's update ID
-with the ready event after reconnecting, then check the outcome and target version.
-A reconnect alone cannot distinguish successful replacement from rollback. Older
-servers without an update ID retain version-only correlation.
-
-Desktop updates have a separate two-phase handoff because installing the app stops
-its bundled backend. Preparation returns a token while the connection is alive;
-the client commits that token only after receiving it. Otherwise backend shutdown
-could lose the only successful RPC result. The client must then observe the
-prepared version after reconnecting. If installation fails, desktop restarts the
-stopped backends and replays the failure for the same token.
 
 ## Automatic installs
 
@@ -319,13 +234,6 @@ the same run. That resend skips every thread and Stop that a continuation skips,
 up after three tries so a start that crashes the server cannot loop. A cut usage-limit
 resume is left to the usage-limit worker, which sends it again. A crash after the provider
 received the prompt but before its turn was recorded can repeat that prompt.
-
-Recovery retires effects tied to the lost process and records continuation intent
-in the durable outbox. That intent survives another restart before provider startup.
-Continuation effects wait for activation; a slow provider must not delay the server's
-readiness or the launcher's commit boundary. Graceful shutdown captures intent before
-closing providers, then reconciles after ingestion has stopped so a late completion
-cannot be overwritten by a stale cancellation.
 
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, provider selection, newer user work, a stop the user requested,

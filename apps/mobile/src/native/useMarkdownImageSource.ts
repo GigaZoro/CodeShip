@@ -1,3 +1,4 @@
+import { t } from "../lib/i18n";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { useEnvironmentPresentation } from "../state/presentation";
 import { useEnvironmentQuery } from "../state/query";
@@ -24,12 +25,15 @@ export function useMarkdownImageSource(props: {
   const environment = useEnvironmentPresentation(environmentId);
   const connectionPhase = environment.presentation?.connection.phase;
   const session = useEnvironmentQuery(environmentSession.sessionStateAtom(environmentId));
-  const fileAccess = resolveFilesystemReadAccess({
-    isCatalogReady: environment.isReady,
-    connection: environment.presentation?.connection ?? null,
-    session: session.data,
-    sessionError: session.error,
-  });
+  const fileAccess = resolveFilesystemReadAccess(
+    {
+      isCatalogReady: environment.isReady,
+      connection: environment.presentation?.connection ?? null,
+      session: session.data,
+      sessionError: session.error,
+    },
+    t,
+  );
   const httpBaseUrl = Option.isSome(connection) ? connection.value.httpBaseUrl : null;
   const createUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
   return useCallback(

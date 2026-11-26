@@ -698,3 +698,15 @@ it("exposes every machine-shared setting or documents its exclusion", () => {
   expect(missing).toEqual([]);
   expect(["usageLimitRecovery", "providerUpdates"].filter((field) => !exposed(field))).toEqual([]);
 });
+
+it("keeps agent feedback out of the preferences agents read and write", () => {
+  expect(
+    EnvironmentHandlers.preferences({
+      ...DEFAULT_SERVER_SETTINGS,
+      agentFeedback: { mode: "auto" },
+    }),
+  ).not.toHaveProperty("agentFeedback");
+  expect(
+    Object.keys(EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema.fields),
+  ).not.toContain("agentFeedback");
+});

@@ -52,7 +52,7 @@ import { RUNTIME_MODE_CHOICES } from "./thread-settings-options";
 import { msg, t, type Message } from "../../lib/i18n";
 
 /** The same five levels as web's access picker: read-only, then the runtime modes. */
-const ACCESS_CHOICES: ReadonlyArray<{
+export const LINK_ACCESS_CHOICES: ReadonlyArray<{
   readonly access: AuthMcpClientAccess;
   readonly label: Message;
   readonly description: Message;
@@ -65,7 +65,7 @@ const ACCESS_CHOICES: ReadonlyArray<{
   ...RUNTIME_MODE_CHOICES.map((choice) => ({ ...choice, access: choice.mode })),
 ];
 const accessLabel = (access: AuthMcpClientAccess) => {
-  const label = ACCESS_CHOICES.find((choice) => choice.access === access)?.label;
+  const label = LINK_ACCESS_CHOICES.find((choice) => choice.access === access)?.label;
   return label === undefined ? access : t(label);
 };
 
@@ -532,7 +532,7 @@ function AccessSection(props: {
 }) {
   return (
     <SettingsSection title={props.title}>
-      {ACCESS_CHOICES.map((choice, index) => (
+      {LINK_ACCESS_CHOICES.map((choice, index) => (
         <SettingsChoiceRow
           key={choice.access}
           label={t(choice.label)}

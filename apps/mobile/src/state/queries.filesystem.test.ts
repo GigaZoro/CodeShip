@@ -17,6 +17,7 @@ vi.mock("react", async (importOriginal) => ({
   useMemo: <A>(factory: () => A) => factory(),
   useState: <A>(value: A) => [value, vi.fn()],
 }));
+
 vi.mock("./session", () => ({
   environmentSession: { sessionStateAtom: () => state.sessionAtom },
 }));

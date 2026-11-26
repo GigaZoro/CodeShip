@@ -7,6 +7,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskListResult,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
@@ -61,17 +62,17 @@ vi.mock(import("../../state/server"), async (original) => {
       setScheduledTaskGroup: {
         ...actual.serverEnvironment.setScheduledTaskGroup,
         permissionAtom: () => canWrite,
-        run: async (registry, { input }) => {
-          registry.update(tasks, ({ value }) =>
-            AsyncResult.success({
-              ...value,
-              tasks: value.tasks.map((entry) =>
-                entry.id === input.id ? { ...entry, group: input.group } : entry,
-              ),
-            }),
-          );
-          return AsyncResult.success(undefined);
-        },
+        run: (registry, { input }) =>
+          Effect.sync(() => {
+            registry.update(tasks, ({ value }) =>
+              AsyncResult.success({
+                ...value,
+                tasks: value.tasks.map((entry) =>
+                  entry.id === input.id ? { ...entry, group: input.group } : entry,
+                ),
+              }),
+            );
+          }),
       },
     },
   };
@@ -87,10 +88,11 @@ vi.mock(import("../../state/threads"), async (original) => {
       saveFolders: {
         ...actual.threadEnvironment.saveFolders,
         permissionAtom: () => canWrite,
-        run: async (registry, { input: { folders } }) => {
-          registry.set(savedFolders, folders);
-          return AsyncResult.success({ folders });
-        },
+        run: (registry, { input: { folders } }) =>
+          Effect.sync(() => {
+            registry.set(savedFolders, folders);
+            return { folders };
+          }),
       },
     },
   };

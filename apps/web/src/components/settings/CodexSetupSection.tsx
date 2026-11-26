@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomValue } from "@effect/atom-react";
 import { AuthProvidersManageScope, ProviderDriverKind } from "@t3tools/contracts";
 import { isLoopbackEnvironment, isLoopbackUrl } from "../../state/loopbackEnvironment";
@@ -417,7 +418,9 @@ function ManagedCodexSetup({
         if (!isAtomCommandInterrupted(result)) {
           const failure = squashAtomCommandFailure(result);
           setError(
-            failure instanceof Error ? failure.message : t("Codex setup failed. Try again."),
+            failure instanceof Error
+              ? (thrownErrorMessage(failure) ?? failure.message)
+              : t("Codex setup failed. Try again."),
           );
         }
       } else {
@@ -1201,7 +1204,11 @@ export function CodexRuntimeInstallRow({
       const result = await request();
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const failure = squashAtomCommandFailure(result);
-        setError(failure instanceof Error ? failure.message : t("Codex setup failed. Try again."));
+        setError(
+          failure instanceof Error
+            ? (thrownErrorMessage(failure) ?? failure.message)
+            : t("Codex setup failed. Try again."),
+        );
       }
     } catch {
       setError(t("Codex setup failed. Try again."));

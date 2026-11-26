@@ -1,3 +1,4 @@
+import { t } from "../lib/i18n";
 import { hasShellCodeFence, runnableShellCommand } from "@t3tools/client-runtime/shell-code-block";
 import { decodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
@@ -11,16 +12,20 @@ import {
   markdownForNativeParsing,
   markdownWithInlineFileLinks,
   markdownWithTableBreaks,
+  markdownWithTextDirection,
 } from "../lib/markdownDocument";
+
 import { isValidElement, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import { Platform, Share, StyleSheet, useWindowDimensions, View } from "react-native";
 import {
   EnrichedMarkdownText,
   type CodeBlockPressEvent,
+  type AccessibilityLabels,
   type MarkdownCodeBlock,
   type MarkdownImageBlock,
   type MarkdownLinkOccurrence,
   type MarkdownStyle,
+  type TextSelectionMenuConfig,
 } from "react-native-enriched-markdown";
 import { codeFenceRenderer } from "./codeBlockMarkdown";
 import { HighlightedCodeBlock } from "./HighlightedCodeBlock";
@@ -41,7 +46,6 @@ import {
   enrichedModelReference,
   enrichedLinkVariantPattern,
 } from "../lib/enrichedLinkPresentation";
-import { t } from "../lib/i18n";
 
 function enrichedStyle(
   style: SelectableMarkdownTextProps["textStyle"],
@@ -49,6 +53,8 @@ function enrichedStyle(
   fontScale: number,
 ): MarkdownStyle {
   const monospace = Platform.OS === "ios" ? "Menlo" : "monospace";
+  // Android only bolds fallback glyphs when the bold family is asked for at a bold weight (app.config.ts).
+  const boldFontWeight = Platform.OS === "android" ? "bold" : undefined;
   // Keep the radius modest: iOS clips square table-cell borders without stroking the corner arcs.
   const block = {
     marginTop: 4,
@@ -71,6 +77,7 @@ function enrichedStyle(
       ...body,
       color: style.strongColor,
       fontFamily: style.headingFontFamily,
+      fontWeight: boldFontWeight,
       fontSize,
       lineHeight: fontSize * 1.35,
       marginTop: 8,
@@ -93,7 +100,11 @@ function enrichedStyle(
     h4: heading(4),
     h5: heading(5),
     h6: heading(6),
-    strong: { color: style.strongColor, fontFamily: style.boldFontFamily, fontWeight: "normal" },
+    strong: {
+      color: style.strongColor,
+      fontFamily: style.boldFontFamily,
+      fontWeight: boldFontWeight ?? "normal",
+    },
     link: { color: style.linkColor, underline: false },
     code: {
       fontFamily: monospace,
@@ -182,6 +193,8 @@ function codeBlockElement(
   markdownStyle: MarkdownStyle,
   mathRenderingEnabled: boolean,
   scheme: HighlightScheme,
+  accessibilityLabels: AccessibilityLabels,
+  selectionMenuConfig: TextSelectionMenuConfig,
 ): ReactElement | undefined {
   const renderer = codeFenceRenderer(block.language, mathRenderingEnabled);
   if (renderer.kind === "mermaid") {
@@ -201,6 +214,8 @@ function codeBlockElement(
         selectable
         selectionColor={textStyle.selectionColor}
         selectionHandleColor={textStyle.selectionHandleColor}
+        accessibilityLabels={accessibilityLabels}
+        selectionMenuConfig={selectionMenuConfig}
       />
     ) : undefined;
   }
@@ -222,11 +237,47 @@ function codeBlockElement(
 
 export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
   const { renderImage, resolveImageSource, fileEmbedLabel } = props;
+
   const { themeAppearance, mathRenderingEnabled } = useAppearancePreferences();
+  // The library fills in {n}, {content} and {speech} itself when VoiceOver or TalkBack speaks.
+  const accessibilityLabels = useMemo<AccessibilityLabels>(
+    () => ({
+      list: {
+        bulletPoint: t("Bullet point"),
+        nestedBulletPoint: t("Nested bullet point"),
+        orderedItem: t("List item {n}", { n: "{n}" }),
+        nestedOrderedItem: t("Nested list item {n}", { n: "{n}" }),
+      },
+      blockquote: { quote: t("Blockquote"), nestedQuote: t("Nested blockquote") },
+      table: { row: t("Row {n}: {content}", { n: "{n}", content: "{content}" }) },
+      math: { equation: t("Math: {speech}", { speech: "{speech}" }) },
+      codeBlock: { wrap: t("Wrap lines"), unwrap: t("Disable line wrap") },
+      rotor: {
+        headings: t("Headings"),
+        links: t("Links"),
+        images: t("Images"),
+      },
+    }),
+    [],
+  );
+  // The library's built-in selection menu items default to English labels.
+  const selectionMenuConfig = useMemo<TextSelectionMenuConfig>(
+    () => ({
+      copy: { label: t("Copy") },
+      copyAsMarkdown: { label: t("Copy as Markdown") },
+      copyImageUrl: {
+        label: t("Copy Image URL"),
+        pluralLabels: { other: t("Copy {count} Image URLs", { count: "{count}" }) },
+      },
+    }),
+    [],
+  );
   const { markdown, fileHrefs } = useMemo(() => {
     if (!fileEmbedLabel) {
       return {
-        markdown: markdownForNativeRendering(props.markdown, ENRICHED_INLINE_FILE_LINK_REGEX),
+        markdown: markdownWithTextDirection(
+          markdownForNativeRendering(props.markdown, ENRICHED_INLINE_FILE_LINK_REGEX),
+        ),
         fileHrefs: new Set<string>(),
       };
     }
@@ -235,7 +286,10 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
       ENRICHED_INLINE_FILE_LINK_REGEX,
     );
     const files = markdownWithFileEmbeds(content, fileEmbedLabel);
-    return { ...files, markdown: markdownWithTableBreaks(files.markdown) };
+    return {
+      ...files,
+      markdown: markdownWithTextDirection(markdownWithTableBreaks(files.markdown)),
+    };
   }, [props.markdown, fileEmbedLabel]);
   const [parsedLinkUrls, setParsedLinkUrls] = useState<ReadonlyArray<string>>([]);
   const onLinksChange = (links: MarkdownLinkOccurrence[]) => {
@@ -378,6 +432,8 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
         baseMarkdownStyle,
         mathRenderingEnabled,
         themeAppearance,
+        accessibilityLabels,
+        selectionMenuConfig,
       ),
   };
   const resolveNativeImageSource = useRetryingImageSource(resolveImageSource);
@@ -444,6 +500,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
               : undefined
           }
           selectionClipboard={selectionClipboard}
+          selectionMenuConfig={selectionMenuConfig}
           selectionColor={props.textStyle.selectionColor}
           selectionHandleColor={props.textStyle.selectionHandleColor}
           md4cFlags={{
@@ -463,6 +520,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           onLinkLongPress={onLinkLongPress}
           linkContextMenuItems={linkContextMenuItems}
           linkPillContent={linkPillContent}
+          accessibilityLabels={accessibilityLabels}
         />
       </View>
     );

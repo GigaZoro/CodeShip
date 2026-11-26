@@ -29,6 +29,7 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+
 import { CheckIcon, LinkIcon, MinusIcon, XIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
@@ -49,8 +50,6 @@ import { Radio, RadioGroup } from "../ui/radio-group";
 import { WizardFooter, WizardHeader, WizardPanel, WizardPopup, WizardSteps } from "../ui/wizard";
 import { WorkLogRow } from "./WorkLog";
 
-const accessLabel = (access: AuthMcpClientAccess) => t(accessConfig[access].label);
-
 /** Whether the agent left the machine for the user to pick. */
 const picksMachine = (item: LinkRequestItem) =>
   item.environmentId === undefined && item.url === undefined;
@@ -66,7 +65,13 @@ export function LinkRequestCard(props: {
   readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
 }) {
   const { item } = props;
-  const display = linkRequestDisplay(item, props.visibility, accessLabel);
+
+  const display = linkRequestDisplay(
+    item,
+    props.visibility,
+    (access: AuthMcpClientAccess) => t(accessConfig[access].label),
+    t,
+  );
   if (display.kind === "answered" || display.kind === "pending-elsewhere") {
     const Icon =
       display.kind === "pending-elsewhere"
@@ -92,6 +97,7 @@ function PendingLinkRequest(props: {
   readonly item: LinkRequestItem;
 }) {
   const { item } = props;
+
   const [open, setOpen] = useState(false);
   const [declining, setDeclining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +109,7 @@ function PendingLinkRequest(props: {
   const canAnswer = useAtomValue(
     peerLinkEnvironment.answerRequest.permissionAtom(props.environmentId),
   );
-  const target = linkRequestTargetName(item);
+  const target = linkRequestTargetName(item, t);
 
   const decline = async () => {
     const input = linkRequestAnswerInput(item, { type: "decline" });
@@ -114,7 +120,11 @@ function PendingLinkRequest(props: {
       setDeclining(false),
     );
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      pipe(squashAtomCommandFailure(result), linkRequestFailureMessage, setError);
+      pipe(
+        squashAtomCommandFailure(result),
+        (failure) => linkRequestFailureMessage(failure, t),
+        setError,
+      );
     }
   };
 
@@ -125,7 +135,7 @@ function PendingLinkRequest(props: {
     >
       <div className="flex min-w-0 flex-col gap-1">
         <p className="text-sm font-medium text-foreground">
-          {picksMachine(item)
+          {item.url === undefined
             ? t("Link a machine to this environment")
             : t("Link {target} to this environment", { target })}
         </p>
@@ -176,6 +186,7 @@ function LinkRequestDialog(props: {
   readonly onOpenChange: (open: boolean) => void;
 }) {
   const { item } = props;
+
   const formId = useId();
   const pickMachine = picksMachine(item);
   const listed = useLinkableMachines(props.environmentId, props.open);
@@ -205,8 +216,15 @@ function LinkRequestDialog(props: {
     reportDefect: false,
   });
   const selected = choice ?? linkRequestInitialMachine(item, machines);
-  const target = linkRequestTarget(item, machines, selected);
-  const targetName = target.kind === "machine" ? target.label : linkRequestTargetName(item);
+  const target = linkRequestTarget(item, machines, selected, t);
+  const targetName = target.kind === "machine" ? target.label : linkRequestTargetName(item, t);
+  // Without a catalog entry or an address, the name is the generic "a machine".
+  const unnamed =
+    item.url === undefined &&
+    !(
+      target.kind === "machine" &&
+      machines.some((machine) => machine.environmentId === target.environmentId)
+    );
   const targetId = target.kind === "machine" ? target.environmentId : null;
   const connected = usePreparedConnection(targetId);
   const mayMint = useEnvironmentScope(targetId, AuthAccessWriteScope);
@@ -270,7 +288,7 @@ function LinkRequestDialog(props: {
       const minted = await mintPairingCodeOn(targetId, access);
       if (Result.isFailure(minted)) {
         setMintFailed((failed) => new Set(failed).add(targetId));
-        setError(linkRequestFailureMessage(minted.failure));
+        setError(linkRequestFailureMessage(minted.failure, t));
         return null;
       }
       code = minted.success;
@@ -303,7 +321,11 @@ function LinkRequestDialog(props: {
       // The card switches to its answered row once the item updates.
       close();
     } else if (!isAtomCommandInterrupted(result)) {
-      pipe(squashAtomCommandFailure(result), linkRequestFailureMessage, setError);
+      pipe(
+        squashAtomCommandFailure(result),
+        (failure) => linkRequestFailureMessage(failure, t),
+        setError,
+      );
     }
   };
 
@@ -322,9 +344,11 @@ function LinkRequestDialog(props: {
     >
       <WizardPopup>
         <WizardHeader
-          title={pickMachine ? t("Link a machine") : t("Link {name}", { name: targetName })}
+          title={
+            pickMachine || unnamed ? t("Link a machine") : t("Link {targetName}", { targetName })
+          }
           description={t(
-            "Agents here can then launch, message and wait on threads there. Revoke it in that machine's Connections.",
+            "Agents here can then launch, message and wait on threads there. Revoke it in that machine's Sharing & access.",
           )}
         >
           {steps.length > 1 && !useExisting ? (

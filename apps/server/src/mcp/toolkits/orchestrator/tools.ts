@@ -116,7 +116,8 @@ const DelegateTaskTool = Tool.make("delegate_task", {
 })
   .annotate(Tool.Title, "Delegate a child task")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
@@ -130,7 +131,8 @@ const TaskStatusTool = Tool.make("task_status", {
   .annotate(Tool.Title, "Get delegated task status")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
@@ -142,7 +144,8 @@ const TaskCancelTool = Tool.make("task_cancel", {
   dependencies,
 })
   .annotate(Tool.Title, "Cancel delegated task")
-  .annotate(Tool.Destructive, true);
+  .annotate(Tool.Destructive, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   description:
@@ -170,7 +173,8 @@ const CommandRunTool = Tool.make("t3_command_run", {
 })
   .annotate(Tool.Title, "Run a command")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
@@ -239,7 +243,8 @@ const ReportScheduledRunTool = Tool.make("report_scheduled_run", {
   dependencies,
 })
   .annotate(Tool.Title, "Report a scheduled run's result")
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const SharedSettingsTool = Tool.make("t3_shared_settings", {
   description:
@@ -269,7 +274,7 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
 
 const RequestSecretTool = Tool.make("request_secret", {
   description:
-    'Ask for one secret per single-line card; never combine values. Open it, don\'t offer it. Returns one-use `secretRef`, or `delivery: "file"` a file read only in its command, e.g. `adb pair <ip:port> "$(cat <file>)"`. Asked how: call now. Sign-in link: `url`. Pasted secret for child/script: `value`. Never from an old thread.',
+    'Ask for secrets in a private card, one value per single-line input; never combine values in one. Open it, don\'t offer it. Returns one-use `secretRef`, or `delivery: "file"` a file read only in its command, e.g. `adb pair <ip:port> "$(cat <file>)"`. Asked how: call now. Sign-in link: `url`. Pasted secret for child/script: `value`. Never from an old thread.',
   parameters: OrchestratorMcpRequestSecretInput,
   success: OrchestratorMcpRequestSecretResult,
   failure: OrchestratorMcpFailure,
@@ -279,7 +284,8 @@ const RequestSecretTool = Tool.make("request_secret", {
   .annotate(Tool.Title, "Request a secret from the user")
   .annotate(Tool.Destructive, false)
   // Claude Code defers MCP tools behind ToolSearch; agents that never load this one ask in chat.
-  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true });
+  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const AskUserTool = Tool.make("ask_user", {
   description:
@@ -292,7 +298,7 @@ const AskUserTool = Tool.make("ask_user", {
 })
   .annotate(Tool.Title, "Ask the user")
   .annotate(Tool.Destructive, false)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromSubagents);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToParentThread);
 
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
@@ -305,7 +311,8 @@ const CreateThreadsTool = Tool.make("create_threads", {
 })
   .annotate(Tool.Title, "Create T3.CodeShip threads")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const ThreadListTool = Tool.make("t3_thread_list", {
   description:
@@ -436,7 +443,7 @@ const LinkBackTool = Tool.make("t3_link_back", {
 
 const EnvironmentUnlinkTool = Tool.make("t3_environment_unlink", {
   description:
-    "Forget a linked environment. That machine's Connections list its session until revoked there.",
+    "Forget a linked environment. Its session on that machine ends too when the machine answers.",
   parameters: OrchestratorMcpEnvironmentUnlinkInput,
   success: OrchestratorMcpEnvironmentUnlinkResult,
   failure: OrchestratorMcpFailure,

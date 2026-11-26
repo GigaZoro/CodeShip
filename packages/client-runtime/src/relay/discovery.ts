@@ -1,3 +1,5 @@
+import { msg } from "@t3tools/shared/i18n";
+import { translatableDetail } from "../errors/translatable.ts";
 import type {
   RelayClientEnvironmentRecord,
   RelayEnvironmentStatusResponse,
@@ -22,7 +24,6 @@ import * as Connectivity from "../connection/connectivity.ts";
 import { mapManagedRelayError } from "../connection/errors.ts";
 import { ConnectionBlockedError, type ConnectionAttemptError } from "../connection/model.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export type RelayEnvironmentAvailability = "checking" | "online" | "offline" | "error";
 
@@ -76,7 +77,7 @@ function validateStatus(
     return Effect.fail(
       new ConnectionBlockedError({
         reason: "configuration",
-        detail: t("Relay returned status for a different environment."),
+        ...translatableDetail(msg("Relay returned status for a different environment.")),
       }),
     );
   }
@@ -88,7 +89,7 @@ function validateStatus(
     return Effect.fail(
       new ConnectionBlockedError({
         reason: "configuration",
-        detail: t("Relay returned status for a different environment endpoint."),
+        ...translatableDetail(msg("Relay returned status for a different environment endpoint.")),
       }),
     );
   }
@@ -99,7 +100,7 @@ function validateStatus(
     return Effect.fail(
       new ConnectionBlockedError({
         reason: "configuration",
-        detail: t("Relay returned a descriptor for a different environment."),
+        ...translatableDetail(msg("Relay returned a descriptor for a different environment.")),
       }),
     );
   }

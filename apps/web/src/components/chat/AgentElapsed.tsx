@@ -1,32 +1,38 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
+
 import { tickTextContent } from "~/lib/tickTextContent";
 
-function formatElapsedSeconds(totalSeconds: number): string {
+function formatElapsedSeconds(totalSeconds: number, resolve: typeof t): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(seconds / 60);
   if (minutes === 0) {
-    return t("{seconds}s", { seconds });
+    return resolve(msg("{seconds}s"), { seconds });
   }
   const hours = Math.floor(minutes / 60);
   if (hours === 0) {
-    return t("{minutes}m {seconds}s", {
+    return resolve(msg("{minutes}m {seconds}s"), {
       minutes,
       seconds: String(seconds % 60).padStart(2, "0"),
     });
   }
-  return t("{hours}h {minutes}m", { hours, minutes: String(minutes % 60).padStart(2, "0") });
+  return resolve(msg("{hours}h {minutes}m"), {
+    hours,
+    minutes: String(minutes % 60).padStart(2, "0"),
+  });
 }
 
-function formatCompactElapsedSeconds(totalSeconds: number): string {
+function formatCompactElapsedSeconds(totalSeconds: number, resolve: typeof t): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
-  if (seconds < 60) return t("{seconds}s", { seconds });
+  if (seconds < 60) return resolve(msg("{seconds}s"), { seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return t("{minutes}m", { minutes });
-  if (minutes >= 600) return t("{hours}h", { hours: Math.floor(minutes / 60) });
-  return t("{hours}h", { hours: Math.floor(minutes / 6) / 10 });
+  if (minutes < 60) return resolve(msg("{minutes}m"), { minutes });
+  if (minutes >= 600) {
+    return resolve(msg("{hours}h"), { hours: Math.floor(minutes / 60) });
+  }
+  return resolve(msg("{hours}h"), { hours: Math.floor(minutes / 6) / 10 });
 }
 
 export function AgentElapsed({
@@ -46,7 +52,7 @@ export function AgentElapsed({
     <span
       ref={tickTextContent((nowMs) => {
         const elapsedMs = deriveSubagentElapsedMs({ status, startedAt, completedAt }, nowMs);
-        return elapsedMs === null ? "" : format(elapsedMs / 1000);
+        return elapsedMs === null ? "" : format(elapsedMs / 1000, t);
       }, live)}
       className="tabular-nums"
     />

@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useState } from "react";
 
 import {
@@ -34,7 +35,10 @@ export function useDesktopCliCommand() {
           stackedThreadToast({
             type: "error",
             title: t(FAILURE_TITLES[action]),
-            description: error instanceof Error ? error.message : t("Something went wrong."),
+            description:
+              error instanceof Error
+                ? (thrownErrorMessage(error) ?? error.message)
+                : t("Something went wrong."),
           }),
         );
       })

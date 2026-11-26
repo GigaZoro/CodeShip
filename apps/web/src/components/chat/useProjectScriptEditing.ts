@@ -1,4 +1,7 @@
-import type { EnvironmentId, ProjectScript } from "@t3tools/contracts";
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
+import type { ProjectScript, EnvironmentId } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -13,7 +16,6 @@ import { AsyncResult } from "effect/reactivity";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { useSaveProjectScripts } from "../useSaveProjectScripts";
-import { t } from "~/i18n";
 
 /** The chat's project actions control edits the active project's list. */
 export function useProjectScriptEditing(input: {
@@ -41,8 +43,8 @@ export function useProjectScriptEditing(input: {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: t("Could not delete action"),
-          description: error instanceof Error ? error.message : t("An unexpected error occurred."),
+          title: t(msg("Could not delete action")),
+          description: thrownErrorMessage(error, t) ?? t(msg("An unexpected error occurred.")),
         }),
       );
     }

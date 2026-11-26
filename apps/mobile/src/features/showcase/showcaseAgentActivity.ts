@@ -1,3 +1,4 @@
+import { msg, t, tn, type Message } from "../../lib/i18n";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -20,14 +21,14 @@ const SHOWCASE_AGENT_ACTIVITY_ROWS = [
   readonly minutesAgo: number;
 }>;
 
-const STATUS_BY_PHASE: Record<AgentActivityPhase, string> = {
-  starting: "Connecting",
-  running: "Working",
-  waiting_for_approval: "Approval",
-  waiting_for_input: "Input",
-  stale: "Waiting",
-  completed: "Done",
-  failed: "Failed",
+const STATUS_BY_PHASE: Record<AgentActivityPhase, Message> = {
+  starting: msg("Connecting"),
+  running: msg("Working"),
+  waiting_for_approval: msg("Approval"),
+  waiting_for_input: msg("Input"),
+  stale: msg("Waiting"),
+  completed: msg("Done"),
+  failed: msg("Failed"),
 };
 
 const ACTIVE_PHASES: ReadonlySet<AgentActivityPhase> = new Set([
@@ -61,14 +62,14 @@ export function buildShowcaseAgentActivity(
       threadTitle: thread.title,
       modelTitle: "",
       phase: definition.phase,
-      status: STATUS_BY_PHASE[definition.phase],
+      status: t(STATUS_BY_PHASE[definition.phase]),
       updatedAt: new Date(now - definition.minutesAgo * 60_000).toISOString(),
       deepLink: `/threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(definition.threadId)}`,
     });
   }
   return {
     title: "T3.CodeShip",
-    subtitle: "Agent work in progress",
+    subtitle: t("Agent work in progress"),
     activeCount: rows.filter((row) => ACTIVE_PHASES.has(row.phase)).length,
     updatedAt: new Date(now).toISOString(),
     activities: rows,
@@ -101,8 +102,11 @@ export function showcaseAndroidActivityData(
     t3_kind: "agent_activity",
     updated_at: String(now),
     active: String(activity.activeCount > 0),
-    activity_chip: attentionCount > 0 ? "Review" : "Active",
-    activity_title: `${activity.activeCount} active agents · ${attentionCount} need attention`,
+    activity_chip: attentionCount > 0 ? t("Review") : t("Active"),
+    activity_title: [
+      tn(activity.activeCount, "{count} active agent", "{count} active agents"),
+      tn(attentionCount, "{count} needs attention", "{count} need attention"),
+    ].join(" · "),
     activity_phase: hero?.phase ?? "",
     activity_active_count: String(activity.activeCount),
     activity_attention_count: String(attentionCount),

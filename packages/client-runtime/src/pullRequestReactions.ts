@@ -1,4 +1,7 @@
-import { msg, t, tn, type Message } from "@t3tools/shared/i18n";
+import { tn } from "@t3tools/shared/i18n";
+import { msg, t, type Message } from "@t3tools/shared/i18n";
+
+import { formatConjunctionList } from "./listFormat.ts";
 import type {
   PullRequestComment,
   PullRequestDetail,
@@ -53,37 +56,61 @@ export function pullRequestReactionEmoji(content: PullRequestReactionContent): s
   return REACTION_EMOJI[content];
 }
 
-export function pullRequestReactionName(content: PullRequestReactionContent): string {
-  return t(REACTION_NAME[content]);
+export function pullRequestReactionName(
+  content: PullRequestReactionContent,
+  resolve: typeof t = t,
+): string {
+  return resolve(REACTION_NAME[content]);
 }
 
 const NAMED_ACTOR_LIMIT = 3;
 
-function joinNames(parts: ReadonlyArray<string>): string {
-  if (parts.length <= 1) return parts[0] ?? "";
-  if (parts.length === 2) return t("{first} and {second}", { first: parts[0]!, second: parts[1]! });
-  return t("{head}, and {last}", { head: parts.slice(0, -1).join(", "), last: parts.at(-1)! });
+function countRemainder(count: number, named: boolean): string {
+  return named
+    ? tn(count, "{count} other", "{count} others")
+    : tn(count, "{count} person", "{count} people");
 }
 
-function countRemainder(count: number, named: boolean): string {
-  if (named) return tn(count, "{count} other", "{count} others");
-  return tn(count, "{count} person", "{count} people");
+function reactedWith(
+  content: PullRequestReactionContent,
+  names: string,
+  resolve: typeof t,
+): string {
+  switch (content) {
+    case "thumbs-up":
+      return resolve(msg("{names} reacted with thumbs up emoji"), { names });
+    case "thumbs-down":
+      return resolve(msg("{names} reacted with thumbs down emoji"), { names });
+    case "laugh":
+      return resolve(msg("{names} reacted with laugh emoji"), { names });
+    case "hooray":
+      return resolve(msg("{names} reacted with hooray emoji"), { names });
+    case "confused":
+      return resolve(msg("{names} reacted with confused emoji"), { names });
+    case "heart":
+      return resolve(msg("{names} reacted with heart emoji"), { names });
+    case "rocket":
+      return resolve(msg("{names} reacted with rocket emoji"), { names });
+    case "eyes":
+      return resolve(msg("{names} reacted with eyes emoji"), { names });
+  }
 }
 
 /** Hosts omit the viewer from actors; add You only if count has room, since viewer login is unavailable. */
-export function pullRequestReactionTooltip(reaction: PullRequestReaction): string {
+export function pullRequestReactionTooltip(
+  reaction: PullRequestReaction,
+  resolve: typeof t = t,
+  locale = "en",
+): string {
   const viewerHasRoom = reaction.actors.length < reaction.count;
   const names =
     reaction.viewerHasReacted && viewerHasRoom
-      ? [t("You"), ...reaction.actors]
+      ? [resolve(msg("You")), ...reaction.actors]
       : [...reaction.actors];
   const shown = names.slice(0, Math.min(NAMED_ACTOR_LIMIT, reaction.count));
   const others = Math.max(0, reaction.count - shown.length);
   const parts = [...shown, ...(others > 0 ? [countRemainder(others, shown.length > 0)] : [])];
-  return t("{names} reacted with {reaction} emoji", {
-    names: joinNames(parts),
-    reaction: pullRequestReactionName(reaction.content),
-  });
+  return reactedWith(reaction.content, formatConjunctionList(parts, locale, resolve), resolve);
 }
 
 /** Changes whenever the host reports different reactions, so pending overlays can reset. */
@@ -95,13 +122,18 @@ export function pullRequestReactionsSignature(
     .join(" ");
 }
 
+/** One toggle awaiting the host. Its identity tells it apart from a later toggle of the same reaction. */
+export interface PendingPullRequestReaction {
+  readonly reacted: boolean;
+}
+
 export function applyPendingPullRequestReactions(
   reactions: ReadonlyArray<PullRequestReaction>,
-  pending: ReadonlyMap<PullRequestReactionContent, boolean>,
+  pending: ReadonlyMap<PullRequestReactionContent, PendingPullRequestReaction>,
 ): ReadonlyArray<PullRequestReaction> {
   if (pending.size === 0) return reactions;
   const byContent = new Map(reactions.map((reaction) => [reaction.content, reaction] as const));
-  for (const [content, reacted] of pending) {
+  for (const [content, { reacted }] of pending) {
     const current = byContent.get(content);
     if (current === undefined) {
       if (reacted) {

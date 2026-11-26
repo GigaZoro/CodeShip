@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
@@ -104,7 +105,9 @@ export function ProjectFaviconPickerDialog(props: {
                           type: "error",
                           title: t("Could not open image picker"),
                           description:
-                            error instanceof Error ? error.message : t("An error occurred."),
+                            error instanceof Error
+                              ? (thrownErrorMessage(error) ?? error.message)
+                              : t("An error occurred."),
                         });
                       })
                       .finally(() => setIsPickingExternal(false));

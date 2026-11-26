@@ -1,4 +1,4 @@
-import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
+import type { ContextMenuSource, EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 import {
   machineAvailabilityLabel,
   type MachineAvailability,
@@ -10,6 +10,7 @@ import { ChevronDownIcon, FolderIcon, FolderOpenIcon, SquarePenIcon } from "luci
 import { memo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { contextMenuSourceOf } from "../../contextMenuSource";
 import type {
   SidebarProjectGroupMember,
   SidebarProjectSnapshot,
@@ -78,6 +79,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
     group: SidebarProjectSnapshot,
     member: SidebarProjectGroupMember | null,
     position: { x: number; y: number },
+    source: ContextMenuSource,
   ) => void;
 }) {
   const { folderKey, group, member } = props;
@@ -99,7 +101,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         label: t("New thread in {name}", { name: group.displayName }),
         onClick: () => props.onNewThread(group, member),
       }}
-      onContextMenu={(position) => props.onContextMenu(group, member, position)}
+      onContextMenu={(position, source) => props.onContextMenu(group, member, position, source)}
     />
   );
 });
@@ -110,7 +112,11 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
   hiddenThreads: readonly EnvironmentThreadShell[];
   onToggle: (folderKey: string, siblings: boolean) => void;
   onNewThread: (machine: SidebarMachine) => void;
-  onContextMenu: (machine: SidebarMachine, position: { x: number; y: number }) => void;
+  onContextMenu: (
+    machine: SidebarMachine,
+    position: { x: number; y: number },
+    source: ContextMenuSource,
+  ) => void;
 }) {
   const { machine } = props;
   const folderKey = sidebarMachineFolderKey(machine.environmentId);
@@ -145,7 +151,7 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
       onToggle={(siblings) => props.onToggle(folderKey, siblings)}
-      onContextMenu={(position) => props.onContextMenu(machine, position)}
+      onContextMenu={(position, source) => props.onContextMenu(machine, position, source)}
       // An offline machine cannot start a thread until it is back.
       newThread={
         machine.disconnected
@@ -167,7 +173,11 @@ export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(pro
   hiddenThreads: readonly EnvironmentThreadShell[];
   olderCount: number;
   onToggle: (folderKey: string, siblings: boolean) => void;
-  onContextMenu: (entry: ThreadFolderEntry, position: { x: number; y: number }) => void;
+  onContextMenu: (
+    entry: ThreadFolderEntry,
+    position: { x: number; y: number },
+    source: ContextMenuSource,
+  ) => void;
 }) {
   const { entry, folderKey } = props;
   const Icon = props.collapsed ? FolderIcon : FolderOpenIcon;
@@ -180,7 +190,7 @@ export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(pro
       hiddenThreads={props.hiddenThreads}
       olderCount={props.olderCount}
       onToggle={(siblings) => props.onToggle(folderKey, siblings)}
-      onContextMenu={(position) => props.onContextMenu(entry, position)}
+      onContextMenu={(position, source) => props.onContextMenu(entry, position, source)}
       newThread={null}
     />
   );
@@ -222,7 +232,7 @@ function SidebarFolderHeader(props: {
   dropLineOffset?: number | null;
   onToggle: (siblings: boolean) => void;
   onDragStart?: (event: PointerEvent) => void;
-  onContextMenu?: (position: { x: number; y: number }) => void;
+  onContextMenu?: (position: { x: number; y: number }, source: ContextMenuSource) => void;
 }) {
   const { onContextMenu, onDragStart, newThread } = props;
   const { rowId, parentRowId, collapsed, hiddenThreads } = props;
@@ -274,7 +284,7 @@ function SidebarFolderHeader(props: {
           onContextMenu
             ? (event) => {
                 event.preventDefault();
-                onContextMenu({ x: event.clientX, y: event.clientY });
+                onContextMenu({ x: event.clientX, y: event.clientY }, contextMenuSourceOf(event));
               }
             : undefined
         }

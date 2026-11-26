@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucide-react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
@@ -19,9 +20,9 @@ import {
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { t } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 class LicenseManifestLoadError extends Schema.TaggedError<LicenseManifestLoadError>()(
   "LicenseManifestLoadError",
@@ -48,7 +49,9 @@ const licenseManifestAtom = Atom.make(
       catch: (error) =>
         new LicenseManifestLoadError({
           message:
-            error instanceof Error ? error.message : t("The license manifest could not load."),
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("The license manifest could not load."),
         }),
     });
   }).pipe(
@@ -159,22 +162,20 @@ function LicenseHeaderAction({
     return (
       <div className="flex items-center gap-1.5">
         <LicenseCount filteredCount={filteredCount} totalCount={totalCount} />
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                aria-label={t("Search open-source licenses")}
-                onClick={() => onSearchOpenChange(true)}
-                size="icon-micro"
-                type="button"
-                variant="ghost-muted"
-              >
-                <SearchIcon className="size-3" />
-              </Button>
-            }
-          />
-          <TooltipPopup side="top">{t("Search licenses")}</TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={
+            <Button
+              aria-label={t("Search open-source licenses")}
+              onClick={() => onSearchOpenChange(true)}
+              size="icon-micro"
+              type="button"
+              variant="ghost-muted"
+            >
+              <SearchIcon className="size-3" />
+            </Button>
+          }
+          label={<>{t("Search licenses")}</>}
+        />
       </div>
     );
   }
@@ -198,6 +199,10 @@ function LicenseHeaderAction({
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
             event.preventDefault();
+            event.stopPropagation();
+            // Unmounting the focused input can move focus to a control whose
+            // tooltip would consume the next Escape. Return focus to the workspace.
+            event.currentTarget.closest<HTMLElement>("[data-workspace-area]")?.focus();
             onQueryChange("");
             onSearchOpenChange(false);
           }}

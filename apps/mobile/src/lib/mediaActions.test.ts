@@ -25,6 +25,7 @@ vi.mock("react", () => ({
   useState: <A>(initial: A) => [initial, () => {}],
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
+
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: state.navigate }),
 }));

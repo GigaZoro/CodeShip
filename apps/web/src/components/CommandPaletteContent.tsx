@@ -1,4 +1,5 @@
 import { t } from "~/i18n";
+
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type ComponentProps, type ReactNode, type RefObject } from "react";
 
@@ -54,7 +55,7 @@ type CommandPaletteContentProps = Omit<ComponentProps<typeof Command>, "children
 
 export function CommandPaletteContent({
   children,
-  escapeLabel = "Close",
+  escapeLabel,
   footerActionLabel,
   footerTrailing,
   inputAccessory,
@@ -116,7 +117,7 @@ export function CommandPaletteContent({
             ) : null}
             <KbdGroup>
               <Kbd>{"Esc"}</Kbd>
-              <span>{escapeLabel}</span>
+              <span>{escapeLabel ?? t("Close")}</span>
             </KbdGroup>
           </div>
           {footerTrailing}

@@ -1,4 +1,5 @@
-/* oxlint-disable t3code/no-untranslated-text -- dev-only tool */
+import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -46,14 +47,14 @@ export function DevReplayHost() {
   const replay = async (scenario?: string): Promise<ThreadId> => {
     const model = scenario ?? scenarios[0]?.slug;
     if (environmentId === null || project === undefined || model === undefined) {
-      throw new Error("Replay needs a dev server with a project and the Replay (dev) provider.");
+      throw new Error(t("Replay needs a dev server with a project and the Replay (dev) provider."));
     }
     if (!scenarios.some((candidate) => candidate.slug === model)) {
-      throw new Error(`Unknown replay scenario "${model}".`);
+      throw new Error(t('Unknown replay scenario "{model}".', { model }));
     }
     const threadId = newThreadId();
     const modelSelection = { instanceId: DEV_REPLAY_INSTANCE_ID, model };
-    const title = `Replay: ${model}`;
+    const title = t("Replay: {model}", { model });
     const createdAt = new Date().toISOString();
     const result = await startTurn({
       environmentId,
@@ -114,8 +115,8 @@ export function DevReplayHost() {
     replay(scenario).catch((error: unknown) =>
       toastManager.add({
         type: "error",
-        title: "Replay failed",
-        description: error instanceof Error ? error.message : String(error),
+        title: t("Replay failed"),
+        description: thrownErrorMessage(error, t) ?? String(error),
       }),
     );
   };
@@ -125,13 +126,15 @@ export function DevReplayHost() {
       <DialogPopup className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>
-            {project === undefined ? "Replay a recorded turn" : `Replay in ${project.title}`}
+            {project === undefined
+              ? t("Replay a recorded turn")
+              : t("Replay in {project}", { project: project.title })}
           </DialogTitle>
         </DialogHeader>
         <DialogPanel>
           {scenarios.length === 0 || project === undefined ? (
             <p className="text-sm text-muted-foreground">
-              Needs a project and the Replay (dev) provider, which dev servers start.
+              {t("Needs a project and the Replay (dev) provider, which dev servers start.")}
             </p>
           ) : (
             <div className="flex flex-col items-start gap-1">

@@ -32,7 +32,12 @@ import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { __setClientSettingsForTests } from "../hooks/useSettings";
 import { ToastProvider } from "../components/ui/toast";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { hostRightPanel, selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
+import {
+  ISSUES_PANEL_REF,
+  hostRightPanel,
+  selectActiveRightPanel,
+  useRightPanelStore,
+} from "../rightPanelStore";
 import { useDiffPanelStore } from "../diffPanelStore";
 import { useOpenChangeRequestLink } from "./openPullRequestLink";
 
@@ -54,6 +59,7 @@ const project = {
   },
 };
 const commitUrl = `https://github.com/Effect-TS/effect/commit/${"a".repeat(40)}?plain=1#diff-original`;
+const pullRequestUrl = "https://github.com/Effect-TS/effect/pull/86";
 const pullRequestCommitUrl = `https://github.com/Effect-TS/effect/pull/1/commits/${"a".repeat(40)}`;
 
 function CommitLink({
@@ -67,6 +73,18 @@ function CommitLink({
   return (
     <a href={url} onClick={(event) => open(event, url)}>
       Commit
+    </a>
+  );
+}
+
+function IssuesPagePullRequestLink() {
+  const open = useOpenChangeRequestLink(undefined, ISSUES_PANEL_REF);
+  return (
+    <a
+      href={pullRequestUrl}
+      onClick={(event) => open(event, pullRequestUrl, undefined, environmentId)}
+    >
+      Pull request
     </a>
   );
 }
@@ -190,4 +208,19 @@ it("selects a commit clicked in a hosted chat under the thread whose panel shows
   } finally {
     unhost();
   }
+});
+
+it("opens a pull request linked on the Issues page beside its issues", async () => {
+  setup();
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <IssuesPagePullRequestLink />
+    </AppAtomRegistryProvider>,
+    { router: "/issues" },
+  );
+  await screen.getByRole("link", { name: "Pull request" }).click();
+  expect(
+    useRightPanelStore.getState().byThreadKey[scopedThreadKey(ISSUES_PANEL_REF)],
+  ).toMatchObject({ isOpen: true, surfaces: [{ kind: "pull-request", number: 86 }] });
+  expect(screen.router?.state.location.pathname).toBe("/issues");
 });

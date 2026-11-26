@@ -20,7 +20,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexInstallation from "./CodexInstallation.ts";
 
 const archive = Buffer.from(
@@ -70,7 +70,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     `codex${input.platform === "win32" ? ".exe" : ""}`,
   );
   const probeLog = `${baseDir}/local-probes.txt`;
-  if (input.local) {
+  // A restarted harness on the same baseDir keeps the existing binary, and with it its fingerprint.
+  if (input.local && !(yield* fs.exists(localBinaryPath))) {
     yield* fs.makeDirectory(localDirectory, { recursive: true });
     yield* fs.writeFileString(localBinaryPath, localFixture(input.local), { mode: 0o755 });
     if (input.local.codeModeHost)
@@ -265,6 +266,74 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
+  const compileNative = Effect.fn("test.compileNative")(function* (
+    executablePath: string,
+    source: string,
+  ) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const compiler = yield* spawner.spawn(
+      ChildProcess.make("cc", ["-x", "c", "-", "-o", executablePath], {
+        stdin: Stream.make(new TextEncoder().encode(source)),
+        stdout: "inherit",
+        stderr: "inherit",
+      }),
+    );
+    expect(yield* compiler.exitCode).toBe(0);
+  }, Effect.scoped);
+
+  it.effect.each([
+    { layout: "npm bin symlink", persists: true },
+    { layout: "npm shim", persists: true },
+    { layout: "wrapper script", persists: false },
+  ])(
+    "re-probes a $layout Codex after a restart only when its payload can change",
+    ({ layout, persists }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-install-test-" });
+        const packageDirectory =
+          layout === "npm shim"
+            ? `${baseDir}/local/node_modules/@openai/codex`
+            : `${baseDir}/npm/lib/node_modules/@openai/codex`;
+        const payload =
+          layout === "wrapper script" ? `${baseDir}/payload` : `${packageDirectory}/bin/codex.js`;
+        const install = Effect.fn("test.installPayload")(function* (version: string) {
+          yield* fs.makeDirectory(`${packageDirectory}/bin`, { recursive: true });
+          if (layout !== "wrapper script")
+            yield* fs.writeFileString(
+              `${packageDirectory}/package.json`,
+              JSON.stringify({ name: "@openai/codex", version }),
+            );
+          yield* fs.writeFileString(
+            payload,
+            `#!/bin/sh\nprintf '%s\\n' "$*" >> '${baseDir}/local-probes.txt'\ncase "$1" in --version) printf 'codex-cli ${version}\\n';; esac\n`,
+            { mode: 0o755 },
+          );
+        });
+        yield* install("0.156.1");
+        yield* fs.makeDirectory(`${baseDir}/local`, { recursive: true });
+        if (layout === "npm bin symlink") yield* fs.symlink(payload, `${baseDir}/local/codex`);
+        else
+          yield* fs.writeFileString(
+            `${baseDir}/local/codex`,
+            `#!/bin/sh\nexec '${payload}' "$@"\n`,
+            {
+              mode: 0o755,
+            },
+          );
+        const first = yield* makeHarness({ baseDir, local: { version: "0.156.1" } });
+        expect((yield* first.installation.resolve()).source).toBe("local");
+        const restarted = yield* makeHarness({ baseDir, local: { version: "0.156.1" } });
+        expect((yield* restarted.installation.resolve()).source).toBe("local");
+        expect((yield* fs.readFileString(first.probeLog)).trim().split("\n")).toHaveLength(
+          persists ? 2 : 4,
+        );
+        yield* install("0.128.9");
+        const upgraded = yield* makeHarness({ baseDir, local: { version: "0.156.1" } });
+        expect((yield* upgraded.installation.state).installedVersion).toBeNull();
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
   it.effect("rechecks compatibility after the local executable is replaced", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness({ local: { version: "0.156.1" } });
@@ -327,6 +396,46 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
   );
 
   // A native launcher has no adjacent codex-code-mode-host; only its name lets it run.
+
+  it.effect.each([
+    { kind: "script", name: "volta-shim" },
+    { kind: "native", name: "volta-shim" },
+    { kind: "native", name: "mise" },
+    { kind: "native", name: "aqua-proxy" },
+  ])("preserves the invoked name of $kind $name launcher symlinks", ({ kind, name }) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ local: { version: "0.156.1" } });
+      const launcher = `${h.baseDir}/${name}`;
+      if (kind === "native") {
+        const payload = `${h.baseDir}/codex.js`;
+        yield* h.fs.rename(h.localBinaryPath, payload);
+        yield* compileNative(
+          launcher,
+          `#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  const char *name = strrchr(argv[0], '/');
+  if (strcmp(name ? name + 1 : argv[0], "codex") != 0) return 1;
+  execv(${JSON.stringify(payload)}, argv);
+  return 1;
+}
+`,
+        );
+      } else {
+        yield* h.fs.writeFileString(
+          launcher,
+          '#!/bin/sh\ncase "$0" in */codex) ;; *) exit 1;; esac\ncase "$1" in --version) printf "codex-cli 0.156.1\\n";; app-server) exit 0;; esac\n',
+          { mode: 0o755 },
+        );
+        yield* h.fs.remove(h.localBinaryPath);
+      }
+      yield* h.fs.symlink(launcher, h.localBinaryPath);
+      expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
+      expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);
+      expect(h.downloads()).toBe(0);
+      expect(yield* h.fs.exists(`${h.baseDir}/caches/codex-local-probe.json`)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
   it.effect.each([
     { kind: "script", name: "codex-wrapper" },
     { kind: "native", name: "volta-shim" },
@@ -502,6 +611,72 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
       }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
+  it.effect.each(["cached update", "reverify"] as const)(
+    "reports a verification timeout during %s and preserves the managed runtime",
+    (operation) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-verify-test-" });
+        const managed = `${baseDir}/tools/codex`;
+        const installedVersion = operation === "cached update" ? "0.156.0" : asset.version;
+        const target = "aarch64-pc-windows-msvc";
+        const checksum = "a".repeat(64);
+        for (const version of new Set([installedVersion, asset.version])) {
+          const directory = `${managed}/${version}`;
+          yield* fs.makeDirectory(`${directory}/bin`, { recursive: true });
+          yield* fs.makeDirectory(`${directory}/codex-path`, { recursive: true });
+          for (const name of [
+            "bin/codex.exe",
+            "bin/codex-code-mode-host.exe",
+            "codex-path/rg.exe",
+          ]) {
+            yield* fs.writeFileString(`${directory}/${name}`, "fixture executable");
+          }
+          yield* fs.writeFileString(
+            `${directory}/codex-package.json`,
+            JSON.stringify({ layoutVersion: 1, version, target, entrypoint: "bin/codex.exe" }),
+          );
+          yield* fs.writeFileString(
+            `${directory}/.install-complete.json`,
+            JSON.stringify({ version, target, sha256: checksum }),
+          );
+        }
+        const pointer = JSON.stringify({ version: installedVersion });
+        yield* fs.writeFileString(`${managed}/active.json`, pointer);
+        const entered = yield* Deferred.make<void>();
+        const h = yield* makeHarness({
+          baseDir,
+          platform: "win32",
+          manifestCurrent: Effect.succeed({
+            ...ModelManifest.BUNDLED_MODEL_MANIFEST,
+            compatibility: [
+              {
+                driver: "codex",
+                t3CodeRange: ">=0.0.0",
+                ranges: [{ range: ">=0.156.0", status: "supported" }],
+              },
+            ],
+          }),
+          options: {
+            releaseAsset: operation === "reverify" ? null : { ...asset, target, sha256: checksum },
+            validate: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+          },
+        });
+        yield* h.installation.start;
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust("90 seconds");
+        expect(yield* terminalState(h.installation)).toMatchObject({
+          phase: "failed",
+          installedVersion,
+          message:
+            "Codex runtime verification timed out after 90 seconds. Check this environment's server logs for startup errors, then retry installation.",
+        });
+        expect(yield* fs.readFileString(`${managed}/active.json`)).toBe(pointer);
+        expect((yield* h.installation.resolve()).version).toBe(installedVersion);
+        expect(h.downloads()).toBe(0);
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
   it.effect("reports a download timeout and cleans the staging directory", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();
@@ -608,6 +783,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
         version: upstreamVersion,
       });
 
+      const sessionScope = yield* Scope.make();
+      const previous = yield* h.installation.acquire().pipe(Scope.provide(sessionScope));
       yield* h.installation.start;
       expect(yield* terminalState(h.installation)).toMatchObject({
         phase: "succeeded",
@@ -615,9 +792,13 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
         version: upstreamVersion,
       });
       expect((yield* h.installation.resolve()).version).toBe(upstreamVersion);
+      // The running session keeps its release until the next start prunes it.
+      expect(yield* h.fs.exists(previous.managedVersionDirectory!)).toBe(true);
+      yield* Scope.close(sessionScope, Exit.void);
 
       // Without upstream information the older pin is not offered as a reinstall.
       const restarted = yield* makeHarness({ baseDir: h.baseDir });
+      expect(yield* h.fs.exists(previous.managedVersionDirectory!)).toBe(false);
       expect(yield* restarted.installation.state).toMatchObject({
         installedVersion: upstreamVersion,
         version: upstreamVersion,

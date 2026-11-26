@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -24,7 +25,6 @@ import {
   type FileViewedOverlay,
   type FileViewedPress,
 } from "./pullRequestFilesViewed.logic";
-import { t } from "~/i18n";
 
 export interface FilesViewedTarget {
   readonly environmentId: EnvironmentId;

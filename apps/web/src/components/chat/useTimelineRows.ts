@@ -1,3 +1,9 @@
+import {
+  getActiveLanguage,
+  getFormattingLocale,
+  isPseudoLanguageActive,
+  t,
+} from "@t3tools/shared/i18n";
 import { useState } from "react";
 import {
   computeStableMessagesTimelineRows,
@@ -43,19 +49,23 @@ export function useIncrementalTimelineRows(
   identity: string,
   input: MessagesTimelineRowsInput,
 ): MessagesTimelineRow[] {
+  const locale = `${getActiveLanguage()}\0${getFormattingLocale() ?? ""}\0${isPseudoLanguageActive()}`;
   const [state, setState] = useState(() => ({
     identity,
     input,
-    projection: deriveMessagesTimelineRowsWithState(input),
+    locale,
+    projection: deriveMessagesTimelineRowsWithState(input, null, t),
   }));
-  if (state.identity === identity && sameRowsInput(state.input, input)) {
+  const reusable = state.identity === identity && state.locale === locale;
+  if (reusable && sameRowsInput(state.input, input)) {
     return state.projection.rows;
   }
   const projection = deriveMessagesTimelineRowsWithState(
     input,
-    state.identity === identity ? state.projection : null,
+    reusable ? state.projection : null,
+    t,
   );
-  setState({ identity, input, projection });
+  setState({ identity, input, locale, projection });
   return projection.rows;
 }
 

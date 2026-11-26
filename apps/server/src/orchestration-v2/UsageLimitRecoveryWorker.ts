@@ -50,6 +50,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import { routineSpan } from "@t3tools/shared/observability";
 
 // A cooldown this short is cheaper to wait out than to move the thread to another account for good.
 const MIN_FAILOVER_WAIT_MS = 5 * 60_000;
@@ -520,7 +521,7 @@ const makeSweep = Effect.gen(function* () {
   );
   // Decisions already written, so a stop that looks the same every tick takes no write lock.
   const recentDecisions = new Set<string>();
-  return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
+  return Effect.fn("UsageLimitRecoveryWorker.sweep", { attributes: routineSpan })(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     // A lift records no event, so the threads that wait on it are read again here.

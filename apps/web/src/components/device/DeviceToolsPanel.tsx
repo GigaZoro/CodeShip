@@ -1,7 +1,9 @@
+import { type Message, msg, t } from "~/i18n";
 import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import type { DevicePermission, DeviceSummary, DeviceTextSize } from "@t3tools/contracts";
 import { ChevronDown, X } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
+
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -20,7 +22,6 @@ import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
 import type { DeviceControls } from "./useDeviceControls";
 import { deviceEventLogAtom } from "./deviceHubAtoms";
-import { msg, t, type Message } from "~/i18n";
 
 const TEXT_SIZES: ReadonlyArray<{ value: DeviceTextSize; label: Message }> = [
   { value: "small", label: msg("Small") },
@@ -70,7 +71,11 @@ const ANDROID_PERMISSIONS: ReadonlyArray<{ value: DevicePermission; label: Messa
 ];
 
 const LOCATION_PRESETS = [
-  { label: msg("San Francisco"), latitude: 37.7749, longitude: -122.4194 },
+  {
+    label: msg("San Francisco"),
+    latitude: 37.7749,
+    longitude: -122.4194,
+  },
   { label: msg("New York"), latitude: 40.7128, longitude: -74.006 },
   { label: msg("London"), latitude: 51.5074, longitude: -0.1278 },
   { label: msg("Stockholm"), latitude: 59.3293, longitude: 18.0686 },

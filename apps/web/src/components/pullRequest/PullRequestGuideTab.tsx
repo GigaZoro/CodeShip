@@ -1,4 +1,6 @@
+import { msg, t } from "~/i18n";
 import type { EnvironmentId, PullRequestRef, PullRequestReviewGuideStop } from "@t3tools/contracts";
+
 import { ScrollTextIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useEffectEvent } from "react";
 
@@ -17,7 +19,7 @@ import {
   usePendingReviewComments,
   usePullRequestReviewStore,
 } from "./pullRequestReviewStore";
-import { msg, t } from "~/i18n";
+
 import type { PullRequestCompletionScope } from "./PullRequestMarkdownTextarea";
 
 export function PullRequestGuideTab({
@@ -105,13 +107,21 @@ export function PullRequestGuideTab({
   if (guide === null) {
     if (query.isPending && data === null) {
       return (
-        <div className="flex min-h-48 items-center justify-center">
+        <div
+          tabIndex={-1}
+          data-workspace-focus-default
+          className="flex min-h-48 items-center justify-center outline-none"
+        >
           <Spinner />
         </div>
       );
     }
     return (
-      <div className="scrollbar-gutter-both flex h-full flex-col items-center justify-center-safe gap-2 overflow-y-auto px-4 py-10 text-center">
+      <div
+        tabIndex={-1}
+        data-workspace-focus-default
+        className="scrollbar-gutter-both flex h-full flex-col items-center justify-center-safe gap-2 overflow-y-auto px-4 py-10 text-center outline-none"
+      >
         <p className="text-sm font-medium text-foreground">
           {running
             ? t("Writing a review guide")
@@ -148,7 +158,9 @@ export function PullRequestGuideTab({
             t("Written before the latest push.")
           ) : (
             <>
-              {t("Could not rewrite this guide. {hint}", { hint: t(FAILURE_HINT) })}
+              {t(
+                "Could not rewrite this guide. Check the review guide model in Settings → Source control.",
+              )}
               <FailureDetails detail={failure} />
             </>
           )}
@@ -181,7 +193,7 @@ export function PullRequestGuideTab({
   );
 }
 
-const FAILURE_HINT = msg("Check the review guide model in Settings → Source control.");
+const FAILURE_HINT = msg("Check the review guide model in Settings → Source control & issues.");
 
 function FailureDetails({ detail }: { detail: string }) {
   return (

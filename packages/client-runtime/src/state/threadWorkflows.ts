@@ -1,3 +1,4 @@
+import { msg, t } from "@t3tools/shared/i18n";
 import {
   type ChatAttachment,
   isCompactionCommandMessage,
@@ -6,8 +7,8 @@ import {
 } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
 
+import { compactionBlocksSteering } from "./composerDispatch.ts";
 import type { ThreadStructure } from "./models.ts";
-import { t } from "@t3tools/shared/i18n";
 
 type Projection = ThreadStructure;
 type Run = Projection["runs"][number];
@@ -103,6 +104,45 @@ export function threadSteersDuringCompaction(projection: Projection | null | und
   );
 }
 
+function supportsSteering(turns: OrchestrationV2ProviderCapabilities["turns"]): boolean {
+  return (
+    turns.supportsActiveSteering ||
+    (turns.supportsInterrupt && turns.supportsSteeringByInterruptRestart)
+  );
+}
+
+/** The server rejects a steer into a run that Stop has reached, though the run still reads as running. */
+export function runStopRequested(
+  projection: Pick<Projection, "turnItems"> | null | undefined,
+  runId: Run["id"] | null | undefined,
+): boolean {
+  if (projection == null || runId == null) return false;
+  return projection.turnItems.some(
+    (item) => item.runId === runId && item.type === "run_interrupt_request",
+  );
+}
+
+export function threadCanSteer(
+  projection: Projection | null,
+  input: {
+    readonly compactCommandIsActive: boolean;
+    readonly compactionRunning: boolean;
+    readonly activeRunId: Run["id"] | null | undefined;
+  },
+): boolean {
+  const turns = projection && resolveThreadProviderSession(projection)?.capabilities.turns;
+  // A steer submitted before the session attaches can wait for its provider turn.
+  if (turns && !supportsSteering(turns)) return false;
+  if (runStopRequested(projection, input.activeRunId)) return false;
+  return !compactionBlocksSteering({
+    compactCommandIsActive: input.compactCommandIsActive,
+    compactionRunning: input.compactionRunning,
+    steersDuringCompaction: turns?.activeSteeringDuringCompaction === true,
+    run: projection?.runs.find((run) => run.id === input.activeRunId),
+    messages: projection?.messages,
+  });
+}
+
 export function threadSupportsProviderHandoff(projection: Projection | null | undefined): boolean {
   if (projection == null) return false;
   const session = resolveThreadProviderSession(projection);
@@ -141,10 +181,14 @@ export function getUserQueuedThreadRuns(
   );
 }
 
-export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQueueWorkflowState {
+export function deriveThreadQueueWorkflowState(
+  projection: Projection,
+  resolve: typeof t = t,
+): ThreadQueueWorkflowState {
   const activeRun = resolveActiveThreadRun(projection);
   const session = resolveThreadProviderSession(projection);
   const capabilities = session?.capabilities.turns;
+  const canSteer = capabilities !== undefined && supportsSteering(capabilities);
   const activeMessage = projection.messages.find(
     (message) => message.id === activeRun?.userMessageId,
   );
@@ -166,7 +210,7 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
     return {
       run,
       // A queued guest message shows the guest's words; the agent still gets the attributed text.
-      text: message?.context?.guest?.text ?? message?.text ?? t("Queued message"),
+      text: message?.context?.guest?.text ?? message?.text ?? resolve(msg("Queued message")),
       attachments: message?.attachments ?? [],
       messageId: run.userMessageId,
       ...(message?.context ? { context: message.context } : {}),
@@ -185,12 +229,8 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
     canPromoteToSteer:
       promoteSkipsCompaction ||
       ((activeRun?.status === "preparing" || activeRun?.status === "starting") &&
-        (capabilities === undefined ||
-          capabilities.supportsActiveSteering ||
-          capabilities.supportsSteeringByInterruptRestart)) ||
-      (hasSteerableProviderTurn &&
-        (capabilities?.supportsActiveSteering === true ||
-          capabilities?.supportsSteeringByInterruptRestart === true)),
+        (capabilities === undefined || canSteer)) ||
+      (hasSteerableProviderTurn && canSteer),
     promoteSkipsCompaction,
     canStopAndSend:
       hasSteerableProviderTurn &&

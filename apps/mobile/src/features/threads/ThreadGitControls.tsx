@@ -29,19 +29,7 @@ import {
 import { projectScriptMenuLabel } from "@t3tools/shared/projectScripts";
 import { t } from "../../lib/i18n";
 
-function truncateMiddle(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  const headLength = Math.ceil((maxLength - 1) / 2);
-  const tailLength = Math.floor((maxLength - 1) / 2);
-  return `${value.slice(0, headLength)}…${value.slice(value.length - tailLength)}`;
-}
-
-function compactMenuBranchLabel(branch: string): string {
-  return truncateMiddle(branch, 24);
-}
+import { compactMenuBranchLabel } from "./ThreadGitControls.logic";
 
 function compactMenuStatus(gitStatus: VcsStatusResult): string {
   const parts: string[] = [];
@@ -95,6 +83,8 @@ export type ThreadGitMenuProps = {
   readonly threadId: ThreadId | string;
   readonly currentBranch: string | null;
   readonly hasThread?: boolean;
+  /** The project tracks repositories besides its folder, which then need not be one itself. */
+  readonly tracksRepositories?: boolean;
   readonly gitStatus: VcsStatusResult | null;
   readonly gitOperationLabel: string | null;
   readonly onOpenFilesInspector?: () => void;
@@ -213,8 +203,6 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
         environmentId: String(environmentId),
         threadId: String(threadId),
         confirmAction: confirmableAction,
-        branchName,
-        includesCommit: String(input.action === "commit_push" || input.action === "commit_push_pr"),
       });
       return;
     }
@@ -329,38 +317,58 @@ export function useThreadTerminalMenu(props: ThreadGitControlsProps): AppBarMenu
 /** The thread's git menu, shared by the thread bar and Review. */
 export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): AppBarMenu | null {
   const model = useThreadGitControlModel(props);
+  // A plain folder that tracks repositories has no branch of its own; its turns still have diffs.
+  const repositoriesOnly = !model.isRepo && props.tracksRepositories === true;
   return {
     title: t("Git controls"),
     icon: "point.topleft.down.curvedto.point.bottomright.up",
     separateBackground: false,
     items: [
-      {
-        id: "git-status",
-        title: model.statusRow.title,
-        icon: "point.topleft.down.curvedto.point.bottomright.up",
-        disabled: true,
-        subtitle: model.statusRow.subtitle,
-        onPress: () => {},
-      },
-      {
-        id: "git-quick-action",
-        title: model.quickAction.label,
-        icon: model.quickActionIcon,
-        disabled: model.quickAction.disabled,
-        subtitle: model.quickActionHint ?? undefined,
-        onPress: () => {
-          void model.runQuickAction();
-        },
-      },
+      ...(repositoriesOnly
+        ? // A worktree thread of such a folder still has a branch: its repositories are on it.
+          props.currentBranch === null
+          ? []
+          : [
+              {
+                id: "git-status",
+                title: compactMenuBranchLabel(props.currentBranch),
+                icon: "point.topleft.down.curvedto.point.bottomright.up",
+                disabled: true,
+                subtitle: t("Repository worktrees"),
+                onPress: () => {},
+              },
+            ]
+        : [
+            {
+              id: "git-status",
+              title: model.statusRow.title,
+              icon: "point.topleft.down.curvedto.point.bottomright.up",
+              disabled: true,
+              subtitle: model.statusRow.subtitle,
+              onPress: () => {},
+            },
+            {
+              id: "git-quick-action",
+              title: model.quickAction.label,
+              icon: model.quickActionIcon,
+              disabled: model.quickAction.disabled,
+              subtitle: model.quickActionHint ?? undefined,
+              onPress: () => {
+                void model.runQuickAction();
+              },
+            },
+          ]),
       {
         id: "git-review",
         title: t("Review changes"),
         icon: "text.bubble",
-        disabled: !model.isRepo || props.hasThread === false,
+        disabled: !(model.isRepo || repositoriesOnly) || props.hasThread === false,
         subtitle:
           props.hasThread === false
             ? t("Available after the first message")
-            : t("Turn diffs and worktree changes"),
+            : repositoriesOnly
+              ? t("Turn diffs")
+              : t("Turn diffs and worktree changes"),
         onPress: model.openReview,
       },
       ...(props.onMergeBack
@@ -385,7 +393,11 @@ export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): AppBarMen
         subtitle:
           props.hasThread === false
             ? t("Available after the first message")
-            : t("Commit, files, branches"),
+            : repositoriesOnly
+              ? t("Repositories")
+              : props.tracksRepositories === true
+                ? t("Commit, branches, repositories")
+                : t("Commit, files, branches"),
         onPress: model.openGitInspector,
       },
     ],

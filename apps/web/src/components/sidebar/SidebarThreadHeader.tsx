@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { FolderPlusIcon, SearchIcon, SquarePenIcon, XIcon } from "lucide-react";
 import {
   type ComponentProps,
@@ -10,13 +11,12 @@ import {
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { SidebarInput, SidebarMenuButton } from "../ui/sidebar";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
-import { t } from "~/i18n";
 export interface SidebarThreadHeaderProps {
   hasProjects: boolean;
   projectScope: ReactNode;
-  onNewProject: () => void;
+  onNewProject?: () => void;
   onNewThread: (event: ReactMouseEvent) => void;
   newThreadDisabled: boolean;
   newThreadShortcutLabel: string | null | undefined;
@@ -101,9 +101,11 @@ export function SidebarThreadHeader({
         {hasProjects ? (
           <>
             {projectScope}
-            <SidebarHeaderIconButton label={t("Add project")} onClick={onNewProject}>
-              <FolderPlusIcon />
-            </SidebarHeaderIconButton>
+            {onNewProject ? (
+              <SidebarHeaderIconButton label={t("Add project")} onClick={onNewProject}>
+                <FolderPlusIcon />
+              </SidebarHeaderIconButton>
+            ) : null}
           </>
         ) : null}
         <SidebarHeaderIconButton
@@ -150,25 +152,23 @@ export function SidebarHeaderIconButton({
   "children" | "className" | "tooltip" | "isActive" | "aria-label"
 >) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <SidebarMenuButton
-            size="icon"
-            type="button"
-            aria-label={label}
-            {...rest}
-            className={cn("relative size-7 shrink-0", className)}
-          />
-        }
-      >
-        {children}
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+    <SharedTooltipTrigger
+      render={
+        <SidebarMenuButton
+          size="icon"
+          type="button"
+          aria-label={label}
+          {...rest}
+          className={cn("relative size-7 shrink-0", className)}
         />
-      </TooltipTrigger>
-      <TooltipPopup side="top">{tooltip}</TooltipPopup>
-    </Tooltip>
+      }
+      label={tooltip}
+    >
+      {children}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+      />
+    </SharedTooltipTrigger>
   );
 }

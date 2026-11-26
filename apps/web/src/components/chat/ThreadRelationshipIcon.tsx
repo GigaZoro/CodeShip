@@ -1,5 +1,8 @@
+import { t, msg } from "~/i18n";
 import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
+
 import { BotIcon, type LucideIcon } from "lucide-react";
+
 import { cn } from "../../lib/utils";
 import {
   hasInstanceBadge,
@@ -7,44 +10,46 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
-import { t } from "~/i18n";
 
-export function threadRelationshipStatusLabel(status: string | null): string {
+export function threadRelationshipStatusLabel(
+  status: string | null,
+  resolve: typeof t = t,
+): string {
   switch (status) {
     case "preparing":
     case "starting":
-      return t("Starting");
+      return resolve(msg("Starting"));
     case "running":
     case "in_progress":
-      return t("Running");
+      return resolve(msg("Running"));
     case "pending":
     case "queued":
-      return t("Queued");
+      return resolve(msg("Queued"));
     case "waiting":
     case "blocked":
-      return t("Waiting");
+      return resolve(msg("Waiting"));
     case "completed":
-      return t("Done");
+      return resolve(msg("Done"));
     case "failed":
     case "error":
-      return t("Failed");
+      return resolve(msg("Failed"));
     case "cancelled":
     case "interrupted":
-      return t("Stopped");
+      return resolve(msg("Stopped"));
     case "rolled_back":
-      return t("Reverted");
+      return resolve(msg("Reverted"));
     case "resolved_native":
-      return t("Resolved (native)");
+      return resolve(msg("Resolved (native)"));
     case "resolved_portable":
-      return t("Resolved (portable)");
+      return resolve(msg("Resolved (portable)"));
     case "consumed":
-      return t("Consumed");
+      return resolve(msg("Consumed"));
     case "superseded":
-      return t("Superseded");
+      return resolve(msg("Superseded"));
     case "idle":
-      return t("Idle");
+      return resolve(msg("Idle"));
     default:
-      return t("Unknown");
+      return resolve(msg("Unknown"));
   }
 }
 

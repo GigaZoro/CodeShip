@@ -1,4 +1,4 @@
-import { t, tn } from "~/i18n";
+import { msg, t, tn } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
   guestShareAccessOptions,
@@ -20,11 +20,12 @@ import {
   type ScopedThreadRef,
   type ThreadGuestShare,
 } from "@t3tools/contracts";
+
 import { CheckIcon, CopyIcon, UserIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
-import { useNowMinute } from "~/hooks/useNowMinute";
+import { useDeadlinePassed } from "~/hooks/useDeadline";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useQuietThreadProjection } from "~/state/entities";
 import { serverEnvironment } from "~/state/server";
@@ -90,7 +91,13 @@ function GuestShareDialog({
   const createGuestShare = useAtomCommand(serverEnvironment.createGuestShare, {
     reportFailure: false,
   });
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: t("guest link") });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: {
+      target: "guest link",
+      unavailableMessage: msg("Clipboard API is unavailable while copying guest link."),
+      failureMessage: msg("Failed to copy guest link to the clipboard."),
+    },
+  });
   const [state, setState] = useState<CreateState>({ status: "idle" });
   const [access, setAccess] = useState<GuestShareAccess>("approve");
   const [lifetime, setLifetime] = useState<GuestShareLifetime>(DEFAULT_GUEST_SHARE_LIFETIME);
@@ -288,14 +295,13 @@ export function GuestShareIndicator({ threadRef }: { readonly threadRef: ScopedT
 }
 
 function GuestShareStatus({ share }: { readonly share: ThreadGuestShare }) {
-  const nowMinute = useNowMinute();
+  const expired = useDeadlinePassed(Date.parse(share.expiresAt));
   // The share stays on the thread after it expires, until the owner clears it.
-  const status =
-    share.expiresAt.slice(0, 16) <= nowMinute
-      ? t("Guest link expired")
-      : share.guestName !== null
-        ? t("{name} is a guest", { name: share.guestName })
-        : t("Guest link active");
+  const status = expired
+    ? t("Guest link expired")
+    : share.guestName !== null
+      ? t("{name} is a guest", { name: share.guestName })
+      : t("Guest link active");
   if (!isReadOnlyGuestShare(share)) return <span>{status}</span>;
   // An expired read-only link still keeps the thread read-only, so the label stays until it closes.
   return (

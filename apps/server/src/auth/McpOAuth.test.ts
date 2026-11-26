@@ -6,6 +6,7 @@ import {
   type AuthCreatePairingCredentialInput,
   type EnvironmentCloudLinkStateResult,
   EnvironmentHttpApi,
+  EnvironmentId,
   MCP_PEER_LINK_SOFTWARE_ID,
   mcpClientScopes,
 } from "@t3tools/contracts";
@@ -13,7 +14,6 @@ import { expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
-import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,10 +31,13 @@ import * as CloudLink from "../cloud/CloudLink.ts";
 import * as ServerConfig from "../config.ts";
 import { makeDpopKey } from "./dpop.testkit.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as McpOAuth from "./McpOAuth.ts";
+import * as PayloadSigner from "./PayloadSigner.ts";
+import { base64UrlDecodeUtf8, base64UrlEncode } from "./utils.ts";
 import * as McpOAuthHttp from "./mcpOAuthHttp.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as AuthHttp from "./http.ts";
@@ -79,6 +82,7 @@ const makeLayerRoutes = (
         ),
       ),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
+      Layer.provide(ServerHttp.layerApiBodyLimit),
     ),
   ).pipe(
     Layer.provideMerge(layerEnvironmentAuth),
@@ -108,15 +112,24 @@ it.effect("renews peer sessions without changing their access, metadata or old t
   Effect.gen(function* () {
     const auth = yield* EnvironmentAuth.EnvironmentAuth;
     const oauth = yield* McpOAuth.McpOAuth;
+    const peerEnvironmentId = EnvironmentId.make("environment-laptop");
+    const authenticate = (token: string) =>
+      auth.authenticateMcpClient(
+        HttpServerRequest.fromWeb(
+          new Request(`${ORIGIN}/mcp`, { headers: { authorization: `Bearer ${token}` } }),
+        ),
+      );
     for (const access of AuthMcpClientAccess.literals) {
       const original = yield* auth.issueMcpClientSession({
         label: "T3.CodeShip · Laptop",
         access,
         peerLink: true,
+        peerEnvironmentId,
         client: { userAgent: "original-client", deviceType: "bot" },
       });
+      const originalRows = yield* auth.listSessions();
       yield* TestClock.adjust(Duration.days(1));
-      const renewed = yield* oauth.exchangeCode({
+      const exchange = oauth.exchangeCode({
         request: HttpServerRequest.fromWeb(new Request(`${ORIGIN}/oauth/mcp/token`)),
         urls: { issuer: ORIGIN, resource: `${ORIGIN}/mcp` },
         token: {
@@ -126,31 +139,100 @@ it.effect("renews peer sessions without changing their access, metadata or old t
           resource: `${ORIGIN}/mcp`,
         },
       });
+      const [renewed, retry] = yield* Effect.all([exchange, exchange], { concurrency: 2 });
+      expect(renewed.access_token).not.toBe(original.token);
       expect(renewed.scope.split(" ")).toEqual([...mcpClientScopes(access)]);
       expect(renewed.expires_in).toBe(30 * 24 * 60 * 60);
-      for (const token of [original.token, renewed.access_token]) {
-        expect(
-          yield* auth.authenticateMcpClient(
-            HttpServerRequest.fromWeb(
-              new Request(`${ORIGIN}/mcp`, {
-                headers: { authorization: `Bearer ${token}` },
-              }),
-            ),
-          ),
-        ).toMatchObject({ label: "T3.CodeShip · Laptop", access, peerLink: true });
+      yield* TestClock.adjust(Duration.hours(12));
+      const early = yield* exchange;
+      expect(Object.keys(early).toSorted()).toEqual([
+        "access_token",
+        "expires_in",
+        "issued_token_type",
+        "scope",
+        "token_type",
+      ]);
+      expect(early.scope).toBe(renewed.scope);
+      expect(early.expires_in).toBe(renewed.expires_in - 12 * 60 * 60);
+      const tokens = [original.token, renewed.access_token, retry.access_token, early.access_token];
+      for (const token of tokens) {
+        expect(yield* authenticate(token)).toMatchObject({
+          sessionId: original.sessionId,
+          label: "T3.CodeShip · Laptop",
+          access,
+          peerLink: true,
+          peerEnvironmentId,
+        });
       }
-      const sessions = yield* auth.listSessions();
-      const oldSession = sessions.find((session) => session.sessionId === original.sessionId)!;
-      const newSession = sessions.find(
-        (session) =>
-          session.sessionId !== original.sessionId &&
-          session.client.userAgent === "original-client" &&
-          DateTime.isGreaterThan(session.expiresAt!, original.expiresAt),
-      )!;
-      expect(newSession.client).toEqual(oldSession.client);
-      expect(newSession.scopes).toEqual(oldSession.scopes);
+      const rows = yield* auth.listSessions();
+      expect(rows).toHaveLength(originalRows.length);
+      const row = rows.find((session) => session.sessionId === original.sessionId)!;
+      expect(row.client).toEqual(
+        originalRows.find((session) => session.sessionId === original.sessionId)!.client,
+      );
+      expect(row.scopes).toEqual([...mcpClientScopes(access)]);
+      expect(yield* auth.revokeMcpClientToken(renewed.access_token)).toBe(true);
+      for (const token of tokens) {
+        expect(yield* authenticate(token).pipe(Effect.flip)).toMatchObject({
+          _tag: "ServerAuthInvalidCredentialError",
+        });
+      }
     }
   }).pipe(Effect.provide(layerRenewal)),
+);
+
+it.effect(
+  "requires new pairing for legacy peer bearers and preserves independently paired clients",
+  () =>
+    Effect.gen(function* () {
+      const auth = yield* EnvironmentAuth.EnvironmentAuth;
+      const secrets = yield* ServerSecretStore.ServerSecretStore;
+      const signer = yield* PayloadSigner.fromSecret(
+        yield* secrets.getOrCreateRandom("server-signing-key", 32),
+      );
+      const pair = (peerLink: boolean) =>
+        auth.issueMcpClientSession({
+          label: "Shared label",
+          access: "auto",
+          peerLink,
+          peerEnvironmentId: EnvironmentId.make("environment-laptop"),
+          client: { deviceType: "bot" },
+        });
+      const authenticate = (token: string) =>
+        auth.authenticateMcpClient(
+          HttpServerRequest.fromWeb(
+            new Request(`${ORIGIN}/mcp`, { headers: { authorization: `Bearer ${token}` } }),
+          ),
+        );
+      // Older scheduled exchanges copied all peer metadata onto an independent session.
+      // The server cannot tell which of these otherwise identical rows was retained by the peer.
+      const legacy = yield* Effect.forEach([0, 1], () =>
+        Effect.gen(function* () {
+          const issued = yield* pair(true);
+          const claims = base64UrlDecodeUtf8(issued.token.split(".")[0]!);
+          const payload = base64UrlEncode(claims.replace(/"plk":\d+/, '"plk":1'));
+          return {
+            sessionId: issued.sessionId,
+            token: `${payload}.${yield* signer.sign(payload)}`,
+          };
+        }),
+      );
+      const current = yield* pair(true);
+      const independent = yield* pair(true);
+      const ordinary = yield* pair(false);
+      yield* auth.revokeSession(legacy[1]!.sessionId);
+      for (const { token } of legacy) {
+        expect(yield* authenticate(token).pipe(Effect.flip)).toMatchObject({
+          _tag: "ServerAuthInvalidCredentialError",
+        });
+        expect(yield* auth.renewMcpClientSession(token).pipe(Effect.flip)).toMatchObject({
+          _tag: "ServerAuthInvalidCredentialError",
+        });
+      }
+      expect(yield* auth.revokeMcpClientToken(current.token)).toBe(true);
+      expect((yield* authenticate(independent.token)).sessionId).toBe(independent.sessionId);
+      expect((yield* authenticate(ordinary.token)).sessionId).toBe(ordinary.sessionId);
+    }).pipe(Effect.provide(layerRenewal), Effect.provide(NodeCrypto.layer)),
 );
 
 it.effect("refuses expired, revoked, non-peer, wrong-resource and disabled peer renewal", () =>
@@ -317,8 +399,29 @@ it.effect("derives discovery metadata from the origin the client reached", () =>
         authorization_endpoint: `${ORIGIN}/oauth/mcp/authorize`,
         token_endpoint: `${ORIGIN}/oauth/mcp/token`,
         registration_endpoint: `${ORIGIN}/oauth/mcp/register`,
+        revocation_endpoint: `${ORIGIN}/oauth/mcp/revoke`,
         code_challenge_methods_supported: ["S256"],
       });
+    }),
+  ),
+);
+
+it.effect("answers 413 to a body over the API limit", () =>
+  withRoutes((handler) =>
+    Effect.gen(function* () {
+      const body = "x".repeat(ServerHttp.API_MAX_BODY_BYTES + 1);
+      for (const [path, contentType] of [
+        ["/api/auth/browser-session", "application/json"],
+        ["/oauth/token", "application/x-www-form-urlencoded"],
+        ["/oauth/mcp/register", "application/json"],
+      ]) {
+        const init = { method: "POST", headers: { "content-type": contentType! } };
+        expect((yield* handler(at(path!, { ...init, body }))).status, path).toBe(413);
+        // A chunked body declares no length, so the reader itself has to stop.
+        const chunked = new Blob([body]).stream();
+        const streamed = at(path!, { ...init, body: chunked, duplex: "half" } as RequestInit);
+        expect((yield* handler(streamed)).status, `${path} chunked`).toBe(413);
+      }
     }),
   ),
 );
@@ -504,6 +607,22 @@ it.live("signs in with a pairing code and issues a token only /mcp accepts", () 
         }),
       );
       expect(ticket.status).toBe(401);
+
+      // Revocation ends only an MCP client's own session; any other token is answered alike and kept.
+      const owner = yield* auth.exchangeBootstrapCredentialForAccessToken(
+        (yield* auth.issuePairingCredential()).credential,
+        undefined,
+        { deviceType: "desktop" },
+      );
+      const bearer = (token: string) =>
+        HttpServerRequest.fromWeb(at("/api", { headers: { authorization: `Bearer ${token}` } }));
+      for (const other of ["not-a-token", owner.access_token]) {
+        expect((yield* handler(at("/oauth/mcp/revoke", form({ token: other })))).status).toBe(200);
+      }
+      yield* auth.authenticateHttpRequest(bearer(owner.access_token));
+      const revoked = yield* handler(at("/oauth/mcp/revoke", form({ token: token.access_token })));
+      expect(revoked.status).toBe(200);
+      yield* auth.authenticateMcpClient(bearer(token.access_token)).pipe(Effect.flip);
     }),
   ),
 );
@@ -603,6 +722,44 @@ it.live("signs in Gemini, which registers six user-bound redirect URIs for one c
       });
       const callback = new URL(approved.redirectTo!);
       expect(`${callback.origin}${callback.pathname}`).toBe(callbackUrl);
+    }),
+  ),
+);
+
+it.live("issues no session for a sign-in approved before all other sessions were revoked", () =>
+  withRoutes((handler, auth) =>
+    Effect.gen(function* () {
+      const clientId = yield* registeredClientId(handler);
+      const params = authorizeParams(clientId);
+      const approved = yield* decide(handler, params, {
+        _tag: "pairing-code",
+        access: "approval-required",
+        code: (yield* auth.issuePairingCredential()).credential,
+      });
+      const code = new URL(approved.redirectTo!).searchParams.get("code")!;
+      const owner = yield* auth.issueSession();
+      yield* auth.revokeOtherClientSessions(owner.sessionId);
+
+      const response = yield* handler(
+        at(
+          "/oauth/mcp/token",
+          form({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: params.redirect_uri,
+            client_id: clientId,
+            code_verifier: verifier,
+          }),
+        ),
+      );
+      expect(response.status).toBe(400);
+      expect(yield* json<unknown>(response)).toEqual({
+        error: "invalid_grant",
+        error_description: "The authorization code is invalid or expired.",
+      });
+      expect((yield* auth.listSessions()).map((session) => session.sessionId)).toEqual([
+        owner.sessionId,
+      ]);
     }),
   ),
 );

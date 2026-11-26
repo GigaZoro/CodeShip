@@ -1,3 +1,6 @@
+import { msg, t, tx } from "~/i18n";
+
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { heldPullRequestListEntriesAtom } from "@t3tools/client-runtime/state/pull-requests";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -24,6 +27,7 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowDownUpIcon, LayersIcon, Plug2Icon } from "lucide-react";
+
 import { useEffect, useEffectEvent, useRef, useState, type ComponentProps } from "react";
 
 import {
@@ -32,6 +36,7 @@ import {
   mergePullRequestDiffStats,
   pullRequestDiffStatKey,
   pullRequestEntryKey,
+  pullRequestListAnsweredEmpty,
   rankPullRequestMatches,
   pullRequestStatsRefreshBatches,
   pullRequestStatsRequestBatches,
@@ -55,6 +60,8 @@ import {
   type PullRequestListPreferencePatch,
   writePullRequestListPreferences,
 } from "./pullRequestListPreferences";
+import { SavedViewsMenu } from "../SavedViewsMenu";
+import { PULL_REQUEST_SAVED_VIEWS, pullRequestSavedViewPatch } from "./pullRequestSavedViews";
 import { environmentMachineIcon } from "../EnvironmentMachineIcon";
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
 import {
@@ -62,11 +69,15 @@ import {
   PullRequestSearchInput,
   pullRequestHostLabel,
   pullRequestProjectKey,
-  translatePullRequestFilterOptions,
   type PullRequestFilterOption,
 } from "./PullRequestListFilters";
 import { PullRequestCompactFilterMenu } from "./PullRequestCompactFilterMenu";
-import { INVOLVEMENT_TABS, SORT_OPTIONS, STATE_TABS } from "./pullRequestListOptions";
+import {
+  INVOLVEMENT_TABS,
+  resolveFilterOptions,
+  SORT_OPTIONS,
+  STATE_TABS,
+} from "./pullRequestListOptions";
 import { PullRequestsColumn } from "./PullRequestsColumn";
 import { PullRequestListGroups } from "./PullRequestListGroups";
 import { pullRequestPanelReference } from "./usePullRequestDetail";
@@ -129,12 +140,14 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
-import { t, tx } from "~/i18n";
+
 import {
   rememberPullRequestHosts,
   resetPullRequestHosts,
   type PullRequestHostRead,
 } from "./pullRequestProjectAssignment.logic";
+
+import { changeRequestTermKind } from "./changeRequestTerm";
 
 function getShortcutContext() {
   return {
@@ -423,11 +436,7 @@ export function PullRequestsPage() {
     listQuery.observations,
   );
   if (observedHosts !== hostReads) setHostReads(observedHosts);
-  const baselineEmpty =
-    baselineQuery.data?.entries.length === 0 &&
-    baselineQuery.data.errors.length === 0 &&
-    !baselineQuery.isPending &&
-    baselineQuery.error === null;
+  const baselineEmpty = pullRequestListAnsweredEmpty(baselineQuery);
   const facetTargets = (() => {
     if (!filtersOpen) return NO_LIST_TARGETS;
     return environmentQueries.map(({ environmentId, projectIds }) => ({
@@ -1256,6 +1265,8 @@ export function PullRequestsPage() {
   const searchInput = (
     <PullRequestSearchInput
       value={search.q ?? ""}
+      label={t("Search pull requests")}
+      placeholder={t("Search pull requests, or label:bug")}
       busy={searching}
       onChange={(query) => updateListScope({ q: query || undefined })}
       onSubmit={submitQuery}
@@ -1339,7 +1350,7 @@ export function PullRequestsPage() {
         <PullRequestsUnavailableState
           error={listError}
           refreshing={listQuery.isPending}
-          onRetry={() => listQuery.refresh()}
+          onRetry={listQuery.retry}
           onOpenSettings={openSourceControlSettings}
         />
       ) : carriedToNothing ? (
@@ -1393,7 +1404,7 @@ export function PullRequestsPage() {
             </span>
           </AlertDescription>
           <AlertAction>
-            <Button size="xs" variant="outline" onClick={() => listQuery.refresh()}>
+            <Button size="xs" variant="outline" onClick={listQuery.retry}>
               {t("Retry")}
             </Button>
           </AlertAction>
@@ -1452,7 +1463,7 @@ export function PullRequestsPage() {
       triggerLabel={t("Sort")}
       outlined
       value={sort}
-      options={translatePullRequestFilterOptions(SORT_OPTIONS)}
+      options={resolveFilterOptions(SORT_OPTIONS, t)}
       onChange={(next) => updateListScope({ sort: next })}
     />
   );
@@ -1460,10 +1471,10 @@ export function PullRequestsPage() {
     <PullRequestFiltersMenuInSidebarOrder
       onOpenChange={setFiltersOpen}
       state={search.state}
-      stateOptions={translatePullRequestFilterOptions(STATE_TABS)}
+      stateOptions={resolveFilterOptions(STATE_TABS, t)}
       onState={(state) => updateListScope({ state })}
       involvement={search.involvement}
-      involvementOptions={translatePullRequestFilterOptions(INVOLVEMENT_TABS)}
+      involvementOptions={resolveFilterOptions(INVOLVEMENT_TABS, t)}
       onInvolvement={(involvement) => updateListScope({ involvement })}
       filters={
         typedParsed.filters.draft
@@ -1517,6 +1528,13 @@ export function PullRequestsPage() {
     searchInput,
     sortMenu,
     filtersMenu,
+    savedViewsMenu: (
+      <SavedViewsMenu
+        kind={PULL_REQUEST_SAVED_VIEWS}
+        preferences={search}
+        onApply={(preferences) => updateListScope(pullRequestSavedViewPatch(preferences))}
+      />
+    ),
     rightPanelControl: !pullRequestsSupported ? null : (
       <span
         aria-hidden
@@ -1592,14 +1610,33 @@ export function PullRequestsPage() {
     event.stopPropagation();
     if (event.repeat) return;
     const url = openPanelPullRequestUrl;
-    const { shortLabel, singular } = (
+    const terminology = (
       sourceControlClients.findByChangeRequestUrl(url) ?? sourceControlClients.get(undefined)
     ).changeRequest;
-    void writeTextToClipboard(url, t("{singular} link", { singular })).then(undefined, (error) => {
+    void writeTextToClipboard(url, {
+      target: `${terminology.singular} link`,
+      unavailableMessage:
+        changeRequestTermKind(terminology) === "mr"
+          ? msg("Clipboard API is unavailable while copying merge request link.")
+          : changeRequestTermKind(terminology) === "cr"
+            ? msg("Clipboard API is unavailable while copying change request link.")
+            : msg("Clipboard API is unavailable while copying pull request link."),
+      failureMessage:
+        changeRequestTermKind(terminology) === "mr"
+          ? msg("Failed to copy merge request link to the clipboard.")
+          : changeRequestTermKind(terminology) === "cr"
+            ? msg("Failed to copy change request link to the clipboard.")
+            : msg("Failed to copy pull request link to the clipboard."),
+    }).then(undefined, (error) => {
       toastManager.add({
         type: "error",
-        title: t("Failed to copy {shortLabel} link", { shortLabel }),
-        description: error instanceof Error ? error.message : t("An error occurred."),
+        title:
+          changeRequestTermKind(terminology) === "mr"
+            ? t("Failed to copy MR link")
+            : changeRequestTermKind(terminology) === "cr"
+              ? t("Failed to copy change request link")
+              : t("Failed to copy PR link"),
+        description: thrownErrorMessage(error, t) ?? t("An error occurred."),
       });
     });
   });
@@ -1679,12 +1716,14 @@ export function PullRequestsPage() {
             onCopyFilePath={() => undefined}
             onAddBrowser={() => undefined}
             onAddBrowserInProfile={() => undefined}
+            onAddTerminal={() => undefined}
             onAddDiff={() => undefined}
             onAddFiles={() => undefined}
             onAddPullRequest={() => undefined}
             onAddPullRequests={() => undefined}
             onAddDevice={() => undefined}
             browserAvailable={false}
+            terminalAvailable={false}
             diffAvailable={false}
             filesAvailable={false}
             pullRequestAvailable={false}

@@ -1,8 +1,10 @@
 import type { ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
-import { t, tn } from "~/i18n";
+import { msg, t, tn } from "~/i18n";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import {
   type AssetResource,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2PlanArtifact,
   type OrchestrationV2ProjectedTurnItem,
@@ -16,12 +18,8 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
-import {
-  classifyToolActivity,
-  collectToolFilePaths,
-  formatReadToolLabel,
-  formatSearchToolLabel,
-} from "@t3tools/shared/toolActivity";
+import { classifyToolActivity, collectToolFilePaths } from "@t3tools/shared/toolActivity";
+import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivityCopy";
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import type { McpAppReference } from "@t3tools/shared/mcpApp";
@@ -39,6 +37,7 @@ import {
   deriveRevertTurnCountByUserMessageId as deriveSharedRevertTurnCountByUserMessageId,
   type RevertRunMarker,
 } from "@t3tools/client-runtime/state/thread-rewind";
+import { repositoryCheckpointScopeIds } from "@t3tools/client-runtime/state/thread-repositories";
 import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
@@ -59,7 +58,6 @@ import * as DateTime from "effect/DateTime";
 import * as Equal from "effect/Equal";
 import { shallow } from "zustand/vanilla/shallow";
 
-export { formatDuration } from "@t3tools/shared/orchestrationTiming";
 export {
   workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolFailure,
@@ -250,6 +248,7 @@ const STANDALONE_V2_ITEM_TYPES = new Set<OrchestrationV2ProjectedTurnItem["item"
   "run_interrupt_request",
   "run_interrupt_result",
   "secret_request",
+  "feedback_request",
   "link_request",
   "subagent",
 ]);
@@ -259,6 +258,7 @@ const PERSISTENT_RESOURCE_V2_ITEM_TYPES = new Set<OrchestrationV2TurnItem["type"
   "thread_created",
   // Still answerable after a steer supersedes the attempt that asked.
   "secret_request",
+  "feedback_request",
   "link_request",
 ]);
 
@@ -313,13 +313,14 @@ function projectedWorkEntryTone(item: OrchestrationV2TurnItem): WorkLogEntry["to
 
 export function providerErrorPresentation(
   item: Extract<OrchestrationV2TurnItem, { readonly type: "error" }>,
+  resolve: typeof t = t,
 ): { readonly label: string; readonly detail: string } {
   if (item.retry === undefined) {
     return {
       label:
         item.failure.class === "usage_limit"
-          ? t("Usage limit reached")
-          : item.title?.trim() || t("Provider error"),
+          ? resolve(msg("Usage limit reached"))
+          : item.title?.trim() || resolve(msg("Provider error")),
       detail: item.failure.message,
     };
   }
@@ -329,7 +330,7 @@ export function providerErrorPresentation(
       : `${item.retry.attempt}/${item.retry.maxAttempts}`;
   const label =
     item.status === "running"
-      ? t("Retrying provider ({progress})", { progress })
+      ? resolve(msg("Retrying provider ({progress})"), { progress })
       : item.status === "completed"
         ? tn(
             item.retry.attempt,
@@ -351,12 +352,12 @@ export function providerErrorPresentation(
                 "Provider error after {progress} retries",
                 { progress },
               )
-          : t("Provider retry stopped ({progress})", { progress });
+          : resolve(msg("Provider retry stopped ({progress})"), { progress });
   const retryDelay =
     item.status === "running" && item.retry.retryDelayMs !== null && item.retry.retryDelayMs > 0
       ? item.retry.retryDelayMs < 1_000
-        ? t("Retrying in {delay}ms.", { delay: item.retry.retryDelayMs })
-        : t("Retrying in {delay}s.", {
+        ? resolve(msg("Retrying in {delay}ms."), { delay: item.retry.retryDelayMs })
+        : resolve(msg("Retrying in {delay}s."), {
             delay: (item.retry.retryDelayMs / 1_000).toFixed(1).replace(/\.0$/u, ""),
           })
       : null;
@@ -366,7 +367,10 @@ export function providerErrorPresentation(
   };
 }
 
-export function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry {
+export function projectedWorkEntry(
+  row: OrchestrationV2ProjectedTurnItem,
+  resolve: typeof t = t,
+): WorkLogEntry {
   const { item } = row;
   const title = item.title?.trim() || null;
   const common = {
@@ -385,28 +389,28 @@ export function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkL
     case "thread_created":
       return {
         ...common,
-        label: t("Created thread"),
+        label: resolve(msg("Created thread")),
       };
     case "compaction":
       return {
         ...common,
-        label: contextCompactionLabel(item),
+        label: contextCompactionLabel(item, resolve),
         sourceActivityKind: "context-compaction",
         ...(item.summary ? { detail: item.summary } : {}),
       };
     case "reasoning":
       return {
         ...common,
-        label: title ?? t("Thinking"),
+        label: title ?? resolve(msg("Thinking")),
         ...(item.text ? { detail: item.text } : {}),
       };
     case "command_execution":
       return {
         ...common,
-        label: title ?? t("Ran command"),
+        label: title ?? resolve(msg("Ran command")),
         command: item.input,
         rawCommand: item.input,
-        toolTitle: title ?? t("Command"),
+        toolTitle: title ?? resolve(msg("Command")),
         toolData: item,
       };
     case "file_change": {
@@ -416,34 +420,34 @@ export function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkL
           title ??
           (item.changes !== undefined && item.changes.length > 1
             ? tn(item.changes.length, "Changed {count} file", "Changed {count} files")
-            : t("Changed {name}", { name: item.fileName })),
+            : resolve(msg("Changed {name}"), { name: item.fileName })),
         changedFiles: item.changes?.length
           ? item.changes.map((change) => change.path)
           : [item.fileName],
-        toolTitle: title ?? t("File change"),
+        toolTitle: title ?? resolve(msg("File change")),
         toolData: item,
       };
     }
     case "file_search":
       return {
         ...common,
-        label: title ?? formatSearchToolLabel(item) ?? t("Searched files"),
+        label: title ?? formatSearchToolLabel(item, resolve) ?? resolve(msg("Searched files")),
         ...(item.pattern ? { detail: item.pattern } : {}),
-        toolTitle: title ?? t("File search"),
+        toolTitle: title ?? resolve(msg("File search")),
         toolData: item,
       };
     case "web_search":
       return {
         ...common,
-        label: title ?? t("Searched the web"),
+        label: title ?? resolve(msg("Searched the web")),
         ...(item.patterns?.length ? { detail: item.patterns.join(", ") } : {}),
-        toolTitle: title ?? t("Web search"),
+        toolTitle: title ?? resolve(msg("Web search")),
         toolData: item,
       };
     case "checkpoint":
       return {
         ...common,
-        label: title ?? t("Checkpoint captured"),
+        label: title ?? resolve(msg("Checkpoint captured")),
         changedFiles: item.files.map((file) => file.path),
         toolData: item,
       };
@@ -454,7 +458,7 @@ export function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkL
         ...(item.level === "info" ? {} : { sourceActivityKind: "runtime.warning" }),
       };
     case "error": {
-      const presentation = providerErrorPresentation(item);
+      const presentation = providerErrorPresentation(item, resolve);
       return {
         ...common,
         ...presentation,
@@ -477,11 +481,13 @@ export function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkL
         label:
           title ??
           (classified === "read"
-            ? formatReadToolLabel(readPath ?? "")
+            ? formatReadToolLabel(readPath ?? "", 0, resolve)
             : classified === "search"
-              ? (formatSearchToolLabel({ input: item.input }) ?? item.toolName ?? t("Tool call"))
-              : (item.toolName ?? t("Tool call"))),
-        toolTitle: title ?? item.toolName ?? t("Tool"),
+              ? (formatSearchToolLabel({ input: item.input }, resolve) ??
+                item.toolName ??
+                resolve(msg("Tool call")))
+              : (item.toolName ?? resolve(msg("Tool call")))),
+        toolTitle: title ?? item.toolName ?? resolve(msg("Tool")),
         toolData: { input: item.input, output: item.output },
       };
     }
@@ -494,25 +500,29 @@ export function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkL
       return {
         ...common,
         label: current
-          ? t("Tasks {done}/{total} · {current}", {
+          ? resolve(msg("Tasks {done}/{total} · {current}"), {
               done,
               total: item.steps.length,
               current: current.text,
             })
-          : t("Tasks {done}/{total}", { done, total: item.steps.length }),
+          : resolve(msg("Tasks {done}/{total}"), { done, total: item.steps.length }),
       };
     }
     case "approval_request":
       return {
         ...common,
-        label: title ?? t("Approval requested"),
+        label: title ?? resolve(msg("Approval requested")),
         detail: item.prompt ?? item.requestKind,
         toolData: item,
       };
     case "user_input_request":
       return {
         ...common,
-        label: title ?? (item.questionAnswer ? t("Answered questions") : t("Input requested")),
+        label:
+          title ??
+          (item.questionAnswer
+            ? resolve(msg("Answered questions"))
+            : resolve(msg("Input requested"))),
         ...(item.questionAnswer ? { questionAnswer: item.questionAnswer } : {}),
         toolData: item,
       };
@@ -534,6 +544,7 @@ export interface TimelineEntriesInput {
   readonly attempts?: ReadonlyArray<OrchestrationV2RunAttempt>;
   readonly nodes?: ReadonlyArray<OrchestrationV2ExecutionNode>;
   readonly plans?: ReadonlyArray<OrchestrationV2PlanArtifact>;
+  readonly resolve?: typeof t;
 }
 
 export interface TimelineEntriesProjection {
@@ -725,7 +736,7 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
       id: item.id,
       kind: "work",
       createdAt,
-      entry: projectedWorkEntry(row),
+      entry: projectedWorkEntry(row, input.resolve ?? t),
       ...attemptMetadata,
     });
 
@@ -960,7 +971,8 @@ function reuseTimelineEntries(
     !shallow(input.attachmentUrlById, before.attachmentUrlById) ||
     !shallow(input.attempts, before.attempts) ||
     !shallow(input.nodes, before.nodes) ||
-    !samePlanStatuses(input.plans, before.plans)
+    !samePlanStatuses(input.plans, before.plans) ||
+    input.resolve !== before.resolve
   ) {
     return null;
   }
@@ -1124,6 +1136,32 @@ export function deriveRevertTurnCountByUserMessageId(input: {
     ...rest,
     runMarkers: timelineRevertRunMarkers(timelineEntries),
   });
+}
+
+// A missing or failed snapshot (no git, a side chat, a capture error) still pins a
+// conversation position; only restoring files needs a ready one.
+function isRewindableCheckpoint(checkpoint: Pick<OrchestrationV2Checkpoint, "status">) {
+  return checkpoint.status !== "stale";
+}
+
+export function findRevertCheckpoint(
+  projection:
+    | Pick<OrchestrationV2ThreadProjection, "checkpoints" | "checkpointScopes">
+    | null
+    | undefined,
+  turnCount: number,
+): OrchestrationV2Checkpoint | undefined {
+  if (projection == null) return undefined;
+  // A tracked repository's baseline also sits at ordinal zero; it is never a rewind target.
+  const repositoryScopeIds = repositoryCheckpointScopeIds(projection.checkpointScopes);
+  return projection.checkpoints.findLast(
+    (checkpoint) =>
+      !repositoryScopeIds.has(checkpoint.scopeId) &&
+      isRewindableCheckpoint(checkpoint) &&
+      (turnCount === 0
+        ? checkpoint.ordinalWithinScope === 0 && checkpoint.appRunOrdinal === null
+        : checkpoint.appRunOrdinal === turnCount),
+  );
 }
 
 export function derivePhase(runtime: ThreadStructureRuntime | null): SessionPhase {

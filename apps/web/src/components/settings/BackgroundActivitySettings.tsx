@@ -29,7 +29,6 @@ import {
 } from "../ui/dialog";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   backgroundActivityOverrideSettings,
   backgroundActivitySharedPolicySettings,
@@ -42,6 +41,7 @@ import { CommittedNumberField, IntervalSecondsField } from "./IntervalSecondsFie
 import { ScopedSwitch } from "./ScopedSwitch";
 import { PolicyTooltip, SettingResetButton, SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const MIN_GIT_FETCH_INTERVAL_SECONDS = durationToSeconds(MIN_AUTOMATIC_GIT_FETCH_INTERVAL);
 
@@ -429,21 +429,19 @@ export function BackgroundActivitySettingsRow() {
             </SelectPopup>
           </Select>
           {backgroundActivityProfileOption === "advanced" && isEnvironmentScope ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-sm"
-                    variant="outline"
-                    aria-label={t("Configure advanced background activity")}
-                    onClick={() => setBackgroundActivityDialogOpen(true)}
-                  >
-                    <SettingsIcon className="size-4" />
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top">{t("Configure background activity")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  aria-label={t("Configure advanced background activity")}
+                  onClick={() => setBackgroundActivityDialogOpen(true)}
+                >
+                  <SettingsIcon className="size-4" />
+                </Button>
+              }
+              label={<>{t("Configure background activity")}</>}
+            />
           ) : null}
           <BackgroundActivityAdvancedDialog
             open={backgroundActivityDialogOpen && isEnvironmentScope}

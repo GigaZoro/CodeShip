@@ -1,11 +1,12 @@
+import { t, msg } from "~/i18n";
 import { stripDisplayedPlanMarkdown, proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
-import { t } from "~/i18n";
 
 export function buildCollapsedProposedPlanPreviewMarkdown(
   planMarkdown: string,
   options?: {
     maxLines?: number;
   },
+  resolve: typeof t = t,
 ): string {
   const maxLines = options?.maxLines ?? 8;
   const lines = stripDisplayedPlanMarkdown(planMarkdown)
@@ -33,7 +34,7 @@ export function buildCollapsedProposedPlanPreviewMarkdown(
   }
 
   if (previewLines.length === 0) {
-    return proposedPlanTitle(planMarkdown) ?? t("Plan preview unavailable.");
+    return proposedPlanTitle(planMarkdown) ?? resolve(msg("Plan preview unavailable."));
   }
 
   if (hasMoreContent) {

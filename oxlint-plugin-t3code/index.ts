@@ -21,10 +21,12 @@ import noSparklesIcon from "./rules/no-sparkles-icon.ts";
 import noUnreasonedStateSync from "./rules/no-unreasoned-state-sync.ts";
 import noUntranslatedText from "./rules/no-untranslated-text.ts";
 import requireFormattingLocale from "./rules/require-formatting-locale.ts";
+import noUntranslatedCopy from "./rules/no-untranslated-copy.ts";
 import requireRegisteredListScroll from "./rules/require-registered-list-scroll.ts";
 import noOutsetStateIndicators from "./rules/no-outset-state-indicators.ts";
 import noPlatformEarlyReturnInTests from "./rules/no-platform-early-return-in-tests.ts";
 import noPollingLoopInTests from "./rules/no-polling-loop-in-tests.ts";
+import noLayoutCommandApprovalWrites from "./rules/no-layout-command-approval-writes.ts";
 import noRawMcpRegistration from "./rules/no-raw-mcp-registration.ts";
 import noRawProcessProbe from "./rules/no-raw-process-probe.ts";
 import noRawTaskkill from "./rules/no-raw-taskkill.ts";
@@ -73,10 +75,12 @@ export default definePlugin({
     "no-unreasoned-state-sync": noUnreasonedStateSync,
     "no-untranslated-text": noUntranslatedText,
     "require-formatting-locale": requireFormattingLocale,
+    "no-untranslated-copy": noUntranslatedCopy,
     "require-registered-list-scroll": requireRegisteredListScroll,
     "no-outset-state-indicators": noOutsetStateIndicators,
     "no-platform-early-return-in-tests": noPlatformEarlyReturnInTests,
     "no-polling-loop-in-tests": noPollingLoopInTests,
+    "no-layout-command-approval-writes": noLayoutCommandApprovalWrites,
     "no-raw-mcp-registration": noRawMcpRegistration,
     "no-raw-process-probe": noRawProcessProbe,
     "no-raw-taskkill": noRawTaskkill,

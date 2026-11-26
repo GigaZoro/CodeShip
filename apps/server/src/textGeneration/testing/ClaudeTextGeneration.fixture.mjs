@@ -18,7 +18,8 @@ if (valueOf("--permission-mode") !== "dontAsk") {
   fail("text generation must deny permission prompts", 12);
 }
 const investigation = process.env.T3_FAKE_CLAUDE_INVESTIGATION === "1";
-const expectedTools = investigation ? "Read,Grep,Glob,Bash" : "";
+const expectedTools =
+  process.env.T3_FAKE_CLAUDE_EXPECTED_TOOLS ?? (investigation ? "Read,Grep,Glob,Bash" : "");
 if (valueOf("--tools") !== expectedTools) {
   fail("text generation received an unexpected tool set", 6);
 }
@@ -50,6 +51,8 @@ if (!argv.includes("--strict-mcp-config")) {
   fail("text generation must not load configured MCP servers", 9);
 }
 const unsupportedOptions = JSON.parse(process.env.T3_FAKE_CLAUDE_UNSUPPORTED_OPTIONS ?? "[]");
+if (process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE === "1")
+  unsupportedOptions.push("--no-session-persistence");
 for (const option of unsupportedOptions) {
   if (argv.includes(option)) {
     fail(`error: unknown option '${option}'`, 1);
@@ -60,8 +63,13 @@ for (const option of ["--safe-mode", "--no-session-persistence"]) {
     fail(`text generation must pass '${option}' when supported`, 16);
   }
 }
-const settingsJson = valueOf("--settings");
-if (settingsJson === undefined || JSON.parse(settingsJson).disableAllHooks !== true) {
+const settingsIndex = argv.indexOf("--settings");
+const settingsValue = settingsIndex === -1 ? "{}" : argv[settingsIndex + 1];
+// Like the CLI: a value starting with a brace is inline JSON, anything else a file path.
+const settingsText = settingsValue.startsWith("{")
+  ? settingsValue
+  : NodeFS.readFileSync(settingsValue, "utf8");
+if (JSON.parse(settingsText).disableAllHooks !== true) {
   fail("text generation must disable hooks", 10);
 }
 const settingsMustEqual = process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_EQUAL;
@@ -69,13 +77,18 @@ if (settingsMustEqual) {
   const settingsValues = argv.flatMap((arg, index) =>
     arg === "--settings" ? [argv[index + 1]] : [],
   );
-  const received = settingsValues.map((value) => JSON.parse(value));
+  const received = settingsValues.map((value) =>
+    JSON.parse(value.startsWith("{") ? value : NodeFS.readFileSync(value, "utf8")),
+  );
   if (
     received.length !== 1 ||
     !NodeUtil.isDeepStrictEqual(received[0], JSON.parse(settingsMustEqual))
   ) {
     fail("--settings was " + settingsValues.join(" --settings "), 13);
   }
+}
+if (process.env.T3_FAKE_CLAUDE_SETTINGS_LOG) {
+  NodeFS.writeFileSync(process.env.T3_FAKE_CLAUDE_SETTINGS_LOG, settingsText);
 }
 const cwdMustNotBe = process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
 if (cwdMustNotBe && NodeFS.realpathSync(process.cwd()) === NodeFS.realpathSync(cwdMustNotBe)) {
@@ -104,6 +117,23 @@ if (argsMustNotContain && args.includes(argsMustNotContain)) {
 const stdinMustContain = process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
 if (stdinMustContain && !stdinContent.includes(stdinMustContain)) {
   fail("stdin missing expected content", 4);
+}
+
+const imageRejection = process.env.T3_FAKE_CLAUDE_IMAGE_REJECTION;
+if (imageRejection && stdinContent.includes('"type":"image"')) {
+  if (process.env.T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG) {
+    NodeFS.appendFileSync(process.env.T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG, "image\n");
+  }
+  process.stdout.write(
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 400,
+      result: `API Error: 400 ${imageRejection}`,
+    }) + "\n",
+  );
+  process.exit(1);
 }
 
 const configDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;

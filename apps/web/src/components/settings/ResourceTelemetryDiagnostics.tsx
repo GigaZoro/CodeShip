@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { ProcessSignalActions } from "./ProcessSignalActions";
 import { AuthEnvironmentMaintainScope } from "@t3tools/contracts";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -50,7 +51,6 @@ import { useRelativeTimeState } from "../../hooks/useRelativeTimeState";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
   formatCpuTime,
@@ -64,6 +64,7 @@ import {
 } from "./ResourceTelemetryDiagnostics.logic";
 import { SettingsSection } from "./settingsLayout";
 import { msg, t, tn, tx } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const HISTORY_WINDOWS = [
   { label: msg("5m"), windowMs: 5 * 60_000, bucketMs: 15_000 },
@@ -411,34 +412,40 @@ function ResourceHistoryChart({
             minimumVisiblePercent: 1,
           });
           return (
-            <Tooltip key={DateTime.formatIso(bucket.startedAt)}>
-              <TooltipTrigger
-                render={
-                  <div className="grid h-full min-w-1 flex-1 grid-cols-3 items-end gap-px">
-                    <span
-                      className="block rounded-t-sm bg-foreground/65"
-                      style={{ height: `${cpuHeight}%` }}
-                    />
-                    <span
-                      className="block rounded-t-sm bg-info/70"
-                      style={{ height: `${readHeight}%` }}
-                    />
-                    <span
-                      className="block rounded-t-sm bg-warning/80"
-                      style={{ height: `${writeHeight}%` }}
-                    />
-                  </div>
-                }
-              />
-              <TooltipPopup side="top" className="text-left">
-                <div className="space-y-0.5">
-                  <div>{t("CPU avg {value}%", { value: bucket.avgCpuPercent.toFixed(1) })}</div>
-                  <div>{t("CPU peak {value}%", { value: bucket.maxCpuPercent.toFixed(1) })}</div>
-                  <div>{t("Read {value}", { value: formatBytes(bucket.ioReadBytes) })}</div>
-                  <div>{t("Write {value}", { value: formatBytes(bucket.ioWriteBytes) })}</div>
+            <SharedTooltipTrigger
+              key={DateTime.formatIso(bucket.startedAt)}
+              render={
+                <div className="grid h-full min-w-1 flex-1 grid-cols-3 items-end gap-px">
+                  <span
+                    className="block rounded-t-sm bg-foreground/65"
+                    style={{ height: `${cpuHeight}%` }}
+                  />
+                  <span
+                    className="block rounded-t-sm bg-info/70"
+                    style={{ height: `${readHeight}%` }}
+                  />
+                  <span
+                    className="block rounded-t-sm bg-warning/80"
+                    style={{ height: `${writeHeight}%` }}
+                  />
                 </div>
-              </TooltipPopup>
-            </Tooltip>
+              }
+              label={
+                <>
+                  <div className="space-y-0.5">
+                    <div>
+                      {t("CPU avg {percent}%", { percent: bucket.avgCpuPercent.toFixed(1) })}
+                    </div>
+                    <div>
+                      {t("CPU peak {percent}%", { percent: bucket.maxCpuPercent.toFixed(1) })}
+                    </div>
+                    <div>{t("Read {bytes}", { bytes: formatBytes(bucket.ioReadBytes) })}</div>
+                    <div>{t("Write {bytes}", { bytes: formatBytes(bucket.ioWriteBytes) })}</div>
+                  </div>
+                </>
+              }
+              className="text-left"
+            />
           );
         })}
       </div>
@@ -479,14 +486,11 @@ function ProcessTreeName({
         <span className="size-5" aria-hidden />
       )}
       <span className={cn("size-1.5 rounded-full", categoryDotClass(process.category))} />
-      <Tooltip>
-        <TooltipTrigger
-          render={<span className="min-w-0 truncate font-medium text-foreground">{name}</span>}
-        />
-        <TooltipPopup side="top" variant="code">
-          {process.command || process.name}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={<span className="min-w-0 truncate font-medium text-foreground">{name}</span>}
+        label={process.command || process.name}
+        variant="code"
+      />
     </div>
   );
 }
@@ -624,10 +628,10 @@ function ProcessTable({
                   {formatBytes(process.ioReadBytes)}
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                  <Tooltip>
-                    <TooltipTrigger render={<span>{formatBytes(process.ioWriteBytes)}</span>} />
-                    <TooltipPopup side="top">{ioSemanticsLabel(process.ioSemantics)}</TooltipPopup>
-                  </Tooltip>
+                  <SharedTooltipTrigger
+                    render={<span>{formatBytes(process.ioWriteBytes)}</span>}
+                    label={ioSemanticsLabel(process.ioSemantics)}
+                  />
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
                   {process.identity.pid}
@@ -698,18 +702,15 @@ function HistoryProcessTable({
             {processes.map((process) => (
               <tr key={processIdentityKey(process)} className="hover:bg-muted/20">
                 <td className="px-4 py-2 sm:pl-5">
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <span className="block truncate font-medium text-foreground">
-                          {process.name || process.command}
-                        </span>
-                      }
-                    />
-                    <TooltipPopup side="top" variant="code">
-                      {process.command || process.name}
-                    </TooltipPopup>
-                  </Tooltip>
+                  <SharedTooltipTrigger
+                    render={
+                      <span className="block truncate font-medium text-foreground">
+                        {process.name || process.command}
+                      </span>
+                    }
+                    label={process.command || process.name}
+                    variant="code"
+                  />
                 </td>
                 <td className="truncate px-3 py-2 text-2xs text-muted-foreground">
                   {categoryLabel(process.category)}
@@ -875,7 +876,9 @@ function ResourceTelemetryDiagnosticsBody({
           type: "error",
           title: t("Could not confirm signal"),
           description:
-            error instanceof Error ? error.message : t("Failed to send {signal}.", { signal }),
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("Failed to send {signal}.", { signal }),
         });
         return;
       }
@@ -918,7 +921,9 @@ function ResourceTelemetryDiagnosticsBody({
           type: "error",
           title: t("Could not send {signal}", { signal }),
           description:
-            error instanceof Error ? error.message : t("Failed to send {signal}.", { signal }),
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("Failed to send {signal}.", { signal }),
         });
       })
       .finally(() => {
@@ -951,7 +956,9 @@ function ResourceTelemetryDiagnosticsBody({
           type: "error",
           title: t("Could not restart resource monitor"),
           description:
-            error instanceof Error ? error.message : t("The resource monitor retry failed."),
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("The resource monitor retry failed."),
         });
       })
       .finally(() => {
@@ -983,22 +990,20 @@ function ResourceTelemetryDiagnosticsBody({
               <SourceStatusBadge label={t("Native")} status={snapshot.health.native.status} />
             ) : null}
             <LastSampleLabel sampledAt={snapshot?.readAt ?? null} />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-micro"
-                    variant="ghost"
-                    disabled={telemetry.isPending}
-                    onClick={telemetry.refresh}
-                    aria-label={t("Refresh resource telemetry")}
-                  >
-                    <RefreshIcon size="xs" refreshing={telemetry.isPending} />
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top">{t("Refresh telemetry snapshot")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-micro"
+                  variant="ghost"
+                  disabled={telemetry.isPending}
+                  onClick={telemetry.refresh}
+                  aria-label={t("Refresh resource telemetry")}
+                >
+                  <RefreshIcon size="xs" refreshing={telemetry.isPending} />
+                </Button>
+              }
+              label={<>{t("Refresh telemetry snapshot")}</>}
+            />
           </div>
         }
       >
@@ -1322,7 +1327,7 @@ function ResourceTelemetryDiagnosticsBody({
             snapshot ? (
               <span className="text-3xs text-muted-foreground/55">
                 {tx("Identity: {identity}", {
-                  identity: <span className="font-mono">{"PID + start time"}</span>,
+                  identity: <span className="font-mono">{t("PID + start time")}</span>,
                 })}
               </span>
             ) : null

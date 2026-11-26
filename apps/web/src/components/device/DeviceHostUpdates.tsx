@@ -1,9 +1,10 @@
+import { t } from "~/i18n";
 import type { DeviceServiceState, EnvironmentId } from "@t3tools/contracts";
+
 import { useState } from "react";
 import { Button } from "~/components/ui/button";
 import { deviceEnvironment } from "~/state/device";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { t } from "~/i18n";
 
 export function DeviceHostUpdates({
   state,

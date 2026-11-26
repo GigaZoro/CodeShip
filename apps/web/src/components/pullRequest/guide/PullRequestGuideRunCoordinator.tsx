@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import type { AnyRouter } from "@tanstack/react-router";
 import type { PullRequestReviewGuideResult } from "@t3tools/contracts";
 import { pullRequestReviewGuideInput } from "@t3tools/client-runtime/state/pull-requests";
@@ -15,7 +17,6 @@ import {
 import { toastManager } from "../../ui/toast";
 import { readPullRequestListPreferences } from "../pullRequestListPreferences";
 import { useGuideRunStore, type GuideRunWatch } from "./guideRunStore";
-import { t } from "~/i18n";
 
 const RUN_POLL_MS = 5_000;
 const UNSEEN_RUN_MS = 60_000;

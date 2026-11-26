@@ -39,7 +39,7 @@ type NativeStreamBridge = {
 export function DeviceStreamWebView({
   ref,
   ...props
-}: DeviceStreamConfiguration & NativeStreamBridge) {
+}: Omit<DeviceStreamConfiguration, "labels"> & NativeStreamBridge) {
   const [attempt, setAttempt] = useState(0);
   const processRetried = useRef(false);
   const configuration = JSON.stringify({
@@ -48,6 +48,10 @@ export function DeviceStreamWebView({
     deviceId: props.deviceId,
     ...(props.serveSimOnly ? { serveSimOnly: true } : {}),
     colors: props.colors,
+    labels: {
+      screen: props.platform === "ios" ? t("iOS Simulator screen") : t("Android Emulator screen"),
+      reconnectingControls: t("Reconnecting device controls..."),
+    },
   });
   return (
     <DeviceStreamDocumentView

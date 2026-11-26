@@ -1,7 +1,9 @@
+import { t, tn } from "~/i18n";
 /* oxlint-disable react/no-array-index-key -- Text spans retain their order within an immutable page. */
 /* oxlint-disable react/no-unstable-nested-components -- These callbacks return overlays, and are invoked as render functions. */
-import { Tooltip, TooltipTrigger, TooltipPopup } from "~/components/ui/tooltip";
+
 import { Fragment, useEffect, useRef, useState } from "react";
+
 import { FileSurfaceLoading } from "../fileSurfaceChrome";
 import { OfficePages, type PaintPage } from "./OfficePages";
 import { rasterize } from "./vector-pictures";
@@ -14,7 +16,7 @@ import {
   type WordSpan,
   type WordLink,
 } from "./word-protocol";
-import { msg, t } from "~/i18n";
+import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
 
 type Opened = {
   pages: readonly WordPageSize[];
@@ -83,7 +85,9 @@ export default function WordDocument(props: {
         if (controller.signal.aborted) return;
         setOpened({ pages: first.pages, paint, engine });
         onDetails(
-          `${first.pages.length}${first.loading ? "+" : ""} page${first.pages.length === 1 && !first.loading ? "" : "s"}`,
+          first.loading
+            ? t("{count}+ pages", { count: String(first.pages.length) })
+            : tn(first.pages.length, "{count} page", "{count} pages"),
         );
         if (!first.loading) return;
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -92,7 +96,7 @@ export default function WordDocument(props: {
           if (!step.done) continue;
           if (step.pages.length > 1000) throw new Error(t("Preview limited to 1,000 pages."));
           setOpened({ pages: step.pages, paint, engine });
-          onDetails(`${step.pages.length} page${step.pages.length === 1 ? "" : "s"}`);
+          onDetails(tn(step.pages.length, "{count} page", "{count} pages"));
           break;
         }
       })
@@ -119,7 +123,7 @@ export default function WordDocument(props: {
     <OfficePages
       pages={opened.pages}
       paint={opened.paint}
-      label={msg("Page")}
+      kind="page"
       scrollRef={scroll}
       onError={onError}
       overlay={(index) => (
@@ -188,14 +192,7 @@ function WordTextLayer(props: {
         );
         return (
           <Fragment key={index}>
-            {span.title ? (
-              <Tooltip>
-                <TooltipTrigger render={text} />
-                <TooltipPopup>{span.title}</TooltipPopup>
-              </Tooltip>
-            ) : (
-              text
-            )}
+            {span.title ? <SharedTooltipTrigger render={text} label={span.title} /> : text}
             {span.after === "br" ? <br /> : span.after === "tab" ? "\t" : null}
           </Fragment>
         );

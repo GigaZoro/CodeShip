@@ -1,14 +1,14 @@
-import type { DesktopBridge, DesktopWslState } from "@t3tools/contracts";
 import { t } from "~/i18n";
+import { revalidateOnMount } from "@t3tools/client-runtime/state/runtime";
+import type { DesktopBridge, DesktopWslState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 
-const DESKTOP_WSL_STATE_STALE_TIME_MS = 30_000;
-
 type DesktopWslStateBridge = Pick<DesktopBridge, "getWslState">;
+const WSL_SEARCH_STALE_TIME_MS = 30_000;
 
 class DesktopWslStateUnavailableError extends Schema.TaggedError<DesktopWslStateUnavailableError>()(
   "DesktopWslStateUnavailableError",
@@ -45,17 +45,19 @@ function createDesktopWslStateAtom(getBridge: () => DesktopWslStateBridge | unde
   });
 
   return Atom.make(loadDesktopWslState()).pipe(
-    Atom.swr({
-      staleTime: DESKTOP_WSL_STATE_STALE_TIME_MS,
-      revalidateOnMount: true,
-    }),
     Atom.keepAlive,
     Atom.withLabel("desktop:wsl-state:load"),
   );
 }
 
-export const desktopWslStateAtom = createDesktopWslStateAtom(getDesktopWslStateBridge);
+const desktopWslStateCache = createDesktopWslStateAtom(getDesktopWslStateBridge);
+
+export const desktopWslStateAtom = desktopWslStateCache.pipe(
+  revalidateOnMount(WSL_SEARCH_STALE_TIME_MS),
+);
+
+export const desktopWslAccessStateAtom = desktopWslStateCache.pipe(revalidateOnMount(0));
 
 export function refreshDesktopWslState(): void {
-  appAtomRegistry.refresh(desktopWslStateAtom);
+  appAtomRegistry.refresh(desktopWslStateCache);
 }

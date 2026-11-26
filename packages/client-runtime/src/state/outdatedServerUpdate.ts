@@ -17,7 +17,7 @@ import type * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import { createAtomCommandScheduler, createRuntimeCommand } from "./runtime.ts";
 import {
   restartHoldDecisions,
-  serverUpdateFailureMessage,
+  serverUpdateFailure,
   serverUpdateStateAtom,
   type ServerUpdateStage,
 } from "./server.ts";
@@ -101,7 +101,7 @@ export function createOutdatedServerUpdateCommand<E>(
               stage: currentStage,
               fromVersion,
               targetVersion,
-              message: serverUpdateFailureMessage(Cause.squash(exit.cause)),
+              ...serverUpdateFailure(Cause.squash(exit.cause)),
             });
           }),
         ),

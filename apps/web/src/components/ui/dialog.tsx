@@ -1,5 +1,7 @@
+import { t } from "~/i18n";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { useRender } from "@base-ui/react/use-render";
+
 import { XIcon } from "lucide-react";
 import {
   type ComponentProps,
@@ -22,7 +24,6 @@ import {
 } from "~/components/ui/dialog-styles";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
-import { t } from "~/i18n";
 const ControlledOpenContext = createContext<boolean | undefined>(undefined);
 
 function RetainedWhileClosed({ open, children }: { open: boolean; children: ReactNode }) {

@@ -138,7 +138,7 @@ describe("terminatePosixOwnedProcessTree", () => {
 
   it.skipIf(isWindowsHost)(
     "resolves a contained command through the operating system’s directory traversal",
-    () => {
+    async () => {
       const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "acp-cgroup-target-"));
       try {
         NodeFS.mkdirSync(NodePath.join(cwd, "selected", "child"), { recursive: true });
@@ -152,7 +152,7 @@ describe("terminatePosixOwnedProcessTree", () => {
           { mode: 0o700 },
         );
         for (const command of ["./linked/../probe", "probe"]) {
-          const target = AcpSessionRuntime.resolveLinuxCgroupTargetCommand(command, cwd, {
+          const target = await AcpSessionRuntime.resolveLinuxCgroupTargetCommand(command, cwd, {
             PATH: "linked/..",
           });
           expect(target).toBeDefined();
@@ -188,27 +188,39 @@ describe("terminatePosixOwnedProcessTree", () => {
         NodeFS.symlinkSync(process.execPath, NodePath.join(relativeBin, "grok"));
         NodeFS.symlinkSync(process.execPath, NodePath.join(validBin, "grok"));
         expect(
-          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: scratch }),
+          yield* Effect.promise(() =>
+            AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: scratch }),
+          ),
         ).toBe(bareGrok);
         expect(
-          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: "" }),
+          yield* Effect.promise(() =>
+            AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: "" }),
+          ),
         ).toBe(bareGrok);
         // Undefined PATH searches /usr/bin:/bin; the bareGrok fixture lives only in cwd.
         expect(
-          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: undefined }),
+          yield* Effect.promise(() =>
+            AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: undefined }),
+          ),
         ).toBeUndefined();
         expect(
-          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("sh", scratch, { PATH: undefined }),
+          yield* Effect.promise(() =>
+            AcpSessionRuntime.resolveLinuxCgroupTargetCommand("sh", scratch, { PATH: undefined }),
+          ),
         ).toBeDefined();
         expect(
-          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
-            PATH: "relative-bin",
-          }),
+          yield* Effect.promise(() =>
+            AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
+              PATH: "relative-bin",
+            }),
+          ),
         ).toBe(NodePath.join(relativeBin, "grok"));
         expect(
-          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
-            PATH: `directory-bin${NodePath.delimiter}valid-bin`,
-          }),
+          yield* Effect.promise(() =>
+            AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
+              PATH: `directory-bin${NodePath.delimiter}valid-bin`,
+            }),
+          ),
         ).toBe(NodePath.join(validBin, "grok"));
         const target = [
           'const fs = require("node:fs");',

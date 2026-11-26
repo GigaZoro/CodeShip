@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { t } from "~/i18n";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
@@ -223,7 +224,10 @@ export function SnapShotSettings() {
         savedShortcut,
         availability: {
           available: false,
-          message: error instanceof Error ? error.message : t("Could not check this shortcut."),
+          message:
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("Could not check this shortcut."),
         },
       });
     }
@@ -487,7 +491,8 @@ export function SnapShotSettings() {
                         t("Off")
                       ) : soundSelection === "soft-pop" ? (
                         <>
-                          {"Whoosh"} <span className="text-muted-foreground">{t("(Default)")}</span>
+                          {t("Whoosh")}{" "}
+                          <span className="text-muted-foreground">{t("(Default)")}</span>
                         </>
                       ) : (
                         t("Click")
@@ -505,7 +510,7 @@ export function SnapShotSettings() {
                         </MenuRadioItem>
                         <div className={soundOptionRowClassName}>
                           <MenuRadioItem closeOnClick value="soft-pop">
-                            {"Whoosh"}{" "}
+                            {t("Whoosh")}{" "}
                             <span className="text-muted-foreground">{t("(Default)")}</span>
                           </MenuRadioItem>
                           <MenuItem

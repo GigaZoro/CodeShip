@@ -1,3 +1,4 @@
+import { msg, t } from "~/i18n";
 import type { FileDiffContentsLoader, FileDiffMetadata } from "@pierre/diffs";
 import type {
   PullRequestReviewGuideAttention,
@@ -13,6 +14,7 @@ import {
   MessageCircleQuestionIcon,
   MessageSquareIcon,
 } from "lucide-react";
+
 import type { ReactNode } from "react";
 
 import { getDiffLineStat } from "~/lib/diffRendering";
@@ -29,7 +31,6 @@ import { GuideFileDiff } from "./GuideFileDiff";
 import { GuideNotes } from "./GuideNotes";
 import { GuideProse } from "./GuideProse";
 import { letterStopNotes, stopSummary, stopTitle } from "@t3tools/client-runtime/review-guide-tour";
-import { msg, t } from "~/i18n";
 
 const ATTENTION_LABELS = {
   tradeoff: msg("A tradeoff to weigh"),
@@ -213,7 +214,12 @@ export function GuideStop({
                         </CollapsibleTrigger>
                         <CollapsiblePanel animate={false}>
                           {diff !== undefined ? (
-                            <GuideFileDiff file={diff} loadDiffFiles={loadDiffFiles} />
+                            <GuideFileDiff
+                              path={file.path}
+                              file={diff}
+                              commenting={commenting}
+                              loadDiffFiles={loadDiffFiles}
+                            />
                           ) : (
                             <p className="px-3 py-2 text-xs text-muted-foreground">
                               {diffLoading
@@ -275,9 +281,7 @@ export function GuideStop({
         <footer className="flex flex-wrap items-center justify-end gap-3 border-t border-border/60 pt-4">
           {nextTitle !== null ? (
             <Button size="multiline" className="max-w-full" onClick={() => onStep(1)}>
-              <span className="min-w-0 break-words">
-                {t("Next: {title}", { title: nextTitle })}
-              </span>
+              <span className="min-w-0 break-words">{t("Next: {nextTitle}", { nextTitle })}</span>
               <ArrowRightIcon aria-hidden />
             </Button>
           ) : onFinish !== null ? (

@@ -1,16 +1,18 @@
-import { msg, t, type Message } from "~/i18n";
+import { msg, type Message, t } from "~/i18n";
 import {
   type ApprovalKeybindingCommand,
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
   type RuntimeRequestId,
 } from "@t3tools/contracts";
+
 import { memo } from "react";
 import { EllipsisIcon, TriangleAlertIcon } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export const APPROVAL_SHORTCUT_DECISIONS = {
   "approval.approve": "accept",
@@ -166,10 +168,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                 </MenuItem>
               );
               return option.warning ? (
-                <Tooltip key={option.decision}>
-                  <TooltipTrigger render={item} />
-                  <TooltipPopup side="top">{option.warning}</TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger key={option.decision} render={item} label={option.warning} />
               ) : (
                 item
               );

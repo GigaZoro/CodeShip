@@ -1,5 +1,5 @@
-import { PRIMARY_LOCAL_ENVIRONMENT_ID, type DesktopEnvironmentBootstrap } from "@t3tools/contracts";
 import { t } from "~/i18n";
+import { PRIMARY_LOCAL_ENVIRONMENT_ID, type DesktopEnvironmentBootstrap } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";

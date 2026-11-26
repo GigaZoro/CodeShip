@@ -1,3 +1,5 @@
+import { t, msg, tn } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type AtomCommandResult,
@@ -5,10 +7,12 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { AuthAccessWriteScope, type EnvironmentId } from "@t3tools/contracts";
+import { unseenConnectDevices } from "@t3tools/client-runtime/connect-device-notices";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
 import { useEffect, useRef, useState } from "react";
 
-import { t } from "~/i18n";
+import { readLocalStorageValue, writeLocalStorageValue } from "../hooks/useLocalStorage";
 
 import { authEnvironment } from "../state/auth";
 import { useEnvironments } from "../state/environments";
@@ -19,27 +23,143 @@ import { describeConnectDeviceClient } from "./settings/ConnectionsSettings.logi
 import { toastManager } from "./ui/toast";
 import { stackedThreadToast } from "./ui/toastHelpers";
 
-/** Asks whoever can approve to look at T3 Connect devices waiting on an environment. */
+/**
+ * Asks whoever can approve to look at T3 Connect devices waiting on an environment, and tells
+ * them about devices that got in without approval.
+ */
 export function ConnectDeviceApprovalCoordinator() {
   const { environments } = useEnvironments();
   return environments.map((environment) =>
-    environment.connection.phase === "connected" &&
-    environment.serverConfig?.settings.requireConnectDeviceApproval === true ? (
-      <EnvironmentConnectDeviceRequests
+    environment.connection.phase === "connected" && environment.serverConfig ? (
+      <EnvironmentConnectDevices
         key={environment.environmentId}
         environmentId={environment.environmentId}
         environmentLabel={environment.label}
+        approvalRequired={environment.serverConfig.settings.requireConnectDeviceApproval}
       />
     ) : null,
   );
 }
 
-function EnvironmentConnectDeviceRequests(props: {
+function EnvironmentConnectDevices({
+  approvalRequired,
+  ...props
+}: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
+  readonly approvalRequired: boolean;
 }) {
   const canApprove = useEnvironmentScope(props.environmentId, AuthAccessWriteScope);
-  return canApprove ? <ConnectDeviceRequestToasts {...props} /> : null;
+  if (!canApprove) return null;
+  return (
+    <>
+      {approvalRequired ? <ConnectDeviceRequestToasts {...props} /> : null}
+      <NewConnectDeviceToast {...props} announce={!approvalRequired} />
+    </>
+  );
+}
+
+const CONNECT_DEVICES_SEEN_KEY = "t3code:connect-devices-seen-through";
+const ConnectDevicesSeenThrough = Schema.Record(Schema.String, Schema.Number);
+
+/** Devices approved by hand are already known, so only `announce` hosts that skip approval. */
+function NewConnectDeviceToast({
+  environmentId,
+  environmentLabel,
+  announce,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly announce: boolean;
+}) {
+  const navigate = useNavigate();
+  const access = useEnvironmentQuery(authEnvironment.accessChanges({ environmentId, input: null }));
+  // Older servers omit the list.
+  const devices =
+    access.data?.type === "snapshot" ? (access.data.payload.connectDevices ?? null) : null;
+  const shown = useRef<{ toastId: string; renderedKey: string } | null>(null);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens, updates and closes an imperative toastManager toast to match devices this client has not announced
+  useEffect(() => {
+    if (devices === null) return;
+    const seenThrough = readLocalStorageValue(
+      CONNECT_DEVICES_SEEN_KEY,
+      {},
+      ConnectDevicesSeenThrough,
+    )[environmentId];
+    const { unseen, newest } = unseenConnectDevices(devices, seenThrough);
+    const markSeen = () =>
+      writeLocalStorageValue(
+        CONNECT_DEVICES_SEEN_KEY,
+        (current) => ({
+          ...current,
+          [environmentId]: Math.max(current[environmentId] ?? 0, newest),
+        }),
+        {},
+        ConnectDevicesSeenThrough,
+      );
+    const close = () => {
+      if (shown.current) toastManager.close(shown.current.toastId);
+      shown.current = null;
+    };
+    if (!announce || unseen.length === 0) {
+      close();
+      if (seenThrough !== newest) markSeen();
+      return;
+    }
+    const renderedKey = unseen.map((device) => device.proofKeyThumbprint).join(",");
+    if (shown.current?.renderedKey === renderedKey) return;
+    const [first] = unseen;
+    const options = stackedThreadToast({
+      type: "warning",
+      title: t(msg("New device signed in to {environmentLabel}"), { environmentLabel }),
+      description:
+        unseen.length === 1 && first
+          ? t(msg("{device} connected through {product}. Not you? Review it."), {
+              device: describeConnectDeviceClient(first),
+              product: "T3 Connect",
+            })
+          : tn(
+              unseen.length,
+              "{count} device connected through {product}. Not you? Review them.",
+              "{count} devices connected through {product}. Not you? Review them.",
+              { product: "T3 Connect" },
+            ),
+      timeout: 0,
+      actionProps: {
+        children: t(msg("Review")),
+        onClick: () => {
+          markSeen();
+          close();
+          void navigate({ to: "/settings/access", search: { machine: environmentId } });
+        },
+      },
+      data: {
+        hideCopyButton: true,
+        onClose: () => {
+          markSeen();
+          // A dismissed toast is gone, so the next unseen device needs a new one.
+          if (shown.current?.renderedKey === renderedKey) shown.current = null;
+        },
+      },
+    });
+    if (shown.current) {
+      toastManager.update(shown.current.toastId, options);
+      shown.current = { toastId: shown.current.toastId, renderedKey };
+    } else {
+      shown.current = { toastId: toastManager.add(options), renderedKey };
+    }
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes this environment's imperative toast when it goes away
+  useEffect(
+    () => () => {
+      if (shown.current) toastManager.close(shown.current.toastId);
+    },
+    [],
+  );
+
+  return null;
 }
 
 /** Reports a failed command and says whether it failed, so its request can be offered again. */
@@ -55,7 +175,7 @@ async function reportFailure(
       stackedThreadToast({
         type: "error",
         title,
-        description: error instanceof Error ? error.message : t("An error occurred."),
+        description: thrownErrorMessage(error, t) ?? t(msg("An error occurred.")),
       }),
     );
   }
@@ -117,19 +237,19 @@ function ConnectDeviceRequestToasts({
       };
       const options = stackedThreadToast({
         type: "info",
-        title: t("A device wants to connect to {environment}", { environment: environmentLabel }),
-        description: t("{device}. Approve only if it shows code {code}.", {
+        title: t(msg("A device wants to connect to {environmentLabel}"), { environmentLabel }),
+        description: t(msg("{device}. Approve only if it shows code {code}."), {
           device,
           code: request.verificationCode,
         }),
         timeout: remainingMs,
         actionProps: {
-          children: t("Approve"),
+          children: t(msg("Approve")),
           onClick: () => {
             close();
             void settle(
               id,
-              reportFailure(t("Could not approve the device"), () =>
+              reportFailure(t(msg("Could not approve the device")), () =>
                 approve({ environmentId, input: { pairingLinkId: id } }),
               ),
             );
@@ -138,12 +258,12 @@ function ConnectDeviceRequestToasts({
         data: {
           hideCopyButton: true,
           secondaryActionProps: {
-            children: t("Deny"),
+            children: t(msg("Deny")),
             onClick: () => {
               close();
               void settle(
                 id,
-                reportFailure(t("Could not deny the device"), () =>
+                reportFailure(t(msg("Could not deny the device")), () =>
                   deny({ environmentId, input: { id } }),
                 ),
               );
@@ -153,7 +273,7 @@ function ConnectDeviceRequestToasts({
             {
               id: "review",
               props: {
-                children: t("Review"),
+                children: t(msg("Review")),
                 onClick: () =>
                   void navigate({ to: "/settings/access", search: { machine: environmentId } }),
               },

@@ -12,6 +12,8 @@ import { msg, t, type Message } from "./i18n.ts";
 const CAPABILITY_LABELS: Record<ManagedCapability, Message> = {
   remoteClients: msg("connecting from other devices"),
   connect: msg("T3 Connect"),
+  previewTunnel: msg("opening this machine's local servers on other devices"),
+  worktreeLayoutCommands: msg("project worktree layout commands"),
   webhookTasks: msg("webhook tasks"),
   browserCookieImport: msg("importing browser cookies"),
 };

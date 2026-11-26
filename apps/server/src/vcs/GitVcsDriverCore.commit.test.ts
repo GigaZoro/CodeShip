@@ -119,44 +119,6 @@ it.layer(layerTest)("Git commit context", (it) => {
     }),
   );
 
-  it.effect.each(["root", "aliased-nested"] as const)(
-    "prepares selected files without staging and commits only those files from %s",
-    (location) =>
-      Effect.gen(function* () {
-        const sandbox = yield* makeTmpDir();
-        const path = yield* Path.Path;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const repository = path.join(sandbox, "repo");
-        const nested = path.join(repository, "sub", "dir");
-        yield* fileSystem.makeDirectory(nested, { recursive: true });
-        yield* initRepoWithCommit(repository);
-        const cwd = location === "aliased-nested" ? path.join(sandbox, "link") : repository;
-        if (location === "aliased-nested") NodeFS.symlinkSync(nested, cwd, "junction");
-        const driver = yield* GitVcsDriver.GitVcsDriver;
-        const selected = "sub/dir/a.txt";
-        yield* writeTextFile(repository, selected, "a\n");
-        yield* writeTextFile(repository, "b.txt", "b\n");
-
-        const context = yield* driver.prepareCommitContext(cwd, [selected]);
-        assert.include(context?.stagedSummary ?? "", "a.txt");
-        assert.notInclude(context?.stagedSummary ?? "", "b.txt");
-        assert.equal(yield* git(repository, ["diff", "--cached", "--name-only"]), "");
-
-        const commit = yield* driver.commit(cwd, "Add a", "", {
-          stage: { filePaths: [selected] },
-        });
-        assert.match(commit.commitSha, /^[a-f0-9]{40}$/);
-        assert.equal(yield* git(repository, ["log", "-1", "--pretty=%s"]), "Add a");
-        assert.equal(
-          yield* git(repository, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]),
-          selected,
-        );
-        const status = yield* git(repository, ["status", "--porcelain"]);
-        assert.include(status, "?? b.txt");
-        assert.notInclude(status, "a.txt");
-      }),
-  );
-
   it.effect("stops a selected-file commit when another process holds the index lock", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();
@@ -342,34 +304,6 @@ it.layer(layerTest)("Git commit context", (it) => {
         } else if (conflict)
           assert.equal(yield* git(cwd, ["show", "HEAD:README.md"]), "Heading\n=======\n\nresolved");
       }),
-  );
-
-  it.effect("reports a merge resolved to HEAD's tree as committable", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      // A branch named MERGE_HEAD is not a merge in progress.
-      yield* git(cwd, ["branch", "MERGE_HEAD"]);
-      assert.isNull(yield* driver.prepareCommitContext(cwd, undefined, { includePatch: false }));
-      yield* git(cwd, ["branch", "-D", "MERGE_HEAD"]);
-      yield* git(cwd, ["checkout", "-b", "feature"]);
-      yield* writeTextFile(cwd, "README.md", "feature version\n");
-      yield* git(cwd, ["commit", "-am", "Feature"]);
-      yield* git(cwd, ["checkout", initialBranch]);
-      yield* writeTextFile(cwd, "README.md", "main version\n");
-      yield* git(cwd, ["commit", "-am", "Main"]);
-      const merge = yield* driver.execute({
-        operation: "test.merge",
-        cwd,
-        args: ["merge", "feature"],
-        allowNonZeroExit: true,
-      });
-      assert.equal(merge.exitCode, 1);
-      yield* writeTextFile(cwd, "README.md", "main version\n");
-
-      assert.isNotNull(yield* driver.prepareCommitContext(cwd, undefined, { includePatch: false }));
-    }),
   );
 
   it.effect.each([

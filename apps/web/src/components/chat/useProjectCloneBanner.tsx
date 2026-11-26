@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
   isAtomCommandInterrupted,
@@ -9,16 +12,13 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { useRemoveClonedProject } from "../../hooks/useRemoveClonedProject";
 import { sourceControlEnvironment } from "../../state/sourceControl";
 import { useProjectClone } from "../../state/projectClones";
-import {
-  projectCloneDisplayName,
-  projectCloneProgressSummary,
-  type ScopedProjectRef,
-} from "@t3tools/contracts";
+import { projectCloneDisplayName, type ScopedProjectRef } from "@t3tools/contracts";
+import { projectCloneProgressSummary } from "@t3tools/client-runtime/contract-labels";
 import { dismissProjectFileCopy, useProjectFileCopy } from "../../lib/addProjectToMachine";
 import { type ComposerBannerStackItem } from "./ComposerBannerStack";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
-import { t } from "~/i18n";
+
 /**
  * A project still being cloned or copied into place: the composer banner with its cancel,
  * retry, and remove actions, and the reason sending waits until it is done.
@@ -43,7 +43,7 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
         stackedThreadToast({
           type: "error",
           title,
-          description: error instanceof Error ? error.message : t("An error occurred."),
+          description: thrownErrorMessage(error, t) ?? t(msg("An error occurred.")),
         }),
       );
     }
@@ -80,13 +80,13 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
         variant: "info",
         icon: <DownloadIcon />,
         title: t("Cloning {name}", { name }),
-        description: projectCloneProgressSummary(activeProjectClone),
+        description: projectCloneProgressSummary(activeProjectClone, t),
         actions: (
           <Button
             size="xs"
             variant="ghost"
             onClick={() =>
-              void runProjectCloneActionStable(t("Failed to cancel clone"), () =>
+              void runProjectCloneActionStable(t(msg("Failed to cancel clone")), () =>
                 cancelProjectClone({ environmentId, input: { projectId } }),
               )
             }
@@ -118,7 +118,7 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
             size="xs"
             variant="ghost"
             onClick={() =>
-              void runProjectCloneActionStable(t("Failed to retry clone"), () =>
+              void runProjectCloneActionStable(t(msg("Failed to retry clone")), () =>
                 retryProjectClone({ environmentId, input: { projectId } }),
               )
             }

@@ -1,6 +1,6 @@
 import { t, tn, tx } from "../../lib/i18n";
 import * as Dialog from "../../components/ui/Dialog";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
@@ -66,6 +66,7 @@ import {
   WEBHOOK_FILTER_OPS,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { scheduledTaskWorktreeBaseRef } from "@t3tools/client-runtime/scheduled-task-worktree";
 import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 import { useRef, useState, type ReactNode } from "react";
 import { useFocusEffect, useNavigation, usePreventRemove } from "@react-navigation/native";
@@ -146,8 +147,9 @@ import {
   resolveInheritedDefaultModelSelection,
 } from "@t3tools/shared/serverSettings";
 import { useEnvironmentQuery } from "../../state/query";
+import { usePaginatedBranches } from "../../state/queries";
 import { connectedEnvironmentIdsAtom } from "../../state/presentation";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { ListSection } from "../../components/ui/ListSection";
 import { serverEnvironment } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
@@ -931,12 +933,19 @@ export function SettingsScheduledTaskEditRouteScreen() {
 }
 
 function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }) {
-  const { editor, voiceOwnerKey, readEditor, setEditor, hasChanges, draftForEnvironment } =
-    useScheduledTaskEditor();
+  const {
+    editor,
+    voiceOwnerKey,
+    readEditor,
+    setEditor,
+    hasChanges,
+    saving,
+    setSaving,
+    draftForEnvironment,
+  } = useScheduledTaskEditor();
   const { availableTargets } = useSettingsEnvironmentFilter();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const [saving, setSaving] = useState(false);
   // Set once the save lands, so the removal guard lets the editor close.
   const saved = useRef(false);
   const ownerKey = editor ? `${voiceOwnerKey}:${editor.environmentId}` : null;
@@ -1147,6 +1156,21 @@ function TaskForm({
     .map((target) => target.environmentId);
   const sharedSnapshots = useSharedScheduledTaskSnapshots();
   const draftProject = projects.find((project) => project.id === draft.projectId);
+  const automaticBaseRefCwd =
+    draft.workspace === "worktree" && !draft.baseRef.trim()
+      ? (draftProject?.workspaceRoot ?? null)
+      : null;
+  const automaticBaseRefs = usePaginatedBranches({
+    environmentId,
+    cwd: automaticBaseRefCwd,
+    query: "",
+  });
+  const worktreeBaseRef = scheduledTaskWorktreeBaseRef(draft.baseRef, automaticBaseRefs.refs);
+  // A failed lookup can fall back to main. Wait for a pending lookup to resolve first.
+  const automaticBaseRefLoading =
+    automaticBaseRefCwd !== null &&
+    automaticBaseRefs.data === null &&
+    automaticBaseRefs.error === null;
   const sharedProject = sharedProjectReference({
     editedShared: draft.task?.shared,
     editedProjectId: draft.task?.projectId,
@@ -1296,6 +1320,7 @@ function TaskForm({
       dictationPending ||
       taskMissing ||
       environmentUnavailable ||
+      automaticBaseRefLoading ||
       // An upsert is shaped by what the target stores, so it waits for the target's config.
       supportsPromptFiles === null
     )
@@ -1429,6 +1454,9 @@ function TaskForm({
       ...(maxLiveRuns === undefined ? {} : { maxLiveRuns }),
       enabled: draft.enabled,
       threadId: sharing ? null : draft.threadId,
+      ...((sharing || draft.threadId === null) && (liveTask ?? draft.task)?.threadId != null
+        ? { unbindThread: true }
+        : {}),
       ...(offersThreadModes ? { threadMode: sharing ? "new_thread" : draft.threadMode } : {}),
       workspaceStrategy:
         draft.workspace === "root"
@@ -1437,7 +1465,7 @@ function TaskForm({
             ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
             : {
                 type: "worktree",
-                baseRef: draft.baseRef.trim() || "main",
+                baseRef: worktreeBaseRef,
                 startFromOrigin: draft.startFromOrigin,
               },
       // Tasks have no mode picker; a mode above the administrator's ceiling is refused.
@@ -1874,7 +1902,7 @@ function TaskForm({
             <PickerRow
               label={t("Base branch")}
               value={resolveNewTaskBranchLabel({
-                branchName: draft.baseRef,
+                branchName: automaticBaseRefLoading ? null : worktreeBaseRef,
                 startFromOrigin: draft.startFromOrigin,
                 workspaceMode: "worktree",
               })}
@@ -1970,6 +1998,7 @@ function TaskForm({
                   display={Platform.OS === "ios" ? "spinner" : "default"}
                   onDismiss={() => setTimePickerOpen(false)}
                   onValueChange={(_, selected) => {
+                    if (Platform.OS === "android") setTimePickerOpen(false);
                     const timeOfDay = `${String(selected.getHours()).padStart(2, "0")}:${String(selected.getMinutes()).padStart(2, "0")}`;
                     setDraft((current) => ({
                       ...current,
@@ -2257,6 +2286,7 @@ function TaskForm({
             <FormField
               label={t("Check command")}
               value={draft.runCondition.command}
+              // oxlint-disable-next-line t3code/no-untranslated-copy -- a literal example shell command
               placeholder={"node ~/scripts/has-work.mjs"}
               technical
               disabled={saving}
@@ -2328,6 +2358,7 @@ function TaskForm({
           dictationPending ||
           taskMissing ||
           environmentUnavailable ||
+          automaticBaseRefLoading ||
           // The server refuses an enabled webhook task under this policy.
           (draft.enabled && draft.schedule.mode === "webhook" && webhookDenial !== undefined)
         }
@@ -2430,7 +2461,7 @@ function WebhookScheduleDetails({
 
 function useCollapsedScheduledTaskGroups() {
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const save = useAtomSet(updateMobilePreferencesAtom);
+  const save = useAtomCommand(saveMobilePreferences);
   const collapsed = AsyncResult.isSuccess(preferences)
     ? (preferences.value.collapsedScheduledTaskGroups ?? [])
     : [];

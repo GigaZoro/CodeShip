@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { pipe } from "effect/Function";
 import { ChevronsLeftRightEllipsisIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -39,7 +40,6 @@ import {
   DialogTrigger,
 } from "../ui/dialog";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { AnimatedHeight } from "../AnimatedHeight";
@@ -51,6 +51,7 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { desktopSshHostsStateAtom, filterDiscoveredSshHosts } from "~/state/desktopSshHosts";
 import { type EnvironmentPresentation, useRelayEnvironmentDiscovery } from "~/state/environments";
+import type { AddEnvironmentPrefill } from "~/state/linkedThreadView";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import {
@@ -65,6 +66,7 @@ import {
   parseRemotePairingFields,
   formatDesktopSshConnectionError,
 } from "./ConnectionsSettings.logic";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const EMPTY_DISCOVERED_SSH_HOSTS: ReadonlyArray<DesktopDiscoveredSshHost> = [];
 // known_hosts can list one host on several ports. Its own bracketed form keeps an IPv6
@@ -74,14 +76,20 @@ const sshHostSuggestionValue = (target: DesktopDiscoveredSshHost) =>
 
 export function AddEnvironmentDialog({
   open,
+  prefill = null,
   routeTarget,
   error,
   savedEnvironments,
+  initialHost = "",
   onOpenChange,
   onErrorChange,
 }: {
   readonly open: boolean;
+  /** A machine the user chose elsewhere to pair with; they supply only the pairing code. */
+  readonly prefill?: AddEnvironmentPrefill | null;
   readonly routeTarget: EnvironmentPresentation | null;
+  /** An address already known for the machine being added, such as one a link uses. */
+  readonly initialHost?: string;
   readonly error: string | null;
   readonly savedEnvironments: ReadonlyArray<EnvironmentPresentation>;
   readonly onOpenChange: (open: boolean) => void;
@@ -115,7 +123,7 @@ export function AddEnvironmentDialog({
     return keys;
   })();
   const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
-  const [savedBackendHost, setSavedBackendHost] = useState("");
+  const [savedBackendHost, setSavedBackendHost] = useState(prefill?.host ?? initialHost);
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
   const [savedBackendSshHost, setSavedBackendSshHost] = useState("");
   const [savedBackendSshUsername, setSavedBackendSshUsername] = useState("");
@@ -156,7 +164,7 @@ export function AddEnvironmentDialog({
     if (!nextOpen) {
       savedBackendSessionRef.current += 1;
       setSavedBackendMode("remote");
-      setSavedBackendHost("");
+      setSavedBackendHost(initialHost);
       setSavedBackendPairingCode("");
       setSavedBackendSshHost("");
       setSavedBackendSshUsername("");
@@ -222,7 +230,10 @@ export function AddEnvironmentDialog({
         pairingCode: savedBackendPairingCode,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : t("Failed to add backend.");
+      const message =
+        error instanceof Error
+          ? (thrownErrorMessage(error) ?? error.message)
+          : t("Failed to add backend.");
       onErrorChange(message);
       toastManager.add(
         stackedThreadToast({
@@ -235,14 +246,18 @@ export function AddEnvironmentDialog({
       return;
     }
 
+    const expected = routeTarget ?? prefill;
     const result = await connectPairing({
       ...remotePairingInput,
-      ...(routeTarget ? { expectedEnvironmentId: routeTarget.environmentId } : {}),
+      ...(expected ? { expectedEnvironmentId: expected.environmentId } : {}),
     });
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
-        const message = error instanceof Error ? error.message : t("Failed to add backend.");
+        const message =
+          error instanceof Error
+            ? (thrownErrorMessage(error) ?? error.message)
+            : t("Failed to add backend.");
         onErrorChange(message);
         toastManager.add(
           stackedThreadToast({
@@ -448,7 +463,11 @@ export function AddEnvironmentDialog({
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
-        onErrorChange(error instanceof Error ? error.message : t("Could not add the route."));
+        onErrorChange(
+          error instanceof Error
+            ? (thrownErrorMessage(error) ?? error.message)
+            : t("Could not add the route."),
+        );
       }
       return;
     }
@@ -537,7 +556,7 @@ export function AddEnvironmentDialog({
                     {t("Loading hosts…")}
                   </div>
                 ) : filteredDiscoveredSshHosts.length > 0 ? (
-                  <AutocompleteList className="max-h-72">
+                  <AutocompleteList scrollAreaClassName="max-h-72">
                     {filteredDiscoveredSshHosts.map((target, index) => {
                       const address = formatDesktopSshTarget(target);
                       const shortcutCommand = index < 9 ? threadJumpCommandForIndex(index) : null;
@@ -627,34 +646,39 @@ export function AddEnvironmentDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <DialogTrigger
-              render={
-                <Button size="xs" variant="ghost-muted" aria-label={t("Add environment")}>
-                  <PlusIcon className="size-3" />
-                  <span>{t("Add environment")}</span>
-                </Button>
-              }
-            />
-          }
-        />
-        <TooltipPopup side="top">{t("Add environment")}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <DialogTrigger
+            render={
+              <Button size="xs" variant="ghost-muted" aria-label={t("Add environment")}>
+                <PlusIcon className="size-3" />
+                <span>{t("Add environment")}</span>
+              </Button>
+            }
+          />
+        }
+        label={<>{t("Add environment")}</>}
+      />
       <DialogPopup className="max-h-[80dvh] sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>
             {routeTarget
               ? t("Add a route to {environment}", { environment: routeTarget.label })
-              : t("Add Environment")}
+              : prefill
+                ? t("Connect to {environment}", { environment: prefill.label })
+                : t("Add Environment")}
           </DialogTitle>
           <DialogDescription>
             {routeTarget
               ? t(
                   "Pair this machine again over another address, such as its Tailscale name. It joins the existing routes instead of adding a second machine.",
                 )
-              : t("Pair another environment to this client.")}
+              : prefill
+                ? t(
+                    "Create a pairing code on {environment}, in its Settings → Sharing & access or with `t3 auth pairing create`, and enter it here.",
+                    { environment: prefill.label },
+                  )
+                : t("Pair another environment to this client.")}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

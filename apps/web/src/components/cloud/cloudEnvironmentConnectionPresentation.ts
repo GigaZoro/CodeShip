@@ -1,9 +1,9 @@
+import { msg, t } from "~/i18n";
 import {
   connectionStatusText,
   type EnvironmentConnectionPresentation,
 } from "@t3tools/client-runtime/connection";
 
-import { t } from "~/i18n";
 export interface SavedCloudEnvironmentConnectionPresentation {
   readonly buttonLabel: string;
   readonly statusText: string;
@@ -12,48 +12,51 @@ export interface SavedCloudEnvironmentConnectionPresentation {
 
 export function presentSavedCloudEnvironmentConnection(
   connection: EnvironmentConnectionPresentation,
+  resolve: typeof t = t,
 ): SavedCloudEnvironmentConnectionPresentation {
   switch (connection.phase) {
     case "connected":
       return {
-        buttonLabel: t("Connected"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: resolve(msg("Connected")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "connected",
       };
     case "connecting":
       return {
-        buttonLabel: t("Connecting…"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: resolve(msg("Connecting…")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "connecting",
       };
     case "reconnecting":
       return {
-        buttonLabel: connection.awaitingApproval ? t("Waiting for approval…") : t("Reconnecting…"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: connection.awaitingApproval
+          ? resolve(msg("Waiting for approval…"))
+          : resolve(msg("Reconnecting…")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "connecting",
       };
     case "unsupported":
       return {
-        buttonLabel: t("Client not supported"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: resolve(msg("Client not supported")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "idle",
       };
     case "error":
       return {
-        buttonLabel: t("Connection failed"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: resolve(msg("Connection failed")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "error",
       };
     case "offline":
       return {
-        buttonLabel: t("Offline"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: resolve(msg("Offline")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "idle",
       };
     case "available":
       return {
-        buttonLabel: t("Not connected"),
-        statusText: connectionStatusText(connection),
+        buttonLabel: resolve(msg("Not connected")),
+        statusText: connectionStatusText(connection, resolve),
         tone: "idle",
       };
   }

@@ -1,6 +1,7 @@
-import type { WorktreeSetupSnapshot, WorktreeSetupStage } from "@t3tools/contracts";
-import { worktreeSetupStageLabel } from "@t3tools/client-runtime/worktree-setup";
-import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { t, msg } from "~/i18n";
+import { type WorktreeSetupSnapshot, type WorktreeSetupStage } from "@t3tools/contracts";
+import { worktreeSetupStageLabel } from "@t3tools/client-runtime/contract-labels";
+import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import {
   CheckIcon,
   CircleAlertIcon,
@@ -21,7 +22,6 @@ import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { cn } from "~/lib/utils";
 import { useNowSecond } from "~/hooks/useNowSecond";
 import { WorkLogRow } from "./WorkLog";
-import { t } from "~/i18n";
 
 interface WorktreeSetupCardProps {
   snapshot: WorktreeSetupSnapshot;
@@ -40,7 +40,7 @@ function elapsedMs(startedAt: string | null, endMs: number): number | null {
 /** Mounted only while setup runs, so finished setups never subscribe to the tick. */
 function LiveElapsed({ startedAt }: { startedAt: string }) {
   const elapsed = elapsedMs(startedAt, useNowSecond());
-  return elapsed === null ? null : <>{formatDuration(elapsed)}</>;
+  return elapsed === null ? null : <>{formatDuration(elapsed, t)}</>;
 }
 
 /** A finished duration, or a ticking one while setup is still running. */
@@ -56,7 +56,7 @@ function Elapsed({
   if (!startedAt) return null;
   if (endedAt) {
     const elapsed = elapsedMs(startedAt, Date.parse(endedAt));
-    return elapsed === null ? null : <>{formatDuration(elapsed)}</>;
+    return elapsed === null ? null : <>{formatDuration(elapsed, t)}</>;
   }
   return live ? <LiveElapsed startedAt={startedAt} /> : null;
 }
@@ -107,18 +107,18 @@ function ShimmerOverlay({ children }: { children: ReactNode }) {
   );
 }
 
-function headerLabel(snapshot: WorktreeSetupSnapshot): string {
+function headerLabel(snapshot: WorktreeSetupSnapshot, resolve: typeof t): string {
   switch (snapshot.phase) {
     case "running":
-      return t("Setting up worktree…");
+      return resolve(msg("Setting up worktree…"));
     case "done":
       return snapshot.stages.some((stage) => stage.status === "failed")
-        ? t("Worktree ready, setup script failed")
-        : t("Worktree ready");
+        ? resolve(msg("Worktree ready, setup script failed"))
+        : resolve(msg("Worktree ready"));
     case "failed":
-      return t("Worktree setup failed");
+      return resolve(msg("Worktree setup failed"));
     case "cancelled":
-      return t("Worktree setup cancelled");
+      return resolve(msg("Worktree setup cancelled"));
   }
 }
 
@@ -127,7 +127,7 @@ function SetupHeaderRow({ snapshot }: { snapshot: WorktreeSetupSnapshot }) {
   const failed = snapshot.phase === "failed";
   const finishedWithFailedStage =
     snapshot.phase === "done" && snapshot.stages.some((stage) => stage.status === "failed");
-  const text = headerLabel(snapshot);
+  const text = headerLabel(snapshot, t);
   const tone = failed
     ? "text-destructive-foreground"
     : finishedWithFailedStage
@@ -168,7 +168,7 @@ function StageRow({
   scriptName: string | null;
 }) {
   const label =
-    stage.id === "setup-script" && scriptName ? scriptName : worktreeSetupStageLabel(stage.id);
+    stage.id === "setup-script" && scriptName ? scriptName : worktreeSetupStageLabel(stage.id, t);
   const running = stage.status === "running";
   const trailing =
     stage.status === "pending"
@@ -289,7 +289,7 @@ function CollapsedSummaryRow({ snapshot }: { snapshot: WorktreeSetupSnapshot }) 
       : snapshot.stages.some((stage) => stage.id === "setup-script" && stage.status === "failed")
         ? "failed"
         : "done";
-  const label = headerLabel(snapshot);
+  const label = headerLabel(snapshot, t);
   return (
     <WorkLogRow
       data-worktree-setup-stage="summary"

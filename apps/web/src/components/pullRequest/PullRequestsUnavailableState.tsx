@@ -1,14 +1,17 @@
+import { t } from "~/i18n";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { useOpenLink } from "~/browser/useOpenLink";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+
 import { ExternalLinkIcon, SettingsIcon } from "lucide-react";
 
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { PullRequestGlyph } from "./pullRequestIcons";
 import { SourceControlMessage } from "./PullRequestListGapsNotice";
-import { t } from "~/i18n";
 
 export function PullRequestsUnavailableState({
-  title = t("Could not load pull requests"),
+  title,
   error,
   onRetry,
   refreshing = false,
@@ -19,17 +22,22 @@ export function PullRequestsUnavailableState({
   error: string;
   onRetry?: () => void;
   refreshing?: boolean;
-  host?: { readonly url: string; readonly openLabel: string };
+  host?: {
+    readonly url: string;
+    readonly openLabel: string;
+    readonly threadRef: ScopedThreadRef | null;
+  };
   /** Most list failures are a missing CLI or credential, which Source control settings fixes. */
   onOpenSettings?: () => void;
 }) {
+  const openLink = useOpenLink(host?.threadRef);
   return (
     <Empty className="scrollbar-gutter-both min-h-0 justify-center-safe overflow-y-auto [&>*]:shrink-0">
       <EmptyMedia variant="icon">
         <PullRequestGlyph.pullRequest />
       </EmptyMedia>
       <EmptyHeader>
-        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyTitle>{title ?? t("Could not load pull requests")}</EmptyTitle>
         <EmptyDescription>
           <SourceControlMessage text={error} />
         </EmptyDescription>
@@ -53,6 +61,10 @@ export function PullRequestsUnavailableState({
               size="sm"
               variant="outline"
               render={<a href={host.url} target="_blank" rel="noopener noreferrer" />}
+              onClick={(event) => {
+                event.preventDefault();
+                void openLink(host.url, { event }).catch(console.error);
+              }}
             >
               <ExternalLinkIcon aria-hidden className="size-3.5" />
               {host.openLabel}

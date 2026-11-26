@@ -6,8 +6,8 @@ Appearance, don't show it. They start at **All projects** and **All environments
 and stay selected as you move between categories or search for a setting.
 
 Preferences saved on this device, such as appearance, confirmations and browser profiles, ignore
-the environment selection. On the Browser page they are read-only while a project is selected,
-though profiles can still be added, renamed and removed. Everything else is stored on a server.
+the environment selection. On the Browser and Labs pages they are read-only while a project is selected,
+though browser profiles can still be added, renamed and removed. Everything else is stored on a server.
 Choose one environment to edit its settings, or leave **All environments** to edit every connected
 environment at once. Offline environments keep their current values. When a connected machine follows
 [shared settings](remote-access.md#shared-settings), a shared setting saved for all environments
@@ -43,7 +43,7 @@ machine's setting. Every other provider setting stays per machine.
 
 On mobile, open **Settings** and use the filter in its header to choose connected environments
 and a project. The filter stays available in server-setting pages. With **All projects** selected,
-the server-setting pages, such as Threads, Source control and Worktrees, edit the selected
+the server-setting pages, such as Threads, Source control & issues and Worktrees, edit the selected
 environments' defaults. Choosing a project edits its overrides on the selected
 environments. Use **Use defaults** in a page to remove that page's project overrides.
 Open **Settings → Projects** to rename the project across its selected
@@ -119,6 +119,11 @@ that family, until its reset or until a run of that family gets an answer.
 A used-up usage window without a reset holds for at most the same time, counted from when
 it was first seen used up, and so does the switch to the fallback model.
 
+## Projects with several repositories
+
+A project covers every repository inside its folder, and any folder you add under **Settings →
+Projects → Repositories**; see [Projects with several repositories](multi-repo-projects.md).
+
 ## Pin and archive projects
 
 Pinned projects come first in the project pickers: the project picker on a new thread, the
@@ -176,6 +181,9 @@ project starts a new thread there on its next run.
 
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
+An archived thread refuses messages, so a task that posts into one stays on and fails
+each run until you unarchive the thread or pick another destination. To set a task's thread
+aside without breaking it, settle the thread; see [Settle or archive](thread-sidebar.md#settle-or-archive).
 
 A fixed-time task whose time passed while its machine was off or asleep runs
 once when the machine is back, if that is nearer the missed time than the next
@@ -603,6 +611,15 @@ itself, or **Skip** to leave them for a setup script. It resolves in the same or
 workspace default: a `"worktreeSubmodules"` value in the `t3.json` of the branch being checked out
 applies when the project and environment are both on **Inherit**.
 
+New worktrees check out every file. For a large repository, set `"worktreeSparsePatternsPath"` in
+`t3.json` to a repository-relative file of git sparse-checkout patterns in non-cone syntax. New
+worktrees then check out only the matching files, before any other file is written. Both files are
+read from the branch being checked out, so the patterns can leave out `t3.json` and `.gitmodules`.
+If the pattern file is missing, creating the worktree fails instead of checking out everything.
+Submodules still follow **Submodules** above, also under excluded paths; set it to **Skip** to leave
+them empty. The first sparse worktree turns on Git's `extensions.worktreeConfig` for the repository.
+This needs Git 2.35 or newer.
+
 ## Worktree location
 
 New worktrees go in the `worktrees` folder of the T3 home directory. To put them somewhere else,
@@ -715,13 +732,14 @@ Choose **Monogram** in the icon picker to set one or two letters or numbers and 
 
 When no image is found, web and desktop show a two-character monogram with a color
 from the icon palette, derived from the saved project name. For example, `Nebula` becomes `NA`,
-`Silver Orchard` becomes `SO`, and `M7 Forge` becomes `M7`.
+`Silver Orchard` becomes `SO`, and `M7 Forge` becomes `M7`. A name that starts with a Chinese,
+Japanese, or Korean character uses only that character, so `健康顾问` becomes `健`.
 
 ## Keep the default branch current
 
-In Source control, enable **Automatically pull** to keep the default-branch checkout up to date
+In Source control & issues, enable **Automatically pull** to keep the default-branch checkout up to date
 with its configured upstream. Choose an environment to set the default or a project to override it.
-On mobile, use **Settings → Source control** to change selected environment defaults or project overrides.
+On mobile, use **Settings → Source control & worktrees** to change selected environment defaults or project overrides.
 
 T3.CodeShip only pulls when it can fast-forward and the checkout has no changed files, untracked files,
 or local commits. It skips checkouts on another branch or without an upstream. If a checkout has

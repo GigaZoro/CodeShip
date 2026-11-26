@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { parseUrl } from "@t3tools/shared/url";
 import { Globe, History, RadioTower } from "lucide-react";
@@ -9,7 +11,6 @@ import { DiscoveryList } from "../ui/discovery-list";
 import { PreviewLocalServerCard } from "./PreviewLocalServerCard";
 import { PreviewRecentUrlCard } from "./PreviewRecentUrlCard";
 import { useDiscoveredLocalServers } from "./useDiscoveredLocalServers";
-import { t } from "~/i18n";
 
 interface Props {
   threadRef: ScopedThreadRef;

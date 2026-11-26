@@ -1,13 +1,15 @@
+import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthRelayReadScope,
   type EnvironmentCloudLinkStateResult,
   type EnvironmentId,
 } from "@t3tools/contracts";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import * as Cause from "effect/Cause";
+
 import { AsyncResult, Atom } from "effect/reactivity";
 
-import { t } from "~/i18n";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -55,7 +57,9 @@ export function useCloudLinkState(environmentId: EnvironmentId | null) {
   let error: string | null = null;
   if (result._tag === "Failure") {
     const cause = Cause.squash(result.cause);
-    error = cause instanceof Error ? cause.message : t("Could not read T3 Connect link state.");
+    error =
+      (cause instanceof Error ? thrownErrorMessage(cause, t) : null) ??
+      t("Could not read T3 Connect link state.");
   }
 
   return {

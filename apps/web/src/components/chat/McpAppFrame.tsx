@@ -20,23 +20,27 @@ import {
   mcpAppFileName,
   type McpAppReference,
 } from "@t3tools/shared/mcpApp";
+
 import { Minimize2Icon } from "lucide-react";
 import { useEffect, useRef, useState, type FocusEvent, type ToggleEvent } from "react";
 import { flushSync } from "react-dom";
 
 import { useLongLivedAssetUrl } from "~/assets/longLivedAssetUrls";
-import { APP_VERSION } from "~/branding";
+import { APP_BASE_NAME, APP_VERSION } from "~/branding";
 import { isConfirmDialogActive, requestConfirmDialog } from "~/confirmDialog";
 import { useHtmlRenderTheme } from "~/hooks/useHtmlRenderTheme";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { Button } from "~/components/ui/button";
 import { isElectron } from "~/env";
+
 import { cn } from "~/lib/utils";
 import { useEnvironmentQuery } from "~/state/query";
 import { useTurnItemDetail } from "~/state/queries";
 import { mcpAppEnvironment } from "~/state/mcpApps";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { observeResize } from "~/lib/observeResize";
+import { attachMcpAppDocumentLink } from "./mcpAppDocumentLink";
+import { useNativeTitlebarHeight } from "~/lib/windowControlsOverlay";
 
 const commandFailure = (result: {
   readonly cause: Parameters<typeof squashAtomCommandFailure>[0]["cause"];
@@ -91,12 +95,15 @@ export function McpAppFrame(props: {
   readonly onFullscreenChange?: (fullscreen: boolean) => void;
 }) {
   const { app } = props;
+
   const theme = useHtmlRenderTheme();
+  const nativeTitlebarHeight = useNativeTitlebarHeight();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(MCP_APP_DEFAULT_HEIGHT);
   const [navigatedAway, setNavigatedAway] = useState(false);
+  const [bridgeMissing, setBridgeMissing] = useState(false);
   const [displayMode, setDisplayMode] = useState<McpAppDisplayMode>("inline");
   const [closed, setClosed] = useState(false);
   const [documentGeneration, setDocumentGeneration] = useState(0);
@@ -267,16 +274,19 @@ export function McpAppFrame(props: {
       }
       return approved;
     };
-    const target = () => frameRef.current?.contentWindow ?? null;
     const scope = () => {
       const { environmentId, threadId, itemId } = readLive().props;
       return { environmentId, input: { threadId, itemId } };
     };
+    const documentLink = attachMcpAppDocumentLink(
+      frame,
+      (data) => host.receive(data),
+      () => setBridgeMissing(true),
+    );
     const host = makeMcpAppHost({
       app,
       hostVersion: APP_VERSION,
-      // Opaque origins require "*"; the window reference scopes delivery to this frame.
-      post: (message) => target()?.postMessage(message, "*"),
+      post: documentLink.post,
       hostContext,
       callTool: async ({ name, arguments: args }) => {
         const { environmentId, input } = scope();
@@ -409,12 +419,9 @@ export function McpAppFrame(props: {
       },
     });
     hostRef.current = host;
-    const receive = (event: MessageEvent) => {
-      if (event.source !== null && event.source === target()) host.receive(event.data);
-    };
-    window.addEventListener("message", receive);
+    window.addEventListener("message", documentLink.receive);
     return () => {
-      window.removeEventListener("message", receive);
+      window.removeEventListener("message", documentLink.receive);
       void host.teardown();
       hostRef.current = null;
       frameRef.current = null;
@@ -452,6 +459,18 @@ export function McpAppFrame(props: {
     );
   }
 
+  // Only a server that binds the app to its document gets a bridge; without one the app cannot run.
+  if (bridgeMissing) {
+    return (
+      <p className="rounded-lg border border-border px-3 py-2 text-muted-foreground text-xs">
+        {t(
+          "The {server} app needs a newer {app} server on this environment. Update the server to use it.",
+          { server: app.server, app: APP_BASE_NAME },
+        )}
+      </p>
+    );
+  }
+
   const fullscreen = displayMode === "fullscreen";
   return (
     // Preserve inline row height during fullscreen to prevent timeline jumps.
@@ -470,6 +489,8 @@ export function McpAppFrame(props: {
             ? "fixed inset-0 m-0 flex h-dvh max-h-none w-dvw max-w-none flex-col border-0 bg-background p-0"
             : "block! static! m-0 border-0 bg-transparent p-0 text-inherit",
         )}
+        // Keep the header clear of the native window controls.
+        style={fullscreen ? { paddingTop: nativeTitlebarHeight } : undefined}
       >
         {fullscreen ? (
           <div

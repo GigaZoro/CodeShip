@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -21,7 +22,7 @@ import * as ProviderProcesses from "./providerProcesses.ts";
 import { classifyScope, make, ownedAgentSlice, type ScopeState } from "./agentScope.ts";
 
 const GiB = 1024 ** 3;
-const memory = vi.hoisted(() => ({ total: 16 * 1024 ** 3 }));
+const memory = vi.hoisted(() => ({ total: 16 * 1024 ** 3, swapKb: 2 * 1024 ** 2 }));
 vi.mock("node:os", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:os")>()),
   totalmem: () => memory.total,
@@ -73,17 +74,21 @@ const withFakeSystemd = <A, E>(
     memoryPolicy,
     leftovers = false,
     liveOwner = false,
+    noBinSh = false,
+    noScopes = false,
   }: {
     readonly oomPolicy?: boolean;
     readonly stopFails?: boolean;
     readonly memoryPolicy?: string;
     readonly leftovers?: boolean;
     readonly liveOwner?: boolean;
+    readonly noBinSh?: boolean;
+    readonly noScopes?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
     const bin = makeBinDirectory();
-    for (const name of ["systemd-run", "systemctl", "agent"]) {
+    for (const name of ["systemd-run", "systemctl", "agent", "sh"]) {
       NodeFS.writeFileSync(NodePath.join(bin, name), "", { mode: 0o755 });
     }
     const cgroupRoot = NodePath.join(bin, "cgroup");
@@ -147,14 +152,26 @@ const withFakeSystemd = <A, E>(
       Effect.provideService(ProviderProcesses.ProviderProcesses, { hasOtherLiveOwner: liveOwner }),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
-      Effect.provideService(HostProcess.Environment, {
-        PATH: bin,
-        XDG_RUNTIME_DIR: "/run/user/1",
-        ...(memoryPolicy === undefined ? {} : { T3CODE_AGENT_SLICE_MEMORY_POLICY: memoryPolicy }),
-      }),
+      Effect.provideService(
+        HostProcess.Environment,
+        noScopes
+          ? { PATH: bin }
+          : {
+              PATH: bin,
+              XDG_RUNTIME_DIR: "/run/user/1",
+              ...(memoryPolicy === undefined
+                ? {}
+                : { T3CODE_AGENT_SLICE_MEMORY_POLICY: memoryPolicy }),
+            },
+      ),
       Effect.provideService(FileSystem.FileSystem, {
         ...fileSystem,
-        readFileString: (path, encoding) => fileSystem.readFileString(toFakeCgroup(path), encoding),
+        exists: (path) =>
+          noBinSh && path === "/bin/sh" ? Effect.succeed(false) : fileSystem.exists(path),
+        readFileString: (path, encoding) =>
+          path === "/proc/meminfo"
+            ? Effect.sync(() => `MemTotal:       16384 kB\nSwapTotal:      ${memory.swapKb} kB\n`)
+            : fileSystem.readFileString(toFakeCgroup(path), encoding),
         writeFileString: (path, data, options) =>
           fileSystem.writeFileString(toFakeCgroup(path), data, options),
       }),
@@ -218,8 +235,12 @@ const exitedAgent = (
 
 const stopsOf = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
   calls.filter(([, verb]) => verb === "stop");
-const launchCodex = (scope: Effect.Success<typeof make>, threadId: string) =>
-  makeCodexAppServerSpawnCommand({ command: "agent", args: ["app-server"], threadId }).pipe(
+const launchCodex = (
+  scope: Effect.Success<typeof make>,
+  threadId: string,
+  env?: NodeJS.ProcessEnv,
+) =>
+  makeCodexAppServerSpawnCommand({ command: "agent", args: ["app-server"], threadId, env }).pipe(
     Effect.provideService(AgentScope, scope),
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.map((command) => {
@@ -262,6 +283,29 @@ describe("AgentScope service", () => {
       ),
   );
 
+  it.effect("launches through sh from PATH when the host has no /bin/sh", () =>
+    Effect.gen(function* () {
+      const withScopes = yield* withFakeSystemd(({ scope }) =>
+        scope.wrap({ command: "agent", args: [], name: "t" }),
+      );
+      expect(withScopes.command).toBe("/bin/sh");
+      const scoped = yield* withFakeSystemd(
+        ({ scope }) => scope.wrap({ command: "agent", args: [], name: "t" }),
+        { noBinSh: true },
+      );
+      const unscoped = yield* withFakeSystemd(
+        ({ scope }) => scope.wrap({ command: "agent", args: [], name: "t" }),
+        { noBinSh: true, noScopes: true },
+      );
+      for (const launch of [scoped, unscoped]) {
+        expect(NodePath.basename(launch.command)).toBe("sh");
+        expect(launch.command).not.toBe("/bin/sh");
+        expect(NodePath.basename(String(launch.args.at(-1)))).toBe("agent");
+      }
+      expect(unscoped.args).not.toContain("--scope");
+    }),
+  );
+
   it.effect("labels a thread from its newest scope until its next session clears it", () =>
     withFakeSystemd(({ scope, units }) =>
       Effect.gen(function* () {
@@ -292,7 +336,14 @@ describe("AgentScope service", () => {
           units.set(unitOf(agent), { activeState: "failed", result: "oom-kill" });
           expect(yield* scope.oomKilled("a")).toBe(true);
 
-          const codex = yield* launchCodex(scope, "a");
+          const executable = String(agent.args.at(-1));
+          const codex = yield* launchCodex(scope, "a", {
+            PATH: NodePath.relative(process.cwd(), NodePath.dirname(executable)),
+          });
+          // Anchored to the cwd for systemd-run, with its ".." kept; it names the same file.
+          const anchored = String(codex.args.at(-2));
+          expect(NodePath.isAbsolute(anchored)).toBe(true);
+          expect(NodePath.resolve(anchored)).toBe(executable);
           expect(codex.args).toContain("--property=OOMPolicy=continue");
           expect(codex.args).not.toContain("--property=OOMPolicy=stop");
           expect(codex.args).toContain("--property=TimeoutStopSec=10s");
@@ -304,6 +355,33 @@ describe("AgentScope service", () => {
           expect(
             calls.filter(([, verb, unit]) => verb === "show" && unit === unitOf(codex)),
           ).toEqual([]);
+        }),
+      ),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "keeps a symlinked parent in absolute and relative executable paths",
+    () =>
+      withFakeSystemd(({ scope }) =>
+        Effect.gen(function* () {
+          const plain = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "s" });
+          const bin = NodePath.dirname(String(plain.args.at(-1)));
+          NodeFS.mkdirSync(NodePath.join(bin, "real", "sub"), { recursive: true });
+          NodeFS.writeFileSync(NodePath.join(bin, "real", "agent"), "", { mode: 0o755 });
+          NodeFS.symlinkSync(NodePath.join(bin, "real", "sub"), NodePath.join(bin, "link"));
+          // The kernel follows the link before "..", so this names real/agent, not bin/agent.
+          const command = `${NodePath.join(bin, "link")}/../agent`;
+          const wrapped = yield* scope.wrap({ command, args: [], name: "t", threadId: "s" });
+          expect(wrapped.args.at(-1)).toBe(command);
+          // A relative path is anchored to the cwd the same way, without collapsing "..".
+          const relative = `${NodePath.relative(process.cwd(), NodePath.join(bin, "link"))}/../agent`;
+          const anchored = yield* scope.wrap({
+            command: relative,
+            args: [],
+            name: "t",
+            threadId: "s",
+          });
+          expect(anchored.args.at(-1)).toBe(`${process.cwd()}${NodePath.sep}${relative}`);
         }),
       ),
   );
@@ -398,8 +476,9 @@ describe("AgentScope service", () => {
     ),
   );
 
-  it.effect("follows a live memory change at the next launch", () => {
+  it.effect("follows a live memory or swap change at the next launch", () => {
     memory.total = 16 * GiB;
+    memory.swapKb = 2 * 1024 ** 2;
     return withFakeSystemd(({ scope, calls, failingVerbs }) =>
       Effect.gen(function* () {
         const launch = scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
@@ -428,6 +507,12 @@ describe("AgentScope service", () => {
           grown,
           grown,
         ]);
+
+        // Without swap, MemoryHigh only throttles; MemoryMax must OOM-kill the runaway.
+        memory.swapKb = 0;
+        yield* launch;
+        expect(memoryLimits().at(-1)).toEqual(["MemoryHigh=infinity", `MemoryMax=${18 * GiB}`]);
+        memory.swapKb = 2 * 1024 ** 2;
       }),
     );
   });

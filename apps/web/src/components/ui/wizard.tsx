@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import { CheckIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 
@@ -6,7 +8,6 @@ import { AnimatedHeight } from "../AnimatedHeight";
 import { DialogPopup, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./dialog";
 import { ScrollArea } from "./scroll-area";
 
-import { t } from "~/i18n";
 export function WizardPopup({
   children,
   size = "default",

@@ -4,11 +4,13 @@ import { Platform } from "react-native";
 import {
   navigationCustomizationAvailable,
   resolveHiddenNavigationTabs,
+  sharedSlotAbsentee,
   type NavigationTab,
 } from "./navigation-tab-order";
 
 interface NativeTabCapabilities {
   readonly supportsTasksTab?: boolean;
+  readonly supportsIssuesTab?: boolean;
 }
 
 // Over-the-air JS can reach a binary built before the Tasks tab existed. Its native tab bar
@@ -25,9 +27,23 @@ function tasksTabSupported() {
   return requireOptionalNativeModule<NativeTabCapabilities>(moduleName)?.supportsTasksTab === true;
 }
 
-const UNSUPPORTED_NATIVE_TABS: readonly NavigationTab[] = tasksTabSupported()
-  ? []
-  : ["scheduledTasks"];
+const tabModule =
+  Platform.OS === "android"
+    ? "T3WorkspaceNavigation"
+    : Platform.OS === "ios"
+      ? "T3NativeControls"
+      : null;
+export const supportsIssuesTab =
+  tabModule === null ||
+  requireOptionalNativeModule<NativeTabCapabilities>(tabModule)?.supportsIssuesTab === true;
+
+// The iOS sidebar added localized labels alongside Issues support.
+export const supportsNativeSidebarTabTitles = Platform.OS === "ios" && supportsIssuesTab;
+
+const UNSUPPORTED_NATIVE_TABS: readonly NavigationTab[] = [
+  ...(tasksTabSupported() ? [] : (["scheduledTasks"] as const)),
+  ...(supportsIssuesTab ? [] : (["issues"] as const)),
+];
 
 /** Tabs the installed native binary cannot draw; treated as hidden whatever the preference. */
 export function unsupportedNavigationTabs(): readonly NavigationTab[] {
@@ -35,8 +51,16 @@ export function unsupportedNavigationTabs(): readonly NavigationTab[] {
 }
 
 /** The user's hidden tabs plus any the installed native binary cannot draw. */
-export function effectiveHiddenNavigationTabs(saved: readonly unknown[] | undefined) {
-  return navigationCustomizationAvailable()
-    ? [...new Set([...resolveHiddenNavigationTabs(saved), ...unsupportedNavigationTabs()])]
-    : [...unsupportedNavigationTabs()];
+export function effectiveHiddenNavigationTabs(
+  saved: readonly unknown[] | undefined,
+  selected: NavigationTab = "threads",
+  lastSharedSlotTab?: unknown,
+): readonly NavigationTab[] {
+  return [
+    ...new Set([
+      ...(navigationCustomizationAvailable() ? resolveHiddenNavigationTabs(saved) : []),
+      ...unsupportedNavigationTabs(),
+      ...(supportsIssuesTab ? [sharedSlotAbsentee(selected, lastSharedSlotTab)] : []),
+    ]),
+  ];
 }

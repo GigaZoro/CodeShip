@@ -1,3 +1,4 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -46,9 +47,7 @@ function useActionSubmission(params: PullRequestParams) {
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
       setError(
-        cause instanceof Error
-          ? cause.message
-          : t("The provider could not complete this action. Try again."),
+        errorDisplayMessage(cause) ?? t("The provider could not complete this action. Try again."),
       );
     }
   };
@@ -66,7 +65,13 @@ const VERDICTS = [
 
 export function PullRequestReviewSheet({
   route,
-}: StaticScreenProps<PullRequestParams & { readonly mode: "review" | "comment" }>) {
+}: StaticScreenProps<
+  PullRequestParams & {
+    readonly mode: "review" | "comment";
+    /** The head the opening screen showed; this sheet's own read can run ahead of it. */
+    readonly reviewedHeadSha?: string | undefined;
+  }
+>) {
   const params = route.params;
   const target = pullRequestTarget(params);
   const result = useEnvironmentQuery(composerPullRequests.detail(target));
@@ -91,6 +96,7 @@ export function PullRequestReviewSheet({
     onChangeValue: setBody,
     support: result.data?.capabilities ?? null,
   });
+  const reviewedHeadSha = params.reviewedHeadSha ?? result.data?.headSha;
   const stale = store.draft.comments.some((comment) => comment.headSha !== result.data?.headSha);
   const [requestedVerdict, setRequestedVerdict] = useState<PullRequestReviewVerdict>("comment");
   const offered = VERDICTS.filter((option) => permissions.verdicts.includes(option.value));
@@ -124,6 +130,7 @@ export function PullRequestReviewSheet({
               ...target,
               input: {
                 ...target.input,
+                ...(reviewedHeadSha ? { expectedHeadSha: reviewedHeadSha } : {}),
                 verdict: verdict.value,
                 body,
                 comments: submitted.comments.map(
@@ -144,10 +151,10 @@ export function PullRequestReviewSheet({
     <SheetContent
       title={reviewing ? t("Submit review") : t("Add comment")}
       subtitle={
-        reviewing && result.data?.headSha
+        reviewing && reviewedHeadSha
           ? t("#{number} · reviewing {sha}", {
               number: params.number,
-              sha: result.data.headSha.slice(0, 7),
+              sha: reviewedHeadSha.slice(0, 7),
             })
           : t("#{number} · {repository}", { number: params.number, repository: params.repository })
       }

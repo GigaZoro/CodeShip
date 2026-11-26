@@ -116,8 +116,8 @@ When you return to a large thread after Claude's prompt cache expires, a
 **Compact** chip with the thread's token count shows
 next to the send button. While it is on, Enter summarizes the history first, then
 sends your message. Click the chip to switch it to **Keep** and keep the full
-history for that message. The mobile app shows no chip: an eligible message sent
-from it summarizes first. The cache lasts about an hour on a Claude
+history for that message. The mobile app shows the same chip, labelled with the
+token count: tap it to keep the full history for that message. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
@@ -145,6 +145,15 @@ timestamp shows when the displayed wait started. With a second Claude account,
 and continues it on an account with usage left, unless the reset is less than
 five minutes away.
 
+## Steering
+
+A steer waits until Claude finishes the tool calls it is running, then Claude reads it
+in the same turn. The message shows as unread until then. If Claude drops it before
+reading it, the message is sent as the next turn, after any messages queued before it.
+If Claude exits or the server restarts first, the message waits in the queue in that
+same place until you resume it. If you press Stop, T3.CodeShip shows a notice with the text
+of any steer Claude had not read.
+
 ## Skills
 
 Claude skills come from the config directory's `skills` folder, the project's
@@ -169,11 +178,26 @@ To show Claude task lists in the web and desktop apps, add
 **Environment** section in **Settings > Providers & models**. Each update shows as a Tasks
 row in the thread; open it to see every step.
 
+## Auto mode
+
+**Auto** on a Claude thread is Claude Code's own auto mode. `disableAutoMode` in Claude's managed,
+user, or project settings turns it off: T3.CodeShip then shows **Auto** as unavailable in that project,
+and a thread already set to it asks about each action. See [Permission modes](permission-modes.md).
+
+## Sign in to an MCP server
+
+When an MCP server you added to Claude needs you to sign in, the thread shows a notice with
+**Sign in**, once per session; on mobile, tap the notice. Approve access on the page it opens. Your
+browser then goes to a page that may not load, especially when Claude runs on another machine:
+copy that page's address, paste it into T3.CodeShip, and choose **Finish sign-in**. Claude keeps the
+sign-in and reconnects the server. Connectors you added on claude.ai are signed in on claude.ai,
+so T3.CodeShip doesn't ask about them. Signing in needs permission to manage providers.
+
 ## Claude in Chrome
 
 Claude threads can use the Claude in Chrome extension, which works in your own
 Chrome with its sign-ins. T3.CodeShip sessions load it only when asked: add `--chrome`
-to **Launch arguments** in the Claude instance's settings in **Settings > Providers**.
+to **Launch arguments** in the Claude instance's settings in **Settings > Providers & models**.
 It applies to sessions that start after you save. Set up the extension as you would
 for Claude Code first; see Claude Code's [Chrome guide](https://code.claude.com/docs/en/chrome).
 

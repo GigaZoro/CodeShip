@@ -1,7 +1,7 @@
 # Usage and limits
 
 Open **Usage** from the sidebar or the command palette, or press `mod+u` on web and
-desktop when the terminal is not focused. Customize `usage.open` in
+desktop when the terminal is not focused. Press it again to close Usage. Customize **Usage: Toggle** in
 **Settings → Keybindings**.
 
 On mobile, choose **Usage** in the workspace navigation.
@@ -23,6 +23,13 @@ Totals depend on the history available on each server. Grok turns without a save
 record are missing from the totals.
 Text generation (thread titles, commit messages, PR text, branch names and review guides) is not in
 the totals for Codex or Claude Code 2.0.63 and newer, because those runs save no session history.
+
+The server keeps scanned usage history for 92 days by default. Claude Code deletes its own
+transcripts after 30 days, so for older Claude usage this history is the only record left. To keep
+it longer, set `usageHistoryRetentionDays` in `<T3 home>/userdata/settings.json` to a number of days
+such as `365`, or to `"unlimited"`. Usage views still show at most 90 days. Lowering the value
+prunes older history on the next refresh, and raising it again does not bring pruned history back.
+While `settings.json` cannot be read, nothing is pruned.
 
 OpenCode reads its SQLite database and older JSON history. Antigravity reads local conversation
 databases, including T3-managed profiles. Set `OPENCODE_DATA_DIR` or `ANTIGRAVITY_DATA_DIR` on the
@@ -201,12 +208,7 @@ row to see when it resets and your pace. **Context window** shows the thread's
 context use against the model's limit. A tick on the bar marks where the provider compacts
 automatically, when it reports that point.
 
-OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
-the environment. T3 cannot report limits for external OpenCode servers because their credentials
-belong to the remote server. Limits need an OpenCode Go API key, or an OpenCode Console connected
-in OpenCode with an API key. A Console browser sign-in alone does not report them. You can also add
-your Go API key as `OPENCODE_API_KEY` in the OpenCode instance's **Environment variables**, then
-refresh provider status. Cursor reports
+OpenCode 2 servers with usage reporting show Go allowances and Console budgets for the connected workspace. Local servers can also report Go usage from a Go API key (`OPENCODE_API_KEY`). Cursor reports
 its monthly allowance, including separate Auto and API usage, for `CURSOR_AUTH_TOKEN` when it is set,
 otherwise for the account you signed in with in T3 or set as `CURSOR_API_KEY`.
 Sign-in and API keys report limits only with Cursor's default API endpoint. If you configure a custom
@@ -227,13 +229,53 @@ using a proxy through `ANTHROPIC_AUTH_TOKEN`.
 To see pooled accounts, open **Settings → Providers & models → Usage providers → Add hub**. Choose the
 environment that will connect to the hub and enter its URL and management key.
 
-The hub's Codex, Claude, xAI (shown as Grok) and Antigravity accounts appear under **Usage → Limits**;
-accounts for other providers are not read. Codex accounts show banked reset credits; select an
+The hub's Codex, Claude and xAI (shown as Grok) accounts appear under **Usage → Limits**;
+accounts for other providers, including Antigravity, are not read. Codex accounts show banked reset credits; select an
 account and choose **Use reset** to redeem one. No hub plugin is required.
 
 This connection supplies usage information; configure
-the provider separately to send agent requests through the hub. Remove the hub from the same
-settings section when you no longer need it.
+the provider separately to send agent requests through the hub. A thread uses the hub's limits and
+reset times only when its provider's endpoint has the same address as the hub, for example
+`http://127.0.0.1:8317` for both. Remove the hub from the same settings section when you no longer
+need it.
+
+## Connect an HTTP quota source
+
+In **Settings → Providers & models → Usage providers → Add HTTP source**, choose the environment that can
+reach your quota server and enter the full endpoint URL. If the endpoint requires authentication,
+supply a bearer token. The selected T3 environment sends a read-only GET with
+`Accept: application/json` and shows the result in **Usage → Limits**.
+
+Return JSON in this format, with stable IDs for accounts and their windows.
+
+```json
+{
+  "version": 1,
+  "accounts": [
+    {
+      "id": "primary",
+      "label": "My coding plan",
+      "providerInstanceId": "work-codex",
+      "windows": [
+        {
+          "id": "monthly",
+          "kind": "monthly",
+          "label": "Monthly budget",
+          "usedPercent": 35,
+          "resetsAt": "2026-12-01T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Set `kind` to `session`, `weekly`, `monthly`, or `other`. Use a percentage from 0 to 100 and
+omit `resetsAt` when the reset time is unknown. Your quota server handles the upstream provider
+credentials and APIs. Set the optional `providerInstanceId` to the exact instance ID configured for that environment
+in **Settings → Providers & models**. The account’s quota windows then appear in the
+thread details usage card on web and desktop when that instance is selected. Accounts without
+a binding still appear in **Usage → Limits**.
 
 ## Subscription usage widget
 

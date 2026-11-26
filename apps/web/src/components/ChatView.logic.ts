@@ -1,11 +1,18 @@
-import { t, tn } from "~/i18n";
+import { t, msg, tn } from "~/i18n";
+import * as Option from "effect/Option";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentThreadDetails } from "../state/threads";
+import type { CommandId } from "@t3tools/contracts";
 import { toServerClock } from "@t3tools/client-runtime/clock";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+
 import {
   deriveLatestThreadRun,
   deriveThreadActivityRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
+import { turnChanges } from "@t3tools/client-runtime/state/thread-repositories";
 import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
 import {
   deriveBlockedOnThreadWait,
@@ -18,7 +25,7 @@ import {
 import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
 import { getProviderModelCapabilities } from "../providerModels";
-import { sanitizeThreadErrorMessage } from "@t3tools/client-runtime/errors";
+import { sanitizeThreadErrorMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import type {
   EnvironmentThread,
   PendingSubagentRequest,
@@ -58,6 +65,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { readComposerImageBytes } from "./chat/composerAttachmentFiles";
 import { videoMimeType } from "@t3tools/shared/video";
 import {
   appendCodexArtifactTemplateUsePrompt,
@@ -82,10 +90,11 @@ import * as Schema from "effect/Schema";
 import { threadHasStarted } from "../lib/chatThreadActions";
 import {
   filterTerminalContextsWithText,
-  formatTerminalContextLabel,
+  terminalContextDisplayLabels,
   type TerminalContextDraft,
 } from "../lib/terminalContext";
 import {
+  formatInlineContextReference,
   removeInlineContextReference,
   stripInlineContextReferences,
 } from "~/lib/composerContextReferences";
@@ -119,6 +128,7 @@ export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 export function agentControlledBrowserCloseConfirmation(
   surfaces: readonly RightPanelSurface[],
   desktopByTabId: Readonly<Record<string, Pick<DesktopPreviewOverlay, "controller"> | undefined>>,
+  resolve: typeof t = t,
 ): string | null {
   const activeBrowserCount = surfaces.filter(
     (surface) =>
@@ -129,14 +139,16 @@ export function agentControlledBrowserCloseConfirmation(
   if (activeBrowserCount === 0) return null;
   if (activeBrowserCount === 1) {
     return [
-      t("Close browser while the agent is using it?"),
-      t(
-        "The agent is actively controlling this browser. Closing it may interrupt the current browser action.",
+      resolve(msg("Close browser while the agent is using it?")),
+      resolve(
+        msg(
+          "The agent is actively controlling this browser. Closing it may interrupt the current browser action.",
+        ),
       ),
     ].join("\n");
   }
   return [
-    t("Close {count} browsers while the agent is using them?", { count: activeBrowserCount }),
+    resolve("Close {count} browsers while the agent is using them?", { count: activeBrowserCount }),
     t(
       "The agent is actively controlling these browsers. Closing them may interrupt the current browser actions.",
     ),
@@ -236,19 +248,22 @@ export function shouldOpenProactiveTurnDiff(input: {
 }
 
 export function resolveProactiveTurnDiffAction(input: {
-  checkpoint: Pick<TurnDiffSummary, "status" | "files" | "filesTotal"> | undefined;
+  checkpoint: Pick<TurnDiffSummary, "status" | "files" | "filesTotal" | "repositories"> | undefined;
   isGitRepo: boolean | undefined;
 }): "defer" | "ignore" | "open" {
-  if (input.checkpoint === undefined || input.checkpoint.status === "missing") return "defer";
-  if (input.isGitRepo === undefined) return "defer";
-  if (
-    !input.isGitRepo ||
-    input.checkpoint.status !== "ready" ||
-    input.checkpoint.files.length === 0
-  ) {
-    return "ignore";
+  // A turn that changed tracked repositories has a diff whatever the thread's own folder is.
+  if (input.checkpoint?.repositories === undefined) {
+    if (input.checkpoint === undefined || input.checkpoint.status === "missing") return "defer";
+    if (input.isGitRepo === undefined) return "defer";
+    if (
+      !input.isGitRepo ||
+      input.checkpoint.status !== "ready" ||
+      input.checkpoint.files.length === 0
+    ) {
+      return "ignore";
+    }
   }
-  const totals = checkpointFileTotals(input.checkpoint);
+  const { totals } = turnChanges(input.checkpoint);
   return totals.count >= 3 || totals.additions + totals.deletions >= 50 ? "open" : "ignore";
 }
 
@@ -454,12 +469,13 @@ export function buildLocalDraftThread(
   threadId: ThreadId,
   draftThread: DraftThreadState,
   fallbackModelSelection: ModelSelection,
+  resolve: typeof t = t,
 ): Thread {
   const timestamp = DateTime.makeUnsafe(draftThread.createdAt);
   return presentThreadShell(draftThread.environmentId, {
     id: threadId,
     projectId: draftThread.projectId,
-    title: t("New thread"),
+    title: resolve(msg("New thread")),
     providerInstanceId: fallbackModelSelection.instanceId,
     modelSelection: fallbackModelSelection,
     runtimeMode: draftThread.runtimeMode,
@@ -551,26 +567,27 @@ export function getAntigravitySendBlockReason(
     | null
     | undefined,
   model: string,
+  resolve: typeof t = t,
 ): string | null {
   if (provider?.driver !== "antigravity") return null;
   if (!provider.installed) {
-    return t("Install Antigravity in provider settings before sending.");
+    return resolve(msg("Install Antigravity in provider settings before sending."));
   }
   if (provider.auth.status === "unauthenticated") {
-    return t("Sign in to Antigravity in provider settings before sending.");
+    return resolve(msg("Sign in to Antigravity in provider settings before sending."));
   }
   const slug = model.trim();
-  if (slug.length === 0) return t("Choose an Antigravity model before sending.");
+  if (slug.length === 0) return resolve(msg("Choose an Antigravity model before sending."));
   if (provider.auth.status === "unknown") return null;
   if (provider.models.length === 0) {
-    return t("Refresh Antigravity models in provider settings before sending.");
+    return resolve(msg("Refresh Antigravity models in provider settings before sending."));
   }
   if (
     provider.status === "ready" &&
     slug !== ANTIGRAVITY_DEFAULT_MODEL &&
     !provider.models.some((entry) => entry.slug === slug || entry.aliases?.includes(slug))
   ) {
-    return t("That Antigravity model is no longer available. Choose another model.");
+    return resolve(msg("That Antigravity model is no longer available. Choose another model."));
   }
   return null;
 }
@@ -640,7 +657,7 @@ export async function resolveFileAttachmentUrl(input: {
   });
   if (result._tag === "Failure") throw squashAtomCommandFailure(result);
   const url = resolveAssetUrl(input.httpBaseUrl, result.value.relativeUrl);
-  if (url === null) throw new Error(t("The environment returned an invalid attachment URL."));
+  if (url === null) throw new Error(t(msg("The environment returned an invalid attachment URL.")));
   return url;
 }
 
@@ -653,7 +670,7 @@ export async function prepareRevertedMessageAttachments(input: {
   return Promise.all(
     (input.message.attachments ?? []).map(async (attachment) => {
       if (attachment.type !== "image" && attachment.type !== "file") {
-        throw new Error(t("This message has an attachment that cannot be restored."));
+        throw new Error(t(msg("This message has an attachment that cannot be restored.")));
       }
       const result = await input.createAssetUrl({
         environmentId: input.environmentId,
@@ -668,11 +685,16 @@ export async function prepareRevertedMessageAttachments(input: {
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       const url = resolveAssetUrl(input.httpBaseUrl, result.value.relativeUrl);
-      if (url === null) throw new Error(t("The environment returned an invalid attachment URL."));
+      if (url === null)
+        throw new Error(t(msg("The environment returned an invalid attachment URL.")));
       const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
       if (!response.ok)
-        throw new Error(t("Could not restore attachment: {name}", { name: attachment.name }));
-      return new File([await response.blob()], attachment.name, { type: attachment.mimeType });
+        throw new Error(t(msg("Could not restore attachment: {name}"), { name: attachment.name }));
+      const file = new File([await response.blob()], attachment.name, {
+        type: attachment.mimeType,
+      });
+      if (attachment.type === "image") await readComposerImageBytes(file);
+      return file;
     }),
   );
 }
@@ -887,13 +909,16 @@ export function deriveLockedProvider(input: {
   return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
 }
 
-export function getStartedThreadModelChangeBlockReason(input: {
-  hasStartedSession: boolean;
-  supportsProviderSwitchingViaHandoff?: boolean;
-  currentModelSelection: ModelSelection;
-  currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
-  nextModelSelection: ModelSelection;
-}): { title: string; description: string } | null {
+export function getStartedThreadModelChangeBlockReason(
+  input: {
+    hasStartedSession: boolean;
+    supportsProviderSwitchingViaHandoff?: boolean;
+    currentModelSelection: ModelSelection;
+    currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
+    nextModelSelection: ModelSelection;
+  },
+  resolve: typeof t = t,
+): { title: string; description: string } | null {
   if (!input.hasStartedSession) {
     return null;
   }
@@ -908,9 +933,93 @@ export function getStartedThreadModelChangeBlockReason(input: {
     return null;
   }
   return {
-    title: t("Start a new chat to switch providers"),
-    description: t("This thread does not support switching providers after it has started."),
+    title: resolve(msg("Start a new chat to switch providers")),
+    description: resolve(
+      msg("This thread does not support switching providers after it has started."),
+    ),
   };
+}
+
+export async function waitForRevertedMessage(
+  threadRef: ScopedThreadRef,
+  turnCount: number,
+  requestId: CommandId,
+  revert: () => Promise<void>,
+  timeoutMs = 120_000,
+): Promise<ReadonlyArray<string>> {
+  const threadAtom = environmentThreadDetails.stateAtom(threadRef);
+  const readProjection = () => Option.getOrNull(appAtomRegistry.get(threadAtom).data);
+  const initial = readProjection();
+  const providerThreadId = initial?.thread.activeProviderThreadId;
+  const initialProviderThread = initial?.providerThreads.find(
+    (providerThread) => providerThread.id === providerThreadId,
+  );
+  const initialProviderThreadIds = new Set(initial?.providerThreads.map((thread) => thread.id));
+  // Paging can omit the source run. Rollback commits the entire settled suffix atomically.
+  const witness = initial?.runs.reduce<(typeof initial.runs)[number] | undefined>((latest, run) => {
+    if (
+      run.ordinal <= turnCount ||
+      (run.status !== "completed" &&
+        run.status !== "interrupted" &&
+        run.status !== "failed" &&
+        run.status !== "cancelled")
+    )
+      return latest;
+    return latest === undefined || run.ordinal > latest.ordinal ? run : latest;
+  }, undefined);
+  if (witness === undefined) {
+    throw new Error(t(msg("The thread has changed. Select a message to rewind again.")));
+  }
+  return new Promise<ReadonlyArray<string>>((resolve, reject) => {
+    let settled = false;
+    let accepted = false;
+    let unsubscribe = () => {};
+    let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) globalThis.clearTimeout(timeout);
+      unsubscribe();
+      if (error !== undefined) return reject(error);
+      const unrestored = readProjection()?.thread.rollbackUnrestored;
+      resolve(unrestored?.requestId === requestId ? unrestored.repositories : []);
+    };
+    const inspect = () => {
+      const thread = readProjection();
+      if (!thread) return;
+      const failure = thread.thread.rollbackFailure;
+      if (failure?.requestId === requestId) {
+        finish(new Error(failure.message));
+        return;
+      }
+      if (
+        accepted &&
+        thread.providerThreads.some(
+          (providerThread) =>
+            (providerThread.id === providerThreadId ||
+              // Claude resets to a fresh root session when rewinding to thread start.
+              (turnCount === 0 &&
+                providerThread.ownerNodeId === null &&
+                providerThread.appThreadId === initial?.thread.id &&
+                providerThread.providerInstanceId === initialProviderThread?.providerInstanceId &&
+                !initialProviderThreadIds.has(providerThread.id))) &&
+            providerThread.lastRunOrdinal === (turnCount === 0 ? null : turnCount),
+        ) &&
+        thread.runs.some((run) => run.id === witness.id && run.status === "rolled_back")
+      )
+        finish();
+    };
+    unsubscribe = appAtomRegistry.subscribe(threadAtom, inspect);
+    timeout = globalThis.setTimeout(() => {
+      finish(new Error(t(msg("Timed out waiting for the thread to rewind."))));
+    }, timeoutMs);
+    Promise.resolve()
+      .then(revert)
+      .then(() => {
+        accepted = true;
+        inspect();
+      }, finish);
+  });
 }
 
 export interface LocalDispatchSnapshot {
@@ -1043,15 +1152,17 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   );
 }
 
-// Window return puts the caret in the composer unless focus is deliberate: another text field,
-// a terminal, an open dialog, menu, or popup, a region, timeline, or sidebar row reached from the
-// keyboard, or a region with its own keys (aria-keyshortcuts). A plain focused button or a clicked
-// row yields to the composer.
+// Window return puts the caret in the composer unless focus or a selection is deliberate: another
+// text field, a terminal, an open dialog, menu, or popup, a region, timeline, or sidebar row reached
+// from the keyboard, a region with its own keys (aria-keyshortcuts), or selected text the composer
+// would clear. A plain focused button or a clicked row yields to the composer.
 export function shouldRefocusComposerOnWindowFocus(
   activeElement:
     | (Pick<Element, "tagName" | "closest" | "getAttribute"> & { isContentEditable?: boolean })
     | null,
+  selection: Pick<Selection, "isCollapsed"> | null,
 ): boolean {
+  if (selection !== null && !selection.isCollapsed) return false;
   if (activeElement === null || activeElement.tagName === "BODY") return true;
   if (
     activeElement.tagName === "INPUT" ||
@@ -1139,8 +1250,57 @@ export type LocalThreadErrorEntry = {
   readonly at: number;
 };
 
-export function chatActionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : t("An error occurred.");
+export function chatActionErrorMessage(error: unknown, resolve: typeof t = t): string {
+  return thrownErrorMessage(error, resolve) ?? resolve(msg("An error occurred."));
+}
+
+/** A local copy of the runtime's error shares the runtime's key, so one dismissal covers both. */
+function threadErrorIsServerRuntime(input: {
+  readonly isServerThread: boolean;
+  readonly localServerError: string | null;
+  readonly runtimeError: string | null;
+}): boolean {
+  return (
+    input.isServerThread &&
+    (input.localServerError === null || input.localServerError === input.runtimeError)
+  );
+}
+
+// Only server runtime errors get a session dismissal: they persist in projections across
+// remounts. Local and draft errors are cleared on dismiss, so a repeat shows again.
+export function resolveThreadErrorBanner(input: {
+  readonly isServerThread: boolean;
+  readonly localServerError: string | null;
+  readonly localDraftError: string | null;
+  readonly runtimeError: string | null;
+  readonly runtimeErrorSource: string | null;
+}): {
+  readonly threadError: string | null;
+  readonly sessionDismissal: {
+    readonly error: string;
+    readonly source: string | null;
+  } | null;
+} {
+  const threadError = input.isServerThread
+    ? (input.localServerError ?? input.runtimeError ?? null)
+    : input.localDraftError;
+  if (
+    threadError === null ||
+    !threadErrorIsServerRuntime({
+      isServerThread: input.isServerThread,
+      localServerError: input.localServerError,
+      runtimeError: input.runtimeError,
+    })
+  ) {
+    return { threadError, sessionDismissal: null };
+  }
+  return {
+    threadError,
+    sessionDismissal: {
+      error: threadError,
+      source: input.runtimeErrorSource,
+    },
+  };
 }
 
 export function releaseChatTimelineAnchor<T extends { readonly messageId: MessageId | null }>(
@@ -1202,15 +1362,18 @@ export function makeModelDisabledReason(
     Parameters<typeof getStartedThreadModelChangeBlockReason>[0],
     "nextModelSelection"
   > | null,
+  resolve: typeof t = t,
 ) {
   return (instanceId: ProviderInstanceId, model: string): string | null => {
     if (!context) return null;
-    const reason = getStartedThreadModelChangeBlockReason({
-      ...context,
-      nextModelSelection: { instanceId, model },
-    });
+    const reason = getStartedThreadModelChangeBlockReason(
+      { ...context, nextModelSelection: { instanceId, model } },
+      resolve,
+    );
     return reason
-      ? t("{reason} Start a new thread to use this model.", { reason: reason.description })
+      ? resolve(msg("{reason} Start a new thread to use this model."), {
+          reason: reason.description,
+        })
       : null;
   };
 }
@@ -1292,6 +1455,12 @@ export function planComposerTurn(input: {
   readonly sendEnvMode: DraftThreadEnvMode;
   readonly worktreePath: string | null;
   readonly activeThreadBranch: string | null;
+  /** False for a plain folder that tracks repositories: each starts from its own default branch. */
+  readonly projectIsGitRepo: boolean;
+  /** For such a plain folder: the branch its repositories start from where they have it. */
+  readonly plainProjectBaseBranch?: string | undefined;
+  /** The server launches a No project worktree request at its root, so it needs no base. */
+  readonly isScratchProject: boolean;
   readonly resumeCompactionTokens: number | null;
   readonly keepFullHistory: boolean;
   readonly phase: SessionPhase;
@@ -1318,8 +1487,17 @@ export function planComposerTurn(input: {
   return {
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    missingWorktreeBaseBranch: shouldCreateWorktree && !input.activeThreadBranch,
-    baseBranchForWorktree: shouldCreateWorktree ? input.activeThreadBranch : null,
+    missingWorktreeBaseBranch:
+      shouldCreateWorktree &&
+      input.projectIsGitRepo &&
+      !input.activeThreadBranch &&
+      !input.isScratchProject,
+    // The launch schema requires a base ref; `HEAD` leaves each repository on its default branch.
+    baseBranchForWorktree: !shouldCreateWorktree
+      ? null
+      : input.projectIsGitRepo
+        ? input.activeThreadBranch
+        : input.plainProjectBaseBranch || "HEAD",
     compactBeforeSend,
     turnDispatchMode:
       compactBeforeSend || (input.sendQueuesBehindSetup && dispatchMode !== "steer")
@@ -1381,16 +1559,29 @@ export function optimisticMessageAttachments(
   );
 }
 
-/** Fallback title sources for a message with no text of its own. */
-export function sendTitleFallbackLabels(snapshot: ComposerSendSnapshot) {
-  const terminalContext = snapshot.terminalContexts[0];
+export function deriveComposerSendTitle(snapshot: ComposerSendSnapshot, resolve: typeof t = t) {
+  const terminalLabels = terminalContextDisplayLabels(snapshot.terminalContexts, resolve);
+  const text = replaceComposerContextReferences(snapshot.messageText, (reference) => {
+    const label = terminalLabels.get(reference.contextId);
+    return reference.kind === "terminal" && label !== undefined
+      ? formatInlineContextReference({ ...reference, label })
+      : reference.source;
+  });
   const reviewComment = snapshot.reviewComments[0];
   const previewAnnotation = snapshot.previewAnnotations[0];
-  return [
-    terminalContext ? formatTerminalContextLabel(terminalContext) : undefined,
-    reviewComment ? `Review: ${reviewCommentContextLabel(reviewComment)}` : undefined,
-    previewAnnotation ? previewAnnotationContextLabel(previewAnnotation) : undefined,
+  const fallbackLabels = [
+    terminalLabels.values().next().value,
+    reviewComment
+      ? resolve(msg("Review: {label}"), {
+          label: reviewCommentContextLabel(reviewComment, resolve),
+        })
+      : undefined,
+    previewAnnotation ? previewAnnotationContextLabel(previewAnnotation, resolve) : undefined,
   ];
+  return deriveThreadTitleSeed(
+    { text, attachments: snapshot.attachments, fallbackLabels },
+    resolve,
+  );
 }
 
 /**

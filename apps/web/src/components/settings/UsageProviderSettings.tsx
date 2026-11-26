@@ -18,6 +18,8 @@ import { AddUsageLimitSourceDialog } from "./AddUsageLimitSourceDialog";
 import { searchableSetting } from "./settingsSearch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
+const CLI_PROXY_NAME = "CLI Proxy";
+
 export function UsageProviderSettings({
   environmentId,
   environmentLabel,
@@ -30,40 +32,44 @@ export function UsageProviderSettings({
   readonly readOnly: boolean;
 }) {
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<"cliproxy" | "http" | null>(null);
   const entries = Object.entries(sources);
   // Without a hub or a way to add one, the section has nothing to show.
   if (entries.length === 0 && readOnly) return null;
+
+  const addActions = (
+    <div className="flex gap-2">
+      <Button size="xs" variant="outline" onClick={() => setAdding("cliproxy")}>
+        <PlusIcon className="size-3" aria-hidden />
+        {t("Add hub")}
+      </Button>
+      <Button size="xs" variant="outline" onClick={() => setAdding("http")}>
+        <PlusIcon className="size-3" aria-hidden />
+        {t("Add HTTP source")}
+      </Button>
+    </div>
+  );
 
   return (
     <>
       <SettingsSection
         {...searchableSetting("usage-providers")}
         headerAction={
-          // An empty list carries its own Add hub button, beside the words that say it is empty.
-          !readOnly && entries.length > 0 ? (
-            <Button size="xs" variant="outline" onClick={() => setAdding(true)}>
-              <PlusIcon className="size-3" aria-hidden />
-              {t("Add hub")}
-            </Button>
-          ) : null
+          // An empty list carries its own add buttons, beside the words that say it is empty.
+          !readOnly && entries.length > 0 ? addActions : null
         }
       >
         {entries.length === 0 ? (
           readOnly ? null : (
             <SettingsRow
-              title={t("No hubs configured.")}
-              description={t("A hub adds its accounts' usage limits to the Limits view.")}
-              control={
-                <Button size="xs" variant="outline" onClick={() => setAdding(true)}>
-                  <PlusIcon className="size-3" aria-hidden />
-                  {t("Add hub")}
-                </Button>
-              }
+              title={t("No usage sources configured.")}
+              description={t("A source adds usage limits to the Limits view.")}
+              control={addActions}
             />
           )
         ) : (
           entries.map(([id, source]) => {
+            const kindLabel = source.kind === "http" ? t("HTTP quota source") : CLI_PROXY_NAME;
             const label = source.label?.trim() || source.url;
             return (
               <SettingsRow
@@ -71,8 +77,7 @@ export function UsageProviderSettings({
                 title={label}
                 description={
                   <span className="break-all">
-                    {"CLI Proxy"}
-                    {source.enabled ? "" : ` · ${t("Disabled")}`}
+                    {source.enabled ? kindLabel : t("{name} · Disabled", { name: kindLabel })}
                     {label !== source.url ? ` · ${source.url}` : ""}
                   </span>
                 }
@@ -92,7 +97,10 @@ export function UsageProviderSettings({
       {adding && !readOnly ? (
         <AddUsageLimitSourceDialog
           open
-          onOpenChange={setAdding}
+          kind={adding}
+          onOpenChange={(open) => {
+            if (!open) setAdding(null);
+          }}
           environmentId={environmentId}
           environmentLabel={environmentLabel}
           sources={sources}
@@ -120,9 +128,7 @@ function RemoveUsageProviderButton({
           <AlertDialogHeader>
             <AlertDialogTitle>{t("Remove {label}?", { label })}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t(
-                "The hub's management key is deleted from this server. Its accounts leave the Limits view; the hub itself is untouched. Add it again with the URL and key to bring them back.",
-              )}
+              {t("The saved connection and its credentials are removed from this environment.")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -134,7 +140,7 @@ function RemoveUsageProviderButton({
                 onConfirm();
               }}
             >
-              {t("Remove hub")}
+              {t("Remove")}
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

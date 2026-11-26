@@ -3,7 +3,7 @@ import { Platform, Pressable, StyleSheet, View, type AccessibilityActionEvent } 
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { cn } from "../../lib/cn";
-import { t } from "../../lib/i18n";
+import { t, tn } from "../../lib/i18n";
 
 const ACCESSIBILITY_RESIZE_STEP = 24;
 
@@ -66,7 +66,7 @@ export function WorkspacePaneDivider(props: WorkspacePaneDividerProps) {
         accessibilityRole="adjustable"
         accessibilityValue={{
           now: Math.round(props.currentWidth),
-          text: `${Math.round(props.currentWidth)} points wide`,
+          text: tn(Math.round(props.currentWidth), "{count} point wide", "{count} points wide"),
         }}
         onAccessibilityAction={handleAccessibilityAction}
       >

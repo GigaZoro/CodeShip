@@ -1,23 +1,26 @@
+import { t, tn } from "@t3tools/shared/i18n";
 import { isListedThreadLineage } from "@t3tools/contracts";
 
 import type { EnvironmentProject, EnvironmentThreadShell } from "./models.ts";
-import { t, tn } from "@t3tools/shared/i18n";
 
 export function planProjectRemoval<
   Thread extends Pick<EnvironmentThreadShell, "environmentId" | "projectId" | "lineage">,
->(options: {
-  readonly members: ReadonlyArray<
-    Pick<EnvironmentProject, "id" | "environmentId" | "title" | "workspaceRoot"> & {
-      readonly environmentLabel?: string | null;
-    }
-  >;
-  readonly groupMemberCount: number;
-  readonly hasOtherMembers: boolean;
-  readonly displayName: string;
-  readonly threads: ReadonlyArray<Thread>;
-  /** The members' threads this client does not hold: older settled threads its shell left out. */
-  readonly unloadedThreadCount?: number;
-}) {
+>(
+  options: {
+    readonly members: ReadonlyArray<
+      Pick<EnvironmentProject, "id" | "environmentId" | "title" | "workspaceRoot"> & {
+        readonly environmentLabel?: string | null;
+      }
+    >;
+    readonly groupMemberCount: number;
+    readonly hasOtherMembers: boolean;
+    readonly displayName: string;
+    readonly threads: ReadonlyArray<Thread>;
+    /** The members' threads this client does not hold: older settled threads its shell left out. */
+    readonly unloadedThreadCount?: number;
+  },
+  resolve: typeof t = t,
+) {
   const { members, groupMemberCount, hasOtherMembers, displayName, threads } = options;
   const memberKeys = new Set(members.map((member) => `${member.environmentId}:${member.id}`));
   const projectThreads = threads.filter((thread) =>
@@ -47,13 +50,17 @@ export function planProjectRemoval<
             { label: targetLabel },
           )
       : targetKind === "checkout"
-        ? t('Remove checkout "{label}"?', { label: targetLabel })
-        : t('Remove project "{label}"?', { label: targetLabel }),
+        ? resolve('Remove checkout "{label}"?', { label: targetLabel })
+        : resolve('Remove project "{label}"?', { label: targetLabel }),
     ...(singleMember
       ? [
-          t("Path: {path}", { path: singleMember.workspaceRoot }),
+          resolve("Path: {path}", { path: singleMember.workspaceRoot }),
           ...(singleMember.environmentLabel
-            ? [t("Environment: {environment}", { environment: singleMember.environmentLabel })]
+            ? [
+                resolve("Environment: {environment}", {
+                  environment: singleMember.environmentLabel,
+                }),
+              ]
             : []),
         ]
       : [
@@ -65,15 +72,17 @@ export function planProjectRemoval<
         ]),
     ...(threadCount > 0
       ? [
-          t(
+          resolve(
             "Those threads and any archived threads are deleted from T3.CodeShip. Provider sessions are kept.",
           ),
         ]
-      : [t("Any archived threads are deleted from T3.CodeShip. Provider sessions are kept.")]),
+      : [
+          resolve("Any archived threads are deleted from T3.CodeShip. Provider sessions are kept."),
+        ]),
     isWholeGroup && !hasOtherMembers
-      ? t("This removes only the project entries, not the files on disk.")
-      : t("Other entries in this grouped project are unaffected."),
-    t("This action cannot be undone."),
+      ? resolve("This removes only the project entries, not the files on disk.")
+      : resolve("Other entries in this grouped project are unaffected."),
+    resolve("This action cannot be undone."),
   ].join("\n");
 
   return { projectThreads, isWholeGroup, targetKind, confirmationMessage };

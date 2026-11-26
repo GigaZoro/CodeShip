@@ -8,6 +8,8 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useRef, useState } from "react";
 
@@ -77,7 +79,9 @@ export function PullRequestThreadDialog({
   const [reference, setReference] = useState(initialReference ?? "");
   const [referenceDirty, setReferenceDirty] = useState(false);
   const [preparingMode, setPreparingMode] = useState<"local" | "worktree" | null>(null);
-  const [prepareErrorMessage, setPrepareErrorMessage] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<{ target: string; message: string } | null>(
+    null,
+  );
   const [debouncedReference, referenceDebouncer] = useDebouncedValue(
     reference,
     { wait: 450 },
@@ -116,6 +120,7 @@ export function PullRequestThreadDialog({
       ? (pullRequestResolution.data?.pullRequest ?? null)
       : null;
   const resolvedPullRequest = liveResolvedPullRequest ?? cachedPullRequest;
+  const checkoutTarget = JSON.stringify([environmentId, cwd, threadId, parsedReference]);
   const isResolving =
     open &&
     parsedReference !== null &&
@@ -141,7 +146,7 @@ export function PullRequestThreadDialog({
     if (!parsedReference || !resolvedPullRequest || !cwd) {
       return;
     }
-    setPrepareErrorMessage(null);
+    setCheckoutError(null);
     setPreparingMode(mode);
     const result = await preparePullRequestThreadAction.run({
       reference: parsedReference,
@@ -150,15 +155,14 @@ export function PullRequestThreadDialog({
     });
     setPreparingMode(null);
     if (result._tag === "Failure") {
-      if (isAtomCommandInterrupted(result)) {
-        preparePullRequestThreadAction.resetError();
-      } else {
+      if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
-        setPrepareErrorMessage(
-          error instanceof Error
-            ? error.message
-            : t("Failed to prepare {kind} thread.", { kind: terminology.singular }),
-        );
+        setCheckoutError({
+          target: checkoutTarget,
+          message:
+            thrownErrorMessage(error, t) ??
+            t("Failed to prepare {kind} thread.", { kind: terminology.singular }),
+        });
       }
       return;
     }
@@ -184,14 +188,8 @@ export function PullRequestThreadDialog({
         : null;
   const errorMessage =
     validationMessage ??
-    prepareErrorMessage ??
-    (resolvedPullRequest === null && pullRequestResolution.error
-      ? pullRequestResolution.error
-      : preparePullRequestThreadAction.error instanceof Error
-        ? preparePullRequestThreadAction.error.message
-        : preparePullRequestThreadAction.error
-          ? t("Failed to prepare {kind} thread.", { kind: terminology.singular })
-          : null);
+    (checkoutError?.target === checkoutTarget ? checkoutError.message : null) ??
+    (resolvedPullRequest === null ? pullRequestResolution.error : null);
 
   return (
     <Dialog
@@ -266,7 +264,11 @@ export function PullRequestThreadDialog({
                   </p>
                 </div>
                 <span className={cn("shrink-0 text-xs capitalize", statusTone)}>
-                  {resolvedPullRequest.state}
+                  {resolvedPullRequest.state === "open"
+                    ? t("open")
+                    : resolvedPullRequest.state === "closed"
+                      ? t("closed")
+                      : t("merged")}
                 </span>
               </div>
             </div>

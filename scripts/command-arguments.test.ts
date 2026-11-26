@@ -7,7 +7,6 @@ import ts from "typescript-legacy";
 import { parseBehaviorArguments } from "./mobile-behavior.ts";
 import { parseE2eArguments } from "./mobile-e2e.ts";
 import { parseShowcaseCliArgs } from "./mobile-showcase.ts";
-import { parseRenderMetricsArguments } from "./render-metrics.ts";
 import { parseCachedTestArguments } from "./test-cached.ts";
 import { isChangedTestScript } from "./lib/cached-tests.ts";
 import {
@@ -30,6 +29,55 @@ const metadataPackageUsage = "Usage: node package.mjs <helpers|verify> <director
 const metadataSigningUsage = "Usage: node scripts/sign-macos.ts --verify-codex-metadata";
 const wakeUsageUsage = "Usage: node scripts/wake-usage.mjs <statev2.sqlite> <YYYY-MM-DD UTC>";
 const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
+  "../.agents/skills/launch-video/scripts/capture.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [
+      ["one", "one", "one"],
+      1,
+      "Usage: capture.mjs <story.html> <outDir> [--at <seconds,...>] [--fps 30]",
+    ],
+  ],
+  "../.agents/skills/launch-video/scripts/cut.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["one", "one"], 1, "Usage: cut.mjs <spec.json>"],
+  ],
+  "../.agents/skills/launch-video/scripts/find.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["one", "one", "one"], 1, "Usage: find.mjs <beats/name.html> <text> [--all]"],
+  ],
+  "../.agents/skills/launch-video/scripts/phone-3d.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["one", "one"], 1, "Usage: phone-3d.mjs <dir> [--probe]"],
+  ],
+  "../.agents/skills/launch-video/stagings/linked-environments/drive.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["one", "one"], 1, "Usage: drive.mjs <out-dir>"],
+  ],
+  "../.agents/skills/launch-video/stagings/linked-environments/serve.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["one", "one"], 1, "Usage: serve.mjs <out-dir>"],
+  ],
+  "../.agents/skills/launch-video/stagings/mobile-2.4/serve.mjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["one", "one"], 1, "Usage: serve.mjs <out-dir> [--reuse]"],
+  ],
+  "../.github/scripts/set-mobile-version.cjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["1.2.3", "extra"], 1, "Usage: set-mobile-version.cjs <version>"],
+  ],
+  "../.github/scripts/set-release-version.cjs": [
+    [[UNREAD], 1, unknownOption(UNREAD)],
+    [["1.2.3", "extra"], 1, "Usage: set-release-version.cjs <version>"],
+  ],
+  "../.github/scripts/mobile-ios-preview-record.cjs": [
+    [["read", UNREAD], 1, unknownOption(UNREAD)],
+    [["create", "only-link"], 1, "Usage: mobile-ios-preview-record.cjs read | create"],
+    [["read", "unused"], 1, "Usage: mobile-ios-preview-record.cjs read | create"],
+  ],
+  "../apps/desktop/scripts/build-apple-speech.mjs": [[[UNREAD], 1, unknownOption(UNREAD)]],
+  "../evals/mcp-tool-use/compare-arms.ts": [[[UNREAD], 1, unknownOption(UNREAD)]],
+  "../evals/workflow-authoring/run.ts": [[[UNREAD], 1, unknownOption(UNREAD)]],
+  "./scenarios/start-app.ts": [[[UNREAD], 1, `Unrecognized flag: ${UNREAD}`]],
   "../.github/scripts/bounded-git.cjs": [
     [[UNREAD, "status"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
     [["1000"], 2, "usage: bounded-git.cjs <timeoutMs> <git args…>"],
@@ -165,8 +213,9 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
     [["acp", UNREAD], 2, "fake-fx: unsupported command acp " + UNREAD],
     [["--version", UNREAD], 2, "fake-fx: unsupported command --version " + UNREAD],
   ],
-  "./render-metrics.ts": [
-    [["compare", "before.json", "after.json", UNREAD], 1, unknownOption(UNREAD)],
+  "./metrics/web/client-metrics.ts": [
+    [["compare", "before.json", "after.json", UNREAD], 1, `Unrecognized flag: ${UNREAD}`],
+    [["run", UNREAD], 1, `Unrecognized flag: ${UNREAD}`],
   ],
   "./sign-macos.ts": [
     [["--verify-codex-metadata", "Test.app", "staged", UNREAD], 1, metadataSigningUsage],
@@ -190,12 +239,28 @@ const PARSER_CHECKS = {
   "./mobile-behavior.ts": parseBehaviorArguments,
   "./mobile-e2e.ts": parseE2eArguments,
   "./mobile-showcase.ts": parseShowcaseCliArgs,
-  "./render-metrics.ts": (args: ReadonlyArray<string>) =>
-    parseRenderMetricsArguments(["run", ...args]),
 };
 
 /** Argv readers whose command line is delegated, or whose parser is exercised by its own tests. */
 const EXEMPT: Readonly<Record<string, string>> = {
+  "../.coderabbit.config.ts":
+    "mentions process.argv in a review instruction; the configuration has no command line",
+  "../apps/server/scripts/dev.ts":
+    "forwards every argument to the server CLI, which validates them",
+  "../.agents/skills/launch-video/scripts/fake-claude.mjs":
+    "implements the Claude SDK subprocess protocol; the version handshake below exercises its command line",
+  "./scenarios/acp-location-only-update-names-edited-file.e2e.ts":
+    "the scenario runs its embedded fake ACP command with its file and gate paths",
+  "./scenarios/acp-refresh-keeps-deleted-session-removed.e2e.ts":
+    "the scenario runs its embedded fake ACP command with the origin path",
+  "./scenarios/acp-refused-model-keeps-native-session.e2e.ts":
+    "the scenario runs its embedded fake ACP command with its online flag path",
+  "./scenarios/agent-browser-devtools-port-not-a-server.e2e.ts":
+    "the scenario runs its embedded fake browser listener with a debugging port",
+  "./scenarios/hermes-wrapper-keeps-background-reply.e2e.ts":
+    "the scenario runs its embedded fake Hermes command with its gate path",
+  "./scenarios/issues-refresh-reads-new-azure-state.e2e.ts":
+    "the scenario runs its embedded fake Azure CLI and reads its arguments",
   "../apps/mobile/scripts/generate-uniwind-themes.mts":
     "the mobile theme tests exercise the CLI in a disposable project",
   "../apps/desktop/scripts/ensure-electron-runtime.mjs":
@@ -635,14 +700,24 @@ describe("command-line scripts", () => {
     );
   });
 
-  it.each(["--help", "-h"])("writes standalone %s to stdout", (flag) => {
+  it("answers the staged Claude SDK version probe", () => {
     const result = NodeChildProcess.spawnSync(
       process.execPath,
-      [NodePath.join(root, "scripts/render-metrics.ts"), flag],
+      [NodePath.join(root, ".agents/skills/launch-video/scripts/fake-claude.mjs"), "--version"],
       { encoding: "utf8" },
     );
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toMatch(/^Usage:/);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+ \(Claude Code\)$/);
+  });
+
+  it.each(["--help", "-h"])("writes standalone %s to stdout", (flag) => {
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      [NodePath.join(root, "scripts/metrics/web/client-metrics.ts"), flag],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^USAGE$/m);
     expect(result.stderr).toBe("");
   });
 

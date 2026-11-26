@@ -1,12 +1,13 @@
+import { msg, t, tn } from "~/i18n";
 import {
   type LinkedPrompt,
-  parseNewThreadLink,
-  parseThreadLinkPrompt,
   promptLinkAppPath,
   promptLinkDeepLink,
 } from "@t3tools/shared/promptLinks";
+import { parseNewThreadLink, parseThreadLinkPrompt } from "@t3tools/shared/promptLinksCopy";
 import { useLocation } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
+
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { DESKTOP_DOWNLOAD_URL } from "~/branding";
@@ -19,7 +20,6 @@ import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { StandalonePage, StandalonePageHeader } from "../ui/standalone-page";
 
-import { t, tn } from "~/i18n";
 const OPENER_STORAGE_KEY = "t3code:prompt-link-opener";
 const Opener = Schema.NullOr(Schema.Literals(["app", "browser"]));
 
@@ -30,47 +30,49 @@ interface LinkSummary {
   readonly details: ReadonlyArray<string>;
 }
 
-const promptHeader = () => ({
-  title: t("Open this prompt"),
-  description: t("It opens as a draft. Nothing runs until you press Send."),
-});
-
 function summarize(
   appPath: string,
+  resolve: typeof t,
 ): { ok: true; value: LinkSummary } | { ok: false; error: string } {
+  const PROMPT_HEADER = {
+    title: resolve(msg("Open this prompt")),
+    description: resolve(msg("It opens as a draft. Nothing runs until you press Send.")),
+  };
   const url = new URL(appPath, window.location.origin);
   if (url.pathname !== "/new") {
-    const prompt = parseThreadLinkPrompt(url.search);
+    const prompt = parseThreadLinkPrompt(url.search, resolve);
     if (!prompt.ok) return prompt;
     return {
       ok: true,
       value:
         prompt.value === null
           ? {
-              title: t("Open this thread"),
-              description: t(
-                "It opens in T3.CodeShip if you're connected to the machine it runs on.",
+              title: resolve(msg("Open this thread")),
+              description: resolve(
+                msg("It opens in T3.CodeShip if you're connected to the machine it runs on."),
               ),
               prompt: null,
               details: [],
             }
           : {
-              ...promptHeader(),
+              ...PROMPT_HEADER,
               prompt: prompt.value,
-              details: [t("Opens one of your threads.")],
+              details: [resolve(msg("Opens one of your threads."))],
             },
     };
   }
-  const link = parseNewThreadLink(url.search);
+  const link = parseNewThreadLink(url.search, resolve);
   if (!link.ok) return link;
   if (link.value.kind === "pull-request") {
     const { owner, name, number } = link.value.pullRequest;
     return {
       ok: true,
       value: {
-        ...promptHeader(),
+        ...PROMPT_HEADER,
         prompt: link.value.prompt,
-        details: [t("Pull request {owner}/{name}#{number}", { owner, name, number })],
+        details: [
+          resolve(msg("Pull request {pullRequest}"), { pullRequest: `${owner}/${name}#${number}` }),
+        ],
       },
     };
   }
@@ -78,14 +80,16 @@ function summarize(
   return {
     ok: true,
     value: {
-      ...promptHeader(),
+      ...PROMPT_HEADER,
       prompt: link.value.prompt,
       details: [
         repository
-          ? t("Repository {owner}/{name}", { owner: repository.owner, name: repository.name })
-          : t("No project"),
+          ? resolve(msg("Repository {repository}"), {
+              repository: `${repository.owner}/${repository.name}`,
+            })
+          : resolve(msg("No project")),
         ...(provider
-          ? [t("Model {model}", { model: model ? `${provider} ${model}` : provider })]
+          ? [resolve(msg("Model {model}"), { model: model ? `${provider} ${model}` : provider })]
           : []),
       ],
     },
@@ -131,7 +135,7 @@ function HostedPromptLinkLanding({
   readonly openInAppRemembered: boolean;
   readonly onChoose: (choice: "app" | "browser", remember: boolean) => void;
 }) {
-  const summary = summarize(appPath);
+  const summary = summarize(appPath, t);
   const [remember, setRemember] = useState(false);
   const deepLink = promptLinkDeepLink(appPath);
   const onPhone = /android|iphone|ipad/i.test(navigator.userAgent);

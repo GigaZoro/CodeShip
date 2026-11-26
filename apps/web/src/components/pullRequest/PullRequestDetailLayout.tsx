@@ -1,11 +1,35 @@
-import { ArrowLeftIcon, FileDiffIcon } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import { t } from "~/i18n";
+
+import { ArrowLeftIcon, FileDiffIcon, LockIcon } from "lucide-react";
+import { useEffect, useRef, type ComponentProps, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
+import { Badge } from "../ui/badge";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { PullRequestMetaLine } from "./pullRequestPresentation";
-import { t } from "~/i18n";
+
+export function PullRequestPrivateMark({ className }: { className?: string }) {
+  const label = t("Private");
+  return (
+    <SharedTooltipTrigger
+      render={<LockIcon role="img" aria-label={label} className={cn("shrink-0", className)} />}
+      label={label}
+    />
+  );
+}
+
+export function PullRequestPrivateBadge() {
+  return (
+    <Badge size="control" variant="outline">
+      <span className="flex items-center gap-1 text-muted-foreground">
+        <LockIcon className="size-3.5" />
+        {t("Private")}
+      </span>
+    </Badge>
+  );
+}
 
 export function PullRequestDetailHeaderBody({
   title,
@@ -78,6 +102,10 @@ export function PullRequestDetailTabBar<Tab extends string>({
   inert?: boolean;
   children?: ReactNode;
 }) {
+  // A pointer passing over a tab is not intent; it must rest like a list row does.
+  const pointerIntent = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A rest timer still pending when the bar unmounts must not read for a closed panel.
+  useEffect(() => () => clearTimeout(pointerIntent.current), []);
   return (
     <nav
       className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-2"
@@ -98,7 +126,15 @@ export function PullRequestDetailTabBar<Tab extends string>({
           <Toggle
             key={tab.value}
             value={tab.value}
-            onPointerEnter={onTabIntent ? () => onTabIntent(tab.value) : undefined}
+            onPointerEnter={
+              onTabIntent
+                ? () => {
+                    clearTimeout(pointerIntent.current);
+                    pointerIntent.current = setTimeout(() => onTabIntent(tab.value), 150);
+                  }
+                : undefined
+            }
+            onPointerLeave={onTabIntent ? () => clearTimeout(pointerIntent.current) : undefined}
             onFocus={onTabIntent ? () => onTabIntent(tab.value) : undefined}
           >
             {tab.label}

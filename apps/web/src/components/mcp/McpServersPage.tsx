@@ -95,6 +95,11 @@ import {
 import { FAILURE_FALLBACK, McpSignInFlow } from "./McpSignInFlow";
 import { msg, t, tn, type Message } from "~/i18n";
 
+const EXAMPLE_TOKEN_KEY = "THREADPAGE_TOKEN";
+const EXAMPLE_AUTHORIZATION_HEADER = "Authorization: Bearer …";
+const EXAMPLE_STDIO_COMMAND = "npx -y @upstash/context7-mcp";
+const EXAMPLE_ENVIRONMENT_VARIABLE = "API_KEY=…";
+
 const serverLabel = (server: ProviderMcpServer) => server.displayName ?? server.name;
 
 const CLAUDE_CONNECTORS_URL = "https://claude.ai/settings/connectors";
@@ -551,7 +556,7 @@ function ServerForm(props: {
                   <Input
                     {...field("bearerTokenEnvVar")}
                     spellCheck={false}
-                    placeholder={"THREADPAGE_TOKEN"}
+                    placeholder={EXAMPLE_TOKEN_KEY}
                     value={form.bearerTokenEnvVar}
                     onChange={(event) => update("bearerTokenEnvVar", event.currentTarget.value)}
                   />
@@ -572,7 +577,7 @@ function ServerForm(props: {
                   {...field("headers")}
                   size="sm"
                   spellCheck={false}
-                  placeholder={"Authorization: Bearer …"}
+                  placeholder={EXAMPLE_AUTHORIZATION_HEADER}
                   value={form.headers}
                   onChange={(event) => update("headers", event.currentTarget.value)}
                 />
@@ -593,7 +598,7 @@ function ServerForm(props: {
                 <Input
                   {...field("command")}
                   spellCheck={false}
-                  placeholder={"npx -y @upstash/context7-mcp"}
+                  placeholder={EXAMPLE_STDIO_COMMAND}
                   value={form.command}
                   onChange={(event) => update("command", event.currentTarget.value)}
                 />
@@ -610,7 +615,7 @@ function ServerForm(props: {
                   {...field("env")}
                   size="sm"
                   spellCheck={false}
-                  placeholder={"API_KEY=…"}
+                  placeholder={EXAMPLE_ENVIRONMENT_VARIABLE}
                   value={form.env}
                   onChange={(event) => update("env", event.currentTarget.value)}
                 />

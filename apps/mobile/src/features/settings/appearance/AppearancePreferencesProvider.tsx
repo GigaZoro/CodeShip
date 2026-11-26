@@ -16,7 +16,7 @@ import {
   type AndroidNavigationStyle,
 } from "../../../lib/androidNavigationStyle";
 
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import type { AccentColor, InterfaceDensity } from "@t3tools/contracts/settings";
 import { normalizeLanguagePreference, type LanguagePreference } from "@t3tools/shared/i18n";
 import { Atom, AsyncResult } from "effect/reactivity";
@@ -30,7 +30,8 @@ import {
 } from "../../../lib/appearancePreferences";
 import { applyLanguagePreference } from "../../../lib/language";
 import { appAtomRegistry } from "../../../state/atom-registry";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../../state/preferences";
+import { useAtomCommand } from "../../../state/use-atom-command";
 import type { Preferences } from "../../../persistence/mobile-preferences";
 import {
   isSystemColorsAvailable,
@@ -217,7 +218,7 @@ export function AppearancePreferencesProvider(props: {
   readonly onBeforeLanguageRemount?: () => void;
 }) {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const systemColorScheme = useColorScheme() === "dark" ? "dark" : "light";
   const storedPreferences = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value
@@ -282,11 +283,13 @@ export function AppearancePreferencesProvider(props: {
   }, [preferencesLoaded, languagePreference, onBeforeLanguageRemount]);
 
   const updatePreferences = (patch: Partial<Preferences>) => {
-    startTransition(() => savePreferences(patch));
+    startTransition(() => {
+      void savePreferences(patch);
+    });
   };
 
   const updateThemePreferences = (patch: Partial<Preferences>) => {
-    savePreferences(patch);
+    void savePreferences(patch);
   };
 
   const setThemeIdForAppearance = (appearance: MobileThemeAppearance, value: MobileThemeId) => {
@@ -328,7 +331,7 @@ export function AppearancePreferencesProvider(props: {
   };
 
   const setLanguagePreference = (value: LanguagePreference) => {
-    savePreferences({ language: value });
+    void savePreferences({ language: value });
   };
 
   const setAndroidNavigationStyle = (value: AndroidNavigationStyle) =>

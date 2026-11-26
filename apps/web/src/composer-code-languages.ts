@@ -1,15 +1,16 @@
-/* oxlint-disable t3code/no-untranslated-text -- programming-language names; "Plain text" is translated by codeLanguageLabel */
-import { t } from "~/i18n";
+import { msg, t } from "~/i18n";
 
+/* oxlint-disable t3code/no-untranslated-text -- programming language names use their conventional spelling */
 export const CODE_BLOCK_LANGUAGES = [
-  { id: "", label: "Plain text" },
-  { id: "asm", label: "Assembly" },
+  { id: "", label: msg("Plain text") },
+  { id: "asm", label: msg("Assembly") },
   { id: "bash", label: "Bash" },
   { id: "c", label: "C" },
   { id: "cpp", label: "C++" },
   { id: "csharp", label: "C#" },
   { id: "css", label: "CSS" },
   { id: "dart", label: "Dart" },
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- code language name
   { id: "diff", label: "Diff" },
   { id: "dockerfile", label: "Dockerfile" },
   { id: "elixir", label: "Elixir" },
@@ -35,14 +36,19 @@ export const CODE_BLOCK_LANGUAGES = [
   { id: "sql", label: "SQL" },
   { id: "svelte", label: "Svelte" },
   { id: "swift", label: "Swift" },
+  { id: "systemverilog", label: "SystemVerilog" },
   { id: "toml", label: "TOML" },
   { id: "tsx", label: "TSX" },
   { id: "typescript", label: "TypeScript" },
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- code language name
+  { id: "verilog", label: "Verilog" },
+  { id: "vhdl", label: "VHDL" },
   { id: "vue", label: "Vue" },
   { id: "xml", label: "XML" },
   { id: "yaml", label: "YAML" },
   { id: "zig", label: "Zig" },
 ] as const;
+/* oxlint-enable t3code/no-untranslated-text */
 
 export type CodeBlockLanguage = { readonly id: string; readonly label: string };
 
@@ -59,6 +65,8 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   s: "asm",
   sh: "bash",
   shell: "bash",
+  sv: "systemverilog",
+  "system-verilog": "systemverilog",
   text: "",
   ts: "typescript",
   txt: "",
@@ -77,13 +85,13 @@ export function withInfoStringLanguage(info: string, language: string): string {
   return rest.trim() ? `${leading}text${rest}` : "";
 }
 
-export function codeLanguageEntry(language: string): CodeBlockLanguage | null {
+export function codeLanguageEntry(language: string): (typeof CODE_BLOCK_LANGUAGES)[number] | null {
   const id = LANGUAGE_ALIASES[language.toLowerCase()] ?? language;
   return CODE_BLOCK_LANGUAGES.find((entry) => entry.id === id.toLowerCase()) ?? null;
 }
 
-export function codeLanguageLabel(language: string): string {
+export function codeLanguageLabel(language: string, resolve: typeof t = t): string {
   const entry = codeLanguageEntry(language);
-  if (entry === null) return language;
-  return entry.id === "" ? t("Plain text") : entry.label;
+  if (!entry) return language;
+  return entry.id === "" || entry.id === "asm" ? resolve(entry.label) : entry.label;
 }

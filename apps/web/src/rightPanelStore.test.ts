@@ -1,8 +1,9 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { type EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useClosedViewStore } from "./closedViewStore";
+import { linkedThreadTitle } from "./linkedThreadSurface";
 import { reopenClosedView } from "./reopenClosedView";
 import {
   embedRightPanelThread,
@@ -22,7 +23,11 @@ import {
 const refA = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-A"));
 const refB = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-B"));
 const remoteRef = scopeThreadRef("env-2" as EnvironmentId, refB.threadId);
-const remoteSurface = { id: "thread:env-2:thread-B", kind: "thread", threadRef: remoteRef };
+const remoteSurface = {
+  id: "thread:env-2:thread-B",
+  kind: "workspace-thread",
+  threadRef: remoteRef,
+};
 
 beforeEach(() => {
   useClosedViewStore.setState({ entries: [] });
@@ -87,10 +92,10 @@ describe("rightPanelStore", () => {
   it("opens a side chat of an embedded thread in that thread's panel and reveals the thread", () => {
     const sideChatId = ThreadId.make("thread-C");
     const unembed = embedRightPanelThread(refB, refA);
-    useRightPanelStore.getState().openSideChat(refB, sideChatId);
+    useRightPanelStore.getState().openThread(refB, sideChatId);
 
     const { byThreadKey, pendingThreadReveal } = useRightPanelStore.getState();
-    expect(selectActiveRightPanelSurface(byThreadKey, refB)?.id).toBe("side-chat:thread-C");
+    expect(selectActiveRightPanelSurface(byThreadKey, refB)?.id).toBe("thread:thread-C");
     expect(selectThreadRightPanelState(byThreadKey, refA).surfaces).toEqual([]);
     expect(pendingThreadReveal).toEqual({
       hostKey: scopedThreadKey(refA),
@@ -175,15 +180,15 @@ describe("rightPanelStore", () => {
   it("uses the existing side-chat tab only for a child in the host environment", () => {
     const store = useRightPanelStore.getState();
     const lineage = { sideChat: true, parentThreadId: refA.threadId };
-    store.openSideChat(refA, refB.threadId);
+    store.openThread(refA, refB.threadId);
     store.open(refA, "diff");
     store.openThread(refA, refB, lineage);
     expect(
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA),
     ).toMatchObject({
-      activeSurfaceId: "side-chat:thread-B",
+      activeSurfaceId: "thread:thread-B",
       surfaces: [
-        { id: "side-chat:thread-B", kind: "side-chat", threadId: refB.threadId },
+        { id: "thread:thread-B", kind: "thread", threadId: refB.threadId },
         { id: "diff", kind: "diff" },
       ],
     });
@@ -207,7 +212,7 @@ describe("rightPanelStore", () => {
       isOpen: true,
       activeSurfaceId: remoteSurface.id,
       surfaces: [
-        { id: "thread:env-1:thread-B", kind: "thread", threadRef: refB },
+        { id: "thread:env-1:thread-B", kind: "workspace-thread", threadRef: refB },
         remoteSurface,
         { id: "diff", kind: "diff" },
       ],
@@ -708,6 +713,121 @@ describe("rightPanelStore", () => {
     expect(selectThreadRightPanelState(migrated.byThreadKey, refA).maximized).toBe(true);
   });
 
+  it("opens a linked thread once per thread and environment it is read through", () => {
+    const store = useRightPanelStore.getState();
+    const target = {
+      viaEnvironmentId: EnvironmentId.make("env-1"),
+      environmentId: EnvironmentId.make("env:b"),
+      threadId: ThreadId.make("there"),
+      label: "fs-17",
+      title: null,
+    };
+    store.openLinkedThread(refA, target);
+    store.open(refA, "diff");
+    store.openLinkedThread(refA, { ...target, label: "renamed", title: "Fix the build" });
+    store.openLinkedThread(refA, { ...target, title: null });
+    store.openLinkedThread(refA, { ...target, viaEnvironmentId: EnvironmentId.make("env-2") });
+    const panel = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(panel.surfaces.map((surface) => surface.id)).toEqual([
+      "linked-thread:env-1:env%3Ab:there",
+      "diff",
+      "linked-thread:env-2:env%3Ab:there",
+    ]);
+    // A click that knows no title keeps the one an earlier click or read gave.
+    expect(panel.surfaces[0]).toMatchObject({ label: "fs-17", title: "Fix the build" });
+    store.setLinkedThreadTitle(refA, "linked-thread:env-1:env%3Ab:there", "Fix flaky test");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces[0],
+    ).toMatchObject({ title: "Fix flaky test" });
+    // The tab is named for the thread once its title is known, else for where it is.
+    expect(linkedThreadTitle({ title: "Fix flaky test" }, "Thread on fs-17")).toBe(
+      "Fix flaky test",
+    );
+    expect(linkedThreadTitle({ title: " " }, "Thread on fs-17")).toBe("Thread on fs-17");
+    expect(linkedThreadTitle({ title: null }, "Thread on fs-17")).toBe("Thread on fs-17");
+  });
+
+  it("keeps saved linked threads it can show and drops surfaces it cannot", () => {
+    const linked = {
+      id: "linked-thread:stale-id",
+      kind: "linked-thread",
+      viaEnvironmentId: "env-1",
+      environmentId: "env-b",
+      threadId: "there",
+      label: "fs-17",
+    };
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "linked-thread:stale-id",
+          surfaces: [
+            linked,
+            { ...linked, id: "linked-thread:no-thread", threadId: undefined },
+            { id: "hologram:1", kind: "hologram" },
+            null,
+            { id: "diff", kind: "diff" },
+          ],
+        },
+      },
+    });
+    expect(selectThreadRightPanelState(migrated.byThreadKey, refA)).toEqual({
+      isOpen: true,
+      // The saved id no longer names a surface, so the first one left is shown.
+      activeSurfaceId: "linked-thread:env-1:env-b:there",
+      surfaces: [
+        {
+          id: "linked-thread:env-1:env-b:there",
+          kind: "linked-thread",
+          viaEnvironmentId: "env-1",
+          environmentId: "env-b",
+          threadId: "there",
+          label: "fs-17",
+          title: null,
+        },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+  });
+
+  it("opens a side chat or subagent once per thread, and never the panel's own thread", () => {
+    const store = useRightPanelStore.getState();
+    const child = ThreadId.make("child");
+    store.openThread(refA, child);
+    store.open(refA, "diff");
+    store.openThread(refA, child);
+    store.openThread(refA, refA.threadId);
+    const panel = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(panel.surfaces.map((surface) => surface.id)).toEqual(["thread:child", "diff"]);
+    expect(panel.activeSurfaceId).toBe("thread:child");
+  });
+
+  it("keeps side chat tabs saved before they became thread surfaces", () => {
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "side-chat:side",
+          surfaces: [
+            { id: "diff", kind: "diff" },
+            { id: "side-chat:side", kind: "side-chat", threadId: "side" },
+            { id: "side-chat:gone", kind: "side-chat" },
+            { id: "thread:stale", kind: "thread", threadId: "sub" },
+          ],
+        },
+      },
+    });
+    expect(selectThreadRightPanelState(migrated.byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "thread:side",
+      surfaces: [
+        { id: "diff", kind: "diff" },
+        { id: "thread:side", kind: "thread", threadId: "side" },
+        { id: "thread:sub", kind: "thread", threadId: "sub" },
+      ],
+    });
+  });
+
   it("drops the legacy singleton terminal surface during migration", () => {
     expect(
       migratePersistedRightPanelState({
@@ -749,7 +869,7 @@ describe("rightPanelStore", () => {
           },
         },
       }).byThreadKey["env-1:thread-A"]?.surfaces,
-    ).toEqual([sideChat]);
+    ).toEqual([{ id: "thread:thread-S", kind: "thread", threadId: "thread-S" }]);
   });
 
   it("upgrades saved single-session terminal surfaces to split-capable surfaces", () => {

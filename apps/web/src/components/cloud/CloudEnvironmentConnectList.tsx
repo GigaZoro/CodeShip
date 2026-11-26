@@ -1,5 +1,11 @@
-import { findErrorTraceId } from "@t3tools/client-runtime/errors";
+import { t } from "~/i18n";
 import {
+  errorDisplayMessage,
+  findErrorTraceId,
+  thrownErrorMessage,
+} from "@t3tools/client-runtime/errors";
+import {
+  connectionErrorText,
   type ConnectionTarget,
   type EnvironmentConnectionPresentation,
   RelayConnectionRegistration,
@@ -22,13 +28,14 @@ import type {
   RelayEnvironmentStatusResponse,
 } from "@t3tools/contracts/relay";
 import * as Option from "effect/Option";
+
 import { type ReactNode, useEffect, useEffectEvent, useState } from "react";
 
 import { environmentCatalog } from "~/connection/catalog";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { cn } from "~/lib/utils";
 import { relayEnvironmentDiscovery } from "~/state/relay";
-import { useRelayEnvironmentDiscovery } from "~/state/environments";
+import { useRelayEnvironmentDiscovery, useRetainedRelayEnvironments } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
@@ -38,9 +45,9 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { presentSavedCloudEnvironmentConnection } from "./cloudEnvironmentConnectionPresentation";
 
-import { t } from "~/i18n";
 const EMPTY_DISCOVERY_REFRESH_INTERVAL_MS = 5_000;
 
 function discoveredCompatibilityError(
@@ -80,7 +87,10 @@ export function CloudEnvironmentConnectRows({
   empty = null,
   selection,
   onDiscoveryReady,
+  only,
 }: {
+  /** Show this machine's row alone, for a view that picks one machine at a time. */
+  readonly only?: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironments: ReadonlyArray<SavedCloudEnvironmentConnection>;
   readonly showSavedEnvironments?: boolean;
@@ -94,6 +104,9 @@ export function CloudEnvironmentConnectRows({
   };
 }) {
   const environmentsState = useRelayEnvironmentDiscovery();
+  const retainedEnvironments = useRetainedRelayEnvironments();
+  // A single row is a machine the user picked: it stays through a refresh, as it does on the map.
+  const discovered = only === undefined ? environmentsState.environments : retainedEnvironments;
   const registerEnvironment = useAtomCommand(environmentCatalog.register, {
     reportFailure: false,
   });
@@ -135,6 +148,8 @@ export function CloudEnvironmentConnectRows({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches relay discovery when its inputs change, unless hidden polling covers it, and reports readiness
   useEffect(() => {
     let active = true;
+    // A single row belongs to a view that already listed the machines; listing again empties it.
+    if (only !== undefined) return;
     if (onDiscoveryReady || !refreshWhileEmpty || document.visibilityState === "visible") {
       void refreshRelayEnvironments().then(() => {
         if (active) onDiscoveryReady?.();
@@ -143,7 +158,7 @@ export function CloudEnvironmentConnectRows({
     return () => {
       active = false;
     };
-  }, [refreshRelayEnvironments, refreshWhileEmpty, onDiscoveryReady]);
+  }, [refreshRelayEnvironments, refreshWhileEmpty, onDiscoveryReady, only]);
 
   const connectEnvironment = async (environment: RelayClientEnvironmentRecord) => {
     if (
@@ -166,10 +181,12 @@ export function CloudEnvironmentConnectRows({
           ? t("T3 Connect route added")
           : t("Environment added"),
         description: savedWithoutRelay.has(environment.environmentId)
-          ? t("{label} falls back to T3 Connect when its other routes are unreachable.", {
-              label: environment.label,
+          ? t("{environment} falls back to T3 Connect when its other routes are unreachable.", {
+              environment: environment.label,
             })
-          : t("Connecting to {label} through T3 Connect.", { label: environment.label }),
+          : t("Connecting to {environment} through T3 Connect.", {
+              environment: environment.label,
+            }),
       });
       return true;
     }
@@ -178,7 +195,7 @@ export function CloudEnvironmentConnectRows({
     }
     const cause = squashAtomCommandFailure(result);
     const message =
-      cause instanceof Error ? cause.message : t("Could not connect the T3 Connect environment.");
+      thrownErrorMessage(cause, t) ?? t("Could not connect the T3 Connect environment.");
     const traceId = findErrorTraceId(cause);
     console.error("[t3-connect] Could not connect environment", { message, traceId, cause });
     toastManager.add({
@@ -199,12 +216,13 @@ export function CloudEnvironmentConnectRows({
 
   // Omit machines saved over other routes; onboarding selection must not add a T3 Connect route.
   const isVisibleEnvironment = (environmentId: EnvironmentId) =>
+    (only === undefined || environmentId === only) &&
     environmentId !== primaryEnvironmentId &&
     !desktopLocalIds.has(environmentId) &&
     (showSavedEnvironments || !savedById.has(environmentId)) &&
     !(selection && savedWithoutRelay.has(environmentId));
-  const visibleEnvironments = [...environmentsState.environments.values()].filter(
-    ({ environment }) => isVisibleEnvironment(environment.environmentId),
+  const visibleEnvironments = [...discovered.values()].filter(({ environment }) =>
+    isVisibleEnvironment(environment.environmentId),
   );
   const selectNewComputers = useEffectEvent(
     (environments: typeof environmentsState.environments) => {
@@ -296,7 +314,7 @@ export function CloudEnvironmentConnectRows({
   if (standalone && visibleEnvironments.length === 0) {
     const discoveryProblem = environmentsState.offline
       ? t("You appear to be offline.")
-      : (Option.getOrNull(environmentsState.error)?.message ?? null);
+      : thrownErrorMessage(Option.getOrNull(environmentsState.error), t);
     if (discoveryProblem !== null && !environmentsState.refreshing) {
       return (
         <div className={ITEM_ROW_CLASSNAME}>
@@ -324,21 +342,25 @@ export function CloudEnvironmentConnectRows({
     const unsupported =
       compatibilityError !== null || savedEnvironment?.connection.phase === "unsupported";
     const unsupportedDetail =
-      compatibilityError?.message ?? savedEnvironment?.connection.error ?? null;
+      thrownErrorMessage(compatibilityError, t) ??
+      (savedEnvironment ? connectionErrorText(savedEnvironment.connection, t) : null);
     const savedConnection = unsupported
-      ? presentSavedCloudEnvironmentConnection({
-          phase: "unsupported",
-          error: unsupportedDetail,
-          traceId: null,
-        })
+      ? presentSavedCloudEnvironmentConnection(
+          {
+            phase: "unsupported",
+            error: unsupportedDetail,
+            traceId: null,
+          },
+          t,
+        )
       : savedEnvironment
-        ? presentSavedCloudEnvironmentConnection(savedEnvironment.connection)
+        ? presentSavedCloudEnvironmentConnection(savedEnvironment.connection, t)
         : null;
     const relayStatus = status === undefined ? null : Option.getOrNull(status);
     const descriptor = relayStatus?.descriptor;
     const offlineReason =
       availability === "offline" && relayStatus !== null
-        ? relayOfflineReasonMessage(relayStatus)
+        ? relayOfflineReasonMessage(relayStatus, t)
         : null;
     const machineKind = resolveEnvironmentMachineKind(
       savedEnvironment?.serverConfig ??
@@ -364,19 +386,19 @@ export function CloudEnvironmentConnectRows({
       : t("Not added");
     const statusText =
       unsupported && !savedEnvironment
-        ? t("T3 Connect · {notAdded} · Client not supported", { notAdded })
+        ? `T3 Connect · ${notAdded} · ${t("Client not supported")}`
         : offlineReason !== null
           ? offlineReason
           : savedConnection
             ? savedConnection.statusText
             : availability === "online"
-              ? t("T3 Connect · {notAdded} · Relay online", { notAdded })
+              ? `T3 Connect · ${notAdded} · ${t("Relay online")}`
               : availability === "offline"
-                ? t("T3 Connect · {notAdded} · Relay offline", { notAdded })
+                ? `T3 Connect · ${notAdded} · ${t("Relay offline")}`
                 : availability === "checking"
-                  ? t("T3 Connect · {notAdded} · Checking relay status…", { notAdded })
-                  : (Option.getOrNull(error)?.message ??
-                    t("T3 Connect · {notAdded} · Relay status unavailable", { notAdded }));
+                  ? `T3 Connect · ${notAdded} · ${t("Checking relay status…")}`
+                  : (errorDisplayMessage(Option.getOrNull(error), t) ??
+                    `T3 Connect · ${notAdded} · ${t("Relay status unavailable")}`);
     if (selection) {
       return (
         <label
@@ -460,7 +482,8 @@ export function CloudEnvironmentConnectRows({
                             ? t("Relay offline")
                             : availability === "checking"
                               ? t("Checking relay status")
-                              : (Option.getOrNull(error)?.message ?? t("Relay status unavailable"))
+                              : (errorDisplayMessage(Option.getOrNull(error), t) ??
+                                t("Relay status unavailable"))
                 }
               />
               <EnvironmentMachineIcon
@@ -486,14 +509,14 @@ export function CloudEnvironmentConnectRows({
             </p>
           </div>
           {unsupported && !savedEnvironment ? (
-            <Tooltip>
-              <TooltipTrigger render={<span className="inline-flex" tabIndex={0} />}>
-                <Button size="sm" disabled>
-                  {t("Add")}
-                </Button>
-              </TooltipTrigger>
-              <TooltipPopup>{unsupportedDetail ?? t("Client not supported")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={<span className="inline-flex" tabIndex={0} />}
+              label={unsupportedDetail ?? t("Client not supported")}
+            >
+              <Button size="sm" disabled>
+                {t("Add")}
+              </Button>
+            </SharedTooltipTrigger>
           ) : savedConnection ? (
             <Button size="sm" variant="outline" disabled>
               {savedConnection.buttonLabel}

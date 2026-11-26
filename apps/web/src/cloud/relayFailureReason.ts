@@ -1,6 +1,6 @@
+import { t } from "~/i18n";
 import { ManagedRelay, relayRequestFailureDetail } from "@t3tools/client-runtime/relay";
 import * as Schema from "effect/Schema";
-import { t } from "~/i18n";
 
 const isRequestFailed = Schema.is(ManagedRelay.ManagedRelayRequestFailedError);
 const isRequestTimeout = Schema.is(ManagedRelay.ManagedRelayRequestTimeoutError);

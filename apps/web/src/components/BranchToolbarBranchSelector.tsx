@@ -1,5 +1,6 @@
 import { msg, t } from "~/i18n";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
+import { contextMenuSourceOf } from "../contextMenuSource";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import {
   machineAvailability,
@@ -19,6 +20,7 @@ import {
   type VcsRef,
   type ThreadId,
 } from "@t3tools/contracts";
+
 import { GitBranchIcon } from "lucide-react";
 import {
   useEffect,
@@ -48,6 +50,7 @@ import { vcsEnvironment } from "../state/vcs";
 import { cn } from "../lib/utils";
 import { THREAD_DETAILS_PANEL_ICON_CLASS } from "./chat/threadDetailsPanelStyles";
 import { ThreadDetailsThreadPrRows } from "./chat/ThreadDetailsPrRows";
+import { ThreadDetailsIssueRows } from "./chat/ThreadDetailsIssueRows";
 import { parsePullRequestReference } from "@t3tools/client-runtime/pull-request-link-input";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
 import { useComposerMenuProps } from "./chat/composerEventScope";
@@ -67,6 +70,7 @@ import {
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
   shouldOfferCreateRef,
+  toBranchActionErrorMessage,
 } from "./BranchToolbar.logic";
 import {
   ThreadPullRequestBadgeControl,
@@ -106,9 +110,11 @@ const BRANCH_SEARCH_DEBOUNCE_MS = 150;
 const EMPTY_REFS: ReadonlyArray<VcsRef> = [];
 const WORKTREE_CHANGE_BLOCKED_MESSAGE = msg("Stop the current turn to switch worktrees.");
 
-function toBranchActionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : t("An error occurred.");
-}
+// Picker checkouts by environment and checkout: null while in flight, then the branch it landed
+// on. Shared because a draft thread mounts two selectors on one checkout, and the switch's own
+// settle reloads refs for both.
+const pickerCheckouts = new Map<string, string | null>();
+const pickerCheckoutKey = (environmentId: string, cwd: string) => `${environmentId}\u0000${cwd}`;
 
 export function BranchToolbarBranchSelector({
   forceNewWorktree = false,
@@ -425,7 +431,11 @@ export function BranchToolbarBranchSelector({
             : null));
 
   const copyBranchName = (branchName: string) => {
-    void writeTextToClipboard(branchName, t("branch name")).then(undefined, (error: unknown) => {
+    void writeTextToClipboard(branchName, {
+      target: "branch name",
+      unavailableMessage: msg("Clipboard API is unavailable while copying branch name."),
+      failureMessage: msg("Failed to copy branch name to the clipboard."),
+    }).then(undefined, (error: unknown) => {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -445,9 +455,11 @@ export function BranchToolbarBranchSelector({
     const items: ContextMenuItem<"copy-branch-name">[] = [
       { id: "copy-branch-name", label: t("Copy branch name"), icon: "copy" },
     ];
-    void api.contextMenu.show(items, { x: event.clientX, y: event.clientY }).then((action) => {
-      if (action === "copy-branch-name") copyBranchName(branchName);
-    });
+    void api.contextMenu
+      .show(items, { x: event.clientX, y: event.clientY }, contextMenuSourceOf(event))
+      .then((action) => {
+        if (action === "copy-branch-name") copyBranchName(branchName);
+      });
   };
 
   const runBranchAction = (action: () => Promise<void>) => {
@@ -529,12 +541,14 @@ export function BranchToolbarBranchSelector({
     }
 
     const selectedBranchName = refName.isRemote
-      ? deriveLocalBranchNameFromRemoteRef(refName.name)
+      ? deriveLocalBranchNameFromRemoteRef(refName.name, refName.remoteName)
       : refName.name;
 
     runBranchAction(async () => {
       const previousBranch = resolvedActiveBranch;
       setOptimisticBranch(selectedBranchName);
+      const checkoutKey = pickerCheckoutKey(environmentId, selectionTarget.checkoutCwd);
+      pickerCheckouts.set(checkoutKey, null);
       const checkoutResult = await switchRef({
         environmentId,
         input: {
@@ -546,6 +560,7 @@ export function BranchToolbarBranchSelector({
         const nextBranchName = refName.isRemote
           ? (checkoutResult.value.refName ?? selectedBranchName)
           : selectedBranchName;
+        pickerCheckouts.set(checkoutKey, nextBranchName);
         const movesCheckout = selectionTarget.checkoutCwd !== branchCwd;
         let hold: BranchHold | null = null;
         const applied = setThreadBranch(
@@ -579,6 +594,7 @@ export function BranchToolbarBranchSelector({
         setOptimisticBranch(applied ? nextBranchName : previousBranch);
         return;
       }
+      pickerCheckouts.delete(checkoutKey);
       setOptimisticBranch(previousBranch);
       if (!isAtomCommandInterrupted(checkoutResult)) {
         toastManager.add(
@@ -604,6 +620,8 @@ export function BranchToolbarBranchSelector({
     runBranchAction(async () => {
       const previousBranch = resolvedActiveBranch;
       setOptimisticBranch(name);
+      const checkoutKey = pickerCheckoutKey(environmentId, branchCwd);
+      pickerCheckouts.set(checkoutKey, null);
       const createBranchResult = await createRefMutation({
         environmentId,
         input: {
@@ -614,6 +632,7 @@ export function BranchToolbarBranchSelector({
       });
       if (createBranchResult._tag === "Success") {
         const nextBranchName = createBranchResult.value.refName;
+        pickerCheckouts.set(checkoutKey, nextBranchName);
         const applied = setThreadBranch(nextBranchName, activeWorktreePath);
         if (applied) {
           setBranchHold({
@@ -625,6 +644,7 @@ export function BranchToolbarBranchSelector({
         setOptimisticBranch(applied ? nextBranchName : previousBranch);
         return;
       }
+      pickerCheckouts.delete(checkoutKey);
       setOptimisticBranch(previousBranch);
       if (!isAtomCommandInterrupted(createBranchResult)) {
         toastManager.add(
@@ -646,7 +666,7 @@ export function BranchToolbarBranchSelector({
     if (branchCwd === null) return;
     void refreshLocalStatusForPicker({
       environmentId,
-      input: { cwd: branchCwd, localOnly: true },
+      input: { cwd: branchCwd },
     });
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refs listed while the project was cloning are empty; reload them past the server's snapshot when the clone finishes
@@ -656,7 +676,15 @@ export function BranchToolbarBranchSelector({
   // A checkout made outside T3.CodeShip, such as a clone finishing, leaves refs listed before it.
   const statusBranch = branchStatusQuery.data?.refName ?? null;
   const refreshRefsMissingStatusBranch = useEffectEvent((branch: string | null) => {
-    if (searchedRefs === null || branch === null) return;
+    if (branch === null || branchCwd === null) return;
+    // Kept until the checkout reports another branch, so every selector on it skips the refresh.
+    const checkoutKey = pickerCheckoutKey(environmentId, branchCwd);
+    if (pickerCheckouts.has(checkoutKey)) {
+      const pickerBranch = pickerCheckouts.get(checkoutKey);
+      if (pickerBranch === null || pickerBranch === branch) return;
+      pickerCheckouts.delete(checkoutKey);
+    }
+    if (searchedRefs === null) return;
     if (branchByName.get(branch)?.current !== true) refreshStaleRefs();
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reloads refs from the server once per branch live status reports that they do not list as checked out
@@ -692,7 +720,7 @@ export function BranchToolbarBranchSelector({
     if (open && !isBranchMenuOpen && branchCwd !== null) {
       void refreshLocalStatusForPicker({
         environmentId,
-        input: { cwd: branchCwd, localOnly: true },
+        input: { cwd: branchCwd },
       });
     }
     if (!open) {
@@ -711,13 +739,16 @@ export function BranchToolbarBranchSelector({
     [handleOpenChange, isBranchActionPending],
   );
 
-  const triggerLabel = resolveBranchTriggerLabel({
-    activeWorktreePath,
-    effectiveEnvMode,
-    resolvedActiveBranch,
-    resolvedActiveBranchIsRemote,
-    startFromOrigin,
-  });
+  const triggerLabel = resolveBranchTriggerLabel(
+    {
+      activeWorktreePath,
+      effectiveEnvMode,
+      resolvedActiveBranch,
+      resolvedActiveBranchIsRemote,
+      startFromOrigin,
+    },
+    t,
+  );
 
   const branchPrBranch = resolveBranchToolbarPrBranch({
     activeThreadBranch,
@@ -739,6 +770,7 @@ export function BranchToolbarBranchSelector({
     branchStatusQuery.data?.sourceControlProvider,
   );
   const openPrLink = useOpenPrLink(threadRef);
+  const linkedIssues = serverThread?.issues ?? [];
 
   function selectPickerItem(itemValue: string) {
     if (itemValue === checkoutPullRequestItemValue && prReference && onCheckoutPullRequestRequest) {
@@ -930,6 +962,9 @@ export function BranchToolbarBranchSelector({
             branchSourceControlProvider={branchStatusQuery.data?.sourceControlProvider}
             onActed={() => branchStatusQuery.refresh()}
           />
+        ) : null}
+        {displayMode === "panel" ? (
+          <ThreadDetailsIssueRows links={linkedIssues} threadRef={threadRef} />
         ) : null}
       </div>
     </BranchPicker>

@@ -1,5 +1,5 @@
-import { sha256 } from "@noble/hashes/sha2";
 import { t } from "~/i18n";
+import { sha256 } from "@noble/hashes/sha2";
 import JSZip from "jszip";
 import { parse, type ParseError } from "jsonc-parser";
 
@@ -256,7 +256,7 @@ export async function searchOpenVsxThemes(
     const searchBytes = await readCappedResponse(
       response,
       MAX_SEARCH_BYTES,
-      "Open VSX returned an unexpectedly large response.",
+      t("Open VSX returned an unexpectedly large response."),
     );
     try {
       return JSON.parse(new TextDecoder().decode(searchBytes)) as unknown;
@@ -282,7 +282,7 @@ export async function searchOpenVsxThemes(
         const detailBytes = await readCappedResponse(
           detailResponse,
           MAX_DETAIL_BYTES,
-          "Open VSX returned an unexpectedly large detail response.",
+          t("Open VSX returned an unexpectedly large detail response."),
         );
         try {
           const extension = extensionFromDetail(JSON.parse(new TextDecoder().decode(detailBytes)));
@@ -291,7 +291,7 @@ export async function searchOpenVsxThemes(
             fetch(extension.manifestUrl, { signal: requestSignal }),
             fetch(extension.vsixUrl, { method: "HEAD", signal: requestSignal }),
           ]);
-          if (!manifestResponse.ok) throw new Error(t("manifest unavailable"));
+          if (!manifestResponse.ok) throw new Error("manifest unavailable");
           if (!packageResponse.ok) return null;
           const packageLength = Number(packageResponse.headers.get("content-length"));
           if (Number.isFinite(packageLength) && packageLength > MAX_VSIX_BYTES) {
@@ -300,11 +300,11 @@ export async function searchOpenVsxThemes(
           const manifestBytes = await readCappedResponse(
             manifestResponse,
             MAX_MANIFEST_BYTES,
-            "Open VSX returned an unexpectedly large manifest.",
+            t("Open VSX returned an unexpectedly large manifest."),
           );
           const manifest = parseJsoncObject(
             new TextDecoder().decode(manifestBytes),
-            "Extension manifest",
+            t("Extension manifest"),
           );
           return themeContributions(manifest).length > 0 &&
             manifestLicenseMatches(manifest, extension.license)
@@ -327,7 +327,8 @@ export async function searchOpenVsxThemes(
 function parseJsoncObject(source: string, description: string): Record<string, unknown> {
   const errors: ParseError[] = [];
   const value: unknown = parse(source, errors, { allowTrailingComma: true });
-  if (errors.length > 0 || !isRecord(value)) throw new Error(`${description} is not valid JSON.`);
+  if (errors.length > 0 || !isRecord(value))
+    throw new Error(t("{description} is not valid JSON.", { description }));
   return value;
 }
 
@@ -392,6 +393,14 @@ type InspectableZipObject = JSZip.JSZipObject & {
   internalStream?: (type: "uint8array") => JSZip.JSZipStreamHelper<Uint8Array>;
 };
 
+const extensionPackageErrors = new WeakSet<Error>();
+
+function extensionPackageError(message: string): Error {
+  const error = new Error(message);
+  extensionPackageErrors.add(error);
+  return error;
+}
+
 function inspectZipDirectory(bytes: Uint8Array): Uint8Array {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const minimumOffset = Math.max(0, bytes.byteLength - 65_557);
@@ -403,13 +412,14 @@ function inspectZipDirectory(bytes: Uint8Array): Uint8Array {
   ) {
     endOffset -= 1;
   }
-  if (endOffset < minimumOffset) throw new Error(t("That extension package has no ZIP directory."));
+  if (endOffset < minimumOffset)
+    throw extensionPackageError(t("That extension package has no ZIP directory."));
 
   const directorySize = view.getUint32(endOffset + 12, true);
   const directoryOffset = view.getUint32(endOffset + 16, true);
   const directoryEnd = directoryOffset + directorySize;
   if (directoryEnd !== endOffset || directoryEnd > bytes.byteLength) {
-    throw new Error(t("That extension package has an invalid ZIP directory."));
+    throw extensionPackageError(t("That extension package has an invalid ZIP directory."));
   }
 
   let entryCount = 0;
@@ -417,26 +427,28 @@ function inspectZipDirectory(bytes: Uint8Array): Uint8Array {
   let offset = directoryOffset;
   while (offset < directoryEnd) {
     if (offset + 46 > directoryEnd || view.getUint32(offset, true) !== 0x02014b50) {
-      throw new Error(t("That extension package has an invalid ZIP directory."));
+      throw extensionPackageError(t("That extension package has an invalid ZIP directory."));
     }
     entryCount += 1;
     if (entryCount > MAX_ZIP_ENTRIES) {
-      throw new Error(t("That extension package has too many files."));
+      throw extensionPackageError(t("That extension package has too many files."));
     }
     const compressed = view.getUint32(offset + 20, true);
     const uncompressed = view.getUint32(offset + 24, true);
     if (compressed === 0xffffffff || uncompressed === 0xffffffff) {
-      throw new Error(t("That extension package has unsupported ZIP64 metadata."));
+      throw extensionPackageError(t("That extension package has unsupported ZIP64 metadata."));
     }
     totalUncompressed += uncompressed;
     if (totalUncompressed > MAX_UNCOMPRESSED_BYTES) {
-      throw new Error(t("That extension package expands beyond the safe import limit."));
+      throw extensionPackageError(
+        t("That extension package expands beyond the safe import limit."),
+      );
     }
     if (
       uncompressed > 0 &&
       (compressed === 0 || uncompressed / compressed > MAX_COMPRESSION_RATIO)
     ) {
-      throw new Error(t("That extension package has an unsafe compression ratio."));
+      throw extensionPackageError(t("That extension package has an unsafe compression ratio."));
     }
     const nameLength = view.getUint16(offset + 28, true);
     const extraLength = view.getUint16(offset + 30, true);
@@ -444,7 +456,7 @@ function inspectZipDirectory(bytes: Uint8Array): Uint8Array {
     offset += 46 + nameLength + extraLength + commentLength;
   }
   if (offset !== directoryEnd)
-    throw new Error(t("That extension package has an invalid ZIP directory."));
+    throw extensionPackageError(t("That extension package has an invalid ZIP directory."));
 
   const commentLength = view.getUint16(endOffset + 20, true);
   if (commentLength === 0) return bytes;
@@ -459,7 +471,7 @@ function inspectZipDirectory(bytes: Uint8Array): Uint8Array {
 function inspectZip(zip: JSZip): void {
   const entries = Object.values(zip.files) as InspectableZipObject[];
   if (entries.length > MAX_ZIP_ENTRIES)
-    throw new Error(t("That extension package has too many files."));
+    throw extensionPackageError(t("That extension package has too many files."));
 
   for (const entry of entries) {
     if (entry.unsafeOriginalName) normalizePackagePath(entry.unsafeOriginalName);
@@ -474,12 +486,13 @@ async function readZipText(
 ): Promise<string> {
   signal?.throwIfAborted();
   const file = zip.file(path) as InspectableZipObject | null;
-  if (!file) throw new Error(`${description} is missing from the extension package.`);
+  if (!file)
+    throw new Error(t("{description} is missing from the extension package.", { description }));
   if (typeof file._data?.uncompressedSize !== "number" || !file.internalStream) {
-    throw new Error(`${description} has unreadable size metadata.`);
+    throw new Error(t("{description} has unreadable size metadata.", { description }));
   }
   if (file._data.uncompressedSize > MAX_THEME_BYTES) {
-    throw new Error(`${description} is too large.`);
+    throw new Error(t("{description} is too large.", { description }));
   }
 
   return new Promise((resolve, reject) => {
@@ -504,7 +517,7 @@ async function readZipText(
           settled = true;
           stream.pause();
           cleanup();
-          reject(new Error(`${description} is too large.`));
+          reject(new Error(t("{description} is too large.", { description })));
           return;
         }
         chunks.push(chunk);
@@ -620,7 +633,7 @@ async function fetchPackage(url: string, signal?: AbortSignal): Promise<Uint8Arr
   return readCappedResponse(
     response,
     MAX_VSIX_BYTES,
-    "That theme extension is too large to import safely.",
+    t("That theme extension is too large to import safely."),
   );
 }
 
@@ -633,9 +646,12 @@ export async function importOpenVsxThemeExtension(
   const manifestBytes = await readCappedResponse(
     manifestResponse,
     MAX_MANIFEST_BYTES,
-    "That Open VSX extension manifest is too large.",
+    t("That Open VSX extension manifest is too large."),
   );
-  const manifest = parseJsoncObject(new TextDecoder().decode(manifestBytes), "Extension manifest");
+  const manifest = parseJsoncObject(
+    new TextDecoder().decode(manifestBytes),
+    t("Extension manifest"),
+  );
   const advertisedContributions = themeContributions(manifest);
   if (advertisedContributions.length === 0) {
     throw new Error(t("That extension does not contain color themes."));
@@ -653,7 +669,7 @@ export async function importOpenVsxThemeExtension(
       await readCappedResponse(
         checksumResponse,
         256,
-        "That Open VSX checksum response is invalid.",
+        t("That Open VSX checksum response is invalid."),
       ),
     )
     .trim()
@@ -677,13 +693,13 @@ export async function importOpenVsxThemeExtension(
     inspectZip(zip);
   } catch (cause) {
     if (signal?.aborted) signal.throwIfAborted();
-    if (cause instanceof Error && cause.message.startsWith("That extension package")) throw cause;
+    if (cause instanceof Error && extensionPackageErrors.has(cause)) throw cause;
     throw new Error(t("That Open VSX extension package could not be opened."), { cause });
   }
 
   const packagedManifest = parseJsoncObject(
-    await readZipText(zip, "extension/package.json", "Extension manifest", signal),
-    "Extension manifest",
+    await readZipText(zip, "extension/package.json", t("Extension manifest"), signal),
+    t("Extension manifest"),
   );
   if (
     typeof packagedManifest.publisher !== "string" ||
@@ -735,7 +751,7 @@ export async function importOpenVsxThemeExtension(
         displayName: label,
         ...(type ? { type } : {}),
       };
-      if (!isVsCodeThemeFile(decorated)) throw new Error(t("not a VS Code color theme"));
+      if (!isVsCodeThemeFile(decorated)) throw new Error("not a VS Code color theme");
       parsed.push({
         theme: parseVsCodeThemeFile(decorated),
         sourceName: path.split("/").at(-1)!,

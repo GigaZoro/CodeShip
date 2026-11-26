@@ -9,6 +9,8 @@ import {
   COMPOSER_CONTEXT_TERMINAL_TEXT_MAX_CHARS,
 } from "@t3tools/contracts";
 import type {
+  ChatFileAttachment,
+  ChatImageAttachment,
   ComposerContextId,
   ComposerContextRecord,
   EnvironmentContextRecord,
@@ -26,6 +28,7 @@ import type {
   ThreadContextRecord,
   ThreadId,
 } from "@t3tools/contracts";
+import { msg, t, tn, type Message } from "~/i18n";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
@@ -47,6 +50,7 @@ import {
   type TerminalContextDraft,
 } from "./terminalContext";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
+import { changeRequestTermKind } from "~/components/pullRequest/changeRequestTerm";
 
 const PREVIEW_LABEL_MAX_CHARS = 48;
 const RESPONSE_LABEL_MAX_CHARS = 64;
@@ -69,18 +73,93 @@ function basename(filePath: string): string {
   return filePath.split(/[\\/]/).at(-1) ?? filePath;
 }
 
-export function reviewCommentContextLabel(comment: ReviewCommentPresentation): string {
+function diffRangeLabel(
+  start: string,
+  end: string | undefined,
+  before: boolean,
+  resolve: typeof t | undefined,
+): string {
+  if (resolve === undefined) {
+    return `L${start}${end ? ` to L${end}` : ""}${before ? " (before)" : ""}`;
+  }
+  if (end === undefined) {
+    return before
+      ? resolve("L{start} (before)", {
+          start,
+        })
+      : `L${start}`;
+  }
+  return before
+    ? resolve("L{start} to L{end} (before)", { start, end })
+    : resolve("L{start} to L{end}", { start, end });
+}
+
+/** Without `resolve` the label stays English, for records sent to the agent. */
+export function reviewCommentContextLabel(
+  comment: ReviewCommentPresentation,
+  resolve?: typeof t,
+): string {
   const pullRequestNumber = pullRequestContextNumber(comment);
   if (isPullRequestSummaryContext(comment) && pullRequestNumber !== null) {
     return `#${pullRequestNumber}`;
   }
   const diffRange = /^([+-])(\d+)(?: to \1(\d+))?$/u.exec(comment.rangeLabel);
   const rangeLabel = diffRange
-    ? `L${diffRange[2]}${diffRange[3] ? ` to L${diffRange[3]}` : ""}${diffRange[1] === "-" ? " (before)" : ""}`
+    ? diffRangeLabel(diffRange[2]!, diffRange[3], diffRange[1] === "-", resolve)
     : comment.rangeLabel;
   const sectionPullRequest = /^pull-request:(\d+)$/u.exec(comment.sectionId)?.[1];
   const prefix = sectionPullRequest === undefined ? "" : `#${sectionPullRequest} `;
   return `${prefix}${basename(comment.filePath)} ${rangeLabel}`;
+}
+
+const REVIEW_SECTION_TITLES: ReadonlyMap<string, Message> = new Map([
+  ["File comment", msg("File comment")],
+  ["Review guide", msg("Review guide")],
+]);
+
+/** A stored review comment `sectionTitle` for display; the record itself stays English. */
+export function reviewCommentSectionText(sectionTitle: string, resolve: typeof t): string {
+  const known = REVIEW_SECTION_TITLES.get(sectionTitle);
+  if (known !== undefined) return resolve(known);
+  const number = /^PR #(\d+) review$/u.exec(sectionTitle)?.[1];
+  return number === undefined ? sectionTitle : resolve("PR #{number} review", { number });
+}
+
+/** A stored `rangeLabel` such as "+12 to +15" or "L3 to L9" for display. */
+export function reviewCommentRangeText(rangeLabel: string, resolve: typeof t): string {
+  const range = /^([+-]?L?\d+) to ([+-]?L?\d+)$/u.exec(rangeLabel);
+  return range === null
+    ? rangeLabel
+    : resolve("{start} to {end}", {
+        start: range[1]!,
+        end: range[2]!,
+      });
+}
+
+/** A preview annotation record's `targetSummary` rebuilt in the UI language when it has counts. */
+export function previewAnnotationTargetText(
+  record: Pick<
+    PreviewAnnotationContextRecord,
+    "targetSummary" | "elementIds" | "regionCount" | "strokeCount"
+  >,
+  plural: typeof tn = tn,
+): string {
+  const parts: string[] = [];
+  // The stored summary also counts selected elements whose details failed to normalize.
+  const summaryElements = /^(\d+) selected elements?\b/.exec(record.targetSummary)?.[1];
+  const elements =
+    summaryElements === undefined ? (record.elementIds?.length ?? 0) : Number(summaryElements);
+  if (elements > 0) {
+    parts.push(plural(elements, "{count} selected element", "{count} selected elements"));
+  }
+  if ((record.regionCount ?? 0) > 0) {
+    parts.push(plural(record.regionCount!, "{count} marked region", "{count} marked regions"));
+  }
+  if ((record.strokeCount ?? 0) > 0) {
+    parts.push(plural(record.strokeCount!, "{count} drawing", "{count} drawings"));
+  }
+  // Older records carry only the English summary.
+  return parts.length === 0 ? record.targetSummary : parts.join(", ");
 }
 
 export function isPullRequestSummaryContext(comment: ReviewCommentPresentation): boolean {
@@ -108,16 +187,53 @@ export function pullRequestContextDisplayState(
   return pullRequest.state === "open" && pullRequest.isDraft ? "draft" : pullRequest.state;
 }
 
-export function pullRequestContextKindLabel(comment: ReviewCommentPresentation): string {
+const CHANGE_REQUEST_KIND_LABEL = {
+  mr: {
+    default: msg("Merge request"),
+    open: msg("Open merge request"),
+    draft: msg("Draft merge request"),
+    merged: msg("Merged merge request"),
+    closed: msg("Closed merge request"),
+  },
+  cr: {
+    default: msg("Change request"),
+    open: msg("Open change request"),
+    draft: msg("Draft change request"),
+    merged: msg("Merged change request"),
+    closed: msg("Closed change request"),
+  },
+  pr: {
+    default: msg("Pull request"),
+    open: msg("Open pull request"),
+    draft: msg("Draft pull request"),
+    merged: msg("Merged pull request"),
+    closed: msg("Closed pull request"),
+  },
+};
+
+/** Without `resolve` the label stays English. */
+export function pullRequestContextKindLabel(
+  comment: ReviewCommentPresentation,
+  resolve?: typeof t,
+): string {
   const url = comment.pullRequest?.url;
   const host = url === undefined ? null : sourceControlClients.findByChangeRequestUrl(url);
   const term = (host ?? sourceControlClients.get(undefined)).changeRequest.singular;
   const state = pullRequestContextDisplayState(comment);
+  if (resolve !== undefined) {
+    return resolve(
+      CHANGE_REQUEST_KIND_LABEL[changeRequestTermKind({ singular: term })][state ?? "default"],
+    );
+  }
   if (state === null) return capitalizeTerm(term);
   return `${capitalizeTerm(state)} ${term}`;
 }
 
-export function previewAnnotationContextLabel(annotation: PreviewAnnotationPayload): string {
+/** Without `resolve` the fallback stays English, for records sent to the agent. */
+export function previewAnnotationContextLabel(
+  annotation: PreviewAnnotationPayload,
+  resolve?: typeof t,
+): string {
   const comment = annotation.comment.trim().replace(/\s+/g, " ");
   if (comment) {
     if (comment.length <= PREVIEW_LABEL_MAX_CHARS) return comment;
@@ -125,9 +241,10 @@ export function previewAnnotationContextLabel(annotation: PreviewAnnotationPaylo
     const previous = comment.charCodeAt(end - 1);
     const next = comment.charCodeAt(end);
     if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
-    return `${comment.slice(0, end)}…`;
+    return `${comment.slice(0, end).trimEnd()}…`;
   }
-  return annotation.pageTitle?.trim() || "Preview annotation";
+  const fallback = msg("Preview annotation");
+  return annotation.pageTitle?.trim() || (resolve ? resolve(fallback) : fallback);
 }
 
 export function terminalContextReference(context: TerminalContextDraft): ComposerContextReference {
@@ -273,6 +390,7 @@ export function reviewCommentContextRecord(
   };
 }
 
+// Stored in the record and read by the agent, so it stays English.
 function previewAnnotationTargetSummary(annotation: PreviewAnnotationPayload): string {
   const parts: string[] = [];
   const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -341,39 +459,59 @@ export function fileContextReference(file: ComposerFileAttachment): ComposerCont
   };
 }
 
+export type ComposerContextAttachment =
+  | ComposerImageAttachment
+  | ComposerFileAttachment
+  | (Omit<ComposerImageAttachment, "file"> & {
+      readonly file: File | null;
+      readonly uploadedAttachmentId?: string | undefined;
+    })
+  | ChatImageAttachment
+  | ChatFileAttachment;
+
 export interface BoundComposerAttachment {
-  attachment: ComposerImageAttachment | ComposerFileAttachment;
+  attachment: ComposerContextAttachment;
   attachmentId: string;
+  contextId?: ComposerContextId | undefined;
 }
 
 /** Returns null until the attachment has a server id. */
 export function uploadedAttachmentContextRecord(
-  attachment: ComposerImageAttachment | ComposerFileAttachment,
+  attachment: ComposerContextAttachment,
   upload: AttachmentUploadState | undefined,
+  contextId?: ComposerContextId,
 ): ImageContextRecord | FileContextRecord | null {
   const attachmentId =
-    attachment.type === "file" && attachment.uploadedAttachmentId !== undefined
+    "uploadedAttachmentId" in attachment && attachment.uploadedAttachmentId !== undefined
       ? attachment.uploadedAttachmentId
       : upload?.status === "ready"
         ? upload.attachmentId
         : undefined;
-  return attachmentId === undefined ? null : attachmentContextRecord({ attachment, attachmentId });
+  return attachmentId === undefined
+    ? null
+    : attachmentContextRecord({ attachment, attachmentId, contextId });
 }
 
 export function attachmentContextRecord(
   bound: BoundComposerAttachment,
 ): ImageContextRecord | FileContextRecord {
-  const { attachment, attachmentId } = bound;
+  const { attachment, attachmentId, contextId } = bound;
   const base = {
     version: 1 as const,
-    contextId: toKindScopedComposerContextId(attachment.type, attachment.id),
+    contextId: contextId ?? toKindScopedComposerContextId(attachment.type, attachment.id),
     label: sanitizeComposerContextLabel(attachment.name, attachment.type),
     attachmentId,
     name: attachment.name,
     mimeType: attachment.mimeType,
     sizeBytes: attachment.sizeBytes,
   };
-  return attachment.type === "image" ? { ...base, kind: "image" } : { ...base, kind: "file" };
+  return attachment.type === "image"
+    ? {
+        ...base,
+        kind: "image",
+        ...(attachment.source !== undefined ? { source: attachment.source } : {}),
+      }
+    : { ...base, kind: "file" };
 }
 
 export function buildMessageContext(input: {

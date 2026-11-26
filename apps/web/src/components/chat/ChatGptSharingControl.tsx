@@ -1,6 +1,7 @@
 import { t } from "~/i18n";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import type { ServerProvider } from "@t3tools/contracts";
+
 import { useId } from "react";
 import { OpenAI } from "../Icons";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
@@ -8,6 +9,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function ChatGptSharingControl({ provider }: { provider: ServerProvider | null }) {
   const speedNoticeId = useId();
+
   const speedNotice = t(
     "Fast and Ultrafast are unavailable with this ChatGPT connection. Use an existing Codex CLI login for speed options your account supports.",
   );

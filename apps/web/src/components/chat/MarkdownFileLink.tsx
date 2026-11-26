@@ -1,4 +1,5 @@
 import { t } from "~/i18n";
+import { useNativeFileDrag } from "../../useNativeFileDrag";
 import { useAssetUrlState } from "../../assets/assetUrls";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import {
@@ -7,9 +8,11 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ContextMenuSource, EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useState, type MouseEvent as ReactMouseEvent } from "react";
 
-import { contextMenuSourceOf } from "../../contextMenuSource";
+import { FolderIcon } from "lucide-react";
+
+import { contextMenuSourceOf, openContextMenuFromKeyboard } from "../../contextMenuSource";
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { shouldOpenMarkdownFileLinkInEditor } from "../../markdown-links";
@@ -17,15 +20,16 @@ import type { markdownFileCopyPaths } from "../../markdownFileHostPath";
 import { documentChipKindForFileName } from "../../pierre-icons";
 import { ContextChip } from "../ContextChip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger, useSharedTooltip, withSharedTooltip } from "../ui/shared-tooltip";
 import { FileTagChipContent } from "./FileTagChip";
 import {
+  FILE_PATH_COPY_TARGET,
   hasMarkdownFilePrimaryAction,
   markdownFileCopyMenuItems,
   shouldUseMarkdownFileBrowserPrimaryAction,
 } from "./MarkdownFileLink.logic";
 import { reportMarkdownActionFailure } from "./markdownActionFailure";
-import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
+import { WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
 
 interface MarkdownFileLinkProps {
   environmentId: EnvironmentId | null;
@@ -42,6 +46,7 @@ interface MarkdownFileLinkProps {
   threadRef?: ScopedThreadRef | undefined;
   onOpen?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenInPanel: (panelPath: string, line: number | undefined) => void;
+  resolveDragPath: () => Promise<string>;
   resolveCopyPaths: () => Promise<ReturnType<typeof markdownFileCopyPaths>>;
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
@@ -52,7 +57,7 @@ interface MarkdownFileLinkProps {
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
 
-export function MarkdownFileLink({
+export const MarkdownFileLink = memo(function MarkdownFileLink({
   environmentId,
   href,
   targetPath,
@@ -73,7 +78,9 @@ export function MarkdownFileLink({
   onReveal,
   revealLabel,
   resolveCopyPaths,
+  resolveDragPath,
 }: MarkdownFileLinkProps) {
+  const nativeDrag = useNativeFileDrag(environmentId, resolveDragPath);
   const handleOpenInEditor = () => {
     if (!onOpen) {
       return;
@@ -201,15 +208,14 @@ export function MarkdownFileLink({
   };
 
   const handleCopy = (resolveValue: () => Promise<string>, kind: "relative" | "full") => {
-    // oxlint-disable-next-line t3code/no-untranslated-text -- failure-report log field, not shown
-    const title = kind === "relative" ? "Relative path" : "Full path";
-    const failedTitle =
+    const copyTarget = FILE_PATH_COPY_TARGET[kind];
+    const failureTitle =
       kind === "relative" ? t("Failed to copy relative path") : t("Failed to copy full path");
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: failedTitle,
+          title: failureTitle,
           description: t("Clipboard API unavailable."),
         }),
       );
@@ -228,13 +234,13 @@ export function MarkdownFileLink({
         : value.then((text) => navigator.clipboard.writeText(text));
     void Promise.all([write, value]).catch((error) => {
       reportMarkdownActionFailure(
-        { operation: "copy-file-path", target: targetPath, copyTarget: title },
+        { operation: "copy-file-path", target: targetPath, copyTarget },
         error,
       );
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: failedTitle,
+          title: failureTitle,
           description: error instanceof Error ? error.message : t("An error occurred."),
         }),
       );
@@ -320,109 +326,144 @@ export function MarkdownFileLink({
     canOpenMedia: onOpenMedia !== undefined,
   });
   const useBrowserPrimaryAction = shouldUseMarkdownFileBrowserPrimaryAction({
-    iconPath,
     canOpenInEditor,
     canOpenInBrowser,
     canOpenInPanel,
   });
   const chipKind = documentChipKindForFileName(iconPath) ?? "mention";
-  const handlePrimaryClick = (event: ReactMouseEvent<HTMLElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
-      handleOpenInEditor();
-      return;
-    }
-    if (useBrowserPrimaryAction) {
-      handleOpenInBrowser();
-      return;
-    }
-    handleOpenInFilePreview();
-  };
 
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          hasPrimaryAction ? (
-            <ContextChip
-              kind={chipKind}
-              dir="ltr"
-              render={<a href={href} />}
-              className={MARKDOWN_FILE_LINK_CLASS_NAME}
-              data-markdown-copy={copyMarkdown}
-              onClick={handlePrimaryClick}
-              // A middle click would open the path as a page of this app in a new tab.
-              onAuxClick={(event) => {
-                if (event.button === 1) handlePrimaryClick(event);
-              }}
-              onContextMenu={handleContextMenu}
-            >
-              <FileTagChipContent
-                icon={
-                  isAppBundle ? (
-                    <AppBundleIcon environmentId={environmentId} path={iconPath} theme={theme} />
-                  ) : undefined
-                }
-                path={iconPath}
-                environmentId={environmentId}
-                label={label}
-                theme={theme}
-              />
-            </ContextChip>
-          ) : (
-            <ContextChip
-              kind={chipKind}
-              dir="ltr"
-              render={<button type="button" />}
-              aria-label={t("File options for {label}", { label })}
-              aria-haspopup="menu"
-              className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, "select-text")}
-              data-markdown-copy={copyMarkdown}
-              onClick={handleContextMenu}
-              onContextMenu={handleContextMenu}
-            >
-              <FileTagChipContent
-                icon={
-                  isAppBundle ? (
-                    <AppBundleIcon environmentId={environmentId} path={iconPath} theme={theme} />
-                  ) : undefined
-                }
-                path={iconPath}
-                environmentId={environmentId}
-                label={label}
-                theme={theme}
-              />
-            </ContextChip>
-          )
+  const tooltipContent = (
+    <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+  );
+  const sharedTooltip = useSharedTooltip({
+    render: () => tooltipContent,
+    contentKey: `${iconPath}\u0000${targetPath}`,
+    variant: "code",
+  });
+  const chip = hasPrimaryAction ? (
+    <ContextChip
+      {...nativeDrag}
+      kind={chipKind}
+      dir="ltr"
+      render={<a href={href} />}
+      className={MARKDOWN_FILE_LINK_CLASS_NAME}
+      data-markdown-copy={copyMarkdown}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
+          handleOpenInEditor();
+          return;
         }
+        if (useBrowserPrimaryAction) {
+          handleOpenInBrowser();
+          return;
+        }
+        handleOpenInFilePreview();
+      }}
+      onContextMenu={handleContextMenu}
+      onKeyDown={openContextMenuFromKeyboard}
+    >
+      <FileTagChipContent
+        icon={
+          isAppBundle ? <AppBundleIcon environmentId={environmentId} path={iconPath} /> : undefined
+        }
+        path={iconPath}
+        environmentId={environmentId}
+        label={label}
+        theme={theme}
       />
-      <TooltipPopup side="top" variant="code">
-        <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
-      </TooltipPopup>
-    </Tooltip>
+    </ContextChip>
+  ) : (
+    <ContextChip
+      {...nativeDrag}
+      kind={chipKind}
+      dir="ltr"
+      render={<button type="button" />}
+      aria-label={t("File options for {label}", { label })}
+      aria-haspopup="menu"
+      className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, "select-text")}
+      data-markdown-copy={copyMarkdown}
+      onClick={handleContextMenu}
+      onContextMenu={handleContextMenu}
+      onKeyDown={openContextMenuFromKeyboard}
+    >
+      <FileTagChipContent
+        icon={
+          isAppBundle ? <AppBundleIcon environmentId={environmentId} path={iconPath} /> : undefined
+        }
+        path={iconPath}
+        environmentId={environmentId}
+        label={label}
+        theme={theme}
+      />
+    </ContextChip>
+  );
+  if (sharedTooltip) return withSharedTooltip(chip, sharedTooltip);
+  return (
+    <SharedTooltipTrigger
+      render={chip}
+      label={tooltipContent}
+      variant="code"
+      className="pointer-events-auto"
+    />
+  );
+}, areMarkdownFileLinkPropsEqual);
+
+function areMarkdownFileLinkPropsEqual(
+  previous: Readonly<MarkdownFileLinkProps>,
+  next: Readonly<MarkdownFileLinkProps>,
+): boolean {
+  return (
+    previous.href === next.href &&
+    previous.targetPath === next.targetPath &&
+    previous.iconPath === next.iconPath &&
+    previous.environmentId === next.environmentId &&
+    previous.workspaceRelativePath === next.workspaceRelativePath &&
+    previous.panelPath === next.panelPath &&
+    previous.line === next.line &&
+    previous.label === next.label &&
+    previous.copyMarkdown === next.copyMarkdown &&
+    previous.theme === next.theme &&
+    previous.threadRef === next.threadRef &&
+    previous.isAppBundle === next.isAppBundle &&
+    previous.onOpen === next.onOpen &&
+    previous.onOpenInPanel === next.onOpenInPanel &&
+    previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
+    previous.onOpenInBrowser === next.onOpenInBrowser &&
+    previous.onOpenMedia === next.onOpenMedia &&
+    previous.onReveal === next.onReveal &&
+    previous.resolveCopyPaths === next.resolveCopyPaths &&
+    previous.resolveDragPath === next.resolveDragPath &&
+    previous.revealLabel === next.revealLabel
   );
 }
 
-function AppBundleIcon(props: {
-  environmentId: EnvironmentId | null;
-  path: string;
-  theme: "light" | "dark";
-}) {
+function AppBundleIcon(props: { environmentId: EnvironmentId | null; path: string }) {
   const asset = useAssetUrlState(props.environmentId, {
     _tag: "native-app-icon",
     app: { _tag: "app-path", path: props.path },
   });
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  if (asset._tag !== "Success" || asset.url === failedUrl) {
-    return <WorkspaceEntryIcon {...props} />;
-  }
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  const url = asset._tag === "Success" && asset.url !== failedUrl ? asset.url : null;
+  const loaded = url !== null && loadedUrl === url;
   return (
-    <img
-      src={asset.url}
-      alt=""
-      className="size-4 shrink-0 object-contain"
-      onError={() => setFailedUrl(asset.url)}
-    />
+    <span
+      data-app-bundle-icon=""
+      aria-hidden="true"
+      className="relative me-[0.2em] inline-block size-[1em] align-[calc((1cap-1em)/2)]"
+    >
+      <FolderIcon className={cn("size-full text-icon-muted", loaded && "invisible")} />
+      {url !== null && (
+        <img
+          src={url}
+          alt=""
+          className={cn("absolute inset-0 size-full object-contain", !loaded && "invisible")}
+          onLoad={() => setLoadedUrl(url)}
+          onError={() => setFailedUrl(url)}
+        />
+      )}
+    </span>
   );
 }

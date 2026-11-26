@@ -39,6 +39,7 @@ import { SettingsScreen } from "./components/SettingsScreen";
 import { ProjectActionsSection } from "./components/ProjectActionsSection";
 import { SettingsSection } from "./components/SettingsSection";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
+import { ProjectRepositoriesSection } from "./ProjectRepositoriesSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
@@ -425,6 +426,24 @@ function ProjectOverviewContent(props: {
           );
         })}
       </SettingsSection>
+      {props.members.map((member) => {
+        const environment = props.environments.find(
+          (entry) => entry.environmentId === member.environmentId,
+        )?.label;
+        return (
+          <ProjectRepositoriesSection
+            key={`${member.environmentId}:${member.id}`}
+            member={member}
+            title={
+              props.members.length === 1
+                ? t("Repositories")
+                : t("Repositories · {environment}", {
+                    environment: environment ?? t("Environment"),
+                  })
+            }
+          />
+        );
+      })}
       <SettingsSection title={t("Danger")}>
         <SettingsActionRow
           icon="trash"

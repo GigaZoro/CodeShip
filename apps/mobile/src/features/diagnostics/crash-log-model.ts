@@ -52,6 +52,7 @@ export function formatStartupCrashReport(
   app: { readonly version: string; readonly build: string },
 ): string {
   const header = `T3.CodeShip ${app.version} (${app.build})`;
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- This diagnostic report is copied for sharing with support.
   if (records.length === 0) return `${header}\nNo startup crashes recorded.`;
   return [
     header,

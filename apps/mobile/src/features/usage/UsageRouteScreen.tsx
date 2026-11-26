@@ -24,7 +24,6 @@ import { isModelCostUnknown, type DailyTotals, type MergedUsage } from "@t3tools
 import {
   enumerateDays,
   enumerateHourStarts,
-  formatCount,
   formatDayShort,
   formatHourShort,
   formatPercent,
@@ -53,6 +52,7 @@ import { useWorkspaceSettledContentWidth } from "../layout/workspace-content-wid
 import { cn } from "../../lib/cn";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { useUsage } from "../../state/usage";
+import { NativeWorkspaceTabActivityContext } from "../../native/v5-workspace-context";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { UsageDailyChart } from "./UsageDailyChart";
 import { toggleUsageEnvironment } from "./usageEnvironmentSelection";
@@ -61,7 +61,7 @@ import { useRefreshLimits } from "./UsageLimitsSection";
 import { UsageLimitsSection } from "./UsageLimitsPooled";
 import { usageChartEmptyMessage, usageChartTotals, type UsageChartMetric } from "./usageChartData";
 import { PROVIDER_LABEL, useProviderColors, useUsageMixColors } from "./usageProviders";
-import { t, msg } from "../../lib/i18n";
+import { tn, t, msg } from "../../lib/i18n";
 
 type UsageView = UsageChartMetric | "limits";
 const VIEW_OPTIONS = [
@@ -125,7 +125,8 @@ function UsageScreen(props: {
   const [windowDays, selectWindow] = useState(30);
   const resolution = windowDays === 1 ? "hour" : "day";
   const foreground = useAppForeground();
-  const advanceWindow = isFocused && foreground && !showingLimits;
+  const headerOnly = use(NativeWorkspaceTabActivityContext)?.headerOnly === true;
+  const advanceWindow = isFocused && foreground && !showingLimits && !headerOnly;
   const now = useUsageNow(advanceWindow);
   const window = makeWindow(windowDays, new Date(now), resolution);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
@@ -137,7 +138,10 @@ function UsageScreen(props: {
     environments,
     selectedEnvironments,
     refresh,
-  } = useUsage(window, selectedEnvironmentIds, { advanceWindow, enabled: !showingLimits });
+  } = useUsage(window, selectedEnvironmentIds, {
+    advanceWindow,
+    enabled: !showingLimits && !headerOnly,
+  });
   const shown = usage.view.kind === "figures" ? usage.view : null;
   const showingKept = shown?.kept === true;
   const merged = shown?.merged ?? EMPTY_USAGE;
@@ -145,7 +149,10 @@ function UsageScreen(props: {
   const shownEnvironments: readonly Pick<UsageViewEnvironment, "environmentId">[] =
     shown?.environments ?? selectedEnvironments;
   const isPast24Hours = shownWindow.resolution === "hour";
-  const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && showingLimits);
+  const limits = useRefreshLimits(
+    selectedEnvironmentIds,
+    isFocused && showingLimits && !headerOnly,
+  );
   const { coverage, sourceMessages } = usageNotices(usage, selectedEnvironments, requestedWindow);
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
@@ -261,189 +268,191 @@ function UsageScreen(props: {
       menus={showEnvironmentFilter ? [environmentMenu] : undefined}
       workspaceRoot={props.workspace}
     >
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        showsVerticalScrollIndicator={false}
-        className="flex-1"
-        contentContainerClassName="px-5 pt-4"
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
-        refreshControl={
-          showingLimits || canReadDiagnostics ? (
-            <RefreshControl
-              refreshing={showingLimits ? limits.refreshing : refreshingUsage}
-              onRefresh={showingLimits ? () => void limits.refresh() : refreshWindow}
-            />
-          ) : undefined
-        }
-      >
-        <View className="w-full gap-6 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
-          {wide ? (
-            <View className="flex-row items-center gap-3">
-              {showingLimits ? (
-                <View className="flex-1" />
-              ) : (
-                <SegmentedControl
-                  options={windowOptions()}
-                  selected={windowDays}
-                  onSelect={selectWindow}
-                  size="compact"
-                  className="flex-1"
-                />
-              )}
-              <SegmentedControl
-                options={viewOptions()}
-                selected={view}
-                onSelect={setView}
-                size="compact"
-                role="tab"
-                className="flex-1"
+      {headerOnly ? null : (
+        <ScrollView
+          contentInsetAdjustmentBehavior="automatic"
+          showsVerticalScrollIndicator={false}
+          className="flex-1"
+          contentContainerClassName="px-5 pt-4"
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+          onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+          refreshControl={
+            showingLimits || canReadDiagnostics ? (
+              <RefreshControl
+                refreshing={showingLimits ? limits.refreshing : refreshingUsage}
+                onRefresh={showingLimits ? () => void limits.refresh() : refreshWindow}
               />
-            </View>
-          ) : (
-            <SegmentedControl
-              options={viewOptions()}
-              selected={view}
-              onSelect={setView}
-              role="tab"
-            />
-          )}
-          <Animated.View
-            key={showingLimits ? "limits" : "usage"}
-            entering={FadeIn.duration(160).reduceMotion(ReduceMotion.System)}
-            className="gap-6"
-          >
-            {showingLimits ? (
-              <UsageLimitsSection
-                failedLabels={limits.failedLabels}
-                selectedEnvironmentIds={selectedEnvironmentIds}
-                wide={wide}
-              />
-            ) : (
-              <>
-                {wide ? null : (
+            ) : undefined
+          }
+        >
+          <View className="w-full gap-6 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
+            {wide ? (
+              <View className="flex-row items-center gap-3">
+                {showingLimits ? (
+                  <View className="flex-1" />
+                ) : (
                   <SegmentedControl
                     options={windowOptions()}
                     selected={windowDays}
                     onSelect={selectWindow}
                     size="compact"
+                    className="flex-1"
                   />
                 )}
-                <ChatGptUsageSummary
-                  selectedEnvironmentIds={
-                    showingKept
-                      ? new Set(shownEnvironments.map(({ environmentId }) => environmentId))
-                      : selectedEnvironmentIds
-                  }
-                  disabled={showingKept}
+                <SegmentedControl
+                  options={viewOptions()}
+                  selected={view}
+                  onSelect={setView}
+                  size="compact"
+                  role="tab"
+                  className="flex-1"
                 />
-                {merged.duplicateSources.length > 0 ? (
-                  <Text className="text-sm text-foreground-muted">
-                    {t(
-                      "Counted once across environments sharing a transcript directory: {sources}",
-                      {
-                        sources: merged.duplicateSources.join(", "),
-                      },
-                    )}
-                  </Text>
-                ) : null}
-                {coverage === null ? null : (
-                  <View className="gap-2">
-                    <Notice
-                      message={[
-                        coverage.title,
-                        ...coverage.gaps.map(({ message }) => message),
-                      ].join("\n")}
-                    />
-                    {coverage.gaps.some(({ retryable }) => retryable) ? (
-                      <Button
-                        label={t("Retry")}
-                        disabled={refreshingUsage}
-                        onPress={refreshWindow}
-                      />
-                    ) : null}
-                  </View>
-                )}
-                {selectedEnvironments.length === 0 ? (
-                  <Text className="py-16 text-center text-base text-foreground-muted">
-                    {environments.length === 0
-                      ? t("Connect an environment to see usage.")
-                      : t("Select an environment to see usage.")}
-                  </Text>
-                ) : initialLoading ? (
-                  <Text
-                    accessibilityLiveRegion="polite"
-                    className="py-16 text-center text-base text-foreground-muted"
-                  >
-                    {t("Scanning provider transcripts…")}
-                  </Text>
-                ) : shown === null ? null : (
-                  <>
-                    {showingKept ? (
-                      <Text className="text-sm text-foreground-muted">
-                        {retainedUsageLabel(shown)}
-                      </Text>
-                    ) : null}
-                    {formatUsageSourceNotices(sourceMessages, providerLabel).map(
-                      ({ key, text }) => (
-                        <Notice key={key} message={text} />
-                      ),
-                    )}
-                    <UsageUpdating
-                      dimmed={showingKept}
-                      announce={progress.announcement !== null}
-                      label={
-                        rollingRefresh && !refreshingUsage
-                          ? null
-                          : (progress.label ?? (showingKept ? t("Updating…") : null))
-                      }
-                    >
-                      {wide ? (
-                        <View className="flex-row gap-6">
-                          <View className="w-72 gap-6">
-                            <View className="rounded-[24px] border-continuous bg-grouped-card p-4">
-                              <UsageSummary merged={merged} metric={metric} />
-                            </View>
-                            {providers}
-                          </View>
-                          <View className="min-w-0 flex-1">
-                            <ChartCard
-                              {...chart}
-                              height={WIDE_CHART_HEIGHT}
-                              fill
-                              title={
-                                isPast24Hours
-                                  ? metric === "cost"
-                                    ? t("Hourly cost")
-                                    : t("Hourly processed tokens")
-                                  : metric === "cost"
-                                    ? t("Daily cost")
-                                    : t("Daily processed tokens")
-                              }
-                            />
-                          </View>
-                        </View>
-                      ) : (
-                        <>
-                          <ChartCard {...chart} height={CHART_HEIGHT} />
-                          {providers}
-                        </>
-                      )}
-                      <TotalsSection
-                        merged={merged}
-                        isPast24Hours={isPast24Hours}
-                        columns={width >= 900 ? 6 : wide ? 3 : 2}
-                      />
-                      <CostSection merged={merged} wide={wide} />
-                      <ModelsSection merged={merged} metric={metric} columns={wide ? 2 : 1} />
-                    </UsageUpdating>
-                  </>
-                )}
-              </>
+              </View>
+            ) : (
+              <SegmentedControl
+                options={viewOptions()}
+                selected={view}
+                onSelect={setView}
+                role="tab"
+              />
             )}
-          </Animated.View>
-        </View>
-      </ScrollView>
+            <Animated.View
+              key={showingLimits ? "limits" : "usage"}
+              entering={FadeIn.duration(160).reduceMotion(ReduceMotion.System)}
+              className="gap-6"
+            >
+              {showingLimits ? (
+                <UsageLimitsSection
+                  failedLabels={limits.failedLabels}
+                  selectedEnvironmentIds={selectedEnvironmentIds}
+                  wide={wide}
+                />
+              ) : (
+                <>
+                  {wide ? null : (
+                    <SegmentedControl
+                      options={windowOptions()}
+                      selected={windowDays}
+                      onSelect={selectWindow}
+                      size="compact"
+                    />
+                  )}
+                  <ChatGptUsageSummary
+                    selectedEnvironmentIds={
+                      showingKept
+                        ? new Set(shownEnvironments.map(({ environmentId }) => environmentId))
+                        : selectedEnvironmentIds
+                    }
+                    disabled={showingKept}
+                  />
+                  {merged.duplicateSources.length > 0 ? (
+                    <Text className="text-sm text-foreground-muted">
+                      {t(
+                        "Counted once across environments sharing a transcript directory: {sources}",
+                        {
+                          sources: merged.duplicateSources.join(", "),
+                        },
+                      )}
+                    </Text>
+                  ) : null}
+                  {coverage === null ? null : (
+                    <View className="gap-2">
+                      <Notice
+                        message={[
+                          coverage.title,
+                          ...coverage.gaps.map(({ message }) => message),
+                        ].join("\n")}
+                      />
+                      {coverage.gaps.some(({ retryable }) => retryable) ? (
+                        <Button
+                          label={t("Retry")}
+                          disabled={refreshingUsage}
+                          onPress={refreshWindow}
+                        />
+                      ) : null}
+                    </View>
+                  )}
+                  {selectedEnvironments.length === 0 ? (
+                    <Text className="py-16 text-center text-base text-foreground-muted">
+                      {environments.length === 0
+                        ? t("Connect an environment to see usage.")
+                        : t("Select an environment to see usage.")}
+                    </Text>
+                  ) : initialLoading ? (
+                    <Text
+                      accessibilityLiveRegion="polite"
+                      className="py-16 text-center text-base text-foreground-muted"
+                    >
+                      {t("Scanning provider transcripts…")}
+                    </Text>
+                  ) : shown === null ? null : (
+                    <>
+                      {showingKept ? (
+                        <Text className="text-sm text-foreground-muted">
+                          {retainedUsageLabel(shown)}
+                        </Text>
+                      ) : null}
+                      {formatUsageSourceNotices(sourceMessages, providerLabel).map(
+                        ({ key, text }) => (
+                          <Notice key={key} message={text} />
+                        ),
+                      )}
+                      <UsageUpdating
+                        dimmed={showingKept}
+                        announce={progress.announcement !== null}
+                        label={
+                          rollingRefresh && !refreshingUsage
+                            ? null
+                            : (progress.label ?? (showingKept ? t("Updating…") : null))
+                        }
+                      >
+                        {wide ? (
+                          <View className="flex-row gap-6">
+                            <View className="w-72 gap-6">
+                              <View className="rounded-[24px] border-continuous bg-grouped-card p-4">
+                                <UsageSummary merged={merged} metric={metric} />
+                              </View>
+                              {providers}
+                            </View>
+                            <View className="min-w-0 flex-1">
+                              <ChartCard
+                                {...chart}
+                                height={WIDE_CHART_HEIGHT}
+                                fill
+                                title={
+                                  isPast24Hours
+                                    ? metric === "cost"
+                                      ? t("Hourly cost")
+                                      : t("Hourly processed tokens")
+                                    : metric === "cost"
+                                      ? t("Daily cost")
+                                      : t("Daily processed tokens")
+                                }
+                              />
+                            </View>
+                          </View>
+                        ) : (
+                          <>
+                            <ChartCard {...chart} height={CHART_HEIGHT} />
+                            {providers}
+                          </>
+                        )}
+                        <TotalsSection
+                          merged={merged}
+                          isPast24Hours={isPast24Hours}
+                          columns={width >= 900 ? 6 : wide ? 3 : 2}
+                        />
+                        <CostSection merged={merged} wide={wide} />
+                        <ModelsSection merged={merged} metric={metric} columns={wide ? 2 : 1} />
+                      </UsageUpdating>
+                    </>
+                  )}
+                </>
+              )}
+            </Animated.View>
+          </View>
+        </ScrollView>
+      )}
     </SettingsScreen>
   );
 }
@@ -584,7 +593,7 @@ function UsageSummary(props: { readonly merged: MergedUsage; readonly metric: Us
       <Text className="text-sm text-foreground-muted">
         {metric === "cost"
           ? t("* if billed at full API rate")
-          : t("Across {count} sessions", { count: formatCount(merged.sessions) })}
+          : tn(merged.sessions, "Across {count} session", "Across {count} sessions")}
       </Text>
     </View>
   );

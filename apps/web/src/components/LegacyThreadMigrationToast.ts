@@ -1,4 +1,4 @@
-import { getFormattingLocale, t, tn } from "~/i18n";
+import { t, tn, getFormattingLocale } from "~/i18n";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { primaryServerLegacyThreadMigrationAtom } from "../state/server";
 import { toastManager } from "./ui/toast";

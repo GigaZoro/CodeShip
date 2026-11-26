@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { prepareClerkTokenDirectory } from "./ClerkTokenStore.ts";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
@@ -25,7 +26,6 @@ import * as DesktopClerkTokenFile from "./DesktopClerkTokenFile.ts";
 import * as DesktopKeychain from "./DesktopKeychain.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
-import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
 import { t } from "@t3tools/shared/i18n";
 
@@ -98,7 +98,7 @@ function createDesktopClerkBridge(
   createTokenStorage: (directory: string) => TokenStorage,
 ) {
   return createClerkBridge({
-    storage: openClerkTokenStorage(stateDir, createTokenStorage, userDataPath),
+    storage: createTokenStorage(prepareClerkTokenDirectory(stateDir, userDataPath)),
     manageSingleInstanceLock: false,
     passkeys: true,
     renderer: {
@@ -195,11 +195,12 @@ export const make = Effect.gen(function* () {
           Effect.gen(function* () {
             yield* electronApp.whenReady;
             yield* Effect.tryPromise({
-              try: () =>
+              try: (signal) =>
                 receiveCodexAuthCallback(
                   request.authorizationUrl,
                   (url) => runPromise(shell.openExternal(url)),
                   (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl),
+                  signal,
                 ),
               catch: () =>
                 new LoopbackAuthCallbackError({

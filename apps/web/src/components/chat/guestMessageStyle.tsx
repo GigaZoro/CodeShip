@@ -1,5 +1,6 @@
-/** Bubble classes for a guest's message. A pending one has a dashed edge and no fill. */
 import { t } from "~/i18n";
+/** Bubble classes for a guest's message. A pending one has a dashed edge and no fill. */
+
 export function guestBubbleClassName(pending: boolean): string {
   return pending ? "border border-dashed border-guest/50 bg-transparent" : "bg-guest-surface";
 }

@@ -1,11 +1,10 @@
+import { t, msg } from "@t3tools/shared/i18n";
 import {
   t3ConnectTroubleshootingUrl,
   type T3ConnectTroubleshootingSection,
 } from "@t3tools/contracts";
 import type { RelayEnvironmentStatusResponse } from "@t3tools/contracts/relay";
 import * as DateTime from "effect/DateTime";
-
-import { t } from "@t3tools/shared/i18n";
 
 import type {
   ConnectionAttemptError,
@@ -97,165 +96,207 @@ function locate(input: ConnectionDiagnosisInput): Located | null {
   return { hop: cause !== null && NOT_ANSWERING.has(cause) ? "server" : "tunnel", cause };
 }
 
-function headline(host: string, located: Located, failure: ConnectionAttemptError | null): string {
+function headline(
+  host: string,
+  located: Located,
+  failure: ConnectionAttemptError | null,
+  resolve: typeof t,
+): string {
   switch (located.cause) {
     case "offline":
-      return t("This device is offline");
+      return resolve(msg("This device is offline"));
     case "session_pending":
-      return t("This device is still loading its T3 Connect sign-in");
+      return resolve(msg("This device is still loading its T3 Connect sign-in"));
     case "approval_pending":
-      return t("{host} is waiting for someone to approve this device", { host });
+      return resolve(msg("{host} is waiting for someone to approve this device"), { host });
     case "outdated":
-      return t("{host} runs an older T3.CodeShip", { host });
+      return resolve(msg("{host} runs an older T3.CodeShip"), { host });
     case "clock_skew":
-      return t("This device's clock is off");
+      return resolve(msg("This device's clock is off"));
     case "not_linked":
-      return t("{host} is not linked to your T3 Connect account", { host });
+      return resolve(msg("{host} is not linked to your T3 Connect account"), { host });
     case "relay_error":
-      return t("T3 Connect returned an error");
+      return resolve(msg("T3 Connect returned an error"));
     case "tunnel_pending":
-      return t("{host}'s tunnel is still being set up", { host });
+      return resolve(msg("{host}'s tunnel is still being set up"), { host });
     case "tunnel_not_enabled":
-      return t("T3 Connect is not turned on for {host}", { host });
+      return resolve(msg("T3 Connect is not turned on for {host}"), { host });
     case "released":
     case "tunnel_down":
-      return t("{host}'s tunnel is offline", { host });
+      return resolve(msg("{host}'s tunnel is offline"), { host });
     case "origin_unreachable":
-      return t("Tunnel works, but T3.CodeShip on {host} did not answer", { host });
+      return resolve(msg("Tunnel works, but T3.CodeShip on {host} did not answer"), { host });
     case "invalid_response":
-      return t("T3.CodeShip on {host} sent an unexpected answer", { host });
+      return resolve(msg("T3.CodeShip on {host} sent an unexpected answer"), { host });
     case "dns":
-      return t("{host}'s tunnel address did not resolve", { host });
+      return resolve(msg("{host}'s tunnel address did not resolve"), { host });
     case "tls":
-      return t("Secure connection to {host}'s tunnel failed", { host });
+      return resolve(msg("Secure connection to {host}'s tunnel failed"), { host });
     case "refused":
-      return t("{host}'s tunnel refused the connection", { host });
+      return resolve(msg("{host}'s tunnel refused the connection"), { host });
     case "timeout":
-      return t("{host} did not answer in time", { host });
+      return resolve(msg("{host} did not answer in time"), { host });
     case "unknown":
     case null:
       break;
   }
   switch (located.hop) {
     case "device":
-      return t("This device could not prepare the connection");
+      return resolve(msg("This device could not prepare the connection"));
     case "relay":
       return failure?.reason === "authentication"
-        ? t("T3 Connect did not accept this device's sign-in")
-        : t("This device can't reach T3 Connect");
+        ? resolve(msg("T3 Connect did not accept this device's sign-in"))
+        : resolve(msg("This device can't reach T3 Connect"));
     case "tunnel":
       // The relay already reached the host when this device fails on its own.
       return failure?.reason === "network" ||
         failure?.reason === "transport" ||
         failure?.reason === "timeout"
-        ? t("This device can't reach {host}'s tunnel", { host })
-        : t("T3 Connect could not reach {host}'s tunnel", { host });
+        ? resolve(msg("This device can't reach {host}'s tunnel"), { host })
+        : resolve(msg("T3 Connect could not reach {host}'s tunnel"), { host });
     case "server":
       return failure?.reason === "authentication" || failure?.reason === "permission"
-        ? t("T3.CodeShip on {host} did not accept this device", { host })
-        : t("T3.CodeShip on {host} did not answer", { host });
+        ? resolve(msg("T3.CodeShip on {host} did not accept this device"), { host })
+        : resolve(msg("T3.CodeShip on {host} did not answer"), { host });
   }
 }
 
-function steps(host: string, located: Located, failure: ConnectionAttemptError | null): string[] {
-  const checkHost = t("On {host}, check Settings > Sharing & access or run `t3 connect status`.", {
-    host,
-  });
+function steps(
+  host: string,
+  located: Located,
+  failure: ConnectionAttemptError | null,
+  resolve: typeof t,
+): string[] {
+  const checkHost = resolve(
+    msg("On {host}, check Settings > Sharing & access or run `t3 connect status`."),
+    { host },
+  );
   switch (located.cause) {
     case "offline":
-      return [t("Connect this device to the internet. T3.CodeShip reconnects on its own.")];
+      return [
+        resolve(msg("Connect this device to the internet. T3.CodeShip reconnects on its own.")),
+      ];
     case "session_pending":
       return [
-        t("Wait a moment. T3.CodeShip retries on its own."),
-        t("If it keeps waiting, reload or restart T3.CodeShip on this device."),
+        resolve(msg("Wait a moment. T3.CodeShip retries on its own.")),
+        resolve(msg("If it keeps waiting, reload or restart T3.CodeShip on this device.")),
       ];
     case "approval_pending": {
       const code =
         failure?._tag === "ConnectionTransientError" ? failure.verificationCode : undefined;
-      const approve = code
-        ? t("approve the device showing {code}", { code })
-        : t("approve this device");
       return [
-        t(
-          "On a device already connected to {host}, open Settings > Sharing & access and {approve}.",
-          { host, approve },
-        ),
-        t("Or run `t3 auth connect-device approve {code}` on {host}.", {
+        code
+          ? resolve(
+              msg(
+                "On a device already connected to {host}, open Settings > Sharing & access and approve the device showing {code}.",
+              ),
+              { host, code },
+            )
+          : resolve(
+              msg(
+                "On a device already connected to {host}, open Settings > Sharing & access and approve this device.",
+              ),
+              { host },
+            ),
+        resolve(msg("Or run `t3 auth connect-device approve {code}` on {host}."), {
           code: code ?? "<code>",
           host,
         }),
       ];
     }
     case "outdated":
-      return [t("Update T3.CodeShip on {host}.", { host })];
+      return [resolve(msg("Update T3.CodeShip on {host}."), { host })];
     case "clock_skew":
       return [
-        t("Turn on automatic date and time on this device and on {host}, then retry.", { host }),
+        resolve(msg("Turn on automatic date and time on this device and on {host}, then retry."), {
+          host,
+        }),
       ];
     case "not_linked":
       return [
-        t("Check that this device is signed in to the same T3 Connect account as the host."),
-        t("On {host}, open Settings > Sharing & access and turn T3 Connect on.", { host }),
+        resolve(
+          msg("Check that this device is signed in to the same T3 Connect account as the host."),
+        ),
+        resolve(msg("On {host}, open Settings > Sharing & access and turn T3 Connect on."), {
+          host,
+        }),
       ];
     case "tunnel_pending":
-      return [t("Wait a minute. T3.CodeShip retries on its own."), checkHost];
+      return [resolve(msg("Wait a minute. T3.CodeShip retries on its own.")), checkHost];
     case "relay_error":
       return [
-        t("Wait a few minutes. T3.CodeShip retries on its own."),
-        t("If it keeps failing, copy the diagnostics and report it."),
+        resolve(msg("Wait a few minutes. T3.CodeShip retries on its own.")),
+        resolve(msg("If it keeps failing, copy the diagnostics and report it.")),
       ];
     case "tunnel_not_enabled":
-      return [t("On {host}, open Settings > Sharing & access and turn T3 Connect on.", { host })];
+      return [
+        resolve(msg("On {host}, open Settings > Sharing & access and turn T3 Connect on."), {
+          host,
+        }),
+      ];
     case "released":
     case "tunnel_down":
       return [
-        t("Make sure {host} is awake and T3.CodeShip is running on it.", { host }),
+        resolve(msg("Make sure {host} is awake and T3.CodeShip is running on it."), { host }),
         checkHost,
-        t(
-          "A VPN or Tailscale exit node on {host} can block the tunnel (port 7844). Turn it off or allow the tunnel.",
+        resolve(
+          msg(
+            "A VPN or Tailscale exit node on {host} can block the tunnel (port 7844). Turn it off or allow the tunnel.",
+          ),
           { host },
         ),
       ];
     case "origin_unreachable":
     case "invalid_response":
-      return [t("Open or restart T3.CodeShip on {host}.", { host }), checkHost];
+      return [resolve(msg("Open or restart T3.CodeShip on {host}."), { host }), checkHost];
     // The relay saw these on its way to the host, so the fix is on the host.
     case "dns":
     case "tls":
     case "refused":
     case "timeout":
     case "unknown":
-      return [t("Make sure {host} is awake and online.", { host }), checkHost];
+      return [resolve(msg("Make sure {host} is awake and online."), { host }), checkHost];
     case null:
       break;
   }
   switch (located.hop) {
     case "device":
       return [
-        t("Restart T3.CodeShip on this device."),
-        t("If it keeps failing, remove {host} from this device and add it again.", { host }),
+        resolve(msg("Restart T3.CodeShip on this device.")),
+        resolve(msg("If it keeps failing, remove {host} from this device and add it again."), {
+          host,
+        }),
       ];
     case "relay":
       return failure?.reason === "authentication"
-        ? [t("Sign out of T3 Connect and sign in again.")]
+        ? [resolve(msg("Sign out of T3 Connect and sign in again."))]
         : [
-            t("Check this device's internet connection."),
-            t("A VPN, firewall, or ad blocker on this device can block T3 Connect."),
+            resolve(msg("Check this device's internet connection.")),
+            resolve(msg("A VPN, firewall, or ad blocker on this device can block T3 Connect.")),
           ];
     case "tunnel":
       return failure?.reason === "network" ||
         failure?.reason === "transport" ||
         failure?.reason === "timeout"
         ? [
-            t("A VPN, firewall, or DNS filter on this device can block the tunnel."),
-            t("Try another network, or add a direct route such as a Tailscale address."),
+            resolve(msg("A VPN, firewall, or DNS filter on this device can block the tunnel.")),
+            resolve(msg("Try another network, or add a direct route such as a Tailscale address.")),
           ]
-        : [t("Make sure {host} is awake and online.", { host }), checkHost];
+        : [resolve(msg("Make sure {host} is awake and online."), { host }), checkHost];
     case "server":
-      return [
-        t("Make sure T3.CodeShip is running on {host}.", { host }),
-        t("Retry. If it keeps failing, copy the diagnostics."),
-      ];
+      return failure?.reason === "authentication"
+        ? [
+            resolve(
+              msg(
+                "This device's sign-in to {host} expired or was revoked. Pair it again with a new pairing link from {host}.",
+              ),
+              { host },
+            ),
+          ]
+        : [
+            resolve(msg("Make sure T3.CodeShip is running on {host}."), { host }),
+            resolve(msg("Retry. If it keeps failing, copy the diagnostics.")),
+          ];
   }
 }
 
@@ -313,21 +354,23 @@ function helpSection(
   }
 }
 
+const T3_CONNECT_NAME = "T3 Connect";
+
 const HOP_ORDER = {
   relay: ["device", "relay", "tunnel", "server"],
   direct: ["device", "server"],
 } as const;
 
-function hopLabel(hop: ConnectionHop, host: string): string {
+function hopLabel(hop: ConnectionHop, host: string, resolve: typeof t): string {
   switch (hop) {
     case "device":
-      return t("This device");
+      return resolve(msg("This device"));
     case "relay":
-      return "T3 Connect";
+      return T3_CONNECT_NAME;
     case "tunnel":
-      return t("{host} tunnel", { host });
+      return resolve(msg("{host} tunnel"), { host });
     case "server":
-      return t("T3.CodeShip on {host}", { host });
+      return resolve(msg("T3.CodeShip on {host}"), { host });
   }
 }
 
@@ -337,6 +380,7 @@ function hopLabel(hop: ConnectionHop, host: string): string {
  */
 export function presentConnectionDiagnosis(
   input: ConnectionDiagnosisInput,
+  resolve: typeof t = t,
 ): ConnectionDiagnosis | null {
   const located = locate(input);
   if (located === null) return null;
@@ -351,7 +395,7 @@ export function presentConnectionDiagnosis(
   const failedIndex = order.indexOf(located.hop);
   const hops = order.map((hop, index): ConnectionDiagnosisHop => ({
     hop,
-    label: hopLabel(hop, host),
+    label: hopLabel(hop, host, resolve),
     result:
       index === failedIndex
         ? "failed"
@@ -366,25 +410,25 @@ export function presentConnectionDiagnosis(
   const add = (label: string, value: string | number | null | undefined) => {
     if (value !== null && value !== undefined && value !== "") facts.push([label, String(value)]);
   };
-  add(t("Cause"), located.cause ?? failure?.reason);
-  add(t("HTTP status"), httpStatus);
-  add(t("Attempts"), input.state.attempt > 0 ? input.state.attempt : null);
+  add(resolve(msg("Cause")), located.cause ?? failure?.reason);
+  add(resolve(msg("HTTP status")), httpStatus);
+  add(resolve(msg("Attempts")), input.state.attempt > 0 ? input.state.attempt : null);
   add(
-    t("Next retry"),
+    resolve(msg("Next retry")),
     input.state.retryAt === null
       ? null
       : DateTime.formatIso(DateTime.makeUnsafe(input.state.retryAt)),
   );
-  add(t("Route"), relayPath ? "T3 Connect" : t("Direct"));
-  add(t("App version"), input.clientVersion);
-  add(t("Host version"), input.serverVersion);
-  add(t("Error"), failure?.detail);
-  add(t("Trace ID"), failure?.traceId);
+  add(resolve(msg("Route")), relayPath ? "T3 Connect" : resolve(msg("Direct")));
+  add(resolve(msg("App version")), input.clientVersion);
+  add(resolve(msg("Host version")), input.serverVersion);
+  add(resolve(msg("Error")), failure?.detail);
+  add(resolve(msg("Trace ID")), failure?.traceId);
 
   return {
-    headline: headline(host, located, failure),
+    headline: headline(host, located, failure, resolve),
     hops,
-    steps: steps(host, located, failure),
+    steps: steps(host, located, failure, resolve),
     facts,
     moreInfoUrl:
       relayPath || located.cause === "session_pending"

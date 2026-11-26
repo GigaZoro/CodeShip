@@ -1,4 +1,6 @@
+import { t } from "~/i18n";
 import type { PullRequestInvolvement, PullRequestListState } from "@t3tools/contracts";
+
 import { Plug2Icon, SearchIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 
@@ -15,12 +17,8 @@ import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { PullRequestCompactFilterMenu } from "./PullRequestCompactFilterMenu";
-import {
-  translatePullRequestFilterOptions,
-  type PullRequestFilterOption,
-} from "./PullRequestListFilters";
-import { INVOLVEMENT_TABS, STATE_TABS } from "./pullRequestListOptions";
-import { t } from "~/i18n";
+import type { PullRequestFilterOption } from "./PullRequestListFilters";
+import { INVOLVEMENT_TABS, resolveFilterOptions, STATE_TABS } from "./pullRequestListOptions";
 
 function ExpandableSearch({
   searchInput,
@@ -50,10 +48,14 @@ function ExpandableSearch({
       <div
         ref={containerRef}
         className="w-56 min-w-24 shrink"
-        onFocus={() => onFocusWithin?.(true)}
+        onFocus={() => {
+          onFocusWithin?.(true);
+          // Open while focused, so Escape clearing the query does not unmount the field.
+          onOpenChange(true);
+        }}
         onBlur={() => {
           onFocusWithin?.(false);
-          if (searchValue.length === 0) onOpenChange(false);
+          onOpenChange(false);
         }}
       >
         {searchInput}
@@ -86,6 +88,7 @@ export function PullRequestsColumn({
   searchInput,
   sortMenu,
   filtersMenu,
+  savedViewsMenu,
   rightPanelControl,
   titlebarControls,
   rightPanelOpen,
@@ -106,6 +109,7 @@ export function PullRequestsColumn({
   searchInput: ReactNode;
   sortMenu: ReactNode;
   filtersMenu: ReactNode;
+  savedViewsMenu: ReactNode;
   rightPanelControl: ReactNode;
   titlebarControls: ReactNode;
   rightPanelOpen: boolean;
@@ -136,6 +140,7 @@ export function PullRequestsColumn({
   const searchExpanded = searchOpen || searchValue.length > 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- window keydown listener focuses the visible search input on Cmd/Ctrl+F
   useEffect(() => {
+    if (maximizedAway) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || maximizedAway) return;
       if (event.key.toLowerCase() !== "f" || !(event.metaKey || event.ctrlKey)) return;
@@ -199,14 +204,14 @@ export function PullRequestsColumn({
               <PullRequestCompactFilterMenu
                 label={t("Filter by state")}
                 value={state}
-                options={translatePullRequestFilterOptions(STATE_TABS)}
+                options={resolveFilterOptions(STATE_TABS, t)}
                 onChange={onState}
                 className="shrink-0"
               />
               <PullRequestCompactFilterMenu
                 label={t("Filter by involvement")}
                 value={involvement}
-                options={translatePullRequestFilterOptions(INVOLVEMENT_TABS)}
+                options={resolveFilterOptions(INVOLVEMENT_TABS, t)}
                 onChange={onInvolvement}
               />
               {hostMenuOptions.length > 2 ? (
@@ -256,6 +261,7 @@ export function PullRequestsColumn({
               </div>
               {sortMenu}
               {filtersMenu}
+              {savedViewsMenu}
               <PullRequestCompactFilterMenu
                 label={t("Filter by provider")}
                 outlined

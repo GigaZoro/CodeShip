@@ -26,12 +26,12 @@ import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { isConfiguredAcpRegistryAgent } from "./AddProviderInstanceDialog.logic";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { providerClients } from "./providerDriverMeta";
 import { t, tn } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.trim()
@@ -175,14 +175,27 @@ export function AcpRegistrySearchStep({
           <InputGroupAddon>
             <SearchIcon />
           </InputGroupAddon>
+          {/* Native search inputs clear on Escape even during IME composition. */}
           <InputGroupInput
             aria-label={t("Search ACP Registry")}
             maxLength={ACP_REGISTRY_SEARCH_QUERY_MAX_LENGTH}
             disabled={preparingId !== null}
+            enterKeyHint="search"
             onChange={(event) => registry.type(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || event.defaultPrevented) return;
+              if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+              const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+              if (!composing && !query && !event.repeat) return;
+              event.stopPropagation();
+              if (composing) return;
+              event.preventDefault();
+              if (query) registry.type("");
+            }}
             placeholder={t("Search agents…")}
+            role="searchbox"
             size="sm"
-            type="search"
+            type="text"
             value={query}
           />
         </InputGroup>
@@ -302,21 +315,19 @@ function AcpRegistryAgentRow({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {aboutUrl ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost-muted"
-                    aria-label={t("About {name}", { name: agent.name })}
-                    render={<a href={aboutUrl} target="_blank" rel="noreferrer" />}
-                  >
-                    <ExternalLinkIcon />
-                  </Button>
-                }
-              />
-              <TooltipPopup>{t("About {name}", { name: agent.name })}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost-muted"
+                  aria-label={t("About {name}", { name: agent.name })}
+                  render={<a href={aboutUrl} target="_blank" rel="noreferrer" />}
+                >
+                  <ExternalLinkIcon />
+                </Button>
+              }
+              label={<>{t("About {name}", { name: agent.name })}</>}
+            />
           ) : null}
           <Button
             aria-label={

@@ -1,4 +1,4 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import type { ToolCallVisibility } from "@t3tools/contracts/settings";
 import { AsyncResult } from "effect/reactivity";
 import { View } from "react-native";
@@ -6,7 +6,8 @@ import { View } from "react-native";
 import { AppText as Text } from "../../../../components/ui/AppText";
 import { ListChoiceRow } from "../../../../components/ui/ListChoiceRow";
 import { msg, t, type Message } from "../../../../lib/i18n";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../../../state/preferences";
+import { useAtomCommand } from "../../../../state/use-atom-command";
 import { SettingsSection } from "../../components/SettingsSection";
 
 const TOOL_CALL_VISIBILITY_OPTIONS: ReadonlyArray<{
@@ -20,7 +21,7 @@ const TOOL_CALL_VISIBILITY_OPTIONS: ReadonlyArray<{
 ];
 
 export function ToolCallsAppearanceSection() {
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const preferences = useAtomValue(mobilePreferencesAtom);
   const selected = AsyncResult.isSuccess(preferences)
     ? (preferences.value.toolCallVisibility ?? "showAll")
@@ -36,7 +37,7 @@ export function ToolCallsAppearanceSection() {
             selected={selected === option.value}
             separated={index > 0}
             disabled={selected === null}
-            onPress={() => savePreferences({ toolCallVisibility: option.value })}
+            onPress={() => void savePreferences({ toolCallVisibility: option.value })}
           />
         ))}
       </SettingsSection>

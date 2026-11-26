@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import * as DateTime from "effect/DateTime";
 
 import { getFormattingLocale, t, tn } from "~/i18n";
@@ -6,6 +7,7 @@ import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "@t3tools/shared/remote";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import {
+  isLoopbackHostname,
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
@@ -300,7 +302,8 @@ export function parseRemotePairingFields(input: {
 
 export function formatDesktopSshConnectionError(error: unknown): string {
   const fallback = t("Failed to connect SSH host.");
-  const rawMessage = error instanceof Error ? error.message : fallback;
+  const rawMessage =
+    error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : fallback;
   const withoutIpcPrefix = rawMessage.replace(
     /^Error invoking remote method 'desktop:ensure-ssh-environment':\s*/u,
     "",
@@ -431,8 +434,15 @@ export function resolveAdvertisedEndpointPairingUrl(
   return resolveDesktopPairingUrl(endpoint.httpBaseUrl, credential);
 }
 
-export function resolveCurrentOriginPairingUrl(credential: string): string {
-  const url = new URL("/pair", window.location.href);
+export function resolveCurrentOriginPairingUrl(
+  credential: string,
+  currentHref: string = window.location.href,
+): string | null {
+  const url = new URL("/pair", currentHref);
+  // The packaged desktop window loads from t3code://app, which no other device can open.
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || isLoopbackHostname(url.hostname)) {
+    return null;
+  }
   return setPairingTokenOnUrl(url, credential).toString();
 }
 
@@ -486,7 +496,7 @@ export function connectDeviceName({
 }: {
   readonly client?: AuthClientMetadata | undefined;
 }): string {
-  return client?.label ?? client?.os ?? client?.browser ?? "this device";
+  return client?.label ?? client?.os ?? client?.browser ?? t("this device");
 }
 
 /** How a T3 Connect device describes itself. It can say anything, so the code is what to trust. */
@@ -498,5 +508,5 @@ export function describeConnectDeviceClient({
   const bits = [client?.label, client?.os, client?.browser, client?.ipAddress].filter(
     (value): value is string => typeof value === "string" && value.length > 0,
   );
-  return bits.length > 0 ? [...new Set(bits)].join(" · ") : "Unknown device";
+  return bits.length > 0 ? [...new Set(bits)].join(" · ") : t("Unknown device");
 }

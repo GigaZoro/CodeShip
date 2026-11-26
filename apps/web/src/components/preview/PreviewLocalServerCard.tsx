@@ -1,9 +1,10 @@
+import { msg, t } from "~/i18n";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+
 import { DiscoveryListRow } from "../ui/discovery-list";
 
 import { PreviewFaviconIcon } from "./PreviewFaviconIcon";
 import type { PreviewableServer } from "./useDiscoveredLocalServers";
-import { t } from "~/i18n";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -12,7 +13,7 @@ interface Props {
 }
 
 export function PreviewLocalServerCard({ threadRef, server, onOpen }: Props) {
-  const subtitle = describeServer(server);
+  const subtitle = describeServer(server, t);
   return (
     <DiscoveryListRow
       onClick={onOpen}
@@ -23,7 +24,7 @@ export function PreviewLocalServerCard({ threadRef, server, onOpen }: Props) {
   );
 }
 
-function describeServer(server: PreviewableServer): string {
+function describeServer(server: PreviewableServer, resolve: typeof t): string {
   if (server.processName) return server.processName;
-  return t("Listening");
+  return resolve(msg("Listening"));
 }

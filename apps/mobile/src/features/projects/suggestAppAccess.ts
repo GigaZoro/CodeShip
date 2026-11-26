@@ -5,7 +5,7 @@ import type {
 } from "@t3tools/contracts";
 import { appSignInTargetForRemote } from "@t3tools/client-runtime/source-control-clients";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import { Linking } from "react-native";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { t } from "../../lib/i18n";
@@ -37,7 +37,7 @@ export async function suggestAppAccessForRemote(
       { text: t("Not now"), style: "cancel" },
       {
         text: t("Install"),
-        onPress: () => void Linking.openURL(target.appSignIn.installUrl).catch(() => undefined),
+        onPress: () => void tryOpenExternalUrl(target.appSignIn.installUrl, "provider-auth"),
       },
     ],
   );

@@ -36,8 +36,8 @@ export interface TranscriptParseResult {
   readonly records: readonly UsageRecord[];
   /** Unterminated tail records stay outside records/position so the next scan rereads them. */
   readonly tailRecords: readonly UsageRecord[];
-  /** Includes tentative tail diagnostics; position.state only includes committed lines. */
-  readonly malformedRecords: number;
+  /** Timestamps, including tentative tail diagnostics; position.state only includes committed lines. */
+  readonly malformedRecords: readonly number[];
   readonly position: TranscriptParsePosition;
   readonly resumed: boolean;
 }
@@ -61,11 +61,16 @@ export interface TranscriptPathFailure {
 }
 
 /** Thrown instead of a new call on a path whose earlier call has not returned. */
-export class PathCallPendingError extends Error {
-  constructor() {
-    super("An earlier file system call on this path has not returned.");
+export class PathCallPendingError extends Schema.TaggedError<PathCallPendingError>()(
+  "PathCallPendingError",
+  {},
+) {
+  override get message() {
+    return "An earlier file system call on this path has not returned.";
   }
 }
+
+export const isPathCallPending = Schema.is(PathCallPendingError);
 
 export const isGone = (cause: unknown) =>
   cause instanceof Error && "code" in cause && cause.code === "ENOENT";
@@ -360,16 +365,10 @@ async function guardMatches(
   return bytesRead === position.guardLength && fnv1a(window) === position.guardHash;
 }
 
-// Match markers in one latin1 alternation; one character per byte preserves exact ASCII offsets.
+// Match ASCII markers as raw bytes: UTF-8 cannot false-match them mid-sequence, and no line string is allocated.
 export function transcriptLineGate(markers: readonly [string, ...string[]]) {
-  if (markers.length === 1) {
-    const marker = Buffer.from(markers[0]);
-    return (line: Buffer) => line.includes(marker);
-  }
-  const pattern = new RegExp(
-    markers.map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
-  );
-  return (line: Buffer) => pattern.test(line.toString("latin1"));
+  const needles = markers.map((marker) => Buffer.from(marker));
+  return (line: Buffer) => needles.some((needle) => line.includes(needle));
 }
 
 /**
@@ -566,7 +565,7 @@ async function readRecords<State>(
     return {
       records,
       tailRecords,
-      malformedRecords: format.readMalformedRecords?.(tailState) ?? 0,
+      malformedRecords: format.readMalformedRecords?.(tailState) ?? [],
       position: {
         resumeOffset: compressed ? 0 : resumeOffset,
         guardLength,

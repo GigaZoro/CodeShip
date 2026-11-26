@@ -1,9 +1,4 @@
-import type {
-  OrchestrationV2Run,
-  WorktreeSetupSnapshot,
-  WorktreeSetupStageId,
-} from "@t3tools/contracts";
-import { t } from "@t3tools/shared/i18n";
+import type { OrchestrationV2Run, WorktreeSetupSnapshot } from "@t3tools/contracts";
 
 export function resolveVisibleWorktreeSetup(input: {
   live: WorktreeSetupSnapshot | null;
@@ -27,17 +22,4 @@ export function worktreeSetupAgentStarted(snapshot: WorktreeSetupSnapshot): bool
   return snapshot.stages.some((stage) => stage.id === "agent" && stage.status === "done");
 }
 
-export function worktreeSetupStageLabel(id: WorktreeSetupStageId): string {
-  switch (id) {
-    case "fetch":
-      return t("Fetch base branch");
-    case "checkout":
-      return t("Check out files");
-    case "submodules":
-      return t("Init submodules");
-    case "setup-script":
-      return t("Run setup script");
-    case "agent":
-      return t("Start agent");
-  }
-}
+export { worktreeSetupStageLabel } from "./contractLabels.ts";

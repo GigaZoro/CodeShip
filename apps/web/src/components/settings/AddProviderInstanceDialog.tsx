@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { t } from "~/i18n";
 
@@ -363,7 +364,7 @@ export function AddProviderInstanceDialog({
     }));
     setIdentityByDriver((existing) =>
       updateProviderIdentityDraft(existing, ACP_REGISTRY_DRIVER_KIND, {
-        // oxlint-disable-next-line t3code/no-untranslated-text -- default instance name stored in the provider config
+        // oxlint-disable-next-line t3code/no-untranslated-text, t3code/no-untranslated-copy -- default instance name stored in the provider config
         label: "Local ACP",
         instanceIdOverride: null,
       }),
@@ -409,7 +410,10 @@ export function AddProviderInstanceDialog({
       toastManager.add({
         type: "error",
         title: t("Could not add provider instance"),
-        description: error instanceof Error ? error.message : t("The settings update failed."),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error) ?? error.message)
+            : t("The settings update failed."),
       });
       return;
     }

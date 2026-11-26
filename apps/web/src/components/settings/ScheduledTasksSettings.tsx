@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   connectionMayStillAnswer,
@@ -30,7 +31,6 @@ import type {
   EnvironmentMachineKind,
   LinkedScheduledTask,
   LinkedScheduledTaskMachine,
-  ModelSelection,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ScheduledTask,
@@ -58,6 +58,7 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
+import { scheduledTaskWorktreeBaseRef } from "@t3tools/client-runtime/scheduled-task-worktree";
 import {
   liveRunLimitDraft,
   liveRunLimitHelpText,
@@ -93,7 +94,7 @@ import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { formatRelativeTime, formatUpcomingTimestamp } from "../../timestampFormat";
 import { useClientSettings, useEnvironmentSettings } from "../../hooks/useSettings";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { getCustomModelOptionsByInstance, selectsPlanAgent } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { usePrimaryCloudLinkState } from "../../cloud/cloudLinkState";
 import { requestConfirmDialog } from "../../confirmDialog";
@@ -163,7 +164,7 @@ import {
   useSharedScheduledTaskFailures,
 } from "../../state/sharedScheduledTasks";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
-import { useThreadSearch } from "../../state/queries";
+import { usePaginatedBranches, useThreadSearch } from "../../state/queries";
 import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useInheritedDefaultModelSelection } from "../../state/inheritedDefaultModel";
@@ -179,7 +180,6 @@ import {
   clampManagedRuntimeMode,
   managedCapabilityDenial,
 } from "@t3tools/contracts";
-import { withAutoAccount } from "@t3tools/shared/model";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { autoModePick } from "@t3tools/shared/serverSettings";
 import { useManagedPolicy } from "~/state/managedPolicy";
@@ -250,10 +250,12 @@ import {
 } from "../ui/menu";
 import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
+import { Skeleton } from "../ui/skeleton";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
+import { createModelSelection, withModelSelectionOptions } from "@t3tools/shared/model";
 import { Badge } from "../ui/badge";
 import { Checkbox } from "../ui/checkbox";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import {
   Combobox,
@@ -287,6 +289,9 @@ import {
   SettingsSection,
   SETTINGS_PICKER_TRIGGER_CLASSNAME,
 } from "./settingsLayout";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+
+const SCHEDULE_CHECK_EXAMPLE = "node ~/scripts/has-work.mjs";
 
 const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const WEEKDAY_SHORT = [
@@ -332,15 +337,15 @@ const EMPTY_DRAFT: DraftState = {
   weekdays: new Set([1, 2, 3, 4, 5]),
   projectId: "",
   threadId: "",
+  savedThreadId: "",
   threadMode: "new_thread",
   workspaceMode: "worktree",
-  baseRef: "main",
+  baseRef: "",
   startFromOrigin: true,
   existingWorktreePath: "",
-  modelKey: "",
+  modelSelection: null,
   runtimeMode: "full-access",
   interactionMode: "default",
-  baseModelSelection: null,
   followsDefaultModel: true,
   catchUpMissedRun: null,
   runCondition: runConditionDraft(null),
@@ -480,15 +485,6 @@ function Field({
   );
 }
 
-function splitModelKey(value: string): ModelSelection | null {
-  const index = value.indexOf(":");
-  if (index <= 0 || index === value.length - 1) return null;
-  return {
-    instanceId: ProviderInstanceId.make(value.slice(0, index)),
-    model: value.slice(index + 1),
-  };
-}
-
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
 function relativeLabel(value: string | null, nowMs: number): string {
   if (!value) return t("Not scheduled");
@@ -583,10 +579,13 @@ function TaskNoWorkSkip({
   if (skip === null) return null;
   const text = <NoWorkSkipSentence skip={skip} />;
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span tabIndex={0} className={className} />}>{text}</TooltipTrigger>
-      <TooltipPopup side="top">{text}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<span tabIndex={0} className={className} />}
+      side="top"
+      label={text}
+    >
+      {text}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -606,20 +605,19 @@ function TaskFailingCheck({ task }: { readonly task: Pick<ScheduledTask, "failin
   if (failing === null) return null;
   const text = <FailingCheckSentence failing={failing} />;
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            tabIndex={0}
-            className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-warning-foreground"
-          />
-        }
-      >
-        <TriangleAlertIcon aria-hidden className="size-3 shrink-0" />
-        <span className="min-w-0 truncate">{text}</span>
-      </TooltipTrigger>
-      <TooltipPopup side="top">{text}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <span
+          tabIndex={0}
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-warning-foreground"
+        />
+      }
+      side="top"
+      label={text}
+    >
+      <TriangleAlertIcon aria-hidden className="size-3 shrink-0" />
+      <span className="min-w-0 truncate">{text}</span>
+    </SharedTooltipTrigger>
   );
 }
 
@@ -1054,6 +1052,9 @@ function ScheduledTaskEnvironmentList({
   const notConnectedLabel = t("Not connected:");
   const loadingLabel = t("Loading scheduled tasks on");
   const noTasksLabel = t("No tasks on");
+  const loading = states.some((state) => state.connected && state.error === null && !state.tasks);
+  // Until one machine has tasks to show, rows stand in for the list instead of a status line.
+  const placeholder = loading && populated.length === 0;
   const summaries: Record<string, string[]> = {
     [notConnectedLabel]: [],
     [loadingLabel]: [],
@@ -1070,7 +1071,7 @@ function ScheduledTaskEnvironmentList({
     } else if (error !== null) {
       failures.push({ environmentId: environment.environmentId, label, error });
     } else if (!tasks) {
-      summaries[loadingLabel]!.push(label);
+      if (!placeholder) summaries[loadingLabel]!.push(label);
     } else if (
       tasks.length === 0 &&
       !holdsShared(environment.environmentId) &&
@@ -1165,6 +1166,7 @@ function ScheduledTaskEnvironmentList({
           role="status"
         />
       ) : null}
+      {placeholder ? <ScheduledTaskRowsSkeleton /> : null}
       {/* Only once every machine answered: one still loading or failing may hold tasks. */}
       {populated.length === 0 &&
       sharedGroups.length === 0 &&
@@ -1637,6 +1639,36 @@ function ScheduledTaskEnvironmentSection({
   );
 }
 
+const SKELETON_ROWS = [0, 1] as const;
+
+function ScheduledTaskRowsSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label={t("Loading scheduled tasks…")}
+      className="divide-y divide-border/50"
+    >
+      {SKELETON_ROWS.map((row) => (
+        <div
+          key={row}
+          aria-hidden
+          className="flex items-center justify-between gap-3 px-3 py-3 sm:px-4"
+        >
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton shape="pill" className="h-4 w-40" />
+            <Skeleton shape="pill" className="h-3 w-full max-w-sm" />
+            <Skeleton shape="pill" className="h-3 w-48" />
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Skeleton shape="pill" className="h-5 w-9" />
+            <Skeleton className="size-7" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** What every client knows about a shared task across the machines it can reach. */
 function useSharedTaskView(task: ScheduledTask) {
   const nowMinute = useNowMinute();
@@ -1764,29 +1796,34 @@ function SharedTaskBadge({
 }) {
   const leftOut = view.excluded.map(view.labelOf);
   return (
-    <Tooltip>
-      <TooltipTrigger render={<Badge variant={warn ? "warning" : "info"} tabIndex={0} />}>
-        {view.oneMachine ? t("One machine") : t("Every machine")}
-      </TooltipTrigger>
-      <TooltipPopup side="top">
-        <div className="space-y-1">
-          <p>
-            {view.oneMachine
-              ? t(
-                  "Each run happens on one machine: the first in the order that is online and finishes it.",
-                )
-              : t("Runs on every machine, each on its own schedule.")}
-          </p>
-          {view.order.length > 0 ? (
-            <p>{t("Order: {machines}", { machines: view.order.map(view.labelOf).join(" → ") })}</p>
-          ) : null}
-          {leftOut.length > 0 ? (
-            <p>{t("Not on: {machines}", { machines: leftOut.join(", ") })}</p>
-          ) : null}
-          {children}
-        </div>
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<Badge variant={warn ? "warning" : "info"} tabIndex={0} />}
+      side="top"
+      label={
+        <>
+          <div className="space-y-1">
+            <p>
+              {view.oneMachine
+                ? t(
+                    "Each run happens on one machine: the first in the order that is online and finishes it.",
+                  )
+                : t("Runs on every machine, each on its own schedule.")}
+            </p>
+            {view.order.length > 0 ? (
+              <p>
+                {t("Order: {machines}", { machines: view.order.map(view.labelOf).join(" → ") })}
+              </p>
+            ) : null}
+            {leftOut.length > 0 ? (
+              <p>{t("Not on: {machines}", { machines: leftOut.join(", ") })}</p>
+            ) : null}
+            {children}
+          </div>
+        </>
+      }
+    >
+      {view.oneMachine ? t("One machine") : t("Every machine")}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -2002,6 +2039,7 @@ function ScheduledTaskRow({
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
   const { environments } = useEnvironments();
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const commands = useScheduledTaskCommands();
   const busy = commands.busy;
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
@@ -2040,7 +2078,7 @@ function ScheduledTaskRow({
           <ScheduledTaskPlace environmentId={environmentId} projectId={task.projectId} />
           <span>
             {tx("{schedule} · {status}", {
-              schedule: scheduleLabel(task.schedule, timeZone, task.nextRunAt),
+              schedule: scheduleLabel(task.schedule, timestampFormat, timeZone, task.nextRunAt),
               status: <TaskNextRun task={task} />,
             })}
           </span>
@@ -2614,7 +2652,13 @@ function WebhookEndpointField({
     serverEnvironment.rotateScheduledTaskWebhookToken.permissionAtom(environmentId),
   );
   const httpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: t("webhook URL") });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: {
+      target: "webhook URL",
+      unavailableMessage: msg("Clipboard API is unavailable while copying webhook URL."),
+      failureMessage: msg("Failed to copy webhook URL to the clipboard."),
+    },
+  });
   const rotate = useAtomCommand(serverEnvironment.rotateScheduledTaskWebhookToken, {
     label: "scheduled task rotate webhook token",
   });
@@ -2891,7 +2935,7 @@ function ScheduledTaskDestination({
               onChange={(event) => setQuery(event.target.value)}
             />
             <ComboboxEmpty>{t("No threads found.")}</ComboboxEmpty>
-            <ComboboxList className="max-h-72">
+            <ComboboxList scrollAreaClassName="max-h-72">
               {items.map((value, index) => (
                 <ComboboxItem key={value} index={index} value={value}>
                   <span className="block truncate">
@@ -3036,6 +3080,19 @@ function ScheduledTaskEditorForm({
   const liveTask = tasksQuery.data ? (listedTask ?? (awaitingList ? task : null)) : task;
   const selectedProjectId = draft.projectId || projects[0]?.id || "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const automaticBaseRef = draft.workspaceMode === "worktree" && !draft.baseRef.trim();
+  const automaticBaseRefs = usePaginatedBranches({
+    environmentId,
+    cwd: automaticBaseRef ? (selectedProject?.workspaceRoot ?? null) : null,
+    query: "",
+  });
+  const worktreeBaseRef = scheduledTaskWorktreeBaseRef(draft.baseRef, automaticBaseRefs.refs);
+  // Until the project's refs load, the automatic base would save as `main`. A failed lookup falls back to it.
+  const automaticBaseRefLoading =
+    automaticBaseRef &&
+    selectedProject !== undefined &&
+    automaticBaseRefs.data === null &&
+    automaticBaseRefs.error === null;
   const instanceEntries = providerInstanceEntriesFor(
     providers,
     settings,
@@ -3047,7 +3104,7 @@ function ScheduledTaskEditorForm({
     selectedProject?.id ?? null,
   );
   const firstInstance = instanceEntries[0];
-  const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
+  const draftSelection = draft.modelSelection;
   const defaultSelection = scheduledTaskDefaultModel(
     settings,
     selectedProject ?? null,
@@ -3160,15 +3217,6 @@ function ScheduledTaskEditorForm({
       ? draftSelection
       : defaultSelection;
   const activeSelection = followsDefaultModel ? defaultSelection : ownSelection;
-  // The source selection keeps its options and Auto while the picker leaves instanceId:model as is.
-  const chosenSelection =
-    followsDefaultModel ||
-    activeSelection === null ||
-    draft.baseModelSelection === null ||
-    draft.baseModelSelection.instanceId !== activeSelection.instanceId ||
-    draft.baseModelSelection.model !== activeSelection.model
-      ? activeSelection
-      : draft.baseModelSelection;
   const autoPick = autoModePick({
     settings,
     accounts: providers,
@@ -3187,6 +3235,7 @@ function ScheduledTaskEditorForm({
     : { instanceId: activeInstanceId, model: activeModel };
   const shownInstanceId = shownSelection?.instanceId ?? activeInstanceId;
   const shownModel = shownSelection?.model ?? "";
+  const activeEntry = instanceEntries.find((entry) => entry.instanceId === activeInstanceId);
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -3199,7 +3248,8 @@ function ScheduledTaskEditorForm({
       stackedThreadToast({
         type: "error",
         title,
-        description: error instanceof Error ? error.message : String(error),
+        description:
+          error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error),
       }),
     );
   };
@@ -3213,10 +3263,11 @@ function ScheduledTaskEditorForm({
       !connected ||
       // An upsert is shaped by what the target stores, so it waits for the target's config.
       supportsPromptFiles === null ||
-      tasksQuery.data === null
+      tasksQuery.data === null ||
+      automaticBaseRefLoading
     )
       return;
-    const selection = chosenSelection;
+    const selection = activeSelection;
     const missing = [
       { missing: !draft.title.trim(), label: "name", fieldId: "scheduled-task-title" },
       {
@@ -3314,7 +3365,7 @@ function ScheduledTaskEditorForm({
           ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
           : {
               type: "worktree",
-              baseRef: draft.baseRef.trim() || "main",
+              baseRef: worktreeBaseRef,
               startFromOrigin: draft.startFromOrigin,
             };
     if (runConditionLost) {
@@ -3369,6 +3420,7 @@ function ScheduledTaskEditorForm({
       schedule,
       projectId: selectedProjectId as ProjectId,
       threadId: draft.threadId && !sharing ? (draft.threadId as ThreadId) : null,
+      ...(draft.threadId === "" && draft.savedThreadId !== "" ? { unbindThread: true } : {}),
       ...(offersThreadModes && !sharing ? { threadMode: draft.threadMode } : {}),
       workspaceStrategy,
       modelSelection: selection,
@@ -3506,9 +3558,8 @@ function ScheduledTaskEditorForm({
                   ...(source
                     ? {}
                     : {
-                        modelKey: "",
-                        baseModelSelection: null,
-                        baseRef: "main",
+                        modelSelection: null,
+                        baseRef: "",
                         startFromOrigin: true,
                         existingWorktreePath: "",
                       }),
@@ -3857,7 +3908,7 @@ function ScheduledTaskEditorForm({
                 id="scheduled-task-base-ref"
                 environmentId={environmentId}
                 cwd={selectedProject?.workspaceRoot ?? null}
-                value={draft.baseRef}
+                value={automaticBaseRefLoading ? "" : worktreeBaseRef}
                 onValueChange={(baseRef) => setDraft((current) => ({ ...current, baseRef }))}
                 startFromOrigin={draft.startFromOrigin}
                 onStartFromOriginChange={(startFromOrigin) =>
@@ -4028,29 +4079,48 @@ function ScheduledTaskEditorForm({
                 modelOptionsByInstance={modelOptionsByInstance}
                 isComposerOwned={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                onInstanceModelChange={(instanceId, model) =>
+                onInstanceModelChange={(instanceId, model) => {
+                  if (
+                    instanceId === activeSelection?.instanceId &&
+                    model === activeSelection.model &&
+                    !activeSelection.autoAccount
+                  )
+                    return;
                   setDraft((current) => ({
                     ...current,
-                    modelKey: `${instanceId}:${model}`,
-                    // A model picked by name runs as named, even the one Auto ran.
-                    baseModelSelection:
-                      current.baseModelSelection &&
-                      withAutoAccount(current.baseModelSelection, false),
-                  }))
-                }
+                    modelSelection: createModelSelection(instanceId, model),
+                  }));
+                }}
                 auto={{
                   pick: autoPick,
-                  checked: chosenSelection?.autoAccount === true,
+                  checked: activeSelection?.autoAccount === true,
                   onSelect: () => {
                     if (autoPick === null) return;
                     setDraft((current) => ({
                       ...current,
-                      modelKey: `${autoPick.instanceId}:${autoPick.model}`,
-                      baseModelSelection: autoPick,
+                      modelSelection: autoPick,
                     }));
                   },
                 }}
               />
+              {!draft.threadId && activeSelection && activeEntry ? (
+                <TraitsPicker
+                  provider={activeEntry.driverKind}
+                  models={activeEntry.models}
+                  model={activeModel}
+                  modelOptions={activeSelection.options ?? []}
+                  allowPromptInjectedEffort={false}
+                  includePlanAgent={selectsPlanAgent(activeSelection.options)}
+                  disabled={saving || !connected}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  onModelOptionsChange={(options) =>
+                    setDraft((current) => ({
+                      ...current,
+                      modelSelection: withModelSelectionOptions(activeSelection, options),
+                    }))
+                  }
+                />
+              ) : null}
             </div>
           </Field>
 
@@ -4460,7 +4530,7 @@ function ScheduledTaskEditorForm({
                 <Input
                   id="scheduled-task-check-command"
                   aria-describedby="scheduled-task-check-description"
-                  placeholder={"node ~/scripts/has-work.mjs"}
+                  placeholder={SCHEDULE_CHECK_EXAMPLE}
                   value={draft.runCondition.command}
                   onChange={(event) =>
                     setDraft((current) => ({
@@ -4622,6 +4692,7 @@ function ScheduledTaskEditorForm({
             editingTaskMissing ||
             !connected ||
             !tasksQuery.data ||
+            automaticBaseRefLoading ||
             (draft.enabled && draft.scheduleMode === "webhook" && webhookDenial !== undefined)
           }
           onClick={() => void submit()}

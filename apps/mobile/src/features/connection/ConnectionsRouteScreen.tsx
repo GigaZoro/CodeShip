@@ -1,8 +1,9 @@
+import { t } from "../../lib/i18n";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -11,7 +12,7 @@ import { useRemoteConnections } from "../../state/use-remote-environment-registr
 import { LocalEnvironmentList } from "./LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
 import { LinkedEnvironmentsSection } from "./LinkedEnvironmentsSection";
-import { t } from "../../lib/i18n";
+import { LinkSeveralEnvironmentsAction } from "./LinkSeveralEnvironments";
 
 export function ConnectionsRouteScreen() {
   const {
@@ -33,7 +34,7 @@ export function ConnectionsRouteScreen() {
       <AppBar
         title={t("Environments")}
         onClose={() => navigation.goBack()}
-        closeAccessibilityLabel="Close environments"
+        closeAccessibilityLabel={t("Close environments")}
         actions={[
           {
             accessibilityLabel: t("Add environment"),
@@ -64,11 +65,16 @@ export function ConnectionsRouteScreen() {
         {connectedEnvironments
           .filter((environment) => environment.connectionState === "connected")
           .map((environment) => (
-            <LinkedEnvironmentsSection
-              key={environment.environmentId}
-              environmentId={environment.environmentId}
-              environmentLabel={environment.environmentLabel}
-            />
+            <Fragment key={environment.environmentId}>
+              <LinkedEnvironmentsSection
+                environmentId={environment.environmentId}
+                environmentLabel={environment.environmentLabel}
+              />
+              <LinkSeveralEnvironmentsAction
+                environmentId={environment.environmentId}
+                environmentLabel={environment.environmentLabel}
+              />
+            </Fragment>
           ))}
         <PullRequestRoutingSettings />
       </ScrollView>

@@ -1,5 +1,6 @@
 import { t } from "~/i18n";
 import type { ChatAttachment } from "@t3tools/contracts";
+
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 
 import { useTheme } from "~/hooks/useTheme";
@@ -70,7 +71,7 @@ export function GuestMessageAttachments(props: {
             <PierreEntryIcon pathValue={file.name} kind="file" theme={resolvedTheme} />
             <span className="min-w-0 truncate">{file.name}</span>
             <span className="shrink-0 text-xs text-muted-foreground">
-              {formatAttachmentSize(file.sizeBytes)}
+              {formatAttachmentSize(file.sizeBytes, t)}
             </span>
           </>
         );

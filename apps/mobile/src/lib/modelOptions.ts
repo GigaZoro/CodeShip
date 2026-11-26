@@ -48,11 +48,12 @@ export type ModelOption = {
   readonly capabilities: ModelCapabilities | null;
   readonly selection: ModelSelection;
   readonly providerUpdateRequired?: ProviderUpdateRequired;
+  readonly providerSubProviders?: T3ServerConfig["providers"][number]["subProviders"];
 };
 
 type ProviderUpdateRequired = Pick<
   T3ServerConfig["providers"][number],
-  "driver" | "updateRequiredModels"
+  "driver" | "updateRequiredModels" | "versionAdvisory"
 >;
 
 export type ProviderGroup = {
@@ -60,6 +61,7 @@ export type ProviderGroup = {
   readonly providerLabel: string;
   readonly models: ReadonlyArray<ModelOption>;
   readonly updateRequired?: ProviderUpdateRequired;
+  readonly subProviders?: ModelOption["providerSubProviders"];
 };
 
 function providerDisplayLabel(provider: {
@@ -296,6 +298,22 @@ export function resolveNewTaskModelSelection(input: {
   );
 }
 
+// Rows built after a pick on another instance carry no options for the thread's own model.
+export function withStoredThreadModelOptions(
+  selection: ModelSelection,
+  stored: ModelSelection,
+): ModelSelection {
+  if (
+    (selection.options?.length ?? 0) > 0 ||
+    !stored.options?.length ||
+    selection.instanceId !== stored.instanceId ||
+    selection.model !== stored.model
+  ) {
+    return selection;
+  }
+  return { ...selection, options: stored.options };
+}
+
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
@@ -371,7 +389,11 @@ export function buildModelOptions(
     const providerLabel = providerDisplayLabel(provider);
     const providerBadge = providerBadgeFor(provider.instanceId);
     const updateRequired = provider.updateRequiredModels?.length
-      ? { driver: provider.driver, updateRequiredModels: provider.updateRequiredModels }
+      ? {
+          driver: provider.driver,
+          updateRequiredModels: provider.updateRequiredModels,
+          ...(provider.versionAdvisory ? { versionAdvisory: provider.versionAdvisory } : {}),
+        }
       : undefined;
     const preferences = config?.settings?.providerModelPreferences?.[provider.instanceId];
     const hiddenModels = new Set(preferences?.hiddenModels ?? []);
@@ -405,6 +427,7 @@ export function buildModelOptions(
           ? { isUnavailable: true }
           : {}),
         ...(updateRequired ? { providerUpdateRequired: updateRequired } : {}),
+        ...(provider.subProviders?.length ? { providerSubProviders: provider.subProviders } : {}),
         capabilities: model.capabilities,
         selection: normalizeSelectionOptions(
           {
@@ -489,6 +512,7 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
       providerLabel: string;
       models: ModelOption[];
       updateRequired: ProviderUpdateRequired | undefined;
+      subProviders: ModelOption["providerSubProviders"];
     }
   >();
   for (const option of options) {
@@ -496,11 +520,13 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     if (existing) {
       existing.models.push(option);
       existing.updateRequired ??= option.providerUpdateRequired;
+      existing.subProviders ??= option.providerSubProviders;
     } else {
       groups.set(option.providerKey, {
         providerLabel: option.providerLabel,
         models: [option],
         updateRequired: option.providerUpdateRequired,
+        subProviders: option.providerSubProviders,
       });
     }
   }
@@ -510,5 +536,6 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     providerLabel: group.providerLabel,
     models: group.models,
     ...(group.updateRequired ? { updateRequired: group.updateRequired } : {}),
+    ...(group.subProviders ? { subProviders: group.subProviders } : {}),
   }));
 }

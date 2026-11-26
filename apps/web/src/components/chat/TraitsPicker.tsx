@@ -1,3 +1,4 @@
+import { type Message, msg, t } from "~/i18n";
 import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
@@ -22,6 +23,7 @@ import {
   isClaudeUltrathinkPrompt,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
+
 import { memo } from "react";
 import { GaugeIcon } from "lucide-react";
 import {
@@ -34,13 +36,14 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
-import { getProviderModelCapabilities } from "../../providerModels";
+import { getProviderModelCapabilities, keepsUnavailableModelOptions } from "../../providerModels";
+
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ComposerControl, ComposerControlIcon, type ComposerControlSize } from "./ComposerControl";
 import { useComposerMenuState } from "./useComposerMenuState";
-import { msg, t, type Message } from "~/i18n";
+
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
 
@@ -62,28 +65,30 @@ const SAVED_OPTION_LABELS: Readonly<Record<string, Message>> = {
   variant: msg("Reasoning"),
 };
 
-function savedOptionLabel(id: string): string {
-  const label = SAVED_OPTION_LABELS[id];
-  return (
-    (label === undefined ? undefined : t(label)) ??
-    id.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase())
-  );
+function savedOptionLabel(id: string, resolve: typeof t): string {
+  const saved = SAVED_OPTION_LABELS[id];
+  return saved !== undefined
+    ? resolve(saved)
+    : id
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .replace(/^./, (character) => character.toUpperCase());
 }
 
 function buildUnavailableModelOptionDescriptors(
   selections: ProviderOptions | null | undefined,
+  resolve: typeof t,
 ): ReadonlyArray<ProviderOptionDescriptor> {
   return (selections ?? []).map((selection) =>
     typeof selection.value === "boolean"
       ? {
           id: selection.id,
-          label: savedOptionLabel(selection.id),
+          label: savedOptionLabel(selection.id, resolve),
           type: "boolean" as const,
           currentValue: selection.value,
         }
       : {
           id: selection.id,
-          label: savedOptionLabel(selection.id),
+          label: savedOptionLabel(selection.id, resolve),
           type: "select" as const,
           options: [{ id: selection.value, label: selection.value }],
           currentValue: selection.value,
@@ -121,16 +126,18 @@ function getSelectedTraits(
   modelOptions: ProviderOptions | null | undefined,
   allowPromptInjectedEffort: boolean,
   includePlanAgent: boolean | undefined,
+  resolve: typeof t = t,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider, includePlanAgent);
   const modelIsUnavailable =
-    (provider === "opencode" || provider === "cursor") &&
+    keepsUnavailableModelOptions(provider, model) &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
   const descriptors = modelIsUnavailable
     ? buildUnavailableModelOptionDescriptors(
         includePlanAgent
           ? modelOptions
           : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
+        resolve,
       )
     : getProviderOptionDescriptors({
         caps,
@@ -199,6 +206,7 @@ export function getTraitsSectionVisibility(input: {
   modelOptions?: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
   includePlanAgent?: boolean | undefined;
+  resolve?: typeof t;
 }) {
   const selected = getSelectedTraits(
     input.provider,
@@ -208,6 +216,7 @@ export function getTraitsSectionVisibility(input: {
     input.modelOptions,
     input.allowPromptInjectedEffort ?? true,
     input.includePlanAgent,
+    input.resolve,
   );
 
   const showEffort = selected.primarySelectDescriptor !== null;
@@ -319,6 +328,7 @@ export function useTraitsSelection({
   const modelSelection =
     instanceId && model ? { instanceId, model, options: modelOptions ?? [] } : null;
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
+
   const updateModelOptions = (nextOptions: ProviderOptions | undefined) => {
     if ("onModelOptionsChange" in persistence) {
       persistence.onModelOptionsChange(nextOptions);
@@ -343,6 +353,7 @@ export function useTraitsSelection({
     modelOptions,
     allowPromptInjectedEffort,
     includePlanAgent,
+    resolve: t,
   });
   return {
     ...selected,
@@ -375,11 +386,13 @@ export function useTraitsSelection({
   };
 }
 
-export const ULTRATHINK_IN_BODY_NOTE =
-  'Your prompt contains "ultrathink" in the text. Remove it to change this option.';
+export const ULTRATHINK_IN_BODY_NOTE = msg(
+  'Your prompt contains "ultrathink" in the text. Remove it to change this option.',
+);
 
 const TraitsMenuContent = memo(function TraitsMenuContentImpl(props: TraitsSelectionInput) {
   const traits = useTraitsSelection(props);
+
   const {
     descriptors,
     selectDescriptors,
@@ -427,7 +440,7 @@ const TraitsMenuContent = memo(function TraitsMenuContentImpl(props: TraitsSelec
             </div>
             {ultrathinkInBodyText && descriptor.id === primarySelectDescriptor?.id ? (
               <div className="px-2 pb-1.5 text-muted-foreground/80 text-xs">
-                {ULTRATHINK_IN_BODY_NOTE}
+                {t(ULTRATHINK_IN_BODY_NOTE)}
               </div>
             ) : null}
             <MenuRadioGroup
@@ -497,19 +510,23 @@ export const TraitsPicker = memo(function TraitsPicker({
 }) {
   const [isMenuOpen, setIsMenuOpen] = useComposerMenuState(hidden || disabled);
   const traits = useTraitsSelection(props);
+
   if (!traits.hasAnyControls) {
     return null;
   }
-  const { label: triggerLabel } = buildTraitsTriggerDisplay({
-    descriptors: traits.descriptors,
-    primarySelectDescriptorId: traits.primarySelectDescriptor?.id ?? null,
-    ultrathinkPromptControlled: traits.ultrathinkPromptControlled,
-    modelSelection:
-      props.instanceId && props.model
-        ? { instanceId: props.instanceId, model: props.model, options: props.modelOptions ?? [] }
-        : null,
-    reportedModelSelection: props.reportedModelSelection,
-  });
+  const { label: triggerLabel } = buildTraitsTriggerDisplay(
+    {
+      descriptors: traits.descriptors,
+      primarySelectDescriptorId: traits.primarySelectDescriptor?.id ?? null,
+      ultrathinkPromptControlled: traits.ultrathinkPromptControlled,
+      modelSelection:
+        props.instanceId && props.model
+          ? { instanceId: props.instanceId, model: props.model, options: props.modelOptions ?? [] }
+          : null,
+      reportedModelSelection: props.reportedModelSelection,
+    },
+    t,
+  );
   const isCodexStyle = props.provider === "codex";
 
   return (
@@ -519,47 +536,42 @@ export const TraitsPicker = memo(function TraitsPicker({
         setIsMenuOpen(open && !disabled);
       }}
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <MenuTrigger
-              render={
-                <ComposerControl
-                  disabled={disabled}
-                  aria-label={triggerLabel}
-                  size={size}
-                  className={cn(
-                    isCodexStyle
-                      ? "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap sm:max-w-48"
-                      : "shrink-0 whitespace-nowrap",
-                    props.triggerClassName,
-                  )}
-                />
-              }
-            />
-          }
-        >
-          {isCodexStyle ? (
-            <span
-              className={cn(
-                "flex min-w-0 w-full items-center",
-                size === "xs" ? "gap-1" : "gap-1.5",
-              )}
-            >
-              <ComposerControlIcon icon={GaugeIcon} size={size} />
-              <span data-composer-control-label className="min-w-0 truncate">
-                {triggerLabel}
-              </span>
+      <SharedTooltipTrigger
+        render={
+          <MenuTrigger
+            render={
+              <ComposerControl
+                disabled={disabled}
+                aria-label={triggerLabel}
+                size={size}
+                className={cn(
+                  isCodexStyle
+                    ? "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap sm:max-w-48"
+                    : "shrink-0 whitespace-nowrap",
+                  props.triggerClassName,
+                )}
+              />
+            }
+          />
+        }
+        label={triggerLabel}
+      >
+        {isCodexStyle ? (
+          <span
+            className={cn("flex min-w-0 w-full items-center", size === "xs" ? "gap-1" : "gap-1.5")}
+          >
+            <ComposerControlIcon icon={GaugeIcon} size={size} />
+            <span data-composer-control-label className="min-w-0 truncate">
+              {triggerLabel}
             </span>
-          ) : (
-            <>
-              <ComposerControlIcon icon={GaugeIcon} size={size} />
-              <span data-composer-control-label>{triggerLabel}</span>
-            </>
-          )}
-        </TooltipTrigger>
-        <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
-      </Tooltip>
+          </span>
+        ) : (
+          <>
+            <ComposerControlIcon icon={GaugeIcon} size={size} />
+            <span data-composer-control-label>{triggerLabel}</span>
+          </>
+        )}
+      </SharedTooltipTrigger>
       <MenuPopup align="start">
         <TraitsMenuContent {...props} />
       </MenuPopup>

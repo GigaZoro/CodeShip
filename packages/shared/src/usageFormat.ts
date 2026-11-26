@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import { getFormattingLocale, t } from "./i18n.ts";
-import type { MergedUsage, UsageContractMismatch } from "./usageMerge.ts";
+import { sourceIdentity, type MergedUsage, type UsageContractMismatch } from "./usageMerge.ts";
 
 export function usageEmptyMessage(
   usage: Pick<MergedUsage, "records" | "costQuality" | "totalTokens" | "costUsd">,
@@ -23,8 +23,7 @@ export function usageEmptyMessage(
 
 const numberFormatters = new Map<string, Intl.NumberFormat>();
 
-function numberFormatter(kind: "currency" | "integer"): Intl.NumberFormat {
-  const locale = getFormattingLocale() ?? "en-US";
+function numberFormatter(kind: "currency" | "integer", locale: string): Intl.NumberFormat {
   const key = `${kind}:${locale}`;
   let formatter = numberFormatters.get(key);
   if (formatter === undefined) {
@@ -54,7 +53,11 @@ function displayMalformedUsageWarning(count: number): string {
   );
 }
 
-export function usageSourceMessages(sources: readonly UsageSource[]): readonly string[] {
+export function usageSourceMessages(
+  sources: readonly UsageSource[],
+  malformedWarning: (count: number) => string = displayMalformedUsageWarning,
+): readonly string[] {
+  const sourceKey = sourceIdentity(sources.map((source) => source.fingerprint));
   const messages = new Set<string>();
   const malformedBySource = new Map<string, number>();
   for (const source of sources) {
@@ -68,8 +71,7 @@ export function usageSourceMessages(sources: readonly UsageSource[]): readonly s
     }
     let message = source.message;
     if (source.malformedRecords > 0) {
-      const { hostId, provider, resolvedHomePath, volumeId } = source.fingerprint;
-      const key = JSON.stringify([hostId, provider, resolvedHomePath, volumeId]);
+      const key = sourceKey(source.fingerprint);
       malformedBySource.set(
         key,
         Math.max(malformedBySource.get(key) ?? 0, source.malformedRecords),
@@ -84,23 +86,23 @@ export function usageSourceMessages(sources: readonly UsageSource[]): readonly s
     (total, count) => total + count,
     0,
   );
-  if (malformedRecords > 0) messages.add(displayMalformedUsageWarning(malformedRecords));
+  if (malformedRecords > 0) messages.add(malformedWarning(malformedRecords));
   return [...messages];
 }
 
-export function formatUsd(value: number): string {
-  return numberFormatter("currency").format(value);
+export function formatUsd(value: number, locale?: string): string {
+  return numberFormatter("currency", displayLocale(locale)).format(value);
 }
 
-export function formatCount(value: number): string {
-  return numberFormatter("integer").format(Math.round(value));
+export function formatCount(value: number, locale?: string): string {
+  return numberFormatter("integer", displayLocale(locale)).format(Math.round(value));
 }
 
 const TOKEN_SUFFIXES = ["K", "M", "B", "T"] as const;
 
-export function formatTokens(value: number): string {
+export function formatTokens(value: number, locale?: string): string {
   if (Math.abs(Math.round(value)) < 1e3)
-    return numberFormatter("integer").format(Math.round(value));
+    return numberFormatter("integer", displayLocale(locale)).format(Math.round(value));
   let scaled = value / 1e3;
   let unit = 0;
   // Choose the unit after rounding, so 999,999 reads 1M rather than 1000K.
@@ -153,14 +155,16 @@ export function formatUsageContractMismatch(
       );
 }
 
-export function formatDayShort(day: string): string {
+export function formatDayShort(day: string, locale?: string): string {
   const [year, month, dayOfMonth] = day.split("-").map((part) => Number(part));
   if (year === undefined || month === undefined || dayOfMonth === undefined) return day;
-  return dateTimeFormatter(displayLocale(), {
+  const date = new Date(Date.UTC(year, month - 1, dayOfMonth));
+  if (Number.isNaN(date.getTime())) return day;
+  return dateTimeFormatter(displayLocale(locale), {
     timeZone: "UTC",
     month: "short",
     day: "numeric",
-  }).format(new Date(Date.UTC(year, month - 1, dayOfMonth)));
+  }).format(date);
 }
 
 export function enumerateDays(sinceDay: string, untilDay: string): readonly string[] {
@@ -177,8 +181,8 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
 
 export const USAGE_HOUR_MS = 60 * 60 * 1000;
 
-function displayLocale(): string {
-  return getFormattingLocale() ?? "en-US";
+function displayLocale(locale = getFormattingLocale()): string {
+  return !locale || locale === "en" ? "en-US" : locale;
 }
 
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
@@ -227,11 +231,16 @@ function hourOptions(hour12: boolean | undefined): Intl.DateTimeFormatOptions {
  * Repeated wall-clock hours during a fall-back transition include their short zone name so the
  * two distinct buckets remain distinguishable.
  */
-export function formatHourShort(hourStart: string, timeZone?: string, hour12?: boolean): string {
+export function formatHourShort(
+  hourStart: string,
+  timeZone?: string,
+  hour12?: boolean,
+  locale?: string,
+): string {
   const instant = new Date(hourStart);
   if (Number.isNaN(instant.getTime())) return hourStart;
   const options = timeZone === undefined ? {} : { timeZone };
-  const hourFormat = dateTimeFormatter(displayLocale(), {
+  const hourFormat = dateTimeFormatter(displayLocale(locale), {
     ...options,
     ...hourOptions(hour12),
   });
@@ -249,7 +258,7 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12?: b
   );
 
   if (!isRepeatedHour) return hourFormat.format(instant);
-  const zonedHourFormat = dateTimeFormatter(displayLocale(), {
+  const zonedHourFormat = dateTimeFormatter(displayLocale(locale), {
     ...options,
     ...hourOptions(hour12),
     timeZoneName: "short",
@@ -257,15 +266,20 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12?: b
   return zonedHourFormat.format(instant);
 }
 
-export function formatDateTimeShort(instant: string, timeZone?: string, hour12?: boolean): string {
+export function formatDateTimeShort(
+  instant: string,
+  timeZone?: string,
+  hour12?: boolean,
+  locale?: string,
+): string {
   const date = new Date(instant);
   if (Number.isNaN(date.getTime())) return instant;
-  const dateFormat = dateTimeFormatter(displayLocale(), {
+  const dateFormat = dateTimeFormatter(displayLocale(locale), {
     ...(timeZone === undefined ? {} : { timeZone }),
     month: "short",
     day: "numeric",
   });
-  return `${dateFormat.format(date)}, ${formatHourShort(instant, timeZone, hour12)}`;
+  return `${dateFormat.format(date)}, ${formatHourShort(instant, timeZone, hour12, locale)}`;
 }
 
 export function formatRelativeHourShort(
@@ -273,11 +287,14 @@ export function formatRelativeHourShort(
   relativeTo: string,
   timeZone?: string,
   hour12?: boolean,
+  relativeDay: (hour: string, daysAgo: 0 | 1) => string = (hour, daysAgo) =>
+    daysAgo === 0 ? t("{hour} today", { hour }) : t("{hour} yesterday", { hour }),
+  locale?: string,
 ): string {
   const instant = new Date(hourStart);
   const reference = new Date(relativeTo);
   if (Number.isNaN(instant.getTime()) || Number.isNaN(reference.getTime())) {
-    return formatDateTimeShort(hourStart, timeZone, hour12);
+    return formatDateTimeShort(hourStart, timeZone, hour12, locale);
   }
 
   const dayFormat = dateTimeFormatter("en-CA", {
@@ -289,11 +306,10 @@ export function formatRelativeHourShort(
   const instantDay = Date.parse(`${dayFormat.format(instant)}T00:00:00Z`);
   const referenceDay = Date.parse(`${dayFormat.format(reference)}T00:00:00Z`);
   const calendarDaysAgo = Math.round((referenceDay - instantDay) / (24 * USAGE_HOUR_MS));
-  const hour = formatHourShort(hourStart, timeZone, hour12);
+  const hour = formatHourShort(hourStart, timeZone, hour12, locale);
 
-  if (calendarDaysAgo === 0) return t("{hour} today", { hour });
-  if (calendarDaysAgo === 1) return t("{hour} yesterday", { hour });
-  return formatDateTimeShort(hourStart, timeZone, hour12);
+  if (calendarDaysAgo === 0 || calendarDaysAgo === 1) return relativeDay(hour, calendarDaysAgo);
+  return formatDateTimeShort(hourStart, timeZone, hour12, locale);
 }
 
 export function usageWindowLabel(window: UsageSummaryInput, hour12?: boolean): string {

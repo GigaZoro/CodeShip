@@ -1,4 +1,6 @@
 import { t, tn } from "~/i18n";
+
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useParams } from "@tanstack/react-router";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -17,9 +19,11 @@ import {
   type CloneProtocol,
   cloneUrlForProtocol,
   cloneUrlProtocol,
+  withoutRemoteUrlCredentials,
 } from "@t3tools/shared/cloneUrl";
 import { ArrowRightIcon } from "lucide-react";
 import { useId, useState } from "react";
+
 import { create } from "zustand";
 
 import { type DraftId, useComposerDraftStore } from "../composerDraftStore";
@@ -33,9 +37,11 @@ import {
   isDefaultCopiedFile,
 } from "../lib/addProjectToMachine";
 import { formatBytes } from "@t3tools/shared/formatBytes";
+import { seedDraftModelSelection } from "../lib/seedDraftModelSelection";
 import { newProjectId } from "../lib/utils";
 import { readProject, subscribeProject, useProject } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { holdProjectCloneToasts, silenceProjectCloneToasts } from "../state/projectClones";
 import { projectEnvironment } from "../state/projects";
 import { useDebouncedValue } from "../state/queries";
 import { useEnvironmentQuery } from "../state/query";
@@ -103,10 +109,12 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
   const [targetId, setTargetId] = useState(request.targetEnvironmentId);
   const target = targets.find((t) => t.environmentId === targetId) ?? targets[0] ?? null;
   const source = environments.find((env) => env.environmentId === request.projectRef.environmentId);
-  const sourceUrl =
+  // An environment on an older version reports the remote URL as configured, login included.
+  const sourceUrl = withoutRemoteUrlCredentials(
     project?.repositoryIdentity?.origin?.remoteUrl ??
-    project?.repositoryIdentity?.locator.remoteUrl ??
-    "";
+      project?.repositoryIdentity?.locator.remoteUrl ??
+      "",
+  );
   const [protocol, setProtocol] = useState<CloneProtocol | null>(() => cloneUrlProtocol(sourceUrl));
   const sshUrl = cloneUrlForProtocol(sourceUrl, "ssh");
   const httpsUrl = cloneUrlForProtocol(sourceUrl, "https");
@@ -202,6 +210,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
         environmentSelection: "manual",
         loadBalancedEnvironmentId: null,
       });
+      seedDraftModelSelection(draftId, targetRef);
       return;
     }
     void handleNewThread(targetRef);
@@ -215,6 +224,11 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     }
     setSubmitting(true);
     setError(null);
+    const requestedId = newProjectId();
+    // The clone list can arrive before the start reply.
+    const releaseToastHold = holdProjectCloneToasts(
+      scopeProjectRef(target.environmentId, requestedId),
+    );
     try {
       const projectId = await addProjectToMachine({
         source: { environmentId: project.environmentId, cwd: project.workspaceRoot },
@@ -223,18 +237,23 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
           project.workspaceRoot,
         ),
         target: { environmentId: target.environmentId, label: target.label },
-        projectId: newProjectId(),
+        projectId: requestedId,
         title: project.title,
         remoteUrl,
         destinationPath: destinationPath.trim(),
         files: [...selectedFiles.keys()],
       });
-      close();
-      openClonedProject(scopeProjectRef(target.environmentId, projectId));
+      if (useRequest.getState().request === request) {
+        const targetRef = scopeProjectRef(target.environmentId, projectId);
+        silenceProjectCloneToasts(targetRef);
+        close();
+        openClonedProject(targetRef);
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Could not start the clone."));
+      setError(thrownErrorMessage(cause, t) ?? t("Could not start the clone."));
       setSubmitting(false);
     }
+    releaseToastHold();
   };
 
   return (
@@ -275,6 +294,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 </span>
               </div>
               <div className="flex w-28 flex-col items-center gap-0.5 text-muted-foreground text-xs">
+                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- git command name */}
                 <span>{"git clone"}</span>
                 <span className="flex w-full items-center">
                   <span className="h-px flex-1 bg-border" />
@@ -337,7 +357,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                     if (value === "ssh" || value === "https") setProtocol(value);
                   }}
                 >
-                  <Toggle value="ssh">{"SSH"}</Toggle>
+                  <Toggle value="ssh">SSH</Toggle>
                   <Toggle value="https">{"HTTPS"}</Toggle>
                 </ToggleGroup>
               ) : null}
@@ -346,7 +366,9 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-path`}>
-                {t("Folder on {machine}", { machine: target?.label ?? t("the other machine") })}
+                {target
+                  ? t("Folder on {machine}", { machine: target.label })
+                  : t("Folder on the other machine")}
               </Label>
               <Input
                 id={`${id}-path`}
@@ -379,17 +401,26 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                   ) : null}
                 </div>
                 {canSearchFiles && (allIgnoredFiles.data?.truncated || fileQuery.length > 0) ? (
+                  // Native search inputs clear on Escape even during IME composition.
                   <Input
                     size="sm"
-                    type="search"
+                    type="text"
+                    role="searchbox"
+                    enterKeyHint="search"
                     aria-label={t("Search ignored files")}
                     placeholder={t("Search ignored files")}
                     value={fileQuery}
                     maxLength={256}
                     onChange={(event) => setFileQuery(event.target.value)}
-                    // Enter would otherwise submit the clone.
                     onKeyDown={(event) => {
+                      // Enter would otherwise submit the clone.
                       if (event.key === "Enter") event.preventDefault();
+                      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                      if (event.key === "Escape" && (fileQuery || event.repeat)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setFileQuery("");
+                      }
                     }}
                     spellCheck={false}
                     autoComplete="off"
@@ -420,8 +451,11 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 )}
                 {ignoredFiles.data?.truncated ? (
                   <p className="text-muted-foreground text-xs">
-                    {t("Showing the first {count} files.", { count: files.length })}
-                    {canSearchFiles ? ` ${t("Search to find the rest.")}` : ""}
+                    {canSearchFiles
+                      ? t("Showing the first {count} files. Search to find the rest.", {
+                          count: files.length,
+                        })
+                      : t("Showing the first {count} files.", { count: files.length })}
                   </p>
                 ) : null}
                 <p className="text-muted-foreground text-xs">
@@ -441,7 +475,9 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
             <Button type="submit" disabled={unavailable || submitting}>
               {submitting
                 ? t("Starting…")
-                : t("Clone to {machine}", { machine: target?.label ?? t("machine") })}
+                : target
+                  ? t("Clone to {machine}", { machine: target.label })
+                  : t("Clone to machine")}
             </Button>
           </DialogFooter>
         </form>

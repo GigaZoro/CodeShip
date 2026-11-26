@@ -3,9 +3,9 @@ import { TerminalIcon } from "lucide-react";
 
 import type { ContextPresentationCapability } from "../contextPresentationRegistry";
 import { ContextChipPopover, ContextChipShell } from "../contextChipParts";
+import { terminalContextDisplayLabel } from "~/lib/terminalContext";
 
 interface TerminalContextInlineChipProps {
-  label: string;
   terminalLabel: string;
   lineStart: number;
   lineEnd: number;
@@ -15,7 +15,9 @@ interface TerminalContextInlineChipProps {
 }
 
 export function TerminalContextInlineChip(props: TerminalContextInlineChipProps) {
-  const { label, terminalLabel, lineStart, lineEnd, text, detailsMode, expired = false } = props;
+  const { terminalLabel, lineStart, lineEnd, text, detailsMode, expired = false } = props;
+
+  const label = terminalContextDisplayLabel(props, t);
 
   if (!expired && text.length > 0 && detailsMode === "popover") {
     return (

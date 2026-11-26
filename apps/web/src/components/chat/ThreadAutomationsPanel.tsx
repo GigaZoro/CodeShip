@@ -1,3 +1,4 @@
+import { type Message, msg, t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
@@ -57,7 +58,8 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
-import { msg, t, type Message } from "~/i18n";
+
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 
 const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
   never: "bg-muted-foreground/40",
@@ -296,7 +298,7 @@ export function ThreadAutomationsPanel(props: {
       stackedThreadToast({
         type: "error",
         title,
-        description: error instanceof Error ? error.message : String(error),
+        description: thrownErrorMessage(error, t) ?? String(error),
       }),
     );
   };

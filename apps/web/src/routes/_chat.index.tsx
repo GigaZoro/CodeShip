@@ -1,7 +1,9 @@
+import { t } from "~/i18n";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
+
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { isElectron } from "../env";
@@ -21,7 +23,6 @@ import {
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 
-import { t } from "~/i18n";
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
   const { environments, isReady } = useEnvironments();

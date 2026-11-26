@@ -7,6 +7,7 @@ import {
   moveNavigationTab,
   overflowNavigationTabs,
   enabledNavigationTabs,
+  sharedSlotAbsentee,
   toggleNavigationTabVisibility,
   resolveSelectedNavigationTab,
   resolveNavigationTabOrder,
@@ -25,20 +26,35 @@ describe("navigation tab order", () => {
 
   it("fills missing sections and drops removed placeholders, duplicates, and Settings", () => {
     expect(
-      resolveNavigationTabOrder(["usage", "home", "issues", "settings", "usage", null]),
-    ).toEqual(["usage", "threads", "scheduledTasks", "pullRequests"]);
+      resolveNavigationTabOrder(["usage", "home", "inbox", "settings", "usage", null]),
+    ).toEqual(["usage", "threads", "scheduledTasks", "pullRequests", "issues"]);
     expect(resolveNavigationTabOrder()).toEqual(NAVIGATION_TAB_ORDER);
   });
 
   it("lists Tasks right after Threads and names every tab the same on each platform", () => {
-    expect(NAVIGATION_TAB_ORDER).toEqual(["threads", "scheduledTasks", "pullRequests", "usage"]);
+    expect(NAVIGATION_TAB_ORDER).toEqual([
+      "threads",
+      "scheduledTasks",
+      "pullRequests",
+      "issues",
+      "usage",
+    ]);
     expect(NAVIGATION_TAB_LABELS).toEqual({
       threads: "Threads",
       scheduledTasks: "Tasks",
       pullRequests: "PRs",
+      issues: "Issues",
+      workflows: "Workflows",
       usage: "Usage",
     });
     expect(NAVIGATION_TAB_ORDER.filter(isNavigationPageTab)).toEqual(["scheduledTasks", "usage"]);
+  });
+
+  it("gives the shared slot to the open list, or else the one opened last", () => {
+    expect(sharedSlotAbsentee("issues", "pullRequests")).toBe("pullRequests");
+    expect(sharedSlotAbsentee("pullRequests", "issues")).toBe("issues");
+    expect(sharedSlotAbsentee("threads", "issues")).toBe("pullRequests");
+    expect(sharedSlotAbsentee("usage", undefined)).toBe("issues");
   });
 
   it("moves a section without changing the relative order of the others", () => {
@@ -54,11 +70,15 @@ describe("navigation tab order", () => {
   });
 
   it("shows every real section without overflow and keeps Settings selected during editing", () => {
-    expect(visibleNavigationTabs()).toEqual(NAVIGATION_TAB_ORDER);
-    expect(overflowNavigationTabs()).toEqual([]);
+    // Pull requests and issues share a place, so the bar is always given one of them as hidden.
+    const absent = ["issues"];
+    expect(visibleNavigationTabs(undefined, absent)).toEqual(
+      NAVIGATION_TAB_ORDER.filter((tab) => tab !== "issues"),
+    );
+    expect(overflowNavigationTabs(undefined, absent)).toEqual([]);
     expect(selectedNavigationTab(undefined, "threads", true)).toBe("settings");
-    expect(selectedNavigationTab(undefined, "usage", false)).toBe("usage");
-    expect(selectedNavigationTab(undefined, "usage", false, [], 2)).toBe("settings");
+    expect(selectedNavigationTab(undefined, "usage", false, absent)).toBe("usage");
+    expect(selectedNavigationTab(undefined, "usage", false, absent, 2)).toBe("settings");
   });
 
   it("removes hidden sections from navigation and restores their saved positions", () => {
@@ -68,10 +88,11 @@ describe("navigation tab order", () => {
       "threads",
       "scheduledTasks",
       "pullRequests",
+      "issues",
     ]);
     expect(toggleNavigationTabVisibility(hidden, "usage")).toEqual([]);
     expect(visibleNavigationTabs(order, [], 5)).toEqual(order);
-    expect(enabledNavigationTabs(undefined, ["home", "issues", "settings"])).toEqual(
+    expect(enabledNavigationTabs(undefined, ["home", "inbox", "settings"])).toEqual(
       NAVIGATION_TAB_ORDER,
     );
   });

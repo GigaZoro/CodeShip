@@ -102,7 +102,10 @@ export function SourceControlTokenSettings({
               ),
               host: definition.label,
               cliLabel: credentials.cliLabel,
-              access: credentials.tokenAccess,
+              access:
+                definition.kind === "github"
+                  ? t("read and write access to pull requests and contents")
+                  : credentials.tokenAccess,
             },
           )}{" "}
           {normalizedHost || defaultHost ? (

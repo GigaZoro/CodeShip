@@ -1,5 +1,9 @@
+import { t } from "../lib/i18n";
 import * as Dialog from "../components/ui/Dialog";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
+
 import { useRef } from "react";
+
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type ServerConfig } from "@t3tools/contracts";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { nextPastedTextFileName } from "@t3tools/client-runtime/text-paste";
@@ -21,7 +25,6 @@ import {
   type ComposerDraftInsertion,
 } from "./use-composer-drafts";
 import { startComposerDraftOperation } from "./composerDraftOperations";
-import { t } from "../lib/i18n";
 
 export function useComposerAttachmentActions(props: {
   readonly draftKey: string | null;
@@ -47,9 +50,9 @@ export function useComposerAttachmentActions(props: {
     return appendComposerDraftAttachments(key, attachments, { appendReference: true, insertion });
   };
   // A picker may finish after its draft was discarded or the composer moved off it.
-  const withDraftOperation = async (key: string, work: (signal: AbortSignal) => Promise<void>) => {
+  const withDraftOperation = async <T>(key: string, work: (signal: AbortSignal) => Promise<T>) => {
     const operation = startComposerDraftOperation(key);
-    await work(operation.signal).finally(operation.finish);
+    return work(operation.signal).finally(operation.finish);
   };
   const report = (title: string, error: string | null | undefined, rejected: number) => {
     const problems = [
@@ -104,21 +107,20 @@ export function useComposerAttachmentActions(props: {
   };
   const onNativePasteImages = async (uris: ReadonlyArray<string>) => {
     const key = props.draftKey;
-    if (!key || props.locked || !uris.length) return;
+    if (!key || props.locked || !uris.length) return false;
     const insertion = captureComposerDraftInsertion(key);
-    await withDraftOperation(key, async (signal) => {
+    return withDraftOperation(key, async (signal) => {
       try {
         const result = await convertPastedImagesToAttachments({ uris });
-        report(
-          t("Could not paste images"),
-          result.error,
-          await append(key, signal, result.attachments, insertion),
-        );
+        const rejected = await append(key, signal, result.attachments, insertion);
+        report(t("Could not paste images"), result.error, rejected);
+        if (signal.aborted) return false;
+        if (result.error) return false;
+        if (rejected > 0) return false;
+        return result.attachments.length > 0;
       } catch (error) {
-        Dialog.alert(
-          t("Could not paste images"),
-          error instanceof Error ? error.message : t("Try again."),
-        );
+        Dialog.alert(t("Could not paste images"), errorDisplayMessage(error, t) ?? t("Try again."));
+        return false;
       }
     });
   };
@@ -148,7 +150,7 @@ export function useComposerAttachmentActions(props: {
       } catch (error) {
         Dialog.alert(
           t("Could not attach pasted text"),
-          error instanceof Error ? error.message : t("Try again."),
+          errorDisplayMessage(error, t) ?? t("Try again."),
         );
       }
     });

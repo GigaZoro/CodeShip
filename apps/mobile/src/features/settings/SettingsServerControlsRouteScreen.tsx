@@ -37,7 +37,8 @@ import { DatabaseStorageNotice } from "./components/DatabaseStorageNotice";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { SourceControlSignInSection } from "./components/SourceControlSignInSection";
+import { IssueTrackerSection } from "./components/IssueTrackerSection";
+import { SourceControlProvidersSection } from "./components/SourceControlProvidersSection";
 import { SettingsProjectOverridesSection } from "./components/SettingsProjectOverridesSection";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
 import { useReportConversationImport } from "./useReportConversationImport";
@@ -52,19 +53,12 @@ import {
   type ScopedMobileSettingsTarget,
 } from "./settings-scoped-server";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
-import {
-  AutoSettleSettingsRows,
-  FastWorktreeCheckoutSettingsSection,
-  LinkedEnvironmentsSettingsSection,
-} from "./ThreadSettingsSections";
-import { AppSettingsSection } from "./SettingsAboutSection";
+import { AutoSettleSettingsRows } from "./ThreadSettingsSections";
 import { FollowSharedSettingsSection } from "./FollowSharedSettingsSection";
 import { hasSharedSettingsGroup } from "@t3tools/client-runtime/state/shared-settings";
 import { useEnvironments } from "../../state/environments";
-import { isSourceControlProviderOffered } from "@t3tools/client-runtime/operations/projects";
-import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
-type SettingsPage = "threads" | "source-control" | "maintenance";
+type SettingsPage = "threads" | "source-control" | "worktrees" | "maintenance";
 
 const automaticUpdateIntervalLabel = (hours: number) =>
   hours === 0 ? t("No wait") : t("{hours} h", { hours });
@@ -78,8 +72,9 @@ const updateLabels = {
 
 const PAGE_TITLES: Record<SettingsPage, Message> = {
   threads: msg("Threads"),
-  "source-control": msg("Source control & worktrees"),
-  maintenance: msg("Maintenance & about"),
+  "source-control": msg("Source control & issues"),
+  worktrees: msg("Worktrees"),
+  maintenance: msg("Maintenance"),
 };
 
 const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettingKey[]> = {
@@ -96,9 +91,8 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "sidebarAutoSettleAfterDays",
     "continueThreadsAfterServerUpdate",
   ],
-  "source-control": [
-    "defaultAutoPull",
-    "removeAgentCreditsOnMerge",
+  "source-control": ["defaultAutoPull", "removeAgentCreditsOnMerge"],
+  worktrees: [
     "newWorktreesStartFromOrigin",
     "worktreeSubmodules",
     "branchNamingMode",
@@ -204,6 +198,10 @@ export function SettingsThreadsRouteScreen() {
 
 export function SettingsEnvironmentSourceControlRouteScreen() {
   return <ServerSettingsDetail page="source-control" />;
+}
+
+export function SettingsWorktreesRouteScreen() {
+  return <ServerSettingsDetail page="worktrees" />;
 }
 
 export function SettingsEnvironmentMaintenanceRouteScreen() {
@@ -524,36 +522,12 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
             {props.page === "source-control" ? (
               <>
                 {projectSelected ? null : (
-                  <SourceControlSignInSection
+                  <SourceControlProvidersSection
                     environments={selectedTargets}
                     canWrite={(environmentId) => writableEnvironments.has(environmentId)}
                   />
                 )}
-                {projectSelected ? null : (
-                  <SettingsSection title={t("Project sources")}>
-                    {sourceControlClients.definitions.map((definition) => {
-                      const offered = displayTargets.map((target) =>
-                        isSourceControlProviderOffered(
-                          target.settings.offeredSourceControlProviders,
-                          definition.kind,
-                        ),
-                      );
-                      return (
-                        <SettingsSwitchRow
-                          key={definition.kind}
-                          label={definition.pickerLabel}
-                          value={
-                            offered.every((value) => value === offered[0]) ? offered[0]! : null
-                          }
-                          disabled={disabledFor("offeredSourceControlProviders")}
-                          onValueChange={(value) =>
-                            write({ offeredSourceControlProviders: { [definition.kind]: value } })
-                          }
-                        />
-                      );
-                    })}
-                  </SettingsSection>
-                )}
+                {projectSelected ? null : <IssueTrackerSection environments={selectedTargets} />}
                 <SettingsSection title={t("Pull requests")}>
                   <SettingsSwitchRow
                     icon={PullRequestGlyph.merged}
@@ -594,6 +568,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     onValueChange={(value) => write({ ghqCloneLayout: value })}
                   />
                 </SettingsSection>
+              </>
+            ) : null}
+
+            {props.page === "worktrees" ? (
+              <>
                 <SettingsSection title={t("New worktrees")}>
                   <SettingsSwitchRow
                     icon="arrow.triangle.branch"
@@ -806,14 +785,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
             ) : null}
           </>
         )}
-        {props.page === "maintenance" ? (
-          <>
-            <LinkedEnvironmentsSettingsSection />
-            <FastWorktreeCheckoutSettingsSection />
-            <FollowSharedSettingsSection />
-            <AppSettingsSection />
-          </>
-        ) : null}
+        {props.page === "maintenance" ? <FollowSharedSettingsSection /> : null}
       </ScrollView>
     </SettingsScreen>
   );

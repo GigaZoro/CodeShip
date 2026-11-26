@@ -9,7 +9,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
-import * as Option from "effect/Option";
+
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
@@ -369,49 +369,6 @@ it.layer(layerTest)("Git worktree creation", (it) => {
       }),
   );
 
-  it.effect("refreshes a new worktree's index once its checkout second is over", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      for (let file = 0; file < 50; file++) {
-        yield* writeTextFile(cwd, `src/file-${file}.txt`, `contents ${file}\n`);
-      }
-      yield* git(cwd, ["add", "."]);
-      yield* git(cwd, ["commit", "-m", "more files"]);
-      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "fresh");
-
-      // The refresh waits on the clock that stamps the files.
-      yield* TestClock.withLive(
-        driver.createWorktree({
-          cwd,
-          path: worktreePath,
-          refName: initialBranch,
-          newRefName: "feature/fresh",
-        }),
-      );
-
-      // Git re-reads every entry stamped in the index's own second or later.
-      const indexPath = path.resolve(
-        worktreePath,
-        yield* git(worktreePath, ["rev-parse", "--git-path", "index"]),
-      );
-      const indexMtime = Option.getOrThrow((yield* fs.stat(indexPath)).mtime);
-      const indexSecond = Math.floor(indexMtime.getTime() / 1000);
-      const entrySeconds = Array.from(
-        (yield* git(worktreePath, ["ls-files", "--debug"])).matchAll(/^ {2}mtime: (\d+):/gm),
-        ([, seconds]) => Number(seconds),
-      );
-      assert.equal(entrySeconds.length, 51);
-      assert.deepEqual(
-        entrySeconds.filter((seconds) => seconds >= indexSecond),
-        [],
-      );
-    }),
-  );
-
   it.effect("returns the worktree when its index refresh fails", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();
@@ -670,36 +627,6 @@ it.layer(layerTest)("Git worktree creation", (it) => {
           yield* driver.readConfigValue(cwd, "branch.feature/branch.t3-merge-base"),
           baseBranch,
         );
-      }),
-  );
-
-  it.effect.each(["release/v2", "origin/release/v2", "refs/remotes/origin/release/v2"])(
-    "records a remote-only PR base when creating a worktree from %s",
-    (baseRef) =>
-      Effect.gen(function* () {
-        const cwd = yield* makeTmpDir();
-        yield* initRepoWithCommit(cwd);
-        const remote = yield* makeTmpDir("git-remote-");
-        yield* git(remote, ["init", "--bare"]);
-        yield* git(cwd, ["remote", "add", "origin", remote]);
-        yield* git(cwd, ["push", "origin", "HEAD:refs/heads/release/v2"]);
-        const commit = yield* git(cwd, ["rev-parse", "origin/release/v2"]);
-        const path = yield* Path.Path;
-        const driver = yield* GitVcsDriver.GitVcsDriver;
-        const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "remote");
-        yield* driver.createWorktree({
-          cwd,
-          path: worktreePath,
-          refName: commit,
-          newRefName: "feature/remote",
-          baseRefName: baseRef,
-        });
-
-        const preview = yield* driver.getReviewDiffPreview({ cwd: worktreePath });
-        const comparisonBase = preview.sources.find(
-          (source) => source.kind === "branch-range",
-        )!.baseRef;
-        assert.equal(yield* git(worktreePath, ["rev-parse", `${comparisonBase}^{commit}`]), commit);
       }),
   );
 

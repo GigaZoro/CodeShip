@@ -1,3 +1,4 @@
+import { getFormattingLocale, t } from "~/i18n";
 import { Spinner } from "~/components/ui/spinner";
 import { AuthFilesystemReadScope, type ProjectContentMatch } from "@t3tools/contracts";
 
@@ -14,10 +15,9 @@ import { PierreEntryIcon } from "../chat/PierreEntryIcon";
 import { CommandPaletteContent } from "../CommandPaletteContent";
 import { ScrollArea } from "../ui/scroll-area";
 import { Toggle } from "../ui/toggle";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { HighlightedSearchLine } from "./HighlightedSearchLine";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
-import { getFormattingLocale, t, tn } from "~/i18n";
 interface ProjectContentSearchDialogProps {
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -59,23 +59,21 @@ function SearchOptionButton(props: {
   readonly children: ReactNode;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Toggle
-            aria-label={props.label}
-            disabled={props.disabled}
-            pressed={props.active}
-            size="segmented"
-            variant="segmented"
-            onClick={props.onClick}
-          />
-        }
-      >
-        <span className="font-mono">{props.children}</span>
-      </TooltipTrigger>
-      <TooltipPopup side="top">{props.label}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Toggle
+          aria-label={props.label}
+          disabled={props.disabled}
+          pressed={props.active}
+          size="segmented"
+          variant="segmented"
+          onClick={props.onClick}
+        />
+      }
+      label={props.label}
+    >
+      <span className="font-mono">{props.children}</span>
+    </SharedTooltipTrigger>
   );
 }
 
@@ -107,6 +105,7 @@ function OpenContentSearchDialog(props: {
   readonly target: ActiveProjectTarget;
 }) {
   const { target } = props;
+
   const { resolvedTheme } = useTheme();
   const renderedAppearance = useRenderedAppearance();
   const [query, setQuery] = useState("");
@@ -117,14 +116,17 @@ function OpenContentSearchDialog(props: {
 
   const [visibleCount, setVisibleCount] = useState(VISIBLE_MATCH_WINDOW);
 
-  const search = useProjectContentSearch({
-    environmentId: target.environmentId,
-    cwd: target.cwd,
-    query,
-    caseSensitive,
-    wholeWord,
-    useRegex,
-  });
+  const search = useProjectContentSearch(
+    {
+      environmentId: target.environmentId,
+      cwd: target.cwd,
+      query,
+      caseSensitive,
+      wholeWord,
+      useRegex,
+    },
+    t,
+  );
   const canOpenMatches = search.canReadFiles && !search.isPending && search.error === null;
   const matches = search.matches;
   const [resultsFor, setResultsFor] = useState(matches);
@@ -164,7 +166,7 @@ function OpenContentSearchDialog(props: {
 
   return (
     <CommandPaletteContent
-      aria-label={t("Search file contents in {projectName}", { projectName: target.projectName })}
+      aria-label={t("Search file contents in {project}", { project: target.projectName })}
       escapeLabel={t("Back")}
       footerActionLabel={t("Open file")}
       inputAccessory={
@@ -175,6 +177,7 @@ function OpenContentSearchDialog(props: {
             label={t("Match case")}
             onClick={() => setCaseSensitive((current) => !current)}
           >
+            {/* oxlint-disable-next-line t3code/no-untranslated-copy -- match-case glyph; the label carries the meaning */}
             {"Aa"}
           </SearchOptionButton>
           <SearchOptionButton
@@ -191,14 +194,14 @@ function OpenContentSearchDialog(props: {
             label={t("Use regular expression")}
             onClick={() => setUseRegex((current) => !current)}
           >
-            {".*"}
+            .*
           </SearchOptionButton>
         </div>
       }
       inputProps={{
         className: "pe-30",
         disabled: !search.canReadFiles,
-        placeholder: t("Search in {projectName}", { projectName: target.projectName }),
+        placeholder: t("Search in {project}", { project: target.projectName }),
         onKeyDown: (event) => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (event.key === "ArrowDown" && matches.length > 0) {
@@ -236,15 +239,15 @@ function OpenContentSearchDialog(props: {
             <span className="text-destructive-foreground">{search.error}</span>
           ) : search.invalidRegex ? (
             <span className="text-destructive-foreground">{t("Invalid regular expression")}</span>
+          ) : search.truncated ? (
+            t("{results}+ results in {files} files", {
+              results: matches.length.toLocaleString(getFormattingLocale()),
+              files: fileCount.toLocaleString(getFormattingLocale()),
+            })
           ) : (
-            t("{results} in {files}", {
-              results: tn(matches.length, "{count}{more} result", "{count}{more} results", {
-                count: matches.length.toLocaleString(getFormattingLocale()),
-                more: search.truncated ? "+" : "",
-              }),
-              files: tn(fileCount, "{count} file", "{count} files", {
-                count: fileCount.toLocaleString(getFormattingLocale()),
-              }),
+            t("{results} results in {files} files", {
+              results: matches.length.toLocaleString(getFormattingLocale()),
+              files: fileCount.toLocaleString(getFormattingLocale()),
             })
           )}
         </div>

@@ -1,5 +1,14 @@
-import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
+import { deriveAvailableRevertTurnCounts } from "@t3tools/client-runtime/state/thread-rewind";
+import { rewindToMessage } from "./chat/chatViewSend";
+import * as session from "../state/session";
 import {
+  environmentContextRecord,
+  environmentContextReference,
+  threadContextReference,
+} from "../lib/composerContextRecords";
+import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
+import {
+  prepareRevertedMessageAttachments,
   boundAttachmentIds,
   buildExpiredTerminalContextToastCopy,
   mergeDirectPreviewAnnotation,
@@ -8,10 +17,15 @@ import {
   snapshotComposerSend,
   withMessageContext,
   deriveThreadPendingBackgroundTasks,
+  resolveProactiveTurnDiffAction,
+  waitForRevertedMessage,
+} from "./ChatView.logic";
+import {
   isThreadEnvironmentLocked,
   recallCheckoutIsRepo,
   rememberCheckoutIsRepo,
   observeProactivePanelUserChoice,
+  resolveThreadErrorBanner,
 } from "./ChatView.logic";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { deriveProviderInstanceEntries } from "../providerInstances";
@@ -22,11 +36,14 @@ import {
   terminalContextReference,
 } from "../lib/composerContextRecords";
 import {
+  CheckpointScopeId,
+  CommandId,
   EnvironmentId,
   MessageId,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   ThreadId,
   RunId,
@@ -35,13 +52,18 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import * as Option from "effect/Option";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentThreadDetails } from "../state/threads";
 
 import {
   isThreadWaitingOnWork,
   resolveThreadStatus,
 } from "@t3tools/client-runtime/state/thread-status";
 import type { Thread } from "../types";
+import { DraftId, hydrateImagesFromPersisted, useComposerDraftStore } from "../composerDraftStore";
 import { derivePhase } from "../session-logic";
 import { makeThreadFixture, makeThreadProjectionFixture } from "../test-fixtures";
 import {
@@ -835,6 +857,342 @@ describe("worktree setup visibility", () => {
   });
 });
 
+describe("waitForRevertedMessage", () => {
+  const threadRef = { environmentId: EnvironmentId.make("env-1"), threadId: ThreadId.make("t") };
+  const messageId = MessageId.make("message-2");
+  const requestId = CommandId.make("rollback-1");
+
+  function projectionAtom() {
+    const base = makeThreadProjectionFixture();
+    const providerThreadId = ProviderThreadId.make("provider-thread");
+    const projection = {
+      ...base,
+      thread: { ...base.thread, activeProviderThreadId: providerThreadId },
+      providerThreads: [
+        {
+          id: providerThreadId,
+          driver: "codex",
+          providerInstanceId: base.thread.providerInstanceId,
+          providerSessionId: ProviderSessionId.make("provider-session"),
+          appThreadId: base.thread.id,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 4,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: base.updatedAt,
+          updatedAt: base.updatedAt,
+        },
+      ],
+      runs: [1, 2, 3, 4].map((ordinal) => ({
+        id: RunId.make(`run-${ordinal}`),
+        threadId: base.thread.id,
+        ordinal,
+        providerInstanceId: base.thread.providerInstanceId,
+        modelSelection: base.thread.modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make(`message-${ordinal}`),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: base.updatedAt,
+        startedAt: base.updatedAt,
+        completedAt: base.updatedAt,
+        checkpointId: null,
+        contextHandoffId: null,
+      })),
+      messages: [
+        {
+          id: messageId,
+          threadId: base.thread.id,
+          runId: RunId.make("run-2"),
+          nodeId: null,
+          role: "user",
+          text: "second",
+          attachments: [],
+          streaming: false,
+          createdAt: base.updatedAt,
+          updatedAt: base.updatedAt,
+        },
+      ],
+    } as unknown as ReturnType<typeof makeThreadProjectionFixture>;
+    const state = Atom.make({ data: Option.some(projection) });
+    vi.spyOn(environmentThreadDetails, "stateAtom").mockReturnValue(state as never);
+    return { state, projection };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("restores the rewound message's thread and machine mentions beside the existing draft", async () => {
+    const { state, projection } = projectionAtom();
+    vi.spyOn(session, "readPreparedConnection").mockReturnValue({
+      httpBaseUrl: "http://localhost",
+    } as never);
+    useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+    const thread = (id: string, title: string) =>
+      threadContextRecord(
+        { environmentId: threadRef.environmentId, threadId: ThreadId.make(id) },
+        title,
+      );
+    const drafted = thread("drafted-thread", "Drafted thread");
+    const mentioned = thread("referenced-thread", "Other thread");
+    const machine = environmentContextRecord(EnvironmentId.make("env-2"), "Build box");
+    useComposerDraftStore.getState().addThreadContexts(threadRef, [drafted]);
+    const draftPrompt = useComposerDraftStore.getState().getComposerDraft(threadRef)!.prompt;
+    const sentPrompt = ensureInlineContextReferences("Review", [
+      threadContextReference(mentioned),
+      environmentContextReference(machine),
+    ]).trim();
+
+    const result = await rewindToMessage({
+      message: {
+        id: messageId,
+        role: "user",
+        runId: projection.messages[0]!.runId,
+        streaming: false,
+        createdAt: "2026-03-29T00:00:10.000Z",
+        updatedAt: "2026-03-29T00:00:10.000Z",
+        text: sentPrompt,
+        context: { version: 1, records: [mentioned, machine] },
+      },
+      environmentId: threadRef.environmentId,
+      routeThreadRef: threadRef,
+      threadId: threadRef.threadId,
+      turnCount: 1,
+      restoreFiles: false,
+      checkpoint: undefined,
+      draftTarget: threadRef,
+      composerHasPendingAttachments: false,
+      createAssetUrl: async () => {
+        throw new Error("No attachment expected");
+      },
+      revertThreadCheckpoint: async () => {
+        appAtomRegistry.set(state, {
+          data: Option.some({
+            ...projection,
+            providerThreads: projection.providerThreads.map((providerThread) => ({
+              ...providerThread,
+              lastRunOrdinal: 1,
+            })),
+            runs: projection.runs.map((run) =>
+              run.ordinal > 1 ? { ...run, status: "rolled_back" as const } : run,
+            ),
+          }),
+        });
+        return AsyncResult.success(undefined);
+      },
+    });
+
+    const prompt = `${draftPrompt}\n\n${sentPrompt}`;
+    expect(result).toEqual({ error: null, prompt });
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)).toMatchObject({
+      prompt,
+      threadContexts: [drafted, mentioned],
+      environmentContexts: [machine],
+    });
+  });
+
+  it("rejects with the projected reason when the rollback fails for good", async () => {
+    const { state, projection } = projectionAtom();
+    const waiting = waitForRevertedMessage(threadRef, 1, requestId, async () => {});
+    await Promise.resolve();
+    appAtomRegistry.set(state, {
+      data: Option.some({
+        ...projection,
+        thread: {
+          ...projection.thread,
+          rollbackFailure: { requestId, message: "The provider could not roll back." },
+        },
+      }),
+    });
+
+    await expect(waiting).rejects.toThrow("The provider could not roll back.");
+  });
+
+  it.each([
+    ["same", "streamed"],
+    ["replacement", "streamed"],
+    ["replacement", "refetched"],
+  ] as const)(
+    "waits for the retained rollback suffix when the edited message and run are paged out (%s provider, %s)",
+    async (providerIdentity, projectionSource) => {
+      vi.useFakeTimers();
+      const { state, projection } = projectionAtom();
+      const latestRunId = RunId.make("latest-run-9");
+      const latestRun = {
+        ...projection.runs[3]!,
+        id: latestRunId,
+        ordinal: 9,
+        userMessageId: MessageId.make("latest-message-9"),
+        status: "cancelled" as const,
+      };
+      const bounded = {
+        ...projection,
+        messages: [],
+        providerThreads: projection.providerThreads.map((thread) => ({
+          ...thread,
+          lastRunOrdinal: 9,
+        })),
+        runs: [
+          {
+            ...latestRun,
+            id: RunId.make("old-rewound-run-3"),
+            userMessageId: MessageId.make("old-rewound-message-3"),
+            ordinal: 3,
+            status: "rolled_back" as const,
+          },
+          latestRun,
+        ],
+      };
+      const oldProviderThread = bounded.providerThreads[0]!;
+      const completedProviderThread = {
+        ...oldProviderThread,
+        ...(providerIdentity === "replacement"
+          ? { id: ProviderThreadId.make("replacement-provider-thread"), firstRunOrdinal: null }
+          : {}),
+        lastRunOrdinal: null,
+      };
+      appAtomRegistry.set(state, { data: Option.some(bounded) });
+      let outcome = "pending";
+      const waiting = waitForRevertedMessage(threadRef, 0, requestId, async () => {}).then(
+        () => {
+          outcome = "reverted";
+        },
+        (error: Error) => {
+          outcome = error.message;
+        },
+      );
+
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(outcome).toBe("pending");
+
+        appAtomRegistry.set(state, {
+          data: Option.some({
+            ...bounded,
+            thread: {
+              ...bounded.thread,
+              activeProviderThreadId:
+                projectionSource === "refetched"
+                  ? completedProviderThread.id
+                  : oldProviderThread.id,
+            },
+            providerThreads:
+              providerIdentity === "replacement"
+                ? [oldProviderThread, completedProviderThread]
+                : [completedProviderThread],
+            runs: bounded.runs.map((run) =>
+              run.id === latestRunId ? { ...run, status: "rolled_back" as const } : run,
+            ),
+          }),
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(outcome).toBe("reverted");
+        await waiting;
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("waits for the requested target when another client finishes a shallower rewind", async () => {
+    vi.useFakeTimers();
+    const { state, projection } = projectionAtom();
+    let outcome = "pending";
+    const waiting = waitForRevertedMessage(threadRef, 1, requestId, async () => {}).then(
+      () => {
+        outcome = "reverted";
+      },
+      (error: Error) => {
+        outcome = error.message;
+      },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("pending");
+
+      // Our command is accepted while the earlier target-3 effect is still running.
+      const shallowerRewind = {
+        ...projection,
+        thread: { ...projection.thread, rollbackRequestId: requestId, rollbackFailure: null },
+        providerThreads: projection.providerThreads.map((thread) => ({
+          ...thread,
+          lastRunOrdinal: 3,
+        })),
+        runs: projection.runs.map((run) =>
+          run.ordinal > 3 ? { ...run, status: "rolled_back" as const } : run,
+        ),
+      };
+      appAtomRegistry.set(state, { data: Option.some(shallowerRewind) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("pending");
+
+      appAtomRegistry.set(state, {
+        data: Option.some({
+          ...shallowerRewind,
+          providerThreads: shallowerRewind.providerThreads.map((thread) => ({
+            ...thread,
+            lastRunOrdinal: 1,
+          })),
+          runs: shallowerRewind.runs.map((run) =>
+            run.ordinal > 1 ? { ...run, status: "rolled_back" as const } : run,
+          ),
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("reverted");
+      await waiting;
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a stale edit already rewound by another client during attachment preparation", async () => {
+    vi.useFakeTimers();
+    const { state, projection } = projectionAtom();
+    appAtomRegistry.set(state, {
+      data: Option.some({
+        ...projection,
+        thread: { ...projection.thread, rollbackRequestId: CommandId.make("other-client-rewind") },
+        messages: [],
+        providerThreads: projection.providerThreads.map((thread) => ({
+          ...thread,
+          lastRunOrdinal: 1,
+        })),
+        runs: projection.runs.map((run) =>
+          run.ordinal > 1 ? { ...run, status: "rolled_back" as const } : run,
+        ),
+      }),
+    });
+    const revert = vi.fn(async () => {});
+    let outcome = "pending";
+    const waiting = waitForRevertedMessage(threadRef, 1, requestId, revert).then(
+      () => {
+        outcome = "reverted";
+      },
+      () => {
+        outcome = "rejected";
+      },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("rejected");
+      expect(revert).not.toHaveBeenCalled();
+      await waiting;
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("mergeDirectPreviewAnnotation", () => {
   const annotation = (id: string) =>
     ({
@@ -972,6 +1330,8 @@ describe("planComposerTurn", () => {
     sendEnvMode: "worktree" as const,
     worktreePath: null,
     activeThreadBranch: "main",
+    projectIsGitRepo: true,
+    isScratchProject: false,
     resumeCompactionTokens: null,
     keepFullHistory: false,
     phase: "ready" as const,
@@ -990,6 +1350,16 @@ describe("planComposerTurn", () => {
   it("refuses a new worktree without a base branch", () => {
     expect(planComposerTurn({ ...base, activeThreadBranch: null })).toMatchObject({
       missingWorktreeBaseBranch: true,
+      baseBranchForWorktree: null,
+    });
+    // A plain folder that tracks repositories has no branch of its own to start from.
+    expect(
+      planComposerTurn({ ...base, activeThreadBranch: null, projectIsGitRepo: false }),
+    ).toMatchObject({ missingWorktreeBaseBranch: false, baseBranchForWorktree: "HEAD" });
+    expect(
+      planComposerTurn({ ...base, activeThreadBranch: null, isScratchProject: true }),
+    ).toMatchObject({
+      missingWorktreeBaseBranch: false,
       baseBranchForWorktree: null,
     });
   });
@@ -1067,6 +1437,107 @@ describe("boundAttachmentIds", () => {
     expect(
       boundAttachmentIds([{ id: "upload-1" }, {}], [{ id: "local-1" }, { id: "local-2" }]),
     ).toEqual(["upload-1", "local-2"]);
+  });
+});
+
+describe("resolveProactiveTurnDiffAction", () => {
+  const file = { path: "src/a.ts", kind: "modified", additions: 60, deletions: 0 };
+  const repository = (files: ReadonlyArray<typeof file>) => ({
+    scopeId: CheckpointScopeId.make("scope-api"),
+    name: "api",
+    repositoryPath: "/work/api",
+    cwd: "/work/api",
+    files,
+    baselineMissing: files.length === 0,
+  });
+
+  it("opens for repository changes in a folder that is not a Git repository", () => {
+    expect(
+      resolveProactiveTurnDiffAction({
+        checkpoint: { status: "missing", files: [], repositories: [repository([file])] },
+        isGitRepo: false,
+      }),
+    ).toBe("open");
+    expect(
+      resolveProactiveTurnDiffAction({
+        checkpoint: { status: "missing", files: [], repositories: [repository([])] },
+        isGitRepo: false,
+      }),
+    ).toBe("ignore");
+  });
+
+  it("keeps waiting on a missing checkpoint and ignores a folder without Git", () => {
+    expect(
+      resolveProactiveTurnDiffAction({
+        checkpoint: { status: "missing", files: [] },
+        isGitRepo: true,
+      }),
+    ).toBe("defer");
+    expect(
+      resolveProactiveTurnDiffAction({
+        checkpoint: { status: "ready", files: [file] },
+        isGitRepo: false,
+      }),
+    ).toBe("ignore");
+    expect(
+      resolveProactiveTurnDiffAction({
+        checkpoint: { status: "ready", files: [file] },
+        isGitRepo: true,
+      }),
+    ).toBe("open");
+  });
+});
+
+describe("deriveAvailableRevertTurnCounts", () => {
+  const providerThreadId = ProviderThreadId.make("provider-thread");
+  const otherProviderThreadId = ProviderThreadId.make("other-provider-thread");
+
+  function projection(input: { readonly providerSessionId: ProviderSessionId | null }) {
+    const base = makeThreadProjectionFixture();
+    const run = (ordinal: number) => ({
+      id: RunId.make(`run-${ordinal}`),
+      ordinal,
+      activeAttemptId: `attempt-${ordinal}`,
+    });
+    const turn = (ordinal: number, attempt: number, threadId: ProviderThreadId) => ({
+      id: `turn-${attempt}-${ordinal}`,
+      runAttemptId: `attempt-${attempt}`,
+      ordinal,
+      providerThreadId: threadId,
+    });
+    return {
+      ...base,
+      thread: { ...base.thread, activeProviderThreadId: providerThreadId },
+      providerThreads: [
+        {
+          id: providerThreadId,
+          providerInstanceId: base.thread.modelSelection.instanceId,
+          providerSessionId: input.providerSessionId,
+        },
+      ],
+      runs: [run(1), run(2), run(3)],
+      attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, providerTurnId: null })),
+      // Run 2's latest turn moved to another provider thread, so its checkpoint cannot restore
+      // this conversation.
+      providerTurns: [
+        turn(1, 1, providerThreadId),
+        turn(1, 2, providerThreadId),
+        turn(2, 2, otherProviderThreadId),
+        turn(1, 3, providerThreadId),
+      ],
+    } as unknown as ReturnType<typeof makeThreadProjectionFixture>;
+  }
+
+  it("offers the thread start and runs whose latest turn is on the active provider thread", () => {
+    const available = deriveAvailableRevertTurnCounts(
+      projection({ providerSessionId: ProviderSessionId.make("session") }),
+    );
+    expect([...available].toSorted()).toEqual([0, 1, 3]);
+  });
+
+  it("offers nothing without a provider session to rewind", () => {
+    expect(deriveAvailableRevertTurnCounts(projection({ providerSessionId: null })).size).toBe(0);
+    expect(deriveAvailableRevertTurnCounts(null).size).toBe(0);
   });
 });
 
@@ -1177,25 +1648,114 @@ describe("deriveThreadPendingBackgroundTasks", () => {
   });
 });
 
-describe("Open in for the host environment", () => {
-  it("shows both local environments when the primary has a separate WSL home", () => {
-    const primaryEnvironmentId = EnvironmentId.make("wsl");
-    const hostEnvironmentId = EnvironmentId.make("host");
-    for (const [activeThreadEnvironmentId, visible] of [
-      [primaryEnvironmentId, true],
-      [hostEnvironmentId, true],
-      [EnvironmentId.make("other"), false],
-    ] as const) {
-      expect(
-        shouldShowOpenInPicker({
-          activeProjectName: "Project",
-          activeThreadEnvironmentId,
-          primaryEnvironmentId,
-          hostEnvironmentId,
-          remoteOpenMode: "local-exec",
-        }),
-      ).toBe(visible);
-    }
+describe("prepareRevertedMessageAttachments", () => {
+  it("suppresses a repeated image after restoring a rewound message", async () => {
+    using _fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    const [file] = await prepareRevertedMessageAttachments({
+      message: {
+        id: MessageId.make("rewound"),
+        role: "user",
+        text: "",
+        runId: null,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+        attachments: [
+          { type: "image", id: "restored", name: "image.png", mimeType: "image/png", sizeBytes: 3 },
+        ],
+      },
+      environmentId: EnvironmentId.make("rewind-images"),
+      httpBaseUrl: "http://localhost",
+      createAssetUrl: async () =>
+        AsyncResult.success({ relativeUrl: "/attachment/image.png", expiresAt: 0 }),
+    });
+    const target = DraftId.make("rewind-image-repeat");
+    const store = useComposerDraftStore.getState();
+    using _draft = { [Symbol.dispose]: () => store.clearComposerContent(target) };
+    store.addImages(
+      target,
+      [
+        {
+          type: "image",
+          id: "restored",
+          name: file!.name,
+          mimeType: file!.type,
+          sizeBytes: file!.size,
+          file: file!,
+          previewUrl: "data:image/png;base64,AQID",
+        },
+      ],
+      { allowDuplicates: true },
+    );
+    const repeat = hydrateImagesFromPersisted([
+      {
+        id: "repeat",
+        name: "image.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+        dataUrl: "data:image/png;base64,AQID",
+      },
+    ]);
+    expect(store.addImages(target, repeat)).toEqual([]);
+    expect(store.getComposerDraft(target)?.images.map(({ id }) => id)).toEqual(["restored"]);
+  });
+});
+
+describe("resolveThreadErrorBanner", () => {
+  const base = {
+    isServerThread: true,
+    localServerError: null,
+    localDraftError: null,
+    runtimeError: null,
+    runtimeErrorSource: null,
+  };
+
+  it.each([
+    {
+      name: "server runtime error",
+      input: { ...base, runtimeError: "Turn failed", runtimeErrorSource: "item-1" },
+      expected: {
+        threadError: "Turn failed",
+        sessionDismissal: { error: "Turn failed", source: "item-1" },
+      },
+    },
+    {
+      name: "local copy of the runtime error",
+      input: {
+        ...base,
+        localServerError: "Turn failed",
+        runtimeError: "Turn failed",
+        runtimeErrorSource: "item-1",
+      },
+      expected: {
+        threadError: "Turn failed",
+        sessionDismissal: { error: "Turn failed", source: "item-1" },
+      },
+    },
+    {
+      name: "local server error over a different runtime error",
+      input: {
+        ...base,
+        localServerError: "Upload failed",
+        runtimeError: "Turn failed",
+        runtimeErrorSource: "item-1",
+      },
+      expected: { threadError: "Upload failed", sessionDismissal: null },
+    },
+    {
+      name: "draft error",
+      input: {
+        ...base,
+        isServerThread: false,
+        localDraftError: "Worktree failed",
+        runtimeError: "Turn failed",
+      },
+      expected: { threadError: "Worktree failed", sessionDismissal: null },
+    },
+  ])("$name", ({ input, expected }) => {
+    expect(resolveThreadErrorBanner(input)).toEqual(expected);
   });
 });
 

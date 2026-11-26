@@ -15,12 +15,17 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { layerEnvironmentAuth } from "../peer/PeerLinks.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -395,6 +400,50 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
       assert.equal(agentShell?.linkOrigin?.sessionId, "laptop");
       assert.equal(agentShell?.delegatedFrom, undefined);
     }),
+  );
+
+  it.effect("can still change its original thread after both kinds of peer renewal", () =>
+    Effect.gen(function* () {
+      const auth = yield* EnvironmentAuth.EnvironmentAuth;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const original = yield* auth.issueMcpClientSession({
+        label: "Laptop",
+        access: "auto",
+        peerLink: true,
+        client: { deviceType: "bot" },
+      });
+      const authenticate = (token: string) =>
+        auth
+          .authenticateMcpClient(
+            HttpServerRequest.fromWeb(
+              new Request("http://localhost/mcp", {
+                headers: { authorization: `Bearer ${token}` },
+              }),
+            ),
+          )
+          .pipe(
+            Effect.map((client) =>
+              clientScope(client.sessionId, client.peerLink === true, client.access),
+            ),
+          );
+      const thread = yield* launch(yield* authenticate(original.token), "Before renewal");
+      yield* TestClock.adjust(Duration.days(20));
+      const passive = yield* authenticate(original.token);
+      yield* TestClock.adjust(Duration.days(1));
+      const exchanged = yield* auth.renewMcpClientSession(original.token);
+      for (const [scope, title] of [
+        [passive, "Renamed after use"],
+        [yield* authenticate(exchanged.token), "Renamed after exchange"],
+      ] as const) {
+        const result = yield* call(scope, "t3_thread_update", {
+          threadId: thread,
+          action: "rename",
+          title,
+        });
+        assert.equal(result.isError, false);
+        assert.equal((yield* projections.getThreadShell(thread))?.title, title);
+      }
+    }).pipe(Effect.provide(layerEnvironmentAuth("t3-link-origin-renewal-"))),
   );
 
   it.effect("changes only that link's threads below full access", () =>

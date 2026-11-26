@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { usePaginatedBranches } from "../state/queries";
 import { useEnvironmentQuery } from "../state/query";
+import { useAtomCommand } from "../state/use-atom-command";
 import { vcsEnvironment } from "../state/vcs";
 import { BranchPicker, BranchPickerRefItem } from "./BranchPicker";
 import { resolveBranchTriggerLabel, sanitizeNewRefName } from "./BranchToolbar.logic";
@@ -33,11 +34,17 @@ export function WorktreeBaseBranchPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const branches = usePaginatedBranches({
-    environmentId,
-    cwd,
-    query: sanitizeNewRefName(query.trim()),
+  const refreshLocalStatusForPicker = useAtomCommand(vcsEnvironment.refreshLocalStatusForPicker, {
+    reportFailure: false,
   });
+  const branches = usePaginatedBranches(
+    {
+      environmentId,
+      cwd,
+      query: sanitizeNewRefName(query.trim()),
+    },
+    t,
+  );
   const selectedRefQuery = useEnvironmentQuery(
     cwd && value
       ? vcsEnvironment.listRefs({
@@ -49,13 +56,16 @@ export function WorktreeBaseBranchPicker({
   const selectedRef =
     branches.refs.find((branch) => branch.name === value) ??
     selectedRefQuery.data?.refs.find((branch) => branch.name === value);
-  const label = resolveBranchTriggerLabel({
-    activeWorktreePath: null,
-    effectiveEnvMode: "worktree",
-    resolvedActiveBranch: value || null,
-    resolvedActiveBranchIsRemote: selectedRef ? selectedRef.isRemote === true : null,
-    startFromOrigin,
-  });
+  const label = resolveBranchTriggerLabel(
+    {
+      activeWorktreePath: null,
+      effectiveEnvMode: "worktree",
+      resolvedActiveBranch: value || null,
+      resolvedActiveBranchIsRemote: selectedRef ? selectedRef.isRemote === true : null,
+      startFromOrigin,
+    },
+    t,
+  );
   const branchByName = new Map(branches.refs.map((branch) => [branch.name, branch]));
   const items = [...branchByName.keys()];
   const hasNextPage = branches.data?.nextCursor != null;
@@ -73,6 +83,9 @@ export function WorktreeBaseBranchPicker({
           : null);
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
+    if (next && !open && cwd !== null) {
+      void refreshLocalStatusForPicker({ environmentId, input: { cwd } });
+    }
     if (!next) setQuery("");
   };
   return (

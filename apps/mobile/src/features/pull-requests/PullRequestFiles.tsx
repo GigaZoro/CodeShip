@@ -3,7 +3,7 @@ import { sourceControlClients } from "@t3tools/client-runtime/source-control-cli
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { PullRequestChangeBreakdown } from "@t3tools/contracts";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { View } from "react-native";
 import Animated from "react-native-reanimated";
 import { PierreEntryIcon } from "../../components/PierreEntryIcon";
@@ -30,7 +30,8 @@ import {
 } from "./usePullRequestDiff";
 import { usePullRequestFileFilter } from "./usePullRequestFileFilter";
 import { usePullRequestFilesViewed } from "./usePullRequestFilesViewed";
-import { pullRequestFileJumpScope, requestPullRequestFileJump } from "./pullRequestFileJump";
+import { fileDirectory, groupByDirectory } from "./pullRequestFileSections";
+import { requestPullRequestFileJump } from "./pullRequestFileJump";
 import { t, tn, msg, getFormattingLocale } from "../../lib/i18n";
 
 const BREAKDOWN_LABELS = {
@@ -40,11 +41,6 @@ const BREAKDOWN_LABELS = {
   generated: msg("Generated"),
   docs: msg("Docs"),
 } satisfies Record<keyof NonNullable<PullRequestChangeBreakdown>, string>;
-
-function fileDirectory(path: string) {
-  const separator = path.lastIndexOf("/");
-  return separator < 0 ? "" : path.slice(0, separator);
-}
 
 function useChangedFiles(params: PullRequestDiffParams) {
   const detail = useEnvironmentQuery(composerPullRequests.detail(pullRequestTarget(params)));
@@ -95,12 +91,13 @@ function describeFiles(
     .join(" · ");
 }
 
-function FileRow(props: {
+// Memoized: a pull request's rows rebuild as its detail, diff and viewed reads land.
+const FileRow = memo(function FileRow(props: {
   readonly file: ReviewRenderableFile;
   readonly viewed: boolean;
   /** Shown under the file name where files aren't grouped by directory. */
   readonly directory?: string;
-  readonly onPress: () => void;
+  readonly onPress: (path: string) => void;
 }) {
   const { file } = props;
   return (
@@ -119,7 +116,7 @@ function FileRow(props: {
               deletions: tn(file.deletions, "{count} deletion", "{count} deletions"),
             })
       }
-      onPress={props.onPress}
+      onPress={() => props.onPress(file.path)}
       className="min-h-14 flex-row items-center gap-3 border-b border-border-subtle py-3 active:opacity-70"
     >
       <PierreEntryIcon kind="file" path={file.path} size={20} />
@@ -149,7 +146,7 @@ function FileRow(props: {
       <SymbolView name="chevron.right" size={12} tintColorClassName="accent-icon-muted" />
     </RowPressable>
   );
-}
+});
 
 function FileRowSkeleton(props: { readonly index: number }) {
   return (
@@ -223,7 +220,7 @@ function FilesFooter({ files }: { readonly files: ChangedFiles }) {
         <Button
           label={diff.error ? t("Retry loading files") : t("Load more files")}
           tone="secondary"
-          onPress={diff.error ? diff.refresh : diff.loadMore}
+          onPress={diff.error ? diff.retry : diff.loadMore}
           loading={diff.isPending}
           fullWidth
         />
@@ -274,6 +271,7 @@ export function usePullRequestFilesSection(params: PullRequestParams) {
     composerPullRequests.changeBreakdown(pullRequestTarget(params)),
   ).data;
   const expected = pr ?? params.initialSummary;
+  const openFile = (path: string) => navigation.navigate("PullRequestFile", { ...params, path });
   return {
     refresh: diff.refresh,
     header: (
@@ -342,45 +340,12 @@ export function usePullRequestFilesSection(params: PullRequestParams) {
               file={file}
               directory={fileDirectory(file.path)}
               viewed={viewed.isViewed(file.path)}
-              onPress={() => navigation.navigate("PullRequestFile", { ...params, path: file.path })}
+              onPress={openFile}
             />
           ),
         })),
     footer: <FilesFooter files={files} />,
   };
-}
-
-type SheetItem =
-  | {
-      readonly kind: "directory";
-      readonly key: string;
-      readonly directory: string;
-      readonly collapsed: boolean;
-    }
-  | { readonly kind: "file"; readonly key: string; readonly file: ReviewRenderableFile };
-
-function groupByDirectory(
-  files: ReadonlyArray<ReviewRenderableFile>,
-  collapsed: ReadonlySet<string>,
-) {
-  const sorted = files
-    .map((file) => ({ file, directory: fileDirectory(file.path) }))
-    .sort(
-      (a, b) => a.directory.localeCompare(b.directory) || a.file.path.localeCompare(b.file.path),
-    );
-  const items: SheetItem[] = [];
-  sorted.forEach(({ file, directory }, index) => {
-    if (directory !== sorted[index - 1]?.directory) {
-      items.push({
-        kind: "directory",
-        key: `directory:${directory}`,
-        directory,
-        collapsed: collapsed.has(directory),
-      });
-    }
-    if (!collapsed.has(directory)) items.push({ kind: "file", key: file.id, file });
-  });
-  return items;
 }
 
 function DirectoryRow(props: {
@@ -414,7 +379,6 @@ function DirectoryRow(props: {
 export function PullRequestFilesSheet({ route }: StaticScreenProps<PullRequestDiffParams>) {
   const params = route.params;
   const navigation = useNavigation();
-  const jumpScope = pullRequestFileJumpScope(params);
   const files = useChangedFiles(params);
   const { diff, filter, viewed, parsed, loading } = files;
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
@@ -471,14 +435,10 @@ export function PullRequestFilesSheet({ route }: StaticScreenProps<PullRequestDi
                 <FileRow
                   file={item.file}
                   viewed={viewed.isViewed(item.file.path)}
-                  onPress={() => {
-                    requestPullRequestFileJump(jumpScope, item.file.path);
+                  onPress={(path) => {
+                    requestPullRequestFileJump(navigation.getState()?.routes ?? [], path);
                     navigation.dispatch(
-                      StackActions.popTo("PullRequestFile", {
-                        ...params,
-                        path: item.file.path,
-                        focus: undefined,
-                      }),
+                      StackActions.popTo("PullRequestFile", { ...params, path, focus: undefined }),
                     );
                   }}
                 />

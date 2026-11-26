@@ -1,3 +1,5 @@
+import { t } from "../../lib/i18n";
+
 import { type RefObject, use, useRef, useState } from "react";
 import { Keyboard, type TextInputInstance, View } from "react-native";
 import { useHardwareBack } from "../../lib/backHandler";
@@ -10,14 +12,13 @@ import { useAdaptiveWorkspaceLayout } from "../../features/layout/adaptive-works
 import { InspectorCloseContext } from "../../features/layout/inspector-bar-store";
 import { useAppearancePreferences } from "../../features/settings/appearance/AppearancePreferencesProvider";
 import { AndroidHeaderIconButton, AndroidScreenHeader } from "./AndroidScreenHeader.android";
+import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu.android";
 import { ScreenHeaderButton } from "./ScreenHeaderButton.android";
-import { Menu } from "./Menu";
 import { Button } from "./Button";
 import { SearchField } from "./SearchField";
 import { findAppBarMenuItem, menuActionsFromAppBarItems } from "./menuActionItems";
 import type { AppBarMenuItem, AppBarProps, AppBarSearch } from "./AppBar.types";
 import { useHasWorkspaceAppBar, WorkspaceAppBar } from "./WorkspaceAppBar.android";
-import { t } from "../../lib/i18n";
 
 function selectMenuItem(items: ReadonlyArray<AppBarMenuItem>, id: string) {
   const action = findAppBarMenuItem(items, id);
@@ -148,15 +149,16 @@ function AppBarView(props: AppBarProps & { readonly searchState?: SearchState })
   }
 
   const menuView = props.menus?.map((menu) => (
-    <Menu
+    <AndroidAnchoredMenu
       key={menu.title}
       actions={menuActionsFromAppBarItems(menu.items)}
-      isAnchoredToRight
       title={menu.status ?? menu.title}
       onPressAction={({ nativeEvent }) => selectMenuItem(menu.items, nativeEvent.event)}
     >
-      <ScreenHeaderButton accessibilityLabel={menu.title} icon={menu.icon} />
-    </Menu>
+      {(open) => (
+        <ScreenHeaderButton accessibilityLabel={menu.title} icon={menu.icon} onPress={open} />
+      )}
+    </AndroidAnchoredMenu>
   ));
   const confirmButton = props.confirm ? (
     <View className="self-center">

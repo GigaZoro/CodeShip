@@ -1,6 +1,7 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useParams } from "@tanstack/react-router";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -8,11 +9,11 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   projectCloneDisplayName,
-  projectCloneProgressSummary,
   type EnvironmentId,
   type ProjectCloneSnapshot,
   type ProjectId,
 } from "@t3tools/contracts";
+import { projectCloneProgressSummary } from "@t3tools/client-runtime/contract-labels";
 import { useEffect, useRef } from "react";
 
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -22,6 +23,7 @@ import {
   isProjectCloneToastSilenced,
   silenceProjectCloneToasts,
   useEnvironmentProjectClones,
+  useProjectCloneToastHolds,
 } from "../state/projectClones";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -43,6 +45,8 @@ interface TrackedToast {
   readonly toastId: ReturnType<typeof toastManager.add>;
   readonly renderedKey: string;
   readonly phase: ProjectCloneSnapshot["phase"];
+  readonly startedAt: ProjectCloneSnapshot["startedAt"];
+  readonly closed?: true;
 }
 
 function renderKey(clone: ProjectCloneSnapshot): string {
@@ -60,7 +64,7 @@ async function runCloneAction(
       stackedThreadToast({
         type: "error",
         title,
-        description: error instanceof Error ? error.message : t("An error occurred."),
+        description: thrownErrorMessage(error, t) ?? t(msg("An error occurred.")),
       }),
     );
   }
@@ -68,6 +72,7 @@ async function runCloneAction(
 
 function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentId }) {
   const clones = useEnvironmentProjectClones(environmentId);
+  const toastHolds = useProjectCloneToastHolds();
   const handleNewThread = useNewThreadHandler();
   const { draftId: routeDraftId } = useParams({ strict: false });
   const cancelClone = useAtomCommand(sourceControlEnvironment.cancelProjectClone, {
@@ -96,6 +101,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
       seen.add(clone.projectId);
       const key = renderKey(clone);
       const tracked = toasts.current.get(clone.projectId);
+      const sameAttempt = tracked?.startedAt === clone.startedAt;
       const name = projectCloneDisplayName(clone);
       const closeToast = () => {
         const current = toasts.current.get(clone.projectId);
@@ -109,49 +115,71 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
         closeToast();
         continue;
       }
-      if (tracked?.renderedKey === key) continue;
       if (
-        isProjectCloneToastSilenced(ref) &&
+        (isProjectCloneToastSilenced(ref) || toastHolds.has(scopedProjectKey(ref))) &&
         (clone.phase === "running" || clone.phase === "done")
       ) {
         closeToast();
         continue;
       }
+      if (sameAttempt && tracked.renderedKey === key) continue;
+      if (
+        sameAttempt &&
+        tracked.closed &&
+        (tracked.phase !== "running" || clone.phase !== "failed")
+      ) {
+        continue;
+      }
+
+      const showToast = (options: ReturnType<typeof stackedThreadToast>) => {
+        const rendered = { renderedKey: key, phase: clone.phase, startedAt: clone.startedAt };
+        if (tracked && !tracked.closed) {
+          toastManager.update(tracked.toastId, options);
+          toasts.current.set(clone.projectId, { toastId: tracked.toastId, ...rendered });
+          return;
+        }
+
+        const toastId = toastManager.add({
+          ...options,
+          // Updates to a closing toast are ignored, even before it has been removed.
+          onClose: () => {
+            const current = toasts.current.get(clone.projectId);
+            if (current?.toastId === toastId) {
+              toasts.current.set(clone.projectId, { ...current, closed: true });
+            }
+          },
+        });
+        toasts.current.set(clone.projectId, { toastId, ...rendered });
+      };
 
       if (clone.phase === "running") {
         const options = stackedThreadToast({
           type: "loading",
-          title: t("Cloning {name}", { name }),
-          description: projectCloneProgressSummary(clone),
+          title: t(msg("Cloning {name}"), { name }),
+          description: projectCloneProgressSummary(clone, t),
           timeout: 0,
           actionProps: {
-            children: t("Cancel"),
+            children: t(msg("Cancel")),
             onClick: () => {
-              void runCloneAction(t("Failed to cancel clone"), () =>
+              void runCloneAction(t(msg("Failed to cancel clone")), () =>
                 cancelClone({ environmentId, input: { projectId: clone.projectId } }),
               );
             },
           },
           data: { hideCopyButton: true },
         });
-        if (tracked) {
-          toastManager.update(tracked.toastId, options);
-          toasts.current.set(clone.projectId, { ...tracked, renderedKey: key, phase: "running" });
-        } else {
-          const toastId = toastManager.add(options);
-          toasts.current.set(clone.projectId, { toastId, renderedKey: key, phase: "running" });
-        }
+        showToast(options);
         continue;
       }
 
       if (clone.phase === "done") {
         const options = stackedThreadToast({
           type: "success",
-          title: t("Cloned {name}", { name }),
+          title: t(msg("Cloned {name}"), { name }),
           description: clone.destinationPath,
           timeout: 8_000,
           actionProps: {
-            children: t("Open project"),
+            children: t(msg("Open project")),
             onClick: () => {
               closeToast();
               openProject(clone.projectId);
@@ -159,13 +187,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
           },
           data: { hideCopyButton: true },
         });
-        if (tracked) {
-          toastManager.update(tracked.toastId, options);
-          toasts.current.set(clone.projectId, { ...tracked, renderedKey: key, phase: "done" });
-        } else {
-          const toastId = toastManager.add(options);
-          toasts.current.set(clone.projectId, { toastId, renderedKey: key, phase: "done" });
-        }
+        showToast(options);
         continue;
       }
 
@@ -173,14 +195,16 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
       const options = stackedThreadToast({
         type: cancelled ? "info" : "error",
         title: cancelled
-          ? t("Cancelled cloning {name}", { name })
-          : t("Failed to clone {name}", { name }),
-        description: cancelled ? clone.destinationPath : (clone.error ?? t("The clone failed.")),
+          ? t(msg("Cancelled cloning {name}"), { name })
+          : t(msg("Failed to clone {name}"), { name }),
+        description: cancelled
+          ? clone.destinationPath
+          : (clone.error ?? t(msg("The clone failed."))),
         timeout: 0,
         actionProps: {
-          children: t("Retry"),
+          children: t(msg("Retry")),
           onClick: () => {
-            void runCloneAction(t("Failed to retry clone"), () =>
+            void runCloneAction(t(msg("Failed to retry clone")), () =>
               retryClone({ environmentId, input: { projectId: clone.projectId } }),
             );
           },
@@ -188,20 +212,14 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
         data: {
           ...(cancelled ? { hideCopyButton: true } : {}),
           secondaryActionProps: {
-            children: t("Remove project"),
+            children: t(msg("Remove project")),
             onClick: () => {
               void removeClonedProject({ environmentId, projectId: clone.projectId });
             },
           },
         },
       });
-      if (tracked) {
-        toastManager.update(tracked.toastId, options);
-        toasts.current.set(clone.projectId, { ...tracked, renderedKey: key, phase: clone.phase });
-      } else {
-        const toastId = toastManager.add(options);
-        toasts.current.set(clone.projectId, { toastId, renderedKey: key, phase: clone.phase });
-      }
+      showToast(options);
     }
 
     for (const [projectId, tracked] of toasts.current) {
@@ -217,6 +235,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
     openProject,
     removeClonedProject,
     retryClone,
+    toastHolds,
   ]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes every tracked clone toast in toastManager when the coordinator unmounts

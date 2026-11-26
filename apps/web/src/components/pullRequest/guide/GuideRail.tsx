@@ -1,11 +1,12 @@
+import { t } from "~/i18n";
 import type { PullRequestReviewGuideStop } from "@t3tools/contracts";
+
 import { CheckIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 
 import { Badge } from "../../ui/badge";
 import { stopSubline, stopTitle } from "@t3tools/client-runtime/review-guide-tour";
-import { t } from "~/i18n";
 
 export function GuideRail({
   stops,
@@ -33,7 +34,7 @@ export function GuideRail({
                 {t("Look closely")}
               </Badge>
             ) : null}
-            <span>{stopSubline(stop)}</span>
+            <span>{stopSubline(stop, t)}</span>
           </>
         }
       />

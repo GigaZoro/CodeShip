@@ -1,9 +1,12 @@
-import { t, tn } from "~/i18n";
+import { t, msg, tn } from "~/i18n";
 import { BookmarkIcon, FileIcon, FileTextIcon } from "lucide-react";
 import { memo, useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import { composerFileLinksToPlainText } from "@t3tools/shared/composerInlineTokens";
 
 import { RelativeTime } from "../RelativeTime";
+
 import { cn } from "~/lib/utils";
 import { type PromptStashEntry } from "../../promptStashStore";
 import { ComposerBanner } from "./ComposerBanner";
@@ -14,20 +17,26 @@ function missingImageCount(entry: PromptStashEntry): number {
   return entry.droppedImageNames.length + (entry.unreadableImageNames?.length ?? 0);
 }
 
-export function stashEntrySnippet(entry: PromptStashEntry): string {
-  const trimmed = assistantCitationsToPlainText(entry.prompt).trim().replace(/\s+/g, " ");
+export function stashEntrySnippet(entry: PromptStashEntry, resolve: typeof t = t): string {
+  const trimmed = assistantCitationsToPlainText(
+    composerFileLinksToPlainText(
+      replaceComposerContextReferences(entry.prompt, (reference) => reference.label),
+    ),
+  )
+    .trim()
+    .replace(/\s+/g, " ");
   if (trimmed.length > 0) {
     if (trimmed.length <= SNIPPET_MAX_CHARS) return trimmed;
     // Never end on a lone high surrogate, the first half of an emoji.
     const last = trimmed.charCodeAt(SNIPPET_MAX_CHARS - 1);
     const end = last >= 0xd800 && last <= 0xdbff ? SNIPPET_MAX_CHARS - 1 : SNIPPET_MAX_CHARS;
-    return `${trimmed.slice(0, end)}…`;
+    return `${trimmed.slice(0, end).trimEnd()}…`;
   }
   const imageCount = entry.attachments.length + entry.droppedImageNames.length;
   const fileCount = entry.files?.length ?? 0;
   const attachmentCount = imageCount + fileCount;
   if (attachmentCount === 0) {
-    return t("(empty)");
+    return resolve(msg("(empty)"));
   }
   return imageCount > 0 && fileCount > 0
     ? tn(attachmentCount, "({count} attachment)", "({count} attachments)")
@@ -46,6 +55,7 @@ export const ComposerStashMenu = memo(function ComposerStashMenu(props: {
   onClose: () => void;
 }) {
   const { entries, stashShortcutLabel, composerFormRef, onRestore, onDelete, onClose } = props;
+
   const [highlightedId, setHighlightedId] = useState<string | null>(entries[0]?.id ?? null);
 
   const highlightedEntry = entries.find((entry) => entry.id === highlightedId) ?? entries[0];
@@ -65,6 +75,7 @@ export const ComposerStashMenu = memo(function ComposerStashMenu(props: {
   });
 
   const handleKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    if (event.isComposing || event.keyCode === 229) return;
     const drawer = drawerRef.current;
     if (!drawer) return;
     const target = event.target;
@@ -197,7 +208,7 @@ export const ComposerStashMenu = memo(function ComposerStashMenu(props: {
                     onPointerDown={(event) => event.preventDefault()}
                     onClick={() => onRestore(entry)}
                   >
-                    {stashEntrySnippet(entry)}
+                    {stashEntrySnippet(entry, t)}
                   </button>
                 </ComposerBanner.Content>
                 <ComposerBanner.Actions>

@@ -1,17 +1,21 @@
+import { useAtomValue } from "@effect/atom-react";
 import { t } from "~/i18n";
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { Navigate, useNavigate } from "@tanstack/react-router";
+import { Link, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import ChatView from "./ChatView";
+import { Button } from "./ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset } from "./ui/sidebar";
 import { toastManager } from "./ui/toast";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { useEnvironmentThreadRefs, useQuietThreadShell } from "../state/entities";
+import { environmentUnreachableAtom } from "../state/presentation";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentShellStatus } from "../state/shell";
 import { useThreadHiding } from "../state/threadHiding";
@@ -27,7 +31,7 @@ import {
  * Keeps the family of an open thread the shell leaves out (an older settled thread) in the shell
  * rows until the route leaves it, so every reader of its shell row finds it.
  */
-function useOpenThreadFamily(threadRef: ScopedThreadRef | null, missing: boolean) {
+export function useOpenThreadFamily(threadRef: ScopedThreadRef | null, missing: boolean) {
   const key = threadRef === null ? null : scopedThreadKey(threadRef);
   // Sticks to the route thread, so the row the family brings in does not release it.
   const [mountedKey, setMountedKey] = useState<string | null>(null);
@@ -59,6 +63,9 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   const serverThreadShell = useQuietThreadShell(serverThreadRef);
   const shellStatus = useEnvironmentShellStatus(serverThreadRef?.environmentId ?? null);
   const environmentThreadRefs = useEnvironmentThreadRefs(serverThreadRef?.environmentId ?? null);
+  const environmentUnreachable = useAtomValue(
+    environmentUnreachableAtom(serverThreadRef?.environmentId ?? null),
+  );
   const bootstrapComplete = isThreadRouteSnapshotAuthoritative(shellStatus);
   const draftThread = useComposerDraftStore((store) =>
     serverThreadRef ? store.getDraftThreadByRef(serverThreadRef) : null,
@@ -111,6 +118,7 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     serverThreadDeleted: serverThreadShell?.deletedAt != null,
     unlistedThreadDetail,
     draftThreadExists: draftThread !== null,
+    environmentUnreachable,
   });
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
 
@@ -214,6 +222,8 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     } else {
       redirect = <Navigate to="/" replace />;
     }
+  } else if (renderState === "unreachable") {
+    view = <UnreachableEnvironmentState />;
   } else if (hiddenByTagFilter) {
     redirect = <Navigate to="/" replace />;
   } else if (offShellBlocked) {
@@ -235,5 +245,23 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
       {view}
       {redirect}
     </SidebarInset>
+  );
+}
+
+function UnreachableEnvironmentState() {
+  return (
+    <Empty className="flex-1">
+      <EmptyHeader>
+        <EmptyTitle>{t("Thread unavailable")}</EmptyTitle>
+        <EmptyDescription>
+          {t("This thread is on an environment this app is not connected to.")}
+        </EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent>
+        <Button render={<Link to="/settings/connections" />} size="sm">
+          {t("Open Environments")}
+        </Button>
+      </EmptyContent>
+    </Empty>
   );
 }

@@ -1,3 +1,5 @@
+import { t, tn } from "~/i18n";
+import { useNavigateToMainApp } from "../sidebar/mainAppLocation";
 import { useUsageDocumentVisible, useUsageNow } from "../../hooks/useUsageNow";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
@@ -129,7 +131,6 @@ import {
   saveUsagePagePreferences,
   type UsagePagePreferences,
 } from "./usagePagePreferences";
-import { t, tn } from "~/i18n";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -209,6 +210,7 @@ function UsageModelDialogHost({
 }
 
 export function UsagePage() {
+  const returnToMainApp = useNavigateToMainApp();
   const pageRef = useRef<HTMLElement>(null);
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -397,6 +399,12 @@ export function UsagePage() {
       return;
 
     const command = resolveUsageShortcut(event, keybindings);
+    if (command === "usage.open") {
+      event.preventDefault();
+      event.stopPropagation();
+      void returnToMainApp();
+      return;
+    }
     const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
     const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
     // Periods do nothing on Limits, so their keys stay free there.
@@ -624,7 +632,7 @@ export function UsagePage() {
           {topbarContent}
         </WorkspacePageHeader>
 
-        <ScrollArea className="min-h-0 flex-1">
+        <ScrollArea className="min-h-0 flex-1" observeContent>
           <WorkspacePageContainer width="wide">
             {!showingLimits ? (
               <>
@@ -836,15 +844,15 @@ function UsageOverview({
       <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-5">
           <div className="flex flex-col gap-1">
-            <span
+            <p
               className={cn(
                 "text-4xl font-semibold text-foreground tabular-nums",
                 figureClass(loadingPartial),
               )}
             >
               {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
-            </span>
-            <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            </p>
+            <p className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
               <span className="shrink-0">
                 <span className={figureClass(loadingPartial)}>
                   {tn(merged.sessions, "{count} session", "{count} sessions", {
@@ -870,7 +878,7 @@ function UsageOverview({
                 </Popover>
               )}
               <span className="min-w-0 truncate">{progressLabel}</span>
-            </span>
+            </p>
           </div>
 
           {showChatGptSharing ? (
@@ -895,8 +903,8 @@ function UsageOverview({
                 aria-label={PROVIDER_PRESENTATION[provider].label}
                 className="flex flex-col gap-1"
               >
-                <div className="flex items-baseline justify-between gap-4">
-                  <span className="flex min-w-0 items-center gap-2 text-sm text-foreground">
+                <dl className="flex items-baseline justify-between gap-4">
+                  <dt className="flex min-w-0 items-center gap-2 text-sm text-foreground">
                     <span
                       aria-hidden
                       className="size-2 shrink-0 rounded-full"
@@ -916,8 +924,8 @@ function UsageOverview({
                         {!showingKept && providerLoading ? t("Updating…") : sessionLabel}
                       </span>
                     </span>
-                  </span>
-                  <span
+                  </dt>
+                  <dd
                     className={cn(
                       "shrink-0 text-sm font-medium text-foreground tabular-nums",
                       figureClass(providerLoading),
@@ -928,8 +936,8 @@ function UsageOverview({
                       : metric === "cost"
                         ? formatUsd(totals.costUsd)
                         : formatTokens(totals.totalTokens)}
-                  </span>
-                </div>
+                  </dd>
+                </dl>
                 <span className={cn("text-xs text-muted-foreground", figureClass(providerLoading))}>
                   {totals == null
                     ? "–"
@@ -980,7 +988,7 @@ function UsageOverview({
 
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium text-foreground">{t("Totals")}</h2>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
           <Metric
             loading={loadingPartial}
             label={t("Processed tokens")}
@@ -1006,7 +1014,7 @@ function UsageOverview({
             label={t("Cache savings")}
             value={formatUsd(merged.costQuality.cacheSavingsUsd)}
           />
-        </div>
+        </dl>
       </section>
 
       <section className={cn("grid gap-x-12 gap-y-8 lg:grid-cols-2", figureClass(loadingPartial))}>
@@ -1270,12 +1278,12 @@ function Metric({
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd
         className={cn("text-base font-medium text-foreground tabular-nums", figureClass(loading))}
       >
         {value}
-      </span>
+      </dd>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { t, tx } from "~/i18n";
+import { tx, t } from "~/i18n";
 import type {
   DeviceServiceState,
   EnvironmentId,
@@ -7,7 +7,9 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
+import { rewindFileRestore } from "@t3tools/client-runtime/state/thread-repositories";
 import { useAtomValue } from "@effect/atom-react";
+
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -26,7 +28,9 @@ import {
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { WizardPopup } from "../ui/wizard";
-import { findRevertCheckpoint } from "@t3tools/client-runtime/state/thread-rewind";
+import { findRevertCheckpoint } from "../../session-logic";
+import { filesystemEnvironment } from "../../state/filesystem";
+import { useEnvironmentQuery } from "../../state/query";
 import { registerThreadOverlay } from "./threadOverlayRetention";
 
 /**
@@ -200,7 +204,13 @@ export function openRevertConfirm(threadKey: string, pending: PendingRevert): vo
 
 export function RevertConfirmHost(props: {
   readonly threadKey: string;
-  readonly checkpoints: OrchestrationV2ThreadProjection["checkpoints"] | undefined;
+  readonly environmentId: EnvironmentId;
+  /** The thread's worktree, which may be a task folder. */
+  readonly taskFolderPath: string | null;
+  readonly projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "checkpoints" | "checkpointScopes"
+  > | null;
   readonly worktreePath: string | null;
   readonly onConfirm: (
     turnCount: number,
@@ -210,13 +220,28 @@ export function RevertConfirmHost(props: {
   ) => void;
 }) {
   const pending = useThreadOverlay(revertConfirmAtom, props.threadKey);
-  // The server refuses file restore outside an isolated worktree.
-  const canRestoreFiles =
-    pending !== null &&
-    props.worktreePath !== null &&
-    findRevertCheckpoint(props.checkpoints ?? [], pending.turnCount)?.status === "ready";
+  const checkpoint =
+    pending === null ? undefined : findRevertCheckpoint(props.projection, pending.turnCount);
+  // Only a missing snapshot depends on the task folder: its repositories may still restore.
+  const taskFolderQuery = useEnvironmentQuery(
+    checkpoint?.status === "missing" && props.taskFolderPath !== null
+      ? filesystemEnvironment.taskFolder({
+          environmentId: props.environmentId,
+          input: { worktreePath: props.taskFolderPath },
+        })
+      : null,
+  );
+  const fileRestore =
+    // The server refuses file restore outside an isolated worktree.
+    props.projection === null || props.worktreePath === null
+      ? null
+      : rewindFileRestore({
+          projection: props.projection,
+          checkpoint,
+          taskFolder: taskFolderQuery.data?.taskFolder,
+        });
   const confirm = (restoreFiles: boolean) => {
-    if (pending === null || (restoreFiles && !canRestoreFiles)) return;
+    if (pending === null || (restoreFiles && fileRestore === null)) return;
     closeThreadOverlay(revertConfirmAtom);
     props.onConfirm(pending.turnCount, pending.messageId, restoreFiles, pending.retry === true);
   };
@@ -235,22 +260,36 @@ export function RevertConfirmHost(props: {
           </AlertDialogTitle>
           <AlertDialogDescription>
             {retry
-              ? t(
-                  "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.",
-                )
-              : t(
-                  "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.",
-                )}
+              ? fileRestore === "repositories"
+                ? t(
+                    "Retry this response. Undoing repository changes also reverts your edits in this thread’s worktrees. Files in the project folder stay as they are.",
+                  )
+                : t(
+                    "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.",
+                  )
+              : fileRestore === "repositories"
+                ? t(
+                    "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert repositories too” also undoes your own edits in this thread’s repository worktrees. Files in the project folder itself stay as they are.",
+                  )
+                : t(
+                    "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.",
+                  )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose render={<Button variant="outline" />}>{t("Cancel")}</AlertDialogClose>
           <Button
             variant="destructive-outline"
-            disabled={!canRestoreFiles}
+            disabled={fileRestore === null}
             onClick={() => confirm(true)}
           >
-            {retry ? t("Retry and undo file changes") : t("Edit and undo file changes")}
+            {retry
+              ? fileRestore === "repositories"
+                ? t("Retry and revert repositories")
+                : t("Retry and undo file changes")
+              : fileRestore === "repositories"
+                ? t("Revert repositories too")
+                : t("Edit and undo file changes")}
           </Button>
           <Button onClick={() => confirm(false)}>
             {retry ? t("Retry and keep files") : t("Edit and keep files")}

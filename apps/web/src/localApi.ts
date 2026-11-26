@@ -1,10 +1,10 @@
+import { t } from "~/i18n";
 import type {
   ConfirmDialogOptions,
   ContextMenuItem,
   ContextMenuSource,
   LocalApi,
 } from "@t3tools/contracts";
-import { t } from "~/i18n";
 
 import { isWebUrl } from "./browser/webUrl";
 import { requestConfirmDialog } from "./confirmDialog";
@@ -34,7 +34,7 @@ export function createLocalApi(): LocalApi {
           return;
         }
 
-        if (!isWebUrl(url)) throw new Error("Unable to open link.");
+        if (!isWebUrl(url)) throw new Error(t("Unable to open link."));
         window.open(url, "_blank", "noopener,noreferrer");
       },
       openSystemSettings: async (pane) => {
@@ -56,7 +56,7 @@ export function createLocalApi(): LocalApi {
         if (window.desktopBridge) {
           return window.desktopBridge.showContextMenu(items, position, source) as Promise<T | null>;
         }
-        return showContextMenuFallback(items, position);
+        return showContextMenuFallback(items, position, source);
       },
       // Unlike native menus, the DOM fallback needs dismissal when underlying state disappears.
       close: async () => {

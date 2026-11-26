@@ -1,5 +1,5 @@
 import { DEFAULT_HOSTED_APP_URL } from "./connectAuth.ts";
-import { getFormattingLocale, t } from "./i18n.ts";
+import { getFormattingLocale, msg, t } from "./i18n.ts";
 import { parseUrl } from "./url.ts";
 
 export const PROMPT_LINK_MAX_PROMPT_LENGTH = 8_000;
@@ -103,48 +103,75 @@ export function promptLinkPullRequestUrl(pullRequest: PromptLinkPullRequest): st
   return `https://github.com/${pullRequest.owner}/${pullRequest.name}/pull/${pullRequest.number}`;
 }
 
-function readPrompt(params: URLSearchParams): PromptLinkResult<LinkedPrompt | null> {
+export type PromptLinkError =
+  | "prompt-too-long"
+  | "prompt-only-hidden"
+  | "unreadable-pull-request"
+  | "missing-prompt"
+  | "unreadable-repository";
+
+export function promptLinkErrorMessage(error: PromptLinkError, resolve: typeof t = t): string {
+  switch (error) {
+    case "prompt-too-long":
+      return resolve(
+        msg("This prompt is longer than {limit} characters, so T3.CodeShip did not open it."),
+        {
+          limit: PROMPT_LINK_MAX_PROMPT_LENGTH.toLocaleString(getFormattingLocale() ?? "en-US"),
+        },
+      );
+    case "prompt-only-hidden":
+      return resolve(
+        msg(
+          "This prompt had only hidden characters, so it may be malicious. T3.CodeShip did not open it.",
+        ),
+      );
+    case "unreadable-pull-request":
+      return resolve(msg("This link names a pull request T3.CodeShip cannot read."));
+    case "missing-prompt":
+      return resolve(msg("This link has no prompt."));
+    case "unreadable-repository":
+      return resolve(msg("This link names a repository T3.CodeShip cannot read."));
+  }
+}
+
+function readPrompt(
+  params: URLSearchParams,
+  describe: (error: PromptLinkError) => string,
+): PromptLinkResult<LinkedPrompt | null> {
   const raw = params.get("prompt");
   if (raw === null) return { ok: true, value: null };
   if (raw.length > PROMPT_LINK_MAX_PROMPT_LENGTH) {
-    return {
-      ok: false,
-      error: t("This prompt is longer than {limit} characters, so T3.CodeShip did not open it.", {
-        limit: PROMPT_LINK_MAX_PROMPT_LENGTH.toLocaleString(getFormattingLocale() ?? "en-US"),
-      }),
-    };
+    return { ok: false, error: describe("prompt-too-long") };
   }
   const prompt = sanitizeLinkedPrompt(raw);
   if (prompt.text.length === 0 && prompt.hiddenCharacters > 0) {
-    return {
-      ok: false,
-      error: t(
-        "This prompt had only hidden characters, so it may be malicious. T3.CodeShip did not open it.",
-      ),
-    };
+    return { ok: false, error: describe("prompt-only-hidden") };
   }
   return { ok: true, value: prompt.text.length > 0 ? prompt : null };
 }
 
 const optionalParam = (params: URLSearchParams, key: string) => params.get(key)?.trim() || null;
 
-export function parseNewThreadLink(search: string): PromptLinkResult<NewThreadLink> {
+export function parseNewThreadLink(
+  search: string,
+  describe: (error: PromptLinkError) => string = promptLinkErrorMessage,
+): PromptLinkResult<NewThreadLink> {
   const params = new URLSearchParams(search);
-  const prompt = readPrompt(params);
+  const prompt = readPrompt(params, describe);
   if (!prompt.ok) return prompt;
   const pr = params.get("pr");
   if (pr !== null) {
     const pullRequest = parsePromptLinkPullRequest(pr);
     if (pullRequest === null) {
-      return { ok: false, error: t("This link names a pull request T3.CodeShip cannot read.") };
+      return { ok: false, error: describe("unreadable-pull-request") };
     }
     return { ok: true, value: { kind: "pull-request", pullRequest, prompt: prompt.value } };
   }
-  if (prompt.value === null) return { ok: false, error: t("This link has no prompt.") };
+  if (prompt.value === null) return { ok: false, error: describe("missing-prompt") };
   const repo = params.get("repo");
   const repository = repo === null ? null : parsePromptLinkRepository(repo);
   if (repo !== null && repository === null) {
-    return { ok: false, error: t("This link names a repository T3.CodeShip cannot read.") };
+    return { ok: false, error: describe("unreadable-repository") };
   }
   return {
     ok: true,
@@ -158,8 +185,11 @@ export function parseNewThreadLink(search: string): PromptLinkResult<NewThreadLi
   };
 }
 
-export function parseThreadLinkPrompt(search: string): PromptLinkResult<LinkedPrompt | null> {
-  return readPrompt(new URLSearchParams(search));
+export function parseThreadLinkPrompt(
+  search: string,
+  describe: (error: PromptLinkError) => string = promptLinkErrorMessage,
+): PromptLinkResult<LinkedPrompt | null> {
+  return readPrompt(new URLSearchParams(search), describe);
 }
 
 export function withoutPromptLinkParams(search: string): string {

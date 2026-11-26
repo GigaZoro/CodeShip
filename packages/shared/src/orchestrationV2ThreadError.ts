@@ -19,6 +19,13 @@ export function latestRootProviderFailure(
   run: OrchestrationV2Run | null,
   turnItems: ReadonlyArray<FailureScanTurnItem>,
 ): OrchestrationV2ProviderFailure | null {
+  return latestRootProviderFailureItem(run, turnItems)?.failure ?? null;
+}
+
+export function latestRootProviderFailureItem(
+  run: OrchestrationV2Run | null,
+  turnItems: ReadonlyArray<FailureScanTurnItem>,
+): ErrorTurnItem | null {
   if (run?.status !== "failed") return null;
   let latest: ErrorTurnItem | null = null;
   for (const item of turnItems) {
@@ -38,7 +45,7 @@ export function latestRootProviderFailure(
       latest = item;
     }
   }
-  return latest?.failure ?? null;
+  return latest;
 }
 
 /** Items a run records whether or not its agent did anything. */
@@ -162,6 +169,7 @@ export function orchestrationV2WorktreePending(
     (latest?.status === "preparing" ||
       latest?.status === "failed" ||
       latest?.status === "interrupted") &&
+    latest.startedAt === null &&
     latest.workspacePreparation?.type === "worktree"
   );
 }

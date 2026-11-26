@@ -1,8 +1,9 @@
+import { t, msg } from "~/i18n";
 import { MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
-import { t } from "~/i18n";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Hex from "effect/encoding/Hex";
+
 import { extendTailwindMerge } from "tailwind-merge";
 import { DraftId } from "../composerDraftStore";
 
@@ -29,14 +30,14 @@ export function normalizeSearchText(value: string): string {
   return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-export function getLocalFileManagerName(platform: string): string {
+export function getLocalFileManagerName(platform: string, resolve: typeof t = t): string {
   if (isMacPlatform(platform)) {
     return "Finder";
   }
   if (isWindowsPlatform(platform)) {
-    return "File Explorer";
+    return resolve(msg("File Explorer"));
   }
-  return t("Files");
+  return resolve(msg("Files"));
 }
 
 export function randomUUID(): string {

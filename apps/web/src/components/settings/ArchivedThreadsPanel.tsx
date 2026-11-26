@@ -1,3 +1,7 @@
+import { t, tx } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import type { ContextMenuSource } from "@t3tools/contracts";
+import { contextMenuSourceOf } from "../../contextMenuSource";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { Spinner } from "~/components/ui/spinner";
 import { ArchiveIcon, ArchiveRestoreIcon, SearchIcon, Trash2Icon } from "lucide-react";
@@ -36,7 +40,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { t, tx } from "~/i18n";
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -61,7 +64,7 @@ function showFailure(result: AtomCommandResult<unknown, unknown>, title: string)
     stackedThreadToast({
       type: "error",
       title,
-      description: error instanceof Error ? error.message : t("An error occurred."),
+      description: thrownErrorMessage(error, t) ?? t("An error occurred."),
     }),
   );
 }
@@ -103,7 +106,7 @@ function ArchivedThreadRow(props: {
     runExclusive(t("Failed to delete thread"), () =>
       confirmAndDeleteThread(threadRef, { title: thread.title }),
     );
-  const openContextMenu = async (position: { x: number; y: number }) => {
+  const openContextMenu = async (position: { x: number; y: number }, source: ContextMenuSource) => {
     const api = readLocalApi();
     if (!api || pendingRef.current) return;
     const clicked = await api.contextMenu.show(
@@ -117,6 +120,7 @@ function ArchivedThreadRow(props: {
           : []),
       ],
       position,
+      source,
     );
     if (clicked === "open") {
       await navigate({
@@ -135,8 +139,8 @@ function ArchivedThreadRow(props: {
       onContextMenu={(event) => {
         event.preventDefault();
         const position = { x: event.clientX, y: event.clientY };
-        void settlePromise(() => openContextMenu(position)).then((result) =>
-          showFailure(result, t("Archived thread action failed")),
+        void settlePromise(() => openContextMenu(position, contextMenuSourceOf(event))).then(
+          (result) => showFailure(result, t("Archived thread action failed")),
         );
       }}
       title={

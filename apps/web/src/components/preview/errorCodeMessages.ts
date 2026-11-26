@@ -1,9 +1,10 @@
-import { PREVIEW_ERROR_CODE_MESSAGES } from "./previewConstants";
-import { t } from "~/i18n";
+import { msg, t } from "~/i18n";
 
-export function describePreviewError(description: string): string {
+import { PREVIEW_ERROR_CODE_MESSAGES } from "./previewConstants";
+
+export function describePreviewError(description: string, resolve: typeof t = t): string {
   const friendly = PREVIEW_ERROR_CODE_MESSAGES[description];
-  if (friendly) return t(friendly);
+  if (friendly) return resolve(friendly);
   if (description.length > 0) return description;
-  return t("Network error");
+  return resolve(msg("Network error"));
 }

@@ -1,8 +1,10 @@
+import { msg, t } from "~/i18n";
 import { DeviceHostUpdates } from "./DeviceHostUpdates";
 import type { DevicePlatform, DeviceServiceState, EnvironmentId } from "@t3tools/contracts";
 import { Check, CircleAlert } from "lucide-react";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { useAtomMount } from "@effect/atom-react";
+
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -14,7 +16,8 @@ import { deviceEnvironment, deviceHostProbeAtom, NO_DEVICE_PROBE_ATOM } from "~/
 import { useAtomCommand } from "~/state/use-atom-command";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { cn } from "~/lib/utils";
-import { msg, t } from "~/i18n";
+
+const platformName = (platform: DevicePlatform) => (platform === "ios" ? "iOS" : "Android");
 
 const deviceHubDescription = msg(
   "Enable this environment to open simulators and emulators, whether they run here or on a remote device host.",
@@ -78,19 +81,25 @@ function DeviceHostDiagnostics(props: {
     <div role="status" className={cn("space-y-1 text-xs text-muted-foreground", props.className)}>
       {diagnostics.map(({ hostId, label, detail }) => (
         <p key={hostId} className="whitespace-pre-line break-words">
-          {label}: {detail}
+          {t("{label}: {detail}", { label, detail })}
         </p>
       ))}
     </div>
   );
 }
 
-export function platformSetupStatus(state: DeviceServiceState, platform: DevicePlatform) {
+export function platformSetupStatus(
+  state: DeviceServiceState,
+  platform: DevicePlatform,
+  resolve: typeof t = t,
+) {
   const hasDevices = state.devices.some((device) => device.platform === platform);
   if (platform === "android" && !hasDevices && isAndroidDiscoveryUncertain(state)) {
     return {
       ready: false,
-      message: t("The Android device list may be incomplete. Check the device host and try again."),
+      message: resolve(
+        msg("The Android device list may be incomplete. Check the device host and try again."),
+      ),
     };
   }
   const availabilities = state.hosts.flatMap((host) =>
@@ -106,9 +115,7 @@ export function platformSetupStatus(state: DeviceServiceState, platform: DeviceP
       ready: false,
       message:
         availabilities[0]?.reason ??
-        (platform === "ios"
-          ? t("iOS support was not detected.")
-          : t("Android support was not detected.")),
+        resolve(msg("{platform} support was not detected."), { platform: platformName(platform) }),
     };
   }
   const readyHosts = supportingHosts.filter(
@@ -124,45 +131,50 @@ export function platformSetupStatus(state: DeviceServiceState, platform: DeviceP
     ) {
       return {
         ready: false,
-        message:
-          platform === "ios"
-            ? t("No iOS devices were listed because device discovery reported a problem.")
-            : t("No Android devices were listed because device discovery reported a problem."),
+        message: resolve(
+          msg("No {platform} devices were listed because device discovery reported a problem."),
+          { platform: platformName(platform) },
+        ),
       };
     }
     return {
       ready: false,
       message:
         platform === "ios"
-          ? t(
-              "Xcode is installed, but no iOS Simulator is available. Install a runtime in Xcode Settings → Components.",
+          ? resolve(
+              msg(
+                "Xcode is installed, but no iOS Simulator is available. Install a runtime in Xcode Settings → Components.",
+              ),
             )
-          : t(
-              "The Android SDK is installed, but no virtual device exists. Create one in Android Studio → Device Manager.",
+          : resolve(
+              msg(
+                "The Android SDK is installed, but no Android device was found. Connect a phone with USB debugging on, or create a virtual device in Android Studio → Device Manager.",
+              ),
             ),
     };
   }
   const remoteHost = supportingHosts.every((host) => host.kind !== "local")
     ? supportingHosts[0]
     : undefined;
+  const host = remoteHost?.label;
   return {
     ready: true,
     message:
       remoteHost?.kind === "eas"
         ? platform === "ios"
-          ? t("{host} starts iOS Simulators in the cloud with Expo Simulators.", {
+          ? resolve(msg("{host} starts iOS Simulators in the cloud with Expo Simulators."), {
               host: remoteHost.label,
             })
-          : t("{host} starts Android emulators in the cloud with Expo Simulators.", {
+          : resolve(msg("{host} starts Android emulators in the cloud with Expo Simulators."), {
               host: remoteHost.label,
             })
         : platform === "ios"
-          ? remoteHost
-            ? t("Xcode and iOS Simulator are available on {host}.", { host: remoteHost.label })
-            : t("Xcode and iOS Simulator are available.")
-          : remoteHost
-            ? t("The Android SDK and Emulator are available on {host}.", { host: remoteHost.label })
-            : t("The Android SDK and Emulator are available."),
+          ? host
+            ? resolve(msg("Xcode and iOS Simulator are available on {host}."), { host })
+            : resolve(msg("Xcode and iOS Simulator are available."))
+          : host
+            ? resolve(msg("The Android SDK and Emulator are available on {host}."), { host })
+            : resolve(msg("The Android SDK is available.")),
   };
 }
 
@@ -172,6 +184,7 @@ export function DeviceSetup(props: {
   readonly onComplete?: () => void;
 }) {
   const canConfigure = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
+
   const configure = useAtomCommand(deviceEnvironment.configure);
   const list = useAtomCommand(deviceEnvironment.list, { reportFailure: false });
   const [pending, setPending] = useState<"hub" | "check" | "agent" | "complete" | null>(null);
@@ -348,8 +361,8 @@ function DevicePlatformSetup(props: {
 }) {
   return (
     <div className="space-y-3">
-      <PlatformStatus platform="iOS" status={platformSetupStatus(props.state, "ios")} />
-      <PlatformStatus platform="Android" status={platformSetupStatus(props.state, "android")} />
+      <PlatformStatus platform="iOS" status={platformSetupStatus(props.state, "ios", t)} />
+      <PlatformStatus platform="Android" status={platformSetupStatus(props.state, "android", t)} />
       <DeviceHostDiagnostics hosts={props.state.hosts} hostStatuses={props.state.hostStatuses} />
       <p className="text-xs text-muted-foreground">
         {t("You can use either platform. Fixing a missing platform does not block the other one.")}

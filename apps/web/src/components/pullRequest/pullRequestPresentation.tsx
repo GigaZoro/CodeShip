@@ -1,3 +1,4 @@
+import { msg, t, tn } from "~/i18n";
 import { Spinner } from "~/components/ui/spinner";
 import type {
   PullRequestActor,
@@ -8,6 +9,7 @@ import type {
   PullRequestMergeability,
   PullRequestReviewDecision,
   PullRequestState,
+  ScopedThreadRef,
 } from "@t3tools/contracts";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import {
@@ -21,22 +23,22 @@ import {
   UserRoundIcon,
   UserRoundXIcon,
 } from "lucide-react";
+
 import { Children, type CSSProperties, isValidElement, type ReactNode, useState } from "react";
 
+import { useOpenLink } from "~/browser/useOpenLink";
 import { cn } from "~/lib/utils";
 
 import { Badge } from "../ui/badge";
 import { InlineButton } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import type { PullRequestReviewOutcome } from "./pullRequestDetail.logic";
 import { pullRequestLabelColor } from "./pullRequestList.logic";
 import {
   PULL_REQUEST_STATE_PRESENTATION,
   PullRequestGlyph,
-  type PullRequestStatePresentation,
   type PullRequestGlyphIcon,
 } from "./pullRequestIcons";
-import { msg, t, tn } from "~/i18n";
 
 export function PullRequestLabelChip({
   label,
@@ -66,12 +68,7 @@ export function PullRequestLabelChip({
     </Badge>
   );
   if (!label.description) return badge;
-  return (
-    <Tooltip>
-      <TooltipTrigger render={badge} />
-      <TooltipPopup>{label.description}</TooltipPopup>
-    </Tooltip>
-  );
+  return <SharedTooltipTrigger render={badge} label={label.description} />;
 }
 
 function reviewDecisionPresentation(decision: PullRequestReviewDecision) {
@@ -79,19 +76,19 @@ function reviewDecisionPresentation(decision: PullRequestReviewDecision) {
     case "approved":
       return {
         Icon: UserCheckIcon,
-        label: t("Approved"),
+        label: msg("Approved"),
         toneClassName: CHECK_STATUS_PRESENTATION.success.toneClassName,
       };
     case "changes-requested":
       return {
         Icon: UserRoundXIcon,
-        label: t("Changes requested"),
+        label: msg("Changes requested"),
         toneClassName: "text-amber-600/90 dark:text-amber-400/80",
       };
     case "review-required":
       return {
         Icon: UserRoundIcon,
-        label: t("Awaiting review"),
+        label: msg("Awaiting review"),
         toneClassName: "text-muted-foreground/60",
       };
   }
@@ -104,23 +101,26 @@ export function PullRequestReviewDecisionGlyph({
 }) {
   const presentation = reviewDecisionPresentation(decision);
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
-        <presentation.Icon aria-hidden className={cn("size-3.5", presentation.toneClassName)} />
-        <span className="sr-only">{presentation.label}</span>
-      </TooltipTrigger>
-      <TooltipPopup>{presentation.label}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<span className="inline-flex shrink-0" />}
+      label={t(presentation.label)}
+    >
+      <presentation.Icon aria-hidden className={cn("size-3.5", presentation.toneClassName)} />
+      <span className="sr-only">{t(presentation.label)}</span>
+    </SharedTooltipTrigger>
   );
 }
 
-export function resolvePullRequestState(input: {
-  readonly state: PullRequestState;
-  readonly isDraft: boolean;
-}): Omit<PullRequestStatePresentation, "label"> & { readonly label: string } {
+export function resolvePullRequestState(
+  input: {
+    readonly state: PullRequestState;
+    readonly isDraft: boolean;
+  },
+  resolve: typeof t = t,
+) {
   const key = input.state === "open" && input.isDraft ? "draft" : input.state;
   const presentation = PULL_REQUEST_STATE_PRESENTATION[key];
-  return { ...presentation, label: t(presentation.label) };
+  return { ...presentation, label: resolve(presentation.label) };
 }
 
 export interface PullRequestConflictPresentation {
@@ -129,19 +129,22 @@ export interface PullRequestConflictPresentation {
   readonly Icon: PullRequestGlyphIcon;
 }
 
-function resolvePullRequestConflict(input: {
-  readonly state: PullRequestState;
-  readonly isDraft: boolean;
-  readonly mergeability?: PullRequestMergeability;
-  readonly baseBranch?: string;
-}): PullRequestConflictPresentation | null {
+function resolvePullRequestConflict(
+  input: {
+    readonly state: PullRequestState;
+    readonly isDraft: boolean;
+    readonly mergeability?: PullRequestMergeability;
+    readonly baseBranch?: string;
+  },
+  resolve: typeof t,
+): PullRequestConflictPresentation | null {
   if (input.state !== "open" || input.isDraft || input.mergeability !== "conflicting") {
     return null;
   }
   return {
     label: input.baseBranch
-      ? t("Conflicts with {baseBranch}", { baseBranch: input.baseBranch })
-      : t("Has conflicts"),
+      ? resolve(msg("Conflicts with {baseBranch}"), { baseBranch: input.baseBranch })
+      : resolve(msg("Has conflicts")),
     toneClassName: "text-destructive-foreground",
     Icon: PullRequestGlyph.conflicting,
   };
@@ -156,18 +159,18 @@ export function PullRequestStateGlyph({
   isDraft: boolean;
   className?: string;
 }) {
-  const presentation = resolvePullRequestState({ state, isDraft });
+  const presentation = resolvePullRequestState({ state, isDraft }, t);
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
-        <presentation.Icon
-          role="img"
-          aria-label={presentation.label}
-          className={cn("size-4 shrink-0", presentation.toneClassName, className)}
-        />
-      </TooltipTrigger>
-      <TooltipPopup>{presentation.label}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<span className="inline-flex shrink-0" />}
+      label={presentation.label}
+    >
+      <presentation.Icon
+        role="img"
+        aria-label={presentation.label}
+        className={cn("size-4 shrink-0", presentation.toneClassName, className)}
+      />
+    </SharedTooltipTrigger>
   );
 }
 
@@ -184,29 +187,36 @@ export function PullRequestConflictGlyph({
   baseBranch?: string;
   className?: string;
 }) {
-  const presentation = resolvePullRequestConflict({
-    state,
-    isDraft,
-    ...(mergeability === undefined ? {} : { mergeability }),
-    ...(baseBranch === undefined ? {} : { baseBranch }),
-  });
+  const presentation = resolvePullRequestConflict(
+    {
+      state,
+      isDraft,
+      ...(mergeability === undefined ? {} : { mergeability }),
+      ...(baseBranch === undefined ? {} : { baseBranch }),
+    },
+    t,
+  );
   if (presentation === null) return null;
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
-        <presentation.Icon
-          role="img"
-          aria-label={presentation.label}
-          className={cn("size-4 shrink-0", presentation.toneClassName, className)}
-        />
-      </TooltipTrigger>
-      <TooltipPopup>{presentation.label}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<span className="inline-flex shrink-0" />}
+      label={presentation.label}
+    >
+      <presentation.Icon
+        role="img"
+        aria-label={presentation.label}
+        className={cn("size-4 shrink-0", presentation.toneClassName, className)}
+      />
+    </SharedTooltipTrigger>
   );
 }
 
 const CHECK_STATUS_PRESENTATION = {
-  pending: { label: msg("Running"), Icon: Spinner, toneClassName: "text-amber-500" },
+  pending: {
+    label: msg("Running"),
+    Icon: Spinner,
+    toneClassName: "text-amber-500",
+  },
   "action-required": {
     label: msg("Awaiting action"),
     Icon: CircleDotIcon,
@@ -252,10 +262,11 @@ function isWorkflowApprovalCheck(check: Pick<PullRequestCheck, "status" | "url">
 
 export function pullRequestCheckStatusLabel(
   check: Pick<PullRequestCheck, "status" | "url">,
+  resolve: typeof t = t,
 ): string {
   return isWorkflowApprovalCheck(check)
-    ? t("Awaiting approval")
-    : t(CHECK_STATUS_PRESENTATION[check.status].label);
+    ? resolve(msg("Awaiting approval"))
+    : resolve(CHECK_STATUS_PRESENTATION[check.status].label);
 }
 
 export function PullRequestCheckStatusIcon({ status }: { status: PullRequestCheckStatus }) {
@@ -289,9 +300,12 @@ const CHECKS_STATE_PRESENTATION = {
   { label: string; Icon: typeof CircleCheckIcon; toneClassName: string }
 >;
 
-export function pullRequestChecksStatePresentation(state: PullRequestChecksState) {
+export function pullRequestChecksStatePresentation(
+  state: PullRequestChecksState,
+  resolve: typeof t = t,
+) {
   const presentation = CHECKS_STATE_PRESENTATION[state];
-  return { ...presentation, label: t(presentation.label) };
+  return { ...presentation, label: resolve(presentation.label) };
 }
 
 export function pullRequestChecksState(
@@ -307,6 +321,7 @@ export function pullRequestChecksState(
 const REVIEW_OUTCOME_PRESENTATION = {
   approved: {
     label: msg("Approved"),
+    staleLabel: msg("Approved earlier changes"),
     Icon: CircleCheckIcon,
     toneClassName: "text-emerald-600 dark:text-emerald-300/90",
     ringClassName: "ring-2 ring-emerald-500 dark:ring-emerald-400",
@@ -317,6 +332,7 @@ const REVIEW_OUTCOME_PRESENTATION = {
   },
   "changes-requested": {
     label: msg("Changes requested"),
+    staleLabel: msg("Changes requested earlier changes"),
     Icon: CircleXIcon,
     toneClassName: "text-destructive-foreground",
     ringClassName: "ring-2 ring-destructive",
@@ -326,6 +342,7 @@ const REVIEW_OUTCOME_PRESENTATION = {
   },
   dismissed: {
     label: msg("Review dismissed"),
+    staleLabel: msg("Review dismissed earlier changes"),
     Icon: CircleDashedIcon,
     toneClassName: "text-muted-foreground/70",
     ringClassName: "ring-2 ring-muted-foreground/60",
@@ -338,6 +355,7 @@ const REVIEW_OUTCOME_PRESENTATION = {
   PullRequestReviewOutcome,
   {
     label: string;
+    staleLabel: string;
     Icon: typeof CircleCheckIcon;
     toneClassName: string;
     ringClassName: string;
@@ -360,8 +378,11 @@ export function pullRequestReviewOutcomeRingClassName(
   return stale ? presentation.staleRingClassName : presentation.ringClassName;
 }
 
-export function pullRequestReviewOutcomeStaleLabel(outcome: PullRequestReviewOutcome): string {
-  return t("{label} earlier changes", { label: t(REVIEW_OUTCOME_PRESENTATION[outcome].label) });
+export function pullRequestReviewOutcomeStaleLabel(
+  outcome: PullRequestReviewOutcome,
+  resolve: typeof t = t,
+): string {
+  return resolve(REVIEW_OUTCOME_PRESENTATION[outcome].staleLabel);
 }
 
 export function PullRequestReviewOutcomeIcon({
@@ -402,8 +423,11 @@ export function PullRequestReviewOutcomeAvatarBadge({
   );
 }
 
-export function pullRequestReviewOutcomeLabel(outcome: PullRequestReviewOutcome): string {
-  return t(REVIEW_OUTCOME_PRESENTATION[outcome].label);
+export function pullRequestReviewOutcomeLabel(
+  outcome: PullRequestReviewOutcome,
+  resolve: typeof t = t,
+): string {
+  return resolve(REVIEW_OUTCOME_PRESENTATION[outcome].label);
 }
 
 export function PullRequestReviewOutcomeBadge({
@@ -442,7 +466,7 @@ export function PullRequestActorAvatar({
         className,
       )}
     >
-      {login.slice(0, 1).toUpperCase()}
+      {[...login][0]?.toUpperCase()}
     </span>
   ) : (
     <img
@@ -462,13 +486,16 @@ export function PullRequestActorLabel({
   variant = "label",
   tooltip = true,
   profileUrl,
+  threadRef = null,
 }: {
   actor: PullRequestActor | null;
   className?: string;
   variant?: "label" | "avatar";
   tooltip?: boolean;
   profileUrl?: string | null;
+  threadRef?: ScopedThreadRef | null;
 }) {
+  const openLink = useOpenLink(threadRef);
   const login = actor?.login ?? "ghost";
   const label = (
     <span className={cn("flex min-w-0 items-baseline", variant === "label" && "gap-1.5")}>
@@ -481,38 +508,37 @@ export function PullRequestActorLabel({
   const placement = cn("flex min-w-0 shrink", className);
   if (!tooltip) return <span className={placement}>{label}</span>;
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          profileUrl ? (
-            <InlineButton
-              className={placement}
-              render={
-                <a
-                  href={profileUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={t("Open {login}'s profile", { login })}
-                />
-              }
-            />
-          ) : (
-            <span className={placement} />
-          )
-        }
-      >
-        {label}
-      </TooltipTrigger>
-      <TooltipPopup side="top">
-        {profileUrl
-          ? t("{actor} · Open profile", {
-              actor: actor?.name && actor.name !== login ? `${actor.name} (@${login})` : login,
-            })
-          : actor?.name && actor.name !== login
-            ? `${actor.name} (@${login})`
-            : login}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        profileUrl ? (
+          <InlineButton
+            className={placement}
+            render={
+              <a
+                href={profileUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={t("Open {login}'s profile", { login })}
+              />
+            }
+            onClick={(event) => {
+              event.preventDefault();
+              void openLink(profileUrl, { event }).catch(console.error);
+            }}
+          />
+        ) : (
+          <span className={placement} />
+        )
+      }
+      label={
+        <>
+          {actor?.name && actor.name !== login ? `${actor.name} (@${login})` : login}
+          {profileUrl ? ` · ${t("Open profile")}` : ""}
+        </>
+      }
+    >
+      {label}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -568,8 +594,33 @@ export function PullRequestMetaLine({
   );
 }
 
-export function summarizePullRequestChecks(checks: ReadonlyArray<PullRequestCheck>): string {
-  if (checks.length === 0) return t("No checks reported");
+/** The short label beside the checks icon; null when every check passed. */
+export function pullRequestChecksCountLabel(
+  checks: ReadonlyArray<PullRequestCheck>,
+  resolve: typeof t = t,
+): string | null {
+  const count = (statuses: ReadonlyArray<PullRequestCheckStatus>) =>
+    checks.filter((check) => statuses.includes(check.status)).length;
+  const failed = count(["failure", "cancelled"]);
+  if (failed > 0) {
+    return resolve(msg("{count} failed"), { count: failed });
+  }
+  const awaitingAction = count(["action-required"]);
+  if (awaitingAction > 0) {
+    return resolve(msg("{count} awaiting action"), { count: awaitingAction });
+  }
+  const running = count(["pending"]);
+  if (running > 0) {
+    return resolve(msg("{count} running"), { count: running });
+  }
+  return null;
+}
+
+export function summarizePullRequestChecks(
+  checks: ReadonlyArray<PullRequestCheck>,
+  resolve: typeof t = t,
+): string {
+  if (checks.length === 0) return resolve(msg("No checks reported"));
   const actionRequired = checks.filter((check) => check.status === "action-required");
   const workflowApprovalRequired = actionRequired.filter(isWorkflowApprovalCheck).length;
   const otherActionRequired = actionRequired.length - workflowApprovalRequired;
@@ -578,7 +629,8 @@ export function summarizePullRequestChecks(checks: ReadonlyArray<PullRequestChec
   ).length;
   const pending = checks.filter((check) => check.status === "pending").length;
   const passed = checks.filter((check) => check.status === "success").length;
-  if (failed > 0) return t("{count} of {total} failing", { count: failed, total: checks.length });
+  if (failed > 0)
+    return resolve(msg("{failed} of {total} failing"), { failed, total: checks.length });
   if (workflowApprovalRequired > 0 && otherActionRequired > 0) {
     return t("{workflows} and {checks} awaiting action", {
       workflows: tn(workflowApprovalRequired, "{count} workflow", "{count} workflows"),
@@ -599,8 +651,9 @@ export function summarizePullRequestChecks(checks: ReadonlyArray<PullRequestChec
       "{count} checks awaiting action",
     );
   }
-  if (pending > 0) return t("{count} of {total} running", { count: pending, total: checks.length });
+  if (pending > 0)
+    return resolve(msg("{pending} of {total} running"), { pending, total: checks.length });
   return passed === checks.length
-    ? t("All checks passed")
-    : t("{count} of {total} passing", { count: passed, total: checks.length });
+    ? resolve(msg("All checks passed"))
+    : resolve(msg("{passed} of {total} passing"), { passed, total: checks.length });
 }

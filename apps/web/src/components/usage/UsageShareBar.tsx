@@ -1,12 +1,12 @@
+import { type Message, t } from "~/i18n";
 import { formatPercent, usageEmptyMessage } from "@t3tools/shared/usageFormat";
 import type { MergedUsage } from "@t3tools/shared/usageMerge";
-import type { ReactNode } from "react";
 
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { t } from "~/i18n";
+import type { ReactNode } from "react";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export interface ShareSegment {
-  readonly label: string;
+  readonly label: Message;
   readonly value: number;
   readonly color: string;
 }
@@ -37,6 +37,7 @@ export function UsageShareBar({
       </div>
       {total <= 0 ? (
         <>
+          {" "}
           <div aria-hidden className="h-2 rounded-full bg-muted" />
           <p className="text-xs text-muted-foreground">
             {usageEmptyMessage(recordedUsage, metric)}
@@ -44,47 +45,40 @@ export function UsageShareBar({
         </>
       ) : (
         <>
-          <div
-            role="img"
-            aria-label={t("{label}: {segments}", {
-              label,
-              segments: visible
-                .map((segment) =>
-                  t("{label} {value}", { label: segment.label, value: format(segment.value) }),
-                )
-                .join(", "),
-            })}
-            className="flex h-2 gap-0.5"
-          >
+          {/* The legend below carries every figure; the bar's tooltips are pointer-only. */}
+          <div aria-hidden className="flex h-2 gap-0.5">
             {visible.map((segment) => (
-              <Tooltip key={segment.label}>
-                <TooltipTrigger
-                  render={
-                    <div
-                      className="h-full min-w-1 rounded-xs first:rounded-l-full last:rounded-r-full"
-                      style={{ flex: `${segment.value} 1 0`, backgroundColor: segment.color }}
-                    />
-                  }
-                />
-                <TooltipPopup>
-                  {segment.label} · {format(segment.value)} · {formatPercent(segment.value / total)}
-                </TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                key={segment.label}
+                render={
+                  <div
+                    className="h-full min-w-1 rounded-xs first:rounded-l-full last:rounded-r-full"
+                    style={{ flex: `${segment.value} 1 0`, backgroundColor: segment.color }}
+                  />
+                }
+                label={
+                  <>
+                    {t(segment.label)} · {format(segment.value)} ·{" "}
+                    {formatPercent(segment.value / total)}
+                  </>
+                }
+              />
             ))}
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          <ul aria-label={label} className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             {visible.map((segment) => (
-              <span key={segment.label} className="flex items-center gap-1.5">
+              <li key={segment.label} className="flex items-center gap-1.5">
                 <span
                   aria-hidden
                   className="size-2 rounded-xs"
                   style={{ backgroundColor: segment.color }}
                 />
-                <span className="text-muted-foreground">{segment.label}</span>
+                <span className="text-muted-foreground">{t(segment.label)}</span>{" "}
                 <span className="text-foreground tabular-nums">{format(segment.value)}</span>
-              </span>
+                <span className="sr-only">, {formatPercent(segment.value / total)}</span>
+              </li>
             ))}
-          </div>
+          </ul>
         </>
       )}
     </div>

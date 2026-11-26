@@ -2,6 +2,7 @@ import { t } from "~/i18n";
 import type { CommandOutputView } from "@t3tools/client-runtime/state/command-output";
 import type { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { TERMINAL_PALETTES, terminalOutputSpans } from "@t3tools/shared/terminalOutput";
+
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 
 import { useTheme } from "../../hooks/useTheme";

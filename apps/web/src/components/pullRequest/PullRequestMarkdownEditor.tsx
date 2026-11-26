@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import { useState } from "react";
 import {
   AuthSourceControlWriteScope,
@@ -11,7 +13,7 @@ import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { Button } from "../ui/button";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
-import { t } from "~/i18n";
+
 import {
   PullRequestMarkdownTextarea,
   type PullRequestCompletionScope,
@@ -78,6 +80,7 @@ export function PullRequestMarkdownEditor({
         }
         if (event.key !== "Escape" || saving) return;
         event.preventDefault();
+        event.stopPropagation();
         onCancel();
       }}
     >

@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   cancelEnvironmentSpeechModelDownload,
   downloadEnvironmentSpeechModel,
@@ -30,7 +31,12 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection, pickModelSelection } from "@t3tools/shared/model";
 import { resolveSpeechPostProcessingModelSelection } from "@t3tools/shared/serverSettings";
-import { cloudSpeechLanguages } from "@t3tools/shared/speech";
+import {
+  cloudSpeechLanguages,
+  recommendSpeechModels,
+  speechModelDownloadPercent,
+  type SpeechRecommendationRole,
+} from "@t3tools/shared/speech";
 import {
   ArrowDownUpIcon,
   AudioLinesIcon,
@@ -38,6 +44,7 @@ import {
   DownloadIcon,
   LanguagesIcon,
   KeyRoundIcon,
+  LaptopIcon,
   MonitorIcon,
   MicOffIcon,
   MicIcon,
@@ -53,6 +60,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { msg, t, tn, tx, type Message } from "~/i18n";
+import { supportsAppleSpeechLocale, useAppleSpeechLocales } from "../../speech/appleSpeech";
 import { cn } from "~/lib/utils";
 import {
   listAudioInputs,
@@ -82,6 +90,7 @@ import { useEnvironmentScope } from "../../state/session";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import {
   useEnvironmentSpeechInput,
+  APPLE_SPEECH_LABEL,
   useVoiceTranscriptionDestination,
 } from "../../speech/useEnvironmentSpeechInput";
 import { ComposerSpeechRecordingPill } from "../chat/ComposerSpeechButton";
@@ -91,8 +100,8 @@ import { ProviderPackageIcon } from "../chat/ProviderPackageIcon";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { VoiceInputSetup } from "../chat/VoiceInputSetup";
 import { Badge } from "../ui/badge";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
+import { Skeleton } from "../ui/skeleton";
 import { Input } from "../ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import {
@@ -138,8 +147,10 @@ import { searchableSetting } from "./settingsSearch";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const OFF = "off";
+const DEVICE = "device";
 function CloudSpeechLogo({ provider }: { provider: CloudSpeechProvider }) {
   if (provider === "openrouter")
     return <ProviderPackageIcon icon={openRouterIcon} aria-hidden className="size-4 shrink-0" />;
@@ -191,7 +202,8 @@ const spellingsOf = (words: SpeechCustomWords) =>
 type ModelCardProps = {
   readonly model: EnvironmentSpeechModel;
   readonly comparisonLanguages: readonly string[];
-  readonly benchmarkTier: SpeechBenchmarkTier;
+  readonly recommendation: SpeechRecommendationRole | undefined;
+  readonly benchmarkTier: SpeechBenchmarkTier | undefined;
   readonly busy: boolean;
   readonly canCancel: boolean;
   readonly onDownload: () => void;
@@ -206,13 +218,10 @@ type ModelCardProps = {
 
 function ModelBadge(props: { icon: ReactNode; label: string; tooltip: string }) {
   return (
-    <Tooltip>
-      <TooltipTrigger render={<Badge variant="outline" />}>
-        {props.icon}
-        {props.label}
-      </TooltipTrigger>
-      <TooltipPopup side="top">{props.tooltip}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger render={<Badge variant="outline" />} label={props.tooltip}>
+      {props.icon}
+      {props.label}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -220,6 +229,7 @@ function ModelCard(props: ModelCardProps) {
   const { model } = props;
   const downloading = model.state === "downloading" || model.state === "verifying";
   const progress = model.downloaded === undefined ? 0 : (model.downloaded / model.size) * 100;
+  const percent = speechModelDownloadPercent(model.downloaded ?? 0, model.size);
   return (
     <div className="@container/model px-3 py-3">
       <div
@@ -232,11 +242,27 @@ function ModelCard(props: ModelCardProps) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-medium leading-5">{model.name}</span>
-            {model.recommended ? (
+            {props.recommendation ? (
               <ModelBadge
                 icon={<StarIcon className="mr-1 size-3" />}
-                label={t("Recommended")}
-                tooltip={t("A good default pick for the languages it covers.")}
+                label={
+                  props.recommendation === "recommended"
+                    ? t("Recommended")
+                    : props.recommendation === "faster"
+                      ? t("Faster")
+                      : t("More accurate")
+                }
+                tooltip={
+                  props.recommendation === "recommended"
+                    ? t(
+                        "Balanced accuracy and speed for your selected languages on Handy’s reference benchmarks.",
+                      )
+                    : props.recommendation === "faster"
+                      ? t("Quicker than Recommended on this reference tier, with useful accuracy.")
+                      : t(
+                          "Higher accuracy with a longer reference processing budget for your selected languages.",
+                        )
+                }
               />
             ) : null}
             {model.supportsStreaming ? (
@@ -288,7 +314,7 @@ function ModelCard(props: ModelCardProps) {
                 aria-label={t("{name} download progress", { name: model.name })}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={Math.round(progress)}
+                aria-valuenow={percent}
                 className="h-1 overflow-hidden rounded-full bg-muted"
               >
                 <div
@@ -299,7 +325,7 @@ function ModelCard(props: ModelCardProps) {
               <p className="mt-1 text-2xs text-muted-foreground">
                 {model.state === "verifying"
                   ? t("Verifying download…")
-                  : t("{progress}% downloaded", { progress: Math.round(progress) })}
+                  : t("{percent}% downloaded", { percent })}
               </p>
             </div>
           ) : null}
@@ -448,7 +474,13 @@ function DictionaryEditor(props: {
                   onBlur={() => setAliasDraft(null)}
                   onKeyDown={(event) => {
                     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-                    if (event.key === "Escape") setAliasDraft(null);
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      // Unmounting the focused input can move focus to a control whose
+                      // tooltip would consume the next Escape. Return focus to the workspace.
+                      event.currentTarget.closest<HTMLElement>("[data-workspace-area]")?.focus();
+                      setAliasDraft(null);
+                    }
                     if (event.key !== "Enter") return;
                     event.preventDefault();
                     addAlias();
@@ -646,6 +678,7 @@ function useVoiceModels(prepared: PreparedConnection | null) {
   const canManage = useEnvironmentScope(prepared?.environmentId ?? null, AuthSettingsWriteScope);
   const [models, setModels] = useState<readonly EnvironmentSpeechModel[]>([]);
   const [status, setStatus] = useState<EnvironmentSpeechStatus | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [requestedDownload, setRequestedDownload] = useState<string | null>(null);
   const [actionConnection, setActionConnection] = useState(prepared);
@@ -655,6 +688,7 @@ function useVoiceModels(prepared: PreparedConnection | null) {
     setRequestedDownload(null);
     setModels([]);
     setStatus(null);
+    setLoadFailed(false);
   }
   const epoch = useRef(0);
   const refreshRevision = useRef(0);
@@ -680,10 +714,12 @@ function useVoiceModels(prepared: PreparedConnection | null) {
       } catch (error) {
         if (mode === "progress") return;
         if (current !== epoch.current || revision !== refreshRevision.current) return;
+        setLoadFailed(true);
         toastManager.add({
           type: "error",
           title: t("Could not load transcription models"),
-          description: error instanceof Error ? error.message : String(error),
+          description:
+            error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error),
         });
       }
     },
@@ -727,7 +763,8 @@ function useVoiceModels(prepared: PreparedConnection | null) {
         toastManager.add({
           type: "error",
           title: label,
-          description: error instanceof Error ? error.message : String(error),
+          description:
+            error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error),
         });
     }
     if (current === epoch.current) {
@@ -739,6 +776,7 @@ function useVoiceModels(prepared: PreparedConnection | null) {
   return {
     models,
     status,
+    loading: prepared !== null && status === null && !loadFailed,
     run,
     controlsDisabled: busy || downloading || !canManage,
     canCancel: canManage && !busy,
@@ -755,11 +793,36 @@ function AdvancedSpeechSettings({
   prepared: PreparedConnection;
   catalog: VoiceModels;
 }) {
+  const settings = useClientSettings();
   const { run, controlsDisabled, status } = catalog;
   if (!status?.supported) return null;
   const supported = status;
   return (
-    <AdvancedSettings targetIds={[searchableSetting("speech-hardware").id]}>
+    <AdvancedSettings
+      targetIds={[
+        searchableSetting("speech-streaming").id,
+        searchableSetting("speech-hardware").id,
+      ]}
+    >
+      <SettingsRow
+        {...searchableSetting("speech-streaming")}
+        title={t("Streaming transcription")}
+        description={
+          supported.supportsStreaming
+            ? t(
+                "Transcribe while recording. Turn off to transcribe after stopping, which may help when live transcription falls behind.",
+              )
+            : t("This model doesn’t support native streaming.")
+        }
+        control={
+          <Switch
+            aria-label={t("Streaming transcription")}
+            disabled={!supported.supportsStreaming}
+            checked={settings.speechStreaming}
+            onCheckedChange={(checked) => void updateClientSettings({ speechStreaming: checked })}
+          />
+        }
+      />
       <SettingsRow
         {...searchableSetting("speech-hardware")}
         title={t("Hardware")}
@@ -876,14 +939,20 @@ function SpeechModelBrowser(props: {
     selectedLanguages.length === 0
       ? t("All languages")
       : selectedLanguages.map(languageLabel).join(", ");
-  const sortedModels = filterSpeechModels(models, {
-    search,
-    languages: selectedLanguages,
-    downloadedOnly,
-    sort,
-    accuracyLanguage,
-    benchmarkTier: status?.supported ? status.benchmarkTier : "accelerated",
-  });
+  const benchmarkTier = status?.supported ? status.benchmarkTier : undefined;
+  const recommendations = recommendSpeechModels(models, selectedLanguages, benchmarkTier);
+  const sortedModels = filterSpeechModels(
+    models,
+    {
+      search,
+      languages: selectedLanguages,
+      downloadedOnly,
+      sort,
+      accuracyLanguage,
+      benchmarkTier,
+    },
+    recommendations,
+  );
   const activeModel = models.find((model) => model.active);
   const renderedModels =
     activeModel && !sortedModels.includes(activeModel)
@@ -906,7 +975,7 @@ function SpeechModelBrowser(props: {
       {...searchableSetting("speech-models")}
       title={t("Models")}
       description={t(
-        "Grades are error rates and speed is seconds per 30 s of audio, from Handy’s benchmark {hardware}.",
+        "Grades and seconds per 30 s use Handy’s reference {hardware}, not your hardware. Select languages for balanced recommendations.",
         { hardware: status.benchmarkTier === "cpu" ? "CPU" : "GPU" },
       )}
       className="@container/voice-models"
@@ -916,15 +985,27 @@ function SpeechModelBrowser(props: {
           <InputGroupAddon>
             <SearchIcon aria-hidden />
           </InputGroupAddon>
+          {/* Native search inputs clear on Escape even during IME composition. */}
           <InputGroupInput
-            type="search"
+            type="text"
+            role="searchbox"
             aria-label={t("Search transcription models")}
             placeholder={t("Search models")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || event.defaultPrevented) return;
+              if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+              const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+              if (!composing && !search && !event.repeat) return;
+              event.stopPropagation();
+              if (composing) return;
+              event.preventDefault();
+              setSearch("");
+            }}
           />
         </InputGroup>
-        <Menu>
+        <Menu onOpenChange={(open) => (open ? undefined : setLanguageSearch(""))}>
           <MenuTrigger
             render={<Button variant="outline" className="max-w-56" />}
             aria-label={t("Filter by language: {languages}", { languages: languagesLabel })}
@@ -1038,6 +1119,7 @@ function SpeechModelBrowser(props: {
             busy: controlsDisabled,
             canCancel,
             comparisonLanguages: selectedLanguages,
+            recommendation: recommendations.get(model.id),
             benchmarkTier: status.benchmarkTier,
             onDownload: () =>
               void run(
@@ -1238,6 +1320,16 @@ export function VoiceSettingsPanel() {
   const settings = useClientSettings();
   const settingsScope = useOptionalSettingsScope();
   const destination = useVoiceTranscriptionDestination();
+  const appleSpeechLocales = useAppleSpeechLocales();
+  const appleSpeechLanguages =
+    !appleSpeechLocales.includes(settings.speechLanguage) &&
+    supportsAppleSpeechLocale(appleSpeechLocales, settings.speechLanguage)
+      ? [...appleSpeechLocales, settings.speechLanguage]
+      : appleSpeechLocales;
+  const appleSpeechAvailable = appleSpeechLocales.length > 0;
+  const appleSpeechLabel = appleSpeechAvailable
+    ? APPLE_SPEECH_LABEL
+    : t("Apple Speech (unavailable)");
   const canManageKey = useEnvironmentScope(destination.environmentId, AuthSettingsWriteScope);
   const [pendingCloud, setPendingCloud] = useState<{
     provider: CloudSpeechProvider;
@@ -1294,11 +1386,13 @@ export function VoiceSettingsPanel() {
       })),
     }));
   const cloudChoices = cloudGroups.flatMap((group) => group.choices);
-  const destinationValue = destination.cloudProvider
-    ? JSON.stringify(["cloud", destination.environmentId, destination.cloudProvider])
-    : destination.environmentId
-      ? JSON.stringify(["environment", destination.environmentId])
-      : OFF;
+  const destinationValue = destination.device
+    ? DEVICE
+    : destination.cloudProvider
+      ? JSON.stringify(["cloud", destination.environmentId, destination.cloudProvider])
+      : destination.environmentId
+        ? JSON.stringify(["environment", destination.environmentId])
+        : OFF;
   const cloudEnvironment = environments.find(
     (env) => env.environmentId === pendingCloud?.environmentId,
   );
@@ -1318,9 +1412,12 @@ export function VoiceSettingsPanel() {
     <SettingsPageContainer
       searchTargetFallbacks={{
         "speech-language":
-          model || destination.cloudProvider ? undefined : "voice-transcription-destination",
+          model || destination.cloudProvider || destination.device
+            ? undefined
+            : "voice-transcription-destination",
         "speech-models": prepared ? undefined : "voice-transcription-destination",
         "speech-hardware": prepared && model ? undefined : "voice-transcription-destination",
+        "speech-streaming": prepared && model ? undefined : "voice-transcription-destination",
         "transcription-test": !prepared
           ? "voice-transcription-destination"
           : !model || model.state === "missing-model"
@@ -1337,22 +1434,20 @@ export function VoiceSettingsPanel() {
           title={t("Microphone")}
           description={t("Voice input uses the first connected microphone in this list.")}
           control={
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon-sm"
-                    aria-label={t("Refresh microphones")}
-                    onClick={() => void refreshMicrophones()}
-                  >
-                    <RefreshCwIcon />
-                  </Button>
-                }
-              />
-              <TooltipPopup>{t("Refresh microphones")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label={t("Refresh microphones")}
+                  onClick={() => void refreshMicrophones()}
+                >
+                  <RefreshCwIcon />
+                </Button>
+              }
+              label={<>{t("Refresh microphones")}</>}
+            />
           }
         >
           <div className="mt-3 pb-2">
@@ -1424,6 +1519,7 @@ export function VoiceSettingsPanel() {
                   setPendingCloud(null);
                   const chosen = environmentChoices.find((choice) => choice.value === value);
                   if (value === OFF) chooseAudioDestination(null);
+                  else if (value === DEVICE) chooseAudioDestination({ kind: "device" });
                   else if (chosen)
                     chooseAudioDestination({
                       kind: "environment",
@@ -1438,7 +1534,9 @@ export function VoiceSettingsPanel() {
                 >
                   <SelectValue>
                     <span className="flex min-w-0 items-center gap-2">
-                      {destination.cloudProvider ? (
+                      {destination.device ? (
+                        <LaptopIcon aria-hidden className="size-4" />
+                      ) : destination.cloudProvider ? (
                         <CloudSpeechLogo provider={destination.cloudProvider} />
                       ) : destination.environmentId ? (
                         <MonitorIcon aria-hidden className="size-4" />
@@ -1446,18 +1544,20 @@ export function VoiceSettingsPanel() {
                         <MicOffIcon aria-hidden className="size-4" />
                       )}
                       <span className="truncate">
-                        {destination.cloudProvider
-                          ? tx("{provider} via {environment}", {
-                              provider: CLOUD_SPEECH_LABELS[destination.cloudProvider],
-                              environment: (
-                                <span className="text-muted-foreground">
-                                  {chosenEnvironment?.label ?? t("unavailable environment")}
-                                </span>
-                              ),
-                            })
-                          : destination.environmentId
-                            ? (chosenEnvironment?.label ?? t("Chosen environment (unavailable)"))
-                            : t("Off")}
+                        {destination.device
+                          ? appleSpeechLabel
+                          : destination.cloudProvider
+                            ? tx("{provider} via {environment}", {
+                                provider: CLOUD_SPEECH_LABELS[destination.cloudProvider],
+                                environment: (
+                                  <span className="text-muted-foreground">
+                                    {chosenEnvironment?.label ?? t("unavailable environment")}
+                                  </span>
+                                ),
+                              })
+                            : destination.environmentId
+                              ? (chosenEnvironment?.label ?? t("Chosen environment (unavailable)"))
+                              : t("Off")}
                       </span>
                     </span>
                   </SelectValue>
@@ -1469,6 +1569,17 @@ export function VoiceSettingsPanel() {
                       {t("Off")}
                     </span>
                   </SelectItem>
+                  {(appleSpeechAvailable || destination.device) && (
+                    <SelectGroup>
+                      <SelectGroupLabel>{t("On this Mac")}</SelectGroupLabel>
+                      <SelectItem value={DEVICE}>
+                        <span className="flex items-center gap-2">
+                          <LaptopIcon aria-hidden className="size-4" />
+                          {appleSpeechLabel}
+                        </span>
+                      </SelectItem>
+                    </SelectGroup>
+                  )}
                   {environmentChoices.length > 0 && (
                     <SelectGroup>
                       <SelectGroupLabel>{t("On an environment")}</SelectGroupLabel>
@@ -1517,28 +1628,26 @@ export function VoiceSettingsPanel() {
               {destination.cloudProvider &&
                 chosenEnvironment &&
                 (canManageKey || destination.cloudProvider === "openrouter") && (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          size="icon-sm"
-                          type="button"
-                          variant="ghost"
-                          aria-label={manageLabel}
-                          onClick={() => {
-                            if (destination.cloudProvider)
-                              setPendingCloud({
-                                provider: destination.cloudProvider,
-                                environmentId: chosenEnvironment.environmentId,
-                              });
-                          }}
-                        >
-                          <KeyRoundIcon aria-hidden className="size-4" />
-                        </Button>
-                      }
-                    />
-                    <TooltipPopup>{manageLabel}</TooltipPopup>
-                  </Tooltip>
+                  <SharedTooltipTrigger
+                    render={
+                      <Button
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                        aria-label={manageLabel}
+                        onClick={() => {
+                          if (destination.cloudProvider)
+                            setPendingCloud({
+                              provider: destination.cloudProvider,
+                              environmentId: chosenEnvironment.environmentId,
+                            });
+                        }}
+                      >
+                        <KeyRoundIcon aria-hidden className="size-4" />
+                      </Button>
+                    }
+                    label={manageLabel}
+                  />
                 )}
             </div>
           }
@@ -1555,22 +1664,38 @@ export function VoiceSettingsPanel() {
             close={() => setPendingCloud(null)}
           />
         )}
-        {(model || destination.cloudProvider) && (
+        {!destination.cloudProvider && !destination.device && catalog.loading ? (
+          <SettingsRow
+            title={t("Language")}
+            description={t("Checking which languages the model supports…")}
+            control={<Skeleton shape="card" className="h-8 w-40 sm:h-7" />}
+          />
+        ) : null}
+        {(model || destination.cloudProvider || destination.device) && (
           <SettingsRow
             {...searchableSetting("speech-language")}
             title={t("Language")}
             description={
-              destination.cloudProvider
-                ? t("The provider detects your language automatically.")
-                : model?.supportsLanguageDetection
-                  ? t("{model} detects the language automatically.", { model: model.model })
-                  : model
-                    ? t("{model} uses one fixed language.", { model: model.model })
-                    : t("This model uses one fixed language.")
+              destination.device
+                ? t("Automatic uses your Mac’s language. The first use of a language downloads it.")
+                : destination.cloudProvider
+                  ? t("The provider detects your language automatically.")
+                  : model?.supportsLanguageDetection
+                    ? t("{model} detects the language automatically.", { model: model.model })
+                    : model
+                      ? t("{model} uses one fixed language.", { model: model.model })
+                      : t("This model uses one fixed language.")
             }
             control={
               <SpeechLanguageSelect
-                model={destination.cloudProvider ? cloudSpeechLanguages : model}
+                automaticLabel={destination.device ? t("Auto") : undefined}
+                model={
+                  destination.device
+                    ? { languages: appleSpeechLanguages, supportsLanguageDetection: true }
+                    : destination.cloudProvider
+                      ? cloudSpeechLanguages
+                      : model
+                }
               />
             }
           />
@@ -1594,14 +1719,16 @@ export function VoiceSettingsPanel() {
           {...searchableSetting("speech-silence-filtering")}
           title={t("Silence filtering")}
           description={
-            destination.cloudProvider === "openai"
-              ? t("OpenAI handles silence itself.")
-              : t("Skip silence and background noise before transcribing.")
+            destination.device
+              ? t("Apple Speech handles silence itself.")
+              : destination.cloudProvider === "openai"
+                ? t("OpenAI handles silence itself.")
+                : t("Skip silence and background noise before transcribing.")
           }
           control={
             <Switch
               aria-label={t("Silence filtering")}
-              disabled={destination.cloudProvider === "openai"}
+              disabled={destination.device || destination.cloudProvider === "openai"}
               checked={settings.speechSilenceFiltering}
               onCheckedChange={(checked) =>
                 void updateClientSettings({ speechSilenceFiltering: checked })
@@ -1612,10 +1739,15 @@ export function VoiceSettingsPanel() {
         <SettingsRow
           {...searchableSetting("remove-filler-words")}
           title={t("Remove filler words")}
-          description={t("Drop “um” and “uh” from transcripts.")}
+          description={
+            destination.device
+              ? t("Not available with Apple Speech.")
+              : t("Drop “um” and “uh” from transcripts.")
+          }
           control={
             <Switch
               aria-label={t("Remove filler words")}
+              disabled={destination.device}
               checked={settings.speechRemoveFillerWords}
               onCheckedChange={(checked) =>
                 void updateClientSettings({ speechRemoveFillerWords: checked })

@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   applyCommandOutputFrame,
   EMPTY_COMMAND_OUTPUT,
@@ -19,7 +20,6 @@ import { Atom } from "effect/reactivity";
 
 import type { TurnItemSource } from "../chat/timelineRowContext";
 
-import { t } from "~/i18n";
 /** What an expanded guest row says when it cannot read the item. */
 class GuestItemReadError extends Schema.TaggedError<GuestItemReadError>()("GuestItemReadError", {
   message: Schema.String,

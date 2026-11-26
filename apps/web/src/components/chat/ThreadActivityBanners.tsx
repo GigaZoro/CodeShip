@@ -1,4 +1,4 @@
-import { t, tx } from "~/i18n";
+import { t, msg, tx } from "~/i18n";
 import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
@@ -14,8 +14,9 @@ import {
 } from "@t3tools/client-runtime/state/thread-execution";
 import { childThreadInputsTitle } from "@t3tools/client-runtime/state/threads";
 import { commandDisplayText } from "@t3tools/client-runtime/work-log/command-label";
-import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import * as DateTime from "effect/DateTime";
+
 import {
   CircleDashedIcon,
   CircleStopIcon,
@@ -27,13 +28,14 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import { Fragment } from "react";
+
 import { tickTextContent } from "~/lib/tickTextContent";
 import { BackgroundWorkDetails } from "./BackgroundWorkDetails";
 import { Button, InlineButton } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import type { ThreadNowItem } from "./ThreadNow";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function extensionStatusBannerItem(
   statuses: NonNullable<OrchestrationV2ProviderSession["extensionStatuses"]>,
@@ -52,12 +54,15 @@ export function extensionStatusBannerItem(
 }
 
 /** Subagents and side chats waiting on the user, unless the parent is itself waiting on them. */
-export function childInputNowItem(input: {
-  readonly childThreadInputs: ReadonlyArray<EnvironmentThreadShell>;
-  readonly parentAwaitingUser: boolean;
-  // A task delegated to a linked environment lives there, not where the parent runs.
-  readonly onOpenThread: (threadId: ThreadId, environmentId: EnvironmentId) => void;
-}): (ThreadNowItem & { readonly waitingLabel: string }) | null {
+export function childInputNowItem(
+  input: {
+    readonly childThreadInputs: ReadonlyArray<EnvironmentThreadShell>;
+    readonly parentAwaitingUser: boolean;
+    // A task delegated to a linked environment lives there, not where the parent runs.
+    readonly onOpenThread: (threadId: ThreadId, environmentId: EnvironmentId) => void;
+  },
+  resolve: typeof t = t,
+): (ThreadNowItem & { readonly waitingLabel: string }) | null {
   const { childThreadInputs, onOpenThread } = input;
   const first = childThreadInputs[0];
   if (!first || input.parentAwaitingUser) return null;
@@ -69,10 +74,10 @@ export function childInputNowItem(input: {
     ) : (
       <MessageCircleIcon className="text-info-foreground" />
     ),
-    title: childThreadInputsTitle(childThreadInputs),
+    title: childThreadInputsTitle(childThreadInputs, resolve),
     waitingLabel: childThreadInputs.every((child) => child.lineage.sideChat === true)
-      ? t("Side chat waiting")
-      : t("Subagent waiting"),
+      ? resolve(msg("Side chat waiting"))
+      : resolve(msg("Subagent waiting")),
     description: childThreadInputs.map((child, index) => (
       <Fragment key={child.id}>
         {index > 0 ? " " : null}
@@ -93,14 +98,17 @@ export function childInputNowItem(input: {
 }
 
 /** The thread's goal, for the end of the timeline. */
-export function goalNowItem(input: {
-  readonly threadId: ThreadId;
-  readonly goal: OrchestrationV2ProviderGoal;
-  readonly isWorking: boolean;
-  readonly onSendCommand: (text: string, failureMessage: string) => Promise<void>;
-}): ThreadNowItem {
+export function goalNowItem(
+  input: {
+    readonly threadId: ThreadId;
+    readonly goal: OrchestrationV2ProviderGoal;
+    readonly isWorking: boolean;
+    readonly onSendCommand: (text: string, failureMessage: string) => Promise<void>;
+  },
+  resolve: typeof t = t,
+): ThreadNowItem {
   const { isWorking, onSendCommand } = input;
-  const presentation = presentProviderGoal(input.goal, isWorking);
+  const presentation = presentProviderGoal(input.goal, isWorking, resolve);
   return {
     id: `goal:${input.threadId}`,
     icon: <TargetIcon />,
@@ -122,7 +130,9 @@ export function goalNowItem(input: {
         {presentation.canResume && !isWorking ? (
           <>
             <InlineButton
-              onClick={() => void onSendCommand("/goal resume", t("Failed to resume goal."))}
+              onClick={() =>
+                void onSendCommand("/goal resume", resolve(msg("Failed to resume goal.")))
+              }
             >
               {t("Resume")}
             </InlineButton>
@@ -131,7 +141,7 @@ export function goalNowItem(input: {
         ) : null}
         <InlineButton
           tone="muted"
-          onClick={() => void onSendCommand("/goal clear", t("Failed to clear goal."))}
+          onClick={() => void onSendCommand("/goal clear", resolve(msg("Failed to clear goal.")))}
         >
           {t("Clear")}
         </InlineButton>
@@ -165,7 +175,7 @@ export function runStopNowItem(input: {
       <>
         <span
           ref={tickTextContent(
-            (nowMs) => formatDuration(Math.max(1_000, nowMs - requestedAtMs)),
+            (nowMs) => formatDuration(Math.max(1_000, nowMs - requestedAtMs), t),
             true,
           )}
           className="tabular-nums"
@@ -181,18 +191,21 @@ export function runStopNowItem(input: {
 }
 
 /** Background commands and subagents, for the end of the timeline. */
-export function backgroundWorkNowItem(input: {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-  readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
-  readonly turnItems: ThreadStructure["turnItems"];
-  readonly stopDisabled: boolean;
-  readonly stopping: boolean;
-  readonly onStop: () => Promise<void>;
-  readonly onOpenThread: (threadId: ThreadId) => void;
-}): ThreadNowItem | null {
+export function backgroundWorkNowItem(
+  input: {
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+    readonly turnItems: ThreadStructure["turnItems"];
+    readonly stopDisabled: boolean;
+    readonly stopping: boolean;
+    readonly onStop: () => Promise<void>;
+    readonly onOpenThread: (threadId: ThreadId) => void;
+  },
+  resolve: typeof t = t,
+): ThreadNowItem | null {
   const { onOpenThread } = input;
-  const presentation = presentPendingBackgroundWork(input.tasks);
+  const presentation = presentPendingBackgroundWork(input.tasks, resolve);
   if (presentation === null) return null;
   const rows = presentation.items.map((task) => {
     const itemKey =
@@ -215,10 +228,10 @@ export function backgroundWorkNowItem(input: {
         ) : (
           task.label
         ),
+      childThreadId: task.childThreadId ?? subagent?.childThreadId ?? undefined,
       activity: subagent?.progress?.replace(/\s+/gu, " ").trim() || null,
       startedAtMs: item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : task.startedAtMs,
       updatedAtMs: subagent ? DateTime.toEpochMillis(subagent.updatedAt) : 0,
-      childThreadId: task.childThreadId ?? subagent?.childThreadId ?? undefined,
     };
   });
   const [only] = rows.length === 1 ? rows : [];
@@ -294,14 +307,17 @@ export function backgroundWorkNowItem(input: {
 }
 
 /** The local checkout moved off the branch this thread last ran on. */
-export function branchMismatchBannerItem(input: {
-  readonly mismatchKey: string;
-  readonly mismatch: { readonly threadBranch: string; readonly currentBranch: string };
-  readonly restoreDisabled: boolean;
-  readonly restoring: boolean;
-  readonly onRestore: () => void;
-  readonly onDismiss: () => void;
-}): ComposerBannerStackItem {
+export function branchMismatchBannerItem(
+  input: {
+    readonly mismatchKey: string;
+    readonly mismatch: { readonly threadBranch: string; readonly currentBranch: string };
+    readonly restoreDisabled: boolean;
+    readonly restoring: boolean;
+    readonly onRestore: () => void;
+    readonly onDismiss: () => void;
+  },
+  resolve: typeof t = t,
+): ComposerBannerStackItem {
   const { mismatch } = input;
   return {
     id: `branch-mismatch:${input.mismatchKey}`,
@@ -334,7 +350,7 @@ export function branchMismatchBannerItem(input: {
         {input.restoring ? t("Restoring...") : t("Restore branch")}
       </Button>
     ),
-    dismissLabel: t("Dismiss branch change notice"),
+    dismissLabel: resolve(msg("Dismiss branch change notice")),
     onDismiss: input.onDismiss,
   };
 }

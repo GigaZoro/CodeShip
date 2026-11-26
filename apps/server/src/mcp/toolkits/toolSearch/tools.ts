@@ -1,6 +1,7 @@
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolExposure from "../../McpToolExposure.ts";
@@ -14,9 +15,14 @@ const ToolSearchTool = Tool.make(McpToolExposure.TOOL_SEARCH, {
   }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies: [McpInvocationContext.McpInvocationContext, McpToolExposure.McpToolExposure],
+  dependencies: [
+    ThreadManagementService.ThreadManagementService,
+    McpInvocationContext.McpInvocationContext,
+    McpToolExposure.McpToolExposure,
+  ],
 })
   .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 export const ToolSearchToolkit = Toolkit.make(ToolSearchTool);

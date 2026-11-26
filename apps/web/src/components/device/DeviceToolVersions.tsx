@@ -1,8 +1,9 @@
+import { msg, t } from "~/i18n";
+
 import type { ReactNode } from "react";
 import type { DeviceToolVersions as ToolVersions } from "@t3tools/contracts";
 import { InlineButton } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "~/components/ui/popover";
-import { t } from "~/i18n";
 
 export function DeviceToolVersions({
   tools,
@@ -25,17 +26,18 @@ export function DeviceToolVersions({
       : selected?.installedVersions
           .toSorted((a, b) => a.localeCompare(b, undefined, { numeric: true }))
           .at(-1));
-  const label = kind === "hub" ? t("Device hub") : t("Agent device");
+
+  const label = kind === "hub" ? msg("Device hub") : msg("Agent device");
   return (
     <Popover>
       <PopoverTrigger
         aria-label={
           kind
             ? version
-              ? t("{label}: version {version}. Show details", { label, version })
+              ? t("{tool}: version {version}. Show details", { tool: t(label), version })
               : selected
-                ? t("{label}: not installed. Show details", { label })
-                : t("{label}: version unknown. Show details", { label })
+                ? t("{tool}: not installed. Show details", { tool: t(label) })
+                : t("{tool}: version unknown. Show details", { tool: t(label) })
             : undefined
         }
         render={<InlineButton tone="muted" />}
@@ -51,19 +53,19 @@ export function DeviceToolVersions({
             : t("Versions")}
       </PopoverTrigger>
       <PopoverPopup align="end" width="md">
-        <PopoverTitle>{kind ? label : t("Device tools")}</PopoverTitle>
+        <PopoverTitle>{kind ? t(label) : t("Device tools")}</PopoverTitle>
         {tools ? (
           <div className="mt-4 divide-y divide-border/50">
             {(
               [
-                ["hub", t("Device hub"), tools.hub],
-                ["agent", t("Agent device"), tools.agent],
+                [msg("Device hub"), tools.hub],
+                [msg("Agent device"), tools.agent],
               ] as const
             )
-              .filter(([key]) => !kind || key === kind)
-              .map(([key, name, tool]) => (
-                <div key={key} className="space-y-2 py-3 first:pt-0 last:pb-0">
-                  {!kind ? <p className="text-xs font-medium">{name}</p> : null}
+              .filter(([name]) => !kind || name === label)
+              .map(([name, tool]) => (
+                <div key={name} className="space-y-2 py-3 first:pt-0 last:pb-0">
+                  {!kind ? <p className="text-xs font-medium">{t(name)}</p> : null}
                   <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-xs">
                     <dt className="text-muted-foreground">{t("Running")}</dt>
                     <dd className="text-right font-mono">
@@ -85,11 +87,8 @@ export function DeviceToolVersions({
           </p>
         )}
         <p className="mt-4 border-t border-border/50 pt-3 text-xs text-muted-foreground">
-          {owner
-            ? t("Managed by {owner}. Tools update automatically on this host when needed.", {
-                owner,
-              })
-            : t("Tools update automatically on this host when needed.")}
+          {owner ? `${t("Managed by {owner}.", { owner })} ` : ""}
+          {t("Tools update automatically on this host when needed.")}
         </p>
         {error ? (
           <p role="status" className="mt-2 text-xs text-destructive-foreground">

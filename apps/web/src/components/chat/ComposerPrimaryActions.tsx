@@ -7,6 +7,7 @@ import {
   type PointerEventHandler,
   type ReactNode,
 } from "react";
+
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -18,6 +19,7 @@ import {
   RotateCcwIcon,
 } from "lucide-react";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
+
 import { formatContextWindowTokens } from "~/lib/contextWindow";
 import { cn, isMacPlatform } from "~/lib/utils";
 import { useShortcutModifierSelection } from "../../shortcutModifierState";
@@ -60,6 +62,8 @@ interface ComposerPrimaryActionsProps {
   /** Dictation is running; Send finishes it and submits once the transcript lands. */
   voiceInputActive?: boolean;
   isSendBusy: boolean;
+  /** A send is armed and waiting for its attachments to finish preparing or uploading. */
+  isSendHeld?: boolean;
   sendDisabledReason: string | null;
   isEnvironmentUnavailable: boolean;
   /** The offline machine a message here waits for, which turns Send into Queue. */
@@ -107,22 +111,25 @@ const FOLLOW_UP_ICON = {
   restart: RotateCcwIcon,
 } as const;
 
-const formatPendingPrimaryActionLabel = (input: {
-  compact: boolean;
-  isLastQuestion: boolean;
-  isResponding: boolean;
-  questionIndex: number;
-}) => {
+const formatPendingPrimaryActionLabel = (
+  input: {
+    compact: boolean;
+    isLastQuestion: boolean;
+    isResponding: boolean;
+    questionIndex: number;
+  },
+  resolve: typeof t,
+) => {
   if (input.isResponding) {
-    return t("Submitting...");
+    return resolve(msg("Submitting..."));
   }
   if (input.compact) {
-    return input.isLastQuestion ? t("Submit") : t("Next");
+    return input.isLastQuestion ? resolve(msg("Submit")) : resolve(msg("Next"));
   }
   if (!input.isLastQuestion) {
-    return t("Next question");
+    return resolve(msg("Next question"));
   }
-  return input.questionIndex > 0 ? t("Submit answers") : t("Submit answer");
+  return input.questionIndex > 0 ? resolve(msg("Submit answers")) : resolve(msg("Submit answer"));
 };
 
 const STOP_PENDING_MAX_MS = 10_000;
@@ -282,6 +289,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   stopShortcutLabel = null,
   voiceInputActive = false,
   isSendBusy,
+  isSendHeld = false,
   sendDisabledReason,
   isEnvironmentUnavailable,
   offlineQueueMachine = null,
@@ -380,12 +388,15 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 : !pendingAction.canAdvance))
           }
         >
-          {formatPendingPrimaryActionLabel({
-            compact,
-            isLastQuestion: pendingAction.isLastQuestion,
-            isResponding: pendingAction.isResponding,
-            questionIndex: pendingAction.questionIndex,
-          })}
+          {formatPendingPrimaryActionLabel(
+            {
+              compact,
+              isLastQuestion: pendingAction.isLastQuestion,
+              isResponding: pendingAction.isResponding,
+              questionIndex: pendingAction.questionIndex,
+            },
+            t,
+          )}
         </button>
         {canInterrupt || stopPhase === "pending" || stopPhase === "timedOut"
           ? renderStopGenerationButton(true)
@@ -394,7 +405,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  const showResume = canResume && !hasSendableContent && !isEditingQueuedMessage;
+  const showResume = canResume && !hasSendableContent && !isEditingQueuedMessage && !isSendHeld;
 
   const compactTokens =
     compactBeforeSendTokens !== null && !showResume && !isEditingQueuedMessage
@@ -415,14 +426,16 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             : t(FOLLOW_UP_SUBMIT_LABEL[dispatchMode]);
   const submitStatus = isEnvironmentUnavailable
     ? t("Environment disconnected")
-    : (sendDisabledReason ??
-      (isPreparingWorktree
-        ? t("Preparing worktree")
-        : isSendBusy
-          ? isEditingQueuedMessage
-            ? t("Updating queued message")
-            : t("Submitting message")
-          : null));
+    : isSendHeld
+      ? t("Sending when ready")
+      : (sendDisabledReason ??
+        (isPreparingWorktree
+          ? t("Preparing worktree")
+          : isSendBusy
+            ? isEditingQueuedMessage
+              ? t("Updating queued message")
+              : t("Submitting message")
+            : null));
   const submitTooltip =
     submitStatus ??
     (compactsBeforeSend
@@ -442,6 +455,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             })
         : submitLabel);
 
+  const isBusyOrHeld = isSendBusy || isSendHeld;
   const sendButton = (
     <button
       type={showResume ? "button" : "submit"}
@@ -461,19 +475,20 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         else onSubmitMessage?.(event);
       }}
       disabled={
-        isSendBusy ||
+        isBusyOrHeld ||
         isSendDisabled ||
         isEnvironmentUnavailable ||
         (!hasSendableContent && !showResume)
       }
       aria-label={submitStatus ?? submitLabel}
+      aria-busy={isBusyOrHeld || undefined}
     >
       {stageBackdropVariant ? (
         <span className="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
           <StageBackdropButtonArt variant={stageBackdropVariant} />
         </span>
       ) : null}
-      {isSendBusy ? (
+      {isBusyOrHeld ? (
         <Spinner size="sm" aria-hidden="true" />
       ) : showResume ? (
         <PlayIcon className="size-4 fill-current" aria-hidden="true" />

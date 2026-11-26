@@ -1,3 +1,6 @@
+import { t } from "../lib/i18n";
+import { vcsActionLabelText } from "@t3tools/client-runtime/state/vcs";
+
 import { useMemo } from "react";
 
 import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
@@ -6,12 +9,16 @@ import { useBranches } from "./queries";
 import { useEnvironmentQuery } from "./query";
 import { sourceControlEnvironment } from "./sourceControl";
 import { useVcsActionState } from "./use-vcs-action-state";
+import type { GitRepositoryTarget } from "./thread-git-target";
 import { useThreadSelection } from "./use-thread-selection";
 import { useSelectedThreadWorktree } from "./use-selected-thread-worktree";
 
-export function useSelectedThreadGitState() {
+/** Git state for the selected thread's own folder, or for `repository` when given. */
+export function useSelectedThreadGitState(repository?: GitRepositoryTarget) {
+  const messages = t;
   const { selectedThread } = useThreadSelection();
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const threadWorktree = useSelectedThreadWorktree();
+  const selectedThreadCwd = repository?.cwd ?? threadWorktree.selectedThreadCwd;
 
   const selectedThreadGitTarget = {
     environmentId: selectedThread?.environmentId ?? null,
@@ -42,7 +49,7 @@ export function useSelectedThreadGitState() {
   );
 
   return {
-    gitOperationLabel: gitActionState.currentLabel,
+    gitOperationLabel: vcsActionLabelText(gitActionState, messages),
     sourceControlDiscovery,
     selectedThreadBranches,
     selectedThreadBranchesLoading:

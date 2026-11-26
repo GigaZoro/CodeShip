@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off processEnvInEffect:off - fixtures need real paths, the process resource list and the live environment.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeEvents from "node:events";
+import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 import type * as NodeStream from "node:stream";
 import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeURL from "node:url";
@@ -76,7 +76,7 @@ describe("SpawnWorker", () => {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const literal = "quote' \" $HOME; * & %PATH%";
-      const cwd = NodeOS.tmpdir();
+      const cwd = NodeFS.realpathSync(NodeOS.tmpdir());
       const script = `
         const fs = require('node:fs');
         const input = fs.readFileSync(0, 'utf8');
@@ -98,7 +98,7 @@ describe("SpawnWorker", () => {
           { concurrency: "unbounded" },
         );
         expect(stdout).toBe(
-          JSON.stringify(["stdin value", NodePath.resolve(cwd), "inherited value", literal]) +
+          JSON.stringify(["stdin value", cwd, "inherited value", literal]) +
             "\n" +
             "a".repeat(1024 * 1024),
         );
@@ -269,6 +269,38 @@ describe("SpawnWorker", () => {
       }),
   );
 
+  it.live("a short child's output ends while a sibling launched beside it still runs", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const untilStdin =
+        "process.stdout.write('ready');process.stdin.once('data',()=>process.exit(0))";
+      // Workers that own a child stay alive, as beside a running agent, so each round's two
+      // launches land on two warm workers at once.
+      yield* Effect.all(
+        Array.from({ length: 4 }, () =>
+          Effect.gen(function* () {
+            const holder = yield* spawner.spawn(node(untilStdin));
+            expect(yield* holder.stdout.pipe(Stream.take(1), text)).toBe("ready");
+          }),
+        ),
+        { concurrency: "unbounded" },
+      );
+      for (let round = 0; round < 20; round++) {
+        const [sibling, output] = yield* Effect.all(
+          [
+            spawner.spawn(node(untilStdin, [], { stdin: { stream: Stream.never } })),
+            spawner
+              .spawn(node("process.stdout.write('ok')"))
+              .pipe(Effect.flatMap((child) => text(child.stdout))),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(output).toBe("ok");
+        expect(yield* sibling.isRunning).toBe(true);
+      }
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.live("kills running commands, detached or not, and on scope interruption", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -321,25 +353,34 @@ describe("SpawnWorker", () => {
           const pool = root.worker.pool;
           const launch = pool.spawn;
           let killedWhileStopping: boolean | undefined;
-          using _stop = vi.spyOn(pool, "spawn").mockImplementation((_command, _args, options) => {
-            // The tree stop starts once the launcher is gone, so an abort now can signal nothing.
-            aborts.abort();
-            killedWhileStopping = root.killed;
-            if (stop === "cannot launch") return launch(missingCommand, [], options);
-            if (stop === "cannot get a launcher") throw new Error("No thread for a launcher.");
-            const code = stop === "exits 0" ? 0 : 1;
-            const child = launch(process.execPath, ["-e", `process.exit(${code})`], options);
-            // A microtask runs before the launcher's reply can arrive.
-            if (stop === "loses its launcher before the start is reported") {
-              queueMicrotask(() => child.worker.fail(new Error("lost")));
-            }
-            return child;
-          });
+          using requestStop = vi
+            .spyOn(pool, "spawn")
+            .mockImplementation((_command, _args, options) => {
+              // The tree stop starts once the launcher is gone, so an abort now can signal nothing.
+              aborts.abort();
+              killedWhileStopping = root.killed;
+              if (stop === "cannot launch") return launch(missingCommand, [], options);
+              if (stop === "cannot get a launcher") throw new Error("No thread for a launcher.");
+              const code = stop === "exits 0" ? 0 : 1;
+              const child = launch(process.execPath, ["-e", `process.exit(${code})`], options);
+              // A microtask runs before the launcher's reply can arrive.
+              if (stop === "loses its launcher before the start is reported") {
+                queueMicrotask(() => child.worker.fail(new Error("lost")));
+              }
+              return child;
+            });
           using report = vi.spyOn(pool, "report").mockImplementation(() => {});
           using kill = vi.spyOn(process, "kill").mockImplementation(() => true);
           const exited = new Promise((resolve) => root.once("exit", resolve));
           void root.worker.worker.terminate();
           yield* Effect.promise(() => exited);
+          const [command, args] = requestStop.mock.calls[0] ?? [];
+          expect(command).toMatch(/\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i);
+          const created = root.treeRoot?.created;
+          if (created === undefined || created === "unknown") throw new Error("No creation window");
+          expect(args?.at(-1)).toMatch(
+            new RegExp(`Stop-T3ProcessTree ${pid} ${created.from} ${created.from} ${created.to}$`),
+          );
           expect([
             stop,
             kill.mock.calls.some(([target]) => target === pid),
@@ -349,6 +390,104 @@ describe("SpawnWorker", () => {
           ]).toEqual([stop, false, reported ? 1 : 0, false, []]);
         }
       }),
+  );
+
+  it.live(
+    "signals the leader by handle and waits for descendant cleanup before reporting exit",
+    () =>
+      Effect.gen(function* () {
+        const pool = new SpawnWorker.__testing.SpawnWorkerPool("win32");
+        const stopStarted = Promise.withResolvers<() => void>();
+        let finishStop: (() => void) | undefined;
+        using stop = vi.spyOn(pool, "killTree").mockImplementation((_root, done) => {
+          finishStop = done;
+          stopStarted.resolve(done);
+        });
+        const child = pool.spawn(process.execPath, ["-e", "process.stdin.resume()"], {
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        child.stopTreeOnKill = true;
+        pool.close();
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (!child.exited) child.stdin?.end();
+            finishStop?.();
+          }),
+        );
+        const events: Array<string> = [];
+        child.on("exit", () => events.push("exit"));
+        child.on("close", () => events.push("close"));
+        const closed = NodeEvents.EventEmitter.once(child, "close");
+        yield* Effect.promise(() => NodeEvents.EventEmitter.once(child, "spawn"));
+        using posted = vi.spyOn(child.worker, "post");
+        expect(child.kill()).toBe(true);
+        expect(posted).toHaveBeenCalledWith({ type: "kill", id: child.id, signal: "SIGTERM" });
+        const finish = yield* Effect.promise(() => stopStarted.promise);
+        expect(stop).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            pid: child.pid,
+            created: expect.objectContaining({ from: expect.any(Number), to: expect.any(Number) }),
+            ended: expect.any(Number),
+          }),
+          finish,
+        );
+        expect(events).toEqual([]);
+        expect(child.kill()).toBe(false);
+        finishStop = undefined;
+        finish();
+        yield* Effect.promise(() => closed);
+        expect(events).toEqual(["exit", "close"]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live.skipIf(HostProcess.Platform.defaultValue() !== "win32")(
+    "stops a detached Windows descendant on a direct Claude-style child kill",
+    () =>
+      Effect.gen(function* () {
+        const connected = Promise.withResolvers<NodeNet.Socket>();
+        const server = NodeNet.createServer(connected.resolve);
+        const sockets = new Set<NodeNet.Socket>();
+        server.on("connection", (socket) => {
+          sockets.add(socket);
+          socket.once("close", () => sockets.delete(socket));
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            server.close();
+            for (const socket of sockets) socket.destroy();
+          }),
+        );
+        const port = yield* Effect.promise(
+          () =>
+            new Promise<number>((resolve, reject) =>
+              server
+                .once("error", reject)
+                .listen(0, "127.0.0.1", () =>
+                  resolve((server.address() as NodeNet.AddressInfo).port),
+                ),
+            ),
+        );
+        const descendant = `require("node:net").connect(Number(process.argv[1]), "127.0.0.1").on("close", () => process.exit())`;
+        const child = SpawnWorker.spawnPiped(
+          process.execPath,
+          [
+            "-e",
+            `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}, process.argv[1]], { detached: true, stdio: "ignore" }).unref(); process.stdin.resume();`,
+            String(port),
+          ],
+          {},
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (!child.exited) child.stdin.end();
+          }),
+        );
+        const exited = NodeEvents.EventEmitter.once(child, "exit");
+        const socket = yield* Effect.promise(() => connected.promise);
+        const disconnected = NodeEvents.EventEmitter.once(socket, "close");
+        expect(child.kill()).toBe(true);
+        yield* Effect.promise(() => Promise.all([exited, disconnected]));
+      }).pipe(Effect.scoped),
   );
 
   it.live("keeps a child working after its spawner layer closes, then ends its launcher", () =>
@@ -434,7 +573,7 @@ describe("SpawnWorker", () => {
     "takes a file URL as the working directory, and an unref before the start is reported",
     () =>
       Effect.gen(function* () {
-        const cwd = NodeOS.tmpdir();
+        const cwd = NodeFS.realpathSync(NodeOS.tmpdir());
         const located = SpawnWorker.spawnPiped(
           process.execPath,
           ["-e", "process.stdout.write(process.cwd())"],
@@ -445,7 +584,7 @@ describe("SpawnWorker", () => {
         let output = "";
         located.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
         yield* Effect.promise(() => new Promise((resolve) => located.once("close", resolve)));
-        expect(output).toBe(NodePath.resolve(cwd));
+        expect(output).toBe(cwd);
         const quiet = SpawnWorker.spawnPiped(
           process.execPath,
           ["-e", "process.stdin.resume()"],

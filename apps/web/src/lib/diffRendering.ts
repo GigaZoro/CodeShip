@@ -1,7 +1,8 @@
+import { t, msg } from "~/i18n";
 import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
-import { t } from "~/i18n";
 import { parseDiffFromFile } from "@pierre/diffs";
 import type { FileDiffMetadata } from "@pierre/diffs/types";
+
 import { READABLE_LIGHT_THEME_NAME } from "./readableSyntaxTheme";
 
 // Light mode uses a darker pierre-light so syntax stays readable on every code surface.
@@ -159,6 +160,7 @@ export function getRenderablePatch(
   patch: string | undefined,
   cacheScope = "diff-panel",
   options: RenderablePatchOptions = {},
+  resolve: typeof t = t,
 ): RenderablePatch | null {
   if (!patch?.trim()) return null;
 
@@ -178,15 +180,51 @@ export function getRenderablePatch(
     return {
       kind: "raw",
       text: patch,
-      reason: t("Unsupported diff format. Showing raw patch."),
+      reason: resolve(msg("Unsupported diff format. Showing raw patch.")),
     };
   } catch {
     return {
       kind: "raw",
       text: patch,
-      reason: t("Failed to parse patch. Showing raw patch."),
+      reason: resolve(msg("Failed to parse patch. Showing raw patch.")),
     };
   }
+}
+
+/**
+ * Several patches as one file list. Each file is named from the folder the patches share, so the
+ * same path in two repositories stays two files.
+ */
+export function getRenderablePatchSections(
+  sections: ReadonlyArray<{
+    readonly key: string;
+    readonly relativePath: string;
+    readonly diff: string;
+  }>,
+  cacheScope = "diff-panel",
+  options: RenderablePatchOptions = {},
+): RenderablePatch | null {
+  const files: FileDiffMetadata[] = [];
+  const sourceFiles: FileDiffMetadata[] = [];
+  for (const section of sections) {
+    const patch = getRenderablePatch(section.diff, `${cacheScope}:${section.key}`, options);
+    if (patch === null) continue;
+    if (patch.kind === "raw") {
+      return { ...patch, text: sections.map((entry) => entry.diff).join("\n") };
+    }
+    const prefix = section.relativePath === "" ? "" : `${section.relativePath}/`;
+    const inFolder = (file: FileDiffMetadata): FileDiffMetadata =>
+      prefix === ""
+        ? file
+        : {
+            ...file,
+            name: `${prefix}${file.name}`,
+            ...(file.prevName === undefined ? {} : { prevName: `${prefix}${file.prevName}` }),
+          };
+    files.push(...patch.files.map(inFolder));
+    sourceFiles.push(...patch.sourceFiles.map(inFolder));
+  }
+  return files.length === 0 ? null : { kind: "files", files, sourceFiles };
 }
 
 /** Uses the parser-decoded filename, including Git's quoted and escaped names. */

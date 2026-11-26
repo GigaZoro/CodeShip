@@ -1,5 +1,6 @@
+import { msg, t, type Message } from "~/i18n";
+
 import { useAtomValue } from "@effect/atom-react";
-import { t } from "~/i18n";
 import type {
   AtomCommandFailure,
   AtomCommandResult,
@@ -25,6 +26,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
+
 import { gitEnvironment } from "./git";
 import { useEnvironmentQuery } from "./query";
 import { readEnvironmentScope, useEnvironmentScope } from "./session";
@@ -76,7 +78,7 @@ function useAction<
   R extends AtomCommandResult<unknown, unknown>,
 >(input: {
   readonly kind: SourceControlActionKind;
-  readonly label: string;
+  readonly label: Message;
   readonly scope: SourceControlActionScope;
   readonly action: (...args: TArgs) => Promise<R>;
   readonly onSuccess?: () => void;
@@ -121,7 +123,7 @@ function useAction<
           input.scope,
           {
             operation,
-            label: input.label,
+            label: t(input.label),
           },
           execute,
         );
@@ -178,7 +180,7 @@ export function useVcsInitAction(scope: SourceControlActionScope) {
       input: { cwd: target.cwd },
     });
   };
-  return useAction({ kind: "init", label: t("Initializing repository"), scope, action });
+  return useAction({ kind: "init", label: msg("Initializing repository"), scope, action });
 }
 
 export function useVcsPullAction(scope: SourceControlActionScope) {
@@ -211,7 +213,7 @@ export function useVcsPullAction(scope: SourceControlActionScope) {
   };
   return useAction({
     kind: "pull",
-    label: t("Pulling latest changes..."),
+    label: msg("Pulling latest changes..."),
     scope,
     action,
     onSuccess: status.refresh,
@@ -248,7 +250,7 @@ export function useGitStackedAction(scope: SourceControlActionScope) {
 
   return useAction({
     kind: "runStackedAction",
-    label: t("Running source control action"),
+    label: msg("Running source control action"),
     scope,
     action,
     onSuccess: status.refresh,
@@ -301,7 +303,7 @@ export function useSourceControlPublishRepositoryAction(scope: SourceControlActi
   };
   return useAction({
     kind: "publishRepository",
-    label: t("Publishing repository"),
+    label: msg("Publishing repository"),
     scope,
     action,
     onSuccess: status.refresh,
@@ -355,7 +357,7 @@ export function usePreparePullRequestThreadAction(scope: SourceControlActionScop
   };
   return useAction({
     kind: "preparePullRequestThread",
-    label: t("Preparing pull request thread"),
+    label: msg("Preparing pull request thread"),
     scope,
     action,
   });
@@ -395,6 +397,7 @@ export function usePullRequestResolutionState(target: PullRequestResolutionTarge
           },
         })
       : null,
+    t,
   );
   const cached = readCachedPullRequestResolution(target);
 

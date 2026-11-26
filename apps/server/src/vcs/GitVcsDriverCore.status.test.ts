@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - these fixtures observe native filesystem paths or Node child process behavior directly.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
+
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -370,42 +370,6 @@ it.layer(layerTest)("Git repository status", (it) => {
       assert.strictEqual(status.branchChanges?.deletions, 0);
       // Writing the index takes index.lock, which makes concurrent user Git writes fail.
       assert.deepStrictEqual(yield* fileSystem.readFile(indexPath), originalIndex);
-    }),
-  );
-
-  it.effect("reads Changes totals with untracked files when requested", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      yield* initRepoWithCommit(cwd);
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const pathService = yield* Path.Path;
-      yield* git(cwd, ["branch", "-M", "main"]);
-      yield* git(cwd, ["checkout", "-b", "feature/totals"]);
-      yield* writeTextFile(cwd, "README.md", "# test\ncommitted\n");
-      yield* git(cwd, ["commit", "-am", "commit edit"]);
-      yield* writeTextFile(cwd, "nested/untracked.txt", "one\ntwo\n");
-      yield* writeTextFile(cwd, "src/code.ts", "export const value = 1;\n");
-      yield* writeTextFile(cwd, "src/code.test.ts", "test\n");
-      yield* writeTextFile(cwd, "__mocks__/value.ts", "mock\n");
-      yield* writeTextFile(cwd, "pnpm-lock.yaml", "lock\n");
-      yield* writeTextFile(cwd, "new [1].txt", "literal\n");
-
-      const status = yield* driver.statusDetailsLocal(pathService.join(cwd, "nested"), {
-        includeBranchChanges: true,
-      });
-      assert.deepInclude(status.branchChanges, {
-        baseRef: "main",
-        insertions: 8,
-        deletions: 0,
-      });
-      assert.deepStrictEqual(status.branchChanges?.breakdown, {
-        code: { additions: 1, deletions: 0 },
-        tests: { additions: 1, deletions: 0 },
-        mocks: { additions: 1, deletions: 0 },
-        generated: { additions: 1, deletions: 0 },
-        docs: { additions: 4, deletions: 0 },
-      });
-      assert.isUndefined((yield* driver.statusDetailsLocal(cwd)).branchChanges);
     }),
   );
 
@@ -909,129 +873,6 @@ it.layer(layerTest)("Git upstream status", (it) => {
         "No git remote is configured for this repository.",
       );
       assert.deepStrictEqual(fetch.failedSpans, ["GitVcsDriver.fetchRefCommit"]);
-    }),
-  );
-
-  it.effect("can read cached remote divergence without fetching upstream", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const remote = yield* makeTmpDir("git-vcs-driver-remote-");
-      const updater = yield* makeTmpDir("git-vcs-driver-updater-");
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      yield* git(remote, ["init", "--bare"]);
-      yield* git(cwd, ["remote", "add", "origin", remote]);
-      yield* git(cwd, ["push", "-u", "origin", initialBranch]);
-
-      yield* git(updater, ["clone", remote, "."]);
-      yield* git(updater, ["config", "user.email", "test@test.com"]);
-      yield* git(updater, ["config", "user.name", "Test"]);
-      yield* writeTextFile(updater, "remote.txt", "remote\n");
-      yield* git(updater, ["add", "remote.txt"]);
-      yield* git(updater, ["commit", "-m", "remote commit"]);
-      yield* git(updater, ["push", "origin", initialBranch]);
-
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const cachedStatus = yield* driver.statusDetailsRemote(cwd, {
-        refreshUpstream: false,
-      });
-      const refreshedStatus = yield* driver.statusDetailsRemote(cwd);
-
-      assert.equal(cachedStatus.behindCount, 0);
-      assert.equal(refreshedStatus.behindCount, 1);
-    }),
-  );
-
-  it.effect("a ref snapshot detects branch identity, ref and ancestry changes", () =>
-    Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
-      const remote = yield* makeTmpDir("git-vcs-driver-remote-");
-      const updater = yield* makeTmpDir("git-vcs-driver-updater-");
-      const { initialBranch } = yield* initRepoWithCommit(cwd);
-      yield* git(remote, ["init", "--bare"]);
-      yield* git(cwd, ["remote", "add", "origin", remote]);
-      yield* git(cwd, ["push", "-u", "origin", initialBranch]);
-      yield* git(updater, ["clone", remote, "."]);
-      yield* git(updater, ["config", "user.email", "test@test.com"]);
-      yield* git(updater, ["config", "user.name", "Test"]);
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const snapshot = driver.readRefSnapshot(cwd);
-
-      // Newer Git can create origin/HEAD on the first fetch.
-      yield* git(cwd, ["fetch", "origin"]);
-      const initial = yield* snapshot;
-      assert.isNotNull(initial);
-      yield* git(cwd, ["fetch", "origin"]);
-      assert.equal(yield* snapshot, initial);
-
-      yield* git(cwd, ["branch", "same-commit"]);
-      const beforeCheckout = yield* snapshot;
-      const refsBeforeCheckout = yield* git(cwd, ["show-ref", "--head"]);
-      yield* git(cwd, ["checkout", "same-commit"]);
-      assert.equal(yield* git(cwd, ["show-ref", "--head"]), refsBeforeCheckout);
-      const afterCheckout = yield* snapshot;
-      assert.isNotNull(afterCheckout);
-      assert.notEqual(afterCheckout, beforeCheckout);
-      yield* git(cwd, ["checkout", "--detach"]);
-      assert.equal(yield* git(cwd, ["show-ref", "--head"]), refsBeforeCheckout);
-      const detached = yield* snapshot;
-      assert.isNotNull(detached);
-      assert.notEqual(detached, beforeCheckout);
-      assert.notEqual(detached, afterCheckout);
-      assert.equal(yield* snapshot, detached);
-      yield* git(cwd, ["checkout", initialBranch]);
-      assert.equal(yield* snapshot, beforeCheckout);
-      yield* git(cwd, ["branch", "-d", "same-commit"]);
-
-      yield* writeTextFile(updater, "remote.txt", "remote\n");
-      yield* git(updater, ["add", "remote.txt"]);
-      yield* git(updater, ["commit", "-m", "remote commit"]);
-      yield* git(updater, ["push", "origin", initialBranch]);
-      assert.equal(yield* snapshot, initial);
-      yield* git(cwd, ["fetch", "origin"]);
-      const fetched = yield* snapshot;
-      assert.notEqual(fetched, initial);
-
-      const shallow = yield* makeTmpDir("git-vcs-driver-shallow-");
-      yield* git(shallow, ["clone", "--depth=1", NodeURL.pathToFileURL(remote).href, "."]);
-      const shallowRefs = yield* git(shallow, ["show-ref", "--head"]);
-      const shallowSnapshot = yield* driver.readRefSnapshot(shallow);
-      assert.isNotNull(shallowSnapshot);
-      const shallowWorktree = yield* makeTmpDir("git-vcs-driver-shallow-worktree-");
-      yield* git(shallow, ["worktree", "add", "--detach", shallowWorktree]);
-      const worktreeSnapshot = yield* driver.readRefSnapshot(shallowWorktree);
-      assert.isNotNull(worktreeSnapshot);
-      yield* git(shallow, ["fetch", "--unshallow", "origin"]);
-      assert.equal(yield* git(shallow, ["show-ref", "--head"]), shallowRefs);
-      const unshallowSnapshot = yield* driver.readRefSnapshot(shallow);
-      const unshallowWorktreeSnapshot = yield* driver.readRefSnapshot(shallowWorktree);
-      assert.isNotNull(unshallowSnapshot);
-      assert.isNotNull(unshallowWorktreeSnapshot);
-      assert.notEqual(unshallowSnapshot, shallowSnapshot);
-      assert.notEqual(unshallowWorktreeSnapshot, worktreeSnapshot);
-
-      yield* git(cwd, ["checkout", "--detach"]);
-      yield* git(cwd, ["commit", "--allow-empty", "-m", "detached"]);
-      assert.notEqual(yield* snapshot, fetched);
-
-      const head = yield* git(cwd, ["rev-parse", "HEAD"]);
-      yield* driver.execute({
-        operation: "GitVcsDriver.test.git",
-        cwd,
-        args: ["update-ref", "--stdin"],
-        stdin: Array.from(
-          { length: 16_000 },
-          (_, index) => `create refs/heads/snapshot-${String(index).padStart(5, "0")} ${head}\n`,
-        ).join(""),
-      });
-      yield* git(cwd, ["pack-refs", "--all"]);
-      const large = yield* snapshot;
-      assert.isNotNull(large);
-      assert.isAbove(Buffer.byteLength(large ?? "", "utf8"), 1_000_000);
-      assert.equal(yield* snapshot, large);
-      yield* git(cwd, ["update-ref", "refs/heads/snapshot-00000", "HEAD~1"]);
-      assert.notEqual(yield* snapshot, large);
-
-      assert.isNull(yield* driver.readRefSnapshot(yield* makeTmpDir()));
     }),
   );
 

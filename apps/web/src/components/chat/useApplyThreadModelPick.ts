@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { RegistryContext } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
@@ -9,7 +12,7 @@ import { useContext } from "react";
 import { type ComposerThreadTarget, useComposerDraftStore } from "../../composerDraftStore";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
-import { t } from "~/i18n";
+
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
 /** Sets an existing thread's composer pick on the thread, so any next turn runs on it. */
@@ -40,9 +43,9 @@ export function useApplyThreadModelPick() {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: t("Could not apply model selection"),
-          description: t("This model pick was not saved. {detail}", {
-            detail: error instanceof Error ? error.message : t("Try again."),
+          title: t(msg("Could not apply model selection")),
+          description: t(msg("This model pick was not saved. {detail}"), {
+            detail: thrownErrorMessage(error, t) ?? t(msg("Try again.")),
           }),
         }),
       );

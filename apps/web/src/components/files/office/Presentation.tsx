@@ -1,4 +1,6 @@
+import { t, tn } from "~/i18n";
 /* oxlint-disable react/no-unstable-nested-components -- These callbacks return overlays, and are invoked as render functions. */
+
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import {
@@ -10,7 +12,6 @@ import { OfficePages, type PaintPage } from "./OfficePages";
 import { createWorkerClient } from "./worker-rpc";
 import type { SlideMethods, SlideSummary } from "./slide-protocol";
 import { rasterize } from "./vector-pictures";
-import { msg, t } from "~/i18n";
 
 type Opened = { slides: readonly SlideSummary[]; paint: PaintPage };
 export default function Presentation(props: {
@@ -19,6 +20,7 @@ export default function Presentation(props: {
   onError: (cause: unknown) => void;
 }) {
   const { onError, bytes: source, onDetails } = props;
+
   const [opened, setOpened] = useState<Opened>();
   const [page, setPage] = useState(0);
   const [failed, setFailed] = useState<Record<number, boolean>>({});
@@ -80,7 +82,7 @@ export default function Presentation(props: {
         if (slides.length === 0 || slides.length > 500)
           throw new Error(t("Preview limited to presentations with 1 to 500 slides."));
         setOpened({ slides, paint });
-        onDetails(`${slides.length} slide${slides.length === 1 ? "" : "s"}`);
+        onDetails(tn(slides.length, "{count} slide", "{count} slides"));
       })
       .catch(fail);
     return () => {
@@ -104,7 +106,10 @@ export default function Presentation(props: {
           <ChevronLeftIcon className="size-3.5" />
         </FileSurfaceAction>
         <span className="flex-1 text-center text-xs tabular-nums" aria-live="polite">
-          {t("Slide {page} of {total}", { page: page + 1, total: opened.slides.length })}
+          {t("Slide {page} of {count}", {
+            page: String(page + 1),
+            count: String(opened.slides.length),
+          })}
         </span>
         <FileSurfaceAction
           label={t("Next slide")}
@@ -117,7 +122,7 @@ export default function Presentation(props: {
       <OfficePages
         pages={opened.slides}
         paint={opened.paint}
-        label={msg("Slide")}
+        kind="slide"
         scrollRef={scroll}
         onPageChange={setPage}
         onError={onError}

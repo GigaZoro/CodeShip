@@ -1,3 +1,4 @@
+import { msg, t } from "~/i18n";
 import {
   PREVIEW_VIEWPORT_MAX_AREA,
   PREVIEW_VIEWPORT_MAX_DIMENSION,
@@ -10,7 +11,6 @@ import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import {
   Select,
   SelectGroup,
@@ -25,13 +25,17 @@ import { cn } from "~/lib/utils";
 import { BROWSER_DEVICE_TOOLBAR_HEIGHT, resizeFreeformViewport } from "./browserViewportLayout";
 import { commitViewportAndAspectRatio } from "./browserDeviceToolbarState";
 import { ScreenRotationIcon } from "./ScreenRotationIcon";
+import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
 
-import { t } from "~/i18n";
 const RESPONSIVE_VALUE = "responsive";
-const PRESET_ITEMS = PREVIEW_VIEWPORT_PRESETS.map((preset) => ({
-  value: preset.id,
-  label: preset.label,
-}));
+const RESPONSIVE_LABEL = msg("Responsive");
+const selectItems = () => [
+  {
+    value: RESPONSIVE_VALUE,
+    label: t(RESPONSIVE_LABEL),
+  },
+  ...PREVIEW_VIEWPORT_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
+];
 
 interface Props {
   readonly setting: Exclude<PreviewViewportSetting, { readonly _tag: "fill" }>;
@@ -49,7 +53,6 @@ export function BrowserDeviceToolbar({
   onChange,
 }: Props) {
   const [pending, setPending] = useState(false);
-  const selectItems = [{ value: RESPONSIVE_VALUE, label: t("Responsive") }, ...PRESET_ITEMS];
   const [customSize, setCustomSize] = useState<{
     readonly width: string;
     readonly height: string;
@@ -199,7 +202,7 @@ export function BrowserDeviceToolbar({
         modal={false}
         value={selectedValue}
         onValueChange={selectViewport}
-        items={selectItems}
+        items={selectItems()}
         disabled={pending}
       >
         <SelectTrigger
@@ -211,7 +214,7 @@ export function BrowserDeviceToolbar({
           <SelectValue />
         </SelectTrigger>
         <SelectPopup align="start" alignItemWithTrigger={false}>
-          <SelectItem value={RESPONSIVE_VALUE}>{t("Responsive")}</SelectItem>
+          <SelectItem value={RESPONSIVE_VALUE}>{t(RESPONSIVE_LABEL)}</SelectItem>
           <SelectGroup>
             <SelectGroupLabel>{t("Standard")}</SelectGroupLabel>
             {PREVIEW_VIEWPORT_PRESETS.map((preset) => (
@@ -287,35 +290,31 @@ export function BrowserDeviceToolbar({
         />
       </form>
 
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant={aspectRatio === null ? "ghost" : "secondary"}
-              size="icon-xs"
-              type="button"
-              aria-label={
-                aspectRatio === null
-                  ? t("Lock viewport aspect ratio")
-                  : t("Unlock viewport aspect ratio")
-              }
-              aria-pressed={aspectRatio !== null}
-              disabled={pending || !customValid}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={toggleAspectRatio}
-            />
-          }
-        >
-          {aspectRatio === null ? (
-            <Unlink2 className={cn(aspectRatio !== null && "text-foreground")} />
-          ) : (
-            <Link2 className={cn(aspectRatio !== null && "text-foreground")} />
-          )}
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          {aspectRatio === null ? t("Lock aspect ratio") : t("Unlock aspect ratio")}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <Button
+            variant={aspectRatio === null ? "ghost" : "secondary"}
+            size="icon-xs"
+            type="button"
+            aria-label={
+              aspectRatio === null
+                ? t("Lock viewport aspect ratio")
+                : t("Unlock viewport aspect ratio")
+            }
+            aria-pressed={aspectRatio !== null}
+            disabled={pending || !customValid}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={toggleAspectRatio}
+          />
+        }
+        label={aspectRatio === null ? t("Lock aspect ratio") : t("Unlock aspect ratio")}
+      >
+        {aspectRatio === null ? (
+          <Unlink2 className={cn(aspectRatio !== null && "text-foreground")} />
+        ) : (
+          <Link2 className={cn(aspectRatio !== null && "text-foreground")} />
+        )}
+      </SharedTooltipTrigger>
       <Button
         variant="ghost"
         size="icon-xs"

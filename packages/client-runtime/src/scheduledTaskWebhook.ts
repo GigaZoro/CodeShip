@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "@t3tools/shared/i18n";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
@@ -6,7 +7,6 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { msg, t, type Message } from "@t3tools/shared/i18n";
 
 export const DEFAULT_WEBHOOK_PROMPT = "Handle this webhook:\n{{body}}";
 
@@ -77,9 +77,10 @@ const decodeFilter = Schema.decodeUnknownOption(ScheduledTaskWebhookFilter);
  */
 export function parseWebhookFilterDrafts(
   drafts: ReadonlyArray<WebhookFilterDraft>,
+  resolve: typeof t = t,
 ): { readonly filters: ReadonlyArray<ScheduledTaskWebhookFilter> } | { readonly error: string } {
   if (drafts.length > MAX_WEBHOOK_FILTERS) {
-    return { error: t("Use at most {max} filters.", { max: MAX_WEBHOOK_FILTERS }) };
+    return { error: resolve(msg("Use at most {max} filters."), { max: MAX_WEBHOOK_FILTERS }) };
   }
   const filters: ScheduledTaskWebhookFilter[] = [];
   for (const [index, draft] of drafts.entries()) {
@@ -102,17 +103,20 @@ export function parseWebhookFilterDrafts(
       return {
         error:
           draft.op === "exists"
-            ? t("Filter {number} needs a path under body, headers or query.", {
+            ? resolve(msg("Filter {number} needs a path under body, headers or query."), {
                 number: index + 1,
               })
             : draft.op === "in"
-              ? t(
-                  "Filter {number} needs a path under body, headers or query, and at least one value.",
+              ? resolve(
+                  msg(
+                    "Filter {number} needs a path under body, headers or query, and at least one value.",
+                  ),
                   { number: index + 1 },
                 )
-              : t("Filter {number} needs a path under body, headers or query, and a value.", {
-                  number: index + 1,
-                }),
+              : resolve(
+                  msg("Filter {number} needs a path under body, headers or query, and a value."),
+                  { number: index + 1 },
+                ),
       };
     }
     filters.push(filter.value);

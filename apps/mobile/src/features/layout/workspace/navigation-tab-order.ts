@@ -1,16 +1,41 @@
 import { msg, type Message } from "../../../lib/i18n";
-export const NAVIGATION_TAB_ORDER = ["threads", "scheduledTasks", "pullRequests", "usage"] as const;
-export type NavigationTab = (typeof NAVIGATION_TAB_ORDER)[number];
+
+export const NAVIGATION_TAB_ORDER = [
+  "threads",
+  "scheduledTasks",
+  "pullRequests",
+  "issues",
+  "usage",
+] as const;
+/** Built, but left out of the tab bar while workflows are a soft launch on web. */
+type UnlistedTab = "workflows";
+export type NavigationTab = (typeof NAVIGATION_TAB_ORDER)[number] | UnlistedTab;
+
+const SHARED_SLOT_TABS = ["pullRequests", "issues"] as const;
+export type SharedSlotTab = (typeof SHARED_SLOT_TABS)[number];
+
+export function isSharedSlotTab(value: unknown): value is SharedSlotTab {
+  return SHARED_SLOT_TABS.some((tab) => tab === value);
+}
+
+/**
+ * Pull requests and issues share one slot in the tab bar. The open one holds it, or else the one
+ * opened last; this returns the other, which the bar leaves out.
+ */
+export function sharedSlotAbsentee(selected: NavigationTab, last: unknown): SharedSlotTab {
+  const holder = isSharedSlotTab(selected) ? selected : last === "issues" ? last : "pullRequests";
+  return holder === "issues" ? "pullRequests" : "issues";
+}
 
 /** Tabs that are one full page, with no list/detail pair and no search. */
-export type NavigationPageTab = Exclude<NavigationTab, "threads" | "pullRequests">;
+export type NavigationPageTab = Exclude<NavigationTab, "threads" | "pullRequests" | "issues">;
 
 export function isNavigationPageTab(tab: NavigationTab): tab is NavigationPageTab {
-  return tab !== "threads" && tab !== "pullRequests";
+  return tab !== "threads" && !isSharedSlotTab(tab);
 }
 
 export function navigationCustomizationAvailable(
-  registeredSections: number = NAVIGATION_TAB_ORDER.length,
+  registeredSections: number = NAVIGATION_TAB_ORDER.length - 1,
 ) {
   return registeredSections > 4;
 }
@@ -19,6 +44,8 @@ export const NAVIGATION_TAB_LABELS: Readonly<Record<NavigationTab, Message>> = {
   threads: msg("Threads"),
   scheduledTasks: msg("Tasks"),
   pullRequests: msg("PRs"),
+  issues: msg("Issues"),
+  workflows: msg("Workflows"),
   usage: msg("Usage"),
 };
 

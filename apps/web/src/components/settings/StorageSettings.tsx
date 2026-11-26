@@ -69,9 +69,9 @@ export function WorktreesDirectoryRow() {
   return (
     <SettingsRow
       {...searchableSetting("storage-worktrees-location")}
-      description={
-        "Folder where new worktrees are created, on any drive, such as D:\\worktrees or ~/worktrees. Existing worktrees stay where they are. Leave empty to use the T3.CodeShip home folder."
-      }
+      description={t(
+        "Folder where new worktrees are created, on any drive, such as D:\\worktrees or ~/worktrees. Existing worktrees stay where they are. Leave empty to use the T3.CodeShip home folder.",
+      )}
       serverScoped
       settingKeys={["worktreesDirectory"]}
       resetAction={
@@ -222,7 +222,8 @@ function RetentionControl({
                   // skips an unedited value, so an untouched draft is committed here.
                   const input = event.currentTarget;
                   const shown =
-                    draft !== null && input.value === new Intl.NumberFormat().format(draft);
+                    draft !== null &&
+                    input.value === new Intl.NumberFormat(getFormattingLocale()).format(draft);
                   if (enabling === "draft" && shown) commit(draft);
                   input.blur();
                 } else if (event.key === "Escape" && (held || typeof enabling === "string")) {
@@ -354,10 +355,15 @@ function CleanupResults({
       })}
       {report.omittedCount > 0 && (
         <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {t("{environment}: {count} more results.", {
-            environment: environmentLabel,
-            count: report.omittedCount.toLocaleString(getFormattingLocale()),
-          })}
+          {tn(
+            report.omittedCount,
+            "{environment}: {count} more result.",
+            "{environment}: {count} more results.",
+            {
+              environment: environmentLabel,
+              count: report.omittedCount.toLocaleString(getFormattingLocale()),
+            },
+          )}
         </p>
       )}
       {report.entries.length === 0 && report.omittedCount === 0 && (
@@ -913,7 +919,6 @@ export function StorageCleanupSections() {
   if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
       <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
-        {databaseStorageNotice}
         <SettingsSection
           hideTitle
           id="storage-artifacts"
@@ -922,13 +927,14 @@ export function StorageCleanupSections() {
         >
           <StorageCleanupScopeNotice />
         </SettingsSection>
+        {databaseStorageNotice}
       </SettingsSection>
     );
   }
 
+  // Machines report their databases after the page renders, so the notice goes last to push nothing down.
   return (
     <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
-      {databaseStorageNotice}
       <WorktreeCleanupSection />
       <SettingsSection hideTitle id="storage-artifacts" title={t("Artifacts and logs")}>
         <AnimatedHeight>
@@ -991,6 +997,7 @@ export function StorageCleanupSections() {
         </AnimatedHeight>
       </SettingsSection>
       <CleanupSection />
+      {databaseStorageNotice}
     </SettingsSection>
   );
 }

@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Probes the server's native SQLite ownership lock.
+import { t } from "@t3tools/shared/i18n";
 import * as NodeSqlite from "node:sqlite";
 
-import { t } from "@t3tools/shared/i18n";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+
 import { BACKEND_QUIT_STOP_TIMEOUT } from "./DesktopBackendManager.ts";
 
 // The fields of the server's `server-runtime.json` that identify the owner of a T3 home.

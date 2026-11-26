@@ -46,6 +46,13 @@ export function getProviderStatusKey(provider: ServerProvider | undefined): Prov
   return provider?.status ?? "warning";
 }
 
+export function providerAuthLabel(
+  auth: Pick<ServerProvider["auth"], "label" | "type">,
+): string | undefined {
+  if (auth.type === "customEndpoint") return t("Custom API endpoint");
+  return auth.label ?? auth.type;
+}
+
 export function getProviderSummary(provider: ServerProvider | undefined) {
   if (!provider) {
     return {
@@ -71,7 +78,7 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
     return { headline: t("Unavailable"), detail: provider.unavailableReason ?? null };
   }
   if (provider.auth.status === "unauthenticated") {
-    const authLabel = provider.auth.label ?? provider.auth.type;
+    const authLabel = providerAuthLabel(provider.auth);
     return {
       headline: authLabel
         ? t("Not authenticated · {authLabel}", { authLabel })
@@ -100,7 +107,7 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
     };
   }
   if (provider.auth.status === "authenticated") {
-    const authLabel = provider.auth.label ?? provider.auth.type;
+    const authLabel = providerAuthLabel(provider.auth);
     return {
       headline: authLabel ? t("Authenticated · {authLabel}", { authLabel }) : t("Authenticated"),
       detail: provider.message ?? null,

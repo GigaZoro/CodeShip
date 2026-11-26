@@ -1,22 +1,23 @@
 import {
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   OrchestrationV2ProviderFailure as ProviderFailureSchema,
-} from "@t3tools/contracts";
-import type {
-  NodeId,
-  OrchestrationV2ProviderFailure,
-  OrchestrationV2ProviderFailureClass,
-  OrchestrationV2ProviderRetry,
-  OrchestrationV2TurnItem,
-  ProviderDriverKind,
-  ProviderThreadId,
-  ProviderTurnId,
-  RunId,
-  ThreadId,
+  GoogleAccountVerificationUrl,
+  type NodeId,
+  type OrchestrationV2ProviderFailure,
+  type OrchestrationV2ProviderFailureClass,
+  type OrchestrationV2ProviderRetry,
+  type OrchestrationV2TurnItem,
+  type ProviderDriverKind,
+  type ProviderThreadId,
+  type ProviderTurnId,
+  type RunId,
+  type ThreadId,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import { redactSensitiveText, stripTerminalEscapes } from "@t3tools/shared/redaction";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 
 import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
@@ -60,6 +61,12 @@ const isProviderFailure = Schema.is(ProviderFailureSchema);
 
 const DEFAULT_PROVIDER_FAILURE_MESSAGE = "Provider turn failed.";
 
+// Gateways answer an oversized body with a 413 page; resending the same history fails identically.
+const REQUEST_TOO_LARGE_STATUS = /^\s*(?:(?:API Error|Error|HTTP|status)(?:\s*:)?\s*)?413\b/iu;
+const REQUEST_TOO_LARGE_REASON = /\b(?:Request Entity|Payload|Content) Too Large\b/u;
+const REQUEST_TOO_LARGE_MESSAGE =
+  "This thread's request is too large for the provider (HTTP 413), so retrying fails the same way. Start a fresh session with /clear, or continue in a new thread.";
+
 const PROVIDER_FAILURE_CATEGORIES: Partial<
   Record<string, { readonly summary: string; readonly guidance: string }>
 > = {
@@ -81,9 +88,26 @@ const PROVIDER_FAILURE_CATEGORIES: Partial<
   },
 };
 
+// macOS privacy protection (TCC) refuses a CLI the project folder with EPERM.
+const PERMISSION_DENIED_OUTPUT = /\bEPERM\b|Operation not permitted/u;
+
+/**
+ * What to do after a provider CLI exits on its own. Only recognises the
+ * output; the output itself stays out of the message.
+ */
+export function providerProcessExitGuidance(output: unknown): string {
+  return typeof output === "string" && PERMISSION_DENIED_OUTPUT.test(output)
+    ? "It was denied access to a file or folder (EPERM). On macOS, allow T3 Code under System Settings > Privacy & Security > Files and Folders, or move the project out of Desktop, Documents, or Downloads, then retry the turn."
+    : "Check the server logs for the provider's output, then retry the turn.";
+}
+
 // codex_protocol::protocol::validate_thread_goal_objective
 const CODEX_GOAL_VALIDATION_MESSAGE =
   /^goal objective must (?:not be empty|be at most \d{1,6} characters)$/u;
+
+// OpenCode's /goal command rejecting an objective longer than it accepts.
+const OPENCODE_GOAL_LENGTH_REJECTION =
+  /^A goal objective is limited to \d{1,6} characters \(got \d{1,9}\)\.$/u;
 
 // codex_config::ConstraintError::InvalidValue for a managed requirements.toml or cloud policy.
 const CODEX_ACCESS_REQUIREMENT_REJECTION =
@@ -104,6 +128,7 @@ function curatedCauseMessages(cause: unknown): {
   readonly known: string | undefined;
   readonly category: string | undefined;
   readonly reason?: string;
+  readonly processExited?: true;
 } {
   const seen = new Set<unknown>();
   let category: (typeof PROVIDER_FAILURE_CATEGORIES)[string];
@@ -151,8 +176,11 @@ function curatedCauseMessages(cause: unknown): {
         case "ClaudeSettingsResolveError":
         case "ClaudeMcpRegistrationTimeoutError":
         case "ClaudeCodeRootRefusalError":
+        case "ClaudeConversationNotFoundError":
         case "CursorModelUnavailableError":
         case "CodexGoalObjectiveTooLongError":
+        case "CodexAppServerUnresponsiveError":
+        case "CodexAppServerRetiredError":
         case "ProviderAdapterThreadInUseError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
@@ -177,14 +205,42 @@ function curatedCauseMessages(cause: unknown): {
           }
           break;
         }
-        case "AcpProcessExitedError": {
+        case "CommandExecutionError": {
+          // Only OpenCode's fixed-shape goal text is shown; other command output stays hidden.
+          const rejection = stringField(cause, "message");
+          if ((cause as Record<string, unknown>).command !== "goal" || rejection === undefined) {
+            break;
+          }
+          if (OPENCODE_GOAL_LENGTH_REJECTION.test(rejection)) {
+            return {
+              known: `OpenCode rejected the goal: ${rejection} Shorten it and send /goal again.`,
+              category: categoryMessage(),
+            };
+          }
+          if (rejection === "No paused goal to resume.") {
+            return { known: "OpenCode has no paused goal to resume.", category: categoryMessage() };
+          }
+          break;
+        }
+        case "AcpProcessExitedError":
+        case "CodexAppServerProcessExitedError": {
           const exit = `provider process exited${processExitStatus(cause)}`;
           const stage = category === undefined ? `The ${exit}` : `${category.summary}: the ${exit}`;
+          const guidance = providerProcessExitGuidance((cause as Record<string, unknown>).stderr);
           return {
-            known: `${stage}. Check the server logs for the provider's output, then retry the turn.`,
+            known: `${stage}. ${guidance}`,
             category: categoryMessage(),
+            processExited: true,
           };
         }
+        // ACP reserves -32000 for auth_required; the agent's own text is not shown.
+        case "AcpRequestError":
+          if ((cause as Record<string, unknown>).code !== -32000) break;
+          return {
+            known:
+              "The provider needs you to sign in. Sign in from its provider settings or with its own CLI or app, then retry the turn.",
+            category: categoryMessage(),
+          };
         case "ContextHandoffDeliveryUncertainError":
           return {
             known:
@@ -401,6 +457,8 @@ export function providerErrorClass(
     : "provider_error";
 }
 
+const decodeVerificationUrl = Schema.decodeUnknownOption(GoogleAccountVerificationUrl);
+
 export function makeProviderFailure(input: {
   readonly cause?: unknown;
   readonly message?: string | undefined;
@@ -410,16 +468,22 @@ export function makeProviderFailure(input: {
   readonly resetAt?: string | null;
   readonly modelScope?: string | undefined;
   readonly detail?: string | undefined;
+  readonly verificationUrl?: unknown;
 }): OrchestrationV2ProviderFailure {
   const curated = curatedCauseMessages(input.cause);
+  const requestTooLarge =
+    input.message !== undefined &&
+    (REQUEST_TOO_LARGE_STATUS.test(input.message) || REQUEST_TOO_LARGE_REASON.test(input.message));
   if (curated.failure !== undefined)
     return makeProviderFailure({ ...curated.failure, resetAt: curated.failure.resetAt ?? null });
-  const rawMessage =
-    input.message ?? curated.known ?? curated.category ?? DEFAULT_PROVIDER_FAILURE_MESSAGE;
-  // A caller that words the message keeps the cause out: it can carry another tool's private output.
+  const rawMessage = requestTooLarge
+    ? REQUEST_TOO_LARGE_MESSAGE
+    : (input.message ?? curated.known ?? curated.category ?? DEFAULT_PROVIDER_FAILURE_MESSAGE);
+  // Caller-supplied text takes precedence. A process exit can retain its structured exit status
+  // alongside curated guidance because describeCause excludes its stderr.
   const detail =
     input.detail === undefined
-      ? input.message === undefined && curated.known === undefined
+      ? input.message === undefined && (curated.known === undefined || curated.processExited)
         ? providerFailureDetail(input.cause)
         : undefined
       : boundedDetail(input.detail);
@@ -427,12 +491,13 @@ export function makeProviderFailure(input: {
   const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
   const code =
     rawCode === null ? null : boundedText(rawCode, MAX_PROVIDER_FAILURE_CODE_LENGTH) || null;
+  const verificationUrl = Option.getOrUndefined(decodeVerificationUrl(input.verificationUrl));
 
   return {
     class: input.class ?? "unknown",
     message: message || DEFAULT_PROVIDER_FAILURE_MESSAGE,
     code,
-    retryable: input.retryable ?? null,
+    retryable: requestTooLarge ? false : (input.retryable ?? null),
     ...(input.modelScope === undefined ? {} : { modelScope: input.modelScope }),
     ...(detail === undefined ? {} : { detail }),
     ...(input.class === "usage_limit" &&
@@ -440,6 +505,7 @@ export function makeProviderFailure(input: {
     Number.isFinite(Date.parse(input.resetAt))
       ? { resetAt: DateTime.formatIso(DateTime.makeUnsafe(input.resetAt)) }
       : {}),
+    ...(verificationUrl === undefined ? {} : { verificationUrl }),
   };
 }
 
@@ -458,6 +524,8 @@ export function promptNotSentFailure(
 }
 
 export function makeProviderFailureTurnItem(input: {
+  // Defaults to the turn's single failure row.
+  readonly id?: TurnItemId;
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
   readonly runId: RunId | null;
@@ -471,10 +539,12 @@ export function makeProviderFailureTurnItem(input: {
   readonly occurredAt: DateTime.Utc;
 }): Extract<OrchestrationV2TurnItem, { readonly type: "error" }> {
   return {
-    id: IdAllocator.derive.turnItemFromProviderItem({
-      driver: input.driver,
-      nativeItemId: `terminal-failure:${input.providerTurnId}`,
-    }),
+    id:
+      input.id ??
+      IdAllocator.derive.turnItemFromProviderItem({
+        driver: input.driver,
+        nativeItemId: `terminal-failure:${input.providerTurnId}`,
+      }),
     threadId: input.threadId,
     runId: input.runId,
     nodeId: input.nodeId,
@@ -502,6 +572,7 @@ export function makeProviderFailureTurnItem(input: {
 export const PROVIDER_RETRY_BUDGET_MS = 10 * 60 * 1000;
 
 export function makeProviderRetryTurnItem(input: {
+  readonly id?: TurnItemId;
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
   readonly runId: RunId | null;
@@ -528,10 +599,12 @@ export function makeProviderRetryTurnItem(input: {
     title = "Provider retry stopped";
   }
   return {
-    id: IdAllocator.derive.turnItemFromProviderItem({
-      driver: input.driver,
-      nativeItemId: `terminal-failure:${input.providerTurnId}`,
-    }),
+    id:
+      input.id ??
+      IdAllocator.derive.turnItemFromProviderItem({
+        driver: input.driver,
+        nativeItemId: `terminal-failure:${input.providerTurnId}`,
+      }),
     threadId: input.threadId,
     runId: input.runId,
     nodeId: input.nodeId,

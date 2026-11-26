@@ -1,3 +1,4 @@
+import { msg, t } from "~/i18n";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -10,6 +11,7 @@ import {
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
+
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
@@ -22,6 +24,7 @@ import { GuestShareDialogHost } from "../components/chat/GuestShareControls";
 import { UseInAnotherAppDialogHost } from "../components/mcp/UseInAnotherAppDialog";
 import { AddProjectToMachineDialogHost } from "../components/AddProjectToMachineDialog";
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
+import { WorktreeLayoutApprovalDialogHost } from "../components/WorktreeLayoutApprovalDialogHost";
 import { DevReplayHost } from "../components/DevReplayHost";
 import { FirstRunGate } from "../components/onboarding/FirstRunGate";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
@@ -43,6 +46,7 @@ import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { Button } from "../components/ui/button";
 import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
+import { SharedTooltipProvider } from "../components/ui/shared-tooltip";
 import { AnchoredToastProvider, ToastProvider } from "../components/ui/toast";
 import { isElectron } from "../env";
 import { useClientSettings } from "../hooks/useSettings";
@@ -66,7 +70,6 @@ import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
 import { isChunkLoadError } from "../lib/chunkReloadGuard";
 import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
 
-import { t } from "~/i18n";
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     // Guest links open on the owner's tunnel host in a browser with no T3 session, and must
@@ -143,7 +146,11 @@ function RootRouteView() {
   return (
     <ToastProvider>
       <AnchoredToastProvider>
-        <RootRouteBranch />
+        {/* One tooltip for every trigger in the app: mounting a tooltip per trigger made opening a
+            thread, panel or message pay for tooltips nobody hovers. */}
+        <SharedTooltipProvider>
+          <RootRouteBranch />
+        </SharedTooltipProvider>
       </AnchoredToastProvider>
     </ToastProvider>
   );
@@ -187,9 +194,11 @@ function RootRouteBranch() {
   // first-run gate and the event router, whose first navigation would leave the page.
   const appHosts = (
     <>
-      {primaryEnvironmentAuthenticated ? <DesktopAppActivationCoordinator /> : null}
       {primaryEnvironmentAuthenticated || localEnvironmentDisabled ? (
-        <DesktopWebLinkCoordinator />
+        <>
+          <DesktopAppActivationCoordinator />
+          <DesktopWebLinkCoordinator />
+        </>
       ) : null}
       {isElectron ? <RunningThreadKeepAlive /> : null}
       {isElectron && primaryEnvironmentAuthenticated ? <DesktopAutoUpdateCoordinator /> : null}
@@ -200,6 +209,7 @@ function RootRouteBranch() {
       <ReopenClosedViewShortcut />
       {primaryEnvironmentAuthenticated ? <ReopenLastArchivedShortcut /> : null}
       <ConfirmDialogHost />
+      <WorktreeLayoutApprovalDialogHost />
       <CustomSnoozeDialogHost />
       <ThreadFolderNameDialogHost />
       <GuestShareDialogHost />
@@ -249,7 +259,8 @@ function RootRouteBranch() {
 
 function RootRouteErrorView({ error }: ErrorComponentProps) {
   const router = useRouter();
-  const message = errorMessage(error);
+
+  const message = errorMessage(error) ?? t("An unexpected router error occurred.");
   // Router pathname rather than window.location: desktop uses hash history, where the window path is always "/".
   const pathname = useLocation({ select: (location) => location.pathname });
   const report = errorReport(error, pathname);
@@ -284,7 +295,13 @@ function RootRouteErrorView({ error }: ErrorComponentProps) {
 }
 
 function CopyErrorButton({ report }: { report: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: t("error report") });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: {
+      target: "error-report",
+      unavailableMessage: msg("Clipboard API is unavailable while copying error-report."),
+      failureMessage: msg("Failed to copy error-report to the clipboard."),
+    },
+  });
 
   return (
     <Button size="sm" variant="outline" onClick={() => copyToClipboard(report)}>
@@ -294,7 +311,7 @@ function CopyErrorButton({ report }: { report: string }) {
   );
 }
 
-function errorMessage(error: unknown): string {
+function errorMessage(error: unknown): string | null {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
@@ -303,7 +320,7 @@ function errorMessage(error: unknown): string {
     return error;
   }
 
-  return t("An unexpected router error occurred.");
+  return null;
 }
 
 function errorDetails(error: unknown): string {
@@ -318,6 +335,7 @@ function errorDetails(error: unknown): string {
   try {
     return JSON.stringify(error, null, 2);
   } catch {
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- error report pasted into bug reports
     return "No additional error details are available.";
   }
 }

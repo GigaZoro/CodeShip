@@ -7,25 +7,29 @@ import { Dialog, DialogPopup, DialogTitle } from "../components/ui/dialog";
 import { isInsideModalDialog } from "./modalDialog";
 
 it.each([
-  [
-    "dialog",
-    <Dialog open>
-      <DialogPopup>
-        <DialogTitle>Rename thread</DialogTitle>
-        <button type="button">Keep</button>
-      </DialogPopup>
-    </Dialog>,
-  ],
-  [
-    "alert dialog",
-    <AlertDialog open>
-      <AlertDialogPopup>
-        <AlertDialogTitle>Edit from here?</AlertDialogTitle>
-        <button type="button">Keep</button>
-      </AlertDialogPopup>
-    </AlertDialog>,
-  ],
-])("treats keys pressed in an open %s as the dialog's own", async (_name, dialog) => {
+  {
+    name: "dialog",
+    dialog: (
+      <Dialog open>
+        <DialogPopup>
+          <DialogTitle>Rename thread</DialogTitle>
+          <button type="button">Keep</button>
+        </DialogPopup>
+      </Dialog>
+    ),
+  },
+  {
+    name: "alert dialog",
+    dialog: (
+      <AlertDialog open>
+        <AlertDialogPopup>
+          <AlertDialogTitle>Edit from here?</AlertDialogTitle>
+          <button type="button">Keep</button>
+        </AlertDialogPopup>
+      </AlertDialog>
+    ),
+  },
+])("treats keys pressed in an open $name as the dialog's own", async ({ dialog }) => {
   await using _screen = await render(dialog);
   const button = page.getByRole("button", { name: "Keep" });
   await expect.element(button).toBeVisible();

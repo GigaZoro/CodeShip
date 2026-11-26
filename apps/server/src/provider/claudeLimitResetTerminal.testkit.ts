@@ -317,9 +317,10 @@ export function makeFakeClaude(script: FakeClaudeScript): FakeClaude {
     return {
       pid: 4242,
       write: (data) => {
-        keys.push(data);
+        const text = typeof data === "string" ? data : data.toString("utf8");
+        keys.push(text);
         if (exited) return;
-        press(data);
+        press(text);
         if (!exited) render();
       },
       resize: () => {},

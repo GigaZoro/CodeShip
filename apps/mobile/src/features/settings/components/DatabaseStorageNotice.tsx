@@ -1,12 +1,13 @@
 import { t } from "../../../lib/i18n";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { describeDatabaseChange } from "@t3tools/client-runtime/host-resources";
 import { offlineVacuumBytes } from "@t3tools/contracts";
 import { formatBytes } from "@t3tools/shared/formatBytes";
 
 import { copyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../../state/preferences";
+import { useAtomCommand } from "../../../state/use-atom-command";
 import { serverEnvironment } from "../../../state/server";
 import type { SettingsTarget } from "../settings-environment-filter";
 import { ListActionRow as SettingsActionRow } from "../../../components/ui/ListActionRow";
@@ -25,7 +26,7 @@ export function DatabaseStorageNotice({
     serverEnvironment.databaseCompactionRecommendations(environmentIdsKey),
   );
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const updatePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const updatePreferences = useAtomCommand(saveMobilePreferences);
   const dismissed = AsyncResult.isSuccess(preferences)
     ? (preferences.value.dismissedDatabaseStorageNotices ?? [])
     : [];
@@ -70,7 +71,7 @@ export function DatabaseStorageNotice({
           icon="xmark"
           label={t("Dismiss")}
           onPress={() =>
-            updatePreferences({
+            void updatePreferences({
               transform: (current) => ({
                 dismissedDatabaseStorageNotices: [
                   ...new Set([

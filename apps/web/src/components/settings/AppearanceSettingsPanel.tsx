@@ -4,6 +4,7 @@ import {
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
   DEFAULT_UNIFIED_SETTINGS,
   type ChatWidth,
+  type HtmlPreviewWidth,
   type EffortDisplay,
   type InterfaceDensity,
   type EnvironmentIdentificationMode,
@@ -82,6 +83,12 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, Message> = {
   comfortable: msg("Comfortable"),
   wide: msg("Wide"),
   full: msg("Full"),
+};
+
+const HTML_PREVIEW_WIDTH_LABELS: Record<HtmlPreviewWidth, Message> = {
+  chat: msg("Match chat"),
+  wide: CHAT_WIDTH_LABELS.wide,
+  full: CHAT_WIDTH_LABELS.full,
 };
 
 const INTERFACE_DENSITY_LABELS: Record<InterfaceDensity, Message> = {
@@ -347,6 +354,48 @@ export function AppearanceSettingsPanel() {
                   <SelectItem value="comfortable">{t("Comfortable (default)")}</SelectItem>
                   <SelectItem value="wide">{t("Wide")}</SelectItem>
                   <SelectItem value="full">{t("Full")}</SelectItem>
+                </SelectPopup>
+              </Select>
+            </div>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("html-preview-width")}
+          description={t(
+            "Let HTML previews in a chat grow wider than its messages, which stay centered.",
+          )}
+          resetAction={
+            settings.htmlPreviewWidth !== DEFAULT_UNIFIED_SETTINGS.htmlPreviewWidth ? (
+              <SettingResetButton
+                label={t("HTML preview width")}
+                onClick={() =>
+                  updateSettings({ htmlPreviewWidth: DEFAULT_UNIFIED_SETTINGS.htmlPreviewWidth })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="w-full sm:w-40">
+              <Select
+                value={settings.htmlPreviewWidth}
+                onValueChange={(value) => {
+                  if (value === "chat" || value === "wide" || value === "full")
+                    updateSettings({ htmlPreviewWidth: value });
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-full min-w-0"
+                  aria-label={t("HTML preview width")}
+                >
+                  <SelectValue>
+                    {t(HTML_PREVIEW_WIDTH_LABELS[settings.htmlPreviewWidth])}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem value="chat">{t("Match chat (default)")}</SelectItem>
+                  <SelectItem value="wide">{t(HTML_PREVIEW_WIDTH_LABELS.wide)}</SelectItem>
+                  <SelectItem value="full">{t(HTML_PREVIEW_WIDTH_LABELS.full)}</SelectItem>
                 </SelectPopup>
               </Select>
             </div>

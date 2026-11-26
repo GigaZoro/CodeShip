@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import {
   useLayoutEffect,
@@ -18,7 +19,6 @@ import {
 } from "./threadDetailsCardLayout";
 import { observeResize } from "../../lib/observeResize";
 import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
-import { t } from "~/i18n";
 
 export function ThreadDetailsCard({
   threadRef,
@@ -79,11 +79,10 @@ export function ThreadDetailsCard({
     const measure = () => {
       const frame = element.closest<HTMLElement>("[data-thread-details-card]");
       const next = element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0);
-      // PR lists, servers, lineage, side chats, automations, tasks and prompts scroll as they grow.
-      // Counting them toward density would hide the section and workspace controls when the user
-      // asks to see more rows.
+      // PR and issue lists, servers, repositories, lineage, side chats and automations scroll as they grow.
+      // Counting them toward density would hide the section and workspace controls when the user asks to see more.
       const lists = element.querySelectorAll<HTMLElement>(
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-flexible], [data-thread-details-server-overflow]",
+        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-details-issue-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-details-repository-overflow]",
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);

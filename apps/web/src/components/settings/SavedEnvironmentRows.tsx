@@ -23,7 +23,7 @@ import {
 } from "@t3tools/client-runtime/connection";
 import * as Option from "effect/Option";
 
-import { t, tn } from "~/i18n";
+import { t, tn, msg } from "~/i18n";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
@@ -42,6 +42,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { Button, InlineButton } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import {
@@ -50,12 +51,11 @@ import {
   supportsDesktopAppUpdate,
 } from "~/versionSkew";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
-import { isElectron } from "~/env";
 import { useT3ConnectTurnOn } from "~/cloud/useT3ConnectTurnOn";
 import { useCloudLinkController } from "~/cloud/useCloudLinkController";
 import { useManagedTunnelUsage } from "~/cloud/managedRelayState";
 import { useT3ConnectAccountPage } from "../clerk/T3ConnectAccountPages";
-import { TunnelLimitAlert, TunnelUsageMeter } from "../cloud/TunnelUsage";
+import { TunnelLimitAlert, TunnelUsageMeter, TunnelUsageMeterSkeleton } from "../cloud/TunnelUsage";
 import { environmentCatalog } from "~/connection/catalog";
 import { readEnvironmentScope } from "~/state/session";
 import { type EnvironmentPresentation, useRelayEnvironmentDiscovery } from "~/state/environments";
@@ -78,9 +78,11 @@ type SavedBackendListRowProps = {
   onSetEnabled: (environmentId: EnvironmentId, enabled: boolean) => void;
   onRemove: (environment: EnvironmentPresentation) => void;
   onAddRoute: (environment: EnvironmentPresentation) => void;
+  /** The map's details open on a machine's routes; the list keeps them folded. */
+  initialRoutesOpen?: boolean;
 };
 
-function savedBackendStatus(environment: EnvironmentPresentation): {
+export function savedBackendStatus(environment: EnvironmentPresentation): {
   readonly text: string;
   readonly tone: "muted" | "error";
 } {
@@ -94,7 +96,7 @@ function savedBackendStatus(environment: EnvironmentPresentation): {
       return { text: t("Connecting"), tone: "muted" };
     case "reconnecting":
       if (connection.awaitingApproval) {
-        return { text: connection.error ?? "Waiting for approval", tone: "muted" };
+        return { text: connection.error ?? t("Waiting for approval"), tone: "muted" };
       }
       return {
         text: connection.error
@@ -124,8 +126,9 @@ export function SavedBackendListRow({
   onSetEnabled,
   onRemove,
   onAddRoute,
+  initialRoutesOpen = false,
 }: SavedBackendListRowProps) {
-  const [routesOpen, setRoutesOpen] = useState(false);
+  const [routesOpen, setRoutesOpen] = useState(initialRoutesOpen);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
   const environmentId = environment.environmentId;
@@ -136,7 +139,11 @@ export function SavedBackendListRow({
   const isRemoving = removingEnvironmentId === environmentId;
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
-    target: t("trace ID"),
+    target: {
+      target: "trace ID",
+      unavailableMessage: msg("Clipboard API is unavailable while copying trace ID."),
+      failureMessage: msg("Failed to copy trace ID to the clipboard."),
+    },
     onError: (error) => {
       toastManager.add(
         stackedThreadToast({
@@ -151,7 +158,11 @@ export function SavedBackendListRow({
     copyTraceIdToClipboard(traceId, { traceId });
   };
   const { copyToClipboard: copyMcpUrl } = useCopyToClipboard<{ url: string }>({
-    target: t("MCP URL"),
+    target: {
+      target: "MCP URL",
+      unavailableMessage: msg("Clipboard API is unavailable while copying MCP URL."),
+      failureMessage: msg("Failed to copy MCP URL to the clipboard."),
+    },
     onCopy: ({ url }) => {
       toastManager.add({
         type: "success",
@@ -387,26 +398,22 @@ export function SavedBackendListRow({
           appearance="icon"
         />
       ) : null}
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Switch
-              size="sm"
-              checked={enabled}
-              disabled={isRemoving || blocked}
-              aria-label={
-                enabled
-                  ? t("Switch off {machine}", { machine: environment.label })
-                  : t("Switch on {machine}", { machine: environment.label })
-              }
-              onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
-            />
-          }
-        />
-        <TooltipPopup side="top">
-          {blocked ? t("Client not supported") : enabled ? t("Switch off") : t("Switch on")}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <Switch
+            size="sm"
+            checked={enabled}
+            disabled={isRemoving || blocked}
+            aria-label={
+              enabled
+                ? t("Switch off {label}", { label: environment.label })
+                : t("Switch on {label}", { label: environment.label })
+            }
+            onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
+          />
+        }
+        label={blocked ? t("Client not supported") : enabled ? t("Switch off") : t("Switch on")}
+      />
       <Menu>
         <MenuTrigger
           render={
@@ -470,10 +477,10 @@ function CloudLinkSwitch({
     />
   );
   return disabledReason ? (
-    <Tooltip>
-      <TooltipTrigger render={<span className="inline-flex">{control}</span>} />
-      <TooltipPopup side="top">{disabledReason}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<span className="inline-flex">{control}</span>}
+      label={disabledReason}
+    />
   ) : (
     control
   );
@@ -514,6 +521,8 @@ function T3ConnectTunnelUsage({ tunnelLimit }: { readonly tunnelLimit: number | 
           ) : null
         }
       />
+    ) : usage.loading ? (
+      <TunnelUsageMeterSkeleton />
     ) : null;
   return (
     <>
@@ -555,14 +564,15 @@ function ConfiguredCloudLinkRow({
     holdWebhooksWhileOffline,
     operationError,
     tunnelLimit,
+    needsRelayConfiguration,
     reconcileCloudState,
   } = useCloudLinkController(environmentId);
   const { openAuthPrompt } = useT3ConnectAuthPrompt();
   // The server unlinks and refuses relay changes under such a policy; unlinking stays possible.
   const connectDenial = managedCapabilityDenial(useManagedPolicy(environmentId), "connect");
   const turnOn = useT3ConnectTurnOn(environmentId);
-  // Turning on links from this desktop's own backend only; turning off works from anywhere.
-  const showSwitch = isElectron && (turnOn.kind !== "on-host" || managedTunnelActive);
+  // Turning on needs relay configuration permission; turning off works from anywhere.
+  const showSwitch = turnOn.kind !== "on-host" || managedTunnelActive;
   const [isUpdating, setIsUpdating] = useState(false);
   const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
 
@@ -576,6 +586,17 @@ function ConfiguredCloudLinkRow({
     cloudLinkState.data === null ||
     cloudLinkState.isPending ||
     isBusy;
+  const configureReason = t(
+    "This connection needs the relay configuration permission to configure T3 Connect.",
+  );
+  const tunnelNeedsConfigure = needsRelayConfiguration({
+    managedTunnel: !managedTunnelActive,
+    publish: publishAgentActivity,
+  });
+  const publishNeedsConfigure = needsRelayConfiguration({
+    managedTunnel: managedTunnelActive,
+    publish: !publishAgentActivity,
+  });
   // `isSignedIn` is undefined until Clerk loads. Signed out, one row shows a
   // sign-in button instead of its switch; the onboarding dialog that opens after
   // a fresh sign-in offers both linking and publishing.
@@ -712,8 +733,8 @@ function ConfiguredCloudLinkRow({
             ) : (
               <CloudLinkSwitch
                 checked={managedTunnelActive}
-                disabled={switchDisabled}
-                disabledReason={disabledReason}
+                disabled={switchDisabled || tunnelNeedsConfigure}
+                disabledReason={disabledReason ?? (tunnelNeedsConfigure ? configureReason : null)}
                 onCheckedChange={(enabled) => void updateManagedTunnel(enabled)}
               />
             )
@@ -730,12 +751,12 @@ function ConfiguredCloudLinkRow({
             "This environment was removed from T3 Connect. Run `t3 connect link` on the host to link it again.",
           )}
         />
-      ) : isElectron ? (
+      ) : (
         <SettingsRow
           title={searchableSetting("t3-connect").title}
           description={t("Run `t3 connect link` on the host, then restart T3.CodeShip there.")}
         />
-      ) : null}
+      )}
       {signedOut && showSwitch ? null : (
         <SettingsRow
           title={searchableSetting("publish-agent-activity").title}
@@ -752,8 +773,8 @@ function ConfiguredCloudLinkRow({
               <CloudLinkSwitch
                 ariaLabel={t("Publish agent activity to mobile clients")}
                 checked={publishAgentActivity}
-                disabled={switchDisabled}
-                disabledReason={disabledReason}
+                disabled={switchDisabled || publishNeedsConfigure}
+                disabledReason={disabledReason ?? (publishNeedsConfigure ? configureReason : null)}
                 onCheckedChange={(enabled) => void updatePublishAgentActivity(enabled)}
               />
             )
@@ -787,13 +808,13 @@ function ConfiguredCloudLinkRow({
           managed={connectDenial}
           control={
             <CloudLinkSwitch
-              ariaLabel="Require approval for new T3 Connect devices"
+              ariaLabel={t("Require approval for new T3 Connect devices")}
               checked={connectDeviceApproval.required}
               disabled={!connectDeviceApproval.canManage}
               disabledReason={
                 connectDeviceApproval.canManage
                   ? null
-                  : "Your session does not have permission to manage access."
+                  : t("Your session does not have permission to manage access.")
               }
               onCheckedChange={(enabled) =>
                 updateEnvironmentSettings({ requireConnectDeviceApproval: enabled })
@@ -866,10 +887,21 @@ function EmptyRemoteEnvironments({ cloudEnabled = true }: { readonly cloudEnable
 export function CloudRemoteEnvironmentRows({
   primaryEnvironmentId,
   savedEnvironments,
+  only,
 }: {
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironments: ReadonlyArray<EnvironmentPresentation>;
+  readonly only?: EnvironmentId;
 }) {
+  if (only !== undefined) {
+    return (
+      <CloudEnvironmentConnectRows
+        only={only}
+        primaryEnvironmentId={primaryEnvironmentId}
+        savedEnvironments={savedEnvironments}
+      />
+    );
+  }
   return hasCloudPublicConfig() ? (
     <CloudEnvironmentConnectRows
       primaryEnvironmentId={primaryEnvironmentId}

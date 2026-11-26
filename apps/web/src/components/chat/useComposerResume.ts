@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import {
   type EnvironmentId,
   type ProviderInteractionMode,
@@ -19,7 +22,6 @@ import type { makeThreadErrorSetter } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
 import type { useTimelineFollow } from "./useTimelineFollow";
 import type { useUsageLimitsPanel } from "./useUsageLimitsPanel";
-import { t } from "~/i18n";
 
 interface ComposerResumeInput {
   readonly environmentId: EnvironmentId;
@@ -148,7 +150,7 @@ export function useComposerResume(input: ComposerResumeInput) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
           threadId,
-          error instanceof Error ? error.message : t("Could not resume thread."),
+          thrownErrorMessage(error, t) ?? t(msg("Could not resume thread.")),
         );
       }
     } else {

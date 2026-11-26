@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type {
   AssetCreateUrlResult,
   AssetResource,
@@ -32,7 +33,6 @@ import {
 
 import { resolveBrowserDefaults } from "./browserDefaults";
 
-import { t } from "~/i18n";
 export const isBrowserPreviewFile = (path: string): boolean =>
   /\.(?:html?|pdf)$/i.test(path.split(/[?#]/, 1)[0] ?? "");
 

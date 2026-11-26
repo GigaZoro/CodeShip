@@ -1,3 +1,4 @@
+import { isSecretsFeatureEnabled } from "../../env";
 import {
   SecretReference,
   type EnvironmentId,
@@ -7,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { builtInSecretProviderDefinitions } from "@t3tools/secret-provider-definitions/registry";
 import { isOnePasswordLinuxServiceAccountReference } from "@t3tools/secret-provider-onepassword/shared/definition";
+import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -14,7 +16,6 @@ import { AlertTriangleIcon, CheckIcon, KeyRoundIcon, RefreshCwIcon, TypeIcon } f
 import { useId, useState, type ComponentProps, type ComponentType, type ReactNode } from "react";
 
 import { t } from "~/i18n";
-import { isSecretsFeatureEnabled } from "../../env";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { OnePasswordIcon } from "../Icons";
 import { serverEnvironment } from "../../state/server";
@@ -23,9 +24,9 @@ import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Spinner } from "../ui/spinner";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SecretInput } from "./SecretInput";
 import { classifySecretProvider, type SecretProviderAuth } from "./SecretProviderDialog.logic";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export interface SecretSource {
   readonly id: SecretProviderId;
@@ -42,12 +43,18 @@ const decodeSecretReference = Schema.decodeUnknownOption(SecretReference);
 export function useSecretSources(environmentId: EnvironmentId): ReadonlyArray<SecretSource> {
   const providers = useEnvironmentSettings(environmentId, (settings) => settings.secretProviders);
   const configAtom = serverEnvironment.configValueAtom(environmentId);
-  const supported = useAtomValue(configAtom, (config) => config?.secretReferences === true);
+  const supported = useAtomValue(
+    configAtom,
+    (config) =>
+      isSecretsFeatureEnabled &&
+      hasFeatureFlag(config, "secretProviders") &&
+      config?.secretReferences === true,
+  );
   const serviceAccountSupported = useAtomValue(
     configAtom,
     (config) => config?.onePasswordServiceAccount === true,
   );
-  if (!isSecretsFeatureEnabled || !supported) return NO_SECRET_SOURCES;
+  if (!supported) return NO_SECRET_SOURCES;
   return (Object.entries(providers) as Array<[SecretProviderId, SecretProviderConfig]>).flatMap(
     ([id, config]) => {
       const classified = classifySecretProvider(config);
@@ -153,7 +160,8 @@ function SecretCheckButton(props: {
   const state = check?.secretKey === secretKey ? check.state : undefined;
 
   const run = async () => {
-    setCheck({ secretKey, state: { status: "checking" } });
+    const pending = { secretKey, state: { status: "checking" } } as const;
+    setCheck(pending);
     const response = await checkSecretSource({ environmentId, input: { source: secret } });
     const next: SecretCheck =
       response._tag !== "Success"
@@ -161,9 +169,7 @@ function SecretCheckButton(props: {
         : response.value._tag === "Resolved"
           ? { status: "resolved" }
           : { status: "failed", detail: response.value.detail };
-    setCheck((previous) =>
-      previous?.secretKey === secretKey ? { secretKey, state: next } : previous,
-    );
+    setCheck((previous) => (previous === pending ? { secretKey, state: next } : previous));
   };
 
   if (!supported) return null;
@@ -177,39 +183,37 @@ function SecretCheckButton(props: {
           ? t("Secret resolved")
           : state.detail;
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span className="inline-flex">
-            <Button
-              type="button"
-              size="icon-micro"
-              variant="ghost-muted"
-              disabled={props.disabled === true || !canCheck || state?.status === "checking"}
-              onClick={() => void run()}
-              aria-label={
-                state?.status === "failed"
-                  ? t("{label} failed: {detail}", { label: props.label, detail: state.detail })
-                  : state?.status === "resolved"
-                    ? t("{label} resolved", { label: props.label })
-                    : props.label
-              }
-            >
-              {state?.status === "checking" ? (
-                <Spinner />
-              ) : state?.status === "resolved" ? (
-                <CheckIcon className="text-success-foreground" />
-              ) : state?.status === "failed" ? (
-                <AlertTriangleIcon className="text-destructive" />
-              ) : (
-                <RefreshCwIcon />
-              )}
-            </Button>
-          </span>
-        }
-      />
-      <TooltipPopup side="top">{description}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <span className="inline-flex">
+          <Button
+            type="button"
+            size="icon-micro"
+            variant="ghost-muted"
+            disabled={props.disabled === true || !canCheck || state?.status === "checking"}
+            onClick={() => void run()}
+            aria-label={
+              state?.status === "failed"
+                ? t("{label} failed: {detail}", { label: props.label, detail: state.detail })
+                : state?.status === "resolved"
+                  ? t("{label} resolved", { label: props.label })
+                  : props.label
+            }
+          >
+            {state?.status === "checking" ? (
+              <Spinner />
+            ) : state?.status === "resolved" ? (
+              <CheckIcon className="text-success-foreground" />
+            ) : state?.status === "failed" ? (
+              <AlertTriangleIcon className="text-destructive" />
+            ) : (
+              <RefreshCwIcon />
+            )}
+          </Button>
+        </span>
+      }
+      label={description}
+    />
   );
 }
 

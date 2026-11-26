@@ -1,11 +1,9 @@
+import { getFormattingLocale, t, tn } from "~/i18n";
 /* oxlint-disable react/no-array-index-key -- Read-only cells retain their database row and column positions. */
-import {
-  decodeFilePreviewText,
-  filePreviewKind,
-  hostPreviewMimeTypeFromExtension,
-} from "@t3tools/shared/filePreview";
+import { decodeFilePreviewText, filePreviewKind } from "@t3tools/shared/filePreview";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { ChevronLeftIcon, ChevronRightIcon, FileIcon, FolderIcon } from "lucide-react";
+
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import {
@@ -27,14 +25,28 @@ import {
   type BinaryWorkerRequest,
   type BinaryWorkerResult,
 } from "./binaryPreviewProtocol";
+import { archiveImageUrl } from "./archiveImageUrl";
 import { PreviewImage } from "./PreviewImage";
 import { readBinaryPreview } from "./readBinaryPreview";
-import { getFormattingLocale, t, tn } from "~/i18n";
+import { previewErrorText, previewFailureText } from "./previewFailureMessages";
 
 const SourcePreview = lazy(() => import("./ReadOnlySourcePreview"));
 type Archive = Extract<BinaryWorkerResult, { type: "archive" }>;
 type Database = Extract<BinaryWorkerResult, { type: "sqlite" }>;
 type Rows = Extract<BinaryWorkerResult, { type: "rows" }>;
+
+const rowsLabel = (count: number) =>
+  tn(count, "{formatted} row", "{formatted} rows", {
+    formatted: count.toLocaleString(getFormattingLocale()),
+  });
+const columnsLabel = (count: number) =>
+  tn(count, "{formatted} column", "{formatted} columns", {
+    formatted: count.toLocaleString(getFormattingLocale()),
+  });
+const entriesLabel = (count: number) =>
+  tn(count, "{formatted} entry", "{formatted} entries", {
+    formatted: count.toLocaleString(getFormattingLocale()),
+  });
 
 function ArchiveFile(props: { readonly path: string; readonly bytes: Uint8Array<ArrayBuffer> }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -50,15 +62,10 @@ function ArchiveFile(props: { readonly path: string; readonly bytes: Uint8Array<
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Create an object URL for the extracted image and revoke it when the entry changes or unmounts.
   useEffect(() => {
     if (kind !== "image") return;
-    const extension = props.path.slice(props.path.lastIndexOf("."));
-    const objectUrl = URL.createObjectURL(
-      new Blob([props.bytes], {
-        type: hostPreviewMimeTypeFromExtension(extension) ?? "application/octet-stream",
-      }),
-    );
+    const image = archiveImageUrl(props.path, props.bytes);
     // oxlint-disable-next-line react/set-state-in-effect -- Publish a Blob URL only after registering its cleanup.
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
+    setUrl(image.url);
+    return image.revoke;
   }, [props.bytes, props.path, kind]);
   if (kind === "image")
     return url ? <PreviewImage key={url} src={url} name={props.path} /> : <FileSurfaceLoading />;
@@ -139,7 +146,7 @@ export default function BinaryViewer(props: {
       if (timerRef.current) clearTimeout(timerRef.current);
       const result = event.data;
       setBusy(false);
-      if (result.type === "error") setError(result.message);
+      if (result.type === "error") setError(previewFailureText(result));
       else if (result.type === "archive") setArchive(result);
       else if (result.type === "entry") setEntry(result);
       else if (result.type === "rows") setRows(result);
@@ -159,9 +166,7 @@ export default function BinaryViewer(props: {
           worker.postMessage({ type: "open", name: props.name, kind: props.kind, bytes }, [bytes]);
         }
       })
-      .catch((cause: unknown) =>
-        fail(cause instanceof Error ? cause.message : t("Could not read this file.")),
-      );
+      .catch((cause: unknown) => fail(previewErrorText(cause, t("Could not read this file."))));
     return () => {
       controller.abort();
       worker.terminate();
@@ -179,19 +184,28 @@ export default function BinaryViewer(props: {
   };
   const children = new Map<
     string,
-    { path: string; directory: boolean; size: number; modified: string | null }
+    { path: string; entryPath: string; directory: boolean; size: number; modified: string | null }
   >();
   for (const item of archive?.entries ?? []) {
-    if (!item.path.startsWith(folder)) continue;
-    const rest = item.path.slice(folder.length).replace(/\/$/, "");
+    const name = item.path.replace(/^\/+|\/+$/g, "").replace(/\/{2,}/g, "/");
+    if (!name.startsWith(folder)) continue;
+    const rest = name.slice(folder.length);
     if (!rest) continue;
     const slash = rest.indexOf("/");
-    const path = slash < 0 ? item.path.replace(/\/$/, "") : `${folder}${rest.slice(0, slash)}`;
+    const path = slash < 0 ? name : `${folder}${rest.slice(0, slash)}`;
     const directory = slash >= 0 || item.directory;
-    const key = `${path}${directory ? "/" : ""}`;
+    // Files stay keyed by their raw name so `/a.txt` and `a.txt` remain two openable rows.
+    const key = directory ? `d:${path}` : `f:${item.path}`;
     const previous = children.get(key);
-    if (previous) previous.size += item.size;
-    else children.set(key, { path, directory, size: item.size, modified: item.modified });
+    if (previous && directory) previous.size += item.size;
+    else
+      children.set(key, {
+        path,
+        entryPath: item.path,
+        directory,
+        size: item.size,
+        modified: item.modified,
+      });
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -213,8 +227,8 @@ export default function BinaryViewer(props: {
             {selectedPath ?? (folder || t("Archive contents"))}
           </span>
           <span className="shrink-0 text-muted-foreground">
-            {tn(archive.entries.length, "{count} entry", "{count} entries")}
-            {sizeBytes !== null ? ` · ${formatAttachmentSize(sizeBytes)}` : ""}
+            {entriesLabel(archive.entries.length)}
+            {sizeBytes !== null ? ` · ${formatAttachmentSize(sizeBytes, t)}` : ""}
           </span>
         </div>
       ) : null}
@@ -235,17 +249,13 @@ export default function BinaryViewer(props: {
                   size="xs"
                 >
                   <SelectValue>
-                    {tn(table.count, "{name} ({count} row)", "{name} ({count} rows)", {
-                      name: table.name,
-                    })}
+                    {table.name} ({rowsLabel(table.count)})
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
                   {database.tables.map((item) => (
                     <SelectItem key={item.name} value={item.name}>
-                      {tn(item.count, "{name} ({count} row)", "{name} ({count} rows)", {
-                        name: item.name,
-                      })}
+                      {item.name} ({rowsLabel(item.count)})
                     </SelectItem>
                   ))}
                 </SelectPopup>
@@ -261,9 +271,9 @@ export default function BinaryViewer(props: {
             <span className="shrink-0 tabular-nums" aria-live="polite">
               {table.count === 0
                 ? t("0 rows")
-                : t("{from}–{to} of {total}", {
-                    from: page * SQLITE_PAGE_SIZE + 1,
-                    to: Math.min(table.count, (page + 1) * SQLITE_PAGE_SIZE),
+                : t("{start}–{end} of {total}", {
+                    start: String(page * SQLITE_PAGE_SIZE + 1),
+                    end: String(Math.min(table.count, (page + 1) * SQLITE_PAGE_SIZE)),
                     total: table.count.toLocaleString(getFormattingLocale()),
                   })}
             </span>
@@ -279,13 +289,8 @@ export default function BinaryViewer(props: {
             className="border-b border-border/60 px-3 py-2 text-xs text-muted-foreground tabular-nums"
             role="status"
           >
-            {t("{rows} · {columns}", {
-              rows: tn(table.count, "{count} row", "{count} rows"),
-              columns: rows
-                ? tn(rows.columns.length, "{count} column", "{count} columns")
-                : t("… columns"),
-            })}
-            {sizeBytes !== null ? ` · ${formatAttachmentSize(sizeBytes)}` : ""}
+            {rowsLabel(table.count)} · {rows ? columnsLabel(rows.columns.length) : t("… columns")}
+            {sizeBytes !== null ? ` · ${formatAttachmentSize(sizeBytes, t)}` : ""}
           </div>
           <FileSurfaceNotice>
             {t(
@@ -332,7 +337,7 @@ export default function BinaryViewer(props: {
                 )
                 .map((item) => (
                   <tr
-                    key={`${item.path}${item.directory ? "/" : ""}`}
+                    key={item.directory ? `d:${item.path}` : `f:${item.entryPath}`}
                     className="hover:bg-muted/40"
                   >
                     <td className="max-w-0 border-b border-border/60">
@@ -344,7 +349,7 @@ export default function BinaryViewer(props: {
                           else {
                             setSelectedPath(item.path);
                             setEntry(null);
-                            send({ type: "entry", path: item.path });
+                            send({ type: "entry", path: item.entryPath });
                           }
                         }}
                       >
@@ -357,7 +362,7 @@ export default function BinaryViewer(props: {
                       </button>
                     </td>
                     <td className="w-20 border-b border-border/60 px-3 py-2 text-right whitespace-nowrap text-muted-foreground tabular-nums">
-                      {formatAttachmentSize(item.size)}
+                      {formatAttachmentSize(item.size, t)}
                     </td>
                     <td className="w-28 border-b border-border/60 px-3 py-2 text-right whitespace-nowrap text-muted-foreground">
                       {item.modified

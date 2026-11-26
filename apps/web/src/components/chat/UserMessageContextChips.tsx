@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { useNativeFileDrag } from "../../useNativeFileDrag";
+import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { documentChipKindForFileName } from "~/pierre-icons";
 import { isSvgAttachment } from "@t3tools/shared/image";
 import { useRenderedAppearance } from "../../hooks/useTheme";
@@ -30,7 +33,6 @@ import type { ComposerContextId, KnownComposerContextRecord } from "@t3tools/con
 import { buildExpandedImagePreview } from "./ExpandedImagePreview";
 import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   ContextChipPopover as UserMessageContextPopover,
   FileChip,
@@ -41,9 +43,12 @@ import {
 } from "../contextChipParts";
 import {
   isPullRequestSummaryContext,
+  previewAnnotationTargetText,
   pullRequestContextDisplayState,
   pullRequestContextKindLabel,
   reviewCommentContextLabel,
+  reviewCommentRangeText,
+  reviewCommentSectionText,
 } from "~/lib/composerContextRecords";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { ContextChip, ContextChipLabel, type ContextChipKind } from "../ContextChip";
@@ -62,45 +67,50 @@ import {
 } from "../../reviewCommentContext";
 import { TimelineRowCtx } from "./timelineRowContext";
 import { userMessageFileLabel } from "./TimelineUserMessageRow.logic";
-import { t } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 function UserMessageMentionChip(props: {
   record: Extract<KnownComposerContextRecord, { kind: "mention" }>;
   copyMarkdown: string;
 }) {
   const ctx = use(TimelineRowCtx);
+  const nativeDrag = useNativeFileDrag(ctx.activeThreadEnvironmentId, () =>
+    resolvePathLinkTarget(props.record.path, ctx.workspaceRoot ?? ""),
+  );
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <ContextChip
-            kind={documentChipKindForFileName(props.record.path) ?? "mention"}
-            render={<button type="button" />}
-            aria-label={t("Preview {name}", { name: props.record.path })}
-            data-markdown-copy={props.copyMarkdown}
-            onClick={() => {
-              if (ctx.threadRef)
-                useRightPanelStore.getState().openFile(ctx.threadRef, props.record.path);
-            }}
-          >
-            <WorkspaceEntryIcon
-              path={props.record.path}
-              environmentId={ctx.activeThreadEnvironmentId}
-              cwd={ctx.workspaceRoot}
-              theme={ctx.resolvedTheme}
-            />
-            <ContextChipLabel>{props.record.label}</ContextChipLabel>
-          </ContextChip>
-        }
-      />
-      <TooltipPopup>
-        <WorkspaceEntryTooltip
-          path={props.record.path}
-          environmentId={ctx.activeThreadEnvironmentId}
-          cwd={ctx.workspaceRoot}
-        />
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <ContextChip
+          {...nativeDrag}
+          kind={documentChipKindForFileName(props.record.path) ?? "mention"}
+          render={<button type="button" />}
+          aria-label={t("Preview {name}", { name: props.record.path })}
+          data-markdown-copy={props.copyMarkdown}
+          onClick={() => {
+            if (ctx.threadRef)
+              useRightPanelStore.getState().openFile(ctx.threadRef, props.record.path);
+          }}
+        >
+          <WorkspaceEntryIcon
+            path={props.record.path}
+            environmentId={ctx.activeThreadEnvironmentId}
+            cwd={ctx.workspaceRoot}
+            theme={ctx.resolvedTheme}
+          />
+          <ContextChipLabel>{props.record.label}</ContextChipLabel>
+        </ContextChip>
+      }
+      label={
+        <>
+          <WorkspaceEntryTooltip
+            path={props.record.path}
+            environmentId={ctx.activeThreadEnvironmentId}
+            cwd={ctx.workspaceRoot}
+          />
+        </>
+      }
+      className="pointer-events-auto"
+    />
   );
 }
 
@@ -126,14 +136,15 @@ function UserMessagePullRequestContextChip(props: {
   kind: ContextChipKind;
 }) {
   const { activeThreadEnvironmentId, openPullRequest } = use(TimelineRowCtx);
+
   const metadata = props.record.pullRequest;
   if (metadata === undefined) return null;
   return (
     <PullRequestChip
       metadata={metadata}
       environmentId={activeThreadEnvironmentId}
-      label={reviewCommentContextLabel(props.record)}
-      kindLabel={pullRequestContextKindLabel(props.record)}
+      label={reviewCommentContextLabel(props.record, t)}
+      kindLabel={pullRequestContextKindLabel(props.record, t)}
       kind={props.kind}
       copyMarkdown={props.copyMarkdown}
       onOpen={openPullRequest}
@@ -146,7 +157,9 @@ function UserMessagePreviewAnnotationDetails(props: {
   image: ChatImageAttachment | null;
 }) {
   const ctx = use(TimelineRowCtx);
+
   const visibleElements = props.record.elements ?? [];
+  const targetText = previewAnnotationTargetText(props.record);
   return (
     <div className="max-w-full overflow-hidden rounded-lg border border-border/70 bg-background/70">
       {props.image?.previewUrl ? (
@@ -181,9 +194,7 @@ function UserMessagePreviewAnnotationDetails(props: {
           </div>
         ) : null}
         <div className="mt-1 flex items-center gap-2 text-secondary-label text-3xs">
-          {props.record.targetSummary ? (
-            <span className="truncate">{props.record.targetSummary}</span>
-          ) : null}
+          {targetText ? <span className="truncate">{targetText}</span> : null}
           {(props.record.styleChanges?.length ?? 0) > 0 ? (
             <span className="inline-flex shrink-0 items-center gap-1">
               <PaintbrushIcon className="size-3" />
@@ -276,6 +287,7 @@ interface UserMessageContextRenderContext {
   onExpandImage: (image: ChatImageAttachment) => void;
   onExpandVideo: (file: ChatFileAttachment) => void;
   onOpenFile: (file: ChatFileAttachment) => void;
+  resolve: typeof t;
 }
 
 function UnavailableUserMessageContextChip(props: UserMessageContextRenderContext) {
@@ -283,7 +295,7 @@ function UnavailableUserMessageContextChip(props: UserMessageContextRenderContex
     <UnresolvedChip
       label={props.reference.label}
       copyMarkdown={props.copyMarkdown}
-      tooltip={t("This context is no longer available.")}
+      tooltip={props.resolve(msg("This context is no longer available."))}
     />
   );
 }
@@ -369,7 +381,7 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
           <ImageChipButton
             name={record.name}
             previewUrl={attachment.previewUrl}
-            size={formatAttachmentSize(record.sizeBytes)}
+            size={formatAttachmentSize(record.sizeBytes, context.resolve)}
             data-markdown-copy={context.copyMarkdown}
             onClick={() => context.onExpandImage(attachment)}
           />
@@ -390,13 +402,13 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
         }
         const attachment = context.attachment;
         const isVideo = isVideoAttachment(attachment);
-        const label = userMessageFileLabel(attachment);
+        const label = userMessageFileLabel(attachment, context.resolve);
         const disabled =
           attachment.downloadable === false && (!isVideo || attachment.previewUrl === undefined);
         const size =
           attachment.downloadable === false
-            ? t("Sending…")
-            : formatAttachmentSize(record.sizeBytes);
+            ? context.resolve(msg("Sending…"))
+            : formatAttachmentSize(record.sizeBytes, context.resolve);
         return (
           <FileChip
             name={label}
@@ -411,8 +423,8 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
             disabled={disabled}
             accessibleLabel={
               isVideo
-                ? t("Video attachment, {label}, {size}", { label, size })
-                : t("File attachment, {label}, {size}", { label, size })
+                ? context.resolve("Video attachment, {label}, {size}", { label, size })
+                : context.resolve("File attachment, {label}, {size}", { label, size })
             }
             copyMarkdown={context.copyMarkdown}
             onOpen={() =>
@@ -430,7 +442,6 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
         record.kind === "terminal" ? (
           <span data-markdown-copy={context.copyMarkdown}>
             <TerminalContextInlineChip
-              label={record.label}
               terminalLabel={record.terminalLabel}
               lineStart={record.lineStart}
               lineEnd={record.lineEnd}
@@ -449,7 +460,7 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
         record.kind === "element" ? (
           <UserMessageContextPopover
             copyMarkdown={context.copyMarkdown}
-            accessibleLabel={`Browser element, ${record.label}`}
+            accessibleLabel={context.resolve("Browser element, {label}", { label: record.label })}
             kind="element"
             icon={<MousePointerClickIcon />}
             label={record.label}
@@ -468,8 +479,10 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
           return <UnavailableUserMessageContextChip {...context} />;
         }
         const isPullRequest = isPullRequestSummaryContext(record);
-        const label = reviewCommentContextLabel(record);
-        const kindLabel = isPullRequest ? pullRequestContextKindLabel(record) : t("Review comment");
+        const label = reviewCommentContextLabel(record, context.resolve);
+        const kindLabel = isPullRequest
+          ? pullRequestContextKindLabel(record, context.resolve)
+          : context.resolve(msg("Review comment"));
         const pullRequestState = pullRequestContextDisplayState(record) ?? "unknown";
         if (isPullRequest && record.pullRequest !== undefined) {
           return (
@@ -485,12 +498,12 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
             copyMarkdown={context.copyMarkdown}
             accessibleLabel={
               record.pullRequest
-                ? t("{kind}, {label}, {title}", {
+                ? context.resolve("{kind}, {label}, {title}", {
                     kind: kindLabel,
                     label,
                     title: record.pullRequest.title,
                   })
-                : t("{kind}, {label}", { kind: kindLabel, label })
+                : context.resolve("{kind}, {label}", { kind: kindLabel, label })
             }
             kind={isPullRequest ? PULL_REQUEST_CHIP_KINDS[pullRequestState] : "review-comment"}
             icon={isPullRequest ? <PullRequestGlyph.pullRequest /> : <MessageCircleIcon />}
@@ -524,7 +537,9 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
         record.kind === "preview-annotation" ? (
           <UserMessageContextPopover
             copyMarkdown={context.copyMarkdown}
-            accessibleLabel={`Preview annotation, ${record.label}`}
+            accessibleLabel={context.resolve("Preview annotation, {label}", {
+              label: record.label,
+            })}
             kind="preview-annotation"
             icon={<MousePointerClickIcon />}
             label={record.label}
@@ -549,6 +564,7 @@ export function UserMessageContextReferenceChip(props: {
   onOpenFile: (file: ChatFileAttachment) => void;
 }) {
   const { resolvedTheme, activeThreadEnvironmentId } = use(TimelineRowCtx);
+
   const copyMarkdown = formatComposerContextReference({
     kind: props.reference.kind,
     contextId: props.reference.contextId as ComposerContextId,
@@ -564,6 +580,7 @@ export function UserMessageContextReferenceChip(props: {
     onExpandImage: props.onExpandImage,
     onExpandVideo: props.onExpandVideo,
     onOpenFile: props.onOpenFile,
+    resolve: t,
   });
 }
 
@@ -574,6 +591,8 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
   const renderablePatch = getRenderablePatch(
     buildReviewCommentRenderablePatch(comment),
     `review-comment:${comment.id}`,
+    undefined,
+    t,
   );
 
   return (
@@ -583,7 +602,8 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
           {formatWorkspaceRelativePath(comment.filePath, ctx.workspaceRoot)}
         </div>
         <div className="text-2xs text-muted-foreground">
-          {comment.sectionTitle} · {comment.rangeLabel}
+          {reviewCommentSectionText(comment.sectionTitle, t)} ·{" "}
+          {reviewCommentRangeText(comment.rangeLabel, t)}
         </div>
       </div>
       {comment.text.length > 0 && (

@@ -1,7 +1,7 @@
 import type { ServerProcessSignal } from "@t3tools/contracts";
 
 import { InlineButton } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { t } from "~/i18n";
 
 export function ProcessSignalActions({
@@ -13,36 +13,32 @@ export function ProcessSignalActions({
 }) {
   return (
     <div className="flex items-center justify-end gap-1.5">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <InlineButton
-              disabled={disabled}
-              aria-label={t("Send SIGINT")}
-              tone="muted"
-              onClick={() => onSignal("SIGINT")}
-            >
-              {"INT"}
-            </InlineButton>
-          }
-        />
-        <TooltipPopup side="top">{t("Send SIGINT")}</TooltipPopup>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <InlineButton
-              disabled={disabled}
-              aria-label={t("Send SIGKILL")}
-              tone="destructive"
-              onClick={() => onSignal("SIGKILL")}
-            >
-              {"KILL"}
-            </InlineButton>
-          }
-        />
-        <TooltipPopup side="top">{t("Send SIGKILL")}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <InlineButton
+            disabled={disabled}
+            aria-label={t("Send {signal}", { signal: "SIGINT" })}
+            tone="muted"
+            onClick={() => onSignal("SIGINT")}
+          >
+            {"INT"}
+          </InlineButton>
+        }
+        label={<>{t("Send {value}", { value: "SIGINT" })}</>}
+      />
+      <SharedTooltipTrigger
+        render={
+          <InlineButton
+            disabled={disabled}
+            aria-label={t("Send {signal}", { signal: "SIGKILL" })}
+            tone="destructive"
+            onClick={() => onSignal("SIGKILL")}
+          >
+            {"KILL"}
+          </InlineButton>
+        }
+        label={<>{t("Send {value}", { value: "SIGKILL" })}</>}
+      />
     </div>
   );
 }

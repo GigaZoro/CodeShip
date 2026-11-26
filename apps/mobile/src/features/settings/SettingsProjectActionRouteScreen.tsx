@@ -180,6 +180,7 @@ function ProjectActionForm(props: {
             accessibilityLabel={t("Command")}
             value={command}
             onChangeText={setCommand}
+            // oxlint-disable-next-line t3code/no-untranslated-copy -- This placeholder is a shell command.
             placeholder={"bun test"}
             editable={editable}
             multiline

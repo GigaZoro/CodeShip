@@ -1,3 +1,4 @@
+import { tn } from "../lib/i18n";
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import { resolveThreadOutboxDeliveryAction } from "@t3tools/client-runtime/state/thread-outbox";
 import type { EnvironmentId, MessageId, ProjectId } from "@t3tools/contracts";
@@ -49,8 +50,7 @@ function draftTitle(draft: ComposerDraft): string {
   if (draft.text.trim().length > 0) {
     return deriveThreadTitleFromPrompt(draft.text);
   }
-  const count = draft.attachments.length;
-  return count === 1 ? "1 attachment" : `${count} attachments`;
+  return tn(draft.attachments.length, "{count} attachment", "{count} attachments");
 }
 
 /** A project's new-task defaults, as useNewTaskProjectDefaults resolves them. */

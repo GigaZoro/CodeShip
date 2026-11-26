@@ -18,7 +18,7 @@ export type UsageScanInstance = Pick<
  */
 export interface UsageScanSettings extends Pick<
   ServerSettings,
-  "usagePriceOverrides" | "usageModelAliases" | "usageModelFilter"
+  "usagePriceOverrides" | "usageModelAliases" | "usageModelFilter" | "usageHistoryRetentionDays"
 > {
   readonly providerInstances: Readonly<Record<ProviderInstanceId, UsageScanInstance>>;
 }
@@ -28,6 +28,7 @@ export function usageScanSettings(settings: ServerSettings): UsageScanSettings {
     usagePriceOverrides: settings.usagePriceOverrides,
     usageModelAliases: settings.usageModelAliases,
     usageModelFilter: settings.usageModelFilter,
+    usageHistoryRetentionDays: settings.usageHistoryRetentionDays,
     providerInstances: Object.fromEntries(
       Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
         instanceId,

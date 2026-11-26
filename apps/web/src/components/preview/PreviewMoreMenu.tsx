@@ -1,4 +1,6 @@
+import { type Message, msg, t } from "~/i18n";
 import type { DesktopPreviewColorScheme } from "@t3tools/contracts";
+
 import { Minus, MoreVertical, Plus as PlusIcon, RotateCcw } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
@@ -17,8 +19,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "~/components/ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { msg, t, type Message } from "~/i18n";
+import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
 
 const COLOR_SCHEME_OPTIONS: ReadonlyArray<{
   value: DesktopPreviewColorScheme;
@@ -55,9 +56,9 @@ interface Props {
   move?: { readonly label: string; readonly onMove: () => void };
 }
 
-const MenuTriggerButton = () => (
-  <Tooltip>
-    <TooltipTrigger
+const MenuTriggerButton = () => {
+  return (
+    <SharedTooltipTrigger
       render={
         <MenuTrigger
           render={
@@ -65,12 +66,12 @@ const MenuTriggerButton = () => (
           }
         />
       }
+      label={<>{t("More")}</>}
     >
       <MoreVertical />
-    </TooltipTrigger>
-    <TooltipPopup>{t("More")}</TooltipPopup>
-  </Tooltip>
-);
+    </SharedTooltipTrigger>
+  );
+};
 
 export function PreviewMoreMenu({
   enabled,
@@ -178,7 +179,7 @@ export function PreviewMoreMenu({
         <MenuGroup>
           {profileName ? (
             <MenuGroupLabel className="max-w-64">
-              <span className="block truncate">{t("Profile: {name}", { name: profileName })}</span>
+              <span className="block truncate">{t("Profile: {profileName}", { profileName })}</span>
             </MenuGroupLabel>
           ) : null}
           <MenuItem onClick={actions.clearCookies}>{t("Clear cookies")}</MenuItem>

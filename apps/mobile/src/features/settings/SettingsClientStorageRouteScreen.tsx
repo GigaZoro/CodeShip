@@ -75,10 +75,10 @@ export function SettingsClientStorageRouteScreen() {
     <SettingsScreen title={t("Client Storage")}>
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
-        contentInset={{ bottom: Math.max(insets.bottom, 18) }}
         showsVerticalScrollIndicator={false}
         className="flex-1"
-        contentContainerClassName="gap-6 px-5 pt-4 pb-[18px]"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <SettingsSection title={t("Environment caches")}>
           {AsyncResult.isFailure(summaryResult) ? (

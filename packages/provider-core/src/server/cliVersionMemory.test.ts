@@ -37,6 +37,7 @@ const makeMemory = Effect.fn("makeMemory")(function* (cacheDir: string) {
     Effect.provideService(
       ProviderHost.ProviderHost,
       ProviderHost.ProviderHost.of({
+        compatibility: () => Effect.undefined,
         paths: {
           cwd: process.cwd(),
           baseDir: path.dirname(cacheDir),

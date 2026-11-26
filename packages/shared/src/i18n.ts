@@ -203,7 +203,7 @@ function displayed(translated: string | PluralForms | undefined, message: string
   return pseudoActive ? pseudoize(text) : text;
 }
 
-function interpolate(text: string, values: MessageValues | undefined): string {
+export function interpolateMessage(text: string, values: MessageValues | undefined): string {
   if (values === undefined) return text;
   return text.replace(PLACEHOLDER, (placeholder, name: string) =>
     Object.hasOwn(values, name) ? String(values[name]) : placeholder,
@@ -212,7 +212,7 @@ function interpolate(text: string, values: MessageValues | undefined): string {
 
 /** Translates English source text. `{name}` placeholders take `values`. */
 export function t<M extends string>(message: MessageKey<M>, values?: MessageValues): string {
-  return interpolate(displayed(activeCatalog[message], message), values);
+  return interpolateMessage(displayed(activeCatalog[message], message), values);
 }
 
 /**
@@ -228,7 +228,7 @@ export function tn(count: number, one: string, other: string, values?: MessageVa
       : pluralCategory("en", count) === "one"
         ? one
         : other;
-  return interpolate(pseudoActive ? pseudoize(text) : text, {
+  return interpolateMessage(pseudoActive ? pseudoize(text) : text, {
     count: activeCountFormat.format(count),
     ...values,
   });

@@ -1,4 +1,5 @@
-import type { PullRequestListEntry, PullRequestSummary } from "@t3tools/contracts";
+import { getFormattingLocale, msg, t, tn, tx } from "~/i18n";
+import type { PullRequestListEntry, PullRequestSummary, ScopedThreadRef } from "@t3tools/contracts";
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
@@ -9,14 +10,14 @@ import {
   UserPlusIcon,
   UsersIcon,
 } from "lucide-react";
+
 import type { ReactNode } from "react";
 import {
-  capitalizeTerm,
   sourceControlClients,
   type ChangeRequestTerminology,
 } from "@t3tools/client-runtime/source-control-clients";
 
-import { readLocalApi } from "~/localApi";
+import { useOpenLink } from "~/browser/useOpenLink";
 import { cn } from "~/lib/utils";
 import { RelativeTime } from "~/components/RelativeTime";
 
@@ -36,20 +37,21 @@ import {
   pullRequestChecksStatePresentation,
   resolvePullRequestState,
 } from "./pullRequestPresentation";
-import { getFormattingLocale, t, tn, tx } from "~/i18n";
+import { resolveFilterOptions } from "./pullRequestListOptions";
 
-function GhostBar({ className }: { className?: string | undefined }) {
+import { changeRequestTermKind } from "./changeRequestTerm";
+
+export function GhostBar({ className }: { className?: string | undefined }) {
   return <span aria-hidden className={cn("block h-3 rounded bg-muted-foreground/15", className)} />;
 }
 
 const TITLE_WIDTHS = ["w-3/5", "w-2/5", "w-1/2", "w-2/3", "w-2/5", "w-3/5", "w-1/2"];
 const META_WIDTHS = ["w-2/5", "w-1/3", "w-2/5", "w-1/4", "w-1/3", "w-2/5", "w-1/3"];
-const defaultDetailTabs = () =>
-  [
-    { value: "summary", label: t("Summary") },
-    { value: "timeline", label: t("Timeline") },
-    { value: "code", label: t("Code") },
-  ] as const;
+const DEFAULT_DETAIL_TABS = [
+  { value: "summary", label: msg("Summary") },
+  { value: "timeline", label: msg("Timeline") },
+  { value: "code", label: msg("Code") },
+] as const;
 
 export function PullRequestListGhost({ rows = 7, caption }: { rows?: number; caption?: string }) {
   return (
@@ -85,12 +87,13 @@ export function PullRequestDetailGhost({
   summary,
   actions,
   checkoutCommand,
-  tabs = defaultDetailTabs(),
+  tabs: requestedTabs,
   activeTab,
   number,
   onBack,
   onClose,
   onCheckoutError,
+  threadRef = null,
 }: {
   seed?: PullRequestListEntry | null;
   summary?: PullRequestSummary | null;
@@ -102,7 +105,10 @@ export function PullRequestDetailGhost({
   onBack?: (() => void) | undefined;
   onClose?: (() => void) | undefined;
   onCheckoutError?: ((error: Error) => void) | undefined;
+  threadRef?: ScopedThreadRef | null | undefined;
 }) {
+  const openLink = useOpenLink(threadRef);
+  const tabs = requestedTabs ?? resolveFilterOptions(DEFAULT_DETAIL_TABS, t);
   const seed = summary
     ? {
         ...entry,
@@ -112,15 +118,18 @@ export function PullRequestDetailGhost({
     : entry;
   const terminology = sourceControlClients.get(seed?.provider).changeRequest;
   const statePresentation = seed
-    ? resolvePullRequestState({
-        state: seed.state,
-        isDraft: seed.isDraft ?? false,
-      })
+    ? resolvePullRequestState(
+        {
+          state: seed.state,
+          isDraft: seed.isDraft ?? false,
+        },
+        t,
+      )
     : null;
   // Passing list rollups can omit workflows awaiting approval; wait for detail.
   const checksPresentation =
     seed?.checksState === "failing" || seed?.checksState === "pending"
-      ? pullRequestChecksStatePresentation(seed.checksState)
+      ? pullRequestChecksStatePresentation(seed.checksState, t)
       : null;
   const checkout = checkoutCommand ?? null;
   const changedFiles = summary?.changedFiles ?? null;
@@ -130,7 +139,13 @@ export function PullRequestDetailGhost({
   return (
     <div
       role="status"
-      aria-label={t("Loading {term}", { term: terminology.singular })}
+      aria-label={
+        changeRequestTermKind(terminology) === "mr"
+          ? t("Loading merge request")
+          : changeRequestTermKind(terminology) === "cr"
+            ? t("Loading change request")
+            : t("Loading pull request")
+      }
       className={cn(
         "flex h-full min-h-0 flex-col overflow-hidden bg-background",
         !seed && "motion-safe:animate-skeleton",
@@ -154,11 +169,17 @@ export function PullRequestDetailGhost({
               <>
                 <span className="min-w-0 truncate font-medium">{seed.repository}</span>
                 <InlineButton
-                  onClick={() => void readLocalApi()?.shell.openExternal(seed.url)}
-                  aria-label={t("Open {term} #{number} on host", {
-                    term: terminology.singular,
-                    number: seed.number,
-                  })}
+                  onClick={(event) => void openLink(seed.url, { event }).catch(console.error)}
+                  onAuxClick={(event) => {
+                    if (event.button === 1) void openLink(seed.url, { event }).catch(console.error);
+                  }}
+                  aria-label={
+                    changeRequestTermKind(terminology) === "mr"
+                      ? t("Open merge request #{number} on host", { number: seed.number })
+                      : changeRequestTermKind(terminology) === "cr"
+                        ? t("Open change request #{number} on host", { number: seed.number })
+                        : t("Open pull request #{number} on host", { number: seed.number })
+                  }
                 >
                   <span className={statePresentation?.toneClassName}>#{seed.number}</span>
                   <ExternalLinkIcon aria-hidden className="size-2.5" />
@@ -178,9 +199,13 @@ export function PullRequestDetailGhost({
             size="icon-xs"
             variant="ghost"
             disabled
-            aria-label={t("{term} actions loading", {
-              term: capitalizeTerm(terminology.singular),
-            })}
+            aria-label={
+              changeRequestTermKind(terminology) === "mr"
+                ? t("Merge request actions loading")
+                : changeRequestTermKind(terminology) === "cr"
+                  ? t("Change request actions loading")
+                  : t("Pull request actions loading")
+            }
           >
             <EllipsisIcon aria-hidden className="size-4" />
           </Button>
@@ -188,7 +213,13 @@ export function PullRequestDetailGhost({
             <Button
               size="icon-xs"
               variant="ghost"
-              aria-label={t("Collapse {term} panel", { term: terminology.singular })}
+              aria-label={
+                changeRequestTermKind(terminology) === "mr"
+                  ? t("Collapse merge request panel")
+                  : changeRequestTermKind(terminology) === "cr"
+                    ? t("Collapse change request panel")
+                    : t("Collapse pull request panel")
+              }
               onClick={onClose}
             >
               <PanelRightIcon aria-hidden className="size-3.5" />
@@ -221,7 +252,9 @@ export function PullRequestDetailGhost({
               updated={
                 seed ? (
                   <span>
-                    {tx("updated {time}", { time: <RelativeTime timestamp={seed.updatedAt} /> })}
+                    {tx("updated {time}", {
+                      time: <RelativeTime timestamp={seed.updatedAt} />,
+                    })}
                   </span>
                 ) : (
                   <GhostBar className="h-3 w-16" />
@@ -232,7 +265,29 @@ export function PullRequestDetailGhost({
                   <PullRequestCopyableCode
                     key={checkout}
                     value={checkout}
-                    target={t("{singular} checkout command", { singular: terminology.singular })}
+                    target={{
+                      target: `${terminology.singular} checkout command`,
+                      unavailableMessage:
+                        changeRequestTermKind(terminology) === "mr"
+                          ? msg(
+                              "Clipboard API is unavailable while copying merge request checkout command.",
+                            )
+                          : changeRequestTermKind(terminology) === "cr"
+                            ? msg(
+                                "Clipboard API is unavailable while copying change request checkout command.",
+                              )
+                            : msg(
+                                "Clipboard API is unavailable while copying pull request checkout command.",
+                              ),
+                      failureMessage:
+                        changeRequestTermKind(terminology) === "mr"
+                          ? msg("Failed to copy merge request checkout command to the clipboard.")
+                          : changeRequestTermKind(terminology) === "cr"
+                            ? msg(
+                                "Failed to copy change request checkout command to the clipboard.",
+                              )
+                            : msg("Failed to copy pull request checkout command to the clipboard."),
+                    }}
                     copyLabel={t("Copy checkout command")}
                     copiedLabel={t("Checkout command copied")}
                     className="ml-auto font-mono"
@@ -257,8 +312,20 @@ export function PullRequestDetailGhost({
                   <PullRequestCopyableCode
                     key={seed.headBranch}
                     value={seed.headBranch}
-                    target={t("branch name")}
-                    copyLabel={t("Copy {term} branch", { term: terminology.singular })}
+                    target={{
+                      target: "branch name",
+                      unavailableMessage: msg(
+                        "Clipboard API is unavailable while copying branch name.",
+                      ),
+                      failureMessage: msg("Failed to copy branch name to the clipboard."),
+                    }}
+                    copyLabel={
+                      changeRequestTermKind(terminology) === "mr"
+                        ? t("Copy merge request branch")
+                        : changeRequestTermKind(terminology) === "cr"
+                          ? t("Copy change request branch")
+                          : t("Copy pull request branch")
+                    }
                     copiedLabel={t("Branch name copied")}
                     className="min-w-0 font-mono"
                   />
@@ -270,8 +337,8 @@ export function PullRequestDetailGhost({
                 changedFiles === null ? (
                   <GhostBar className="h-3 w-10" />
                 ) : (
-                  tn(changedFiles, "{count} file", "{count} files", {
-                    count: changedFiles.toLocaleString(getFormattingLocale()),
+                  tn(changedFiles, "{formatted} file", "{formatted} files", {
+                    formatted: changedFiles.toLocaleString(getFormattingLocale()),
                   })
                 )
               }
@@ -306,7 +373,11 @@ export function PullRequestDetailGhost({
         </PullRequestDetailTabBar>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div
+        tabIndex={-1}
+        data-workspace-focus-default
+        className="min-h-0 flex-1 overflow-hidden outline-none"
+      >
         <section className="px-4 pt-2.5 pb-1">
           <div className="space-y-2">
             <div className="grid min-h-7 min-w-0 grid-cols-[6rem_minmax(0,1fr)] items-center gap-2 text-xs sm:min-h-6">
@@ -426,7 +497,13 @@ export function PullRequestConversationGhost({
   return (
     <div
       role="status"
-      aria-label={t("Loading {term} conversation", { term: terminology.singular })}
+      aria-label={
+        changeRequestTermKind(terminology) === "mr"
+          ? t("Loading merge request conversation")
+          : changeRequestTermKind(terminology) === "cr"
+            ? t("Loading change request conversation")
+            : t("Loading pull request conversation")
+      }
       className="motion-safe:animate-skeleton space-y-4 py-2"
     >
       {Array.from({ length: rows }, (_, index) => (

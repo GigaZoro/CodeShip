@@ -1,3 +1,5 @@
+import { msg } from "@t3tools/shared/i18n";
+import { translatableDetail } from "../errors/translatable.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -9,7 +11,6 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import { ConnectionBlockedError, type ConnectionAttemptError } from "./model.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export const PullRequestRoutingPermission = Schema.Literals(["off", "read", "read-write"]);
 export type PullRequestRoutingPermission = typeof PullRequestRoutingPermission.Type;
@@ -102,7 +103,9 @@ export class PullRequestRoutingPermissions extends Context.Reference<{
       Effect.fail(
         new ConnectionBlockedError({
           reason: "unsupported",
-          detail: t("Pull request routing preferences are unavailable on this client."),
+          ...translatableDetail(
+            msg("Pull request routing preferences are unavailable on this client."),
+          ),
         }),
       ),
     forget: () => Effect.void,
@@ -148,7 +151,9 @@ export const makePullRequestRoutingPermissions = Effect.fn("makePullRequestRouti
           return Effect.fail(
             new ConnectionBlockedError({
               reason: "configuration",
-              detail: t("This environment does not have a saved connection endpoint."),
+              ...translatableDetail(
+                msg("This environment does not have a saved connection endpoint."),
+              ),
             }),
           );
         return update((current) => [

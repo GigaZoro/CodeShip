@@ -37,9 +37,9 @@ import {
   CODEX_NOT_FOUND_MESSAGE,
   makeMissingCodexProvider,
   makePendingCodexProvider,
-  probeCodexSkillsForCwd,
   runCodexCli,
   withCodexAppServerClient,
+  makeCodexSkillsProbe,
 } from "../CodexProvider.ts";
 import {
   privateMcpSignInArgs,
@@ -66,7 +66,11 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
-import { codexContinuationIdentity, materializeCodexShadowHome } from "./CodexHomeLayout.ts";
+import {
+  codexContinuationIdentity,
+  materializeCodexShadowHome,
+  codexHomeLaunchArgs,
+} from "./CodexHomeLayout.ts";
 import { makeCodexCliAuth } from "./CodexCliAuth.ts";
 import { makeManagedCodexProvider } from "./CodexManagedProvider.ts";
 import { codexUsageReader } from "./codexUsage.ts";
@@ -204,6 +208,7 @@ export const CodexDriver: ProviderDriver<
     const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
     const fileSystem = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
+    const host = yield* ProviderHost.ProviderHost;
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const installation = yield* CodexInstallation.CodexInstallation;
@@ -269,6 +274,7 @@ export const CodexDriver: ProviderDriver<
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
+      launchArgs: codexHomeLaunchArgs(pathService, homeLayout, config.launchArgs),
     } satisfies CodexSettings;
     const codexOnPath = resolveCommandPath(DEFAULT_BINARY_PATH, { env: processEnv }).pipe(
       Effect.provideService(HostProcess.Platform, platform),
@@ -306,7 +312,11 @@ export const CodexDriver: ProviderDriver<
     const maintenanceFor = (binaryPath: string) =>
       resolveProviderMaintenanceCapabilitiesEffect(
         makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
-        { binaryPath, env: processEnv },
+        {
+          binaryPath,
+          env: processEnv,
+          npmCacheDir: pathService.join(host.paths.providerStatusCacheDir, "npm"),
+        },
       );
     const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
       resolveBinaryPath.pipe(
@@ -434,6 +444,9 @@ export const CodexDriver: ProviderDriver<
       undefined,
       resolveBinaryPath,
     );
+    const probeSkills = yield* makeCodexSkillsProbe().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
     const snapshotForCwd = (cwd: string) =>
       !effectiveConfig.enabled
         ? snapshot.getSnapshot
@@ -441,7 +454,7 @@ export const CodexDriver: ProviderDriver<
             snapshot.getSnapshot,
             acquireBinaryPath.pipe(
               Effect.flatMap((binaryPath) =>
-                probeCodexSkillsForCwd({
+                probeSkills({
                   binaryPath,
                   homePath: effectiveConfig.homePath,
                   launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
@@ -449,9 +462,8 @@ export const CodexDriver: ProviderDriver<
                   environment: processEnv,
                 }),
               ),
-              Effect.scoped,
               Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv)),
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.scoped,
             ),
           ]).pipe(
             Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills })),

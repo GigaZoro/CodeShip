@@ -1,38 +1,52 @@
+import { msg, t } from "~/i18n";
 import { T3CHAT_PLAN_TUNNEL_LIMITS } from "@t3tools/contracts/relay";
 import { TriangleAlertIcon } from "lucide-react";
+
 import type { ReactNode } from "react";
 
 import type { ManagedTunnelUpgrade } from "../../cloud/managedRelayState";
+
 import { cn } from "../../lib/utils";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
+import { Skeleton } from "../ui/skeleton";
 
-import { t, tn } from "~/i18n";
 // Above this, one slot per tunnel is too thin to read, so the bar fills instead.
 const MAX_SEGMENTS = 10;
 
 export const T3CHAT_SUBSCRIPTION_URL = "https://t3.chat/settings/subscription";
 
-export function tunnelUpgradeCopy(upgrade: Exclude<ManagedTunnelUpgrade, null>): string {
+export function tunnelUpgradeCopy(
+  upgrade: Exclude<ManagedTunnelUpgrade, null>,
+  resolve: typeof t = t,
+): string {
   const { pro, premier } = T3CHAT_PLAN_TUNNEL_LIMITS;
   switch (upgrade) {
     case "link":
-      return t("Link T3 Chat Pro for up to {pro} tunnels, or Premier for up to {premier}.", {
-        pro,
-        premier,
-      });
-    case "pro":
-      return t("Upgrade to T3 Chat Pro for up to {pro} tunnels, or Premier for up to {premier}.", {
-        pro,
-        premier,
-      });
-    case "premier":
-      return tn(
-        premier,
-        "Upgrade to T3 Chat Premier for up to {count} tunnel.",
-        "Upgrade to T3 Chat Premier for up to {count} tunnels.",
+      return resolve(
+        msg("Link T3 Chat Pro for up to {pro} tunnels, or Premier for up to {premier}."),
+        { pro, premier },
       );
+    case "pro":
+      return resolve(
+        msg("Upgrade to T3 Chat Pro for up to {pro} tunnels, or Premier for up to {premier}."),
+        { pro, premier },
+      );
+    case "premier":
+      return resolve(msg("Upgrade to T3 Chat Premier for up to {premier} tunnels."), { premier });
   }
+}
+
+/** Holds the meter's height while usage loads, so the rows below it stay put. */
+export function TunnelUsageMeterSkeleton() {
+  return (
+    <div aria-hidden className="flex max-w-sm flex-col gap-1.5">
+      <div className="flex h-4 items-center">
+        <Skeleton shape="pill" className="h-3 w-32" />
+      </div>
+      <Skeleton shape="pill" className="h-1.5 w-full" />
+    </div>
+  );
 }
 
 /** "2 of 3 tunnels in use" with one bar slot per tunnel. */
@@ -53,9 +67,7 @@ export function TunnelUsageMeter({
     <div className={cn("flex max-w-sm flex-col gap-1.5", className)}>
       <div className="flex items-baseline justify-between gap-3 text-xs">
         <span className={cn("tabular-nums", full ? "text-warning-foreground" : "text-foreground")}>
-          {tn(limit, "{used} of {count} tunnel in use", "{used} of {count} tunnels in use", {
-            used,
-          })}
+          {t("{used} of {limit} tunnels in use", { used, limit })}
         </span>
         {action}
       </div>

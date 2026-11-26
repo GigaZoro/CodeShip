@@ -1,6 +1,8 @@
+import { t } from "~/i18n";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { PlayIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+
 import { useState, type CSSProperties } from "react";
 
 import { observeIntersection } from "../../lib/observeIntersection";
@@ -10,7 +12,6 @@ import { Button } from "../ui/button";
 import { OpenMediaLink } from "./OpenMediaLink";
 import { MediaActions, type MediaActionSource } from "./MediaActions";
 
-import { t } from "~/i18n";
 interface MediaVideoPlayerProps {
   readonly src: string | null;
   readonly label: string;
@@ -203,7 +204,7 @@ export function MediaVideoPlayer({
       {onOpen ? (
         <button
           type="button"
-          aria-label={label ? t("Play {label}", { label }) : t("Play video")}
+          aria-label={label ? t("Play {name}", { name: label }) : t("Play video")}
           onClick={onOpen}
           className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
         >

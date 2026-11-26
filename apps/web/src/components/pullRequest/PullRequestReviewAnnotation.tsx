@@ -1,3 +1,5 @@
+import { t, tn } from "~/i18n";
+
 import type {
   EnvironmentId,
   PullRequestActor,
@@ -17,6 +19,7 @@ import {
   CircleCheckIcon,
   CircleIcon,
 } from "lucide-react";
+
 import { type ReactNode, useRef, useState } from "react";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
@@ -26,7 +29,6 @@ import { SpeechTextField, TextFieldSpeechControls } from "~/speech/useTextFieldS
 
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 import { isCommentSubmitShortcut } from "../diffs/commentSubmitShortcut";
 import {
@@ -39,11 +41,12 @@ import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor";
 import { PullRequestReactionBar } from "./PullRequestReactions";
 import type { PendingReviewComment } from "./pullRequestReviewStore";
-import { t, tn } from "~/i18n";
+
 import {
   PullRequestMarkdownTextarea,
   type PullRequestCompletionScope,
 } from "./PullRequestMarkdownTextarea";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const CARD_CLASS =
   "mx-3 my-2 rounded-xl border border-border/70 bg-background p-3 text-sm shadow-sm";
@@ -56,8 +59,14 @@ function submitKeys(input: {
   readonly onCancel?: (() => void) | undefined;
 }) {
   return (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Unclaimed, an IME Escape would reach the pull requests page and leave it.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Escape" && input.onCancel) {
       event.preventDefault();
+      event.stopPropagation();
       input.onCancel();
     }
     if (isCommentSubmitShortcut(event, input.value, input.pending, input.allowEmpty)) {
@@ -198,34 +207,29 @@ export function InlineReviewThreads({
   return (
     <>
       {resolved.length > 0 ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                data-resolved-threads
-                aria-label={label}
-                aria-expanded={expanded}
-                // Sits on the commented line, which is the row above this annotation.
-                className="absolute right-3 bottom-full flex h-[var(--diffs-line-height,20px)] cursor-pointer items-center -space-x-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                contentEditable={false}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() =>
-                  setShown(new Set((expanded ? open : threads).map((thread) => thread.id)))
-                }
-              />
-            }
-          >
-            {[...authors].slice(0, 3).map(([login, author]) => (
-              <PullRequestActorAvatar
-                key={login}
-                actor={author}
-                className="ring-1 ring-background"
-              />
-            ))}
-          </TooltipTrigger>
-          <TooltipPopup side="left">{label}</TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={
+            <button
+              type="button"
+              data-resolved-threads
+              aria-label={label}
+              aria-expanded={expanded}
+              // Sits on the commented line, which is the row above this annotation.
+              className="absolute right-3 bottom-full flex h-[var(--diffs-line-height,20px)] cursor-pointer items-center -space-x-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+              contentEditable={false}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() =>
+                setShown(new Set((expanded ? open : threads).map((thread) => thread.id)))
+              }
+            />
+          }
+          label={label}
+          side="left"
+        >
+          {[...authors].slice(0, 3).map(([login, author]) => (
+            <PullRequestActorAvatar key={login} actor={author} className="ring-1 ring-background" />
+          ))}
+        </SharedTooltipTrigger>
       ) : null}
       {threads.map((thread) => renderThread(thread, thread.isResolved && !shown.has(thread.id)))}
     </>
@@ -243,7 +247,7 @@ export function ReviewThreadCard({
   completionScope,
   pending,
   fixPending,
-  fixLabel = t("Fix in a thread"),
+  fixLabel,
   onFix,
   onAddToChat,
   onReply,
@@ -373,9 +377,8 @@ export function ReviewThreadCard({
           aria-expanded={expanded}
           onClick={() => setExpanded((current) => !current)}
         >
-          {tn(commentCount, "{status} · {count} comment", "{status} · {count} comments", {
-            status: thread.isResolved ? t("Resolved") : t("Open"),
-          })}
+          {thread.isResolved ? t("Resolved") : t("Open")} ·{" "}
+          {tn(commentCount, "{count} comment", "{count} comments")}
         </button>
         {thread.isOutdated ? <span>{t("outdated")}</span> : null}
         {onFix ? (
@@ -387,7 +390,7 @@ export function ReviewThreadCard({
             onClick={onFix}
           >
             <HammerIcon className="size-3" />
-            {fixPending ? t("Preparing...") : fixLabel}
+            {fixPending ? t("Preparing...") : (fixLabel ?? t("Fix in a thread"))}
           </Button>
         ) : null}
         {onAddToChat && comments.some((comment) => visibleBody(comment.body) !== null) ? (

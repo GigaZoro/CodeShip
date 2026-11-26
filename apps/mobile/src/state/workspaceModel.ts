@@ -3,6 +3,7 @@ import {
   type EnvironmentShellState,
   type EnvironmentShellSummary,
 } from "@t3tools/client-runtime/state/shell";
+import type { MarkedText } from "@t3tools/client-runtime/errors";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 
 import {
@@ -26,6 +27,7 @@ export interface WorkspaceConnectionState {
   readonly unreachableEnvironments: ReadonlyArray<WorkspaceEnvironment>;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
+  readonly i18nConnectionError?: MarkedText;
   readonly networkStatus: NetworkStatus;
 }
 
@@ -73,6 +75,9 @@ export function projectWorkspaceConnectionState(input: {
   readonly environments: ReadonlyArray<WorkspaceEnvironment>;
 }): WorkspaceConnectionState {
   const activeEnvironments = input.environments.filter((environment) => environment.isEnabled);
+  const failedEnvironment = activeEnvironments.find(
+    (environment) => environment.connectionError !== null,
+  );
   const connectingEnvironments = activeEnvironments.filter(
     (environment) =>
       environment.connectionState === "connecting" ||
@@ -91,9 +96,10 @@ export function projectWorkspaceConnectionState(input: {
       machineShowsLastKnownState(machineAvailability(environment.connectionState)),
     ),
     connectionState: overallConnectionState(activeEnvironments, input.networkStatus),
-    connectionError:
-      activeEnvironments.find((environment) => environment.connectionError !== null)
-        ?.connectionError ?? null,
+    connectionError: failedEnvironment?.connectionError ?? null,
+    ...(failedEnvironment?.i18nConnectionError !== undefined
+      ? { i18nConnectionError: failedEnvironment.i18nConnectionError }
+      : {}),
     networkStatus: input.networkStatus,
   };
 }

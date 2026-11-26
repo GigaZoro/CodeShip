@@ -1,3 +1,6 @@
+import { msg } from "@t3tools/shared/i18n";
+import { markMessage } from "@t3tools/shared/markedMessage";
+import { translatableDetail } from "../errors/translatable.ts";
 import type {
   AuthClientPresentationMetadata,
   ExecutionEnvironmentDescriptor,
@@ -45,7 +48,6 @@ import {
 } from "./compatibility.ts";
 import { credentialConnectionId } from "./routes.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export class ConnectionResolver extends Context.Service<
   ConnectionResolver,
@@ -132,9 +134,11 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
     if (!isBearerProfile(profile)) {
       return yield* new ConnectionBlockedError({
         reason: "configuration",
-        detail: t("Connection profile {connectionId} is not a bearer connection.", {
-          connectionId: target.connectionId,
-        }),
+        ...translatableDetail(
+          markMessage(msg("Connection profile {connectionId} is not a bearer connection."), {
+            connectionId: target.connectionId,
+          }),
+        ),
       });
     }
     if (profile.environmentId !== target.environmentId) {
@@ -158,16 +162,21 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
         }),
       ),
     );
-    if (!isBearerCredential(credential)) {
-      return yield* credentialMissingError(target.connectionId);
-    }
-    const authorized = yield* remote.authorizeBearer({
-      expectedEnvironmentId: target.environmentId,
-      httpBaseUrl: profile.httpBaseUrl,
-      wsBaseUrl: profile.wsBaseUrl,
-      bearerToken: credential.token,
-      connectionMethod: "direct",
-    });
+    const authorized =
+      credential._tag === "DpopConnectionCredential"
+        ? yield* remote.authorizeDirectDpop({
+            expectedEnvironmentId: target.environmentId,
+            connectionId: credentialConnectionId(target.connectionId),
+            httpBaseUrl: profile.httpBaseUrl,
+            wsBaseUrl: profile.wsBaseUrl,
+          })
+        : yield* remote.authorizeBearer({
+            expectedEnvironmentId: target.environmentId,
+            httpBaseUrl: profile.httpBaseUrl,
+            wsBaseUrl: profile.wsBaseUrl,
+            bearerToken: credential.token,
+            connectionMethod: "direct",
+          });
     return {
       ...authorized,
       target,
@@ -208,9 +217,11 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
     if (!isSshProfile(profile)) {
       return yield* new ConnectionBlockedError({
         reason: "configuration",
-        detail: t("Connection profile {connectionId} is not an SSH connection.", {
-          connectionId: target.connectionId,
-        }),
+        ...translatableDetail(
+          markMessage(msg("Connection profile {connectionId} is not an SSH connection."), {
+            connectionId: target.connectionId,
+          }),
+        ),
       });
     }
     if (profile.environmentId !== target.environmentId) {

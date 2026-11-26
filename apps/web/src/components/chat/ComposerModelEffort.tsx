@@ -1,4 +1,4 @@
-import { msg, t } from "~/i18n";
+import { t, msg } from "~/i18n";
 import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
@@ -21,7 +21,6 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ComposerControlSize } from "./ComposerControl";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import { EffortGlyph, FastBolt, resolveEffortGlyph } from "./EffortGlyph";
@@ -32,6 +31,7 @@ import {
   ULTRATHINK_IN_BODY_NOTE,
   useTraitsSelection,
 } from "./TraitsPicker";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 type SelectDescriptor = Extract<ProviderOptionDescriptor, { type: "select" }>;
 type BooleanDescriptor = Extract<ProviderOptionDescriptor, { type: "boolean" }>;
@@ -85,22 +85,26 @@ export function describeComposerEffort(
   traits: TraitsSelectionInput | null,
   effortDisplay: EffortDisplay,
   size: ComposerControlSize,
+  resolve: typeof t = t,
 ): { suffix: ReactNode; detail: string | null } {
   if (!traits) return { suffix: null, detail: null };
-  const visibility = getTraitsSectionVisibility(traits);
+  const visibility = getTraitsSectionVisibility({ ...traits, resolve });
   if (!visibility.hasAnyControls) return { suffix: null, detail: null };
   const modelSelection =
     traits.instanceId && traits.model
       ? { instanceId: traits.instanceId, model: traits.model, options: traits.modelOptions ?? [] }
       : null;
   const primary = visibility.primarySelectDescriptor;
-  const display = buildTraitsTriggerDisplay({
-    descriptors: visibility.descriptors,
-    primarySelectDescriptorId: primary?.id ?? null,
-    ultrathinkPromptControlled: visibility.ultrathinkPromptControlled,
-    modelSelection,
-    reportedModelSelection: traits.reportedModelSelection,
-  });
+  const display = buildTraitsTriggerDisplay(
+    {
+      descriptors: visibility.descriptors,
+      primarySelectDescriptorId: primary?.id ?? null,
+      ultrathinkPromptControlled: visibility.ultrathinkPromptControlled,
+      modelSelection,
+      reportedModelSelection: traits.reportedModelSelection,
+    },
+    resolve,
+  );
   // The same reasoning control the column lists, wherever the agent put it among its options.
   const reasoning =
     columnControls(visibility.selectDescriptors, visibility.booleanDescriptors).effort
@@ -122,8 +126,8 @@ export function describeComposerEffort(
       ? null
       : reasoning.type === "boolean"
         ? reasoning.currentValue === true
-          ? t("{label} On", { label: reasoning.label })
-          : t("{label} Off", { label: reasoning.label })
+          ? resolve(msg("{option} On"), { option: reasoning.label })
+          : resolve(msg("{option} Off"), { option: reasoning.label })
         : ultrathink
           ? "Ultrathink"
           : (getProviderOptionCurrentLabel(
@@ -200,8 +204,8 @@ function ColumnRow(props: {
     "aria-checked": props.selected,
     disabled: props.disabled,
     "data-effort-row": true,
-    // Focus lands on a level after a model pick.
-    "data-effort-level": true,
+    // Focus lands on a level after a model pick, and a typed letter finds one by its label.
+    "data-effort-level": props.label,
     // Up and Down move between rows.
     tabIndex: props.tabStop ? 0 : -1,
     className: COLUMN_ROW,
@@ -222,25 +226,40 @@ function ColumnRow(props: {
   );
   if (!props.description) return <button {...rowProps}>{content}</button>;
   return (
-    <Tooltip>
-      <TooltipTrigger render={<button {...rowProps} />}>{content}</TooltipTrigger>
-      <TooltipPopup side="right" className="max-w-56">
-        {props.description}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<button {...rowProps} />}
+      label={props.description}
+      side="right"
+      className="max-w-56"
+    >
+      {content}
+    </SharedTooltipTrigger>
   );
 }
 
 function moveBetweenRows(event: KeyboardEvent<HTMLElement>) {
-  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  const arrow = event.key === "ArrowDown" || event.key === "ArrowUp";
+  if (
+    !arrow &&
+    (event.key.length !== 1 ||
+      event.key.trim() === "" ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey ||
+      event.nativeEvent.isComposing)
+  )
+    return;
   // An option's side menu is a React child here, but it moves through its own items.
   if (!event.currentTarget.contains(event.target as Node)) return;
   const rows = Array.from(
     event.currentTarget.querySelectorAll<HTMLButtonElement>("[data-effort-row]:not(:disabled)"),
   );
   const index = rows.findIndex((row) => row === document.activeElement);
-  const next =
-    rows[Math.min(rows.length - 1, Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)))];
+  const next = arrow
+    ? rows[Math.min(rows.length - 1, Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)))]
+    : [...rows.slice(index + 1), ...rows.slice(0, index + 1)].find((row) =>
+        row.dataset.effortLevel?.toLowerCase().startsWith(event.key.toLowerCase()),
+      );
   if (!next) return;
   event.preventDefault();
   event.stopPropagation();
@@ -329,7 +348,7 @@ function EffortRows(props: { control: ColumnControl; traits: TraitsSelection; lo
     <div role="radiogroup" aria-label={descriptor.label} className="flex flex-col gap-0.5">
       {locked ? (
         <div className="px-2 pb-1.5 text-muted-foreground/80 text-xs">
-          {ULTRATHINK_IN_BODY_NOTE}
+          {t(ULTRATHINK_IN_BODY_NOTE)}
         </div>
       ) : null}
       {choices.map((option, index) => (
@@ -497,7 +516,9 @@ function NoEffortRow() {
 /** The model picker's effort column: the selected model's levels and its other options. */
 export function ComposerEffortColumn(props: { traits: TraitsSelectionInput | null }) {
   const picker = use(DockedPickerContext);
-  const visibility = props.traits ? getTraitsSectionVisibility(props.traits) : null;
+  const visibility = props.traits
+    ? getTraitsSectionVisibility({ ...props.traits, resolve: t })
+    : null;
   const controls =
     props.traits && visibility
       ? columnControls(visibility.selectDescriptors, visibility.booleanDescriptors)
@@ -554,6 +575,7 @@ function SpeedSegment(props: {
   description?: string | undefined;
   onPick: () => void;
 }) {
+  const speed = props.label;
   const buttonProps = {
     type: "button",
     role: "radio",
@@ -564,18 +586,17 @@ function SpeedSegment(props: {
   } as const;
   const content = (
     <>
-      {props.label === "Fast" || props.label === "Ultrafast" ? (
-        <FastBolt ultra={props.label === "Ultrafast"} />
+      {speed === "Fast" || speed === "Ultrafast" ? (
+        <FastBolt ultra={speed === "Ultrafast"} />
       ) : null}
       {props.displayLabel ?? props.label}
     </>
   );
   if (!props.description) return <button {...buttonProps}>{content}</button>;
   return (
-    <Tooltip>
-      <TooltipTrigger render={<button {...buttonProps} />}>{content}</TooltipTrigger>
-      <TooltipPopup side="top">{props.description}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger render={<button {...buttonProps} />} label={props.description}>
+      {content}
+    </SharedTooltipTrigger>
   );
 }
 

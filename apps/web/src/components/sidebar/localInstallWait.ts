@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
+  runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -200,7 +201,7 @@ export async function waitForHostedBackgroundWork(options?: {
   const environmentIds = readHostedRestartHoldEnvironmentIds();
   const results = await Promise.all(
     environmentIds.map(async (environmentId) => {
-      const result = await serverEnvironment.awaitRestartHold.run(appAtomRegistry, {
+      const result = await runAtomCommand(appAtomRegistry, serverEnvironment.awaitRestartHold, {
         environmentId,
         ...(options?.untilIdle === true ? { untilIdle: true } : {}),
       });
@@ -234,7 +235,7 @@ export type HostedWorkNow =
 export async function readHostedBackgroundWork(): Promise<HostedWorkNow> {
   const results = await Promise.all(
     readHostedRestartHoldEnvironmentIds().map((environmentId) =>
-      serverEnvironment.readRestartHold.run(appAtomRegistry, { environmentId }),
+      runAtomCommand(appAtomRegistry, serverEnvironment.readRestartHold, { environmentId }),
     ),
   );
   for (const result of results) {

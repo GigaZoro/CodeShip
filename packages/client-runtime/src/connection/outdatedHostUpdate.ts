@@ -1,3 +1,8 @@
+import type { RestartHoldDecision } from "../state/server.ts";
+import { markMessage } from "@t3tools/shared/markedMessage";
+import { msg } from "@t3tools/shared/i18n";
+
+import { MarkedText, translatableMessage } from "../errors/translatable.ts";
 import {
   ORCHESTRATION_PROTOCOL_VERSION,
   type EnvironmentId,
@@ -25,7 +30,7 @@ import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
 import { makeWsRpcProtocolClient, PING_TIMEOUT } from "../rpc/protocol.ts";
 import {
   isLegacyUpdateHandoffLoss,
-  type RestartHoldDecision,
+  localizeServerSelfUpdateError,
   resolveServerUpdateProgressResult,
 } from "../state/server.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
@@ -38,7 +43,7 @@ import {
   routeHttpBaseUrl,
   usableRoutes,
 } from "./routes.ts";
-import { t } from "@t3tools/shared/i18n";
+
 import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
 
 // A v1 host restarting into v2 runs migrations before its descriptor answers again.
@@ -50,6 +55,7 @@ export class OutdatedHostUpdateError extends Schema.TaggedError<OutdatedHostUpda
   {
     environmentId: Schema.String,
     message: Schema.String,
+    i18nMessage: Schema.optionalKey(MarkedText),
   },
 ) {}
 
@@ -119,9 +125,11 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     ) {
       return yield* new OutdatedHostUpdateError({
         environmentId,
-        message: t("Update T3.CodeShip on {label} manually; it cannot update itself.", {
-          label: descriptor.label,
-        }),
+        ...translatableMessage(
+          markMessage(msg("Update T3.CodeShip on {host} manually; it cannot update itself."), {
+            host: descriptor.label,
+          }),
+        ),
       });
     }
 
@@ -222,7 +230,7 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
         }
         return updateResult;
       }),
-    );
+    ).pipe(Effect.mapError(localizeServerSelfUpdateError));
 
     yield* onStage("resuming");
     const pollUrls = [
@@ -252,9 +260,11 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     if (Option.isNone(resumed)) {
       return yield* new OutdatedHostUpdateError({
         environmentId,
-        message: t("{label} did not come back on a compatible T3.CodeShip version.", {
-          label: descriptor.label,
-        }),
+        ...translatableMessage(
+          markMessage(msg("{host} did not come back on a compatible T3.CodeShip version."), {
+            host: descriptor.label,
+          }),
+        ),
       });
     }
 

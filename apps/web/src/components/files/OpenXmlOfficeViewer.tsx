@@ -1,13 +1,16 @@
+import { t } from "~/i18n";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import type { OfficePreviewKind } from "@t3tools/shared/filePreview";
+
 import { lazy, Suspense, useEffect, useState } from "react";
+
 import {
   FileSurfaceLoading,
   FileSurfaceNotice,
   FILE_SURFACE_SUBHEADER_CLASS,
 } from "./fileSurfaceChrome";
 import { OFFICE_PREVIEW_MAX_BYTES, type OfficeWorkerResult } from "./officePreviewProtocol";
-import { t } from "~/i18n";
+import { previewErrorText, previewFailureText } from "./previewFailureMessages";
 const WordDocument = lazy(() => import("./office/WordDocument"));
 const Spreadsheet = lazy(() => import("./office/Spreadsheet"));
 const Presentation = lazy(() => import("./office/Presentation"));
@@ -45,7 +48,7 @@ export default function OfficeViewer(props: {
   const [prepared, setPrepared] = useState<Extract<OfficeWorkerResult, { bytes: ArrayBuffer }>>();
   const [details, setDetails] = useState("");
   const fail = useStableCallback((cause: unknown) =>
-    setError(cause instanceof Error ? cause.message : t("Could not render this Office document.")),
+    setError(previewErrorText(cause, t("Could not render this Office document."))),
   );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the Open XML fetch, preparation worker, and timeout for this source and release them on cleanup.
   useEffect(() => {
@@ -78,7 +81,7 @@ export default function OfficeViewer(props: {
     worker.addEventListener("message", (event: MessageEvent<OfficeWorkerResult>) => {
       if (controller.signal.aborted) return;
       clearTimeout(timer);
-      if (event.data.type === "error") failure(new Error(event.data.message));
+      if (event.data.type === "error") failure(new Error(previewFailureText(event.data)));
       else if ("bytes" in event.data) {
         setPrepared(event.data);
         worker.terminate();
@@ -115,7 +118,8 @@ export default function OfficeViewer(props: {
       {details ? (
         <div className={FILE_SURFACE_SUBHEADER_CLASS}>
           <span className="text-xs text-muted-foreground" aria-live="polite">
-            {props.kind !== "xlsx" ? `${details} · ${t("Fit to width")}` : details}
+            {details}
+            {props.kind !== "xlsx" ? ` · ${t("Fit to width")}` : ""}
           </span>
         </div>
       ) : null}

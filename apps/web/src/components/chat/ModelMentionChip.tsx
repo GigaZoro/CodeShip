@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -112,7 +113,7 @@ export function ModelMentionChip(props: {
         />
       }
       label={presentation.label}
-      accessibleLabel={`Model ${presentation.label}`}
+      accessibleLabel={t("Model {label}", { label: presentation.label })}
       copyMarkdown={props.source}
     >
       <div className="space-y-1 p-2 text-sm">

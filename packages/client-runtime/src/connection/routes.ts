@@ -13,7 +13,7 @@ import {
   type ConnectionRoute,
 } from "./catalog.ts";
 import { BearerConnectionTarget, type ConnectionTarget } from "./model.ts";
-import { t } from "@t3tools/shared/i18n";
+import { msg, t } from "@t3tools/shared/i18n";
 
 export type ConnectionRouteKind =
   | "relay"
@@ -187,16 +187,23 @@ function routeAddressKey(route: ConnectionRoute): string | null {
   }
 }
 
-export function connectionRouteLabel(route: ConnectionRoute): string {
+const T3_CONNECT_NAME = "T3 Connect";
+
+/** Display labels use the active language while machine names and addresses stay verbatim. */
+export function connectionRouteLabel(route: ConnectionRoute, resolve: typeof t = t): string {
   switch (connectionRouteKind(route)) {
     case "relay":
-      return "T3 Connect";
+      return T3_CONNECT_NAME;
     case "loopback":
-      return t("This device");
+      return resolve(msg("This device"));
     case "lan":
       return "LAN";
     case "tailnet":
-      return "Tailscale";
+      // Tailscale Serve answers over HTTPS on the machine's name; the same machine's
+      // plain address is another route, so the two are told apart.
+      return routeHttpBaseUrl(route)?.startsWith("https:") === true
+        ? resolve(msg("Tailscale HTTPS"))
+        : "Tailscale";
     case "vpn":
       return "VPN";
     case "ssh": {
@@ -206,9 +213,12 @@ export function connectionRouteLabel(route: ConnectionRoute): string {
         : "SSH";
     }
     case "public":
-      return routeHostname(route) ?? t("Remote link");
+      return routeHostname(route) ?? resolve(msg("Remote link"));
   }
 }
+
+/** @public */
+export const connectionRouteLabelText = connectionRouteLabel;
 
 export function connectionRouteAddress(route: ConnectionRoute): string | null {
   if (route.target._tag === "SshConnectionTarget") {
@@ -452,6 +462,20 @@ export function routesAfterRemoving(
     }
     return credentialConnectionId(connectionRouteId(route.target)) !== removedId;
   });
+}
+
+/**
+ * A route is offered for removal only when removing it leaves a route behind.
+ * A learned route would be learned again, and the last route a learned route
+ * borrows from would take the whole environment with it.
+ */
+export function canRemoveRoute(
+  routes: ReadonlyArray<ConnectionRoute>,
+  route: ConnectionRoute,
+): boolean {
+  return (
+    !isLearned(route) && routesAfterRemoving(routes, connectionRouteId(route.target)).length > 0
+  );
 }
 
 /**

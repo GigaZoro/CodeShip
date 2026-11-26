@@ -1,3 +1,4 @@
+import { LegendList } from "@legendapp/list/react-native";
 import { monitoringRefreshTimedOut } from "@t3tools/client-runtime/monitoring/atoms";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -38,20 +39,15 @@ import {
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
 import { useMemo, useState } from "react";
-import {
-  FlatList,
-  Pressable,
-  RefreshControl,
-  ScrollView as NativeScrollView,
-  View,
-} from "react-native";
+import { Pressable, ScrollView as NativeScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
+import { RefreshControl } from "../../components/ui/RefreshControl";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { Menu } from "../../components/ui/Menu";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -419,15 +415,21 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
 
   return (
     <SettingsScreen title={t("Monitoring")} workspaceRoot={props.workspace}>
-      <FlatList
+      <LegendList
         data={visible}
         keyExtractor={monitoringChatKey}
-        renderScrollComponent={(scrollProps) => <ScrollView {...scrollProps} />}
+        extraData={{ projectTitles, count: visible.length, navigation }}
+        estimatedItemSize={78}
+        recycleItems
+        renderScrollComponent={ScreenScrollView}
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         className="flex-1"
-        contentContainerClassName="px-5 pt-4"
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 16,
+          paddingBottom: Math.max(insets.bottom, 18) + 18,
+        }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

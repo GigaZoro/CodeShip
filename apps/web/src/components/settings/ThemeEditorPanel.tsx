@@ -1,3 +1,4 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { msg, t, tn, type Message } from "~/i18n";
 import {
   MousePointer2Icon,
@@ -37,6 +38,7 @@ import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { getThemeRoleLabel, ThemeColorField } from "./ThemeColorPicker";
 import { ThemeCssEditor } from "./ThemeCssEditor";
 import {
@@ -690,6 +692,9 @@ export function ThemeEditorPanel({
           : inspectThemeRoleAtElement(target);
       if (!inspection) return;
       clearHover();
+      // preventDefault keeps focus put; blur so a focused color field commits its draft before
+      // selectThemeRole can switch modes and unmount it.
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       selectThemeRole(inspection.role, true);
       shouldDisarmAfterClick = true;
     };
@@ -702,7 +707,7 @@ export function ThemeEditorPanel({
       shouldDisarmAfterClick = false;
     };
     const cancelInspection = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
       // Esc leaves inspection only; Settings must not see it and close too.
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -776,7 +781,9 @@ export function ThemeEditorPanel({
 
     if (mergeTarget?.css && css.trim() && mergeTarget.css !== css) {
       setError(
-        `“${mergeTarget.label}” has different custom CSS. Use the same CSS or pick another name.`,
+        t("“{name}” has different custom CSS. Use the same CSS or pick another name.", {
+          name: mergeTarget.label,
+        }),
       );
       return;
     }
@@ -909,7 +916,7 @@ export function ThemeEditorPanel({
     } catch (cause) {
       setError(
         cause instanceof Error
-          ? cause.message
+          ? (errorDisplayMessage(cause) ?? cause.message)
           : isEditing
             ? t("Could not save the theme.")
             : t("Could not create the theme."),
@@ -942,12 +949,7 @@ export function ThemeEditorPanel({
       </Toggle>
     );
     if (lockReason === null) return button;
-    return (
-      <Tooltip>
-        <TooltipTrigger render={button} />
-        <TooltipPopup>{lockReason}</TooltipPopup>
-      </Tooltip>
-    );
+    return <SharedTooltipTrigger render={button} label={lockReason} />;
   };
 
   const renderAppearanceButtons = () => (
@@ -987,6 +989,14 @@ export function ThemeEditorPanel({
             aria-label={t("Filter colors")}
             className="min-w-0 flex-1"
             onChange={(event) => setRoleQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || !roleQuery) return;
+              if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              event.preventDefault();
+              event.stopPropagation();
+              setRoleQuery("");
+            }}
             placeholder={t("Filter colors")}
             size="sm"
             value={roleQuery}
@@ -1163,7 +1173,9 @@ export function ThemeEditorPanel({
         // Popups opened from the editor are portaled outside it and handle their own Esc.
         if (event.key !== "Escape" || event.defaultPrevented) return;
         if (!event.currentTarget.contains(event.target as Node)) return;
+        // Base UI's document listener can dismiss on a bare IME Escape (keyCode 229).
         event.stopPropagation();
+        if (event.repeat || event.nativeEvent.isComposing || event.keyCode === 229) return;
         onOpenChange(false);
       }}
       ref={panelRef}

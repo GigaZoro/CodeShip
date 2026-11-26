@@ -1,10 +1,10 @@
+import { t, tn } from "~/i18n";
 import type { LinkedPrompt } from "@t3tools/shared/promptLinks";
 
 import { type ComposerThreadTarget, useComposerDraftStore } from "~/composerDraftStore";
 
 import { toastManager } from "../ui/toast";
 
-import { t, tn } from "~/i18n";
 export function warnAboutHiddenCharacters(prompt: LinkedPrompt): void {
   if (prompt.hiddenCharacters === 0) return;
   toastManager.add({

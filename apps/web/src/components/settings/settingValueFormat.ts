@@ -74,7 +74,7 @@ export function formatSettingValue(key: keyof ServerSettings, value: unknown): s
     }
     if ("model" in value && typeof value.model === "string") return value.model;
     if ("mode" in value && typeof value.mode === "string") {
-      if (key === "worktreeCleanup") return value.mode === "off" ? "Off" : t("Custom");
+      if (key === "worktreeCleanup") return value.mode === "off" ? t("Off") : t("Custom");
       return key === "sourceControlWritingStyle"
         ? labelOrRaw(WRITING_STYLE_LABELS[value.mode], value.mode)
         : value.mode;

@@ -16,27 +16,38 @@ import {
 import { filePreviewKind } from "@t3tools/shared/filePreview";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
-import { t } from "@t3tools/shared/i18n";
+import { msg, t } from "@t3tools/shared/i18n";
 
 /** The working row while T3.CodeShip's own compaction runs. */
-export const IDLE_COMPACTING_LABELS = {
-  get beforeCacheExpires() {
-    return t("Compacting before the cache expires…");
-  },
-  get onReturn() {
-    return t("Compacting…");
-  },
+export const IDLE_COMPACTING_MESSAGES = {
+  beforeCacheExpires: msg("Compacting before the cache expires…"),
+  onReturn: msg("Compacting…"),
 } satisfies Record<OrchestrationV2IdleCompaction, string>;
 
 /** Leads the finished compaction's token counts, in place of "Context compacted". */
-export const IDLE_COMPACTION_TITLES = {
+export const IDLE_COMPACTION_TITLE_MESSAGES = {
+  beforeCacheExpires: msg("Auto-compacted before cache expiry"),
+  onReturn: msg("Context compacted before sending"),
+} satisfies Record<OrchestrationV2IdleCompaction, string>;
+
+// Keep existing consumers localized while callers that defer copy resolution use the message tables.
+export const IDLE_COMPACTING_LABELS = {
   get beforeCacheExpires() {
-    return t("Context automatically compacted before cache expiry");
+    return t(IDLE_COMPACTING_MESSAGES.beforeCacheExpires);
   },
   get onReturn() {
-    return t("Context compacted before sending");
+    return t(IDLE_COMPACTING_MESSAGES.onReturn);
   },
-} satisfies Record<OrchestrationV2IdleCompaction, string>;
+};
+
+export const IDLE_COMPACTION_TITLES = {
+  get beforeCacheExpires() {
+    return t(IDLE_COMPACTION_TITLE_MESSAGES.beforeCacheExpires);
+  },
+  get onReturn() {
+    return t(IDLE_COMPACTION_TITLE_MESSAGES.onReturn);
+  },
+};
 
 const LEGACY_AUTOMATION_PREFIX = /^\[Triggered by schedule task: [^\r\n]+\]\r?\n\r?\n/;
 const LEGACY_AUTOMATION_MESSAGE_ID = /^scheduled-task-message:(.+):\d+:(?:scheduled|manual)$/;

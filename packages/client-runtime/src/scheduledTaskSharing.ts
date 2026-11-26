@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off globalTimers:off - Plain executor for React and native clients, outside an Effect runtime.
 
+import { t } from "@t3tools/shared/i18n";
 import {
   compareScheduledTaskSharedRevisions,
   defaultScheduledTaskMachineOrder,
@@ -548,13 +549,22 @@ export function describeOneMachineLinkWarning(
   const target = labelOf(warning.target);
   switch (warning.kind) {
     case "checkerLinksOff":
-      return `Linked environments is off on ${checker}, so it can't check ${target}.`;
+      return t("Linked environments is off on {checker}, so it can't check {target}.", {
+        checker,
+        target,
+      });
     case "noLink":
-      return `${checker} has no link to ${target}. Link it in Settings → Machines & access on ${checker}.`;
+      return t(
+        "{checker} has no link to {target}. Link it in Settings → Machines & access on {checker}.",
+        { checker, target },
+      );
     case "expired":
-      return `${checker}'s link to ${target} has expired.`;
+      return t("{checker}'s link to {target} has expired.", { checker, target });
     case "targetLinksOff":
-      return `Linked environments is off on ${target}, so ${checker} can't ask it.`;
+      return t("Linked environments is off on {target}, so {checker} can't ask it.", {
+        checker,
+        target,
+      });
   }
 }
 

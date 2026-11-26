@@ -1,6 +1,6 @@
 import { msg, t, type Message } from "../../lib/i18n";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import type { SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -10,7 +10,8 @@ import {
   mobileProjectGroupingModePatch,
   resolveMobileProjectGroupingSettings,
 } from "../../state/project-grouping";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
 import {
@@ -19,6 +20,8 @@ import {
   WorkingSectionSettings,
   ScheduledTaskPlacementSettings,
 } from "./ThreadSettingsSections";
+
+import { LanguageSettingsSection } from "./SettingsLanguageRouteScreen";
 
 const GROUPING_OPTIONS: ReadonlyArray<{
   readonly mode: SidebarProjectGroupingMode;
@@ -45,7 +48,7 @@ const GROUPING_OPTIONS: ReadonlyArray<{
 export function SettingsProjectGroupingRouteScreen() {
   const insets = useSafeAreaInsets();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const preferencesReady = AsyncResult.isSuccess(preferencesResult) && !preferencesResult.waiting;
   const selectedMode = AsyncResult.isSuccess(preferencesResult)
     ? resolveMobileProjectGroupingSettings(preferencesResult.value).sidebarProjectGroupingMode
@@ -81,10 +84,11 @@ export function SettingsProjectGroupingRouteScreen() {
               selected={selectedMode === option.mode}
               separated={index > 0}
               disabled={!preferencesReady}
-              onPress={() => savePreferences(mobileProjectGroupingModePatch(option.mode))}
+              onPress={() => void savePreferences(mobileProjectGroupingModePatch(option.mode))}
             />
           ))}
         </SettingsSection>
+        <LanguageSettingsSection />
         <ThreadGroupingSettingsSection />
         <WorkingSectionSettings />
         <ScheduledTaskPlacementSettings />

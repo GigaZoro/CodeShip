@@ -1,11 +1,12 @@
+import { t } from "~/i18n";
 import { LoaderCircleIcon, PauseIcon, PlayIcon, TriangleAlertIcon } from "lucide-react";
 import { Spinner } from "../ui/spinner";
+
 import { createContext, useContext, useRef, useState } from "react";
 
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { ContextChip, ContextChipAction, ContextChipLabel } from "../ContextChip";
 import { middleTruncateAttachmentName } from "../composerInlineChip";
-import { t } from "~/i18n";
 
 export const AudioPreviewUnmountContext = createContext<((audio: HTMLAudioElement) => void) | null>(
   null,

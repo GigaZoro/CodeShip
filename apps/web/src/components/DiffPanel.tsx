@@ -1,4 +1,5 @@
 import { t, tn } from "~/i18n";
+
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import type { FileDiffContentsLoader, FileDiffMetadata } from "@pierre/diffs";
@@ -43,6 +44,7 @@ import { useCheckpointDiff, useTurnItemDetail } from "~/state/queries";
 import { revisionedQuery } from "~/state/revisionedQuery";
 import { cn } from "~/lib/utils";
 import {
+  type DiffPanelSelection,
   resolveToolCallDiffTarget,
   selectThreadBranchBaseRef,
   selectThreadDiffPanelSelection,
@@ -58,6 +60,7 @@ import {
   buildFileDiffEntries,
   getDiffLineStat,
   getRenderablePatch,
+  getRenderablePatchSections,
   resolveDiffThemeName,
   resolveFileDiffPath,
 } from "../lib/diffRendering";
@@ -69,6 +72,7 @@ import {
   useThreadCheckpointSummaries,
   useQuietThreadShell,
   useQuietThreadVisibleTurnItems,
+  useQuietThreadProjection,
 } from "../state/entities";
 import { useClientSettings, updateClientSettings } from "../hooks/useSettings";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -84,7 +88,7 @@ import { resolveDiffPanelShortcut } from "./diffs/diffPanelShortcuts";
 import { FileExplorerPane } from "./files/FileExplorerPane";
 import { diffFileTreeEntries } from "./diffs/diffFileTree.logic";
 import { getDiffHeaderClickAction } from "./diffs/diffHeaderClick";
-import { Button } from "./ui/button";
+import { Button, InlineButton } from "./ui/button";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
 import { Switch } from "./ui/switch";
 import {
@@ -108,10 +112,12 @@ import {
   DropdownMenuTrigger,
 } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { useEnvironmentQuery } from "../state/query";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+import { useEnvironmentQuery, useEnvironmentQueryRefresh } from "../state/query";
 import { useAtomCommand } from "../state/use-atom-command";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../state/server";
 import { reviewEnvironment } from "../state/review";
+import { filesystemEnvironment } from "../state/filesystem";
 import { vcsEnvironment } from "../state/vcs";
 import { buildBaseRefChoices, filterBaseRefChoices } from "../lib/baseRefChoices";
 import { createGitDiffFileContentsLoader } from "../lib/diffFileContents";
@@ -123,10 +129,22 @@ import { DiffFileStatus } from "./diffs/DiffFileStatus";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
 import { shortcutLabelForCommand } from "../keybindings";
 import { projectCommitUrl } from "@t3tools/client-runtime/change-request-links";
+import {
+  isRelativePathInsideFolder,
+  repositorySectionForPath,
+  threadChangedRepositories,
+  threadGitRepositories,
+  turnDiffSections,
+  type TurnDiffSection,
+} from "@t3tools/client-runtime/state/thread-repositories";
 import { useOpenLink } from "../browser/useOpenLink";
 
 type DiffThemeType = "light" | "dark";
 const AUTOMATIC_BASE_REF = "__automatic_base_ref__";
+const ALL_REPOSITORIES = "__all_repositories__";
+const THREAD_FOLDER = "__thread_folder__";
+const NO_GIT_REPOSITORIES: ReturnType<typeof threadChangedRepositories> = Object.freeze([]);
+const NO_TURN_DIFF_SECTIONS: ReadonlyArray<TurnDiffSection> = [];
 const DIFF_FILE_TREE_STORAGE_KEY = "t3code.diffFileTreeOpen";
 
 const EMPTY_COLLAPSED_DIFF_FILE_KEYS: ReadonlySet<string> = new Set();
@@ -145,45 +163,43 @@ function DiffFileCollapseToggle({
   onToggle: (fileKey: string) => void;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="icon-micro"
-            variant="ghost"
-            className="-ms-0.5"
-            aria-label={
-              collapsed
-                ? t("Expand {file}", { file: filePath })
-                : t("Collapse {file}", { file: filePath })
-            }
-            aria-expanded={!collapsed}
-            ref={(node) => {
-              if (!node || !load) return;
-              return observeIntersection(
-                node,
-                (entry) => {
-                  if (entry.isIntersecting) load();
-                },
-                { rootMargin: "600px" },
-              );
-            }}
-            data-diff-file-key={fileKey}
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggle(fileKey);
-            }}
-          />
-        }
-      >
-        {collapsed ? (
-          <ChevronRightIcon className="size-4 text-muted-foreground/80" />
-        ) : (
-          <ChevronDownIcon className="size-4 text-muted-foreground/80" />
-        )}
-      </TooltipTrigger>
-      <TooltipPopup side="top">{collapsed ? t("Expand diff") : t("Collapse diff")}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          size="icon-micro"
+          variant="ghost"
+          className="-ms-0.5"
+          aria-label={
+            collapsed
+              ? t("Expand {path}", { path: filePath })
+              : t("Collapse {path}", { path: filePath })
+          }
+          aria-expanded={!collapsed}
+          ref={(node) => {
+            if (!node || !load) return;
+            return observeIntersection(
+              node,
+              (entry) => {
+                if (entry.isIntersecting) load();
+              },
+              { rootMargin: "600px" },
+            );
+          }}
+          data-diff-file-key={fileKey}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle(fileKey);
+          }}
+        />
+      }
+      label={collapsed ? t("Expand diff") : t("Collapse diff")}
+    >
+      {collapsed ? (
+        <ChevronRightIcon className="size-4 text-muted-foreground/80" />
+      ) : (
+        <ChevronDownIcon className="size-4 text-muted-foreground/80" />
+      )}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -253,7 +269,7 @@ export default function DiffPanel({
   const routeThreadRef = useThreadRouteRef();
   const activeThreadId = routeThreadRef?.threadId ?? null;
   const activeThread = useQuietThreadShell(routeThreadRef);
-  const fileAccess = useFilesystemReadAccess(activeThread?.environmentId ?? null);
+  const fileAccess = useFilesystemReadAccess(activeThread?.environmentId ?? null, t);
   const { canReadFiles } = fileAccess;
   const activeProjectId = activeThread?.projectId ?? null;
   const activeProject = useProject(
@@ -285,13 +301,75 @@ export default function DiffPanel({
   const activeRepositoryRoot =
     gitStatusQuery.data?.workingTree.rootPath ??
     (activeThread?.worktreePath ? undefined : activeProject?.repositoryIdentity?.rootPath);
-  const diffSelection = useDiffPanelStore((state) =>
+  const storedDiffSelection = useDiffPanelStore((state) =>
     selectThreadDiffPanelSelection(state.byThreadKey, routeThreadRef),
   );
+  const threadFolderIsRepo = gitStatusQuery.data?.isRepo ?? true;
+  // The checkout the Git scopes read: the thread's folder, or a repository the thread changed.
+  // A plain folder has no history of its own, so it starts on the latest one changed.
+  const repositoryStructure = useQuietThreadProjection(routeThreadRef);
+  const tracksFolders = (activeProject?.trackedFolders?.length ?? 0) > 0;
+  const threadWorktreePath = activeThread?.worktreePath ?? null;
+  // Unchanged repositories are listed too: work done outside a turn only shows in these scopes.
+  const taskFolderQuery = useEnvironmentQuery(
+    visible && tracksFolders && activeThread != null && threadWorktreePath !== null
+      ? filesystemEnvironment.taskFolder({
+          environmentId: activeThread.environmentId,
+          input: { worktreePath: threadWorktreePath },
+        })
+      : null,
+  );
+  const projectFoldersQuery = useEnvironmentQuery(
+    visible && tracksFolders && activeThread != null && threadWorktreePath === null
+      ? filesystemEnvironment.listFolders({
+          environmentId: activeThread.environmentId,
+          input: { projectId: activeThread.projectId },
+        })
+      : null,
+  );
+  const gitRepositories = threadGitRepositories({
+    changed:
+      repositoryStructure === null
+        ? NO_GIT_REPOSITORIES
+        : threadChangedRepositories(repositoryStructure.projection),
+    taskFolder: taskFolderQuery.data?.taskFolder ?? null,
+    folders: projectFoldersQuery.data?.folders ?? null,
+    threadCwd: activeCwd ?? null,
+  });
+  const [gitRepositoryPath, setGitRepositoryPath] = useState<string | null>(null);
+  const gitRepository =
+    gitRepositories.find((repository) => repository.repositoryPath === gitRepositoryPath) ??
+    (threadFolderIsRepo ? null : (gitRepositories[0] ?? null));
+  const gitCwd = gitRepository?.cwd ?? activeCwd;
+  const isGitRepo = threadFolderIsRepo || gitRepository !== null;
+  const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadRef);
+  const orderedTurnDiffSummaries = turnDiffSummaries.toSorted((left, right) => {
+    if (left.checkpointTurnCount !== right.checkpointTurnCount) {
+      return right.checkpointTurnCount - left.checkpointTurnCount;
+    }
+    return right.completedAt.localeCompare(left.completedAt);
+  });
+  const latestTurn = orderedTurnDiffSummaries[0];
+  const hasRepositoryChanges = turnDiffSummaries.some(
+    (summary) => summary.repositories !== undefined,
+  );
+  // A plain folder holding tracked repositories has no branch or working tree of its own; every
+  // way into the panel lands on its latest turn.
+  const turnDiffsOnly = !isGitRepo && hasRepositoryChanges;
+  const diffSelection: DiffPanelSelection =
+    turnDiffsOnly &&
+    latestTurn !== undefined &&
+    storedDiffSelection.kind !== "turn" &&
+    storedDiffSelection.kind !== "tool-call"
+      ? { kind: "turn", turnId: latestTurn.runId, filePath: null, revealRequestId: 0 }
+      : storedDiffSelection;
   const rememberedBaseRef = useDiffPanelStore((state) =>
     selectThreadBranchBaseRef(state, routeThreadRef),
   );
   const toolCallSelection = diffSelection.kind === "tool-call" ? diffSelection : null;
+  // Turn and git diffs name files from the repository root; a tool call's diff names them as
+  // its provider recorded them, absolute or relative to the workspace.
+  const diffPathRepositoryRoot = toolCallSelection ? undefined : activeRepositoryRoot;
   const isGitSelection =
     diffSelection.kind === "branch" ||
     diffSelection.kind === "unstaged" ||
@@ -306,23 +384,15 @@ export default function DiffPanel({
       : null,
   );
   const toolCallItem = toolCallDetail.data?.item;
-  const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
-  const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadRef);
-  const orderedTurnDiffSummaries = turnDiffSummaries.toSorted((left, right) => {
-    if (left.checkpointTurnCount !== right.checkpointTurnCount) {
-      return right.checkpointTurnCount - left.checkpointTurnCount;
-    }
-    return right.completedAt.localeCompare(left.completedAt);
-  });
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- rewrites the persisted diff store selection to the latest turn when the selected turn disappears
   useEffect(() => {
-    if (!routeThreadRef || diffSelection.kind !== "turn") return;
+    if (!routeThreadRef || storedDiffSelection.kind !== "turn") return;
     useDiffPanelStore.getState().reconcileTurnSelection(
       routeThreadRef,
       orderedTurnDiffSummaries.map((summary) => summary.runId),
     );
-  }, [diffSelection, orderedTurnDiffSummaries, routeThreadRef]);
+  }, [storedDiffSelection, orderedTurnDiffSummaries, routeThreadRef]);
 
   const selectedRunId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
   const selectedGitScope =
@@ -334,9 +404,7 @@ export default function DiffPanel({
     diffSelection.kind === "branch" || diffSelection.kind === "commit"
       ? diffSelection.baseRef
       : null;
-  // @pierre/diffs trims trailing whitespace from parsed file names; leading whitespace survives.
-  const selectedFilePath =
-    diffSelection.kind === "turn" ? diffSelection.filePath?.trimEnd() || null : null;
+  const selectedFilePath = diffSelection.kind === "turn" ? (diffSelection.filePath ?? null) : null;
   const selectedFileRevealRequestId =
     diffSelection.kind === "turn" ? diffSelection.revealRequestId : 0;
   const selectedTurn =
@@ -345,7 +413,6 @@ export default function DiffPanel({
       : (orderedTurnDiffSummaries.find((summary) => summary.runId === selectedRunId) ??
         orderedTurnDiffSummaries[0]);
   const selectedCheckpointTurnCount = selectedTurn?.checkpointTurnCount;
-  const latestTurn = orderedTurnDiffSummaries[0];
   const reviewSectionId = toolCallSelection
     ? `tool-call:${toolCallSelection.threadId}:${toolCallSelection.itemId}`
     : selectedTurn
@@ -373,12 +440,12 @@ export default function DiffPanel({
       ignoreWhitespace: diffIgnoreWhitespace,
       cacheScope: selectedTurn ? `turn:${selectedTurn.runId}` : null,
     },
-    { enabled: isGitRepo && selectedTurn !== undefined },
+    { enabled: (isGitRepo || hasRepositoryChanges) && selectedTurn !== undefined },
   );
   const branchDiffPreviewInput =
-    canReadFiles && isGitSelection && activeThread && activeCwd
+    canReadFiles && isGitSelection && activeThread && gitCwd
       ? {
-          cwd: activeCwd,
+          cwd: gitCwd,
           ...(selectedBaseRef ? { baseRef: selectedBaseRef } : {}),
           ...(selectedCommitSha !== null ? { commitSha: selectedCommitSha } : {}),
           ignoreWhitespace: diffIgnoreWhitespace,
@@ -393,11 +460,10 @@ export default function DiffPanel({
             : {}),
         }
       : undefined;
-  const canRefreshGitDiff =
-    isGitRepo && isGitSelection && activeThread != null && activeCwd != null;
+  const canRefreshGitDiff = isGitRepo && isGitSelection && activeThread != null && gitCwd != null;
   // Read under the workspace mutation id, so each mutation refetches the diff; the panel stays
   // mounted while hidden, so a mutation made then is already reflected when it shows.
-  const branchDiffPreview = useEnvironmentQuery(
+  const branchDiffPreviewAtom =
     branchDiffPreviewInput && activeThread
       ? revisionedQuery(
           reviewEnvironment.diffPreview({
@@ -406,18 +472,20 @@ export default function DiffPanel({
           }),
           canRefreshGitDiff ? workspaceMutationId : undefined,
         )
-      : null,
-  );
+      : null;
+  const branchDiffPreview = useEnvironmentQuery(branchDiffPreviewAtom, t);
+  const branchDiffPreviewIsPending = useEnvironmentQueryRefresh(branchDiffPreviewAtom).isPending;
   const branchCommitsQuery = useEnvironmentQuery(
-    visible && isGitRepo && canReadFiles && activeThread && activeCwd
+    visible && isGitRepo && canReadFiles && activeThread && gitCwd
       ? reviewEnvironment.branchCommits({
           environmentId: activeThread.environmentId,
           input: {
-            cwd: activeCwd,
+            cwd: gitCwd,
             ...(rememberedBaseRef ? { baseRef: rememberedBaseRef } : {}),
           },
         })
       : null,
+    t,
   );
   const branchCommits = openCommitMenu ?? branchCommitsQuery.data;
   const activeThreadRefreshKey = routeThreadRef
@@ -433,7 +501,10 @@ export default function DiffPanel({
           ? "commit"
           : "branch-range"),
   );
-  const comparisonHeadRef = selectedGitSource?.headRef ?? gitStatusQuery.data?.refName ?? "HEAD";
+  const comparisonHeadRef =
+    selectedGitSource?.headRef ??
+    (gitRepository === null ? gitStatusQuery.data?.refName : null) ??
+    "HEAD";
   const comparisonBaseRef = selectedGitSource?.baseRef ?? selectedBaseRef ?? t("Automatic");
   const selectedCommitSubject =
     selectedCommitSha !== null && selectedGitSource?.headRef === selectedCommitSha
@@ -445,6 +516,7 @@ export default function DiffPanel({
       : selectedGitScope === "unstaged"
         ? t("Uncommitted")
         : t("Changes");
+  const selectedTurnLabel = t("Turn {count}", { count: selectedCheckpointTurnCount ?? "?" });
   const selectedScopeLabel = toolCallSelection
     ? t("Tool call")
     : selectedRunId === null
@@ -453,17 +525,17 @@ export default function DiffPanel({
         : selectedGitScopeLabel
       : selectedTurn?.runId === latestTurn?.runId
         ? t("Latest turn")
-        : t("Turn {number}", { number: selectedCheckpointTurnCount ?? "?" });
+        : selectedTurnLabel;
   const reviewSectionTitle = toolCallSelection
     ? t("Tool call")
     : selectedTurn
-      ? t("Turn {number}", { number: selectedCheckpointTurnCount ?? "?" })
+      ? selectedTurnLabel
       : selectedGitScopeLabel;
   const headerCommitSha = selectedRunId === null ? selectedCommitSha : null;
+  // The project's remote is the thread folder's; another repository's commits are not on it.
+  const commitLinkIdentity = gitRepository === null ? activeProject?.repositoryIdentity : null;
   const selectedCommitUrl =
-    headerCommitSha !== null
-      ? projectCommitUrl(activeProject?.repositoryIdentity, headerCommitSha)
-      : null;
+    headerCommitSha !== null ? projectCommitUrl(commitLinkIdentity, headerCommitSha) : null;
   const openLink = useOpenLink(routeThreadRef);
   // A SHA link goes to the code host; it must not route back into this pane's commit selection.
   const openCommitUrl = (event: MouseEvent<HTMLElement>, url: string) => {
@@ -476,15 +548,33 @@ export default function DiffPanel({
   const refreshPreviewQuery = branchDiffPreview.refresh;
   const refreshDiffFromUserAction = refreshPreviewQuery;
 
+  const threadFolderName = activeProject?.title ?? t("Project folder");
   const preview = branchDiffPreview.data;
   const gitDiff = selectedGitSource?.diff;
 
   const toolCallPreview =
-    toolCallSelection && toolCallItem?.type === "file_change" ? toolCallDiff(toolCallItem) : null;
+    toolCallSelection && toolCallItem?.type === "file_change"
+      ? toolCallDiff(toolCallItem, activeCwd, t)
+      : null;
+  const turnSections =
+    selectedTurn && activeCheckpointDiff.data
+      ? turnDiffSections(activeCheckpointDiff.data, threadFolderName)
+      : NO_TURN_DIFF_SECTIONS;
+  // Sections only matter when a repository changed; otherwise the turn has its one patch.
+  const repositorySections = turnSections.some((section) => section.repositoryPath !== null)
+    ? turnSections
+    : NO_TURN_DIFF_SECTIONS;
+  const repositoryFilter =
+    diffSelection.kind === "turn" ? (diffSelection.repository ?? null) : null;
+  const selectedSection =
+    repositorySections.find((section) => section.key === repositoryFilter) ?? null;
+  const shownSections = selectedSection ? [selectedSection] : repositorySections;
   const selectedPatch = toolCallSelection
     ? toolCallPreview?.patch
     : selectedTurn
-      ? activeCheckpointDiff.data?.diff
+      ? shownSections.length > 0
+        ? shownSections.map((section) => section.diff).join("\n")
+        : activeCheckpointDiff.data?.diff
       : gitDiff;
   const isSelectedPatchTruncated =
     toolCallPreview?.truncated === true ||
@@ -518,14 +608,18 @@ export default function DiffPanel({
     selectedGitSource.files?.length
       ? selectedGitSource
       : null;
-  const renderablePatch = getRenderablePatch(
-    lazySource ? undefined : selectedPatch,
-    `diff-panel:${resolvedTheme}`,
-    {
-      compactPartialHunkOffsets: isGitSelection,
-      ...(toolCallSelection ? { ignoreWhitespace: diffIgnoreWhitespace } : {}),
-    },
-  );
+  const renderablePatch =
+    shownSections.length > 0
+      ? getRenderablePatchSections(shownSections, `diff-panel:${resolvedTheme}`)
+      : getRenderablePatch(
+          lazySource ? undefined : selectedPatch,
+          `diff-panel:${resolvedTheme}`,
+          {
+            compactPartialHunkOffsets: isGitSelection,
+            ...(toolCallSelection ? { ignoreWhitespace: diffIgnoreWhitespace } : {}),
+          },
+          t,
+        );
   const recordedToolCallFileCount =
     toolCallSelection && toolCallItem?.type === "file_change"
       ? (toolCallItem.changes?.length ?? 0)
@@ -563,7 +657,7 @@ export default function DiffPanel({
     return currentLoadDiffFiles(fileDiff);
   });
   const canSelectBranchBase = canReadFiles && canRefreshGitDiff && selectedGitScope === "branch";
-  const branchRefsCwd = branchDiffPreview.data?.cwd ?? activeCwd;
+  const branchRefsCwd = branchDiffPreview.data?.cwd ?? gitCwd;
   const localBranchRefs = useEnvironmentQuery(
     canSelectBranchBase && activeThread && branchRefsCwd
       ? vcsEnvironment.listRefs({
@@ -635,6 +729,8 @@ export default function DiffPanel({
   useLiveRefresh(
     branchDiffPreview.data !== null && !branchDiffPreview.isPending
       ? () => {
+          // A read that began after this render, as a thread switch's, is that revalidation.
+          if (branchDiffPreviewIsPending()) return;
           if (Date.now() - branchDiffPreview.dataUpdatedAt < LIVE_REFRESH_MIN_INTERVAL_MS) return;
           refreshBranchDiffPreview();
         }
@@ -756,12 +852,31 @@ export default function DiffPanel({
     externalRevealRef,
   ]);
 
+  // A tracked repository's file is named from the thread's folder; on disk it belongs to the
+  // repository's own folder, which may sit outside the thread's.
+  const repositoryFileTarget = (filePath: string) => {
+    // A Git scope of a repository lists paths from that repository's folder.
+    if (isGitSelection && gitRepository !== null) {
+      return { path: filePath, insideThreadFolder: false, cwd: gitRepository.cwd };
+    }
+    const match = repositorySectionForPath(repositorySections, filePath);
+    if (match === null) return null;
+    return {
+      path: match.path,
+      insideThreadFolder: isRelativePathInsideFolder(match.section.relativePath),
+      cwd: selectedTurn?.repositories?.find(
+        (repository) => repository.repositoryPath === match.section.repositoryPath,
+      )?.cwd,
+    };
+  };
   const openDiffFile = (filePath: string) => {
+    const repositoryFile = repositoryFileTarget(filePath);
     openDiffFilePrimaryAction({
-      threadRef: routeThreadRef,
-      filePath,
-      activeCwd,
-      repositoryRoot: activeRepositoryRoot,
+      // The file viewer reads below the thread's folder; a repository outside it opens in the editor.
+      threadRef: repositoryFile?.insideThreadFolder === false ? null : routeThreadRef,
+      filePath: repositoryFile?.insideThreadFolder === false ? repositoryFile.path : filePath,
+      activeCwd: repositoryFile?.insideThreadFolder === false ? repositoryFile.cwd : activeCwd,
+      repositoryRoot: repositoryFile ? undefined : diffPathRepositoryRoot,
       openInEditor: (targetPath) => {
         void (async () => {
           const result = await openInPreferredEditor(targetPath);
@@ -903,6 +1018,15 @@ export default function DiffPanel({
     if (!routeThreadRef) return;
     useDiffPanelStore.getState().selectBranchBaseRef(routeThreadRef, baseRef);
   };
+  const selectGitRepository = (value: string) => {
+    const nextPath = value === THREAD_FOLDER ? null : value;
+    if (nextPath === (gitRepository?.repositoryPath ?? null)) return;
+    setGitRepositoryPath(nextPath);
+    // A commit or base ref of the repository being left means nothing in the next one.
+    if (selectedCommitSha === null && rememberedBaseRef === null) return;
+    selectBranchBaseRef(null);
+    if (selectedGitScope === "unstaged") selectGitScope("unstaged");
+  };
   const selectedTurnValue = selectedTurn ? `turn:${selectedTurn.runId}` : "";
   const selectedCommitValue = selectedCommitSha !== null ? `commit:${selectedCommitSha}` : "";
   const selectedScopeValue = toolCallSelection
@@ -912,6 +1036,16 @@ export default function DiffPanel({
       : selectedTurn?.runId === latestTurn?.runId
         ? "latest"
         : selectedTurnValue;
+  const selectRepository = (key: string) => {
+    if (!routeThreadRef || !selectedTurn) return;
+    useDiffPanelStore
+      .getState()
+      .selectTurnRepository(
+        routeThreadRef,
+        selectedTurn.runId,
+        key === ALL_REPOSITORIES ? null : key,
+      );
+  };
   const selectScopeValue = (value: string) => {
     if (value === "unstaged" || value === "branch") {
       selectGitScope(value);
@@ -929,13 +1063,20 @@ export default function DiffPanel({
     }
   };
 
+  // Two pickers leave no room for these in a phone-width panel, where a split view cannot fit anyway.
+  const narrowHeaderHidden =
+    repositorySections.length > 0 ? "@max-[30rem]/diff-header:hidden" : undefined;
   const headerRow = (
     <>
       <div className="@container/diff-refs flex min-w-0 flex-1 items-center gap-3 [-webkit-app-region:no-drag]">
         <DropdownMenu>
           <DropdownMenuTrigger
             render={<Button size="xs" variant="secondary" />}
-            className={cn("max-w-full", headerCommitSha !== null && "min-w-0 shrink")}
+            className={cn(
+              "max-w-full",
+              headerCommitSha !== null && "min-w-0 shrink",
+              repositorySections.length > 0 && "min-w-14 shrink",
+            )}
             aria-label={t("Diff scope: {scope}", { scope: selectedScopeLabel })}
             data-workspace-focus-default
           >
@@ -944,22 +1085,20 @@ export default function DiffPanel({
           </DropdownMenuTrigger>
           {headerCommitSha !== null ? (
             selectedCommitUrl ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <a
-                      href={selectedCommitUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="shrink-0 font-mono text-xs text-muted-foreground underline underline-offset-4"
-                      onClick={(event) => openCommitUrl(event, selectedCommitUrl)}
-                    />
-                  }
-                >
-                  {headerCommitSha.slice(0, 7)}
-                </TooltipTrigger>
-                <TooltipPopup side="top">{selectedCommitUrl}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <a
+                    href={selectedCommitUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 font-mono text-xs text-muted-foreground underline underline-offset-4"
+                    onClick={(event) => openCommitUrl(event, selectedCommitUrl)}
+                  />
+                }
+                label={selectedCommitUrl}
+              >
+                {headerCommitSha.slice(0, 7)}
+              </SharedTooltipTrigger>
             ) : (
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {headerCommitSha.slice(0, 7)}
@@ -968,12 +1107,16 @@ export default function DiffPanel({
           ) : null}
           <DropdownMenuContent align="start">
             <DropdownMenuRadioGroup value={selectedScopeValue} onValueChange={selectScopeValue}>
-              <DropdownMenuRadioItem value="branch" closeOnClick>
-                <span>{t("Changes")}</span>
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="unstaged" closeOnClick>
-                <span>{t("Uncommitted")}</span>
-              </DropdownMenuRadioItem>
+              {turnDiffsOnly ? null : (
+                <>
+                  <DropdownMenuRadioItem value="branch" closeOnClick>
+                    <span>{t("Changes")}</span>
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="unstaged" closeOnClick>
+                    <span>{t("Uncommitted")}</span>
+                  </DropdownMenuRadioItem>
+                </>
+              )}
               <DropdownMenuRadioItem value="latest" closeOnClick>
                 <span>{t("Latest turn")}</span>
               </DropdownMenuRadioItem>
@@ -990,35 +1133,32 @@ export default function DiffPanel({
                 </DropdownMenuRadioGroup>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
-            <DropdownMenuSub
-              onOpenChange={(open) => {
-                setOpenCommitMenu(open ? (branchCommitsQuery.data ?? null) : null);
-                if (!open) return;
-                // The menu keeps the list it opened with; the refreshed one shows next time.
-                branchCommitsQuery.refresh();
-              }}
-            >
-              <DropdownMenuSubTrigger>{t("Commits")}</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="max-h-80 max-w-96">
-                <DropdownMenuRadioGroup
-                  value={selectedCommitValue}
-                  onValueChange={selectScopeValue}
-                >
-                  {branchCommits?.commits.map((commit) => {
-                    const commitUrl = projectCommitUrl(
-                      activeProject?.repositoryIdentity,
-                      commit.sha,
-                    );
-                    return (
-                      <div
-                        key={commit.sha}
-                        className={cn(
-                          "flex items-center rounded-sm hover:bg-accent has-data-highlighted:bg-accent has-focus-visible:bg-accent [&_[data-checked]]:bg-transparent [&_[data-highlighted]]:bg-transparent",
-                          selectedCommitSha === commit.sha && "bg-foreground/[0.08]",
-                        )}
-                      >
-                        <Tooltip>
-                          <TooltipTrigger
+            {turnDiffsOnly ? null : (
+              <DropdownMenuSub
+                onOpenChange={(open) => {
+                  setOpenCommitMenu(open ? (branchCommitsQuery.data ?? null) : null);
+                  if (!open) return;
+                  // The menu keeps the list it opened with; the refreshed one shows next time.
+                  branchCommitsQuery.refresh();
+                }}
+              >
+                <DropdownMenuSubTrigger>{t("Commits")}</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-80 max-w-96">
+                  <DropdownMenuRadioGroup
+                    value={selectedCommitValue}
+                    onValueChange={selectScopeValue}
+                  >
+                    {branchCommits?.commits.map((commit) => {
+                      const commitUrl = projectCommitUrl(commitLinkIdentity, commit.sha);
+                      return (
+                        <div
+                          key={commit.sha}
+                          className={cn(
+                            "flex items-center rounded-sm hover:bg-accent has-data-highlighted:bg-accent has-focus-visible:bg-accent [&_[data-checked]]:bg-transparent [&_[data-highlighted]]:bg-transparent",
+                            selectedCommitSha === commit.sha && "bg-foreground/[0.08]",
+                          )}
+                        >
+                          <SharedTooltipTrigger
                             render={
                               <DropdownMenuRadioItem
                                 className="min-w-0 flex-1"
@@ -1026,65 +1166,138 @@ export default function DiffPanel({
                                 closeOnClick
                               />
                             }
+                            label={commit.subject}
+                            side="right"
+                            className="max-w-80"
                           >
                             <span className="flex items-center gap-3">
                               <span className="min-w-0 flex-1 truncate">{commit.subject}</span>
                               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                                {formatRelativeTimeLabel(commit.committedAt)}
+                                {formatRelativeTimeLabel(commit.committedAt, undefined, t)}
                               </span>
                             </span>
-                          </TooltipTrigger>
-                          <TooltipPopup side="right" className="max-w-80">
-                            {commit.subject}
-                          </TooltipPopup>
-                        </Tooltip>
-                        {commitUrl ? (
-                          <DropdownMenuItem
-                            className="shrink-0"
-                            render={
-                              <a
-                                href={commitUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                aria-label={t("Open commit {sha}", { sha: commit.sha.slice(0, 7) })}
-                              />
-                            }
-                            onClick={(event) => openCommitUrl(event, commitUrl)}
-                          >
-                            <span className="font-mono text-xs text-muted-foreground underline underline-offset-4">
+                          </SharedTooltipTrigger>
+                          {commitUrl ? (
+                            <DropdownMenuItem
+                              className="shrink-0"
+                              render={
+                                <a
+                                  href={commitUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label={t("Open commit {sha}", {
+                                    sha: commit.sha.slice(0, 7),
+                                  })}
+                                />
+                              }
+                              onClick={(event) => openCommitUrl(event, commitUrl)}
+                            >
+                              <span className="font-mono text-xs text-muted-foreground underline underline-offset-4">
+                                {commit.sha.slice(0, 7)}
+                              </span>
+                            </DropdownMenuItem>
+                          ) : (
+                            <span className="shrink-0 px-2 font-mono text-xs text-muted-foreground">
                               {commit.sha.slice(0, 7)}
                             </span>
-                          </DropdownMenuItem>
-                        ) : (
-                          <span className="shrink-0 px-2 font-mono text-xs text-muted-foreground">
-                            {commit.sha.slice(0, 7)}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </DropdownMenuRadioGroup>
-                {branchCommitsQuery.error ? (
-                  <DropdownMenuItem disabled>{branchCommitsQuery.error}</DropdownMenuItem>
-                ) : !canReadFiles ? (
-                  <DropdownMenuItem disabled>
-                    {fileAccess.isPending
-                      ? t("Checking file access...")
-                      : (fileAccess.error ?? t("This connection cannot read local diffs."))}
-                  </DropdownMenuItem>
-                ) : branchCommits === null ? (
-                  <DropdownMenuItem disabled>{t("Loading commits...")}</DropdownMenuItem>
-                ) : branchCommits.commits.length === 0 ? (
-                  <DropdownMenuItem disabled>{t("No commits on this branch.")}</DropdownMenuItem>
-                ) : branchCommits.truncated ? (
-                  <DropdownMenuItem disabled>
-                    {t("Showing latest {count} commits", { count: branchCommits.commits.length })}
-                  </DropdownMenuItem>
-                ) : null}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </DropdownMenuRadioGroup>
+                  {branchCommitsQuery.error ? (
+                    <DropdownMenuItem disabled>{branchCommitsQuery.error}</DropdownMenuItem>
+                  ) : !canReadFiles ? (
+                    <DropdownMenuItem disabled>
+                      {fileAccess.isPending
+                        ? t("Checking file access...")
+                        : (fileAccess.error ?? t("This connection cannot read local diffs."))}
+                    </DropdownMenuItem>
+                  ) : branchCommits === null ? (
+                    <DropdownMenuItem disabled>{t("Loading commits...")}</DropdownMenuItem>
+                  ) : branchCommits.commits.length === 0 ? (
+                    <DropdownMenuItem disabled>{t("No commits on this branch.")}</DropdownMenuItem>
+                  ) : branchCommits.truncated ? (
+                    <DropdownMenuItem disabled>
+                      {t("Showing latest {count} commits", { count: branchCommits.commits.length })}
+                    </DropdownMenuItem>
+                  ) : null}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
+        {isGitSelection && gitRepositories.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button size="xs" variant="ghost-muted" />}
+              className="min-w-14 max-w-48 shrink"
+              aria-label={t("Repository: {name}", {
+                name: gitRepository?.name ?? threadFolderName,
+              })}
+            >
+              <span className="truncate">{gitRepository?.name ?? threadFolderName}</span>
+              <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 max-w-72">
+              <DropdownMenuRadioGroup
+                value={gitRepository?.repositoryPath ?? THREAD_FOLDER}
+                onValueChange={selectGitRepository}
+              >
+                {threadFolderIsRepo ? (
+                  <DropdownMenuRadioItem value={THREAD_FOLDER} closeOnClick>
+                    <span className="min-w-0 truncate">{threadFolderName}</span>
+                  </DropdownMenuRadioItem>
+                ) : null}
+                {gitRepositories.map((repository) => (
+                  <DropdownMenuRadioItem
+                    key={repository.repositoryPath}
+                    value={repository.repositoryPath}
+                    closeOnClick
+                  >
+                    <span className="min-w-0 truncate">{repository.name}</span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        {repositorySections.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button size="xs" variant="ghost-muted" />}
+              className="min-w-14 max-w-48 shrink"
+              aria-label={t("Repository: {name}", {
+                name: selectedSection?.name ?? t("All repositories"),
+              })}
+            >
+              <span className="truncate">{selectedSection?.name ?? t("All repositories")}</span>
+              <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 max-w-72">
+              <DropdownMenuRadioGroup
+                value={selectedSection?.key ?? ALL_REPOSITORIES}
+                onValueChange={selectRepository}
+              >
+                <DropdownMenuRadioItem value={ALL_REPOSITORIES} closeOnClick>
+                  <span>{t("All repositories")}</span>
+                </DropdownMenuRadioItem>
+                {repositorySections.map((section) => (
+                  <DropdownMenuRadioItem key={section.key} value={section.key} closeOnClick>
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="min-w-0 truncate">{section.name}</span>
+                      {section.relativePath !== "" && section.relativePath !== section.name ? (
+                        <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground">
+                          {section.relativePath}
+                        </span>
+                      ) : null}
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         {canSelectBranchBase && (
           <div
             className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden text-xs text-muted-foreground"
@@ -1108,16 +1321,12 @@ export default function DiffPanel({
                 {`${comparisonHeadRef} → ${comparisonBaseRef}`}
               </TooltipPopup>
             </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={<span aria-hidden className="hidden @max-[20rem]/diff-refs:inline" />}
-              >
-                {t("vs")}
-              </TooltipTrigger>
-              <TooltipPopup side="top">
-                {`${comparisonHeadRef} → ${comparisonBaseRef}`}
-              </TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={<span aria-hidden className="hidden @max-[20rem]/diff-refs:inline" />}
+              label={`${comparisonHeadRef} → ${comparisonBaseRef}`}
+            >
+              {t("vs")}
+            </SharedTooltipTrigger>
             <Combobox
               items={baseRefItems}
               filteredItems={filteredBaseRefItems}
@@ -1157,7 +1366,7 @@ export default function DiffPanel({
                   </div>
                 </div>
                 <ComboboxEmpty>{t("No matching refs.")}</ComboboxEmpty>
-                <ComboboxList className="max-h-64 min-w-0 overflow-x-hidden">
+                <ComboboxList className="min-w-0 overflow-x-hidden" scrollAreaClassName="max-h-64">
                   <ComboboxItem
                     className="w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)]"
                     value={AUTOMATIC_BASE_REF}
@@ -1195,20 +1404,18 @@ export default function DiffPanel({
                               />
                             </div>
                           ) : choice.remote ? (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <span className="flex justify-end text-muted-foreground">
-                                    <CheckIcon
-                                      role="img"
-                                      aria-label={t("Remote only")}
-                                      className="size-3"
-                                    />
-                                  </span>
-                                }
-                              />
-                              <TooltipPopup side="top">{t("Remote only")}</TooltipPopup>
-                            </Tooltip>
+                            <SharedTooltipTrigger
+                              render={
+                                <span className="flex justify-end text-muted-foreground">
+                                  <CheckIcon
+                                    role="img"
+                                    aria-label={t("Remote only")}
+                                    className="size-3"
+                                  />
+                                </span>
+                              }
+                              label={<>{t("Remote only")}</>}
+                            />
                           ) : null}
                         </div>
                       </ComboboxItem>
@@ -1235,12 +1442,14 @@ export default function DiffPanel({
           </span>
         ) : null}
         {codeViewFiles.length > 0 || (isGitSelection && selectedGitSource?.files?.length) ? (
-          <DiffStatLabel
-            additions={diffLineStat.additions}
-            deletions={diffLineStat.deletions}
-            className="mr-1 text-2xs"
-            layout="inline"
-          />
+          <span className={cn("contents", narrowHeaderHidden)}>
+            <DiffStatLabel
+              additions={diffLineStat.additions}
+              deletions={diffLineStat.deletions}
+              className="mr-1 text-2xs"
+              layout="inline"
+            />
+          </span>
         ) : null}
         {shownFileKeys.length > 1 && (
           <>
@@ -1285,159 +1494,137 @@ export default function DiffPanel({
           </>
         )}
         {canRefreshGitDiff && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={isRefreshingDiff ? t("Refreshing diff") : t("Refresh diff")}
-                  onClick={refreshDiffFromUserAction}
-                />
-              }
-            >
-              <RefreshIcon size="sm" refreshing={isRefreshingDiff} />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {isRefreshingDiff ? t("Refreshing diff…") : t("Refresh diff")}
-            </TooltipPopup>
-          </Tooltip>
+          <SharedTooltipTrigger
+            render={
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label={isRefreshingDiff ? t("Refreshing diff") : t("Refresh diff")}
+                onClick={refreshDiffFromUserAction}
+              />
+            }
+            label={isRefreshingDiff ? t("Refreshing diff…") : t("Refresh diff")}
+          >
+            <RefreshIcon size="sm" refreshing={isRefreshingDiff} />
+          </SharedTooltipTrigger>
         )}
         {diffFileKeys.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={
-                    allDiffFilesCollapsed ? t("Expand all files") : t("Collapse all files")
-                  }
-                  onClick={toggleDiffFileCollapse}
-                />
-              }
-            >
-              {allDiffFilesCollapsed ? (
-                <ChevronsUpDownIcon className="size-3.5" />
-              ) : (
-                <ChevronsDownUpIcon className="size-3.5" />
-              )}
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {allDiffFilesCollapsed ? t("Expand all files") : t("Collapse all files")}
-            </TooltipPopup>
-          </Tooltip>
+          <SharedTooltipTrigger
+            render={
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label={allDiffFilesCollapsed ? t("Expand all files") : t("Collapse all files")}
+                onClick={toggleDiffFileCollapse}
+              />
+            }
+            label={allDiffFilesCollapsed ? t("Expand all files") : t("Collapse all files")}
+          >
+            {allDiffFilesCollapsed ? (
+              <ChevronsUpDownIcon className="size-3.5" />
+            ) : (
+              <ChevronsDownUpIcon className="size-3.5" />
+            )}
+          </SharedTooltipTrigger>
         )}
-        <ToggleGroup
-          aria-label={t("Diff layout")}
-          className="shrink-0"
-          variant="segmented"
-          value={[diffLayout]}
-          onValueChange={(value) => {
-            const next = value[0];
-            if (next === "stacked" || next === "split") {
-              updateClientSettings({ diffLayout: next });
-            }
-          }}
-        >
-          <Toggle aria-label={t("Stacked diff view")} value="stacked">
-            <Rows3Icon className="size-3.5" />
-          </Toggle>
-          <Toggle aria-label={t("Split diff view")} value="split">
-            <Columns2Icon className="size-3.5" />
-          </Toggle>
-        </ToggleGroup>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                aria-label={
-                  wordWrap ? t("Disable diff line wrapping") : t("Enable diff line wrapping")
-                }
-                variant="ghost"
-                size="sm"
-                pressed={wordWrap}
-                onPressedChange={(pressed) => {
-                  setWordWrapOverride(Boolean(pressed));
-                }}
-              />
-            }
-          >
-            <TextWrapIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="top">
-            {wordWrap ? t("Disable line wrapping") : t("Enable line wrapping")}
-          </TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                aria-label={
-                  diffIgnoreWhitespace ? t("Show whitespace changes") : t("Hide whitespace changes")
-                }
-                variant="ghost"
-                size="sm"
-                pressed={diffIgnoreWhitespace}
-                onPressedChange={(pressed) => {
-                  useDiffPanelSessionStore.getState().setIgnoreWhitespace(Boolean(pressed));
-                }}
-              />
-            }
-          >
-            <PilcrowIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="top">
-            {diffIgnoreWhitespace ? t("Show whitespace changes") : t("Hide whitespace changes")}
-          </TooltipPopup>
-        </Tooltip>
-        {testFileCount > 0 && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  aria-label={t("Hide test files")}
-                  variant="ghost"
-                  size="sm"
-                  pressed={hideTestFiles}
-                  onPressedChange={(pressed) => setHideTestFiles(Boolean(pressed))}
-                />
+        <span className={cn("contents", narrowHeaderHidden)}>
+          <ToggleGroup
+            aria-label={t("Diff layout")}
+            className="shrink-0"
+            variant="segmented"
+            value={[diffLayout]}
+            onValueChange={(value) => {
+              const next = value[0];
+              if (next === "stacked" || next === "split") {
+                updateClientSettings({ diffLayout: next });
               }
-            >
-              <FlaskConicalOffIcon className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {hideTestFiles
+            }}
+          >
+            <Toggle aria-label={t("Stacked diff view")} value="stacked">
+              <Rows3Icon className="size-3.5" />
+            </Toggle>
+            <Toggle aria-label={t("Split diff view")} value="split">
+              <Columns2Icon className="size-3.5" />
+            </Toggle>
+          </ToggleGroup>
+        </span>
+        <SharedTooltipTrigger
+          render={
+            <Toggle
+              aria-label={
+                wordWrap ? t("Disable diff line wrapping") : t("Enable diff line wrapping")
+              }
+              variant="ghost"
+              size="sm"
+              pressed={wordWrap}
+              onPressedChange={(pressed) => {
+                setWordWrapOverride(Boolean(pressed));
+              }}
+            />
+          }
+          label={wordWrap ? t("Disable line wrapping") : t("Enable line wrapping")}
+        >
+          <TextWrapIcon className="size-3.5" />
+        </SharedTooltipTrigger>
+        <SharedTooltipTrigger
+          render={
+            <Toggle
+              aria-label={
+                diffIgnoreWhitespace ? t("Show whitespace changes") : t("Hide whitespace changes")
+              }
+              variant="ghost"
+              size="sm"
+              pressed={diffIgnoreWhitespace}
+              onPressedChange={(pressed) => {
+                useDiffPanelSessionStore.getState().setIgnoreWhitespace(Boolean(pressed));
+              }}
+            />
+          }
+          label={diffIgnoreWhitespace ? t("Show whitespace changes") : t("Hide whitespace changes")}
+        >
+          <PilcrowIcon className="size-3.5" />
+        </SharedTooltipTrigger>
+        {testFileCount > 0 && (
+          <SharedTooltipTrigger
+            render={
+              <Toggle
+                aria-label={t("Hide test files")}
+                variant="ghost"
+                size="sm"
+                pressed={hideTestFiles}
+                onPressedChange={(pressed) => setHideTestFiles(Boolean(pressed))}
+              />
+            }
+            label={
+              hideTestFiles
                 ? tn(
                     testFileCount,
                     "Show {count} hidden test file",
                     "Show {count} hidden test files",
                   )
-                : t("Hide test files")}
-            </TooltipPopup>
-          </Tooltip>
+                : t("Hide test files")
+            }
+          >
+            <FlaskConicalOffIcon className="size-3.5" />
+          </SharedTooltipTrigger>
         )}
         {diffFileKeys.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  aria-label={fileTreeOpen ? t("Hide file tree") : t("Show file tree")}
-                  variant="ghost"
-                  size="sm"
-                  pressed={fileTreeOpen}
-                  onPressedChange={(pressed) => setFileTreeOpen(Boolean(pressed))}
-                />
-              }
-            >
-              <FolderTreeIcon className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {fileTreeOpen ? t("Hide file tree") : t("Show file tree")}
-            </TooltipPopup>
-          </Tooltip>
+          <SharedTooltipTrigger
+            render={
+              <Toggle
+                aria-label={fileTreeOpen ? t("Hide file tree") : t("Show file tree")}
+                variant="ghost"
+                size="sm"
+                pressed={fileTreeOpen}
+                onPressedChange={(pressed) => setFileTreeOpen(Boolean(pressed))}
+              />
+            }
+            label={fileTreeOpen ? t("Hide file tree") : t("Show file tree")}
+          >
+            <FolderTreeIcon className="size-3.5" />
+          </SharedTooltipTrigger>
         )}
       </div>
     </>
@@ -1449,7 +1636,7 @@ export default function DiffPanel({
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           {t("Select a thread to inspect turn diffs.")}
         </div>
-      ) : !isGitRepo && !toolCallSelection ? (
+      ) : !isGitRepo && !hasRepositoryChanges && !toolCallSelection ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           {t("Turn diffs are unavailable because this project is not a git repository.")}
         </div>
@@ -1479,19 +1666,18 @@ export default function DiffPanel({
             )}
             {isSelectedPatchTruncated && !lazySource && (
               <p className="shrink-0 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-2xs text-muted-foreground">
-                {t("This preview exceeds the size limit. Changes shown are incomplete.")}
                 {isGitSelection && selectedGitSource?.files && !preview?.incomplete
-                  ? ` ${t("Totals include all changes.")}`
-                  : ""}
+                  ? t(
+                      "This preview exceeds the size limit. Changes shown are incomplete. Totals include all changes.",
+                    )
+                  : t("This preview exceeds the size limit. Changes shown are incomplete.")}
               </p>
             )}
             {omittedToolCallFiles > 0 && (
               <p className="shrink-0 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-2xs text-muted-foreground">
-                {tn(
-                  recordedToolCallFileCount,
-                  "This tool call changed {count} file. The recorded patch omits {omitted} of them.",
-                  "This tool call changed {count} files. The recorded patch omits {omitted} of them.",
-                  { omitted: omittedToolCallFiles },
+                {t(
+                  "This tool call changed {recorded} files. The recorded patch omits {omitted} of them.",
+                  { recorded: recordedToolCallFileCount, omitted: omittedToolCallFiles },
                 )}
               </p>
             )}
@@ -1543,6 +1729,13 @@ export default function DiffPanel({
                   </p>
                 </div>
               )
+            ) : shownFileEntries.length === 0 && testFileCount > 0 ? (
+              <div className="flex h-full flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs text-muted-foreground/70">
+                <p>{tn(testFileCount, "{count} test file hidden", "{count} test files hidden")}</p>
+                <InlineButton onClick={() => setHideTestFiles(false)}>
+                  {t("Show test files")}
+                </InlineButton>
+              </div>
             ) : lazySource || renderablePatch?.kind === "files" ? (
               <div className="flex min-h-0 flex-1 overflow-hidden">
                 <div
@@ -1561,13 +1754,20 @@ export default function DiffPanel({
                     const filePath = title?.textContent?.trim();
                     if (!filePath) return;
                     event.preventDefault();
+                    const repositoryFile = repositoryFileTarget(filePath);
                     onFileContextMenu(
-                      {
-                        environmentId: activeThread?.environmentId ?? null,
-                        filePath,
-                        workspaceRoot: activeCwd,
-                        repositoryRoot: activeRepositoryRoot,
-                      },
+                      repositoryFile?.cwd === undefined
+                        ? {
+                            environmentId: activeThread?.environmentId ?? null,
+                            filePath,
+                            workspaceRoot: activeCwd,
+                            repositoryRoot: repositoryFile ? undefined : diffPathRepositoryRoot,
+                          }
+                        : {
+                            environmentId: activeThread?.environmentId ?? null,
+                            filePath: repositoryFile.path,
+                            workspaceRoot: repositoryFile.cwd,
+                          },
                       event,
                     );
                   }}
@@ -1658,7 +1858,7 @@ export default function DiffPanel({
                     resizeLabel={t("Resize Changes files")}
                   >
                     <DiffFileTree
-                      ariaLabel={`${reviewSectionTitle} files`}
+                      ariaLabel={t("{section} files", { section: reviewSectionTitle })}
                       entries={fileTreeEntries}
                       selectedPath={selectedFilePath}
                       revealRequestId={selectedFileRevealRequestId}

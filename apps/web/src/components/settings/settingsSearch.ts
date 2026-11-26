@@ -1,6 +1,8 @@
+import { interpolateMessage } from "@t3tools/shared/i18n";
+import { isSecretsFeatureEnabled } from "../../env";
 import { HOSTED_APP_CHANNEL } from "~/branding";
 import { msg, t, type Message } from "~/i18n";
-import { isElectron, isSecretsFeatureEnabled } from "~/env";
+import { isElectron } from "~/env";
 import { isMacPlatform, isWindowsPlatform, normalizeSearchText } from "~/lib/utils";
 import { STATIC_KEYBINDING_COMMANDS, type KeybindingCommand } from "@t3tools/contracts";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -52,6 +54,7 @@ export type SettingsSearchScope =
 export interface SettingsSearchItem {
   readonly id: string;
   readonly title: Message;
+  readonly titleValues?: Readonly<Record<string, string>>;
   readonly to: SettingsPath | SettingsSearchAppPage;
   readonly extensionsTab?: ExtensionsTab;
   readonly targetId?: string;
@@ -63,7 +66,7 @@ export interface SettingsSearchItem {
   readonly windowsOnly?: boolean;
   readonly macOrWindowsOnly?: boolean;
   readonly releaseChannelOnly?: boolean;
-  readonly secretsFeatureOnly?: boolean;
+  readonly secretProvidersOnly?: boolean;
   readonly cloudOnly?: boolean;
   readonly environmentOnly?: boolean;
   readonly providerSettingsOnly?: boolean;
@@ -74,6 +77,7 @@ export interface SettingsSearchItem {
   readonly managedTunnelOnly?: boolean;
   readonly peerLinksOnly?: boolean;
   readonly fastWorktreeCheckoutOnly?: boolean;
+  readonly agentFeedbackOnly?: boolean;
   readonly textGeneratorsOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
@@ -96,9 +100,11 @@ export interface SettingsSearchAvailability {
   readonly managedTunnelActive?: boolean;
   readonly hasPeerLinkHost?: boolean;
   readonly hasFastWorktreeCheckoutEnvironment?: boolean;
+  readonly hasAgentFeedbackEnvironment?: boolean;
   /** An environment without a provider allow-list, which hides text generators. */
   readonly hasTextGeneratorsEnvironment?: boolean;
   readonly hasPrimaryEnvironment?: boolean;
+  readonly hasSecretProvidersEnvironment?: boolean;
 }
 
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, Message>> = {
@@ -132,12 +138,14 @@ export function settingsSearchSectionLabel(to: SettingsSearchItem["to"]): Messag
     : SETTINGS_SEARCH_APP_PAGE_LABELS[to as SettingsSearchAppPage];
 }
 
-/** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
-export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
+type SettingsNavGroup = {
   readonly heading: Message;
   readonly headingHidden?: true;
   readonly paths: ReadonlyArray<SettingsPath>;
-}> = [
+};
+
+/** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
+const ALL_SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
   {
     heading: msg("Preferences"),
     headingHidden: true,
@@ -159,10 +167,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: msg("Connections"),
-    paths: [
-      "/settings/connections",
-      ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
-    ],
+    paths: ["/settings/connections", "/settings/secrets"],
   },
   {
     heading: msg("More"),
@@ -170,6 +175,22 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: ["/settings/maintenance"],
   },
 ];
+
+const SETTINGS_NAV_GROUPS_WITHOUT_SECRETS = ALL_SETTINGS_NAV_GROUPS.map((group) => ({
+  ...group,
+  paths: group.paths.filter((path) => path !== "/settings/secrets"),
+}));
+
+/** Sidebar groups; Secrets shows only when some environment's server enables secret providers. */
+export function settingsSearchItemTitle(item: SettingsSearchItem): string {
+  return t(item.title, item.titleValues);
+}
+
+export function settingsNavGroups(hasSecretProvidersEnvironment: boolean) {
+  return isSecretsFeatureEnabled && hasSecretProvidersEnvironment
+    ? ALL_SETTINGS_NAV_GROUPS
+    : SETTINGS_NAV_GROUPS_WITHOUT_SECRETS;
+}
 
 export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
   return `keybinding-${command}` as const;
@@ -208,9 +229,8 @@ export function sourceControlHostSearchItems(
     return [
       {
         id: sourceControlHostSettingsSearchId(definition.kind),
-        title: (credentials
-          ? `${definition.label} accounts and token`
-          : `${definition.label} credentials`) as Message,
+        title: credentials ? msg("{provider} accounts and token") : msg("{provider} credentials"),
+        titleValues: { provider: definition.label },
         to: "/settings/source-control" as const,
         searchTerms: [
           credentials
@@ -391,6 +411,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["colour hue palette primary buttons highlight focus ring swatch"],
   },
   {
+    id: "html-preview-width",
+    title: msg("HTML preview width"),
+    to: "/settings/appearance",
+    searchTerms: [msg("wide full width inline page render chart dashboard artifact centered")],
+  },
+  {
     id: "thread-details-items",
     title: msg("Thread details"),
     to: "/settings/chat",
@@ -543,6 +569,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     searchTerms: ["beta grouped sidebar folder rows multiline branch pull request details"],
   },
+
   {
     id: "tool-call-visibility",
     title: msg("Tool calls in chat"),
@@ -587,6 +614,22 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/connections",
     scope: "connections",
     searchTerms: ["sync all machines catch up offline same settings every machine global default"],
+  },
+  {
+    id: "workflows-beta",
+    title: msg("Workflows"),
+    to: "/settings/maintenance",
+    scope: "environment",
+    searchTerms: [msg("beta workflow durable runs automation steps schedule webhook folder")],
+  },
+  {
+    id: "workflow-skipped-runs",
+    title: msg("Skipped runs kept"),
+    to: "/settings/maintenance",
+    // Shown only while workflows are on, so search lands on the switch that turns them on.
+    targetId: "workflows-beta",
+    scope: "environment",
+    searchTerms: [msg("workflow history retention delete old skipped runs webhook")],
   },
   {
     id: "prompt-suggestions-beta",
@@ -695,6 +738,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Transcription hardware and model unloading"),
     to: "/settings/voice",
     searchTerms: ["speech voice stt advanced gpu cpu acceleration memory unload idle"],
+  },
+  {
+    id: "speech-streaming",
+    title: msg("Streaming transcription"),
+    to: "/settings/voice",
+    searchTerms: ["speech voice stt advanced native live preview batch after stopping slow lag"],
   },
   {
     id: "microphone-test",
@@ -857,6 +906,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "side-thread-open-target",
+    title: msg("Open subagents and side chats in"),
+    to: "/settings/chat",
+    searchTerms: [
+      msg(
+        "subagent side chat linked thread click right panel side panel main view command ctrl middle click",
+      ),
+    ],
+  },
+  {
     id: "install-updates-automatically",
     title: msg("Install updates automatically when idle"),
     to: "/settings/maintenance",
@@ -968,6 +1027,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["ask before thread chat history"],
   },
   {
+    id: "terminal-close-confirmation",
+    title: msg("Terminal close confirmation"),
+    to: "/settings/general",
+    searchTerms: ["ask before delete stop process shell console history"],
+  },
+  {
     id: "quit-confirmation",
     title: msg("Quit shortcut"),
     to: "/settings/keybindings",
@@ -1058,6 +1123,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Diagnostics"),
     to: "/settings/diagnostics",
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
+  },
+  {
+    id: "agent-feedback",
+    title: msg("Agent feedback"),
+    to: "/settings/maintenance",
+    scope: "environment-defaults",
+    agentFeedbackOnly: true,
+    searchTerms: [
+      msg("report bug problem t3 team send feedback agents tools automatic when i ask"),
+    ],
   },
   {
     id: "open-source-licenses",
@@ -1370,6 +1445,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["pull request merge squash rebase last selected"],
   },
   {
+    id: "issue-trackers",
+    title: msg("Issue trackers"),
+    to: "/settings/source-control",
+    scope: "environment-defaults",
+    searchTerms: ["linear jira issues tracker team api key connect bind project"],
+  },
+  {
     id: "source-control",
     title: msg("Source control"),
     to: "/settings/source-control",
@@ -1454,6 +1536,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["commands scripts setup run dev server checkout worktree t3.json import"],
   },
   {
+    id: "project-repositories",
+    title: msg("Repositories"),
+    to: "/settings/projects",
+    searchTerms: [msg("tracked folders multi repo workspace code-workspace rescan add folder")],
+  },
+  {
     id: "environment-icon",
     title: msg("Environment icon"),
     to: "/settings/connections",
@@ -1535,6 +1623,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     cloudOnly: true,
   },
   {
+    id: "preview-tunnel",
+    title: msg("Preview tunnel"),
+    to: "/settings/connections",
+    targetId: "connections-environment",
+    searchTerms: [
+      msg("localhost loopback port forwarding open on this device browser tabs stream security"),
+    ],
+  },
+  {
     id: "connections-environment",
     title: msg("This machine"),
     to: "/settings/connections",
@@ -1585,7 +1682,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Secret providers"),
     to: "/settings/secrets",
     searchTerms: ["1password vault credentials api key"],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "secret-providers-add",
@@ -1593,7 +1690,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/secrets",
     targetId: "secret-providers",
     searchTerms: ["new 1password vault op cli account"],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "archive",
@@ -1758,9 +1855,10 @@ export function getSettingsSearchTargetScope(targetId: string) {
     items.find((candidate) => candidate.targetId === targetId);
   return item
     ? {
-        title: t(item.title),
+        title: settingsSearchItemTitle(item),
         scope: item.scope !== undefined ? item.scope : SETTINGS_CATEGORY_SCOPES[item.to],
         ...(item.requiresThreadAutoSettlement ? { requiresThreadAutoSettlement: true } : {}),
+        ...(item.agentFeedbackOnly ? { agentFeedbackOnly: true } : {}),
       }
     : null;
 }
@@ -1848,7 +1946,10 @@ export function filterAvailableSettingsSearchItems(
       (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
       (!item.fastWorktreeCheckoutOnly ||
         availability.hasFastWorktreeCheckoutEnvironment === true) &&
-      (!item.textGeneratorsOnly || availability.hasTextGeneratorsEnvironment === true),
+      (!item.agentFeedbackOnly || availability.hasAgentFeedbackEnvironment === true) &&
+      (!item.textGeneratorsOnly || availability.hasTextGeneratorsEnvironment === true) &&
+      (!item.secretProvidersOnly ||
+        (isSecretsFeatureEnabled && availability.hasSecretProvidersEnvironment === true)),
   );
 }
 
@@ -1859,9 +1960,9 @@ export function settingsForThisPlatform<Item extends SettingsSearchItem>(
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   return items.filter(
     (item) =>
+      (!item.secretProvidersOnly || isSecretsFeatureEnabled) &&
       (isElectron || item.desktopOnly !== true) &&
       (!item.releaseChannelOnly || isElectron || HOSTED_APP_CHANNEL !== null) &&
-      (!item.secretsFeatureOnly || isSecretsFeatureEnabled) &&
       (!item.macOnly || isMacPlatform(platform)) &&
       (!item.windowsOnly || isWindowsPlatform(platform)) &&
       (!item.macOrWindowsOnly || isMacPlatform(platform) || isWindowsPlatform(platform)),
@@ -1881,8 +1982,10 @@ export function searchSettings(
 
   return settingsForThisPlatform(items)
     .flatMap((item, index) => {
-      const title = normalizeSearchText(t(item.title));
-      const englishTitle = normalizeSearchText(item.title);
+      const title = normalizeSearchText(settingsSearchItemTitle(item));
+      const englishTitle = normalizeSearchText(
+        interpolateMessage(item.title, item.titleValues ?? {}),
+      );
       const sectionLabel = settingsSearchSectionLabel(item.to);
       const fields = [
         title,

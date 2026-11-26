@@ -1,8 +1,11 @@
+import { t, tn } from "../lib/i18n";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import * as Dialog from "./ui/Dialog";
 import { ComposerContextId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+
 import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
@@ -35,16 +38,16 @@ import { appAtomRegistry } from "../state/atom-registry";
 import { enrichedModelDetails, enrichedModelReference } from "../lib/enrichedLinkPresentation";
 import { useModelMentions } from "../state/model-mentions";
 import { mobilePreferencesAtom } from "../state/preferences";
-import { useOpenLinkedThread } from "../features/threads/useOpenLinkedThread";
+import { useOpenThreadLink } from "../features/threads/useOpenThreadLink";
 import { useLinkedEnvironments } from "../state/peerLinks";
 import { ComposerContextSheet } from "./ComposerContextSheet";
 import { AppText as Text } from "./ui/AppText";
 import {
+  assistantCitationDraftWithinLimit,
   composerDocumentAttachment,
   composerMentionPath,
   type ComposerDocumentAttachment,
 } from "../lib/composerContext";
-import { t, tn } from "../lib/i18n";
 
 export type ComposerEditorProps = NativeComposerEditorProps & {
   readonly draftKey?: string | null;
@@ -157,7 +160,7 @@ export function ComposerEditor({
       const error = squashAtomCommandFailure(settled);
       Dialog.alert(
         t("Could not paste context"),
-        error instanceof Error ? error.message : t("Try copying again."),
+        errorDisplayMessage(error) ?? t("Try copying again."),
       );
     }
   };
@@ -179,7 +182,7 @@ export function ComposerEditor({
           }),
         })
       : "";
-  const openLinkedThread = useOpenLinkedThread();
+  const openThreadLink = useOpenThreadLink(environmentId ?? null);
   const selectedReference = selected
     ? collectComposerContextReferences(selected.source)[0]
     : undefined;
@@ -214,6 +217,15 @@ export function ComposerEditor({
           );
           const text =
             props.value.slice(0, selected.start) + next + props.value.slice(selected.end);
+          if (!assistantCitationDraftWithinLimit(text)) {
+            Dialog.alert(
+              t("Could not update quote"),
+              t(
+                "This comment would make the message too long to send. Shorten the comment or draft.",
+              ),
+            );
+            return;
+          }
           const cursor = selected.start + next.length;
           if (draftKey)
             rememberComposerDraftSelection(draftKey, text, { start: cursor, end: cursor });
@@ -275,6 +287,18 @@ export function ComposerEditor({
           onClose={() => setSelected(null)}
           onRemove={removeSelected}
           onCommentChange={commentSelectedCitation}
+          canChangeComment={
+            selected && commentSelectedCitation
+              ? (comment) =>
+                  assistantCitationDraftWithinLimit(
+                    props.value.slice(0, selected.start) +
+                      serializeAssistantCitation(
+                        withAssistantCitationComment(selectedCitation, comment),
+                      ) +
+                      props.value.slice(selected.end),
+                  )
+              : undefined
+          }
         />
       ) : null}
       {selected && (selectedReference || selectedSkill) ? (
@@ -308,10 +332,7 @@ export function ComposerEditor({
             : {})}
           onOpenThread={(thread) => {
             setSelected(null);
-            openLinkedThread({
-              environmentId: String(thread.environmentId),
-              threadId: String(thread.threadId),
-            });
+            openThreadLink(thread);
           }}
           environmentId={environmentId ?? draft.project?.environmentId}
           projectId={draft.project?.projectId}

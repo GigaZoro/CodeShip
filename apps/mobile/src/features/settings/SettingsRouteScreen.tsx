@@ -284,7 +284,7 @@ function useSettingsIndexSections(): SettingsListSection[] {
         serverPage("SettingsProviderAccounts", "person.crop.circle", msg("Providers")),
         serverPage("SettingsThreads", "text.bubble", msg("Threads")),
         ...(tasksTabHidden
-          ? [serverPage("SettingsScheduledTasks", "clock", msg("Scheduled tasks"))]
+          ? [page("SettingsScheduledTasks", "clock", msg("Scheduled tasks"))]
           : []),
       ],
     },
@@ -300,12 +300,18 @@ function useSettingsIndexSections(): SettingsListSection[] {
         serverPage(
           "SettingsEnvironmentSourceControl",
           "arrow.triangle.branch",
-          msg("Source control & worktrees"),
+          msg("Source control & issues"),
         ),
+        serverPage("SettingsWorktrees", "square.on.square", msg("Worktrees")),
       ],
     },
     {
-      rows: [page("SettingsEnvironmentMaintenance", "arrow.clockwise", msg("Maintenance & about"))],
+      rows: [
+        serverPage("SettingsEnvironmentMaintenance", "arrow.clockwise", msg("Maintenance")),
+        page("SettingsLabs", "flask", msg("Labs")),
+        page("SettingsAbout", "info.circle", msg("About")),
+        page("SettingsArchive", "archivebox", msg("Archive")),
+      ],
     },
   ];
 }

@@ -1,17 +1,25 @@
+import { t } from "~/i18n";
 import { useAtomCommand } from "~/state/use-atom-command";
 import type { EnvironmentId, PullRequestLabelCandidate, PullRequestRef } from "@t3tools/contracts";
 import { CheckIcon, TagIcon } from "lucide-react";
+
 import { useState } from "react";
 
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  emptySelection,
+  isSelected,
+  changeBatches,
+  selectionChanges,
+  toggleSelection,
+} from "@t3tools/client-runtime/pull-request-selection";
 
 import { toastManager } from "../ui/toast";
 import { PullRequestCandidatePicker } from "./PullRequestCandidatePicker";
 import { readableFailure } from "./pullRequestDetail.logic";
 import { pullRequestLabelColor } from "./pullRequestList.logic";
-import { t } from "~/i18n";
 
 function matches(candidate: PullRequestLabelCandidate, query: string): boolean {
   if (query.length === 0) return true;
@@ -33,9 +41,11 @@ export function PullRequestLabelPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [draft, setDraft] = useState(emptySelection<PullRequestLabelCandidate>);
 
   const candidatesQuery = useEnvironmentQuery(
     open ? pullRequestEnvironment.labelCandidates({ environmentId, input: reference }) : null,
+    t,
   );
   const setLabels = useAtomCommand(pullRequestEnvironment.setLabels, {
     reportFailure: false,
@@ -45,25 +55,39 @@ export function PullRequestLabelPicker({
     matches(entry, query),
   );
 
-  // Each change shows at once and queues behind the one before it on the host.
-  const toggle = async (candidate: PullRequestLabelCandidate) => {
+  const send = async (labels: ReadonlyArray<PullRequestLabelCandidate>, applied: boolean) => {
+    for (const batch of changeBatches(labels)) await sendBatch(batch, applied);
+  };
+  const sendBatch = async (labels: ReadonlyArray<PullRequestLabelCandidate>, applied: boolean) => {
+    const names = labels.map((label) => label.name);
     const result = await setLabels({
       environmentId,
-      input: { ...reference, labels: [candidate.name], applied: !candidate.isApplied },
+      input: { ...reference, labels: names, applied },
     });
-    if (result._tag === "Failure") {
-      toastManager.add({
-        type: "error",
-        title: candidate.isApplied
-          ? t("Could not take {name} off", { name: candidate.name })
-          : t("Could not put {name} on", { name: candidate.name }),
-        description: readableFailure(
-          squashAtomCommandFailure(result),
-          t("The host refused it. Check that you have triage access on this repository."),
-        ),
-      });
-      return;
-    }
+    if (result._tag === "Success") return;
+    toastManager.add({
+      type: "error",
+      title: applied
+        ? t("Could not put {names} on", { names: names.join(", ") })
+        : t("Could not take {names} off", { names: names.join(", ") }),
+      description: readableFailure(
+        squashAtomCommandFailure(result),
+        t("The host refused it. Check that you have triage access on this repository."),
+      ),
+    });
+  };
+
+  const onOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) return;
+    const latest = candidatesQuery.data?.candidates ?? [];
+    const { add, remove } = selectionChanges(
+      draft,
+      (name, label) => latest.find((entry) => entry.name === name)?.isApplied ?? label.isApplied,
+    );
+    setDraft(emptySelection());
+    // Adding first keeps the Labels row from showing empty between the two writes.
+    void send(add, true).then(() => send(remove, false));
   };
 
   return (
@@ -73,7 +97,7 @@ export function PullRequestLabelPicker({
       allowed={allowed}
       disabledReason={t("Changing labels needs triage access on this repository")}
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={onOpenChange}
       query={query}
       onQueryChange={setQuery}
       searchLabel={t("Search labels")}
@@ -88,8 +112,11 @@ export function PullRequestLabelPicker({
         "This repository has more labels than are listed here. Apply the rest on the host.",
       )}
       candidateKey={(candidate) => candidate.name}
-      disabled={false}
-      onSelect={(candidate) => void toggle(candidate)}
+      onSelect={(candidate) =>
+        setDraft((current) =>
+          toggleSelection(current, candidate.name, candidate, candidate.isApplied),
+        )
+      }
     >
       {(candidate) => {
         const dot = pullRequestLabelColor(candidate.color);
@@ -106,7 +133,7 @@ export function PullRequestLabelPicker({
                 <span className="text-muted-foreground"> · {candidate.description}</span>
               ) : null}
             </span>
-            {candidate.isApplied ? (
+            {isSelected(draft, candidate.name, candidate.isApplied) ? (
               <CheckIcon aria-label={t("Applied")} className="size-3.5 shrink-0" />
             ) : null}
           </>

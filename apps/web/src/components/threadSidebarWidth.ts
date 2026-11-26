@@ -39,5 +39,6 @@ export function resolveInitialThreadSidebarWidth(
           THREAD_SIDEBAR_WIDE_DEFAULT_WIDTH,
         )
       : Math.max(THREAD_SIDEBAR_MIN_WIDTH, storedWidth);
-  return Math.min(preferredWidth, resolveThreadSidebarMaximumWidth(viewportWidth));
+  // Rendering clamps the width for the current viewport, so growing it restores the preference.
+  return preferredWidth;
 }

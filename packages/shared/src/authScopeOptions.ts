@@ -11,6 +11,7 @@ import {
   AuthPreviewOperateScope,
   AuthProvidersManageScope,
   AuthRelayReadScope,
+  AuthRelayConfigureScope,
   AuthRelayWriteScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
@@ -103,22 +104,33 @@ export const AUTH_SCOPE_OPTIONS: ReadonlyArray<{
   {
     scope: AuthRelayWriteScope,
     title: msg("Manage relay"),
-    description: msg("Change managed tunnel connectivity."),
+    description: msg("Update relay preferences or unlink T3 Connect."),
+  },
+  {
+    scope: AuthRelayConfigureScope,
+    title: msg("Configure relay (admin)"),
+    description: msg(
+      "Set up or replace T3 Connect, including its trusted pairing credential issuer.",
+    ),
   },
 ];
 
 /** Shown instead of the granted scopes while they are unknown, so every surface says the same thing. */
-export function sessionPermissionsUnavailableMessage(input: {
-  readonly connected: boolean;
-  /** The check errored; the client retries it while connected. */
-  readonly failed: boolean;
-  /** The environment answered that this session is not signed in; retrying will not change that. */
-  readonly rejected: boolean;
-}): string {
-  if (!input.connected) return t("Connect to this environment to view this session’s permissions.");
+export function sessionPermissionsUnavailableMessage(
+  input: {
+    readonly connected: boolean;
+    /** The check errored; the client retries it while connected. */
+    readonly failed: boolean;
+    /** The environment answered that this session is not signed in; retrying will not change that. */
+    readonly rejected: boolean;
+  },
+  resolve: typeof t = t,
+): string {
+  if (!input.connected)
+    return resolve(msg("Connect to this environment to view this session’s permissions."));
   if (input.rejected)
-    return t("This environment did not accept your session. Reconnect to try again.");
+    return resolve(msg("This environment did not accept your session. Reconnect to try again."));
   return input.failed
-    ? t("Could not verify your permissions. Retrying automatically.")
-    : t("Checking permissions…");
+    ? resolve(msg("Could not verify your permissions. Retrying automatically."))
+    : resolve(msg("Checking permissions…"));
 }

@@ -5,10 +5,11 @@ import {
   type ResolvedVcsActionTarget,
   summarizeGitActionResult,
   summarizePullResult,
+  vcsActionLabelText,
   type VcsActionState,
   type VcsActionTarget,
 } from "@t3tools/client-runtime/state/vcs";
-import type { GitRunStackedActionResult, VcsPullResult } from "@t3tools/contracts";
+import type { GitRunStackedActionResult, ScopedThreadRef, VcsPullResult } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useSyncExternalStore } from "react";
@@ -19,6 +20,21 @@ import { t } from "../lib/i18n";
 
 export function useVcsActionState(target: VcsActionTarget): VcsActionState {
   return useAtomValue(vcsActionManager.stateAtom(target));
+}
+
+interface RepositoryGitAction {
+  readonly threadRef: ScopedThreadRef;
+  readonly cwd: string;
+}
+
+// The tracked repository a thread last ran an action in, so the thread can show its progress.
+const repositoryGitActionAtom = Atom.make<RepositoryGitAction | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:repository-git-action"),
+);
+
+export function noteRepositoryGitAction(action: RepositoryGitAction): void {
+  appAtomRegistry.set(repositoryGitActionAtom, action);
 }
 
 export interface GitActionResultNotification {
@@ -56,7 +72,7 @@ export function pullSuccess(result: VcsPullResult): GitActionResultNotification 
 
 const RESULT_DISMISS_MS = 5_000;
 
-// A result belongs to the checkout it ran in, so another thread's screen never shows it.
+// A result has a workspace-scoped owner. Draft actions only know their checkout.
 const gitActionResultAtom = Atom.family((key: string) =>
   Atom.make<GitActionResultNotification | null>(null).pipe(
     Atom.keepAlive,
@@ -68,13 +84,17 @@ const NO_TARGET_RESULT_ATOM = Atom.make<GitActionResultNotification | null>(null
 );
 const dismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-function resultKey(target: VcsActionTarget): string | null {
+type GitActionResultOwner = VcsActionTarget | ScopedThreadRef;
+
+function resultKey(target: GitActionResultOwner): string | null {
+  if ("threadId" in target)
+    return JSON.stringify(["thread", target.environmentId, target.threadId]);
   return target.environmentId === null || target.cwd === null
     ? null
-    : JSON.stringify([target.environmentId, target.cwd]);
+    : JSON.stringify(["checkout", target.environmentId, target.cwd]);
 }
 
-export function gitActionResultAtomFor(target: VcsActionTarget) {
+export function gitActionResultAtomFor(target: GitActionResultOwner) {
   const key = resultKey(target);
   return key === null ? NO_TARGET_RESULT_ATOM : gitActionResultAtom(key);
 }
@@ -89,27 +109,40 @@ function clearDismissTimer(key: string): void {
 export function showGitActionResult(
   target: ResolvedVcsActionTarget,
   result: GitActionResultNotification,
+): void;
+export function showGitActionResult(
+  result: GitActionResultNotification & { readonly threadRef: ScopedThreadRef },
+): void;
+export function showGitActionResult(
+  targetOrResult:
+    | ResolvedVcsActionTarget
+    | (GitActionResultNotification & { readonly threadRef: ScopedThreadRef }),
+  checkoutResult?: GitActionResultNotification,
 ): void {
+  const owner = "threadRef" in targetOrResult ? targetOrResult.threadRef : targetOrResult;
+  const result = "threadRef" in targetOrResult ? targetOrResult : checkoutResult;
+  const key = resultKey(owner);
+  if (result === undefined || key === null) return;
   // Best effort: devices without a haptics engine reject.
-  Haptics.notificationAsync(
+  void Haptics.notificationAsync(
     result.type === "success"
       ? Haptics.NotificationFeedbackType.Success
       : Haptics.NotificationFeedbackType.Error,
   ).catch(() => undefined);
-  const key = JSON.stringify([target.environmentId, target.cwd]);
   clearDismissTimer(key);
   appAtomRegistry.set(gitActionResultAtom(key), result);
   // A failure stays until dismissed so its output can be read.
   if (result.type === "success") {
     dismissTimers.set(
       key,
-      setTimeout(() => dismissGitActionResult(target), RESULT_DISMISS_MS),
+      setTimeout(() => dismissGitActionResult(owner), RESULT_DISMISS_MS),
     );
   }
 }
 
-export function dismissGitActionResult(target: VcsActionTarget): void {
-  const key = resultKey(target);
+export function dismissGitActionResult(owner: GitActionResultOwner | null): void {
+  if (owner === null) return;
+  const key = resultKey(owner);
   if (key === null) return;
   clearDismissTimer(key);
   appAtomRegistry.set(gitActionResultAtom(key), null);
@@ -139,9 +172,30 @@ function formatElapsedSeconds(ms: number | null, nowMs: number): string | null {
   return t("Running for {seconds}s", { seconds: elapsed });
 }
 
-export function useGitActionProgress(target: VcsActionTarget): GitActionProgress {
-  const actionState = useVcsActionState(target);
-  const result = useAtomValue(gitActionResultAtomFor(target));
+/** Checkout progress and the selected thread's own Git result. */
+export function useGitActionProgress(
+  target: VcsActionTarget,
+  threadRef: ScopedThreadRef | null = null,
+): GitActionProgress {
+  const threadFolderState = useVcsActionState(target);
+  const repositoryCwd = useAtomValue(repositoryGitActionAtom, (action) =>
+    action !== null &&
+    threadRef !== null &&
+    action.threadRef.environmentId === threadRef.environmentId &&
+    action.threadRef.threadId === threadRef.threadId
+      ? action.cwd
+      : null,
+  );
+  const repositoryState = useVcsActionState({
+    environmentId: threadRef?.environmentId ?? null,
+    cwd: repositoryCwd,
+  });
+  const actionState = repositoryState.isRunning ? repositoryState : threadFolderState;
+  const threadResult = useAtomValue(
+    threadRef === null ? NO_TARGET_RESULT_ATOM : gitActionResultAtomFor(threadRef),
+  );
+  const checkoutResult = useAtomValue(gitActionResultAtomFor(target));
+  const result = threadResult ?? checkoutResult;
 
   // Only a running action shows elapsed time, so only it subscribes to the second tick.
   const nowMs = useSyncExternalStore(
@@ -155,7 +209,7 @@ export function useGitActionProgress(target: VcsActionTarget): GitActionProgress
       formatElapsedSeconds(actionState.hookStartedAtMs ?? actionState.phaseStartedAtMs, nowMs);
     return {
       phase: "running",
-      label: actionState.currentLabel,
+      label: vcsActionLabelText(actionState),
       description,
     };
   }
@@ -165,7 +219,7 @@ export function useGitActionProgress(target: VcsActionTarget): GitActionProgress
       phase: result.type,
       label: result.title,
       description: result.description ?? null,
-      prUrl: result.prUrl,
+      ...(result.prUrl === undefined ? {} : { prUrl: result.prUrl }),
     };
   }
 

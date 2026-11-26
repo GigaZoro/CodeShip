@@ -407,6 +407,7 @@ export const layer = McpToolAccess.toLayer(TerminalToolkit, {
         yield* terminals
           .write(
             { ...target, data: input.enter === false ? input.input : `${input.input}\r` },
+            undefined,
             "agent",
           )
           .pipe(Effect.mapError(unavailable));

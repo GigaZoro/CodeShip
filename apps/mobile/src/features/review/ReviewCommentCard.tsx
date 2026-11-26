@@ -1,3 +1,5 @@
+import { t } from "../../lib/i18n";
+
 import { memo, useMemo, useState } from "react";
 import { getFiletypeFromFileName } from "@pierre/diffs/utils/getFiletypeFromFileName";
 import { ScrollView, StyleSheet, Text as NativeText, View, type ColorValue } from "react-native";
@@ -49,13 +51,14 @@ export const ReviewCommentCard = memo(function ReviewCommentCard(props: {
   readonly colors: ReviewCommentColors;
 }) {
   const { codeSurface, nativeReviewDiffStyle } = useAppearanceCodeSurface();
+
   const markdownStyles = useMarkdownPreviewStyles();
   const { themeAppearance: appearanceScheme, themeId } = useAppearancePreferences();
   const appTheme = useUniwindTheme();
   const [NativeReviewDiffView] = useState(() => resolveNativeReviewDiffView());
   const patch = useMemo(() => buildReviewCommentPatch(props.comment), [props.comment]);
   const parsedDiff = useMemo(
-    () => buildReviewParsedDiff(patch, `thread-review-comment:${props.comment.id}`),
+    () => buildReviewParsedDiff(patch, `thread-review-comment:${props.comment.id}`, t),
     [patch, props.comment.id],
   );
   const nativeReviewDiffData = useMemo(() => buildNativeReviewDiffData(parsedDiff), [parsedDiff]);

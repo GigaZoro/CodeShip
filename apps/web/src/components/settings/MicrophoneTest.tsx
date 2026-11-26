@@ -1,3 +1,4 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { MicIcon, PauseIcon, PlayIcon, RotateCcwIcon, SquareIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -183,7 +184,7 @@ export function MicrophoneTest({
           : name === "NotFoundError"
             ? t("No microphone found.")
             : cause instanceof Error
-              ? cause.message
+              ? (errorDisplayMessage(cause) ?? cause.message)
               : t("Could not access the microphone."),
       );
     }

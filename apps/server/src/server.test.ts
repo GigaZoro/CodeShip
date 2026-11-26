@@ -1,3 +1,4 @@
+import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
@@ -69,7 +70,7 @@ it.live.skipIf(!wildcardBindConflicts)(
             : address._tag;
         assert.strictEqual(listening, `127.0.0.1:${port}`);
       }),
-    ),
+    ).pipe(Effect.provide(DatabaseMigrationProgress.layer)),
 );
 
 it.live.skipIf(!wildcardBindConflicts)(
@@ -89,7 +90,7 @@ it.live.skipIf(!wildcardBindConflicts)(
         assert.instanceOf(error, HttpServerError.ServeError);
         assert.propertyVal(error.cause, "code", "EADDRINUSE");
       }),
-    ),
+    ).pipe(Effect.provide(DatabaseMigrationProgress.layer)),
 );
 
 // A spawner a later layer provides wins, so one over these would leave trees running on Windows.
@@ -118,5 +119,8 @@ it.effect("the server's spawners end on Windows what a command left running", ()
       ),
     );
     assert.notStrictEqual(withoutWindowsTreeEnding(http), http);
-  }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  }).pipe(
+    Effect.provideService(HostProcess.Platform, "win32"),
+    Effect.provide(DatabaseMigrationProgress.layer),
+  ),
 );

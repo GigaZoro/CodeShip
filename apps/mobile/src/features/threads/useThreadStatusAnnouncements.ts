@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { useIsFocused } from "@react-navigation/native";
 import {
   nextThreadAnnouncement,
@@ -61,7 +62,7 @@ export function useThreadStatusAnnouncements({
       working,
       run: runId === null || runStatus === null ? null : { runId, status: runStatus },
     });
-    const next = nextThreadAnnouncement(previous?.announcement ?? null, activity.snapshot);
+    const next = nextThreadAnnouncement(previous?.announcement ?? null, activity.snapshot, t);
     memoryRef.current = { threadKey: activeKey, activity, announcement: next.memory };
     // Queued, like the web's polite region, so VoiceOver doesn't cut off what it is reading.
     if (next.announcement !== null) {

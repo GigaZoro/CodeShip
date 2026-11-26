@@ -1,6 +1,7 @@
-import { MenuGroupLabel } from "../ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { t } from "~/i18n";
+
+import { MenuGroupLabel } from "../ui/menu";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export function PullRequestStackHeader({
   number,
@@ -16,12 +17,12 @@ export function PullRequestStackHeader({
       <div className="flex items-center justify-between gap-2">
         <span>{t("Stack #{number}", { number })}</span>
         {notice ? (
-          <Tooltip>
-            <TooltipTrigger render={<span role="status" className="text-xs font-normal" />}>
-              {stale ? t("May be stale") : t("Refreshing…")}
-            </TooltipTrigger>
-            <TooltipPopup>{notice}</TooltipPopup>
-          </Tooltip>
+          <SharedTooltipTrigger
+            render={<span role="status" className="text-xs font-normal" />}
+            label={notice}
+          >
+            {stale ? t("May be stale") : t("Refreshing…")}
+          </SharedTooltipTrigger>
         ) : null}
       </div>
     </MenuGroupLabel>

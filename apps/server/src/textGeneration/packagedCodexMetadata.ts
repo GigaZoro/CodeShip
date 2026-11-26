@@ -5,7 +5,7 @@ import {
 } from "@t3tools/shared/cliRelease";
 import { embeddedCodexMetadataDigest } from "@t3tools/shared/codexMetadataInventory";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -20,7 +20,10 @@ export const SeaRequiresCodexMetadata = Context.Reference<boolean>(
   },
 );
 
-class WslMetadataUnavailable extends Data.TaggedError("WslMetadataUnavailable") {
+class WslMetadataUnavailable extends Schema.TaggedError<WslMetadataUnavailable>()(
+  "WslMetadataUnavailable",
+  {},
+) {
   override readonly message =
     "Reinstall CodeShip to restore its bundled Linux Codex metadata runtime for WSL, then restart the WSL backend.";
 }
@@ -69,9 +72,10 @@ export const resolvePackagedCodexMetadataBinary = Effect.fn("codex.resolvePackag
 );
 
 /** Codex reports the denied sandbox only to the model, which then answers from the prompt alone. */
-class CodexMetadataSandboxBlocked extends Data.TaggedError("CodexMetadataSandboxBlocked")<{
-  readonly setupCommand: string;
-}> {
+class CodexMetadataSandboxBlocked extends Schema.TaggedError<CodexMetadataSandboxBlocked>()(
+  "CodexMetadataSandboxBlocked",
+  { setupCommand: Schema.String },
+) {
   override get message(): string {
     return `This host blocks the sandbox Codex metadata requests read the repository in (AppArmor on Ubuntu 23.10+), so titles, commit messages and other generated text are written without the repository. Run \`${this.setupCommand}\` on the host once to allow it.`;
   }

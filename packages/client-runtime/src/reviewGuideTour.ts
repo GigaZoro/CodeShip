@@ -1,6 +1,7 @@
+import { msg, t, tn } from "@t3tools/shared/i18n";
 import type { FileDiffMetadata } from "@pierre/diffs";
 import type { PullRequestReviewGuideExcerpt, PullRequestReviewGuideStop } from "@t3tools/contracts";
-import { t, tn } from "@t3tools/shared/i18n";
+import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 
 export function stepTourPosition(current: number, delta: 1 | -1, stopCount: number): number {
   return Math.max(Math.min(current + delta, stopCount - 1), 0);
@@ -15,9 +16,9 @@ export function stopFilePaths(stop: PullRequestReviewGuideStop): ReadonlyArray<s
   ];
 }
 
-export function stopSubline(stop: PullRequestReviewGuideStop): string {
+export function stopSubline(stop: PullRequestReviewGuideStop, resolve: typeof t = t): string {
   const count = stopFilePaths(stop).length;
-  if (count === 0) return t("Context, no code");
+  if (count === 0) return resolve(msg("Context, no code"));
   return tn(count, "{count} file", "{count} files");
 }
 
@@ -134,11 +135,9 @@ export function rowsToPatch(
   rows: ReadonlyArray<DiffRow>,
 ): string {
   if (rows.length === 0) return "";
-  const lines = [
-    `diff --git a/${previousPath} b/${path}`,
-    `--- a/${previousPath}`,
-    `+++ b/${path}`,
-  ];
+  const oldName = quoteGitPatchPath(`a/${previousPath}`);
+  const newName = quoteGitPatchPath(`b/${path}`);
+  const lines = [`diff --git ${oldName} ${newName}`, `--- ${oldName}`, `+++ ${newName}`];
   let start = 0;
   while (start < rows.length) {
     let end = start;

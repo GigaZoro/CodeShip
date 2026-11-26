@@ -9,6 +9,7 @@ import {
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -166,6 +167,7 @@ const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
 
 /** One linked environment at the address it answered on, for one call. */
 interface Peer {
+  readonly link: PeerLinks.ResolvedPeerLink["link"];
   readonly environmentId: EnvironmentId;
   readonly key: string;
   readonly label: string;
@@ -272,8 +274,30 @@ const make = Effect.gen(function* () {
     );
   };
 
+  // A peer that renews a used link says when it now ends; one that does not sends nothing.
+  const recordLinkExpiry = (
+    link: PeerLinks.ResolvedPeerLink["link"],
+    headers: Readonly<Record<string, string>>,
+  ) =>
+    Option.match(
+      Option.filter(
+        Option.flatMap(
+          Option.fromNullishOr(headers[McpInvocationContext.LINK_EXPIRES_AT_HEADER]),
+          DateTime.make,
+        ),
+        (expiresAt) => !DateTime.Equivalence(expiresAt, link.expiresAt),
+      ),
+      {
+        onNone: () => Effect.void,
+        onSome: (expiresAt) => links.recordExpiry(link.environmentId, expiresAt),
+      },
+    );
+
   const openSession = Effect.fn("PeerMcpClient.openSession")(
-    function* (url: string, token: string, limitHeader: Record<string, string>) {
+    function* (
+      { link, url, token }: Pick<Peer, "link" | "url" | "token">,
+      limitHeader: Record<string, string>,
+    ) {
       const initialized = yield* post(
         url,
         token,
@@ -300,6 +324,7 @@ const make = Effect.gen(function* () {
               : `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
         });
       }
+      yield* recordLinkExpiry(link, initialized.headers);
       yield* post(
         url,
         token,
@@ -309,7 +334,7 @@ const make = Effect.gen(function* () {
       return sessionId;
     },
     // Only the handshake is bounded: a forwarded tool call may wait for minutes.
-    (effect, url) => Effect.timeout(effect, PeerLinks.probeTimeout(url)),
+    (effect, { url }) => Effect.timeout(effect, PeerLinks.probeTimeout(url)),
   );
 
   /** It answered, so it is up, but on a version that answers in a way this one cannot read. */
@@ -326,7 +351,7 @@ const make = Effect.gen(function* () {
     );
 
   const startSession = Effect.fnUntraced(function* (peer: Peer) {
-    const sessionId = yield* openSession(peer.url, peer.token, peer.limitHeader);
+    const sessionId = yield* openSession(peer, peer.limitHeader);
     // The initialized session outlives a request, including a long wait or cancellation.
     yield* Ref.update(sessions, (current) => new Map(current).set(peer.key, sessionId));
     return sessionId;
@@ -392,6 +417,7 @@ const make = Effect.gen(function* () {
         message: `The linked environment answered HTTP ${response.status}.`,
       });
     }
+    yield* recordLinkExpiry(peer.link, response.headers);
     return sent;
   });
 
@@ -481,6 +507,7 @@ const make = Effect.gen(function* () {
   const request = Effect.fnUntraced(function* (input: PeerCallInput<Schema.Decoder<unknown>>) {
     const resolved = yield* links.resolve(input.environmentId).pipe(Effect.mapError(fromLinkError));
     const peer: Peer = {
+      link: resolved.link,
       environmentId: input.environmentId,
       key: `${input.environmentId} ${resolved.url}`,
       label: resolved.link.label,

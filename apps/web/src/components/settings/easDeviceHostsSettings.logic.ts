@@ -10,7 +10,7 @@ export const parseEasDeviceHostDraft = Schema.decodeUnknownOption(EasDeviceHostC
 export const newEasDeviceHost = (id: string): EasDeviceHostConfigType => ({
   kind: "eas",
   id,
-  // oxlint-disable-next-line t3code/no-untranslated-text -- default host name stored in settings
+  // oxlint-disable-next-line t3code/no-untranslated-text, t3code/no-untranslated-copy -- default host name stored in settings
   label: "Expo Simulators",
   accessToken: "",
   maxSessionMinutes: 30,

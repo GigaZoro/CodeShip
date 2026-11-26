@@ -16,7 +16,8 @@ function noticeTitle(
   environmentLabel: string,
   awaitingApproval: boolean,
 ): string {
-  if (awaitingApproval) return `Waiting for ${environmentLabel} to approve this device`;
+  if (awaitingApproval)
+    return t("Waiting for {environment} to approve this device", { environment: environmentLabel });
   switch (phase) {
     case "offline":
       return t("You are offline");

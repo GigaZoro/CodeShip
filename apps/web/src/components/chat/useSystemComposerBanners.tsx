@@ -1,3 +1,6 @@
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { type EnvironmentId } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
@@ -34,7 +37,6 @@ import {
   resolveServerSelfUpdateCapability,
   supportsDesktopAppUpdate,
 } from "../../versionSkew";
-import { t } from "~/i18n";
 
 export type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
@@ -68,6 +70,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     automaticEnvironment,
     autoUpdateEnvironments,
   } = input;
+
   const navigate = useNavigate();
   const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
     reportFailure: false,
@@ -104,8 +107,8 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: t("Could not disconnect server"),
-            description: error instanceof Error ? error.message : t("Failed to disconnect."),
+            title: t(msg("Could not disconnect server")),
+            description: thrownErrorMessage(error, t) ?? t(msg("Failed to disconnect.")),
           }),
         );
       }
@@ -117,11 +120,15 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     handleDisconnectActiveEnvironment,
   );
   const autoBalanceUpdateBanner = useAutoBalanceUpdateBanner(autoUpdateEnvironments);
-  const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
-  const versionMismatchServerLabel =
+  const versionMismatch = resolveServerConfigVersionMismatch(serverConfig, t);
+  const versionMismatchServerName =
     hasMultipleRegisteredEnvironments && activeThreadEnvironmentId !== null
-      ? `${activeEnvironment?.label ?? serverConfig?.environment.label ?? activeThreadEnvironmentId} server`
-      : "server";
+      ? (activeEnvironment?.label ?? serverConfig?.environment.label ?? activeThreadEnvironmentId)
+      : null;
+  const versionMismatchServerLabel =
+    versionMismatchServerName !== null
+      ? t("{environment} server", { environment: versionMismatchServerName })
+      : t("server");
   const serverUpdateEnvironmentId = activeThreadEnvironmentId;
   const versionMismatchSelfUpdate = resolveServerSelfUpdateCapability(serverConfig);
   const versionMismatchInstallation = serverConfig?.environment.capabilities.serverInstallation;
@@ -226,7 +233,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         description:
           serverUpdateState.status === "failed"
             ? serverUpdateState.message
-            : serverUpdateStageLabel(serverUpdateState.stage),
+            : serverUpdateStageLabel(serverUpdateState.stage, t),
         actions: !updateFailed ? (
           disconnectAction
         ) : !versionMismatch ||

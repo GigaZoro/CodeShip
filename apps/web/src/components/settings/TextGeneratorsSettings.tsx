@@ -12,7 +12,7 @@ import { AsyncResult } from "effect/reactivity";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { CheckIcon, MoreVertical, PlusIcon, ServerIcon } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { msg, t, tn } from "~/i18n";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
@@ -268,6 +268,7 @@ function TextGeneratorWizard({
   readonly onSave: (id: ProviderInstanceId, config: TextGeneratorConfig) => void;
   readonly newId: (preset: TextGeneratorPreset) => ProviderInstanceId;
 }) {
+  const formId = useId();
   const existing = editing === "new" ? null : editing.config;
   const [step, setStep] = useState(0);
   const [preset, setPreset] = useState(TEXT_GENERATOR_PRESETS[0]!);
@@ -352,6 +353,7 @@ function TextGeneratorWizard({
         <WizardPanel>
           {step === 0 ? (
             <form
+              id={formId}
               className="grid gap-4"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -498,7 +500,7 @@ function TextGeneratorWizard({
               <Button variant="outline" onClick={onClose}>
                 {t("Cancel")}
               </Button>
-              <Button onClick={() => void connect()} disabled={!canConnect || checking}>
+              <Button type="submit" form={formId} disabled={!canConnect || checking}>
                 {checking ? <Spinner /> : null}
                 {checking ? t("Connecting") : existing ? t("Save and continue") : t("Connect")}
               </Button>
@@ -641,13 +643,24 @@ function TextGeneratorModelList({
   return (
     <div className="grid gap-2">
       {models.length > 8 ? (
+        // Native search inputs clear on Escape even during IME composition.
         <Input
-          type="search"
+          type="text"
+          role="searchbox"
+          enterKeyHint="search"
           placeholder={t("Search models")}
           aria-label={t("Search models")}
           autoFocus
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === "Escape" && (query || event.repeat)) {
+              event.preventDefault();
+              event.stopPropagation();
+              setQuery("");
+            }
+          }}
         />
       ) : null}
       <div className="max-h-80 overflow-y-auto rounded-lg border divide-y divide-border/60">

@@ -10,6 +10,10 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text, AppTextInput as TextInput } from "../../../components/ui/AppText";
 import { cn } from "../../../lib/cn";
 import { useEnvironmentQuery } from "../../../state/query";
+import {
+  gitRepositoryTargetFromRoute,
+  type GitRepositoryRouteParams,
+} from "../../../state/thread-git-target";
 import { useThreadSelection } from "../../../state/use-thread-selection";
 import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
@@ -17,18 +21,28 @@ import { useSelectedThreadWorktree } from "../../../state/use-selected-thread-wo
 import { vcsEnvironment } from "../../../state/vcs";
 import { t } from "../../../lib/i18n";
 
-type GitCommitSheetProps = StaticScreenProps<{
-  readonly environmentId: string;
-  readonly threadId: string;
-}>;
+type GitCommitSheetProps = StaticScreenProps<
+  {
+    readonly environmentId: string;
+    readonly threadId: string;
+  } & GitRepositoryRouteParams
+>;
 
-export function GitCommitSheet(_props: GitCommitSheetProps) {
+// The sheet unmounts on submit, so a failed commit's exclusions are kept here for the retry.
+const retainedExclusions = new Map<
+  string,
+  { readonly refName: string | null; readonly excluded: ReadonlySet<string> }
+>();
+
+export function GitCommitSheet(props: GitCommitSheetProps) {
+  const repository = gitRepositoryTargetFromRoute(props.route.params);
   const navigation = useNavigation();
   const { selectedThread } = useThreadSelection();
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
-  const gitState = useSelectedThreadGitState();
-  const gitActions = useSelectedThreadGitActions();
-  const { canWriteSourceControl, canChangeThreadBranch } = gitActions;
+  const threadWorktree = useSelectedThreadWorktree();
+  const selectedThreadCwd = repository?.cwd ?? threadWorktree.selectedThreadCwd;
+  const gitState = useSelectedThreadGitState(repository);
+  const gitActions = useSelectedThreadGitActions(repository);
+  const { canWriteSourceControl, canCreateFeatureBranch } = gitActions;
 
   const gitStatus = useEnvironmentQuery(
     selectedThread !== null && selectedThreadCwd !== null
@@ -40,28 +54,62 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
   );
 
   const busy = gitState.gitOperationLabel !== null;
+  const isCurrentThread =
+    selectedThread?.environmentId === props.route.params.environmentId &&
+    selectedThread.id === props.route.params.threadId;
   const isDefaultRef = gitStatus.data?.isDefaultRef ?? false;
   const allFiles = gitStatus.data?.workingTree?.files ?? [];
 
+  const selectionKey =
+    selectedThread !== null && selectedThreadCwd !== null
+      ? `${selectedThread.environmentId}\u0000${selectedThreadCwd}`
+      : null;
+  const retained = selectionKey === null ? undefined : retainedExclusions.get(selectionKey);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
-  const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
+  const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(
+    retained?.excluded ?? new Set(),
+  );
+  const [selectionBranch, setSelectionBranch] = useState(
+    retained?.refName ?? gitStatus.data?.refName ?? null,
+  );
+  if (gitStatus.data && selectionBranch !== gitStatus.data.refName) {
+    setSelectionBranch(gitStatus.data.refName);
+    setExcludedFiles(new Set());
+  }
 
   const selectedFiles = allFiles.filter((file) => !excludedFiles.has(file.path));
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
+  const canCommit =
+    isCurrentThread &&
+    canWriteSourceControl &&
+    !busy &&
+    !noneSelected &&
+    gitStatus.data?.isRepo === true &&
+    gitStatus.data.refName === selectionBranch;
   const selectedInsertions = selectedFiles.reduce((sum, file) => sum + file.insertions, 0);
   const selectedDeletions = selectedFiles.reduce((sum, file) => sum + file.deletions, 0);
 
   const runCommitAction = async (featureBranch: boolean) => {
-    if (!canWriteSourceControl || (featureBranch && !canChangeThreadBranch)) return;
+    if (!canCommit || (featureBranch && !canCreateFeatureBranch)) return;
     const commitMessage = dialogCommitMessage.trim();
+    if (selectionKey !== null) {
+      retainedExclusions.set(selectionKey, { refName: selectionBranch, excluded: excludedFiles });
+    }
     navigation.goBack();
-    await gitActions.onRunSelectedThreadGitAction({
+    const result = await gitActions.onRunSelectedThreadGitAction({
       action: "commit",
       featureBranch,
       ...(commitMessage ? { commitMessage } : {}),
       ...(!allSelected ? { filePaths: selectedFiles.map((file) => file.path) } : {}),
     });
+    if (
+      selectionKey !== null &&
+      result?.commit.status === "created" &&
+      retainedExclusions.get(selectionKey)?.excluded === excludedFiles
+    ) {
+      retainedExclusions.delete(selectionKey);
+    }
   };
 
   return (
@@ -69,7 +117,9 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
       header={
         <SheetHeader
           title={t("Commit changes")}
-          subtitle={gitStatus.data?.refName ?? t("(detached HEAD)")}
+          subtitle={[repository?.name, gitStatus.data?.refName ?? t("(detached HEAD)")]
+            .filter(Boolean)
+            .join(" · ")}
           onCancel={() => navigation.goBack()}
           accessibilityLabel={t("Cancel commit")}
         />
@@ -201,7 +251,7 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
           icon="checkmark"
           tone="primary"
           fullWidth
-          disabled={!canWriteSourceControl || noneSelected || busy}
+          disabled={!canCommit}
           onPress={() => void runCommitAction(false)}
         />
         <Button
@@ -209,7 +259,7 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
           icon="arrow.branch"
           tone="text"
           fullWidth
-          disabled={!canWriteSourceControl || !canChangeThreadBranch || noneSelected || busy}
+          disabled={!canCommit || !canCreateFeatureBranch}
           onPress={() => void runCommitAction(true)}
         />
       </View>

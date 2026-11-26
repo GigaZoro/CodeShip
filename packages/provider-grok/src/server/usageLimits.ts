@@ -198,11 +198,14 @@ export const readGrokAccount = Effect.fn("readGrokAccount")(function* (
       const { error } = yield* HttpClientResponse.schemaBodyJson(GrokErrorResponse)(response);
       // xAI refuses Grok Build while the account's privacy setting is a legacy mode.
       if (error.includes("WKE=privacy-mode:")) {
-        return makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "probeFailed",
-          message: "Switch your xAI account to Privacy Mode to show Grok usage limits.",
-        });
+        return {
+          funding: undefined,
+          usageLimits: makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "probeFailed",
+            message: "Switch your xAI account to Privacy Mode to show Grok usage limits.",
+          }),
+        };
       }
     }
     const body = yield* HttpClientResponse.schemaBodyJson(GrokUsageResponse)(

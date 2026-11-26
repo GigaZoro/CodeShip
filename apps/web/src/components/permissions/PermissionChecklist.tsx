@@ -1,8 +1,9 @@
+import { t } from "~/i18n";
+
 import { CircleCheckIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { Button } from "../ui/button";
 
-import { t } from "~/i18n";
 export interface PermissionItem {
   id: string;
   icon: ReactNode;
@@ -47,12 +48,12 @@ export function PermissionChecklist({
 export function PermissionContinueButton({
   ready,
   busy = false,
-  children = t("Continue"),
+  children,
   ...props
 }: Omit<ComponentProps<typeof Button>, "disabled"> & { ready: boolean; busy?: boolean }) {
   return (
     <Button {...props} disabled={!ready || busy}>
-      {children}
+      {children ?? t("Continue")}
     </Button>
   );
 }

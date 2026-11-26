@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   createPreviewFramePainter,
   createPreviewStreamClient,
@@ -11,6 +12,7 @@ import {
   type PreviewStreamInput,
   type PreviewStreamMouseButton,
   type PreviewStreamPointer,
+  type PreviewStreamSelectMenu,
   type PreviewStreamViewport,
   previewStreamHostSetupMessage,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
@@ -37,12 +39,14 @@ import { AgentCursorMark } from "~/components/preview/AgentBrowserCursor";
 import { CommandBlock } from "~/components/CommandBlock";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem } from "~/components/ui/menu";
 import { toastManager } from "~/components/ui/toast";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { cn } from "~/lib/utils";
 import { refreshPreviewStreamAccess, usePreviewStreamAccess } from "~/state/previewStream";
 import { observeResize } from "~/lib/observeResize";
 
-import { t } from "~/i18n";
 export interface ServerBrowserHandle {
   readonly navigate: (url: string) => void;
   readonly history: (delta: -1 | 1) => void;
@@ -68,6 +72,8 @@ const TAP_SLOP_PX = 8;
 const MULTI_CLICK_MS = 500;
 const MULTI_CLICK_SLOP_PX = 4;
 const WHEEL_LINE_PX = 16;
+// The server answers a new viewer with a still within seconds, so silence means Chromium is not painting.
+const NO_FRAME_TIMEOUT_MS = 10_000;
 
 type MouseInput = Extract<PreviewStreamInput, { type: "mouse" }>;
 type WheelInput = Extract<PreviewStreamInput, { type: "wheel" }>;
@@ -149,6 +155,7 @@ export function ServerBrowserSurface(props: {
   readonly followSize?: boolean;
   readonly controlPosition?: "top" | "bottom";
   readonly onFirstFrame?: () => void;
+  readonly onNoFrames?: () => void;
   readonly onViewport?: (viewport: PreviewStreamViewport) => void;
   readonly onControl?: (control: PreviewStreamControl | null) => void;
   readonly onPopup?: (tabId: string) => void;
@@ -164,6 +171,7 @@ export function ServerBrowserSurface(props: {
     followSize = true,
     controlPosition = "top",
     onFirstFrame,
+    onNoFrames,
     onViewport,
     onControl,
     onPopup,
@@ -171,6 +179,7 @@ export function ServerBrowserSurface(props: {
     pdfUrl = null,
     ref,
   } = props;
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const keySentRef = useRef(false);
@@ -184,6 +193,7 @@ export function ServerBrowserSurface(props: {
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
   const [agentCursor, setAgentCursor] = useState<AgentCursorPlacement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectMenu, setSelectMenu] = useState<PreviewStreamSelectMenu | null>(null);
   const answerFileChooser = (files: ReadonlyArray<File>) => {
     const chooser = fileChooser;
     if (!chooser) return;
@@ -192,7 +202,7 @@ export function ServerBrowserSurface(props: {
       toastManager.add({
         type: "error",
         title: t("Could not send the files to the page"),
-        description: cause instanceof Error ? cause.message : undefined,
+        description: thrownErrorMessage(cause, t) ?? undefined,
       }),
     );
   };
@@ -216,6 +226,8 @@ export function ServerBrowserSurface(props: {
   const probeRef = useRef<TouchProbe | null>(null);
   const lastProbeRef = useRef<{ x: number; y: number; editable: boolean; at: number } | null>(null);
   const firstFrame = useEffectEvent(() => onFirstFrame?.());
+  const noFrames = useEffectEvent(() => onNoFrames?.());
+  const [framesStalled, setFramesStalled] = useState(false);
   const viewportChanged = useEffectEvent((viewport: PreviewStreamViewport) =>
     onViewport?.(viewport),
   );
@@ -371,9 +383,16 @@ export function ServerBrowserSurface(props: {
     const canvas = canvasRef.current;
     if (!visible || accessDenied || hostSetup || !access || !cap || !canvas) return;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let noFrameTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearNoFrameTimer = () => {
+      if (noFrameTimer !== null) clearTimeout(noFrameTimer);
+      noFrameTimer = null;
+    };
     const painter = createPreviewFramePainter(canvas, () => {
       if (hasFrameRef.current) return;
       hasFrameRef.current = true;
+      clearNoFrameTimer();
+      setFramesStalled(false);
       firstFrame();
     });
     const client = createPreviewStreamClient(
@@ -403,6 +422,7 @@ export function ServerBrowserSurface(props: {
         onDownload: offerDownload,
         onPopup: popupOpened,
         onFileChooser: setFileChooser,
+        onSelectMenu: setSelectMenu,
         onViewport: (viewport) => {
           viewportRef.current = viewport;
           viewportChanged(viewport);
@@ -418,6 +438,7 @@ export function ServerBrowserSurface(props: {
           )
             setPromptText(next.dialog?.defaultValue ?? "");
           if (next.controller !== "you") {
+            setSelectMenu(null);
             clearInput();
           } else if (previous?.controller !== "you") {
             const size = sizeRef.current;
@@ -425,7 +446,15 @@ export function ServerBrowserSurface(props: {
           }
         },
         onConnectedChange: (connected) => {
-          if (connected) return;
+          clearNoFrameTimer();
+          if (connected) {
+            if (!hasFrameRef.current)
+              noFrameTimer = setTimeout(() => {
+                setFramesStalled(true);
+                noFrames();
+              }, NO_FRAME_TIMEOUT_MS);
+            return;
+          }
           setFileChooser(null);
           controlRef.current = null;
           setControl(null);
@@ -450,6 +479,7 @@ export function ServerBrowserSurface(props: {
     clientRef.current = client;
     return () => {
       painter.stop();
+      clearNoFrameTimer();
       if (refreshTimer !== null) clearTimeout(refreshTimer);
       client.stop();
       if (clientRef.current === client) clientRef.current = null;
@@ -756,7 +786,7 @@ export function ServerBrowserSurface(props: {
         )}
       >
         <span role="status" className="text-xs text-muted-foreground">
-          {previewStreamControlLabel(control)}
+          {previewStreamControlLabel(control, t)}
         </span>
         {control?.canOperate ? (
           <Button
@@ -825,6 +855,47 @@ export function ServerBrowserSurface(props: {
             if (text) send({ type: "text", text });
           }}
         />
+        {selectMenu && control?.controller === "you" ? (
+          <Menu open modal={false} onOpenChange={(open) => !open && setSelectMenu(null)}>
+            <MenuPopup
+              anchor={() => selectMenuAnchor(selectMenu, canvasRef.current, viewportRef.current)}
+              align="start"
+              sideOffset={0}
+              finalFocus={inputRef}
+              aria-label={t("Page select options")}
+            >
+              <MenuRadioGroup
+                value={selectMenu.selectedIndex}
+                onValueChange={(index: number) => {
+                  setSelectMenu(null);
+                  send({ type: "selectMenu", id: selectMenu.id, index });
+                }}
+              >
+                {selectMenu.options
+                  .map((option, index) => ({ ...option, index }))
+                  .map((option) => (
+                    <MenuRadioItem
+                      key={option.index}
+                      value={option.index}
+                      disabled={option.disabled}
+                      closeOnClick
+                    >
+                      {option.label}
+                    </MenuRadioItem>
+                  ))}
+              </MenuRadioGroup>
+            </MenuPopup>
+          </Menu>
+        ) : null}
+        {visible && framesStalled && !pdfUrl ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-background p-4 text-center">
+            <p role="alert" className="max-w-sm text-sm text-muted-foreground">
+              {t(
+                "The server's browser loaded this page but is not drawing it. Try reloading, or open the page in a browser on this computer.",
+              )}
+            </p>
+          </div>
+        ) : null}
         {fileChooser && control?.controller === "you" ? (
           <div
             className="absolute inset-x-2 top-2 z-10 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 shadow-lg"
@@ -905,7 +976,7 @@ export function ServerBrowserSurface(props: {
       {visible && hostSetup ? (
         <div className="visible absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-background p-4 text-center">
           <p role="alert" className="max-w-sm text-sm text-muted-foreground">
-            {previewStreamHostSetupMessage(hostSetup)}
+            {previewStreamHostSetupMessage(hostSetup, t)}
           </p>
           <CommandBlock command={hostSetup.command} className="w-full max-w-md text-left" />
           <Button variant="outline" size="sm" onClick={() => setHostSetup(null)}>
@@ -934,6 +1005,28 @@ export function ServerBrowserSurface(props: {
       ) : null}
     </div>
   );
+}
+
+function selectMenuAnchor(
+  menu: PreviewStreamSelectMenu,
+  canvas: HTMLCanvasElement | null,
+  viewport: PreviewStreamViewport | null,
+) {
+  if (!canvas || !viewport || canvas.width < 1 || canvas.height < 1) return null;
+  return {
+    getBoundingClientRect: () => {
+      const rect = canvas.getBoundingClientRect();
+      const fit = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+      const scaleX = (canvas.width * fit) / viewport.width;
+      const scaleY = (canvas.height * fit) / viewport.height;
+      return DOMRect.fromRect({
+        x: rect.left + (rect.width - canvas.width * fit) / 2 + menu.x * scaleX,
+        y: rect.top + (rect.height - canvas.height * fit) / 2 + menu.y * scaleY,
+        width: menu.width * scaleX,
+        height: menu.height * scaleY,
+      });
+    },
+  };
 }
 
 interface AgentCursorPlacement {

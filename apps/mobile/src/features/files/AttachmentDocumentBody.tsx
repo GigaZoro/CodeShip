@@ -2,6 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { View } from "react-native";
 
 import { EmptyState } from "../../components/ui/EmptyState";
+import { useContentTopInset } from "../../components/ui/useBarInset";
 import type { useAttachmentDocument } from "../../lib/attachmentDocument";
 import { HtmlRenderWebView } from "../threads/HtmlRenderWebView";
 import { AudioFilePreview } from "./AudioFilePreview";
@@ -40,6 +41,7 @@ export function AttachmentDocumentBody(props: {
   readonly onOpenNative: () => void;
 }) {
   const { document } = props;
+  const headerInset = useContentTopInset();
   if (document.error) {
     return (
       <View className="flex-1 items-center justify-center bg-sheet px-6">
@@ -62,7 +64,7 @@ export function AttachmentDocumentBody(props: {
   if (document.needsText && document.content) {
     const { content, table } = document;
     return (
-      <View className="flex-1 bg-sheet">
+      <View className="flex-1 bg-sheet" style={{ paddingTop: content.truncated ? headerInset : 0 }}>
         {content.truncated ? (
           <FilePreviewNotice title={t("Partial file")}>
             {t("Preview limited to the first 1 MB. Save or share the file to read it in full.")}

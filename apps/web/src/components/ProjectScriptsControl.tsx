@@ -1,4 +1,5 @@
 import { t } from "~/i18n";
+
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import {
   AuthSettingsWriteScope,
@@ -16,11 +17,10 @@ import type {
   ProjectScriptSaveInput,
   ProjectScriptSaveResult,
 } from "@t3tools/client-runtime/state/projectScriptSaves";
-import {
-  commandForProjectScript,
-  primaryProjectScript,
-  projectScriptMenuLabel,
-} from "@t3tools/shared/projectScripts";
+import { commandForProjectScript, primaryProjectScript } from "@t3tools/shared/projectScripts";
+import { projectScriptMenuLabel } from "@t3tools/shared/projectScriptsCopy";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { stackedThreadToast, toastManager } from "./ui/toast";
 import { ChevronDownIcon, DownloadIcon, PlusIcon, SettingsIcon, WrenchIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
@@ -48,7 +48,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "./ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
 import { cn } from "~/lib/utils";
 import {
   THREAD_DETAILS_PANEL_CHEVRON_CLASS,
@@ -63,6 +63,7 @@ const NO_FILE_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
 interface ProjectScriptsControlProps {
   environmentId: EnvironmentId;
   scripts: ReadonlyArray<ProjectScript>;
+  onActionsMenuOpen?: () => void;
   fileScripts?: ReadonlyArray<T3ProjectFileScript>;
   preferredScriptId?: string | null;
   /** Omitted when this client cannot run terminal commands. */
@@ -79,6 +80,7 @@ export default function ProjectScriptsControl({
   environmentId,
   scripts,
   fileScripts = NO_FILE_SCRIPTS,
+  onActionsMenuOpen,
   preferredScriptId = null,
   onRunScript,
   onAddScript,
@@ -103,16 +105,25 @@ export default function ProjectScriptsControl({
           script.name.toLowerCase() === fileScript.name.toLowerCase(),
       ),
   );
-  const roleLabels = { setup: t("setup"), settle: t("on settle") };
+  const editorRequestId = useRef(0);
+  const changeMenuOpen = (open: boolean) => {
+    if (open) onActionsMenuOpen?.();
+    setMenuOpen(open);
+  };
+  const openEditor = (request: ProjectScriptEditorRequest) => {
+    editorRequestId.current += 1;
+    setEditorRequest(request);
+  };
 
   const openAddDialog = () => {
-    setEditorRequest({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT });
+    openEditor({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT });
   };
 
   const submitScript = (scriptId: string | null, input: ProjectScriptSaveInput) =>
     scriptId === null ? onAddScript(input) : onUpdateScript(scriptId, input);
 
   const importFileScript = async (fileScript: T3ProjectFileScript) => {
+    const requestId = ++editorRequestId.current;
     const payload: ProjectScriptSaveInput = {
       name: fileScript.name,
       command: fileScript.command,
@@ -127,11 +138,21 @@ export default function ProjectScriptsControl({
     };
     const result = await onAddScript(payload);
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
+      const message = thrownErrorMessage(squashAtomCommandFailure(result));
+      if (requestId !== editorRequestId.current) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: t("Failed to import {name}.", { name: fileScript.name }),
+            ...(message ? { description: message } : {}),
+          }),
+        );
+        return;
+      }
       setEditorRequest({
         scriptId: null,
         initial: payload,
-        error: error instanceof Error ? error.message : t("Failed to import action."),
+        error: message ?? t("Failed to import action."),
       });
     }
   };
@@ -146,7 +167,7 @@ export default function ProjectScriptsControl({
         return (
           <MenuItem key={script.id} disabled={!onRunScript} onClick={() => onRunScript?.(script)}>
             <ScriptIcon icon={script.icon} className="size-4" />
-            <MenuItemLabel>{projectScriptMenuLabel(script, roleLabels)}</MenuItemLabel>
+            <MenuItemLabel>{projectScriptMenuLabel(script)}</MenuItemLabel>
             {shortcutLabel ? <MenuShortcut>{shortcutLabel}</MenuShortcut> : null}
           </MenuItem>
         );
@@ -182,7 +203,7 @@ export default function ProjectScriptsControl({
             {scripts.map((script) => (
               <MenuItem
                 key={script.id}
-                onClick={() => setEditorRequest(editorRequestForScript(script, keybindings))}
+                onClick={() => openEditor(editorRequestForScript(script, keybindings))}
               >
                 <ScriptIcon icon={script.icon} className="size-4" />
                 <MenuItemLabel>{script.name}</MenuItemLabel>
@@ -207,52 +228,50 @@ export default function ProjectScriptsControl({
           className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}
           ref={anchorRef}
         >
-          <Tooltip>
-            <TooltipTrigger
+          <SharedTooltipTrigger
+            render={
+              <ThreadDetailsControl
+                size="xs"
+                variant="ghost"
+                part="primary"
+                aria-label={t("Run {name}", { name: primaryScript.name })}
+                aria-disabled={!onRunScript || undefined}
+                onClick={() => onRunScript?.(primaryScript)}
+              />
+            }
+            side="top"
+            label={
+              onRunScript
+                ? t("Run {name}", { name: primaryScript.name })
+                : t("Pair this client again with permission to run terminal commands.")
+            }
+          >
+            <ScriptIcon icon={primaryScript.icon} className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+            <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+              {primaryScript.name}
+            </span>
+          </SharedTooltipTrigger>
+          <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
+          <Menu open={menuOpen} onOpenChange={changeMenuOpen}>
+            <SharedTooltipTrigger
               render={
-                <ThreadDetailsControl
-                  size="xs"
-                  variant="ghost"
-                  part="primary"
-                  aria-label={t("Run {name}", { name: primaryScript.name })}
-                  aria-disabled={!onRunScript || undefined}
-                  onClick={() => onRunScript?.(primaryScript)}
+                <MenuTrigger
+                  render={
+                    <ThreadDetailsControl
+                      size="sm"
+                      variant="ghost"
+                      part="secondary"
+                      aria-label={t("More project actions")}
+                      data-toolbar-control=""
+                    />
+                  }
                 />
               }
+              side="top"
+              label={t("More project actions")}
             >
-              <ScriptIcon icon={primaryScript.icon} className={THREAD_DETAILS_PANEL_ICON_CLASS} />
-              <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-                {primaryScript.name}
-              </span>
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {onRunScript
-                ? t("Run {name}", { name: primaryScript.name })
-                : t("Pair this client again with permission to run terminal commands.")}
-            </TooltipPopup>
-          </Tooltip>
-          <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
-          <Menu open={menuOpen} onOpenChange={setMenuOpen}>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <MenuTrigger
-                    render={
-                      <ThreadDetailsControl
-                        size="sm"
-                        variant="ghost"
-                        part="secondary"
-                        aria-label={t("More project actions")}
-                        data-toolbar-control=""
-                      />
-                    }
-                  />
-                }
-              >
-                <ChevronDownIcon className={THREAD_DETAILS_PANEL_CHEVRON_CLASS} />
-              </TooltipTrigger>
-              <TooltipPopup side="top">{t("More project actions")}</TooltipPopup>
-            </Tooltip>
+              <ChevronDownIcon className={THREAD_DETAILS_PANEL_CHEVRON_CLASS} />
+            </SharedTooltipTrigger>
             <MenuPopup align="end" anchor={anchorRef} className="w-(--anchor-width)">
               {menuItems}
             </MenuPopup>
@@ -270,7 +289,7 @@ export default function ProjectScriptsControl({
             variant="ghost"
             part="primary"
             aria-label={t("Project actions")}
-            onClick={() => setMenuOpen(true)}
+            onClick={() => changeMenuOpen(true)}
           >
             <WrenchIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
             <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
@@ -278,7 +297,7 @@ export default function ProjectScriptsControl({
             </span>
           </ThreadDetailsControl>
           <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
-          <Menu highlightItemOnHover={false} open={menuOpen} onOpenChange={setMenuOpen}>
+          <Menu highlightItemOnHover={false} open={menuOpen} onOpenChange={changeMenuOpen}>
             <MenuTrigger
               render={
                 <ThreadDetailsControl

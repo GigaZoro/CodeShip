@@ -1,4 +1,6 @@
 import { msg, t, tx, type Message } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
@@ -68,6 +70,8 @@ import { Label } from "./ui/label";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
+
+const EXAMPLE_SCRIPT_COMMAND = "bun test";
 
 const isProjectScriptShortcutError = Schema.is(ProjectScriptShortcutError);
 
@@ -373,11 +377,13 @@ function ProjectScriptEditorForm({
   };
 
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     const hasModifier = event.metaKey || event.ctrlKey || event.altKey;
     // Tab moves focus, Escape closes the dialog and Enter saves, as in every other field.
-    if (event.key === "Tab" || event.key === "Escape") return;
+    if (event.key === "Tab" || (event.key === "Escape" && !hasModifier && !event.shiftKey)) return;
     if (event.key === "Enter" && !hasModifier && !event.shiftKey) return;
     event.preventDefault();
+    event.stopPropagation();
     if (!readEnvironmentScope(environmentId, editScope)) return;
     if (!readEnvironmentScope(environmentId, AuthSettingsWriteScope)) return;
     if (!hasModifier && (event.key === "Backspace" || event.key === "Delete")) {
@@ -472,7 +478,7 @@ function ProjectScriptEditorForm({
       } satisfies ProjectScriptSaveInput;
     } catch (error) {
       setValidationError({
-        message: error instanceof Error ? error.message : t("Failed to save action."),
+        message: thrownErrorMessage(error) ?? t("Failed to save action."),
         field: "keybinding",
       });
       return;
@@ -492,7 +498,7 @@ function ProjectScriptEditorForm({
               setSavedScript({ id: error.scriptId, name: payload.name });
             }
             setValidationError({
-              message: error instanceof Error ? error.message : t("Failed to save action."),
+              message: thrownErrorMessage(error) ?? t("Failed to save action."),
               field: isProjectScriptShortcutError(error) ? "keybinding" : null,
             });
           }
@@ -503,7 +509,7 @@ function ProjectScriptEditorForm({
     } catch (error) {
       if (pendingSubmissionRef.current === submission) {
         setValidationError({
-          message: error instanceof Error ? error.message : t("Failed to save action."),
+          message: thrownErrorMessage(error) ?? t("Failed to save action."),
           field: null,
         });
       }
@@ -594,6 +600,7 @@ function ProjectScriptEditorForm({
               <Input
                 disabled={!canWriteSettings}
                 id="script-keybinding"
+                data-keybinding-capture=""
                 placeholder={t("Press shortcut")}
                 value={keybindingShortcut ? formatShortcutLabel(keybindingShortcut) : keybinding}
                 readOnly
@@ -615,7 +622,8 @@ function ProjectScriptEditorForm({
               <Label htmlFor="script-command">{t("Command")}</Label>
               <Textarea
                 id="script-command"
-                placeholder={"bun test"}
+                data-script-command-input
+                placeholder={EXAMPLE_SCRIPT_COMMAND}
                 value={command}
                 aria-invalid={fieldError("command") ? true : undefined}
                 aria-describedby={fieldError("command") ? errorId("command") : undefined}

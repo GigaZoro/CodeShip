@@ -114,7 +114,6 @@ import {
   SelectValue,
 } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   getClientSettings,
   persistClientSettingsUpdate,
@@ -133,10 +132,12 @@ import { SimlockHostsRow } from "./OptInFeatureRows";
 import { searchableSetting } from "./settingsSearch";
 import { AGENT_TERMINAL_ACCESS_LABELS } from "./settingValueFormat";
 import { AdvancedSettings } from "./AdvancedSettings";
+import { commitNumberFieldOnEnter } from "./commitNumberFieldOnEnter";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { BrowserImportWizard, type WizardTarget } from "./BrowserImportWizard";
 import type { ImportOutcome } from "./browserImportWizard.logic";
 import { msg, t, tx, type Message } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const FILL_VALUE = "fill";
 const RESPONSIVE_VALUE = "responsive";
@@ -441,7 +442,10 @@ function BrowserViewportSetting() {
                 onValueCommitted={(value) => commitDimension("width", value)}
               >
                 <NumberFieldGroup>
-                  <NumberFieldInput aria-label={t("Default viewport width")} />
+                  <NumberFieldInput
+                    aria-label={t("Default viewport width")}
+                    onKeyDown={commitNumberFieldOnEnter}
+                  />
                 </NumberFieldGroup>
               </NumberField>
               <span className="text-xs text-muted-foreground">×</span>
@@ -455,30 +459,32 @@ function BrowserViewportSetting() {
                 onValueCommitted={(value) => commitDimension("height", value)}
               >
                 <NumberFieldGroup>
-                  <NumberFieldInput aria-label={t("Default viewport height")} />
+                  <NumberFieldInput
+                    aria-label={t("Default viewport height")}
+                    onKeyDown={commitNumberFieldOnEnter}
+                  />
                 </NumberFieldGroup>
               </NumberField>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="icon-sm"
-                      variant="ghost-muted"
-                      aria-label={
-                        presentedSize.height >= presentedSize.width
-                          ? t("Rotate to landscape")
-                          : t("Rotate to portrait")
-                      }
-                      onClick={() =>
-                        updateSettings({ browserDefaultViewport: rotateViewport(sized) })
-                      }
-                    >
-                      <ScreenRotationIcon />
-                    </Button>
-                  }
-                />
-                <TooltipPopup side="top">{t("Rotate")}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    size="icon-sm"
+                    variant="ghost-muted"
+
+                    aria-label={
+                      presentedSize.height >= presentedSize.width
+                        ? t("Rotate to landscape")
+                        : t("Rotate to portrait")
+                    }
+                    onClick={() =>
+                      updateSettings({ browserDefaultViewport: rotateViewport(sized) })
+                    }
+                  >
+                    <ScreenRotationIcon />
+                  </Button>
+                }
+                label={<>{t("Rotate")}</>}
+              />
             </div>
           ) : null}
         </div>

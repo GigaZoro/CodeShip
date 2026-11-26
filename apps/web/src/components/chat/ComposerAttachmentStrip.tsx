@@ -7,8 +7,9 @@ import type {
   SnapShotSource,
 } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
+
 import { CircleAlertIcon, ImageIcon, PaperclipIcon, PlayIcon, XIcon } from "lucide-react";
-import { type ComponentProps, useLayoutEffect, useRef } from "react";
+import { type ComponentProps, type Ref, useLayoutEffect, useRef } from "react";
 
 import {
   type ComposerFileAttachment,
@@ -17,7 +18,10 @@ import {
   composerFileNeedsReattach,
 } from "../../composerDraftStore";
 import { retryAttachmentUpload, useAttachmentUploadStore } from "../../lib/attachmentUploadQueue";
-import type { AttachmentUploadState } from "../../lib/attachmentUploadState";
+import {
+  attachmentUploadFailureText,
+  type AttachmentUploadState,
+} from "../../lib/attachmentUploadState";
 import { useAttachmentUploadProgress } from "../../hooks/useAttachmentUploadProgress";
 import { isHeicImageFile } from "../../lib/imageCompression";
 import {
@@ -33,7 +37,6 @@ import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
 import { AttachmentImage } from "../media/AttachmentImage";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import type { PreparingComposerImage } from "./preparingComposerImages";
@@ -48,6 +51,7 @@ import {
   SnapShotAttachmentDetails,
 } from "./SnapShotAttachmentDetails";
 import { prepareVideoFirstFrame } from "../../lib/videoFirstFrame";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 function ComposerAttachmentUploadProgress({
   id,
@@ -150,6 +154,7 @@ export function ComposerAttachmentMediaRow({
   attachmentDraftTarget,
   canOperateThread,
   onExpandImage,
+  onCopySnapshot,
   onFileOpen,
   onRemoveImage,
   onRemoveFile,
@@ -168,6 +173,7 @@ export function ComposerAttachmentMediaRow({
   readonly environmentId: EnvironmentId;
   readonly attachmentDraftTarget: ScopedThreadRef | DraftId;
   readonly canOperateThread: boolean;
+  readonly onCopySnapshot: (imageId: string) => Promise<void>;
   readonly onExpandImage: (preview: ExpandedImagePreview) => void;
   readonly onFileOpen: (attachment: ChatFileAttachment) => void;
   readonly onRemoveImage: (imageId: string) => void;
@@ -225,7 +231,7 @@ export function ComposerAttachmentMediaRow({
                   aria-label={t("Preview {name}", { name: image.name })}
                   disabled={!ready}
                   onClick={() => {
-                    const preview = buildExpandedImagePreview(images, image.id);
+                    const preview = buildExpandedImagePreview(images, image.id, onCopySnapshot);
                     if (!preview) return;
                     onExpandImage(preview);
                   }}
@@ -255,6 +261,7 @@ export function ComposerAttachmentMediaRow({
               {source?.kind === "snap-shot" ? (
                 <SnapShotAttachmentDetails
                   source={source}
+                  onCopySnapshot={ready ? () => onCopySnapshot(ready.id) : undefined}
                   className={cn(
                     upload?.status === "uploading" && "bottom-4",
                     upload?.status === "failed" && "bottom-8",
@@ -262,24 +269,24 @@ export function ComposerAttachmentMediaRow({
                 />
               ) : null}
               {nonPersistedImageIdSet.has(image.id) && (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <span
-                        role="img"
-                        aria-label={t("Draft attachment may not persist")}
-                        className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-warning-foreground"
-                      >
-                        <CircleAlertIcon className="size-3" />
-                      </span>
-                    }
-                  />
-                  <TooltipPopup side="top">
-                    {t(
-                      "Draft attachment could not be saved locally and may be lost on navigation.",
-                    )}
-                  </TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger
+                  render={
+                    <span
+                      role="img"
+                      aria-label={t("Draft attachment may not persist")}
+                      className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-warning-foreground"
+                    >
+                      <CircleAlertIcon className="size-3" />
+                    </span>
+                  }
+                  label={
+                    <>
+                      {t(
+                        "Draft attachment could not be saved locally and may be lost on navigation.",
+                      )}
+                    </>
+                  }
+                />
               )}
               {(!ready || upload?.status === "uploading") && (
                 <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 px-1 text-center text-3xs text-foreground">
@@ -291,29 +298,27 @@ export function ComposerAttachmentMediaRow({
                 </span>
               )}
               {ready && upload?.status === "failed" && (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="overlay"
-                        size="icon-xs"
-                        className="absolute bottom-1 left-1"
-                        onClick={() =>
-                          retryAttachmentUpload({
-                            environmentId,
-                            image: ready,
-                            draftTarget: attachmentDraftTarget,
-                          })
-                        }
-                        disabled={!canOperateThread}
-                        aria-label={t("Retry upload for {name}", { name: image.name })}
-                      />
-                    }
-                  >
-                    <RefreshIcon />
-                  </TooltipTrigger>
-                  <TooltipPopup side="top">{upload.reason}</TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger
+                  render={
+                    <Button
+                      variant="overlay"
+                      size="icon-xs"
+                      className="absolute bottom-1 left-1"
+                      onClick={() =>
+                        retryAttachmentUpload({
+                          environmentId,
+                          image: ready,
+                          draftTarget: attachmentDraftTarget,
+                        })
+                      }
+                      disabled={!canOperateThread}
+                      aria-label={t("Retry upload for {name}", { name: image.name })}
+                    />
+                  }
+                  label={attachmentUploadFailureText(upload, t)}
+                >
+                  <RefreshIcon />
+                </SharedTooltipTrigger>
               )}
               <span
                 className={cn(
@@ -389,29 +394,27 @@ export function ComposerAttachmentMediaRow({
               </span>
             )}
             {upload?.status === "failed" && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="overlay"
-                      size="icon-xs"
-                      className="absolute bottom-1 left-1"
-                      onClick={() =>
-                        retryAttachmentUpload({
-                          environmentId,
-                          image: file,
-                          draftTarget: attachmentDraftTarget,
-                        })
-                      }
-                      disabled={!canOperateThread}
-                      aria-label={t("Retry upload for {name}", { name: file.name })}
-                    />
-                  }
-                >
-                  <RefreshIcon />
-                </TooltipTrigger>
-                <TooltipPopup side="top">{upload.reason}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    variant="overlay"
+                    size="icon-xs"
+                    className="absolute bottom-1 left-1"
+                    onClick={() =>
+                      retryAttachmentUpload({
+                        environmentId,
+                        image: file,
+                        draftTarget: attachmentDraftTarget,
+                      })
+                    }
+                    disabled={!canOperateThread}
+                    aria-label={t("Retry upload for {name}", { name: file.name })}
+                  />
+                }
+                label={attachmentUploadFailureText(upload, t)}
+              >
+                <RefreshIcon />
+              </SharedTooltipTrigger>
             )}
             <Button
               variant="media-close"
@@ -489,35 +492,33 @@ export function ComposerAttachmentFileList({
                 <ComposerAttachmentUploadProgress
                   id={file.id}
                   upload={upload}
-                  fallback={formatAttachmentSize(file.sizeBytes)}
+                  fallback={formatAttachmentSize(file.sizeBytes, t)}
                 />
               ) : (
-                formatAttachmentSize(file.sizeBytes)
+                formatAttachmentSize(file.sizeBytes, t)
               )}
             </span>
             {!needsReattach && upload?.status === "failed" ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() =>
-                        retryAttachmentUpload({
-                          environmentId,
-                          image: file,
-                          draftTarget: attachmentDraftTarget,
-                        })
-                      }
-                      disabled={!canOperateThread}
-                      aria-label={t("Retry upload for {name}", { name: file.name })}
-                    />
-                  }
-                >
-                  <RefreshIcon />
-                </TooltipTrigger>
-                <TooltipPopup side="top">{upload.reason}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() =>
+                      retryAttachmentUpload({
+                        environmentId,
+                        image: file,
+                        draftTarget: attachmentDraftTarget,
+                      })
+                    }
+                    disabled={!canOperateThread}
+                    aria-label={t("Retry upload for {name}", { name: file.name })}
+                  />
+                }
+                label={attachmentUploadFailureText(upload, t)}
+              >
+                <RefreshIcon />
+              </SharedTooltipTrigger>
             ) : null}
             <Button
               variant="ghost"
@@ -589,11 +590,13 @@ export function ComposerRestingImagePreviews({
   allImages,
   resolvedTheme,
   onExpandImage,
+  onCopySnapshot,
   onShowMore,
 }: {
   readonly images: ReadonlyArray<ComposerImageAttachment>;
   readonly allImages: ReadonlyArray<ComposerImageAttachment>;
   readonly resolvedTheme: "light" | "dark";
+  readonly onCopySnapshot: (imageId: string) => Promise<void>;
   readonly onExpandImage: (preview: ExpandedImagePreview) => void;
   readonly onShowMore: () => void;
 }) {
@@ -609,7 +612,7 @@ export function ComposerRestingImagePreviews({
           aria-label={t("Preview {name}", { name: image.name })}
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => {
-            const preview = buildExpandedImagePreview(allImages, image.id);
+            const preview = buildExpandedImagePreview(allImages, image.id, onCopySnapshot);
             if (preview) onExpandImage(preview);
           }}
         >
@@ -706,50 +709,54 @@ export function ComposerQueuedAttachmentRow({
   );
 }
 
-export function ComposerAttachButton({
+// Kept outside the composer footer: on mobile the picker blurs the editor and the
+// footer unmounts, and a detached input never delivers its change event.
+export function ComposerAttachInput({
+  ref,
   addComposerAttachments,
   focusComposer,
 }: {
+  readonly ref: Ref<HTMLInputElement>;
   readonly addComposerAttachments: (files: File[]) => Promise<boolean>;
   readonly focusComposer: () => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
   return (
-    <>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(event) => {
-          const files = Array.from(event.currentTarget.files ?? []);
-          event.currentTarget.value = "";
-          // Inserting a chip refocuses the editor after the draft renders;
-          // focusing synchronously here would report the editor's stale text
-          // over the prompt that was just written.
-          void addComposerAttachments(files).then((inserted) => {
-            if (!inserted) focusComposer();
-          });
-        }}
-      />
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => inputRef.current?.click()}
-              aria-label={t("Attach files")}
-            />
-          }
-        >
-          {/* The clip's weight sits in its upper loop; 1px down reads as centered on the row. */}
-          <PaperclipIcon className="translate-y-px" />
-        </TooltipTrigger>
-        <TooltipPopup>{t("Attach files")}</TooltipPopup>
-      </Tooltip>
-    </>
+    <input
+      ref={ref}
+      type="file"
+      multiple
+      className="hidden"
+      onChange={(event) => {
+        const files = Array.from(event.currentTarget.files ?? []);
+        event.currentTarget.value = "";
+        // Inserting a chip refocuses the editor after the draft renders;
+        // focusing synchronously here would report the editor's stale text
+        // over the prompt that was just written.
+        void addComposerAttachments(files).then((inserted) => {
+          if (!inserted) focusComposer();
+        });
+      }}
+    />
+  );
+}
+
+export function ComposerAttachButton({ onOpenPicker }: { readonly onOpenPicker: () => void }) {
+  return (
+    <SharedTooltipTrigger
+      render={
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={onOpenPicker}
+          aria-label={t("Attach files")}
+        />
+      }
+      label={<>{t("Attach files")}</>}
+    >
+      {/* The clip's weight sits in its upper loop; 1px down reads as centered on the row. */}
+      <PaperclipIcon className="translate-y-px" />
+    </SharedTooltipTrigger>
   );
 }

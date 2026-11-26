@@ -1,4 +1,6 @@
+import { type Message, msg, t } from "~/i18n";
 import { DownloadIcon } from "lucide-react";
+
 import { useSyncExternalStore } from "react";
 import type { RelayClientInstallProgressStage } from "@t3tools/contracts";
 
@@ -19,7 +21,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { msg, t, type Message } from "~/i18n";
 const installSteps: ReadonlyArray<{
   readonly stage: RelayClientInstallProgressStage;
   readonly label: Message;
@@ -39,6 +40,7 @@ export function RelayClientInstallDialog() {
     readRelayClientInstallDialogState,
     readRelayClientInstallDialogState,
   );
+
   const view = state.status === "closing" ? state.view : state;
   const isConfirming = view.status === "confirming";
   const isInstalling = view.status === "installing";
@@ -85,8 +87,8 @@ export function RelayClientInstallDialog() {
                   {activeStep ? t(activeStep.label) : null}
                 </p>
                 <p className="shrink-0 tabular-nums text-muted-foreground">
-                  {t("{current} of {total}", {
-                    current: activeStepIndex + 1,
+                  {t("{step} of {total}", {
+                    step: activeStepIndex + 1,
                     total: installSteps.length,
                   })}
                 </p>

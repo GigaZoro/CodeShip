@@ -1,5 +1,6 @@
 import {
   STATIC_KEYBINDING_COMMANDS,
+  type ClientSettings,
   type KeybindingCommand,
   type KeybindingShortcut,
   type KeybindingWhenNode,
@@ -13,7 +14,12 @@ import {
   US_SHIFTED_TO_UNSHIFTED_KEYS,
 } from "@t3tools/shared/keybindings";
 
-import { shortcutConflictKey, shortcutKeyFromEvent } from "../../keybindings";
+import {
+  formatShortcutLabel,
+  shortcutConflictKey,
+  shortcutForContext,
+  shortcutKeyFromEvent,
+} from "../../keybindings";
 import { isMacPlatform } from "../../lib/utils";
 import { METRIC_OPTIONS, WINDOW_OPTIONS } from "../usage/usageShortcuts";
 import { msg, t, type Message } from "~/i18n";
@@ -49,10 +55,12 @@ export interface KeybindingRow {
   readonly key: string;
   readonly when: string;
   readonly source: KeybindingSource;
+  readonly isUnassigned: boolean;
   readonly defaultKey: string | null;
   readonly defaultWhen: string;
   readonly binding: ResolvedKeybindingRule;
   readonly conflicts: ReadonlyArray<string>;
+  readonly previewLabels: ReadonlyArray<string>;
 }
 
 export type WhenVariableOption = string;
@@ -62,6 +70,7 @@ const CORE_WHEN_VARIABLES = [
   "terminalFocus",
   "terminalOpen",
   "previewOpen",
+  "composerEmpty",
   "isWeb",
   "isDesktop",
   "true",
@@ -79,7 +88,7 @@ export const DEFAULT_WHEN_VARIABLE =
   ) ?? "terminalFocus";
 const KNOWN_WHEN_VARIABLES = new Set(DEFAULT_WHEN_VARIABLES);
 
-export function shortcutToKeybindingInput(shortcut: KeybindingShortcut): string {
+export function shortcutToKeybindingParts(shortcut: KeybindingShortcut): ReadonlyArray<string> {
   const parts: string[] = [];
   if (shortcut.modKey) parts.push("mod");
   if (shortcut.metaKey) parts.push("meta");
@@ -87,7 +96,11 @@ export function shortcutToKeybindingInput(shortcut: KeybindingShortcut): string 
   if (shortcut.altKey) parts.push("alt");
   if (shortcut.shiftKey) parts.push("shift");
   parts.push(shortcut.key === " " ? "space" : shortcut.key === "escape" ? "esc" : shortcut.key);
-  return parts.join("+");
+  return parts;
+}
+
+export function shortcutToKeybindingInput(shortcut: KeybindingShortcut): string {
+  return shortcutToKeybindingParts(shortcut).join("+");
 }
 
 export function whenAstToExpression(node: KeybindingWhenNode | undefined): string {
@@ -110,6 +123,7 @@ const WHEN_KEY_PHRASES: Readonly<Record<string, { readonly on: Message; readonly
     terminalFocus: { on: msg("In the terminal"), off: msg("Not in the terminal") },
     terminalOpen: { on: msg("Terminal open"), off: msg("Terminal closed") },
     previewOpen: { on: msg("Preview open"), off: msg("Preview closed") },
+    isMac: { on: msg("On macOS"), off: msg("Not on macOS") },
     isWeb: { on: msg("In the web app"), off: msg("Not in the web app") },
     isDesktop: { on: msg("In the desktop app"), off: msg("Not in the desktop app") },
     rightPanelOpen: { on: msg("Right panel open"), off: msg("Right panel closed") },
@@ -211,9 +225,22 @@ function sourceForBinding(binding: ResolvedKeybindingRule): KeybindingSource {
 
 function defaultBindingForBinding(
   binding: ResolvedKeybindingRule,
+  keybindings: ResolvedKeybindingsConfig,
 ): ResolvedKeybindingRule | undefined {
   const bindingKey = shortcutToKeybindingInput(binding.shortcut);
   const bindingWhen = whenAstToExpression(binding.whenAst);
+  const isBound = (entry: ResolvedKeybindingRule) =>
+    keybindings.some(
+      (other) =>
+        other.command === entry.command &&
+        shortcutToKeybindingInput(other.shortcut) === shortcutToKeybindingInput(entry.shortcut) &&
+        [whenAstToExpression(entry.whenAst), "false"].includes(whenAstToExpression(other.whenAst)),
+    );
+  // An edited row does not record which default it replaced; a default the command still has,
+  // or that is unassigned, cannot be it.
+  const findDefault = (matches: (entry: ResolvedKeybindingRule) => boolean) =>
+    DEFAULT_RESOLVED_KEYBINDINGS.find((entry) => matches(entry) && !isBound(entry)) ??
+    DEFAULT_RESOLVED_KEYBINDINGS.find(matches);
 
   return (
     DEFAULT_RESOLVED_KEYBINDINGS.find(
@@ -222,11 +249,18 @@ function defaultBindingForBinding(
         shortcutToKeybindingInput(entry.shortcut) === bindingKey &&
         whenAstToExpression(entry.whenAst) === bindingWhen,
     ) ??
-    DEFAULT_RESOLVED_KEYBINDINGS.find(
+    (bindingWhen === "false"
+      ? DEFAULT_RESOLVED_KEYBINDINGS.find(
+          (entry) =>
+            entry.command === binding.command &&
+            shortcutToKeybindingInput(entry.shortcut) === bindingKey,
+        )
+      : undefined) ??
+    findDefault(
       (entry) =>
         entry.command === binding.command && whenAstToExpression(entry.whenAst) === bindingWhen,
     ) ??
-    DEFAULT_RESOLVED_KEYBINDINGS.find((entry) => entry.command === binding.command)
+    findDefault((entry) => entry.command === binding.command)
   );
 }
 
@@ -235,7 +269,10 @@ function keybindingRowId(command: KeybindingCommand, key: string, when: string):
 }
 
 function conflictsWithWhen(leftWhen: string, rightWhen: string): boolean {
-  return leftWhen.length === 0 || rightWhen.length === 0 || leftWhen === rightWhen;
+  if (leftWhen === "false" || rightWhen === "false") return false;
+  // An empty condition and "true" are both always active.
+  const always = (when: string) => when.length === 0 || when === "true";
+  return always(leftWhen) || always(rightWhen) || leftWhen === rightWhen;
 }
 
 export function keybindingConflictLabels(
@@ -309,10 +346,31 @@ export function groupKeybindingRows(
 export function buildKeybindingRows(
   keybindings: ResolvedKeybindingsConfig,
   platform = navigator.platform,
+  sendShortcut: ClientSettings["sendShortcut"] = "enter",
 ): ReadonlyArray<KeybindingRow> {
+  // Multiline sending can use either shortcut; settings have no active composer prompt.
+  const modifierModes =
+    sendShortcut === "mod-enter-multiline" ? [false, true] : [sendShortcut === "mod-enter"];
+  const previewLabels = keybindings.map(() => new Set<string>());
+  for (const composerRequiresModifier of modifierModes) {
+    const laterBindings = new Set<string>();
+    for (let index = keybindings.length - 1; index >= 0; index--) {
+      const binding = keybindings[index]!;
+      const when = whenAstToExpression(binding.whenAst);
+      if (when === "false") continue;
+      const shortcut = shortcutForContext(binding, { composerRequiresModifier });
+      const key = shortcutConflictKey(shortcut, platform);
+      const conditionKey = `${key}:${when === "true" ? "" : when}`;
+      // Distinct conditions may still apply in other focus contexts.
+      if (!laterBindings.has(`${key}:`) && !laterBindings.has(conditionKey)) {
+        previewLabels[index]!.add(formatShortcutLabel(shortcut, platform));
+      }
+      laterBindings.add(conditionKey);
+    }
+  }
   const rowsById = new Map<string, KeybindingRow>();
-  for (const binding of keybindings) {
-    const defaultBinding = defaultBindingForBinding(binding);
+  for (const [index, binding] of keybindings.entries()) {
+    const defaultBinding = defaultBindingForBinding(binding, keybindings);
     const key = shortcutToKeybindingInput(binding.shortcut);
     const when = whenAstToExpression(binding.whenAst);
     const id = keybindingRowId(binding.command, key, when);
@@ -322,10 +380,15 @@ export function buildKeybindingRows(
       key,
       when,
       source: sourceForBinding(binding),
+      isUnassigned:
+        when === "false" &&
+        defaultBinding !== undefined &&
+        key === shortcutToKeybindingInput(defaultBinding.shortcut),
       defaultKey: defaultBinding ? shortcutToKeybindingInput(defaultBinding.shortcut) : null,
       defaultWhen: whenAstToExpression(defaultBinding?.whenAst),
       binding,
       conflicts: [],
+      previewLabels: [...previewLabels[index]!],
     });
   }
   const rows = [...rowsById.values()];

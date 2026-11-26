@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { ProviderCredentialError } from "@t3tools/provider-core/server/errors";
 
 const Credentials = Schema.fromJsonString(
   Schema.Struct({
@@ -100,11 +101,17 @@ export const readStoredCursorApiKey = Effect.fn("readStoredCursorApiKey")(functi
     instanceId,
   )).get;
   if (Option.isNone(stored)) return undefined;
-  const credentials = yield* decodeCredentials(new TextDecoder().decode(stored.value)).pipe(
-    Effect.option,
+  const { apiKey, apiKeyExpiresAtMs } = yield* decodeCredentials(
+    new TextDecoder().decode(stored.value),
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new ProviderCredentialError({
+          operation: "get",
+          cause: new Error("Invalid Cursor sign-in credentials."),
+        }),
+    ),
   );
-  if (Option.isNone(credentials)) return undefined;
-  const { apiKey, apiKeyExpiresAtMs } = credentials.value;
   return apiKeyExpiresAtMs === undefined || apiKeyExpiresAtMs > (yield* Clock.currentTimeMillis)
     ? apiKey
     : undefined;

@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
   RelayConnectionRegistration,
@@ -8,6 +9,8 @@ import type {
   RelayClientEnvironmentRecord,
   RelayEnvironmentStatusResponse,
 } from "@t3tools/contracts/relay";
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
+
 import * as Option from "effect/Option";
 import { useMemo } from "react";
 
@@ -57,7 +60,7 @@ export function useConnectionController() {
         environment: entry.environment,
         availability: entry.availability,
         status: Option.getOrNull(entry.status),
-        error: Option.getOrNull(entry.error)?.message ?? null,
+        error: errorDisplayMessage(Option.getOrNull(entry.error), t),
         traceId: Option.getOrNull(entry.error)?.traceId ?? null,
       })),
     [discovery.environments],
@@ -102,7 +105,7 @@ export function useConnectionController() {
     relayDiscovery: {
       isRefreshing: discovery.refreshing,
       isOffline: discovery.offline,
-      error: Option.getOrNull(discovery.error)?.message ?? null,
+      error: errorDisplayMessage(Option.getOrNull(discovery.error), t),
       errorTraceId: Option.getOrNull(discovery.error)?.traceId ?? null,
     },
     connectPairingUrl,

@@ -5,18 +5,20 @@ import {
 } from "@t3tools/contracts";
 
 import type { EnvironmentConnectionPresentation } from "../connection/presentation.ts";
-import { t } from "@t3tools/shared/i18n";
+import { msg, t, type Message } from "@t3tools/shared/i18n";
 
-export function resolveUsageAccess(input: {
+type UsageAccessInput = {
   readonly connection: Pick<EnvironmentConnectionPresentation, "phase" | "error">;
   readonly session: SessionGrantInput | null;
   readonly hasSessionError: boolean;
-}) {
+};
+
+export function usageAccessMessage(input: UsageAccessInput) {
   if (input.hasSessionError) {
     return {
       canReadDiagnostics: false,
       isPending: false,
-      error: t("Could not check this connection's access to diagnostics and usage."),
+      error: msg("Could not check this connection's access to diagnostics and usage."),
     };
   }
   if (input.session === null) {
@@ -28,7 +30,7 @@ export function resolveUsageAccess(input: {
     return {
       canReadDiagnostics: false,
       isPending,
-      error: isPending ? null : t("This environment is not connected."),
+      error: isPending ? null : msg("This environment is not connected."),
     };
   }
   const canReadDiagnostics = sessionGrantsScope(input.session, AuthDiagnosticsReadScope);
@@ -37,6 +39,14 @@ export function resolveUsageAccess(input: {
     isPending: false,
     error: canReadDiagnostics
       ? null
-      : t("This connection does not have access to diagnostics and usage."),
+      : msg("This connection does not have access to diagnostics and usage."),
   };
+}
+
+export function resolveUsageAccess(
+  input: UsageAccessInput,
+  resolve: (message: Message) => string = t,
+) {
+  const access = usageAccessMessage(input);
+  return { ...access, error: access.error === null ? null : resolve(access.error) };
 }

@@ -16,8 +16,8 @@ import { MAX_CUSTOM_MODEL_LENGTH } from "../../modelSelection";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { CustomModelEditor } from "./CustomModelEditor";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const CUSTOM_MODEL_PLACEHOLDER_BY_KIND: Partial<Record<ProviderDriverKind, string>> = {
   [ProviderDriverKind.make("codex")]: "gpt-6.7-codex-ultra-preview",
@@ -147,6 +147,10 @@ export function ProviderModelsSection({
   const editAttemptRef = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
   const scrollToSlugRef = useRef<string | null>(null);
+  // A row toggled on its own keeps its placement until a bulk toggle or remount regroups the list.
+  const [heldPlacements, setHeldPlacements] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(),
+  );
   const hiddenModelSet = new Set(hiddenModels);
   const favoriteModelSet = new Set(favoriteModels);
   const reportedSlugs = new Set(models.map((model) => model.slug));
@@ -155,9 +159,15 @@ export function ProviderModelsSection({
   const unreportedFavoriteModels = favoriteModels.flatMap((slug): ServerProviderModel[] =>
     reportedSlugs.has(slug) ? [] : [{ slug, name: slug, isCustom: false, capabilities: null }],
   );
-  const displayModels = groupModelsForDisplay([...models, ...unreportedFavoriteModels], {
+  const listedModels = [...models, ...unreportedFavoriteModels];
+  const placedHiddenSet = new Set(
+    listedModels
+      .filter((model) => heldPlacements.get(model.slug) ?? hiddenModelSet.has(model.slug))
+      .map((model) => model.slug),
+  );
+  const displayModels = groupModelsForDisplay(listedModels, {
     favoriteModels: favoriteModelSet,
-    hiddenModels: hiddenModelSet,
+    hiddenModels: placedHiddenSet,
     modelOrder,
   });
   const favoriteCount = displayModels.filter((model) => favoriteModelSet.has(model.slug)).length;
@@ -263,6 +273,9 @@ export function ProviderModelsSection({
 
   const setHidden = (slug: string, hidden: boolean) => {
     if (!canWritePreferences || hidden === hiddenModelSet.has(slug)) return;
+    setHeldPlacements((current) =>
+      current.has(slug) ? current : new Map(current).set(slug, hiddenModelSet.has(slug)),
+    );
     onHiddenModelsChange(
       hidden ? [...hiddenModels, slug] : hiddenModels.filter((model) => model !== slug),
       [slug],
@@ -277,7 +290,7 @@ export function ProviderModelsSection({
   const groupOf = (model: (typeof displayModels)[number]) =>
     favoriteModelSet.has(model.slug)
       ? "favorite"
-      : !model.isCustom && hiddenModelSet.has(model.slug)
+      : !model.isCustom && placedHiddenSet.has(model.slug)
         ? "hidden"
         : "visible";
   const handleMove = (slug: string, direction: -1 | 1) => {
@@ -339,6 +352,13 @@ export function ProviderModelsSection({
           <Input
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || event.nativeEvent.isComposing || event.keyCode === 229)
+                return;
+              if (!filter && !event.repeat) return;
+              event.stopPropagation();
+              setFilter("");
+            }}
             placeholder={t("Filter models")}
             size="sm"
             className="w-56 max-w-full"
@@ -352,12 +372,13 @@ export function ProviderModelsSection({
               type="button"
               size="xs"
               variant="ghost-muted"
-              onClick={() =>
+              onClick={() => {
+                setHeldPlacements(new Map());
                 onHiddenModelsChange(
                   nextHiddenModelsForBulkToggle(models, hiddenModels),
                   builtInModels.map((model) => model.slug),
-                )
-              }
+                );
+              }}
             >
               {allBuiltInModelsHidden ? t("Enable all") : t("Disable all")}
             </Button>
@@ -448,8 +469,10 @@ export function ProviderModelsSection({
               if (error) setError(null);
             }}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
               if (event.key === "Escape") {
                 event.preventDefault();
+                event.stopPropagation();
                 cancelAdd();
                 return;
               }
@@ -527,49 +550,46 @@ const ProviderModelRow = memo(function ProviderModelRow({
         isHidden && "opacity-50",
       )}
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              size="icon-micro"
-              variant="ghost-muted"
-              disabled={!canWritePreferences}
-              onClick={() => onToggleFavorite(model.slug)}
-              aria-label={
-                isFavorite
-                  ? t("Remove {name} from favorites", { name: model.name })
-                  : t("Add {name} to favorites", { name: model.name })
-              }
-            />
-          }
-        >
-          <StarIcon className={cn("size-3", isFavorite && "fill-current text-warning")} />
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          {isFavorite ? t("Remove from favorites") : t("Add to favorites")}
-        </TooltipPopup>
-      </Tooltip>
-      <span className="flex min-w-0 items-baseline gap-2">
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span tabIndex={0} className="flex min-w-0 items-baseline gap-2 overflow-hidden" />
+      <SharedTooltipTrigger
+        render={
+          <Button
+            size="icon-micro"
+            variant="ghost-muted"
+            disabled={!canWritePreferences}
+            onClick={() => onToggleFavorite(model.slug)}
+            aria-label={
+              isFavorite
+                ? t("Remove {name} from favorites", { name: model.name })
+                : t("Add {name} to favorites", { name: model.name })
             }
-          >
-            <span className={cn(nameClassName, "max-w-full shrink-0 truncate")}>{model.name}</span>
-            {model.name !== model.slug ? (
-              <code className="truncate font-mono text-2xs text-muted-foreground/70">
-                {model.slug}
-              </code>
-            ) : null}
-          </TooltipTrigger>
-          <TooltipPopup side="top" align="start">
-            <div>{model.name}</div>
-            {model.name !== model.slug ? (
-              <code className="font-mono text-2xs text-muted-foreground">{model.slug}</code>
-            ) : null}
-          </TooltipPopup>
-        </Tooltip>
+          />
+        }
+        label={isFavorite ? t("Remove from favorites") : t("Add to favorites")}
+      >
+        <StarIcon className={cn("size-3", isFavorite && "fill-current text-warning")} />
+      </SharedTooltipTrigger>
+      <span className="flex min-w-0 items-baseline gap-2">
+        <SharedTooltipTrigger
+          render={
+            <span tabIndex={0} className="flex min-w-0 items-baseline gap-2 overflow-hidden" />
+          }
+          label={
+            <>
+              <div>{model.name}</div>
+              {model.name !== model.slug ? (
+                <code className="font-mono text-2xs text-muted-foreground">{model.slug}</code>
+              ) : null}
+            </>
+          }
+          align="start"
+        >
+          <span className={cn(nameClassName, "max-w-full shrink-0 truncate")}>{model.name}</span>
+          {model.name !== model.slug ? (
+            <code className="truncate font-mono text-2xs text-muted-foreground/70">
+              {model.slug}
+            </code>
+          ) : null}
+        </SharedTooltipTrigger>
         {model.isCustom ? (
           <span className="shrink-0 text-2xs text-muted-foreground/70">{t("custom")}</span>
         ) : null}
@@ -582,90 +602,82 @@ const ProviderModelRow = memo(function ProviderModelRow({
       <span className="flex shrink-0 items-center justify-end gap-0.5">
         {!isHidden && !isFiltering ? (
           <>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-micro"
-                    variant="ghost-muted"
-                    disabled={!canWritePreferences || !canMoveUp}
-                    onClick={() => onMove(model.slug, -1)}
-                    aria-label={t("Move {name} up", { name: model.name })}
-                  />
-                }
-              >
-                <ArrowUpIcon className="size-3" />
-              </TooltipTrigger>
-              <TooltipPopup side="top">{t("Move up")}</TooltipPopup>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-micro"
-                    variant="ghost-muted"
-                    disabled={!canWritePreferences || !canMoveDown}
-                    onClick={() => onMove(model.slug, 1)}
-                    aria-label={t("Move {name} down", { name: model.name })}
-                  />
-                }
-              >
-                <ArrowDownIcon className="size-3" />
-              </TooltipTrigger>
-              <TooltipPopup side="top">{t("Move down")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-micro"
+                  variant="ghost-muted"
+                  disabled={!canWritePreferences || !canMoveUp}
+                  onClick={() => onMove(model.slug, -1)}
+                  aria-label={t("Move {name} up", { name: model.name })}
+                />
+              }
+              label={<>{t("Move up")}</>}
+            >
+              <ArrowUpIcon className="size-3" />
+            </SharedTooltipTrigger>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-micro"
+                  variant="ghost-muted"
+                  disabled={!canWritePreferences || !canMoveDown}
+                  onClick={() => onMove(model.slug, 1)}
+                  aria-label={t("Move {name} down", { name: model.name })}
+                />
+              }
+              label={<>{t("Move down")}</>}
+            >
+              <ArrowDownIcon className="size-3" />
+            </SharedTooltipTrigger>
           </>
         ) : null}
         {model.isCustom ? (
           <>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-micro"
-                    variant="ghost-muted"
-                    disabled={!canManageCustomModels}
-                    aria-label={t("Edit {name}", { name: model.slug })}
-                    onClick={() => onToggleEdit(model.slug)}
-                  />
-                }
-              >
-                <PencilIcon className="size-3" />
-              </TooltipTrigger>
-              <TooltipPopup side="top">{t("Edit name and options")}</TooltipPopup>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-micro"
-                    variant="ghost-muted"
-                    disabled={!canManageCustomModels}
-                    aria-label={t("Remove {name}", { name: model.slug })}
-                    onClick={() => onRemove(model.slug)}
-                  />
-                }
-              >
-                <XIcon className="size-3" />
-              </TooltipTrigger>
-              <TooltipPopup side="top">{t("Remove custom model")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-micro"
+                  variant="ghost-muted"
+                  disabled={!canManageCustomModels}
+                  aria-label={t("Edit {name}", { name: model.slug })}
+                  onClick={() => onToggleEdit(model.slug)}
+                />
+              }
+              label={<>{t("Edit name and options")}</>}
+            >
+              <PencilIcon className="size-3" />
+            </SharedTooltipTrigger>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="icon-micro"
+                  variant="ghost-muted"
+                  disabled={!canManageCustomModels}
+                  aria-label={t("Remove {name}", { name: model.slug })}
+                  onClick={() => onRemove(model.slug)}
+                />
+              }
+              label={<>{t("Remove custom model")}</>}
+            >
+              <XIcon className="size-3" />
+            </SharedTooltipTrigger>
           </>
         ) : null}
       </span>
       {/* Disabled switches receive no pointer events; wrap the tooltip trigger. */}
-      <Tooltip>
-        <TooltipTrigger render={<span className="flex shrink-0 items-center" />}>
-          <Switch
-            size="sm"
-            checked={!isHidden}
-            disabled={!canWritePreferences || model.isCustom}
-            onCheckedChange={(checked) => onSetHidden(model.slug, !checked)}
-            aria-label={t("Show {name} in the model picker", { name: model.name })}
-          />
-        </TooltipTrigger>
-        <TooltipPopup side="top">{pickerTooltip}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={<span className="flex shrink-0 items-center" />}
+        label={pickerTooltip}
+      >
+        <Switch
+          size="sm"
+          checked={!isHidden}
+          disabled={!canWritePreferences || model.isCustom}
+          onCheckedChange={(checked) => onSetHidden(model.slug, !checked)}
+          aria-label={t("Show {name} in the model picker", { name: model.name })}
+        />
+      </SharedTooltipTrigger>
     </div>
   );
 });

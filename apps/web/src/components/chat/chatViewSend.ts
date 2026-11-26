@@ -1,3 +1,4 @@
+import { t, msg, tn } from "~/i18n";
 import {
   CommandId,
   type EnvironmentId,
@@ -11,18 +12,18 @@ import {
   wasBootstrapThreadNotCreated,
 } from "@t3tools/client-runtime/errors";
 import { Atom } from "effect/reactivity";
+
 import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+
 import { readLocalApi } from "../../localApi";
-import { awaitAttachmentUploads, getUploadedAttachments } from "../../lib/attachmentUploadQueue";
 import {
-  findRevertCheckpoint,
-  waitForRevertedMessage,
-} from "@t3tools/client-runtime/state/thread-rewind";
-import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { environmentThreadDetails } from "../../state/threads";
+  getUploadedAttachments,
+  refreshExpiredAttachmentUploads,
+} from "../../lib/attachmentUploadQueue";
+import { findRevertCheckpoint } from "../../session-logic";
 import { type ChatMessage, DEFAULT_INTERACTION_MODE } from "../../types";
 import { randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -30,6 +31,7 @@ import { newThreadId } from "~/lib/utils";
 import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
+  type ComposerThreadTarget,
   useComposerDraftStore,
   DraftId,
 } from "../../composerDraftStore";
@@ -44,10 +46,10 @@ import {
   type ComposerSendSnapshot,
   readFileAsDataUrl,
   prepareRevertedMessageAttachments,
+  waitForRevertedMessage,
 } from "../ChatView.logic";
 import { readPreparedConnection } from "../../state/session";
-import { recallableComposerPrompt } from "./composerPromptHistory";
-import { t } from "~/i18n";
+import { recallComposerMessage } from "./composerPromptHistory";
 
 // Kept per route so a send in flight, and the multiple-model selections, survive
 // ChatView remounting while the user navigates.
@@ -90,7 +92,11 @@ export async function startFanoutThread(input: {
   try {
     if (uncertainThreadId) {
       throw new Error(
-        "The previous request may have started. Open its thread to check before sending again.",
+        t(
+          msg(
+            "The previous request may have started. Open its thread to check before sending again.",
+          ),
+        ),
       );
     }
     requestMayHaveStarted = true;
@@ -154,8 +160,8 @@ export async function startFanoutThread(input: {
 }
 
 /**
- * Reverts the thread to before `message` and puts that message's text and
- * attachments back in the composer draft. Returns the restored prompt, or the
+ * Reverts the thread to before `message` and puts that message's text, mentions
+ * and attachments back in the composer draft. Returns the restored prompt, or the
  * error to show; on error the draft is untouched.
  */
 export async function rewindToMessage(input: {
@@ -210,12 +216,11 @@ export async function rewindToMessage(input: {
       );
     }
     const commandId = CommandId.make(randomUUID());
-    await waitForRevertedMessage({
-      registry: appAtomRegistry,
-      threadAtom: environmentThreadDetails.stateAtom(input.routeThreadRef),
-      turnCount: input.turnCount,
-      requestId: commandId,
-      revert: async () => {
+    const unrestored = await waitForRevertedMessage(
+      input.routeThreadRef,
+      input.turnCount,
+      commandId,
+      async () => {
         const result = await input.revertThreadCheckpoint({
           environmentId,
           input: {
@@ -230,9 +235,21 @@ export async function rewindToMessage(input: {
         });
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       },
-    });
+    );
+    if (unrestored.length > 0) {
+      toastManager.add({
+        type: "warning",
+        title: t(msg("Some repositories were not rewound")),
+        description: tn(
+          unrestored.length,
+          "{repositories} had no snapshot from before these turns, so it keeps the changes. Check the uncommitted changes there.",
+          "{repositories} had no snapshot from before these turns, so they keep the changes. Check the uncommitted changes there.",
+          { repositories: unrestored.join(", ") },
+        ),
+      });
+    }
     const currentPrompt = store.getComposerDraft(draftTarget)?.prompt ?? "";
-    const restoredPrompt = recallableComposerPrompt(message.text);
+    const { prompt: restoredPrompt, mentions } = recallComposerMessage(message);
     const nextPrompt =
       restoredPrompt.length === 0
         ? currentPrompt
@@ -240,6 +257,11 @@ export async function rewindToMessage(input: {
           ? `${currentPrompt}\n\n${restoredPrompt}`
           : restoredPrompt;
     store.setPrompt(draftTarget, nextPrompt);
+    // The restored prompt already carries the chips; these add only their records.
+    store.addThreadContexts(draftTarget, mentions.threadContexts, { appendReference: false });
+    store.addEnvironmentContexts(draftTarget, mentions.environmentContexts, {
+      appendReference: false,
+    });
     const images: ComposerImageAttachment[] = [];
     const restoredFiles: ComposerFileAttachment[] = [];
     files.forEach((file, index) => {
@@ -264,26 +286,58 @@ export async function rewindToMessage(input: {
   }
 }
 
+function withRestored<T>(
+  existing: ReadonlyArray<T> | undefined,
+  restored: ReadonlyArray<T>,
+  key: (item: T) => string,
+): T[] {
+  const kept = existing ?? [];
+  return [...kept, ...restored.filter((item) => !kept.some((other) => key(other) === key(item)))];
+}
+
 /**
- * Writes a failed send's composer contents back into its draft. Returns the
- * restored images, which are fresh copies so their preview URLs outlive the
- * optimistic row that held the originals.
+ * Writes a failed send's composer contents back into its draft, after anything
+ * typed since. Returns the restored images, which are fresh copies so their
+ * preview URLs outlive the optimistic row that held the originals.
  */
 export function restoreComposerDraft(
   draftTarget: ScopedThreadRef | DraftId,
   snapshot: ComposerSendSnapshot,
 ): ComposerImageAttachment[] {
   const store = useComposerDraftStore.getState();
+  const current = store.getComposerDraft(draftTarget);
   const images = snapshot.images.map(cloneComposerImageForRetry);
-  store.setPrompt(draftTarget, snapshot.draftText);
-  store.setReplyTo(draftTarget, snapshot.replyTo);
+  store.setPrompt(
+    draftTarget,
+    current?.prompt.trim() ? `${current.prompt}\n\n${snapshot.draftText}` : snapshot.draftText,
+  );
+  store.setReplyTo(draftTarget, current?.replyTo ?? snapshot.replyTo);
   store.addImages(draftTarget, images);
   store.addFiles(draftTarget, snapshot.files);
-  store.setTerminalContexts(draftTarget, snapshot.terminalContexts);
-  store.setPreviewAnnotations(draftTarget, snapshot.previewAnnotations);
-  store.setReviewComments(draftTarget, snapshot.reviewComments);
-  store.setThreadContexts(draftTarget, snapshot.threadContexts);
-  store.setEnvironmentContexts(draftTarget, snapshot.environmentContexts);
+  store.setTerminalContexts(
+    draftTarget,
+    withRestored(current?.terminalContexts, snapshot.terminalContexts, (context) => context.id),
+  );
+  store.setPreviewAnnotations(
+    draftTarget,
+    withRestored(current?.previewAnnotations, snapshot.previewAnnotations, (entry) => entry.id),
+  );
+  store.setReviewComments(
+    draftTarget,
+    withRestored(current?.reviewComments, snapshot.reviewComments, (comment) => comment.id),
+  );
+  store.setThreadContexts(
+    draftTarget,
+    withRestored(current?.threadContexts, snapshot.threadContexts, (record) => record.contextId),
+  );
+  store.setEnvironmentContexts(
+    draftTarget,
+    withRestored(
+      current?.environmentContexts,
+      snapshot.environmentContexts,
+      (record) => record.contextId,
+    ),
+  );
   return images;
 }
 
@@ -307,7 +361,7 @@ export function resolveMultipleModelTargets(input: {
       (entry) => entry.instanceId === selection.instanceId,
     );
     if (!provider?.enabled || !provider.isAvailable || provider.status !== "ready") {
-      return { error: `Provider for ${selection.model} is unavailable.` };
+      return { error: t(msg("Provider for {model} is unavailable."), { model: selection.model }) };
     }
     const providerBlockReason = getAntigravitySendBlockReason(provider.snapshot, selection.model);
     if (providerBlockReason) return { error: providerBlockReason };
@@ -344,12 +398,17 @@ export function prepareTurnAttachments(input: {
   readonly environmentId: EnvironmentId;
   readonly attachments: ReadonlyArray<ComposerImageAttachment | ComposerFileAttachment>;
   readonly usesAttachmentUploads: boolean;
+  readonly draftTarget: ComposerThreadTarget;
 }) {
-  const { environmentId, usesAttachmentUploads } = input;
+  const { environmentId, usesAttachmentUploads, draftTarget } = input;
   return Promise.all(
     input.attachments.map(async (attachment) => {
       if (usesAttachmentUploads) {
-        await awaitAttachmentUploads([attachment.id]);
+        await refreshExpiredAttachmentUploads({
+          environmentId,
+          images: [attachment],
+          draftTarget,
+        });
         const uploaded = getUploadedAttachments({ environmentId, images: [attachment] })?.[0];
         if (!uploaded) {
           throw new Error(

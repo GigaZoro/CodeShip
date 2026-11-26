@@ -1,3 +1,4 @@
+import { type Message, msg, t, tx } from "~/i18n";
 import {
   type AuthMcpApprovalDecision,
   type AuthMcpApprovalDetails,
@@ -7,13 +8,14 @@ import {
   isRuntimeModeAbove,
   parseMcpApprovalCode,
 } from "@t3tools/contracts";
-import { managedRuntimeModeCeilingMessage } from "@t3tools/shared/managedPolicyMessages";
+import { managedRuntimeModeCeilingMessage } from "@t3tools/client-runtime/contract-labels";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { isLoopbackHost } from "@t3tools/shared/preview";
 import { EyeIcon, type LucideIcon } from "lucide-react";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+
 import { type ReactNode, useEffect, useState } from "react";
 
 import { PrimaryEnvironmentHttpClient } from "~/environments/primary/httpClient";
@@ -32,7 +34,6 @@ import { RadioGroup } from "../ui/radio-group";
 import { Spinner } from "../ui/spinner";
 import { StandalonePage, StandalonePageHeader } from "../ui/standalone-page";
 
-import { msg, t, tx, type Message } from "~/i18n";
 export const accessConfig: Record<
   AuthMcpClientAccess,
   { readonly label: Message; readonly description: Message; readonly icon: LucideIcon }
@@ -167,8 +168,9 @@ export function McpConsent({
     void transport.load(authorization).then((answer) => {
       if (cancelled) return;
       if (answer.kind === "redirect") {
-        if (!followRedirect(answer.url))
+        if (!followRedirect(answer.url)) {
           setLoaded({ status: "invalid", message: t(UNSAFE_REDIRECT) });
+        }
         return;
       }
       setLoaded(
@@ -262,32 +264,40 @@ export function McpConsent({
   return (
     <StandalonePage>
       <ConnectAgentHeading
-        title={t("Connect {clientName}", { clientName: details.clientName })}
-        description={tx("This agent wants to use the threads in every project on {host}.", {
-          host: (
-            <>
-              <span className="font-medium text-foreground">
-                {environmentLabel ?? details.environmentHost}
-              </span>
-              {environmentLabel ? ` (${details.environmentHost})` : null}
-            </>
-          ),
-        })}
+        title={t("Connect {app}", { app: details.clientName })}
+        description={
+          environmentLabel
+            ? tx(
+                "This agent wants to use the threads in every project on {environment} ({environmentHost}).",
+                {
+                  environment: (
+                    <span className="font-medium text-foreground">{environmentLabel}</span>
+                  ),
+                  environmentHost: details.environmentHost,
+                },
+              )
+            : tx("This agent wants to use the threads in every project on {host}.", {
+                host: (
+                  <span className="font-medium text-foreground">
+                    {environmentLabel ?? details.environmentHost}
+                  </span>
+                ),
+              })
+        }
       />
       <dl className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
         <dt className="text-muted-foreground">{t("App")}</dt>
         <dd className="min-w-0 break-words">
           {details.clientName}{" "}
-          <span className="text-muted-foreground">· {t("name set by the app")}</span>
+          <span className="text-muted-foreground">{t("· name set by the app")}</span>
         </dd>
         <dt className="text-muted-foreground">{t("Access goes to")}</dt>
         <dd className="min-w-0 break-words font-medium">
-          {details.redirectHost}
+          {details.redirectHost}{" "}
           <span className="font-normal text-muted-foreground">
-            {" "}
             {redirectsToThisComputer(details.redirectHost)
               ? t("on the computer that opened this page")
-              : `· ${t("whoever runs it gets this access")}`}
+              : t("· whoever runs it gets this access")}
           </span>
         </dd>
       </dl>
@@ -348,7 +358,7 @@ export function McpConsent({
                   key={option}
                   access={option}
                   selected={option === access}
-                  disabledReason={ceilingReason(details, option)}
+                  disabledReason={ceilingReason(details, option, t)}
                 />
               ))}
             </RadioGroup>
@@ -402,13 +412,17 @@ function ConnectAgentHeading({
 }
 
 /** Why a managed policy keeps `access` from being granted, or undefined when it may be. */
-function ceilingReason(details: AuthMcpApprovalDetails, access: AuthMcpClientAccess) {
+function ceilingReason(
+  details: AuthMcpApprovalDetails,
+  access: AuthMcpClientAccess,
+  resolve: typeof t,
+) {
   const ceiling = details.runtimeModeCeiling;
   return ceiling === undefined ||
     access === "read-only" ||
     !isRuntimeModeAbove(access, ceiling.maxRuntimeMode)
     ? undefined
-    : managedRuntimeModeCeilingMessage(ceiling.organization, ceiling.maxRuntimeMode);
+    : managedRuntimeModeCeilingMessage(ceiling.organization, ceiling.maxRuntimeMode, resolve);
 }
 
 /** One access level in a radio group; `description` replaces the level's own, null hides it. */

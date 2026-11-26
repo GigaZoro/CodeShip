@@ -1,3 +1,4 @@
+import { msg, t } from "~/i18n";
 import type { DeviceHostSummary, DevicePlatform } from "@t3tools/contracts";
 import {
   Camera,
@@ -18,6 +19,7 @@ import {
   MoonIcon,
   SunIcon,
 } from "lucide-react";
+
 import type { ReactNode } from "react";
 import { Button } from "~/components/ui/button";
 import {
@@ -33,7 +35,6 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import type { DeviceStreamHandle, DeviceViewControls } from "./DeviceStreamView";
 import type { DeviceControls } from "./useDeviceControls";
-import { t } from "~/i18n";
 
 export function DeviceControlsRail(props: {
   platform: DevicePlatform;
@@ -55,6 +56,7 @@ export function DeviceControlsRail(props: {
   const inputDisabled = !handle?.inputConnected;
   const runsHostCommands = props.hostKind === "local" || props.hostKind === "ssh";
   const nextAppearance = settings?.appearance === "dark" ? "light" : "dark";
+
   return (
     <aside
       aria-label={t("Device controls")}
@@ -135,9 +137,9 @@ export function DeviceControlsRail(props: {
             <RailButton
               tooltipSide={popupSide}
               label={
-                nextAppearance === "dark"
-                  ? t("Switch device to dark mode")
-                  : t("Switch device to light mode")
+                nextAppearance === "light"
+                  ? t("Switch device to light mode")
+                  : t("Switch device to dark mode")
               }
               disabled={controls.disabled || !settings?.appearance}
               onClick={() => void controls.act({ type: "setAppearance", value: nextAppearance })}
@@ -173,15 +175,15 @@ export function DeviceControlsRail(props: {
                 >
                   {(
                     [
-                      ["small", t("Small")],
-                      ["default", t("Default")],
-                      ["large", t("Large")],
-                      ["extra-large", t("Extra large")],
+                      ["small", msg("Small")],
+                      ["default", msg("Default")],
+                      ["large", msg("Large")],
+                      ["extra-large", msg("Extra large")],
                     ] as const
                   ).map(([value, label]) => (
                     <MenuRadioItem key={value} value={value}>
                       <span className="flex items-center gap-2">
-                        <span className="flex-1">{label}</span>
+                        <span className="flex-1">{t(label)}</span>
                         <MenuRadioItemIndicator />
                       </span>
                     </MenuRadioItem>

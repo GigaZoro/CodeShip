@@ -6,6 +6,7 @@ import {
   htmlRenderFrameHeight,
   type HtmlRenderReference,
 } from "@t3tools/shared/htmlRender";
+
 import { Maximize2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -15,11 +16,24 @@ import { useLongLivedAssetUrl } from "~/assets/longLivedAssetUrls";
 import { HtmlRenderDocument } from "../files/BrowserDocumentFrame";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { HtmlRenderDialog } from "./HtmlRenderDialog";
 import { observeResize } from "~/lib/observeResize";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const MIN_URL_LIFE_MS = 5 * 60_000;
+const MAX_MEASURED_CONTENT_HEIGHTS = 200;
+
+// The height each render's page last reported, so a remounted frame opens at it before its page loads.
+const measuredContentHeights = new Map<string, number>();
+
+function rememberContentHeight(attachmentId: string, height: number) {
+  measuredContentHeights.delete(attachmentId);
+  measuredContentHeights.set(attachmentId, height);
+  if (measuredContentHeights.size > MAX_MEASURED_CONTENT_HEIGHTS) {
+    const oldest = measuredContentHeights.keys().next().value;
+    if (oldest !== undefined) measuredContentHeights.delete(oldest);
+  }
+}
 
 export function HtmlRenderFrame(props: {
   readonly environmentId: EnvironmentId;
@@ -36,7 +50,9 @@ export function HtmlRenderFrame(props: {
     });
   };
   // Client fonts can exceed the server-measured height and cause nested scrolling.
-  const [contentHeight, setContentHeight] = useState<number>();
+  const [contentHeight, setContentHeight] = useState(() =>
+    measuredContentHeights.get(attachmentId),
+  );
   const height = htmlRenderFrameHeight(props.htmlRender, width, contentHeight);
   const fileName = htmlRenderFileName(title);
   const resource = {
@@ -76,37 +92,40 @@ export function HtmlRenderFrame(props: {
             title={title}
             threadRef={props.threadRef}
             className="block size-full"
-            onContentHeight={setContentHeight}
+            containScroll
+            onContentHeight={(height) => {
+              rememberContentHeight(attachmentId, height);
+              setContentHeight(height);
+            }}
             onFullscreenChange={onFullscreenChange}
           />
           <div className="absolute end-2 top-2 flex gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/html-render:opacity-100 pointer-coarse:opacity-100">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    aria-label={t("Open full screen")}
-                    size="icon-xs"
-                    variant="glass"
-                    onClick={async () => {
-                      const url =
-                        loaded !== null && loaded.expiresAt - Date.now() > MIN_URL_LIFE_MS
-                          ? src
-                          : await refresh().catch(() => null);
-                      if (url !== null) setExpandedSrc(url);
-                      else
-                        toastManager.add({
-                          type: "error",
-                          title: t("Page unavailable"),
-                          description: t("Reconnect to the environment and try again."),
-                        });
-                    }}
-                  />
-                }
-              >
-                <Maximize2Icon className="size-3.5" />
-              </TooltipTrigger>
-              <TooltipPopup side="left">{t("Open full screen")}</TooltipPopup>
-            </Tooltip>
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  aria-label={t("Open full screen")}
+                  size="icon-xs"
+                  variant="glass"
+                  onClick={async () => {
+                    const url =
+                      loaded !== null && loaded.expiresAt - Date.now() > MIN_URL_LIFE_MS
+                        ? src
+                        : await refresh().catch(() => null);
+                    if (url !== null) setExpandedSrc(url);
+                    else
+                      toastManager.add({
+                        type: "error",
+                        title: t("Page unavailable"),
+                        description: t("Reconnect to the environment and try again."),
+                      });
+                  }}
+                />
+              }
+              label={<>{t("Open full screen")}</>}
+              side="left"
+            >
+              <Maximize2Icon className="size-3.5" />
+            </SharedTooltipTrigger>
           </div>
           {expandedSrc !== null ? (
             <HtmlRenderDialog

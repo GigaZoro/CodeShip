@@ -1,5 +1,6 @@
+import { t, msg } from "~/i18n";
 import { useStableCallback } from "~/hooks/useStableCallback";
-import { t } from "~/i18n";
+
 import {
   listBrowserMicrophones,
   updateMicrophoneOrder,
@@ -12,7 +13,7 @@ import type {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { CircleAlertIcon, MicIcon, RefreshCwIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../../speech/microphoneOrder";
 import { useEnvironment } from "../../state/environments";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
+import { speechModelDownloadPercent } from "@t3tools/shared/speech";
 import { useEnvironmentScope } from "../../state/session";
 import { languageLabel } from "../settings/SpeechLanguageSelect";
 import { Button } from "../ui/button";
@@ -48,20 +50,26 @@ export function VoiceInputSetup(props: {
 }) {
   const navigate = useNavigate();
   const environment = useEnvironment(props.environmentId);
+  const languageName = props.language ? languageLabel(props.language) : null;
   const canManage = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
   const order = useClientSettings(microphoneOrder);
   const [microphones, setMicrophones] = useState<BrowserMicrophone[]>([]);
   const selectedMicrophone = preferredMicrophoneId(order, microphones);
   const [loadingMicrophones, setLoadingMicrophones] = useState(false);
   const [microphoneError, setMicrophoneError] = useState<string | null>(null);
+  const microphoneRefreshId = useRef(0);
   const refreshMicrophones = useStableCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
+    const requestId = ++microphoneRefreshId.current;
     setLoadingMicrophones(true);
-    try {
-      setMicrophones(await listBrowserMicrophones());
+    const devices = await listBrowserMicrophones().catch(() => null);
+    if (requestId !== microphoneRefreshId.current) return;
+
+    if (devices === null) {
+      setMicrophoneError(t(msg("Couldn’t list microphones. The system default still works.")));
+    } else {
+      setMicrophones(devices);
       setMicrophoneError(null);
-    } catch {
-      setMicrophoneError(t("Couldn’t list microphones. The system default still works."));
     }
     setLoadingMicrophones(false);
   });
@@ -83,13 +91,13 @@ export function VoiceInputSetup(props: {
   const status = props.status?.supported ? props.status : null;
   const model = props.model;
   const progress =
-    model?.downloaded === undefined ? null : Math.round((model.downloaded / model.size) * 100);
+    model?.downloaded === undefined
+      ? null
+      : speechModelDownloadPercent(model.downloaded, model.size);
   const openSettings = (hash: string) => {
     props.onOpenChange(false);
     void navigate({ to: "/settings/voice", hash });
   };
-
-  const destination = environment?.label ?? t("your transcription environment");
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -98,9 +106,13 @@ export function VoiceInputSetup(props: {
           title={props.step === 0 ? t("Set up voice input") : t("Voice input is ready")}
           description={
             props.step === 0
-              ? t("Download a speech model once. Your audio is transcribed on {destination}.", {
-                  destination,
-                })
+              ? environment?.label != null
+                ? t("Download a speech model once. Your audio is transcribed on {destination}.", {
+                    destination: environment.label,
+                  })
+                : t(
+                    "Download a speech model once. Your audio is transcribed on your transcription environment.",
+                  )
               : t("Pick a microphone, then start talking.")
           }
         />
@@ -116,9 +128,9 @@ export function VoiceInputSetup(props: {
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {model.recommended && props.language
+                    {model.recommended && languageName
                       ? t("Recommended for {language}. Includes a 1.2 MB silence detector.", {
-                          language: languageLabel(props.language),
+                          language: languageName,
                         })
                       : t("Includes a 1.2 MB silence detector.")}
                   </p>

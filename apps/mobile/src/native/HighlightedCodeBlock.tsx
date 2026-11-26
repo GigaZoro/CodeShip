@@ -5,8 +5,8 @@ import type { MarkdownStyle } from "react-native-enriched-markdown";
 import { Menu } from "../components/ui/Menu";
 import { useMarkdownCodeHighlight } from "../features/threads/markdownCodeHighlightState";
 import { copyTextWithHaptic } from "../lib/copyTextWithHaptic";
-import type { HighlightScheme } from "../lib/highlights";
 import { msg, t } from "../lib/i18n";
+import { type HighlightScheme, withTokenStarts } from "../lib/highlights";
 import { CodeBlockFrame, CodeBlockHeaderButton } from "./CodeBlockFrame";
 import { fencedCodeMarkdown } from "./codeBlockMarkdown";
 import type { NativeMarkdownTextStyle } from "./SelectableMarkdownText.types";
@@ -59,7 +59,6 @@ export function HighlightedCodeBlock(props: {
     [],
   );
   const fence = props.fence.toLowerCase();
-  let offset = 0;
   const text = (
     // Not selectable: as in the native block, a long-press opens the copy menu instead.
     <Text
@@ -70,14 +69,11 @@ export function HighlightedCodeBlock(props: {
         lineHeight: codeStyle.lineHeight,
       }}
     >
-      {lines?.flatMap((line, lineIndex) => {
+      {(lines ? withTokenStarts(lines) : undefined)?.flatMap((line, lineIndex) => {
         const separator = lineIndex > 0 ? "\n" : "";
-        offset += separator.length;
         return [
           separator,
-          ...line.map((token) => {
-            const start = offset;
-            offset += token.content.length;
+          ...line.map(({ token, start }) => {
             return (
               <Text key={start} style={token.color ? { color: token.color } : undefined}>
                 {token.content}

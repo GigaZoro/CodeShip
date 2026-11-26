@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { resolveTimelineMinimapPreview, type TimelineMinimapItem } from "./timelineMinimapItems";
 import { useRef, useState, type MouseEvent } from "react";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
@@ -11,7 +12,6 @@ import {
 } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-import { t } from "~/i18n";
 
 // A release outside the window can skip `mouseup`, so the next button-free
 // `mousemove` also counts.
@@ -32,7 +32,7 @@ function onMouseButtonsReleased(onRelease: () => void): () => void {
 
 export function TimelineMinimap({
   hasPersistentGutter,
-  hitStripWidth,
+  hitStrip: { left: hitStripLeft, width: hitStripWidth },
   currentIndex,
   atEnd,
   items,
@@ -41,7 +41,7 @@ export function TimelineMinimap({
   onSelect,
 }: {
   hasPersistentGutter: boolean;
-  hitStripWidth: number;
+  hitStrip: { left: number; width: number };
   currentIndex: number | null;
   atEnd: boolean;
   items: ReadonlyArray<TimelineMinimapItem>;
@@ -106,7 +106,7 @@ export function TimelineMinimap({
   return (
     <div
       className={cn(
-        "group/minimap pointer-events-none absolute inset-y-0 left-0 z-40 w-18",
+        "group/minimap pointer-events-none absolute bottom-0 left-0 top-[calc(-1*var(--chat-header-height,0px))] z-40 w-18",
         hasPersistentGutter
           ? "opacity-100"
           : "hidden opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 [@media(pointer:fine)]:block",
@@ -118,7 +118,7 @@ export function TimelineMinimap({
       <div className="relative h-full w-full select-none">
         <div
           className={cn(
-            "absolute top-1/2 left-3 -translate-y-1/2",
+            "absolute top-1/2 -translate-y-1/2",
             hitStripWidth > 0 && !passThrough ? "pointer-events-auto" : "pointer-events-none",
           )}
           onMouseDown={() => {
@@ -135,6 +135,7 @@ export function TimelineMinimap({
           }}
           style={{
             height: resolveTimelineMinimapHeightStyle(items.length),
+            left: hitStripLeft,
             width: hitStripWidth,
           }}
         >
@@ -189,7 +190,6 @@ export function TimelineMinimap({
             onMouseDown={(event) => event.preventDefault()}
             type="button"
           >
-            <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
             {items.map((item, index) => {
               const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
               const activeDistance =

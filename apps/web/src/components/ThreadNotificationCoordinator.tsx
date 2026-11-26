@@ -1,5 +1,6 @@
+import { t, msg } from "~/i18n";
 import { shouldNotifyThread } from "@t3tools/shared/threadNotifications";
-import { t } from "~/i18n";
+
 import {
   type EnvironmentThreadShell,
   type PendingSubagentRequest,
@@ -231,7 +232,7 @@ export function startThreadNotifications(
             ),
         },
         actionProps: {
-          children: t("Open thread"),
+          children: t(msg("Open thread")),
           onClick: () => {
             toastManager.close(toastId);
             void router.navigate({
@@ -475,6 +476,8 @@ export function startThreadNotifications(
       });
     }
     if (hasNotificationSound(nextMode)) {
+      // Electron's default autoplay policy needs no gesture, unlike browsers.
+      if (window.desktopBridge) unlockNotificationAudio();
       document.addEventListener("pointerdown", unlockNotificationAudio);
       document.addEventListener("keydown", unlockNotificationAudio);
       stops.push(() => {

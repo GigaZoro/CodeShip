@@ -1,5 +1,7 @@
+import { t, msg } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentId, PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
+import { connectionErrorText } from "@t3tools/client-runtime/connection";
+import { PROVIDER_DISPLAY_NAMES, type EnvironmentId } from "@t3tools/contracts";
 
 import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
@@ -33,7 +35,6 @@ import {
   waitForUpdateRestart,
 } from "./updateEverythingRun";
 
-import { t } from "~/i18n";
 const UPDATE_RESTART_DELAY_MS = 5_000;
 
 /** Servers this desktop app runs; they update with it. */
@@ -56,6 +57,7 @@ export function useUpdateEverything(
 ) {
   const targetVersion = localUpdateVersion ?? APP_VERSION;
   const { environments } = useEnvironments();
+
   const environmentIds = environmentIdsKey(environments.map(({ environmentId }) => environmentId));
   const sessionStates = useAtomValue(environmentSessionStatesAtom(environmentIds));
   const updateStates = useAtomValue(environmentUpdateStatesAtom(environmentIds));
@@ -64,13 +66,15 @@ export function useUpdateEverything(
     label: environment.label,
     serverConfig: environment.serverConfig,
     connected: environment.connection.phase === "connected",
+    connectionError: connectionErrorText(environment.connection, t),
+    turnedOff: !environment.entry.enabled,
     hostedByThisApp: isHostedByThisApp(environment),
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
   const { targets: servers, skipped } = channelSwitch
-    ? collectChannelSwitchTargets(machines, channelSwitch)
-    : collectServerUpdateTargets(machines, targetVersion);
+    ? collectChannelSwitchTargets(machines, channelSwitch, t)
+    : collectServerUpdateTargets(machines, targetVersion, t);
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
   const restarts = collectRestartingMachines(machines, moving, localUpdateVersion !== null);
@@ -82,22 +86,26 @@ export function useUpdateEverything(
     reportFailure: false,
   });
 
-  const view = describeUpdateEverything({
-    localVersion: localUpdateVersion,
-    localMachines: machines.filter((machine) => machine.hostedByThisApp),
-    servers: moving,
-    skipped,
-    providerMachines: providers.machines.map((machine) => ({
-      environmentId: machine.environmentId,
-      label: machine.label,
-      providers: machine.candidates.map(
-        (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
-      ),
-    })),
-  });
+  const view = describeUpdateEverything(
+    {
+      localVersion: localUpdateVersion,
+      localMachines: machines.filter((machine) => machine.hostedByThisApp),
+      servers: moving,
+      skipped,
+      providerMachines: providers.machines.map((machine) => ({
+        environmentId: machine.environmentId,
+        label: machine.label,
+        providers: machine.candidates.map(
+          (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
+        ),
+      })),
+    },
+    t,
+  );
 
   return {
     hasUpdates: servers.length > 0 || providers.machines.length > 0,
+    machines,
     ...view,
     restarts,
     run: async ({
@@ -166,7 +174,7 @@ export function useUpdateEverything(
                   run.environmentId,
                   runOutcome.status === "failed"
                     ? runOutcome.line
-                    : t("Provider update interrupted"),
+                    : t(msg("Provider update interrupted")),
                 );
               }
               return runOutcome;

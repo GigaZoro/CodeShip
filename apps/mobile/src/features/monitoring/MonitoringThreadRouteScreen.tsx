@@ -12,13 +12,14 @@ import {
 } from "@t3tools/client-runtime/monitoring-text";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
-import { RefreshControl, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { RefreshControl } from "../../components/ui/RefreshControl";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { msg, t, tn } from "../../lib/i18n";
 import { refreshMonitoringThread, useMonitoringRefresh } from "../../state/monitoring";

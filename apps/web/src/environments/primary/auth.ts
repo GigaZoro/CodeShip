@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import type {
   AuthBrowserSessionResult,
   AuthClientMetadata,
@@ -7,7 +9,7 @@ import type {
   AuthSessionId,
   AuthSessionState,
 } from "@t3tools/contracts";
-import { t } from "~/i18n";
+
 import { EnvironmentHttpCommonError, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -62,7 +64,10 @@ export class PrimaryEnvironmentRequestError extends Schema.TaggedError<PrimaryEn
   }
 
   override get message(): string {
-    return `Primary environment request failed during ${this.operation} (HTTP ${this.status}).`;
+    return t("Primary environment request failed during {operation} (HTTP {status}).", {
+      operation: this.operation,
+      status: this.status,
+    });
   }
 }
 
@@ -152,7 +157,7 @@ export function stripPairingTokenFromUrl() {
   if (next.toString() === url.toString()) {
     return;
   }
-  window.history.replaceState({}, document.title, next.toString());
+  window.history.replaceState(window.history.state, document.title, next.toString());
 }
 
 export function takePairingTokenFromUrl(): string | null {
@@ -331,7 +336,7 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
     return {
       status: "requires-auth",
       auth: currentSession.auth,
-      errorMessage: error instanceof Error ? error.message : t("Authentication failed."),
+      errorMessage: thrownErrorMessage(error, t) ?? t("Authentication failed."),
     };
   }
 }

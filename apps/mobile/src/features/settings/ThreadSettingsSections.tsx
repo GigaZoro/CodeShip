@@ -15,6 +15,7 @@ import {
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { Menu } from "../../components/ui/Menu";
 import {
+  type AgentFeedbackMode,
   AuthSettingsWriteScope,
   isManagedSettingPath,
   type ServerSettingsPatch,
@@ -24,17 +25,20 @@ import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoi
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { AutoSettleDaysField } from "./components/AutoSettleDaysField";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import type { ComponentProps } from "react";
 import { View } from "react-native";
 import { useState } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { SettingsScreen } from "./components/SettingsScreen";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 import { AppText as Text } from "../../components/ui/AppText";
 import { useEnvironments } from "../../state/environments";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "./components/SettingsSection";
@@ -332,7 +336,7 @@ export function ThreadGroupingSettingsSection() {
 }
 
 export function WorkingSectionSettings() {
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const preferences = useAtomValue(mobilePreferencesAtom);
   const workingShelfEnabled =
     AsyncResult.isSuccess(preferences) && preferences.value.workingShelfEnabled !== false;
@@ -344,7 +348,9 @@ export function WorkingSectionSettings() {
           icon="bolt.circle"
           label={t("Working section")}
           value={workingShelfEnabled}
-          onValueChange={(value) => savePreferences({ workingShelfEnabled: value })}
+          onValueChange={(value) => {
+            void savePreferences({ workingShelfEnabled: value });
+          }}
         />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
@@ -431,7 +437,7 @@ export function ScheduledTaskPlacementSettings() {
 }
 
 export function NewThreadSettingsSection() {
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const preferences = useAtomValue(mobilePreferencesAtom);
   const useLastProject =
     AsyncResult.isSuccess(preferences) && preferences.value.useLastProjectForNewThreads !== false;
@@ -443,13 +449,97 @@ export function NewThreadSettingsSection() {
         label={t("Use last project")}
         subtitle={t("Start new threads in the last project you used on this device.")}
         value={useLastProject}
-        onValueChange={(value) => savePreferences({ useLastProjectForNewThreads: value })}
+        onValueChange={(value) => {
+          void savePreferences({ useLastProjectForNewThreads: value });
+        }}
       />
     </SettingsSection>
   );
 }
 
 type MachineBetaSetting = "linkedEnvironmentsEnabled" | "fastWorktreeCheckout";
+
+const AGENT_FEEDBACK_CHOICES: ReadonlyArray<{
+  readonly mode: AgentFeedbackMode;
+  readonly label: Message;
+  readonly description: Message;
+}> = [
+  { mode: "off", label: msg("Off"), description: msg("Agents send no feedback to the T3 team.") },
+  {
+    mode: "on-request",
+    label: msg("When I ask"),
+    description: msg("When you ask, you see a short report and send it if you approve."),
+  },
+  {
+    mode: "auto",
+    label: msg("Automatic"),
+    description: msg("Agents also report T3 Code problems they hit on their own."),
+  },
+];
+
+/** One choice list per connected machine that offers it, since each machine's own setting decides. */
+function AgentFeedbackSection() {
+  const { environments } = useEnvironments();
+  const supported = environments.filter(
+    (environment) =>
+      environment.connection.phase === "connected" &&
+      environment.serverConfig?.environment.capabilities.agentFeedback === true,
+  );
+  const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    label: "agentFeedback beta update",
+    reportFailure: true,
+  });
+  if (supported.length === 0) return null;
+  return (
+    <View className="gap-3">
+      {supported.map((environment) => {
+        const policy = environment.serverConfig?.managedPolicy;
+        const managed = isManagedSettingPath(policy, "agentFeedback");
+        const mode = environment.serverConfig?.settings.agentFeedback?.mode;
+        return (
+          <SettingsSection
+            key={environment.environmentId}
+            title={
+              supported.length === 1
+                ? t("Beta: Agent feedback")
+                : t("Beta: Agent feedback · {label}", { label: environment.label })
+            }
+            {...(managed
+              ? {
+                  footer: t("Managed by {organization}.", {
+                    organization: policy?.organization ?? "",
+                  }),
+                }
+              : {})}
+          >
+            {AGENT_FEEDBACK_CHOICES.map((choice, index) => (
+              <SettingsChoiceRow
+                key={choice.mode}
+                label={t(choice.label)}
+                description={t(choice.description)}
+                selected={mode === choice.mode}
+                separated={index > 0}
+                disabled={managed || !writable.has(environment.environmentId)}
+                onPress={() =>
+                  void updateSettings({
+                    environmentId: environment.environmentId,
+                    input: { patch: { agentFeedback: { mode: choice.mode } } },
+                  })
+                }
+              />
+            ))}
+          </SettingsSection>
+        );
+      })}
+      <Text className="px-2 text-sm text-foreground-muted">
+        {t(
+          "Reports go to the T3 team. A report you ask for is shown to you first in a card, with an outline of recent turns. Turn on Include the conversation there to add the messages of the turns the report is about.",
+        )}
+      </Text>
+    </View>
+  );
+}
 
 /** One switch per connected machine that offers the beta, since each machine's own setting decides. */
 function MachineBetaSection({
@@ -517,7 +607,26 @@ function MachineBetaSection({
   );
 }
 
-export function LinkedEnvironmentsSettingsSection() {
+export function SettingsLabsRouteScreen() {
+  const insets = useSafeAreaInsets();
+  return (
+    <SettingsScreen title={t("Labs")}>
+      <ScreenScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        <LinkedEnvironmentsSettingsSection />
+        <FastWorktreeCheckoutSettingsSection />
+        <AgentFeedbackSection />
+      </ScreenScrollView>
+    </SettingsScreen>
+  );
+}
+
+function LinkedEnvironmentsSettingsSection() {
   return (
     <MachineBetaSection
       title={msg("Linked environments")}
@@ -531,7 +640,7 @@ export function LinkedEnvironmentsSettingsSection() {
   );
 }
 
-export function FastWorktreeCheckoutSettingsSection() {
+function FastWorktreeCheckoutSettingsSection() {
   return (
     <MachineBetaSection
       title={msg("Fast worktree checkout")}

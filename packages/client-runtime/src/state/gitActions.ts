@@ -1,3 +1,4 @@
+import { t } from "@t3tools/shared/i18n";
 import type {
   GitActionProgressPhase,
   GitActionProgressStep,
@@ -8,7 +9,6 @@ import type {
   VcsStatusResult,
 } from "@t3tools/contracts";
 import { type ChangeRequestTerminology, sourceControlClients } from "../sourceControlClients.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export type GitActionIconName = "commit" | "push" | "pull" | "pr";
 

@@ -33,8 +33,6 @@ const SETTINGS_SEARCH_TERMS = {
     msg("work log"),
     msg("zen"),
     msg("final answers only"),
-    msg("language"),
-    msg("translation"),
   ],
   SettingsNavigation: [msg("tabs"), msg("tab order"), msg("reorder"), msg("hide tabs")],
   SettingsKeyboard: [
@@ -116,6 +114,10 @@ const SETTINGS_SEARCH_TERMS = {
     msg("working section"),
     msg("new threads"),
     msg("last project"),
+    msg("language"),
+    msg("locale"),
+    msg("translation"),
+    msg("english"),
   ],
   SettingsThreads: [
     msg("new threads"),
@@ -163,20 +165,30 @@ const SETTINGS_SEARCH_TERMS = {
     msg("automatically pull"),
     msg("clone into host folders"),
     msg("ghq"),
+  ],
+  SettingsEnvironmentMaintenance: [
+    msg("updates"),
+    msg("provider updates"),
+    msg("manage environments"),
+    msg("about"),
+  ],
+  SettingsArchive: [msg("archive"), msg("archived"), msg("restore"), msg("unarchive")],
+  SettingsWorktrees: [
     msg("worktree"),
     msg("branch naming"),
     msg("branch prefix"),
     msg("submodules"),
     msg("start from remote"),
   ],
-  SettingsEnvironmentMaintenance: [
-    msg("updates"),
-    msg("provider updates"),
-    msg("manage environments"),
+  SettingsLabs: [
+    msg("beta"),
     msg("linked environments"),
     msg("link machine"),
-    msg("beta"),
-    msg("about"),
+    msg("fast worktree checkout"),
+    msg("clone cache"),
+    msg("agent feedback"),
+  ],
+  SettingsAbout: [
     msg("version"),
     msg("diagnostics"),
     msg("client storage"),
@@ -186,6 +198,7 @@ const SETTINGS_SEARCH_TERMS = {
     msg("terms"),
     msg("open source licenses"),
   ],
+  SettingsLanguage: [msg("language"), msg("locale"), msg("translation"), msg("english")],
 } satisfies Partial<Record<SettingsPageTarget | "account", readonly Message[]>>;
 const termsById: ReadonlyMap<string, readonly Message[]> = new Map(
   Object.entries(SETTINGS_SEARCH_TERMS),

@@ -22,7 +22,10 @@ const tableNames = Effect.gen(function* () {
     WHERE type = 'table'
       AND name GLOB 'orchestration_*'
       AND name NOT GLOB '*_search*'
-      AND name <> 'orchestration_v2_projection_turn_item_counts'
+      AND name NOT IN (
+        'orchestration_v2_projection_turn_item_counts',
+        'orchestration_v2_projection_thread_item_counts'
+      )
     ORDER BY name
   `;
   return tables.map((table) => table.name);

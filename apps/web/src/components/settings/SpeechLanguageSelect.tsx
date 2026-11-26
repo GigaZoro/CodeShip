@@ -12,7 +12,13 @@ type ModelLanguages = Pick<
   "languages" | "supportsLanguageDetection"
 >;
 
-export function SpeechLanguageSelect({ model }: { readonly model: ModelLanguages | null }) {
+export function SpeechLanguageSelect({
+  model,
+  automaticLabel,
+}: {
+  readonly model: ModelLanguages | null;
+  readonly automaticLabel?: string | undefined;
+}) {
   const preference = useClientSettings((settings) => settings.speechLanguage);
   const languages = model?.languages ?? [];
   const resolved = model
@@ -21,7 +27,8 @@ export function SpeechLanguageSelect({ model }: { readonly model: ModelLanguages
         preference,
       )
     : preference;
-  const effectiveLabel = resolved === "auto" ? t("Auto-detect") : languageLabel(resolved);
+  const effectiveLabel =
+    resolved === "auto" ? (automaticLabel ?? t("Auto-detect")) : languageLabel(resolved);
   const unavailable =
     preference !== "auto" && preference !== resolved
       ? t("{language} unavailable", { language: languageLabel(preference) })

@@ -1,3 +1,5 @@
+import { t } from "~/i18n";
+
 import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
 import { useSyncExternalStore } from "react";
 
@@ -37,6 +39,7 @@ export function usePullRequestFilesViewed(options: {
   const { environmentId, reference, enabled } = options;
   const query = useEnvironmentQuery(
     enabled ? pullRequestEnvironment.filesViewed({ environmentId, input: reference }) : null,
+    t,
   );
   const states = toFileViewedStates(query.data);
   // Stable per scope: `setViewed` is handed to every file header the viewer draws.

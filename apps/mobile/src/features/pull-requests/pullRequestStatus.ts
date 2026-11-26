@@ -6,6 +6,7 @@ import type {
   PullRequestListEntry,
   PullRequestMergeability,
 } from "@t3tools/contracts";
+
 import type { AppSymbolName } from "../../components/ui/AppSymbol";
 import { PullRequestGlyph } from "./pullRequestGlyphs";
 import { t, tn, msg } from "../../lib/i18n";
@@ -106,7 +107,7 @@ export function pullRequestChecksSummary(pr: Pick<PullRequestDetail, "checks">) 
   const count = pr.checks.length
     ? t("{passed} of {total}", { passed, total: pr.checks.length })
     : undefined;
-  if (failed)
+  if (failed) {
     return {
       label: tn(failed, "{count} check failing", "{count} checks failing"),
       title: tn(failed, "{count} check failing", "{count} checks failing"),
@@ -114,9 +115,10 @@ export function pullRequestChecksSummary(pr: Pick<PullRequestDetail, "checks">) 
       icon: "exclamationmark.circle",
       tint: "accent-danger-foreground",
     } as const;
+  }
   if (required)
     return {
-      label: t("{count} need attention", { count: required }),
+      label: tn(required, "{count} needs attention", "{count} need attention"),
       title: t("Checks need attention"),
       count: t("{count} awaiting action", { count: required }),
       icon: "exclamationmark.circle",
@@ -175,17 +177,20 @@ export function pullRequestReviewSummary(
     if (!previous || Date.parse(review.createdAt) >= Date.parse(previous.createdAt))
       latest.set(key, { ...review, reviewState: state });
   }
-  const reviews = [
-    ...[...latest.values()].filter((review) => review.reviewState !== "DISMISSED"),
-    ...[...comments.entries()].filter(([key]) => !latest.has(key)).map(([, review]) => review),
-  ];
-  const requested = reviews.filter((review) => review.reviewState === "CHANGES_REQUESTED");
   const newestCommit = Math.max(
     0,
     ...(activity?.commits.map((commit) => Date.parse(commit.committedDate)) ?? []),
   );
+  const reviews = [
+    ...[...latest.values()].filter((review) => review.reviewState !== "DISMISSED"),
+    ...[...comments.entries()].filter(([key]) => !latest.has(key)).map(([, review]) => review),
+  ].map((review) => ({
+    ...review,
+    outdated: review.reviewState === "APPROVED" && Date.parse(review.createdAt) < newestCommit,
+  }));
+  const requested = reviews.filter((review) => review.reviewState === "CHANGES_REQUESTED");
   const approved = reviews.filter(
-    (review) => review.reviewState === "APPROVED" && Date.parse(review.createdAt) >= newestCommit,
+    (review) => review.reviewState === "APPROVED" && !review.outdated,
   );
   if (requested.length)
     return {

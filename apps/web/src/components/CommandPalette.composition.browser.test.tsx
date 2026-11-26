@@ -12,10 +12,13 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { useActiveThreadPaletteItems } from "./CommandPaletteThreadActions";
 import { Atom } from "effect/reactivity";
 import { environmentThreadShells } from "../state/threads";
+import { sourceControlEnvironment } from "../state/sourceControl";
+import { AsyncResult } from "effect/reactivity";
 
 const scopes = vi.hoisted(() => ({
   denied: undefined as string | undefined,
   sourceControl: undefined as unknown,
+  lookupRepository: vi.fn(),
 }));
 const setup = (deniedScope?: string, sourceControl?: unknown) => {
   scopes.denied = deniedScope;
@@ -129,7 +132,11 @@ vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => async () => ({ _tag: "Success", value: { projectId: "project-cloned" } }),
 }));
 vi.mock("../state/use-atom-query-runner", () => ({
-  useAtomQueryRunner: () => async () => ({ _tag: "Success", value: undefined }),
+  // Doubles as the add-project folder scan, which finds nothing to track.
+  useAtomQueryRunner: (family: unknown) =>
+    family === sourceControlEnvironment.repository
+      ? scopes.lookupRepository
+      : async () => ({ _tag: "Success", value: { folders: [] } }),
 }));
 vi.mock("../state/environments", async (original) => ({
   ...(await original<typeof import("../state/environments")>()),
@@ -325,4 +332,32 @@ it.each([
   expect(screen.getByText("Color: None").query() !== null).toBe(
     options.canSet && options.threadColor,
   );
+});
+
+it("keeps the source list visible after a dismissed repository lookup succeeds", async () => {
+  setup(undefined, githubAvailable);
+  const repository = AsyncResult.success({
+    provider: "github",
+    nameWithOwner: "example/slow",
+    url: "https://github.com/example/slow",
+    sshUrl: "git@github.com:example/slow.git",
+  });
+  const lookup = Promise.withResolvers<typeof repository>();
+  scopes.lookupRepository.mockReset().mockReturnValue(lookup.promise);
+  await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+  await act(() => openCommandPalette({ open: "add-project" }));
+  await page.getByRole("option", { name: /^GitHub repository/ }).click();
+  await page.getByRole("combobox").fill("example/slow");
+  await userEvent.keyboard("{Enter}");
+  expect(scopes.lookupRepository).toHaveBeenCalledOnce();
+  await page.getByRole("combobox").fill("");
+  await userEvent.keyboard("{Backspace}");
+  const sources = page.getByText("Git URL", { exact: true });
+  await expect.element(sources).toBeVisible();
+
+  await act(async () => {
+    lookup.resolve(repository);
+    await lookup.promise;
+  });
+  expect(sources.element()).toBeVisible();
 });

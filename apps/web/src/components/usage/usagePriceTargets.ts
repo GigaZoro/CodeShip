@@ -1,9 +1,9 @@
+import { t } from "~/i18n";
 import type {
   EnvironmentId,
   ServerSettingsPatch,
   UsageModelPriceOverride,
 } from "@t3tools/contracts";
-import { t } from "~/i18n";
 
 export interface UsagePriceTarget {
   readonly environmentId: EnvironmentId;

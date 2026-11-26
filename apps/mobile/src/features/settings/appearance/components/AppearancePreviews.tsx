@@ -40,7 +40,7 @@ export function TextAppearancePreview(props: { readonly fontSize: number }) {
   );
 }
 
-/* oxlint-disable t3code/no-untranslated-text -- sample terminal output */
+/* oxlint-disable t3code/no-untranslated-text, t3code/no-untranslated-copy -- sample terminal output */
 export function TerminalAppearancePreview(props: { readonly fontSize: number }) {
   const { themeAppearance: scheme, themeId } = useAppearancePreferences();
   const theme = getMobileTerminalTheme(themeId, scheme);
@@ -94,7 +94,7 @@ export function TerminalAppearancePreview(props: { readonly fontSize: number }) 
   );
 }
 
-/* oxlint-enable t3code/no-untranslated-text */
+/* oxlint-enable t3code/no-untranslated-text, t3code/no-untranslated-copy */
 
 interface CodePreviewToken {
   readonly text: string;
@@ -106,6 +106,7 @@ interface CodePreviewLine {
   readonly tokens: ReadonlyArray<CodePreviewToken>;
 }
 
+/* oxlint-disable t3code/no-untranslated-copy -- These tokens reproduce a JavaScript source file for the code preview. */
 const CODE_PREVIEW_LINES: ReadonlyArray<CodePreviewLine> = [
   {
     id: "signature",
@@ -121,6 +122,8 @@ const CODE_PREVIEW_LINES: ReadonlyArray<CodePreviewLine> = [
   },
   { id: "close", tokens: [{ text: "}" }] },
 ];
+
+/* oxlint-enable t3code/no-untranslated-copy */
 
 export function CodeAppearancePreview(props: {
   readonly fontSize: number;

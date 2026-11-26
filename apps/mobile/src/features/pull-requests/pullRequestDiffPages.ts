@@ -1,3 +1,4 @@
+import { orderDiffFilesForReview } from "@t3tools/client-runtime/diff-file-order";
 import type { ChangeRequestTerminology } from "@t3tools/client-runtime/source-control-clients";
 import type { PullRequestDiffResult } from "@t3tools/contracts";
 import {
@@ -5,7 +6,8 @@ import {
   type ReviewParsedDiff,
   type ReviewRenderableFile,
 } from "../review/reviewModel";
-import { t } from "../../lib/i18n";
+import { getActiveLanguage, isPseudoLanguageActive } from "@t3tools/shared/i18n";
+import { getFormattingLocale, t } from "../../lib/i18n";
 
 export interface PullRequestDiffPage {
   readonly cursor: string | null;
@@ -31,7 +33,14 @@ export function getCachedPullRequestDiffPages(
 ): ReviewParsedDiff {
   const first = pages[0];
   if (!first) return { kind: "empty" };
-  const key = JSON.stringify([scope, terminology.singular, first.cursor]);
+  const key = JSON.stringify([
+    scope,
+    terminology.singular,
+    first.cursor,
+    getActiveLanguage(),
+    isPseudoLanguageActive(),
+    getFormattingLocale(),
+  ]);
   let snapshots = parsedSnapshots.get(first.result);
   if (!snapshots) {
     snapshots = new Map();
@@ -108,7 +117,10 @@ export function combinePullRequestDiffPages(
     cache.set(page.result, value);
     return value;
   });
-  const files = parsed.flatMap((page) => (page.kind === "files" ? page.files : []));
+  const files = orderDiffFilesForReview(
+    parsed.flatMap((page) => (page.kind === "files" ? page.files : [])),
+    (file) => file.path,
+  );
   if (files.length === 0) return parsed[0] ?? { kind: "empty" };
   return {
     kind: "files",
@@ -147,12 +159,12 @@ function parseWithheldFile(result: PullRequestDiffResult, scope: string) {
 function withheldFileNotice(load: WithheldFileLoad | undefined, canLoad: boolean): string {
   if (load === undefined) {
     return canLoad
-      ? "Diff too large to display. Tap to load it."
-      : "Diff too large to display here.";
+      ? t("Diff too large to display. Tap to load it.")
+      : t("Diff too large to display here.");
   }
-  if (load.status === "loading") return "Loading diff…";
-  if (load.status === "error") return "Couldn't load this diff. Tap to try again.";
-  return "No text diff for this file.";
+  if (load.status === "loading") return t("Loading diff…");
+  if (load.status === "error") return t("Couldn't load this diff. Tap to try again.");
+  return t("No text diff for this file.");
 }
 
 /**

@@ -9,15 +9,15 @@ import {
   usageRefreshingEnvironmentIdsAtom,
   usageSummaryInput,
 } from "@t3tools/client-runtime/state/usage";
-import { resolveUsageAccess } from "@t3tools/client-runtime/state/usage-access";
+import { usageAccessMessage } from "@t3tools/client-runtime/state/usage-access";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { appAtomRegistry } from "./atom-registry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 import { environmentSession, readEnvironmentScope } from "./session";
-import { t } from "../lib/i18n";
+import { msg, t, type Message } from "../lib/i18n";
 
 import {
   equalUsageStatuses,
@@ -29,24 +29,38 @@ import { initialUsageViewState, settleUsageView } from "@t3tools/client-runtime/
 
 export type { EnvironmentUsageStatus } from "@t3tools/client-runtime/state/usage-progress";
 
+type MarkedUsageStatus = Omit<EnvironmentUsageStatus, "error"> & { readonly error: Message | null };
+
 const usageByWindowAtom = Atom.family((windowKey: string | null) =>
-  Atom.make((get): readonly EnvironmentUsageStatus[] => {
+  Atom.make((get): readonly MarkedUsageStatus[] => {
     const input = windowKey === null ? null : (JSON.parse(windowKey) as UsageSummaryInput);
     const presentations = get(environmentPresentations.presentationsAtom);
 
-    const statuses: EnvironmentUsageStatus[] = [];
+    const statuses: MarkedUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
+      if (input === null) {
+        statuses.push({
+          environmentId,
+          label: presentation.entry.target.label,
+          isConnected: presentation.connection.phase === "connected",
+          isPending: true,
+          canReadDiagnostics: false,
+          error: null,
+          summary: null,
+          usageSettingsKey: "",
+        });
+        continue;
+      }
       const usageSettingsKey = get(serverEnvironment.usageScanSettingsKeyAtom(environmentId));
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
       const session = AsyncResult.getOrElse(sessionResult, () => null);
-      const access = resolveUsageAccess({
+      const access = usageAccessMessage({
         connection: presentation.connection,
         session,
         hasSessionError: sessionResult._tag === "Failure",
       });
-      const modelFilter =
-        input === null ? undefined : get(serverEnvironment.usageModelFilterAtom(environmentId));
-      if (input === null || !access.canReadDiagnostics) {
+      const modelFilter = get(serverEnvironment.usageModelFilterAtom(environmentId));
+      if (!access.canReadDiagnostics) {
         statuses.push({
           environmentId,
           label: presentation.entry.target.label,
@@ -72,14 +86,14 @@ const usageByWindowAtom = Atom.family((windowKey: string | null) =>
         modelFilter,
         isConnected: presentation.connection.phase === "connected",
         canReadDiagnostics: true,
-        error: result._tag === "Failure" ? t("This environment could not report usage.") : null,
+        error: result._tag === "Failure" ? msg("This environment could not report usage.") : null,
         summary,
         usageSettingsKey,
       });
     }
     return statuses;
   }).pipe(
-    Atom.withEquality(equalUsageStatuses),
+    Atom.withEquality<readonly MarkedUsageStatus[]>(equalUsageStatuses),
     Atom.withLabel(`mobile-usage:window:${windowKey}`),
   ),
 );
@@ -95,8 +109,16 @@ export function useUsage(
     enabled,
   }));
   const requestedWindow = enabled && !request.enabled ? input : request.window;
-  const environments = useAtomValue(
+  const markedEnvironments = useAtomValue(
     usageByWindowAtom(enabled ? usageWindowKey(requestedWindow) : null),
+  );
+  const environments = useMemo(
+    () =>
+      markedEnvironments.map((environment) => ({
+        ...environment,
+        error: environment.error === null ? null : t(environment.error),
+      })),
+    [markedEnvironments],
   );
   const refreshingEnvironmentIds = useAtomValue(usageRefreshingEnvironmentIdsAtom);
   const selectedEnvironments =

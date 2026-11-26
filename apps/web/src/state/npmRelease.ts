@@ -1,5 +1,5 @@
+import { t, msg } from "~/i18n";
 import { type ServerConfig, ServerNpmReleaseError } from "@t3tools/contracts";
-import { t } from "~/i18n";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -14,7 +14,9 @@ const isServerNpmReleaseError = Schema.is(ServerNpmReleaseError);
 
 function unsupportedLookup(config: ServerConfig | null): ServerNpmReleaseError | null {
   if (config === null) {
-    return new ServerNpmReleaseError({ reason: t("Connect to this server to check releases.") });
+    return new ServerNpmReleaseError({
+      reason: t("Connect to this server to check releases."),
+    });
   }
   return config.environment.capabilities.npmReleaseLookup === true
     ? null
@@ -25,12 +27,17 @@ function unsupportedLookup(config: ServerConfig | null): ServerNpmReleaseError |
       });
 }
 
-export function npmReleaseFailureMessage(cause: Cause.Cause<unknown>): string {
+export function npmReleaseFailureMessage(
+  cause: Cause.Cause<unknown>,
+  resolve: typeof t = t,
+): string {
   const error = Option.getOrUndefined(Cause.findErrorOption(cause));
   return isServerNpmReleaseError(error)
     ? error.message
-    : t(
-        "Could not check this environment's npm registry. Check the connection and registry settings.",
+    : resolve(
+        msg(
+          "Could not check this environment's npm registry. Check the connection and registry settings.",
+        ),
       );
 }
 

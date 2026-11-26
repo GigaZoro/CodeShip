@@ -624,56 +624,59 @@ export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (
     }
     return false;
   };
-  return yield* Effect.tryPromise(async () => {
-    const files = new Set<string>();
-    const matches = (file: string) =>
-      GENERATED_INPUT.test(file) ||
-      ENV_INPUT.test(file) ||
-      /(?:^|\/)\.astro\//.test(file) ||
-      file.endsWith(".d.ts");
-    // Git can list a folder together with folders inside it; each is read once. A path removed since
-    // Git listed it is no input, as for `add` in checkChanged.
-    const seen = new Set<string>();
-    const walk = async (file: string): Promise<void> => {
-      if (seen.has(file) || (await inNodeModules(file))) return;
-      seen.add(file);
-      const absolute = NodePath.join(root, file);
-      const info = await unlessAbsentAsync(NodeFSP.lstat(absolute));
-      if (info === undefined) return;
-      if (info.isDirectory() && !info.isSymbolicLink()) {
-        const entries =
-          (await unlessAbsentAsync(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
-        const hasDotGit = entries.some((entry) => entry.name.toLowerCase() === ".git");
-        if (hasDotGit && (await isNestedRepository(absolute))) {
-          if (matches(`${file}/`)) files.add(`${file}/`);
-          return;
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const files = new Set<string>();
+      const matches = (file: string) =>
+        GENERATED_INPUT.test(file) ||
+        ENV_INPUT.test(file) ||
+        /(?:^|\/)\.astro\//.test(file) ||
+        file.endsWith(".d.ts");
+      // Git can list a folder together with folders inside it; each is read once. A path removed since
+      // Git listed it is no input, as for `add` in checkChanged.
+      const seen = new Set<string>();
+      const walk = async (file: string): Promise<void> => {
+        if (seen.has(file) || (await inNodeModules(file))) return;
+        seen.add(file);
+        const absolute = NodePath.join(root, file);
+        const info = await unlessAbsentAsync(NodeFSP.lstat(absolute));
+        if (info === undefined) return;
+        if (info.isDirectory() && !info.isSymbolicLink()) {
+          const entries =
+            (await unlessAbsentAsync(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
+          const hasDotGit = entries.some((entry) => entry.name.toLowerCase() === ".git");
+          if (hasDotGit && (await isNestedRepository(absolute))) {
+            if (matches(`${file}/`)) files.add(`${file}/`);
+            return;
+          }
+          for (const entry of entries) {
+            // Git never lists a .git entry, whatever it holds.
+            if (isDotGit(entry.name)) continue;
+            const child = `${file}/${entry.name}`;
+            if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(child);
+            else if (matches(child)) files.add(child);
+          }
+        } else if (matches(file)) files.add(file);
+      };
+      // Git for Windows lists what is in the folder a junction leads to, where Git elsewhere lists the
+      // link alone, which the walk never enters; so a path under a link is no input either.
+      const underLink = async (file: string) => {
+        const parts = file.split("/");
+        for (let end = 1; end < parts.length; end++) {
+          const info = await unlessAbsentAsync(
+            NodeFSP.lstat(NodePath.join(root, ...parts.slice(0, end))),
+          );
+          if (info?.isSymbolicLink()) return true;
         }
-        for (const entry of entries) {
-          // Git never lists a .git entry, whatever it holds.
-          if (isDotGit(entry.name)) continue;
-          const child = `${file}/${entry.name}`;
-          if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(child);
-          else if (matches(child)) files.add(child);
-        }
-      } else if (matches(file)) files.add(file);
-    };
-    // Git for Windows lists what is in the folder a junction leads to, where Git elsewhere lists the
-    // link alone, which the walk never enters; so a path under a link is no input either.
-    const underLink = async (file: string) => {
-      const parts = file.split("/");
-      for (let end = 1; end < parts.length; end++) {
-        const info = await unlessAbsentAsync(
-          NodeFSP.lstat(NodePath.join(root, ...parts.slice(0, end))),
-        );
-        if (info?.isSymbolicLink()) return true;
+        return false;
+      };
+      for (const entry of listings.flatMap((output) => gitPaths(output)).filter(Boolean)) {
+        const file = entry.replace(/\/$/, "");
+        if (!(await underLink(file))) await walk(file);
       }
-      return false;
-    };
-    for (const entry of listings.flatMap((output) => gitPaths(output)).filter(Boolean)) {
-      const file = entry.replace(/\/$/, "");
-      if (!(await underLink(file))) await walk(file);
-    }
-    return [...files].sort();
+      return [...files].sort();
+    },
+    catch: (cause) => `check:changed cannot enumerate inputs under ${root}: ${String(cause)}`,
   });
 });
 // Directories `scripts/i18n-catalog.ts` reads messages from.
@@ -1796,6 +1799,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       file === ".pnpmfile.cjs" ||
       file.startsWith("patches/") ||
       file.startsWith("apps/mobile/deps/") ||
+      file.startsWith("apps/web/deps/") ||
       path.basename(file) === "package.json",
   );
 
@@ -1820,7 +1824,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           if (yield* fs.exists(inRoot(manifest))) yield* copy(manifest);
         }
       }
-      for (const extra of ["apps/mobile/deps", "patches", ".pnpmfile.cjs"]) {
+      for (const extra of ["apps/mobile/deps", "apps/web/deps", "patches", ".pnpmfile.cjs"]) {
         if (yield* fs.exists(inRoot(extra))) yield* copy(extra);
       }
       const result = yield* vp(["install", "--lockfile-only", "--ignore-scripts"], temp);
@@ -1837,9 +1841,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
 
   // CI's Lint job checks that generated GraphQL operations match their sources.
-  const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =>
-    files.some((file) => file.startsWith(`${dir}/`)),
-  );
+  const graphql = [
+    "apps/server",
+    "packages/issue-tracker-linear",
+    "packages/source-control-github",
+  ].filter((dir) => files.some((file) => file.startsWith(`${dir}/`)));
   const command = (name: string, args: ReadonlyArray<string>) => ({
     name,
     run: (_slots: number, collect: (chunk: string) => void) => vp(args, root, collect),

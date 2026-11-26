@@ -1,3 +1,6 @@
+import { msg } from "@t3tools/shared/i18n";
+
+import { type MarkedText, markedTextEnglish } from "../errors/translatable.ts";
 import {
   type EnvironmentId,
   ProjectId,
@@ -30,7 +33,6 @@ import { createProject, deleteProject, updateProject } from "../operations/comma
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createFileMetadataAtoms } from "./fileMetadata.ts";
 import { resolveWorkspaceFilePath } from "@t3tools/shared/path";
-import { t } from "@t3tools/shared/i18n";
 
 export type {
   CreateProjectInput,
@@ -75,9 +77,13 @@ export class ScratchProjectNotLoadedError extends Schema.TaggedError<ScratchProj
   { projectId: ProjectId },
 ) {
   override get message(): string {
-    return t(
-      "The folder for threads without a project has not reached this device yet. Try again.",
-    );
+    return markedTextEnglish(this.i18nMessage);
+  }
+
+  get i18nMessage(): MarkedText {
+    return [
+      msg("The folder for threads without a project has not reached this device yet. Try again."),
+    ];
   }
 }
 
@@ -98,7 +104,9 @@ export function createProjectEnvironmentAtoms<R, E>(
   const readFile = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:projects:read-file",
     tag: WS_METHODS.projectsReadFile,
-    staleTimeMs: 30_000,
+    // A file can change outside this client, so reopening it reads it again. The idle TTL only
+    // keeps the last contents on screen while that read runs.
+    staleTimeMs: 0,
     idleTtlMs: 5 * 60_000,
     onAnswer: (target, _value, registry): Effect.Effect<void> =>
       Effect.sync(() => {
@@ -110,12 +118,10 @@ export function createProjectEnvironmentAtoms<R, E>(
           registry.set(atom, null);
       }),
     execute: (input) =>
-      fileMetadata.seedAfterRead(
-        request(WS_METHODS.projectsReadFile, input),
-        (result, isCurrent) =>
-          result.exists === false
-            ? Effect.void
-            : fileMetadata.rememberFile(input.cwd, result, isCurrent),
+      fileMetadata.seedAfterRead(request(WS_METHODS.projectsReadFile, input), (result, isCurrent) =>
+        result.exists === false
+          ? Effect.void
+          : fileMetadata.rememberFile(input.cwd, result, isCurrent),
       ),
   });
   const projectConcurrency = {

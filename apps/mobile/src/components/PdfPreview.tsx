@@ -21,10 +21,14 @@ export function PdfPreview(props: { readonly uri: string }) {
         contentInsetAdjustmentBehavior="never"
         startInLoadingState
         onError={(event) =>
-          setError(event.nativeEvent.description || "The PDF could not be loaded.")
+          setError(event.nativeEvent.description || t("The PDF could not be loaded."))
         }
         onHttpError={(event) =>
-          setError(`The server returned HTTP ${event.nativeEvent.statusCode}.`)
+          setError(
+            t("The server returned HTTP {statusCode}.", {
+              statusCode: event.nativeEvent.statusCode,
+            }),
+          )
         }
         renderLoading={() => <FilePreviewLoading message={t("Loading PDF...")} background="card" />}
         style={{ flex: 1, backgroundColor: "transparent" }}

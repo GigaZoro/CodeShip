@@ -1,16 +1,27 @@
 // @effect-diagnostics globalFetch:off - This browser transport runs without an Effect runtime, like the live stream.
+
+import { msg } from "@t3tools/shared/i18n";
+import { markMessage } from "@t3tools/shared/markedMessage";
+import { type MarkedText, markedTextEnglish } from "../errors/translatable.ts";
 import * as Schema from "effect/Schema";
 import { extractPng } from "@t3tools/shared/png";
 import { withDeviceHubQuery } from "./hubAccess.ts";
 import type { DeviceStreamTarget } from "./stream.ts";
-import { t } from "@t3tools/shared/i18n";
 
 export class DeviceScreenshotError extends Schema.TaggedError<DeviceScreenshotError>()(
   "DeviceScreenshotError",
   { status: Schema.Number },
 ) {
   override get message(): string {
-    return t("Screenshot capture failed ({status}). Try again.", { status: this.status });
+    return markedTextEnglish(this.i18nMessage);
+  }
+
+  get i18nMessage(): MarkedText {
+    return [
+      markMessage(msg("Screenshot capture failed ({status}). Try again."), {
+        status: String(this.status),
+      }),
+    ];
   }
 }
 

@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "~/i18n";
 import { useUsageLimitNow, useUsageLimitWorkspaces } from "../../hooks/useUsageNow";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import {
@@ -16,15 +17,14 @@ import {
   collectAccountFailover,
   collectLimitAccounts,
   showsRelativeLimitTimes,
-  formatResetsIn,
   type LimitPace,
   paceOf,
   paceRemainingPercent,
   remainingPercent,
   type ResetCreditChoice,
-  resetCreditChoices,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
+
 import { Fragment, useLayoutEffect, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -44,10 +44,11 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
+import { formatResetsIn, resetCreditChoices } from "@t3tools/shared/usageLimitsCopy";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
-import { msg, t, type Message } from "~/i18n";
+
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const PACE: Record<
   LimitPace,
@@ -81,22 +82,21 @@ export function PaceIcon({
   readonly withLabel?: boolean;
 }) {
   const Icon = PACE[pace].icon;
+
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            role="img"
-            aria-label={t(PACE[pace].label)}
-            className="inline-flex items-center gap-1 text-xs whitespace-nowrap text-muted-foreground"
-          />
-        }
-      >
-        <Icon className="size-3.5" aria-hidden />
-        {withLabel ? <span aria-hidden>{t(PACE[pace].short)}</span> : null}
-      </TooltipTrigger>
-      <TooltipPopup side="top">{t(PACE[pace].label)}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <span
+          role="img"
+          aria-label={t(PACE[pace].label)}
+          className="inline-flex text-muted-foreground"
+        />
+      }
+      label={t(PACE[pace].label)}
+    >
+      <Icon className="size-3.5" aria-hidden />
+      {withLabel ? <span aria-hidden>{t(PACE[pace].short)}</span> : null}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -148,74 +148,86 @@ function WindowBar({
   readonly now: number;
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+
   const remaining = remainingPercent(window);
   const timeLeft = paceRemainingPercent(window, now);
   const [barRef, paceMark] = usePaceMark(timeLeft);
-  const resetsIn = formatResetsIn(window, now);
+  const resetsIn = formatResetsIn(window, now, t);
   const resetsAt = window.resetsAt
-    ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)
+    ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, t)
     : null;
-  const summary = [
-    t("{label}: {percent}% left", { label: window.label, percent: remaining }),
-    ...(timeLeft === null ? [] : [t("{percent}% of the window left", { percent: timeLeft })]),
-    ...(resetsIn ? [resetsIn] : []),
-  ].join(", ");
+  const label = window.label;
+  const summary =
+    timeLeft === null
+      ? resetsIn
+        ? t("{label}: {remaining}% left, {resetsIn}", { label, remaining, resetsIn })
+        : t("{label}: {remaining}% left", { label, remaining })
+      : resetsIn
+        ? t("{label}: {remaining}% left, {timeLeft}% of the window left, {resetsIn}", {
+            label,
+            remaining,
+            timeLeft,
+            resetsIn,
+          })
+        : t("{label}: {remaining}% left, {timeLeft}% of the window left", {
+            label,
+            remaining,
+            timeLeft,
+          });
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
+    <SharedTooltipTrigger
+      render={
+        <div
+          ref={barRef}
+          role="img"
+          aria-label={summary}
+          tabIndex={0}
+          className="relative h-6 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        />
+      }
+      label={
+        <>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-foreground">
+              {timeLeft !== null
+                ? t("{remaining}% left · {timeLeft}% of the window left", { remaining, timeLeft })
+                : t("{remaining}% left", { remaining })}
+            </span>
+            {timeLeft !== null ? (
+              <span className="text-muted-foreground">
+                {t("The line is where even spending would be.")}
+              </span>
+            ) : null}
+            {resetsAt ? (
+              <span className="text-muted-foreground">
+                {resetsIn
+                  ? t("Resets {resetsAt} · {resetsIn}", { resetsAt, resetsIn })
+                  : t("Resets {resetsAt}", { resetsAt })}
+              </span>
+            ) : null}
+          </div>
+        </>
+      }
+    >
+      {/* Clip both layers so the gap exposes even a translucent composer surface. */}
+      <div className="absolute inset-0" style={paceMark?.gap}>
+        <div className="absolute inset-x-0 inset-y-1.5 rounded-full bg-muted" />
+        {remaining > 0 ? (
           <div
-            ref={barRef}
-            role="img"
-            aria-label={summary}
-            tabIndex={0}
-            className="relative h-6 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          />
-        }
-      >
-        {/* Clip both layers so the gap exposes even a translucent composer surface. */}
-        <div className="absolute inset-0" style={paceMark?.gap}>
-          <div className="absolute inset-x-0 inset-y-1.5 rounded-full bg-muted" />
-          {remaining > 0 ? (
-            <div
-              className="absolute inset-y-1.5 left-0 rounded-full"
-              style={{ width: `${remaining}%`, backgroundColor: color }}
-            />
-          ) : null}
-        </div>
-        {paceMark ? (
-          <span
-            aria-hidden
-            className="absolute inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
-            style={paceMark.tick}
+            className="absolute inset-y-1.5 left-0 rounded-full"
+            style={{ width: `${remaining}%`, backgroundColor: color }}
           />
         ) : null}
-      </TooltipTrigger>
-      <TooltipPopup side="top">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-foreground">
-            {timeLeft !== null
-              ? t("{percent}% left · {elapsed}% of the window left", {
-                  percent: remaining,
-                  elapsed: timeLeft,
-                })
-              : t("{percent}% left", { percent: remaining })}
-          </span>
-          {timeLeft !== null ? (
-            <span className="text-muted-foreground">
-              {t("The line is where even spending would be.")}
-            </span>
-          ) : null}
-          {resetsAt ? (
-            <span className="text-muted-foreground">
-              {t("Resets {time}", { time: resetsAt })}
-              {resetsIn ? ` · ${resetsIn}` : ""}
-            </span>
-          ) : null}
-        </div>
-      </TooltipPopup>
-    </Tooltip>
+      </div>
+      {paceMark ? (
+        <span
+          aria-hidden
+          className="absolute inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+          style={paceMark.tick}
+        />
+      ) : null}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -233,6 +245,7 @@ export function LimitWindows({
   readonly compact?: boolean;
 }) {
   const color = normalizeProviderAccentColor(accentColor) ?? barColor(driver);
+
   return (
     <div
       className={
@@ -243,13 +256,13 @@ export function LimitWindows({
     >
       {windows.map((window) => {
         const pace = paceOf(window, now);
-        const resetsIn = formatResetsIn(window, now);
+        const resetsIn = formatResetsIn(window, now, t);
         return (
           <Fragment key={window.id}>
             <span className="flex min-w-0 items-center gap-2 text-xs">
               <span className="truncate text-muted-foreground">{window.label}</span>
               <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
-                {t("{percent}% left", { percent: remainingPercent(window) })}
+                {t("{remaining}% left", { remaining: remainingPercent(window) })}
               </span>
             </span>
             <WindowBar color={color} window={window} now={now} />
@@ -277,6 +290,7 @@ export function useResetCredit(
 ) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, { reportFailure: false });
+
   // Kept after close so the dialog's text survives its exit animation.
   const [choice, setChoice] = useState<ResetCreditChoice | null>(null);
   const target =
@@ -367,10 +381,11 @@ export function ResetCredits({
 }) {
   const { canManageProviders, choice, confirming, setConfirming, confirm, busy, status, redeem } =
     useResetCredit(environmentId, input);
+
   if (credits.availableCount === 0 && status === null) return null;
   return (
     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-      {resetCreditChoices(credits, input, now).map((choice) => (
+      {resetCreditChoices(credits, input, now, false, t).map((choice) => (
         <div key={choice.key} className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="tabular-nums">{choice.summary}</span>
           {choice.availableCount > 0 ? (

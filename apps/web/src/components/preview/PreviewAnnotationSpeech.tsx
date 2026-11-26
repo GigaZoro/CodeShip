@@ -1,3 +1,6 @@
+import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type {
   DesktopPreviewAnnotationVoiceConfig,
@@ -5,6 +8,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+
 import { useEffect, useRef } from "react";
 
 import { resolveSpeechPresentation } from "~/components/chat/ComposerSpeechButton";
@@ -12,7 +16,6 @@ import { VoiceInputSetup } from "~/components/chat/VoiceInputSetup";
 import { toastManager } from "~/components/ui/toast";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useStableCallback } from "~/hooks/useStableCallback";
-import { t } from "~/i18n";
 import { useDictationShortcut, type DictationKeyHandlers } from "~/speech/useDictationShortcut";
 import { useEnvironmentSpeechInput } from "~/speech/useEnvironmentSpeechInput";
 import { useProject, useThreadShell } from "~/state/entities";
@@ -93,7 +96,7 @@ export function PreviewAnnotationSpeech({
     available,
     phase: state.phase,
     errorAction: state.errorAction,
-    status: resolveSpeechPresentation(state, null).status,
+    status: resolveSpeechPresentation(state, null, t).status,
     preview: preview ? preview.committed + preview.tentative : null,
     level,
     shortcutLabel,
@@ -114,7 +117,7 @@ export function PreviewAnnotationSpeech({
         toastManager.add({
           type: "error",
           title: t("Could not update annotation voice input"),
-          description: error instanceof Error ? error.message : String(error),
+          description: thrownErrorMessage(error, t) ?? String(error),
         });
       }
     },

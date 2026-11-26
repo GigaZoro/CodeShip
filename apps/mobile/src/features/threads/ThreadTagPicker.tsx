@@ -1,4 +1,5 @@
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import { LegendList } from "@legendapp/list/react-native";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -9,7 +10,7 @@ import {
 import { CommandId, type ScopedThreadRef } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { useState } from "react";
-import { FlatList, View } from "react-native";
+import { View } from "react-native";
 
 import { AppText, AppTextInput } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -17,6 +18,7 @@ import { Button } from "../../components/ui/Button";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { Sheet } from "../../components/ui/Sheet";
 import { t } from "../../lib/i18n";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { orchestrationEnvironment } from "../../state/orchestration";
@@ -105,10 +107,14 @@ function ThreadTagPicker(props: {
 
   return (
     <Sheet title={t("Tags")} onClose={props.onClose}>
-      <FlatList
-        data={entries ?? undefined}
+      <LegendList
+        renderScrollComponent={NativeScrollView}
+        data={entries ?? []}
+        extraData={disabled}
+        estimatedItemSize={48}
+        recycleItems
         className="flex-1"
-        contentContainerClassName="px-4 pb-6"
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
         keyExtractor={({ tag }) => tag}

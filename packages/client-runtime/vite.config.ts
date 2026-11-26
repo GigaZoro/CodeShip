@@ -12,6 +12,7 @@ export default defineConfig({
       "../shared/src/testing/longTempDir.ts",
       "../shared/src/testing/providerEnv.ts",
       "../shared/src/testing/locale.ts",
+      "../shared/src/testing/gitEnv.ts",
     ],
   },
 });

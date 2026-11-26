@@ -1,6 +1,6 @@
+import { getFormattingLocale, msg, t } from "~/i18n";
 import type { RelayClientDeviceRecord } from "@t3tools/contracts/relay";
 
-import { getFormattingLocale, msg, t } from "~/i18n";
 const NOTIFICATION_PREFERENCES = [
   ["notifyOnApproval", msg("approvals")],
   ["notifyOnInput", msg("input requests")],
@@ -20,27 +20,30 @@ export function mobileClientPlatformLabel(device: RelayClientDeviceRecord): stri
   return `${platform}${device.appVersion ? ` · T3.CodeShip ${device.appVersion}` : ""}`;
 }
 
-export function mobileClientNotificationDetail(device: RelayClientDeviceRecord): string {
+export function mobileClientNotificationDetail(
+  device: RelayClientDeviceRecord,
+  resolve: typeof t = t,
+): string {
   if (!device.notifications.enabled) {
-    return t("Push notifications are disabled on this device.");
+    return resolve(msg("Push notifications are disabled on this device."));
   }
 
   const enabledPreferences = NOTIFICATION_PREFERENCES.flatMap(([preference, label]) =>
-    device.notifications[preference] ? [t(label)] : [],
+    device.notifications[preference] ? [resolve(label)] : [],
   );
   return enabledPreferences.length > 0
-    ? t("Alerts enabled for {alerts}.", { alerts: enabledPreferences.join(", ") })
-    : t("Push notifications are enabled, but no alert types are selected.");
+    ? resolve(msg("Alerts enabled for {alerts}."), { alerts: enabledPreferences.join(", ") })
+    : resolve(msg("Push notifications are enabled, but no alert types are selected."));
 }
 
-export function mobileClientUpdatedAtLabel(updatedAt: string): string {
+export function mobileClientUpdatedAtLabel(updatedAt: string, resolve: typeof t = t): string {
   const date = new Date(updatedAt);
   return Number.isNaN(date.getTime())
-    ? t("Update time unavailable")
-    : t("Updated {time}", {
-        time: new Intl.DateTimeFormat(getFormattingLocale(), {
+    ? resolve(msg("Update time unavailable"))
+    : resolve(msg("Updated {date}"), {
+        date: date.toLocaleString(getFormattingLocale(), {
           dateStyle: "medium",
           timeStyle: "short",
-        }).format(date),
+        }),
       });
 }

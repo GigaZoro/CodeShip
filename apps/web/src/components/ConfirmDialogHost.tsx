@@ -1,4 +1,4 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
 import { useSyncExternalStore } from "react";
 
 import {
@@ -24,10 +24,13 @@ type ConfirmationCopy = {
   readonly description: string | null;
 };
 
-function resolveConfirmDialogCopy(message: string): ConfirmationCopy {
+// LocalApi.confirm takes one string; translated questions may end in a full-width mark.
+const QUESTION_MARK = /[?？]/;
+
+function resolveConfirmDialogCopy(message: string, resolve: typeof t): ConfirmationCopy {
   const normalizedMessage = message.trim();
   const lines = normalizedMessage.split("\n");
-  const questionLineIndex = lines.findIndex((line) => line.trim().endsWith("?"));
+  const questionLineIndex = lines.findIndex((line) => QUESTION_MARK.test(line.trim().slice(-1)));
 
   if (questionLineIndex >= 0) {
     const title = lines[questionLineIndex]!.trim();
@@ -38,7 +41,7 @@ function resolveConfirmDialogCopy(message: string): ConfirmationCopy {
     return { title, description: description || null };
   }
 
-  const questionMarkIndex = normalizedMessage.indexOf("?");
+  const questionMarkIndex = normalizedMessage.search(QUESTION_MARK);
   if (questionMarkIndex >= 0) {
     return {
       title: normalizedMessage.slice(0, questionMarkIndex + 1).trim(),
@@ -47,8 +50,8 @@ function resolveConfirmDialogCopy(message: string): ConfirmationCopy {
   }
 
   return {
-    title: t("Confirm action"),
-    description: normalizedMessage || t("This action requires your confirmation."),
+    title: resolve(msg("Confirm action")),
+    description: normalizedMessage || resolve(msg("This action requires your confirmation.")),
   };
 }
 
@@ -59,7 +62,7 @@ export function ConfirmDialogHost() {
     readConfirmDialogState,
   );
 
-  const copy = resolveConfirmDialogCopy(state.status === "idle" ? "" : state.message);
+  const copy = resolveConfirmDialogCopy(state.status === "idle" ? "" : state.message, t);
   const confirmVariant = state.status === "idle" ? "default" : state.variant;
   const focusConfirm = state.status !== "idle" && state.initialFocus === "confirm";
   const onCancel = () => respondToConfirmDialog(false);

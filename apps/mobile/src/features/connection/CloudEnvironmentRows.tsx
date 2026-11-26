@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ConnectionTraceId } from "./ConnectionTraceId";
@@ -22,6 +23,7 @@ import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSym
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
+import type { MarkedText } from "@t3tools/client-runtime/errors";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { serverEnvironment } from "../../state/server";
 import { environmentPresentations } from "../../state/presentation";
@@ -31,7 +33,6 @@ import { ConnectionStatusDot } from "./ConnectionStatusDot";
 import { useConnectionDiagnosis } from "./ConnectionDiagnosisDetails";
 import { environmentStatusText } from "./environmentStatusText";
 import { type RelayEnvironmentView, useConnectionController } from "./useConnectionController";
-import { t } from "../../lib/i18n";
 
 interface CloudEnvironmentRowsProps {
   readonly connectedCloudEnvironments: ReadonlyArray<ConnectedEnvironmentSummary>;
@@ -99,9 +100,7 @@ function CloudEnvironmentRowsContent(
     <View collapsable={false} className={cn("gap-3", showHeader && "mt-5")}>
       {showHeader ? (
         <View className="px-1">
-          <Text className="text-sm font-t3-bold uppercase text-foreground-muted">
-            {"T3 Connect"}
-          </Text>
+          <Text className="text-sm font-t3-bold uppercase text-foreground-muted">T3 Connect</Text>
         </View>
       ) : null}
 
@@ -166,7 +165,7 @@ function CloudEnvironmentRowsContent(
             label={t("Try again")}
             tone="secondary"
             onPress={() => {
-              void controller.refreshRelayEnvironments();
+              void controller.refreshRelayEnvironments(undefined);
             }}
           />
         </View>
@@ -204,6 +203,9 @@ function ConnectedCloudEnvironmentRow(props: {
       onOpen={props.onOpen}
       onRemove={props.onRemove}
       connectionError={enabled || unsupported ? props.environment.connectionError : null}
+      {...((enabled || unsupported) && props.environment.i18nConnectionError !== undefined
+        ? { i18nConnectionError: props.environment.i18nConnectionError }
+        : {})}
       connectionErrorTraceId={enabled ? props.environment.connectionErrorTraceId : null}
       connectionState={enabled || unsupported ? props.environment.connectionState : "available"}
       awaitingApproval={enabled && presentation?.connection.awaitingApproval === true}
@@ -271,6 +273,7 @@ function CloudEnvironmentRowShell(props: {
   readonly onOpen?: (() => void) | undefined;
   readonly onRemove?: (() => void) | undefined;
   readonly connectionError: string | null;
+  readonly i18nConnectionError?: MarkedText;
   readonly connectionErrorTraceId: string | null;
   readonly connectionState: EnvironmentConnectionPhase;
   /** Waiting on the host to approve this device: say so plainly, not as a failure. */
@@ -292,6 +295,7 @@ function CloudEnvironmentRowShell(props: {
     environmentStatusText({
       phase: props.connectionState,
       error: props.connectionError,
+      ...(props.i18nConnectionError === undefined ? {} : { i18nError: props.i18nConnectionError }),
       traceId: props.connectionErrorTraceId,
       ...(props.awaitingApproval ? { awaitingApproval: true as const } : {}),
     });
@@ -304,7 +308,9 @@ function CloudEnvironmentRowShell(props: {
     readonly lineCount: number;
   } | null>(null);
   const errorTraceId = props.connectionErrorTraceId;
-  const measuredErrorText = errorTraceId ? `${statusText} Trace ID: ${errorTraceId}` : statusText;
+  const measuredErrorText = errorTraceId
+    ? `${statusText} ${t("Trace ID:")} ${errorTraceId}`
+    : statusText;
   const errorLineCount =
     errorMeasurement?.text === measuredErrorText ? errorMeasurement.lineCount : 0;
   const errorCanExpand = props.connectionError !== null && errorLineCount > 1;
@@ -324,19 +330,18 @@ function CloudEnvironmentRowShell(props: {
         : { text: measuredErrorText, lineCount: nextLineCount },
     );
   };
+  const rowActionLabel = props.onOpen
+    ? t("Manage {name}", { name: props.label })
+    : props.onRemove
+      ? t("Remove {name} from this device", { name: props.label })
+      : undefined;
   return (
     <View collapsable={false} className="flex-row items-center gap-3 bg-grouped-card px-4 py-3.5">
       <ContentContainer
-        className="min-w-0 flex-1 gap-0.5"
+        className="min-w-0 flex-1 gap-0.5 active:opacity-70"
         accessibilityHint={props.onRemove ? t("Long press to remove from this device") : undefined}
         accessibilityRole={props.onOpen ? "button" : undefined}
-        accessibilityLabel={
-          props.onOpen
-            ? t("Manage {name}", { name: props.label })
-            : props.onRemove
-              ? t("Remove {name} from this device", { name: props.label })
-              : undefined
-        }
+        accessibilityLabel={rowActionLabel}
         onPress={props.onOpen}
         onLongPress={props.onRemove}
       >
@@ -357,6 +362,7 @@ function CloudEnvironmentRowShell(props: {
         {props.connectionError ? (
           <Text
             aria-hidden
+            pointerEvents="none"
             onTextLayout={onMeasuredErrorTextLayout}
             className={cn("absolute inset-x-0 -z-[1] text-xs opacity-0", statusClassName)}
           >
@@ -409,17 +415,9 @@ function CloudEnvironmentRowShell(props: {
       />
       {props.opensDetails || props.showChevron ? (
         <ChevronContainer
-          accessibilityRole={props.onOpen ? "button" : undefined}
-          accessibilityLabel={
-            props.onOpen
-              ? t("Manage {name}", { name: props.label })
-              : props.onRemove
-                ? t("Remove {name} from this device", { name: props.label })
-                : undefined
-          }
-          accessibilityHint={
-            props.onRemove ? t("Long press to remove from this device") : undefined
-          }
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
           onPress={props.onOpen}
           onLongPress={props.onRemove}
           style={{

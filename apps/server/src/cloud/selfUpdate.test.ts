@@ -621,10 +621,9 @@ it.layer(NodeServices.layer)("moving launchers when a self-update activates", (i
           fs.readLink(launcher).pipe(
             Effect.catch(() =>
               readPosixLauncherTarget(launcher).pipe(
-                Effect.flatMap((target) =>
-                  target === undefined
-                    ? Effect.die("missing launcher target")
-                    : Effect.succeed(target),
+                Effect.filterOrElse(
+                  (target): target is string => target !== undefined,
+                  () => Effect.die("missing launcher target"),
                 ),
               ),
             ),

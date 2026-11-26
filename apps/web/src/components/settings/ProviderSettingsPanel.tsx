@@ -10,7 +10,7 @@ import {
 import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
-import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { safeErrorLogAttributes, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -78,7 +78,6 @@ import {
   EmptyTitle,
 } from "../ui/empty";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { useManagedPolicy } from "~/state/managedPolicy";
@@ -119,6 +118,7 @@ import {
   type ProviderOperateAccess,
   resolveRemoteOperateAccess,
 } from "./ProviderSettingsPanel.logic";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 function providerInstanceName(instance: ProviderInstanceConfig): string {
   return (
@@ -506,7 +506,9 @@ export function EnvironmentProviderSettings({
             type: "error",
             title: t("Could not continue authentication"),
             description:
-              error instanceof Error ? error.message : t("The authentication request expired."),
+              error instanceof Error
+                ? (thrownErrorMessage(error) ?? error.message)
+                : t("The authentication request expired."),
           });
         }
       });
@@ -575,7 +577,7 @@ export function EnvironmentProviderSettings({
             }),
             description:
               error instanceof Error
-                ? error.message
+                ? (thrownErrorMessage(error) ?? error.message)
                 : t("The provider update command could not be started."),
           }),
         );
@@ -697,7 +699,10 @@ export function EnvironmentProviderSettings({
       toastManager.add({
         type: "error",
         title: t("Could not update provider instance"),
-        description: error instanceof Error ? error.message : t("The settings update failed."),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error) ?? error.message)
+            : t("The settings update failed."),
       });
     }
     return result._tag !== "Failure";
@@ -746,7 +751,10 @@ export function EnvironmentProviderSettings({
         toastManager.add({
           type: "error",
           title: t("Could not delete provider instance"),
-          description: error instanceof Error ? error.message : t("The settings update failed."),
+          description:
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("The settings update failed."),
         });
         return;
       }
@@ -776,7 +784,10 @@ export function EnvironmentProviderSettings({
         toastManager.add({
           type: "warning",
           title: t("Provider deleted, but managed files remain"),
-          description: error instanceof Error ? error.message : t("Managed binary cleanup failed."),
+          description:
+            error instanceof Error
+              ? (thrownErrorMessage(error) ?? error.message)
+              : t("Managed binary cleanup failed."),
         });
       }
     },
@@ -799,7 +810,10 @@ export function EnvironmentProviderSettings({
       toastManager.add({
         type: "error",
         title: t("Could not reset provider instance"),
-        description: error instanceof Error ? error.message : t("The settings update failed."),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error) ?? error.message)
+            : t("The settings update failed."),
       });
     }
   });
@@ -890,51 +904,49 @@ export function EnvironmentProviderSettings({
           variant="plain"
           titleAction={
             canAddProvider ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="icon-xs"
-                      variant="ghost-muted"
-                      onClick={() => setIsAddInstanceDialogOpen(true)}
-                      aria-label={t("Add provider")}
-                    >
-                      <PlusIcon />
-                    </Button>
-                  }
-                />
-                <TooltipPopup side="top">{t("Add provider")}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost-muted"
+                    onClick={() => setIsAddInstanceDialogOpen(true)}
+                    aria-label={t("Add provider")}
+                  >
+                    <PlusIcon />
+                  </Button>
+                }
+                side="top"
+                label={t("Add provider")}
+              />
             ) : null
           }
           headerAction={
             // The ghost button's padding would inset its label, so pull the text to the card edge.
             <div className="-me-2 flex min-w-0 items-center gap-2">
               <ProviderUpdatesAction />
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="xs"
-                      variant="ghost-muted"
-                      disabled={isRefreshingProviders || !canRefreshProviders}
-                      aria-busy={isRefreshingProviders}
-                      onClick={() => void refreshProviders()}
-                    >
-                      <RefreshIcon refreshing={isRefreshingProviders} />
-                      <span className="sr-only">{t("Refresh provider status")}</span>
-                      <span className="hidden min-w-0 truncate sm:inline">
-                        {isRefreshingProviders ? (
-                          t("Refreshing providers")
-                        ) : (
-                          <ProviderLastChecked environmentId={environmentId} />
-                        )}
-                      </span>
-                    </Button>
-                  }
-                />
-                <TooltipPopup side="top">{t("Refresh provider status")}</TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    disabled={isRefreshingProviders || !canRefreshProviders}
+                    aria-busy={isRefreshingProviders}
+                    onClick={() => void refreshProviders()}
+                  >
+                    <RefreshIcon refreshing={isRefreshingProviders} />
+                    <span className="sr-only">{t("Refresh provider status")}</span>
+                    <span className="hidden min-w-0 truncate sm:inline">
+                      {isRefreshingProviders ? (
+                        t("Refreshing providers")
+                      ) : (
+                        <ProviderLastChecked environmentId={environmentId} />
+                      )}
+                    </span>
+                  </Button>
+                }
+                side="top"
+                label={t("Refresh provider status")}
+              />
             </div>
           }
         >

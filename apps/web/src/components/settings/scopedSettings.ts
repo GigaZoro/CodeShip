@@ -1,3 +1,4 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { t } from "~/i18n";
 import {
   ClientSettingsSchema,
@@ -933,7 +934,7 @@ async function persistScopedSettingsPlan(
         ...write,
         message:
           error instanceof Error
-            ? error.message
+            ? (errorDisplayMessage(error) ?? error.message)
             : t("The save failed. Try reconnecting and saving again."),
       },
     ];

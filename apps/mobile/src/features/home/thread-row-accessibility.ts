@@ -62,6 +62,8 @@ export type ThreadRowPrimaryAction = "archive" | "unsnooze" | "unsettle" | "sett
  */
 export function threadRowAccessibilityActions(input: {
   readonly canOperate: boolean;
+  /** An offline host can accept queued triage until it answers without the scope. */
+  readonly canTriage?: boolean;
   readonly primary: { readonly kind: ThreadRowPrimaryAction; readonly label: string };
   /** Null when the row cannot be snoozed now. */
   readonly snoozePresets: ReadonlyArray<{
@@ -73,9 +75,11 @@ export function threadRowAccessibilityActions(input: {
   readonly dismissWoke: boolean;
 }): ReadonlyArray<{ readonly name: string; readonly label: string }> {
   return [
-    ...(input.canOperate
+    ...(input.canOperate || (input.canTriage && input.primary.kind !== "archive")
+      ? [{ name: input.primary.kind, label: input.primary.label }]
+      : []),
+    ...(input.canOperate || input.canTriage
       ? [
-          { name: input.primary.kind, label: input.primary.label },
           ...(input.snoozePresets === null
             ? []
             : [
@@ -88,7 +92,7 @@ export function threadRowAccessibilityActions(input: {
                 })),
                 { name: "snooze:custom", label: t("Custom snooze") },
               ]),
-          { name: "delete", label: t("Delete") },
+          ...(input.canOperate ? [{ name: "delete", label: t("Delete") }] : []),
         ]
       : []),
     { name: "export-markdown", label: t("Export as Markdown") },

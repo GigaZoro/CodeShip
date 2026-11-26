@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import type { ProviderAuthController } from "../provider/ProviderAuthService.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ModelManifest from "../provider/ModelManifest.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -41,6 +42,8 @@ const makeAdapter = (
 const makeInstance = (
   instanceId: ProviderInstanceId,
   orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"],
+  version: string | null = null,
+  refreshedVersion = version,
   email?: string,
 ): ProviderInstance => ({
   instanceId,
@@ -58,7 +61,7 @@ const makeInstance = (
       displayName: String(instanceId),
       enabled: true,
       installed: true,
-      version: "1.0.0",
+      version,
       status: "ready",
       auth: { status: "authenticated", ...(email === undefined ? {} : { email }) },
       checkedAt: "2026-11-01T00:00:00.000Z",
@@ -66,7 +69,8 @@ const makeInstance = (
       slashCommands: [],
       skills: [],
     }),
-  } as ProviderInstance["snapshot"],
+    refresh: Effect.succeed({ version: refreshedVersion }),
+  } as unknown as ProviderInstance["snapshot"],
   orchestrationAdapter,
   textGeneration: {} as ProviderInstance["textGeneration"],
 });
@@ -85,9 +89,10 @@ const layerInstanceRegistry = Layer.succeed(ProviderInstanceRegistry.ProviderIns
   streamChanges: Stream.empty,
   subscribeChanges: Effect.never,
 });
-const layerTest = ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
-  Layer.provide(layerInstanceRegistry),
+const layerRegistry = ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+  Layer.provide(ModelManifest.layerTest),
 );
+const layerTest = layerRegistry.pipe(Layer.provide(layerInstanceRegistry));
 
 it.effect("routes two configured instances of the same driver independently", () =>
   Effect.gen(function* () {
@@ -97,6 +102,44 @@ it.effect("routes two configured instances of the same driver independently", ()
     assert.strictEqual((yield* registry.get(workId)).instanceId, workId);
     assert.deepEqual(yield* registry.list(), [personalId, workId]);
   }).pipe(Effect.provide(layerTest)),
+);
+
+const openOn = Effect.fn("openOn")(function* (instance: ProviderInstance) {
+  const registry = yield* Effect.service(ProviderAdapterRegistry.ProviderAdapterRegistryV2).pipe(
+    Effect.provide(
+      layerRegistry.pipe(
+        Layer.provide(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: () => Effect.succeed(instance),
+            listInstances: Effect.succeed([instance]),
+          }),
+        ),
+      ),
+    ),
+  );
+  return yield* (yield* registry.get(instance.instanceId))
+    .openSession({
+      threadId: ThreadId.make("gated-thread"),
+      providerSessionId: ProviderSessionId.make("gated-session"),
+      modelSelection: { instanceId: instance.instanceId, model: "test-model" },
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: "/workspace" },
+    })
+    .pipe(Effect.exit);
+});
+
+it.effect("refuses a session only when a fresh probe still rates the version broken", () =>
+  Effect.gen(function* () {
+    const opened = { ...personalAdapter, openSession: () => Effect.succeed({} as never) };
+    const refused = yield* openOn(makeInstance(personalId, opened, "0.100.0"));
+    assert.include(JSON.stringify(refused), "0.100.0 does not work with this T3.CodeShip release");
+    // Updated since the last probe.
+    assert.isTrue(
+      Exit.isSuccess(yield* openOn(makeInstance(personalId, opened, "0.100.0", "0.200.0"))),
+    );
+    // An adapter that rates the handshake version is not judged on the probe.
+    const handshake = { ...opened, checksVersionAtHandshake: true };
+    assert.isTrue(Exit.isSuccess(yield* openOn(makeInstance(personalId, handshake, "0.100.0"))));
+  }),
 );
 
 it.effect(
@@ -121,7 +164,7 @@ it.effect(
         ProviderAdapterRegistry.ProviderAdapterRegistryV2,
       ).pipe(
         Effect.provide(
-          ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+          layerRegistry.pipe(
             Layer.provide(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
                 getInstance: (id) =>
@@ -226,7 +269,13 @@ it.effect.each(["logout", "publish"] as const)(
       yield* Deferred.await(stopped);
       assert.equal(yield* Deferred.isDone(saved), operation === "publish");
       assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer).pipe(
+          Layer.provideMerge(ModelManifest.layerTest),
+        ),
+      ),
+    ),
 );
 
 it.effect("refuses a session for an instance signed in to another instance's account", () =>
@@ -241,12 +290,18 @@ it.effect("refuses a session for an instance signed in to another instance's acc
           Effect.andThen(Effect.die("session opened")),
         );
     const sameAccount = [
-      makeInstance(personalId, { ...personalAdapter, openSession: open(personalId) }, "a@b.co"),
-      makeInstance(workId, { ...workAdapter, openSession: open(workId) }, "A@B.co"),
+      makeInstance(
+        personalId,
+        { ...personalAdapter, openSession: open(personalId) },
+        null,
+        null,
+        "a@b.co",
+      ),
+      makeInstance(workId, { ...workAdapter, openSession: open(workId) }, null, null, "A@B.co"),
     ];
     const registry = yield* Effect.service(ProviderAdapterRegistry.ProviderAdapterRegistryV2).pipe(
       Effect.provide(
-        ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+        layerRegistry.pipe(
           Layer.provide(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               getInstance: (id) =>

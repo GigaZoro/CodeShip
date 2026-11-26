@@ -18,6 +18,7 @@ import {
   type ThreadGuestShare,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { useMemo, useState } from "react";
 import { Platform, ScrollView, Share, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -38,9 +39,12 @@ import { environmentServerConfigsAtom, serverEnvironment } from "../../state/ser
 import { environmentThreadDetails } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useThreadGuestShare } from "./ThreadGuestShareBar";
-import { t } from "../../lib/i18n";
+import { msg, t } from "../../lib/i18n";
 
 const COPY_FEEDBACK_DURATION_MS = 1200;
+const PENDING_MESSAGES_NOTICE = msg(
+  "Send or dismiss pending guest messages in the thread before creating a new link.",
+);
 
 /**
  * Whether this environment offers "Share with guest": the user may create links there, and its
@@ -72,13 +76,17 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
   );
-  const activeShare = useThreadGuestShare(threadRef);
+  const guestShare = useThreadGuestShare(threadRef);
+  const shareExpired = useDeadlinePassed(
+    guestShare === null ? null : Date.parse(guestShare.expiresAt),
+  );
+  const activeShare = shareExpired ? null : guestShare;
+  const hasPendingMessages =
+    guestShare?.messages.some((message) => message.status === "pending") ?? false;
   // From the thread list the detail loads only now; until it does, an active link is unknown and a
   // new link would end it without the warning.
-  const threadLoaded = useAtomValue(
-    environmentThreadDetails.threadAtom(threadRef),
-    (thread) => thread !== null,
-  );
+  const thread = useAtomValue(environmentThreadDetails.threadAtom(threadRef));
+  const threadLoaded = thread !== null;
   const threadDeleted = useAtomValue(
     environmentThreadDetails.statusAtom(threadRef),
     (status) => status === "deleted",
@@ -102,6 +110,10 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
   usePreventRemove(creating, () => {});
 
   const create = async () => {
+    if (hasPendingMessages) {
+      Dialog.alert(t("Guest messages are waiting"), t(PENDING_MESSAGES_NOTICE));
+      return;
+    }
     setState({ status: "creating" });
     const result = await createGuestShare({ environmentId, input: { threadId, access, lifetime } });
     if (result._tag === "Success") {
@@ -135,6 +147,20 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
     });
   };
 
+  const createdShareExpired = useDeadlinePassed(
+    state.status === "created" ? Date.parse(state.share.expiresAt) : null,
+  );
+  const createdLink =
+    state.status === "created" &&
+    !createdShareExpired &&
+    !threadDeleted &&
+    (thread === null ||
+      DateTime.toEpochMillis(thread.projection.thread.updatedAt) <
+        Date.parse(state.share.createdAt) ||
+      (activeShare?.id === state.share.id && activeShare.guestName === null))
+      ? state
+      : null;
+
   const content = (
     <ScrollView
       nestedScrollEnabled
@@ -143,16 +169,16 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
       contentContainerClassName="gap-5 px-5 pt-4"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
-      {state.status === "created" ? (
+      {createdLink !== null ? (
         <>
           <View className="gap-2">
             <View className="rounded-2xl border border-input-border bg-input px-3.5 py-3">
               <Text selectable numberOfLines={3} className="text-sm text-foreground">
-                {state.url}
+                {createdLink.url}
               </Text>
             </View>
             <Text className="px-1 text-xs text-foreground-muted">
-              {t("Send it to one person.")} {guestShareCreatedText(state.share)}
+              {t("Send it to one person.")} {guestShareCreatedText(createdLink.share)}
             </Text>
           </View>
           <View className="flex-row gap-3">
@@ -161,7 +187,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
                 label={copied ? t("Copied") : t("Copy")}
                 icon={copied ? "checkmark" : "doc.on.doc"}
                 fullWidth
-                onPress={() => void copy(state.url)}
+                onPress={() => void copy(createdLink.url)}
               />
             </View>
             <View className="flex-1">
@@ -170,7 +196,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
                 icon="square.and.arrow.up"
                 tone="primary"
                 fullWidth
-                onPress={() => share(state.url)}
+                onPress={() => share(createdLink.url)}
               />
             </View>
           </View>
@@ -236,6 +262,9 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
             ) : (
               <Text className="text-sm text-foreground">{t("The link works once.")}</Text>
             )}
+            {hasPendingMessages ? (
+              <Text className="text-sm text-foreground-muted">{t(PENDING_MESSAGES_NOTICE)}</Text>
+            ) : null}
             {state.status === "failed" ? (
               <Text accessibilityRole="alert" className="text-sm text-danger-foreground">
                 {state.message}
@@ -255,7 +284,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
             tone="primary"
             fullWidth
             loading={creating}
-            disabled={!canCreate || !threadLoaded}
+            disabled={!canCreate || !threadLoaded || hasPendingMessages}
             onPress={() => void create()}
           />
         </>

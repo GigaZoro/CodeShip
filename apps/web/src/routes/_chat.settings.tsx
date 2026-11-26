@@ -1,6 +1,8 @@
+import { t } from "~/i18n";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
-import { Outlet, createFileRoute, redirect, useLocation } from "@tanstack/react-router";
+import { Outlet, createFileRoute, redirect, useLocation, useRouter } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
+
 import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
@@ -21,6 +23,7 @@ import { useEnvironments } from "../state/environments";
 import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
 import { SETTINGS_DEVICE_ONLY_PATHS } from "../components/settings/SettingsScopeSentence";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
+import { useRenderedSettingsPathname } from "../components/settings/useRenderedSettingsPathname";
 import {
   retainSettingsScope,
   validateSettingsRouteSearch,
@@ -33,7 +36,6 @@ import {
   consolidatedSettingsAnchor,
 } from "../components/settings/settingsSearch";
 
-import { t } from "~/i18n";
 function ResetPageButton({ page, onRestored }: { page: string; onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(page, onRestored);
   return (
@@ -65,24 +67,47 @@ function useSingleEnvironmentSettingsPage(pathname: string) {
 function SettingsScopeBoundary({ pathname, children }: { pathname: string; children: ReactNode }) {
   const { scope, connectedEnvironments } = useSettingsScope();
   const { environments } = useEnvironments();
-  const hash = useLocation({ select: (location) => location.hash });
+
+  // A pending navigation's hash targets the page still loading, not the one on screen.
+  const hash = useLocation({
+    select: (location) => (location.pathname === pathname ? location.hash : ""),
+  });
   const searchTarget = getSettingsSearchTargetScope(hash);
-  const autoSettlementAvailability = searchTarget?.requiresThreadAutoSettlement
-    ? getThreadAutoSettlementSearchAvailability(environments, scope)
+  const agentFeedbackAvailability = searchTarget?.agentFeedbackOnly
+    ? {
+        eligibleEnvironmentIds: environments
+          .filter(
+            (environment) =>
+              environment.connection.phase === "connected" &&
+              environment.serverConfig?.environment.capabilities.agentFeedback === true,
+          )
+          .map((environment) => environment.environmentId),
+        isTargetAvailable:
+          connectedEnvironments.length > 0 &&
+          connectedEnvironments.every(
+            (environment) =>
+              environment.serverConfig?.environment.capabilities.agentFeedback === true,
+          ),
+      }
     : null;
+  const targetAvailability =
+    agentFeedbackAvailability ??
+    (searchTarget?.requiresThreadAutoSettlement
+      ? getThreadAutoSettlementSearchAvailability(environments, scope)
+      : null);
   if (
     scope.kind !== "unavailable" &&
     searchTarget &&
-    autoSettlementAvailability &&
-    !autoSettlementAvailability.isTargetAvailable
+    targetAvailability &&
+    !targetAvailability.isTargetAvailable
   ) {
     return (
       <SettingsScopeNotice
         target="environment"
         targetId={hash}
-        eligibleEnvironmentIds={autoSettlementAvailability.eligibleEnvironmentIds}
+        eligibleEnvironmentIds={targetAvailability.eligibleEnvironmentIds}
       >
-        {autoSettlementAvailability.eligibleEnvironmentIds.length > 0
+        {targetAvailability.eligibleEnvironmentIds.length > 0
           ? t("{title} requires a supporting environment. Choose one to continue.", {
               title: searchTarget.title,
             })
@@ -142,16 +167,17 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
 function SettingsContentLayout() {
   const contentArea = workspaceAreaProps("settings", 1, t("Settings content"));
   const location = useLocation();
+  const pathname = useRenderedSettingsPathname();
   const { search, environment } = useSettingsScope();
-  const singleEnvironmentPage = useSingleEnvironmentSettingsPage(location.pathname);
+  const singleEnvironmentPage = useSingleEnvironmentSettingsPage(pathname);
   const contentScopeKey = singleEnvironmentPage
     ? environment?.environmentId
     : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
   // The providers reset covers Models-tab rows only.
   const showReset =
-    hasRestorableSettings(location.pathname) &&
-    (location.pathname !== "/settings/providers" ||
+    hasRestorableSettings(pathname) &&
+    (pathname !== "/settings/providers" ||
       resolveProvidersSettingsTab((location.search as { tab?: unknown }).tab, location.hash) ===
         "models");
   const settingsNavInSidebar = useSidebarPanel() === "settings";
@@ -159,11 +185,11 @@ function SettingsContentLayout() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <WorkspacePageHeader electron={isElectron} className="border-b">
-        <SettingsBreadcrumb pathname={location.pathname} />
+        <SettingsBreadcrumb pathname={pathname} />
         {showReset ? (
           <div className="ms-auto flex shrink-0 items-center">
             <ResetPageButton
-              page={location.pathname}
+              page={pathname}
               onRestored={() => setRestoreSignal((value) => value + 1)}
             />
           </div>
@@ -176,7 +202,7 @@ function SettingsContentLayout() {
           key={`${contentScopeKey}:${restoreSignal}`}
           className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
-          <SettingsScopeBoundary pathname={location.pathname}>
+          <SettingsScopeBoundary pathname={pathname}>
             <Outlet />
           </SettingsScopeBoundary>
         </div>
@@ -188,9 +214,10 @@ function SettingsContentLayout() {
 function SettingsRouteLayout() {
   const rawSearch = Route.useSearch();
   const navigate = Route.useNavigate();
-  const pathname = useLocation({ select: (location) => location.pathname });
+  const pathname = useRenderedSettingsPathname();
   const hash = useLocation({ select: (location) => location.hash });
   const singleEnvironment = useSingleEnvironmentSettingsPage(pathname);
+  const router = useRouter();
   return (
     <SettingsScopeProvider
       search={rawSearch}
@@ -199,7 +226,7 @@ function SettingsRouteLayout() {
       onChange={(next) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
-          to: pathname,
+          to: router.state.location.pathname,
           search: (previous) => ({
             project: next.project,
             machine: next.machine,

@@ -1,4 +1,6 @@
+import { activateLanguage } from "@t3tools/shared/i18n";
 import { EnvironmentId, ProjectId, type PullRequestSummary } from "@t3tools/contracts";
+
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -17,12 +19,17 @@ const known = vi.hoisted(
       updatedAt: "2026-09-01T00:00:00Z",
     }) as PullRequestSummary,
 );
-const state = vi.hoisted(() => ({ restoredPreview: null as unknown }));
+const state = vi.hoisted(() => ({ restoredPreview: null as unknown, activity: null as unknown }));
 vi.mock(import("~/state/query"), async (original) => ({
   ...(await original()),
   // The host has not answered the preview read yet.
   useEnvironmentQuery: ((atom: unknown) => ({
-    data: state.restoredPreview,
+    data:
+      atom === null
+        ? null
+        : typeof atom === "object" && "activity" in atom
+          ? state.activity
+          : state.restoredPreview,
     dataUpdatedAt: 0,
     error: null,
     failure: null,
@@ -31,13 +38,24 @@ vi.mock(import("~/state/query"), async (original) => ({
     refresh: () => undefined,
   })) as never,
 }));
-vi.mock(import("~/state/pullRequests"), async (original) => ({
-  ...(await original()),
-  useSharedPullRequestSummary: (() => known) as never,
-}));
+vi.mock(import("~/state/pullRequests"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useSharedPullRequestSummary: (() => known) as never,
+    pullRequestEnvironment: {
+      ...actual.pullRequestEnvironment,
+      activity: ((target: unknown) => ({ activity: target })) as never,
+    },
+  };
+});
 
 import { render } from "../../../test/render";
 import { PullRequestLinkPreview } from "./PullRequestLinkPreview";
+
+function setup(next: Partial<typeof state> = {}) {
+  Object.assign(state, { restoredPreview: null, activity: null }, next);
+}
 
 function renderPreview() {
   return render(
@@ -53,17 +71,19 @@ function renderPreview() {
 }
 
 it("keeps a refreshing preview's state and title over an older known summary", async () => {
-  state.restoredPreview = {
-    projectId: "project",
-    repository: "owner/repo",
-    number: 1,
-    title: "Renamed title",
-    url: known.url,
-    author: { login: "octocat" },
-    state: "closed",
-    isDraft: false,
-    createdAt: "2026-08-01T00:00:00Z",
-  };
+  setup({
+    restoredPreview: {
+      projectId: "project",
+      repository: "owner/repo",
+      number: 1,
+      title: "Renamed title",
+      url: known.url,
+      author: { login: "octocat" },
+      state: "closed",
+      isDraft: false,
+      createdAt: "2026-08-01T00:00:00Z",
+    },
+  });
   await using screen = await renderPreview();
 
   await userEvent.hover(screen.getByRole("link"));
@@ -74,7 +94,7 @@ it("keeps a refreshing preview's state and title over an older known summary", a
 });
 
 it("shows the known summary while the preview loads", async () => {
-  state.restoredPreview = null;
+  setup();
   await using screen = await render(
     <PullRequestLinkPreview
       link={<a href={known.url}>#1</a>}
@@ -89,4 +109,49 @@ it("shows the known summary while the preview loads", async () => {
   await userEvent.hover(screen.getByRole("link"));
 
   await expect.element(page.getByText("Known title")).toBeVisible();
+});
+
+it("shows who commented on a linked comment in the active language", async () => {
+  const commentUrl = `${known.url}#issuecomment-2`;
+  setup({
+    activity: {
+      comments: [
+        {
+          id: "comment-2",
+          kind: "issue-comment",
+          author: { login: "octocat" },
+          body: "Looks good",
+          createdAt: "2026-09-01T00:00:00Z",
+          url: commentUrl,
+          path: null,
+          reviewState: null,
+        },
+      ],
+      reviewThreads: [],
+      commits: [],
+    },
+  });
+  activateLanguage({
+    language: "uk",
+    formattingLocale: "uk",
+    catalog: { "{author} commented": "Коментар від {author}" },
+  });
+  try {
+    await using screen = await render(
+      <PullRequestLinkPreview
+        link={<a href={commentUrl}>#1</a>}
+        originalUrl={commentUrl}
+        target={{
+          environmentId: EnvironmentId.make("environment"),
+          input: { projectId: ProjectId.make("project"), repository: "owner/repo", number: 1 },
+        }}
+      />,
+    );
+
+    await userEvent.hover(screen.getByRole("link"));
+
+    await expect.element(page.getByText(/Коментар від\s*octocat/)).toBeVisible();
+  } finally {
+    activateLanguage({ language: "en", formattingLocale: undefined, catalog: {} });
+  }
 });

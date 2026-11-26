@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { EnvironmentId, type T3ProjectFileScript } from "@t3tools/contracts";
@@ -49,7 +50,10 @@ function reportScriptFailure(result: ProjectScriptSaveResult) {
     toastManager.add({
       type: "error",
       title: t("Failed to save project actions"),
-      description: error instanceof Error ? error.message : t("An error occurred."),
+      description:
+        error instanceof Error
+          ? (thrownErrorMessage(error) ?? error.message)
+          : t("An error occurred."),
     });
   }
   return result;
@@ -105,7 +109,10 @@ export function ProjectActionsSettings() {
       setRequest({
         scriptId: null,
         initial: payload,
-        error: error instanceof Error ? error.message : t("Failed to import action."),
+        error:
+          error instanceof Error
+            ? (thrownErrorMessage(error) ?? error.message)
+            : t("Failed to import action."),
       });
     }
   };

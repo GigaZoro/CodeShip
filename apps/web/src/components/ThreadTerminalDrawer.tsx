@@ -1,6 +1,9 @@
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { contextMenuSourceOf } from "../contextMenuSource";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
+
 import {
   isAtomCommandInterrupted,
   executeAtomQuery,
@@ -26,13 +29,15 @@ import {
   AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
+  TerminalProcessChangedError,
+  type TerminalWriteInput,
   type ContextMenuItem,
   type ProviderInstanceId,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
+import { getTerminalLabel } from "@t3tools/shared/terminalLabelsCopy";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import {
@@ -63,6 +68,7 @@ import {
   isDiffToggleShortcut,
   isTerminalClearShortcut,
   isTerminalNewShortcut,
+  isTerminalCycleShortcut,
   isTerminalSplitShortcut,
   isTerminalSplitVerticalShortcut,
   isTerminalToggleShortcut,
@@ -89,6 +95,7 @@ import { readEnvironmentScope } from "../state/session";
 import { terminalEnvironment } from "../state/terminal";
 import { useEnvironmentScope } from "../state/session";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
+import { terminalInputWriter } from "./terminal/terminalInputWriter";
 import { useAtomCommand } from "../state/use-atom-command";
 import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { observeResize } from "../lib/observeResize";
@@ -168,6 +175,15 @@ export function writeTerminalOutputUpdate(
   }
 }
 
+// Full-screen apps such as vim read their own modified arrows; shell motions would break them.
+export function terminalPromptNavigationData(
+  terminal: Pick<GhosttyTerminalSurface, "isAlternateScreen">,
+  event: KeyboardEvent,
+  platform?: string,
+): string | null {
+  return terminal.isAlternateScreen() ? null : terminalNavigationShortcutData(event, platform);
+}
+
 // Avoid formatting unbounded scrollback selections on every output update.
 const MAX_COMPARED_SELECTION_CELLS = 3_000;
 
@@ -192,7 +208,7 @@ export function synchronizeTerminalOutput(
   return update.cursor;
 }
 
-/** Writes what changed between two session notifications: new output, then a new error. */
+/** Writes what changed between two session notifications: new output, then the error, again after a reset. */
 export function synchronizeTerminalSession(
   terminal: Parameters<typeof synchronizeTerminalOutput>[0],
   previous: Pick<TerminalSessionState, "output" | "version" | "error">,
@@ -204,7 +220,12 @@ export function synchronizeTerminalSession(
       ? cursor
       : synchronizeTerminalOutput(terminal, session, cursor);
   // An attach failure can change only the error, keeping the last buffer.
-  if (session.error !== null && session.error !== previous.error) {
+  if (
+    session.error !== null &&
+    (session.error !== previous.error ||
+      nextCursor.generation !== cursor.generation ||
+      nextCursor.resetVersion !== cursor.resetVersion)
+  ) {
     writeSystemMessage(terminal, session.error);
   }
   return nextCursor;
@@ -409,9 +430,9 @@ function terminalSelectionMenuItems(options?: {
     ...(options?.canAddToChat === false
       ? []
       : ([
-          { id: "add-to-chat", label: t("Add to chat") },
+          { id: "add-to-chat", label: t(msg("Add to chat")) },
         ] satisfies ContextMenuItem<"add-to-chat">[])),
-    { id: "copy", label: t("Copy") },
+    { id: "copy", label: t(msg("Copy")) },
   ];
 }
 
@@ -426,11 +447,13 @@ function terminalContextMenuItems(options: {
       ...item,
       disabled: !hasSelection,
     })),
-    { id: "paste", label: t("Paste"), ...(options.readOnly ? { disabled: true } : {}) },
-    { id: "select-all", label: t("Select all") },
-    { id: "scroll-to-bottom", label: t("Jump to latest") },
+    { id: "paste", label: t(msg("Paste")), ...(options.readOnly ? { disabled: true } : {}) },
+    { id: "select-all", label: t(msg("Select all")) },
+    { id: "scroll-to-bottom", label: t(msg("Jump to latest")) },
   ];
 }
+
+const isTerminalProcessChanged = Schema.is(TerminalProcessChangedError);
 
 /**
  * A writable session's output generation. A new one is a fresh PTY (or a
@@ -522,23 +545,37 @@ function TerminalSessionViewport({
   );
   const canOpenHostEditor = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const canReadFilesystem = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
-  const [linkPath, setLinkPath] = useState<string | null>(null);
+  const [hoveredLink, setHoveredLink] = useState<{ text: string; fallback?: string } | null>(null);
   const metadataThreadRef = useContext(FileMetadataThreadContext);
-  const linkMetadataQuery =
-    linkPath !== null && canOpenHostEditor && canReadFilesystem
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const hostname = serverConfig?.hostname;
+  const readHostname = useEffectEvent(() => hostname);
+  const hoveredMetadataQuery = (text: string | undefined) =>
+    text !== undefined && canOpenHostEditor && canReadFilesystem
       ? getFileMetadataQueryAtom(
           environmentId,
-          resolveTerminalLinkTarget(linkPath, cwd),
+          resolveTerminalLinkTarget(text, cwd, hostname),
           cwd,
           metadataThreadRef,
         )
       : null;
+  const linkMetadataQuery = hoveredMetadataQuery(hoveredLink?.text);
+  const fallbackMetadataQuery = hoveredMetadataQuery(hoveredLink?.fallback);
   const canActivateTerminalLink = useEffectEvent((text: string) => {
     if (isTerminalUrl(text)) return true;
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
-    if (text !== linkPath || !linkMetadataQuery) return false;
-    const metadata = AsyncResult.getOrElse(appAtomRegistry.get(linkMetadataQuery), () => null);
-    return metadata?.kind === "file" || metadata?.kind === "directory";
+    const exists = (query: typeof linkMetadataQuery) => {
+      const metadata = query ? AsyncResult.getOrElse(appAtomRegistry.get(query), () => null) : null;
+      return metadata?.kind === "file" || metadata?.kind === "directory";
+    };
+    if (text === hoveredLink?.text) return exists(linkMetadataQuery);
+    // The shorter reading stands in only once the whole candidate is known to be no file.
+    return (
+      text === hoveredLink?.fallback &&
+      (!linkMetadataQuery || AsyncResult.isSuccess(appAtomRegistry.get(linkMetadataQuery))) &&
+      !exists(linkMetadataQuery) &&
+      exists(fallbackMetadataQuery)
+    );
   });
   const validateTerminalLink = useEffectEvent(async (text: string) => {
     if (isTerminalUrl(text)) return true;
@@ -549,7 +586,7 @@ function TerminalSessionViewport({
       return false;
     const query = getFileMetadataQueryAtom(
       environmentId,
-      resolveTerminalLinkTarget(text, cwd),
+      resolveTerminalLinkTarget(text, cwd, hostname),
       cwd,
       metadataThreadRef,
     );
@@ -560,7 +597,6 @@ function TerminalSessionViewport({
       (result.value?.kind === "file" || result.value?.kind === "directory")
     );
   });
-  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
     environmentId,
     serverConfig?.availableEditors ?? [],
@@ -573,6 +609,8 @@ function TerminalSessionViewport({
   const runTerminalWrite = useAtomCommand(terminalEnvironment.write, {
     reportFailure: false,
   });
+  // Recovery keeps the original registry-bound command after this viewport unmounts.
+  const retainedTerminalWrite = useRef(runTerminalWrite);
   const runTerminalResize = useAtomCommand(terminalEnvironment.resize, {
     reportFailure: false,
   });
@@ -620,12 +658,6 @@ function TerminalSessionViewport({
     (listener: (session: TerminalSessionState) => void) =>
       appAtomRegistry.subscribe(terminalSessionAtom, listener),
   );
-  const writeTerminal = useEffectEvent((data: string) =>
-    runTerminalWrite({
-      environmentId,
-      input: { threadId, terminalId, data },
-    }),
-  );
   // The surface reports a resent grid like any other, so the next report is the retry.
   const resizeRetryGenerationRef = useRef<number | null>(null);
   const resizeTerminal = useEffectEvent(async (cols: number, rows: number) => {
@@ -656,7 +688,7 @@ function TerminalSessionViewport({
         hasHandledExitRef.current = true;
         writeSystemMessage(
           terminal,
-          status === "closed" ? t("Terminal closed") : t("Process exited"),
+          status === "closed" ? t(msg("Terminal closed")) : t(msg("Process exited")),
         );
         window.setTimeout(() => {
           if (hasHandledExitRef.current) {
@@ -681,16 +713,15 @@ function TerminalSessionViewport({
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refreshes the imperative terminal's hovered link after filesystem metadata or editor permissions change
   useEffect(() => {
-    if (!linkMetadataQuery) {
-      terminalRef.current?.refreshLinkActivation();
-      return;
-    }
-    return appAtomRegistry.subscribe(
-      linkMetadataQuery,
-      () => terminalRef.current?.refreshLinkActivation(),
-      { immediate: true },
+    const refresh = () => terminalRef.current?.refreshLinkActivation();
+    const unsubscribes = [linkMetadataQuery, fallbackMetadataQuery].flatMap((query) =>
+      query ? [appAtomRegistry.subscribe(query, refresh, { immediate: true })] : [],
     );
-  }, [linkMetadataQuery]);
+    if (unsubscribes.length === 0) refresh();
+    return () => {
+      for (const unsubscribe of unsubscribes) unsubscribe();
+    };
+  }, [linkMetadataQuery, fallbackMetadataQuery]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pushes visibility into the terminal surface before paint and consumes focus requests made while hidden
   useLayoutEffect(() => {
@@ -725,13 +756,20 @@ function TerminalSessionViewport({
         theme: terminalThemeFromApp(mount),
         font: terminalFontOptions(setupFont.family, setupFont.size),
         onData: (data) => handleData(data),
+        onBinary: (data) => void sendTerminalInput(data, t(msg("Terminal write failed")), "binary"),
+        onReply: (data) => void sendTerminalInput(data, t(msg("Terminal write failed")), "reply"),
         onResize: (cols, rows) => void resizeTerminal(cols, rows),
         onSelectionChange: () => {},
         beforeKey: (event) => handleBeforeKey(event),
         onLinkActivate: (text, event) => handleLinkActivate(text, event),
         canActivateLink: (text) => canActivateTerminalLink(text),
         validateLink: (text) => validateTerminalLink(text),
-        onLinkHover: (text) => setLinkPath(text !== null && !isTerminalUrl(text) ? text : null),
+        onLinkHover: (text, fallback) =>
+          setHoveredLink(
+            text !== null && !isTerminalUrl(text)
+              ? { text, ...(fallback === undefined ? {} : { fallback }) }
+              : null,
+          ),
         // Surface listeners start before WASM loading finishes and the terminal handler exists.
         onContextMenu: (event) => {
           if (terminalRef.current) void showTerminalContextMenu(event);
@@ -845,7 +883,7 @@ function TerminalSessionViewport({
         if (requestId !== selectionActionRequestIdRef.current) return;
         const activeTerminal = terminalRef.current;
         if (activeTerminal) {
-          writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallback);
+          writeSystemMessage(activeTerminal, thrownErrorMessage(error, t) ?? fallback);
         }
       };
 
@@ -857,9 +895,15 @@ function TerminalSessionViewport({
 
       const copySelection = async (text: string, requestId: number) => {
         try {
-          await writeTextToClipboard(text, t("terminal selection"));
+          await writeTextToClipboard(text, {
+            target: "terminal selection",
+            unavailableMessage: msg(
+              "Clipboard API is unavailable while copying terminal selection.",
+            ),
+            failureMessage: msg("Failed to copy terminal selection to the clipboard."),
+          });
         } catch (error) {
-          reportIfCurrent(requestId, error, t("Unable to copy terminal selection"));
+          reportIfCurrent(requestId, error, t(msg("Unable to copy terminal selection")));
         }
         focusIfCurrent(requestId);
       };
@@ -871,11 +915,18 @@ function TerminalSessionViewport({
         try {
           // Let the surface own clipboard reads so paste shortcuts can supersede an in-flight menu paste.
           await activeTerminal.pasteFromClipboard(
-            () => readTextFromClipboard(t("terminal input")),
+            () =>
+              readTextFromClipboard({
+                target: "terminal input",
+                unavailableMessage: msg(
+                  "Clipboard API is unavailable while reading terminal input.",
+                ),
+                failureMessage: msg("Failed to read terminal input from the clipboard."),
+              }),
             () => requestId === selectionActionRequestIdRef.current,
           );
         } catch (error) {
-          reportIfCurrent(requestId, error, t("Unable to read the clipboard"));
+          reportIfCurrent(requestId, error, t(msg("Unable to read the clipboard")));
           return;
         }
         focusIfCurrent(requestId);
@@ -897,9 +948,10 @@ function TerminalSessionViewport({
               readOnly: !hasTerminalWriteAccess(),
             }),
             { x: event.clientX, y: event.clientY },
+            contextMenuSourceOf(event),
           );
         } catch (error) {
-          reportIfCurrent(requestId, error, t("Unable to open the terminal context menu"));
+          reportIfCurrent(requestId, error, t(msg("Unable to open the terminal context menu")));
           focusIfCurrent(requestId);
           return;
         }
@@ -929,21 +981,119 @@ function TerminalSessionViewport({
         }
       };
 
-      const sendTerminalInput = async (data: string, fallbackError: string) => {
+      const canWriteInput = () => readEnvironmentScope(environmentId, AuthTerminalOperateScope);
+      const writeInputChunk = (
+        data: string,
+        kind?: "binary" | "reply",
+        options?: Pick<TerminalWriteInput, "bracketedPaste" | "plainWrite" | "expectedPid">,
+      ) =>
+        retainedTerminalWrite.current({
+          environmentId,
+          input: {
+            threadId,
+            terminalId,
+            data,
+            ...(kind === undefined ? {} : { [kind]: true }),
+            ...options,
+          },
+        });
+      const sendTerminalInput = (
+        data: string,
+        fallbackError: string,
+        kind?: "binary" | "reply",
+      ) => {
         // The server rejects input until the shell runs, and each rejection would print an error.
-        if (writableSessionGeneration(readTerminalSession(), hasTerminalWriteAccess()) === null) {
-          return;
-        }
-        const activeTerminal = terminalRef.current;
-        if (!activeTerminal) return;
-        const result = await writeTerminal(data);
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          writeSystemMessage(
-            activeTerminal,
-            error instanceof Error ? error.message : fallbackError,
-          );
-        }
+        // Input belongs to the shell and surface it was typed into; a restart the client has seen drops what is left.
+        const session = readTerminalSession();
+        const generation = writableSessionGeneration(session, hasTerminalWriteAccess());
+        const lifecycleVersion = session.lifecycleVersion;
+        if (generation === null) return;
+        const writeInput = terminalInputWriter(
+          JSON.stringify([environmentId, threadId, terminalId]),
+        );
+        let reported = false;
+        const report = (message: string) => {
+          if (reported || terminalRef.current !== terminal) return;
+          reported = true;
+          writeSystemMessage(terminal, message);
+        };
+        return writeInput(
+          data,
+          async (chunk, framing) => {
+            if (terminalRef.current !== terminal) return "not-dispatched";
+            const currentSession = appAtomRegistry.get(terminalSessionAtom);
+            if (
+              currentSession.lifecycleVersion !== lifecycleVersion ||
+              writableSessionGeneration(currentSession, canWriteInput()) !== generation
+            ) {
+              return "not-dispatched";
+            }
+            const expectedPid =
+              framing && session.supportsConditionalWrites ? session.pid : undefined;
+            if (expectedPid === null) return "not-dispatched";
+            const result = await writeInputChunk(chunk, kind, {
+              ...(kind ? {} : framing),
+              ...(expectedPid === undefined ? {} : { expectedPid }),
+            });
+            if (result._tag === "Success") return true;
+            const error = squashAtomCommandFailure(result);
+            if (isTerminalProcessChanged(error)) return "not-dispatched";
+            if (terminalRef.current === terminal && !isAtomCommandInterrupted(result)) {
+              report(thrownErrorMessage(error, t) ?? fallbackError);
+            }
+            return false;
+          },
+          // The attachment's PID stays with the paste even after the viewport detaches.
+          async (bracketed) => {
+            if (kind || session.pid === null) return true;
+            const expectedPid = session.supportsConditionalWrites ? session.pid : undefined;
+            const pidGuard = expectedPid === undefined ? {} : { expectedPid };
+            if (!bracketed) {
+              // Only releases the server's hold, which also ends when that process exits.
+              const current = appAtomRegistry.get(terminalSessionAtom);
+              if (current.lifecycleVersion !== lifecycleVersion) return true;
+              await writeInputChunk("", undefined, { plainWrite: "abort", ...pidGuard });
+              return true;
+            }
+            if (!canWriteInput()) return false;
+            if (!session.supportsConditionalWrites) {
+              const attached =
+                terminalRef.current === terminal ? appAtomRegistry.get(terminalSessionAtom) : null;
+              if (attached && attached.version > 0) {
+                if (attached.status === "closed" || attached.status === "exited") return true;
+                if (attached.pid !== null && attached.pid !== session.pid) return true;
+              }
+              const metadata = appAtomRegistry.get(
+                terminalEnvironment.metadata({ environmentId, input: null }),
+              );
+              if (!AsyncResult.isSuccess(metadata)) return false;
+              const current = metadata.value.find(
+                (item) => item.threadId === threadId && item.terminalId === terminalId,
+              );
+              if (current?.pid == null) return false;
+              if (attached) {
+                // An unguarded write needs both streams to agree the original PTY is running.
+                if (attached.status !== "running" || attached.pid !== current.pid) return false;
+              } else if (current.pid !== session.pid || current.status === "exited") {
+                return true;
+              }
+              if (current.status !== "running" || current.pid !== session.pid) return false;
+            }
+            const result = await writeInputChunk("\x1b[201~", undefined, {
+              bracketedPaste: "abort",
+              ...pidGuard,
+            });
+            if (result._tag === "Success") return true;
+            const error = squashAtomCommandFailure(result);
+            if (isTerminalProcessChanged(error)) return true;
+            if (!isAtomCommandInterrupted(result)) {
+              report(thrownErrorMessage(error, t) ?? t(msg("Failed to close interrupted paste")));
+            }
+            return false;
+          },
+          () =>
+            report(t(msg("Terminal paste interrupted. Paste again when the terminal is ready."))),
+        );
       };
 
       function handleBeforeKey(event: KeyboardEvent): boolean {
@@ -957,6 +1107,7 @@ function TerminalSessionViewport({
           isTerminalSplitShortcut(event, currentKeybindings, options) ||
           isTerminalSplitVerticalShortcut(event, currentKeybindings, options) ||
           isTerminalNewShortcut(event, currentKeybindings, options) ||
+          isTerminalCycleShortcut(event, currentKeybindings, options) ||
           isDiffToggleShortcut(event, currentKeybindings, options) ||
           // Match Sidebar's context, or a key it will reject skips the shell.
           isThreadNavigationShortcut(event, currentKeybindings, {
@@ -966,11 +1117,14 @@ function TerminalSessionViewport({
           return false;
         }
 
-        const navigationData = terminalNavigationShortcutData(event);
+        const activeTerminal = terminalRef.current;
+        const navigationData = activeTerminal
+          ? terminalPromptNavigationData(activeTerminal, event)
+          : null;
         if (navigationData !== null) {
           event.preventDefault();
           event.stopPropagation();
-          void sendTerminalInput(navigationData, t("Failed to move cursor"));
+          void sendTerminalInput(navigationData, t(msg("Failed to move cursor")));
           return false;
         }
 
@@ -978,14 +1132,14 @@ function TerminalSessionViewport({
         if (deleteData !== null) {
           event.preventDefault();
           event.stopPropagation();
-          void sendTerminalInput(deleteData, t("Failed to delete terminal input"));
+          void sendTerminalInput(deleteData, t(msg("Failed to delete terminal input")));
           return false;
         }
 
         if (!isTerminalClearShortcut(event)) return true;
         event.preventDefault();
         event.stopPropagation();
-        void sendTerminalInput("\u000c", t("Failed to clear terminal"));
+        void sendTerminalInput("\u000c", t(msg("Failed to clear terminal")));
         return false;
       }
 
@@ -999,14 +1153,17 @@ function TerminalSessionViewport({
         if (!latestTerminal) return;
         if (isTerminalUrl(text)) {
           if (!localApi) {
-            writeSystemMessage(latestTerminal, t("Opening links is unavailable in this browser."));
+            writeSystemMessage(
+              latestTerminal,
+              t(msg("Opening links is unavailable in this browser.")),
+            );
             return;
           }
           const fallbackToBrowser = () => {
             void localApi.shell.openExternal(text).catch((error: unknown) => {
               writeSystemMessage(
                 latestTerminal,
-                error instanceof Error ? error.message : t("Unable to open link"),
+                thrownErrorMessage(error, t) ?? t(msg("Unable to open link")),
               );
             });
           };
@@ -1019,15 +1176,15 @@ function TerminalSessionViewport({
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: t("Unable to open link"),
-                  description: error instanceof Error ? error.message : t("An error occurred."),
+                  title: t(msg("Unable to open link")),
+                  description: thrownErrorMessage(error, t) ?? t(msg("An error occurred.")),
                 }),
               );
             },
           );
           return;
         }
-        const target = resolveTerminalLinkTarget(text, cwd);
+        const target = resolveTerminalLinkTarget(text, cwd, readHostname());
         void (async () => {
           const result = await openTerminalPath(target);
           if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
@@ -1036,13 +1193,13 @@ function TerminalSessionViewport({
           const error = squashAtomCommandFailure(result);
           writeSystemMessage(
             latestTerminal,
-            error instanceof Error ? error.message : t("Unable to open path"),
+            thrownErrorMessage(error, t) ?? t(msg("Unable to open path")),
           );
         })();
       }
 
       function handleData(data: string): void {
-        void sendTerminalInput(data, t("Terminal write failed"));
+        void sendTerminalInput(data, t(msg("Terminal write failed")));
       }
 
       const themeObserver = new MutationObserver(() => {
@@ -1093,8 +1250,10 @@ function TerminalSessionViewport({
         setupTerminal = null;
         if (cancelled) return;
         const message =
-          error instanceof Error ? error.message : t("Unable to initialize libghostty-vt");
-        mount.textContent = t("{message}. Close and reopen the terminal to retry.", { message });
+          thrownErrorMessage(error, t) ?? t(msg("Unable to initialize libghostty-vt"));
+        mount.textContent = t(msg("{message}. Close and reopen the terminal to retry."), {
+          message,
+        });
       });
 
     return () => {
@@ -1105,7 +1264,7 @@ function TerminalSessionViewport({
         mount.focus({ preventScroll: true });
       }
     };
-  }, [cwd, environmentId, terminalId]);
+  }, [cwd, environmentId, terminalId, terminalSessionAtom, threadId]);
 
   const attachContainer = (mount: HTMLDivElement) => {
     containerRef.current = mount;
@@ -1552,7 +1711,7 @@ export default function ThreadTerminalDrawer({
   const terminalLabelById = (() => {
     const next = new Map<string, string>();
     for (const terminalId of normalizedTerminalIds) {
-      next.set(terminalId, terminalLabelsById?.get(terminalId) ?? getTerminalLabel(terminalId));
+      next.set(terminalId, terminalLabelsById?.get(terminalId) ?? getTerminalLabel(terminalId, t));
     }
     return next;
   })();
@@ -1618,7 +1777,7 @@ export default function ThreadTerminalDrawer({
   };
   const confirmCloseTerminal = (terminalId: string) => {
     if (!canOperateTerminal) return;
-    const label = terminalLabelById.get(terminalId) ?? getTerminalLabel(terminalId);
+    const label = terminalLabelById.get(terminalId) ?? getTerminalLabel(terminalId, t);
     void confirmTerminalClose([label]).then((confirmed) => {
       if (confirmed && readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope)) {
         onCloseTerminal(terminalId, threadRef);

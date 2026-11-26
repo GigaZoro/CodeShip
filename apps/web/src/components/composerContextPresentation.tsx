@@ -3,7 +3,10 @@ import ChatMarkdown from "./ChatMarkdown";
 import { isSvgAttachment } from "@t3tools/shared/image";
 import { ReadOnlySourcePreview } from "./files/AttachmentFilePreview";
 import type {
+  ChatAttachment,
+  ComposerContextId,
   EnvironmentContextRecord,
+  EnvironmentId,
   PreviewAnnotationPayload,
   ThreadContextRecord,
 } from "@t3tools/contracts";
@@ -11,29 +14,36 @@ import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments"
 import { videoMimeType } from "@t3tools/shared/video";
 import { MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
 import { createContext, type ReactElement, type ReactNode, use } from "react";
+
 import { ComposerContextActionsContext } from "./composerContextActions";
 
 import type { ComposerFileAttachment, ComposerImageAttachment } from "~/composerDraftStore";
 import { composerFileNeedsReattach } from "~/composerDraftStore";
 import { useTheme } from "~/hooks/useTheme";
-import type { AttachmentUploadState } from "~/lib/attachmentUploadState";
+import {
+  attachmentUploadFailureText,
+  type AttachmentUploadState,
+} from "~/lib/attachmentUploadState";
 import { useAttachmentUploadProgress } from "~/hooks/useAttachmentUploadProgress";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import {
   fileContextReference,
   imageContextReference,
   isPullRequestSummaryContext,
-  pullRequestContextDisplayState,
-  pullRequestContextKindLabel,
   previewAnnotationContextId,
   previewAnnotationContextLabel,
+  pullRequestContextDisplayState,
+  pullRequestContextKindLabel,
   reviewCommentContextId,
   reviewCommentContextLabel,
+  reviewCommentRangeText,
+  reviewCommentSectionText,
   terminalContextReference,
   uploadedAttachmentContextRecord,
 } from "~/lib/composerContextRecords";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
+import { isQueuedFileAttachment, isQueuedImageAttachment } from "./chat/queuedMessageEdit";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
 import { EnvironmentContextChip } from "./EnvironmentContextChip";
 import { ThreadContextChip } from "./ThreadContextChip";
@@ -43,7 +53,6 @@ import {
   type ContextPresentationCapability,
 } from "./contextPresentationRegistry";
 import type { ContextChipKind } from "./ContextChip";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
   ContextChipPopover,
   ContextChipShell,
@@ -53,6 +62,12 @@ import {
   PullRequestChip,
   UnresolvedChip,
 } from "./contextChipParts";
+import { SharedTooltipTrigger } from "./ui/shared-tooltip";
+
+export interface ComposerImageContextAttachment extends Omit<ComposerImageAttachment, "file"> {
+  readonly file: File | null;
+  readonly uploadedAttachmentId?: string | undefined;
+}
 
 export type ComposerDraftContextRecord =
   | { kind: "terminal"; record: TerminalContextDraft }
@@ -62,8 +77,18 @@ export type ComposerDraftContextRecord =
       record: PreviewAnnotationPayload;
       screenshot?: ComposerImageAttachment | undefined;
     }
-  | { kind: "image"; record: ComposerImageAttachment; upload?: AttachmentUploadState | undefined }
-  | { kind: "file"; record: ComposerFileAttachment; upload?: AttachmentUploadState | undefined }
+  | {
+      kind: "image";
+      record: ComposerImageContextAttachment;
+      upload?: AttachmentUploadState | undefined;
+      contextId?: ComposerContextId | undefined;
+    }
+  | {
+      kind: "file";
+      record: ComposerFileAttachment;
+      upload?: AttachmentUploadState | undefined;
+      contextId?: ComposerContextId | undefined;
+    }
   | { kind: "thread"; record: ThreadContextRecord }
   | { kind: "environment"; record: EnvironmentContextRecord };
 
@@ -78,7 +103,7 @@ export const EMPTY_COMPOSER_CONTEXT_RECORDS: ComposerDraftContextRecords = new M
 
 export function uploadedContextRecordFromDraft(entry: ComposerDraftContextRecord) {
   if (entry.kind !== "image" && entry.kind !== "file") return null;
-  return uploadedAttachmentContextRecord(entry.record, entry.upload);
+  return uploadedAttachmentContextRecord(entry.record, entry.upload, entry.contextId);
 }
 
 export const ComposerContextRecordsContext = createContext<ComposerDraftContextRecords>(
@@ -93,9 +118,44 @@ export function composerContextRecordsFromDraft(input: {
   environmentContexts?: ReadonlyArray<EnvironmentContextRecord>;
   images?: ReadonlyArray<ComposerImageAttachment>;
   files?: ReadonlyArray<ComposerFileAttachment>;
+  existingAttachments?:
+    | ReadonlyArray<{
+        readonly attachment: ChatAttachment;
+        readonly url: string | null;
+        readonly contextIds?: ReadonlyArray<ComposerContextId> | undefined;
+      }>
+    | undefined;
+  environmentId?: EnvironmentId | undefined;
   uploadsByImageId?: Readonly<Record<string, AttachmentUploadState>>;
 }): ComposerDraftContextRecords {
   const records = new Map<string, ComposerDraftContextRecord>();
+  for (const entry of input.existingAttachments ?? []) {
+    for (const contextId of entry.contextIds ?? []) {
+      if (isQueuedImageAttachment(entry.attachment)) {
+        records.set(contextId, {
+          kind: "image",
+          contextId,
+          record: {
+            ...entry.attachment,
+            previewUrl: entry.url ?? "",
+            file: null,
+            uploadedAttachmentId: entry.attachment.id,
+          },
+        });
+      } else if (isQueuedFileAttachment(entry.attachment)) {
+        records.set(contextId, {
+          kind: "file",
+          contextId,
+          record: {
+            ...entry.attachment,
+            file: null,
+            uploadedAttachmentId: entry.attachment.id,
+            ...(input.environmentId ? { uploadEnvironmentId: input.environmentId } : {}),
+          },
+        });
+      }
+    }
+  }
   for (const record of input.images ?? []) {
     records.set(imageContextReference(record).contextId, {
       kind: "image",
@@ -141,13 +201,14 @@ function ContextChip(props: {
   detailsMode: ContextPresentationCapability["details"];
   kind: ContextChipKind;
 }) {
+  const kindLabel = props.kindLabel;
   if (props.detailsMode === "popover") {
     return (
       <ContextChipPopover
         kind={props.kind}
         icon={props.icon}
         label={props.label}
-        accessibleLabel={t("{kind}, {label}", { kind: props.kindLabel, label: props.label })}
+        accessibleLabel={t("{kind}, {label}", { kind: kindLabel, label: props.label })}
       >
         {props.details}
       </ContextChipPopover>
@@ -160,7 +221,7 @@ function ContextChip(props: {
       label={props.label}
       aria-label={
         props.detailsMode === "tooltip"
-          ? t("{kind}, {label}", { kind: props.kindLabel, label: props.label })
+          ? t("{kind}, {label}", { kind: kindLabel, label: props.label })
           : undefined
       }
       tooltip={props.detailsMode === "tooltip" ? props.details : undefined}
@@ -173,42 +234,41 @@ function useUploadStatusSuffix(
   upload: AttachmentUploadState | undefined,
 ): string | null {
   const progress = useAttachmentUploadProgress(key, upload);
-  if (upload?.status === "failed") return "upload failed";
+  if (upload?.status === "failed") return t("upload failed");
   return progress;
 }
 
 function attachmentTooltip(
-  attachment: ComposerImageAttachment | ComposerFileAttachment,
+  attachment: Pick<ComposerImageContextAttachment | ComposerFileAttachment, "name" | "sizeBytes">,
   upload: AttachmentUploadState | undefined,
+  resolve: typeof t,
 ): string {
-  const lines = [attachment.name, formatAttachmentSize(attachment.sizeBytes)];
-  if (upload?.status === "failed") lines.push("", upload.reason);
+  const lines = [attachment.name, formatAttachmentSize(attachment.sizeBytes, resolve)];
+  if (upload?.status === "failed") lines.push("", attachmentUploadFailureText(upload, resolve));
   return lines.join("\n");
 }
 
 function ImageContextChip(props: {
-  record: ComposerImageAttachment;
+  record: ComposerImageContextAttachment;
   upload: AttachmentUploadState | undefined;
 }) {
   const actions = use(ComposerContextActionsContext);
+
   const suffix = useUploadStatusSuffix(props.record.id, props.upload);
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <ImageChipButton
-            name={props.record.name}
-            previewUrl={props.record.previewUrl}
-            size={formatAttachmentSize(props.record.sizeBytes)}
-            suffix={suffix}
-            onClick={() => actions.expandImage(props.record.id)}
-          />
-        }
-      />
-      <TooltipPopup side="top" className="whitespace-pre-wrap">
-        {attachmentTooltip(props.record, props.upload)}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <ImageChipButton
+          name={props.record.name}
+          previewUrl={props.record.previewUrl}
+          size={formatAttachmentSize(props.record.sizeBytes, t)}
+          suffix={suffix}
+          onClick={() => actions.expandImage(props.record.id)}
+        />
+      }
+      label={attachmentTooltip(props.record, props.upload, t)}
+      className="whitespace-pre-wrap"
+    />
   );
 }
 
@@ -220,8 +280,8 @@ function FileContextChip(props: {
   const { resolvedTheme } = useTheme();
   const needsReattach = composerFileNeedsReattach(props.record);
   const uploadSuffix = useUploadStatusSuffix(props.record.id, props.upload);
-  const suffix = needsReattach ? "attach again" : uploadSuffix;
-  const size = formatAttachmentSize(props.record.sizeBytes);
+  const suffix = needsReattach ? t("attach again") : uploadSuffix;
+  const size = formatAttachmentSize(props.record.sizeBytes, t);
   const isVideo = videoMimeType(props.record) !== null;
   return (
     <FileChip
@@ -257,7 +317,7 @@ function FileContextChip(props: {
           ? t("{name} was not saved with this draft. Attach it again to send it.", {
               name: props.record.name,
             })
-          : attachmentTooltip(props.record, props.upload)
+          : attachmentTooltip(props.record, props.upload, t)
       }
     />
   );
@@ -265,16 +325,37 @@ function FileContextChip(props: {
 
 function PullRequestContextChip(props: { record: ReviewCommentContext; kind: ContextChipKind }) {
   const actions = use(ComposerContextActionsContext);
+
   const metadata = props.record.pullRequest;
   if (metadata === undefined) return null;
   return (
     <PullRequestChip
       metadata={metadata}
       environmentId={actions.environmentId}
-      label={reviewCommentContextLabel(props.record)}
-      kindLabel={pullRequestContextKindLabel(props.record)}
+      label={reviewCommentContextLabel(props.record, t)}
+      kindLabel={pullRequestContextKindLabel(props.record, t)}
       kind={props.kind}
       onOpen={actions.openPullRequest}
+    />
+  );
+}
+
+function ReviewCommentContextChip(props: {
+  record: ReviewCommentContext;
+  isPullRequest: boolean;
+  detailsMode: ContextPresentationCapability["details"];
+  kind: ContextChipKind;
+}) {
+  return (
+    <ContextChip
+      icon={props.isPullRequest ? <PullRequestGlyph.pullRequest /> : <MessageCircleIcon />}
+      label={reviewCommentContextLabel(props.record, t)}
+      kindLabel={
+        props.isPullRequest ? pullRequestContextKindLabel(props.record, t) : t("Review comment")
+      }
+      details={<ComposerReviewCommentDetails comment={props.record} />}
+      detailsMode={props.detailsMode}
+      kind={props.kind}
     />
   );
 }
@@ -307,7 +388,8 @@ function ComposerReviewCommentDetails({ comment }: { comment: ReviewCommentConte
       <div className="space-y-1">
         <div className="truncate text-xs font-medium text-foreground">{comment.filePath}</div>
         <div className="text-secondary-label text-2xs">
-          {comment.sectionTitle} · {comment.rangeLabel}
+          {reviewCommentSectionText(comment.sectionTitle, t)} ·{" "}
+          {reviewCommentRangeText(comment.rangeLabel, t)}
         </div>
       </div>
       {comment.text.trim() ? <ChatMarkdown text={comment.text.trim()} cwd={undefined} /> : null}
@@ -317,6 +399,28 @@ function ComposerReviewCommentDetails({ comment }: { comment: ReviewCommentConte
         </div>
       ) : null}
     </div>
+  );
+}
+
+function PreviewAnnotationContextChip(props: {
+  annotation: PreviewAnnotationPayload;
+  screenshot: ComposerImageAttachment | undefined;
+  detailsMode: ContextPresentationCapability["details"];
+}) {
+  return (
+    <ContextChip
+      icon={<MousePointerClickIcon />}
+      label={previewAnnotationContextLabel(props.annotation, t)}
+      kindLabel={t("Preview annotation")}
+      details={
+        <ComposerPreviewAnnotationDetails
+          annotation={props.annotation}
+          screenshot={props.screenshot}
+        />
+      }
+      detailsMode={props.detailsMode}
+      kind="preview-annotation"
+    />
   );
 }
 
@@ -443,13 +547,9 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
           );
         }
         return (
-          <ContextChip
-            icon={isPullRequest ? <PullRequestGlyph.pullRequest /> : <MessageCircleIcon />}
-            label={reviewCommentContextLabel(entry.record)}
-            kindLabel={
-              isPullRequest ? pullRequestContextKindLabel(entry.record) : t("Review comment")
-            }
-            details={<ComposerReviewCommentDetails comment={entry.record} />}
+          <ReviewCommentContextChip
+            record={entry.record}
+            isPullRequest={isPullRequest}
             detailsMode={definition.capabilities.details}
             kind={isPullRequest ? PULL_REQUEST_CHIP_KINDS[pullRequestState] : "review-comment"}
           />
@@ -461,18 +561,10 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
       canRender: (entry) => entry.kind === "preview-annotation",
       render: (entry, context, definition) =>
         entry.kind === "preview-annotation" ? (
-          <ContextChip
-            icon={<MousePointerClickIcon />}
-            label={previewAnnotationContextLabel(entry.record)}
-            kindLabel={t("Preview annotation")}
-            details={
-              <ComposerPreviewAnnotationDetails
-                annotation={entry.record}
-                screenshot={entry.screenshot}
-              />
-            }
+          <PreviewAnnotationContextChip
+            annotation={entry.record}
+            screenshot={entry.screenshot}
             detailsMode={definition.capabilities.details}
-            kind="preview-annotation"
           />
         ) : (
           <UnresolvedContextChip label={context.label} />

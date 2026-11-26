@@ -1,4 +1,7 @@
+import { msg, t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+
 import {
   type EnvironmentId,
   type ProjectListEntriesResult,
@@ -16,7 +19,6 @@ import { useFilesystemReadAccess } from "~/state/filesystem";
 import { projectEnvironment } from "~/state/projects";
 import { useProjectPathSearch } from "~/state/queries";
 import { revisionedQuery } from "~/state/revisionedQuery";
-import { t } from "~/i18n";
 
 const EMPTY_PROJECT_FILE_PATH = "";
 const EMPTY_PROJECT_ENTRIES_QUERY_ATOM = Atom.make(
@@ -176,9 +178,9 @@ function failureCause<A>(result: AsyncResult.AsyncResult<A, unknown>): unknown {
   return result._tag === "Failure" ? Cause.squash(result.cause) : null;
 }
 
-function errorMessage(cause: unknown): string | null {
+function errorMessage(cause: unknown, resolve: typeof t): string | null {
   if (cause === null) return null;
-  return cause instanceof Error ? cause.message : t("Workspace query failed.");
+  return thrownErrorMessage(cause, resolve) ?? resolve(msg("Workspace query failed."));
 }
 
 const isProjectReadFileError = Schema.is(ProjectReadFileError);
@@ -189,8 +191,9 @@ export function useProjectEntriesQuery(
   cwd: string,
   directoryPath?: string,
   revision?: string | null,
+  resolve: typeof t = t,
 ): ProjectQueryState<ProjectListEntriesResult> {
-  const fileAccess = useFilesystemReadAccess(environmentId);
+  const fileAccess = useFilesystemReadAccess(environmentId, resolve);
   const { canReadFiles } = fileAccess;
   const atom = canReadFiles
     ? getProjectEntriesQueryAtom(environmentId, cwd, directoryPath)
@@ -203,8 +206,8 @@ export function useProjectEntriesQuery(
     error: fileAccess.isPending
       ? null
       : canReadFiles
-        ? errorMessage(failureCause(result))
-        : (fileAccess.error ?? t("This connection cannot read host files.")),
+        ? errorMessage(failureCause(result), resolve)
+        : (fileAccess.error ?? resolve(msg("This connection cannot read host files."))),
     isPending: fileAccess.isPending || result.waiting,
     refresh,
   };
@@ -217,6 +220,7 @@ export function useProjectFilePickerQuery(
   query: string,
   limit: number,
   options?: { readonly imageOnly?: boolean },
+  resolve: typeof t = t,
 ) {
   const search = useProjectPathSearch(
     {
@@ -228,6 +232,7 @@ export function useProjectFilePickerQuery(
     },
     limit,
     { allowEmptyQuery: true },
+    resolve,
   );
 
   return {
@@ -243,9 +248,10 @@ export function useProjectFileQuery(
   cwd: string,
   relativePath: string | null,
   enabled = true,
+  resolve: typeof t = t,
 ): ProjectFileQueryState {
   // Read media-like paths too; a failed read is how folders with those names are detected.
-  const fileAccess = useFilesystemReadAccess(environmentId);
+  const fileAccess = useFilesystemReadAccess(environmentId, resolve);
   const { canReadFiles } = fileAccess;
   const isQueryEnabled = enabled;
   const atom =
@@ -272,10 +278,10 @@ export function useProjectFileQuery(
       !isQueryEnabled || fileAccess.isPending
         ? null
         : canReadFiles
-          ? isMissing && !optimisticFile
-            ? `'${relativePath}' does not exist.`
-            : errorMessage(cause)
-          : (fileAccess.error ?? t("This connection cannot read host files.")),
+          ? isMissing && relativePath !== null && !optimisticFile
+            ? resolve(msg("'{path}' does not exist."), { path: relativePath })
+            : errorMessage(cause, resolve)
+          : (fileAccess.error ?? resolve(msg("This connection cannot read host files."))),
     isPending: isQueryEnabled && (fileAccess.isPending || result.waiting),
     readError,
     isNotFile,

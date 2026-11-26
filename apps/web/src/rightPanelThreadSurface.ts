@@ -4,22 +4,25 @@ import * as Schema from "effect/Schema";
 
 export interface ThreadPanelSurface {
   id: `thread:${string}`;
-  kind: "thread";
+  kind: "workspace-thread";
   threadRef: ScopedThreadRef;
 }
 
 export function threadPanelSurface(threadRef: ScopedThreadRef): ThreadPanelSurface {
-  return { kind: "thread", id: `thread:${scopedThreadKey(threadRef)}`, threadRef };
+  return { kind: "workspace-thread", id: `thread:${scopedThreadKey(threadRef)}`, threadRef };
 }
 
 const isThreadRef = Schema.is(ScopedThreadRef);
 
-export function isThreadPanelSurface(value: unknown): value is ThreadPanelSurface {
-  if (typeof value !== "object" || value === null) return false;
+/** Restores workspace tabs saved with the former thread kind and rejects mismatched scoped ids. */
+export function decodeThreadPanelSurface(value: unknown): ThreadPanelSurface | null {
+  if (typeof value !== "object" || value === null) return null;
   const surface = value as Partial<Record<keyof ThreadPanelSurface, unknown>>;
-  return (
-    surface.kind === "thread" &&
-    isThreadRef(surface.threadRef) &&
-    surface.id === threadPanelSurface(surface.threadRef).id
-  );
+  if (
+    (surface.kind !== "thread" && surface.kind !== "workspace-thread") ||
+    !isThreadRef(surface.threadRef)
+  )
+    return null;
+  const decoded = threadPanelSurface(surface.threadRef);
+  return surface.id === decoded.id ? decoded : null;
 }

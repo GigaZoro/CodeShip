@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type * as React from "react";
 import type {
   EnvironmentId,
@@ -6,9 +7,11 @@ import type {
   PullRequestRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+
 import { useState } from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
+
 import { cn } from "~/lib/utils";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
@@ -16,16 +19,16 @@ import { useEnvironmentQuery } from "~/state/query";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { groupPullRequestChecks } from "./pullRequestDetail.logic";
 import {
   PullRequestCheckStatusIcon,
+  pullRequestChecksCountLabel,
   pullRequestCheckStatusLabel,
   pullRequestChecksStatePresentation,
   summarizePullRequestChecks,
 } from "./pullRequestPresentation";
-import { t, tx } from "~/i18n";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 // Fetch only on open to avoid per-row requests.
 function LazyChecksBody({
@@ -39,6 +42,7 @@ function LazyChecksBody({
 }) {
   const detailQuery = useEnvironmentQuery(
     pullRequestEnvironment.detail({ environmentId, input: reference }),
+    t,
   );
   if (detailQuery.error !== null) {
     return <p className="text-muted-foreground text-xs">{detailQuery.error}</p>;
@@ -87,12 +91,12 @@ function ChecksBody({
                 className="col-span-full grid grid-cols-subgrid items-center text-xs"
               >
                 <PullRequestCheckStatusIcon status={check.status} />
-                <Tooltip>
-                  <TooltipTrigger render={<span className="min-w-0 truncate">{check.name}</span>} />
-                  <TooltipPopup side="top">{check.description ?? check.name}</TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger
+                  render={<span className="min-w-0 truncate">{check.name}</span>}
+                  label={check.description ?? check.name}
+                />
                 <span className="justify-self-end whitespace-nowrap text-muted-foreground">
-                  {pullRequestCheckStatusLabel(check)}
+                  {pullRequestCheckStatusLabel(check, t)}
                 </span>
                 {check.url === null ? null : (
                   <button
@@ -152,14 +156,9 @@ export function PullRequestChecksPopover({
   className?: string;
   render?: React.ReactElement;
 }) {
-  const presentation = pullRequestChecksStatePresentation(checksState);
-  const incompleteCount =
-    checks?.filter((check) => check.status === "pending" || check.status === "action-required")
-      .length ?? 0;
-  const failedCount =
-    checks?.filter((check) => check.status === "failure" || check.status === "cancelled").length ??
-    0;
-  const summary = checks === undefined || stale ? null : summarizePullRequestChecks(checks);
+  const presentation = pullRequestChecksStatePresentation(checksState, t);
+  const countLabel = checks === undefined ? null : pullRequestChecksCountLabel(checks, t);
+  const summary = checks === undefined || stale ? null : summarizePullRequestChecks(checks, t);
   return (
     <Popover>
       <PopoverTrigger
@@ -167,7 +166,7 @@ export function PullRequestChecksPopover({
         aria-label={
           variant === "count"
             ? t("Open checks: {summary}", { summary: summary ?? presentation.label })
-            : t("Checks: {status}", { status: presentation.label })
+            : t("Checks: {summary}", { summary: presentation.label })
         }
         render={
           variant === "count" ? (
@@ -183,25 +182,8 @@ export function PullRequestChecksPopover({
         onClick={(event) => event.stopPropagation()}
       >
         <presentation.Icon aria-hidden className={cn("size-3.5", presentation.toneClassName)} />
-        {variant === "count" ? (
-          <>
-            {checks !== undefined && incompleteCount > 0 ? (
-              // Clip the second line so "checks" disappears whole when the count must shrink.
-              <span className="h-lh min-w-0 overflow-hidden text-left whitespace-normal tabular-nums">
-                {tx("{progress} checks", {
-                  progress: (
-                    <span className="whitespace-nowrap">
-                      {checks.length - incompleteCount}/{checks.length}
-                    </span>
-                  ),
-                })}
-              </span>
-            ) : failedCount > 0 ? (
-              <span className="min-w-0 truncate tabular-nums">
-                {t("{count} failed", { count: failedCount })}
-              </span>
-            ) : null}
-          </>
+        {variant === "count" && countLabel !== null ? (
+          <span className="min-w-0 truncate tabular-nums">{countLabel}</span>
         ) : null}
       </PopoverTrigger>
       <PopoverPopup align="start" width="md" side="bottom">

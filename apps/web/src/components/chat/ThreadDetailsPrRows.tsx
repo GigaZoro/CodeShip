@@ -1,5 +1,6 @@
+import { t } from "~/i18n";
 import { pipe } from "effect/Function";
-import { ThreadDetailsControl } from "./ThreadDetailsControl";
+import { ThreadDetailsMoreButton } from "./ThreadDetailsControl";
 import type {
   EnvironmentId,
   ScopedThreadRef,
@@ -13,7 +14,7 @@ import {
   threadPullRequestKeyOf,
   visibleThreadPullRequests,
 } from "@t3tools/client-runtime/thread-pull-requests";
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+
 import { useState, type ComponentProps, type MouseEvent as ReactMouseEvent } from "react";
 
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -35,7 +36,6 @@ import {
 } from "../ThreadStatusIndicators";
 
 import { ThreadDetailsPrRow } from "./ThreadDetailsPrRow";
-import { t } from "~/i18n";
 
 function ThreadDetailsPrLinkRow({
   environmentId,
@@ -69,10 +69,9 @@ function ThreadDetailsPrLinkRow({
       pr={pr}
       number={link.number}
       reference={link}
-      status={prStatusIndicator(pr, linked?.sourceControlProvider)}
+      status={prStatusIndicator(pr, linked?.sourceControlProvider, t)}
       project={project}
       label={`#${link.number}${link.snapshot === null ? "" : `: ${link.snapshot.title}`}`}
-      openAriaLabel={link.url}
       onOpen={onOpen}
       onStopWatching={onStopWatching}
       composerTarget={composerTarget}
@@ -136,22 +135,11 @@ function ThreadDetailsPrRows({
           ))}
         </div>
       ) : null}
-      <ThreadDetailsControl
-        variant="ghost"
-        size="sm"
-        onClick={() => setExpanded(!expanded)}
-        part="row"
-        tone="muted"
-        className="w-full active:scale-100"
-      >
-        {/* Chevrons, not plus and minus: the plus already means "add" in this card. */}
-        {expanded ? (
-          <ChevronUpIcon aria-hidden className="size-4 shrink-0" />
-        ) : (
-          <ChevronDownIcon aria-hidden className="size-4 shrink-0" />
-        )}
-        {expanded ? t("Show less") : t("Show {count} more", { count: rest.length })}
-      </ThreadDetailsControl>
+      <ThreadDetailsMoreButton
+        expanded={expanded}
+        remaining={rest.length}
+        onToggle={() => setExpanded(!expanded)}
+      />
     </>
   );
 }
@@ -208,7 +196,6 @@ export function ThreadDetailsThreadPrRows({
       status={displayed.status}
       project={rowProject}
       label={`#${number}${pr?.title.trim() ? `: ${pr.title}` : ""}`}
-      openAriaLabel={url}
       onOpen={(event) => openPrLink(event, url)}
       composerTarget={composerTarget}
       {...(onActed ? { onActed } : {})}

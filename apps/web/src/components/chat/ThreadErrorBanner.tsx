@@ -1,3 +1,4 @@
+import { msg, t } from "~/i18n";
 import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import {
   CHATGPT_APP_CAP_CODE,
@@ -5,7 +6,9 @@ import {
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
 } from "@t3tools/shared/usageLimits";
+
 import { memo } from "react";
+
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -14,10 +17,13 @@ import { CircleAlertIcon, XIcon } from "lucide-react";
 import { OpenAI } from "../Icons";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { ExpandableText } from "../settings/ExpandableText";
-import { t } from "~/i18n";
 
 export function copyAdminRequest() {
-  void writeTextToClipboard(CHATGPT_WORKSPACE_ADMIN_REQUEST, t("admin request")).then(
+  void writeTextToClipboard(CHATGPT_WORKSPACE_ADMIN_REQUEST, {
+    target: "admin request",
+    unavailableMessage: msg("Clipboard API is unavailable while copying admin request."),
+    failureMessage: msg("Failed to copy admin request to the clipboard."),
+  }).then(
     () =>
       toastManager.add({
         type: "success",
@@ -47,8 +53,12 @@ export function getThreadErrorBannerMessage(error: string): string {
     : error;
 }
 
-export function getThreadErrorBannerKey(threadKey: string, error: string | null): string | null {
-  return error === null ? null : `${threadKey}\u0000${error}`;
+export function getThreadErrorBannerKey(
+  threadKey: string,
+  error: string | null,
+  source: string | null = null,
+): string | null {
+  return error === null ? null : `${threadKey}\u0000${source ?? ""}\u0000${error}`;
 }
 
 export function shouldShowThreadErrorBanner(

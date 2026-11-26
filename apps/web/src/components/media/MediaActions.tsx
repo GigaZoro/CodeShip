@@ -1,3 +1,6 @@
+import { msg, t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { contextMenuSourceOf } from "../../contextMenuSource";
 import {
   formatFilePathForClipboard,
   type MediaActionId,
@@ -15,8 +18,10 @@ import {
   type EnvironmentId,
   sessionGrantsScope,
   type SessionGrantInput,
+  type ContextMenuSource,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
+
 import { useRef, useState, type ReactElement } from "react";
 
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
@@ -25,12 +30,12 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { assetEnvironment } from "../../state/assets";
 import { useEnvironmentQuery } from "../../state/query";
 import { environmentSession, readPreparedConnection } from "../../state/session";
+
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { downloadMedia, readMediaPng } from "./mediaContent";
 
-import { t } from "~/i18n";
 export interface MediaActionSource {
   readonly kind: "image" | "video";
   readonly name: string;
@@ -80,7 +85,9 @@ export function useMediaActions(source: MediaActionSource) {
   const actionUrl = async () => {
     assertCanReadMedia();
     if (!source.asset) {
-      if (!source.src) throw new Error(t("This media is unavailable. Try reopening the preview."));
+      if (!source.src) {
+        throw new Error(t("This media is unavailable. Try reopening the preview."));
+      }
       return source.src;
     }
     const { environmentId, resource } = source.asset;
@@ -126,7 +133,7 @@ export function MediaActions({
   const reference = source.reference;
   const tooltip = reference?.kind === "file" ? reference.path : (reference?.url ?? source.name);
 
-  const showMenu = async (position: { x: number; y: number }) => {
+  const showMenu = async (position: { x: number; y: number }, menuSource: ContextMenuSource) => {
     const api = readLocalApi();
     if (!api || menuOpen.current) return;
     menuOpen.current = true;
@@ -149,7 +156,11 @@ export function MediaActions({
         items.push({ id: "copy-url", label: t("Copy URL") });
       }
       if (source.onOpenFile)
-        items.push({ id: "open-file", label: t("Open in file viewer"), disabled: !canReadMedia });
+        items.push({
+          id: "open-file",
+          label: t("Open in file viewer"),
+          disabled: !canReadMedia,
+        });
       items.push({
         id: "save",
         label: isImage ? t("Save image") : t("Save video"),
@@ -163,19 +174,24 @@ export function MediaActions({
         });
       }
 
-      const action = await api.contextMenu.show(items, position);
+      const action = await api.contextMenu.show(items, position, menuSource);
       if (!action) return;
-      failureTitle = (
-        {
-          "copy-full-path": t("Could not copy full path"),
-          "copy-relative-path": t("Could not copy relative path"),
-          "copy-url": t("Could not copy URL"),
-          "open-file": t("Could not open in file viewer"),
-          save: isImage ? t("Could not save image") : t("Could not save video"),
-          "save-image": t("Could not save image"),
-          "copy-image": t("Could not copy image"),
-        } satisfies Record<MediaActionId, string>
-      )[action];
+      failureTitle =
+        action === "copy-full-path"
+          ? t("Could not copy full path")
+          : action === "copy-relative-path"
+            ? t("Could not copy relative path")
+            : action === "copy-url"
+              ? t("Could not copy url")
+              : action === "open-file"
+                ? t("Could not open in file viewer")
+                : action === "save"
+                  ? isImage
+                    ? t("Could not save image")
+                    : t("Could not save video")
+                  : action === "copy-image"
+                    ? t("Could not copy image")
+                    : t("Could not complete media action");
       const text =
         action === "copy-full-path" && reference?.kind === "file"
           ? reference.path
@@ -189,7 +205,17 @@ export function MediaActions({
           reference?.kind === "file" ? formatFilePathForClipboard(text, reference.path) : text;
         await writeTextToClipboard(
           clipboardText,
-          reference?.kind === "file" ? t("file path") : t("URL"),
+          reference?.kind === "file"
+            ? {
+                target: "file path",
+                unavailableMessage: msg("Clipboard API is unavailable while copying file path."),
+                failureMessage: msg("Failed to copy file path to the clipboard."),
+              }
+            : {
+                target: "URL",
+                unavailableMessage: msg("Clipboard API is unavailable while copying URL."),
+                failureMessage: msg("Failed to copy URL to the clipboard."),
+              },
         );
       } else if (action === "open-file") {
         assertCanReadMedia();
@@ -213,7 +239,7 @@ export function MediaActions({
       const toast = stackedThreadToast({
         type: "error",
         title: failureTitle,
-        description: error instanceof Error ? error.message : t("The media action failed."),
+        description: thrownErrorMessage(error, t) ?? t("The media action failed."),
       });
       if (progressToast) toastManager.update(progressToast, toast);
       else toastManager.add(toast);
@@ -235,6 +261,7 @@ export function MediaActions({
             event.clientX === 0 && event.clientY === 0
               ? { x: bounds.left, y: bounds.bottom }
               : { x: event.clientX, y: event.clientY },
+            contextMenuSourceOf(event),
           );
         }}
         onKeyDown={(event) => {
@@ -246,7 +273,7 @@ export function MediaActions({
           event.preventDefault();
           event.stopPropagation();
           const bounds = event.currentTarget.getBoundingClientRect();
-          void showMenu({ x: bounds.left, y: bounds.bottom });
+          void showMenu({ x: bounds.left, y: bounds.bottom }, "keyboard");
         }}
       />
       <TooltipPopup variant="code">{tooltip}</TooltipPopup>

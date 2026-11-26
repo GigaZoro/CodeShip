@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type {
   EnvironmentId,
   ProviderInstanceId,
@@ -9,7 +10,6 @@ import { useState } from "react";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { toastManager } from "../ui/toast";
 import { usageLimitsBannerItem } from "./ComposerUsageLimits";
-import { t } from "~/i18n";
 
 /** Keep opened data live. Retain hidden panels during reconnect; clear when quota-spending work resumes. */
 export function useUsageLimitsPanel(input: {
@@ -17,6 +17,7 @@ export function useUsageLimitsPanel(input: {
   readonly threadKey: string;
   readonly panelKey: string | null;
   readonly providerInstanceId: ProviderInstanceId | null;
+  readonly model: string | null;
   readonly providerDriver: ServerProvider["driver"] | null;
   readonly providers: readonly ServerProvider[];
   readonly sources: UsageLimitSourceSnapshots;
@@ -26,10 +27,12 @@ export function useUsageLimitsPanel(input: {
     threadKey,
     panelKey,
     providerInstanceId,
+    model,
     providerDriver,
     providers,
     sources,
   } = input;
+
   const [panel, setPanel] = useState<{
     readonly key: string;
     readonly threadKey: string;
@@ -40,13 +43,17 @@ export function useUsageLimitsPanel(input: {
   }
   const report =
     panel !== null && panelKey !== null && panel.key === panelKey && providerInstanceId !== null
-      ? collectProviderUsageLimits(providerInstanceId, providers, sources, panel.now)
+      ? collectProviderUsageLimits(providerInstanceId, providers, sources, panel.now, model)
       : null;
   const banner =
     report !== null && panel !== null
       ? // A fresh id per opening: the stack keeps the last dismissed id as "exiting".
-        usageLimitsBannerItem(`usage-limits:${panel.key}:${panel.now}`, report, environmentId, () =>
-          setPanel(null),
+        usageLimitsBannerItem(
+          `usage-limits:${panel.key}:${panel.now}`,
+          report,
+          environmentId,
+          () => setPanel(null),
+          t,
         )
       : null;
   // Intercept /usage-limits only when Limits has selected-provider data.
@@ -57,7 +64,7 @@ export function useUsageLimitsPanel(input: {
     const now = Date.now();
     const nextReport =
       providerInstanceId !== null && panelKey !== null
-        ? collectProviderUsageLimits(providerInstanceId, providers, sources, now)
+        ? collectProviderUsageLimits(providerInstanceId, providers, sources, now, model)
         : null;
     if (nextReport && panelKey !== null) {
       setPanel({ key: panelKey, threadKey, now });

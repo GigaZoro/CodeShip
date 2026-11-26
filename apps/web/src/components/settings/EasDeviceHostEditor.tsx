@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomValue } from "@effect/atom-react";
 import { useId, useRef, useState } from "react";
 import * as Cause from "effect/Cause";
@@ -40,7 +41,7 @@ const CREDENTIAL_SOURCES: Record<DeviceEasAccount["credentialSource"], Message> 
 
 const failureMessage = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error);
 };
 
 type AccountCheck =
@@ -149,10 +150,10 @@ export function EasDeviceHostEditor(props: {
         type="number"
         min={1}
         max={max}
-        value={draft[field]}
+        value={Number.isNaN(draft[field]) ? "" : draft[field]}
         disabled={props.busy}
         onChange={(event) => {
-          const value = Number(event.target.value);
+          const value = event.target.valueAsNumber;
           setDraft((current) => ({ ...current, [field]: value }));
         }}
       />

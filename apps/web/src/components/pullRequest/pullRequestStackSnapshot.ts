@@ -1,5 +1,5 @@
+import { msg, t } from "~/i18n";
 import type { PullRequestRef, PullRequestStack, ThreadPullRequestLink } from "@t3tools/contracts";
-import { t } from "~/i18n";
 
 /** Saved membership supports navigation, never action head SHAs. */
 export function savedPullRequestStack(
@@ -56,18 +56,20 @@ export function pullRequestStackView(
     error: string | null;
   },
   saved: PullRequestStack | null,
+  resolve: typeof t = t,
 ) {
   const data = query.isSuccess ? query.data : (query.data ?? saved);
   return {
     data,
-    isFresh: query.isSuccess,
+    // A settled read: one still out may be showing an answer restored from the device.
+    isFresh: query.isSuccess && !query.isPending,
     notice:
       data === null
         ? null
         : query.error
-          ? t("Stack data may be stale. We couldn’t refresh it.")
+          ? resolve(msg("Stack data may be stale. We couldn’t refresh it."))
           : !query.isSuccess || query.isPending
-            ? t("Refreshing stack… Showing saved data.")
+            ? resolve(msg("Refreshing stack… Showing saved data."))
             : null,
   };
 }

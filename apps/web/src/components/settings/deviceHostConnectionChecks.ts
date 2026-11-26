@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { t } from "~/i18n";
 import {
   type DeviceHostSummary,
@@ -61,7 +62,8 @@ export async function checkDeviceHostConnections(
       } catch (error) {
         report(target.environmentId, {
           status: "failed",
-          error: error instanceof Error ? error.message : String(error),
+          error:
+            error instanceof Error ? (thrownErrorMessage(error) ?? error.message) : String(error),
         });
       }
     }),

@@ -1,3 +1,4 @@
+import { t, msg, type Message } from "~/i18n";
 import {
   hasUnseenCompletion,
   isThreadWaitingOnWork,
@@ -9,7 +10,7 @@ import {
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
 export { hasUnseenCompletion } from "@t3tools/client-runtime/state/thread-status";
-import { t, type Message } from "~/i18n";
+
 import {
   resolveThreadFolders,
   type ThreadFolderEntry,
@@ -23,6 +24,7 @@ import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/mod
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
+
 import {
   isAtomCommandInterrupted,
   type AtomCommandResult,
@@ -35,7 +37,6 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
 import {
-  isListedThreadLineage,
   threadFolderKeyOf,
   type ContextMenuItem,
   type EnvironmentId,
@@ -217,11 +218,18 @@ export function useSnoozeWakeClock(
   return clockMs;
 }
 
-// Live status that says the cwd is not a repository means the checkout was removed.
+// Live status that says the cwd is not a repository means the checkout was removed. A worktree
+// thread of a project with tracked folders may sit in a plain task folder, which never is one.
 export function withoutRemovedCheckout<
   T extends { readonly branch: string | null; readonly worktreePath: string | null },
->(thread: T, gitStatus: { readonly isRepo?: boolean | undefined } | null): T {
-  return gitStatus?.isRepo === false ? { ...thread, branch: null, worktreePath: null } : thread;
+>(
+  thread: T,
+  gitStatus: { readonly isRepo?: boolean | undefined } | null,
+  project: { readonly trackedFolders?: ReadonlyArray<unknown> | undefined } | null,
+): T {
+  if (gitStatus?.isRepo !== false) return thread;
+  if (thread.worktreePath !== null && (project?.trackedFolders?.length ?? 0) > 0) return thread;
+  return { ...thread, branch: null, worktreePath: null };
 }
 
 export function useRetainedValue<T>(key: string | null, value: T | null): T | null {
@@ -699,30 +707,6 @@ export async function deleteSelectedThreadEntries<
   return { deletedThreadKeys, firstFailure };
 }
 
-export function isSidebarHiddenThread(thread: Pick<SidebarThreadSummary, "lineage">): boolean {
-  return !isListedThreadLineage(thread.lineage);
-}
-
-// Subagent and side-chat threads have no sidebar row, so an open one is represented by
-// its nearest listed ancestor. A broken chain (missing parent, cycle,
-// other environment) resolves to the thread itself, which then matches no row.
-export function resolveSidebarRowThreadId(
-  threadId: ThreadId,
-  environmentId: EnvironmentId,
-  threads: readonly Pick<SidebarThreadSummary, "id" | "environmentId" | "lineage">[],
-): ThreadId {
-  const findThread = (id: ThreadId) =>
-    threads.find((thread) => thread.id === id && thread.environmentId === environmentId);
-  const visited = new Set<ThreadId>();
-  let thread = findThread(threadId);
-  while (thread !== undefined && isSidebarHiddenThread(thread)) {
-    if (thread.lineage.parentThreadId === null || visited.has(thread.id)) return threadId;
-    visited.add(thread.id);
-    thread = findThread(thread.lineage.parentThreadId);
-  }
-  return thread?.id ?? threadId;
-}
-
 /**
  * `delegatedUnderParent` holds the tasks linked environments run for a thread
  * the sidebar lists, by thread key; they show under that thread, as subagents do.
@@ -764,13 +748,13 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
   if (input.actionableCount === 0) {
     return {
       id: "regenerate-title",
-      label: t("Regenerating… ({count})", { count: input.supportedCount }),
+      label: t(msg("Regenerating… ({count})"), { count: input.supportedCount }),
       disabled: true,
     };
   }
   return {
     id: "regenerate-title",
-    label: t("Regenerate titles ({count})", { count: input.actionableCount }),
+    label: t(msg("Regenerate titles ({count})"), { count: input.actionableCount }),
   };
 }
 
@@ -785,7 +769,7 @@ export function buildBulkUnpinContextMenuItem(input: {
   pinnedCount: number;
 }): ContextMenuItem<"unpin"> | null {
   if (input.pinnedCount === 0) return null;
-  return { id: "unpin", label: t("Unpin ({count})", { count: input.pinnedCount }) };
+  return { id: "unpin", label: t(msg("Unpin ({count})"), { count: input.pinnedCount }) };
 }
 
 export interface ThreadStatusPill {
@@ -877,12 +861,15 @@ const threadJumpModifierHold = createModifierHoldStore(THREAD_JUMP_HINT_SHOW_DEL
 
 function subscribeToThreadJumpHintInputs(listener: () => void): () => void {
   const unsubscribeHold = threadJumpModifierHold.subscribe(listener);
+  // The snapshot reads the modifiers; the hold stays silent when it is true across a change.
+  const unsubscribeModifiers = shortcutModifierStore.subscribe(listener);
   const unsubscribeFocus = subscribeToTerminalFocusChanges(listener);
   const unsubscribeTerminals = useTerminalUiStateStore.subscribe(listener);
   const unsubscribeRightPanels = useRightPanelStore.subscribe(listener);
   const unsubscribeModelPicker = subscribeToModelPickerVisibility(listener);
   return () => {
     unsubscribeHold();
+    unsubscribeModifiers();
     unsubscribeFocus();
     unsubscribeTerminals();
     unsubscribeRightPanels();
@@ -980,6 +967,35 @@ export function newThreadAsksForProject(
   projectGroupCount: number,
 ): boolean {
   return !grouping.project && openProjectGroupCount !== 1 && projectGroupCount > 0;
+}
+
+/**
+ * A sidebar filtered to one project already says where the next thread belongs,
+ * so New skips the picker there. A project grouped across environments keeps the
+ * viewed thread's environment when that thread belongs to the group.
+ */
+export function resolveScopedNewThreadProjectRef<
+  TRef extends { readonly environmentId: string; readonly projectId: string },
+>(input: {
+  shiftKey: boolean;
+  scopedProjectGroups: readonly {
+    readonly environmentId: string;
+    readonly id: string;
+    readonly memberProjectRefs: readonly TRef[];
+  }[];
+  viewed: { readonly environmentId: string; readonly projectId: string } | null | undefined;
+}): TRef | null {
+  const [group, ...otherGroups] = input.scopedProjectGroups;
+  if (input.shiftKey || !group || otherGroups.length > 0) return null;
+  const memberAt = (environmentId: string, projectId: string) =>
+    group.memberProjectRefs.find(
+      (ref) => ref.environmentId === environmentId && ref.projectId === projectId,
+    );
+  return (
+    (input.viewed && memberAt(input.viewed.environmentId, input.viewed.projectId)) ??
+    memberAt(group.environmentId, group.id) ??
+    null
+  );
 }
 
 export function orderItemsByPreferredIds<TItem, TId>(input: {
@@ -1083,18 +1099,21 @@ export function resolveSidebarRowStatus(
 }
 
 /** What the window title says the open thread is doing, in the words its announcer uses. */
-export function resolveWindowTitleThreadStatus(thread: ThreadRowStatusInput): string | null {
+export function resolveWindowTitleThreadStatus(
+  thread: ThreadRowStatusInput,
+  resolve: typeof t = t,
+): string | null {
   // A guest waiting doesn't hide that the agent is still working.
   switch (resolveThreadStatus({ ...thread, pendingGuestMessageCount: 0 })) {
     case "approval":
-      return THREAD_STATUS_TEXT.approval;
+      return resolve(THREAD_STATUS_TEXT.approval);
     case "input":
-      return THREAD_STATUS_TEXT.input;
+      return resolve(THREAD_STATUS_TEXT.input);
     case "working":
-      return THREAD_STATUS_TEXT.working;
+      return resolve(THREAD_STATUS_TEXT.working);
     case "waiting":
       // Waiting on a child thread is still this turn, so it must not read as finished.
-      return thread.runtime?.status === "running" ? THREAD_STATUS_TEXT.working : null;
+      return thread.runtime?.status === "running" ? resolve(THREAD_STATUS_TEXT.working) : null;
     default:
       return null;
   }
@@ -1535,6 +1554,8 @@ export function pullRequestMatchesSearchQuery(
   return normalizedQuery.split(" ").every((token) => haystack.includes(token));
 }
 
+export const ADD_PROJECT_SCOPE_ITEM_VALUE = "add-project";
+
 export function filterSidebarProjectScopeItems<TItem extends { readonly value: string }>(input: {
   items: readonly TItem[];
   query: string;
@@ -1542,7 +1563,12 @@ export function filterSidebarProjectScopeItems<TItem extends { readonly value: s
 }): readonly TItem[] {
   const query = input.query.trim();
   if (query.length === 0) return input.items;
-  return input.items.filter((item) => item.value !== "all" && input.matches(item, query));
+  return input.items.filter(
+    (item) =>
+      item.value !== "all" &&
+      item.value !== ADD_PROJECT_SCOPE_ITEM_VALUE &&
+      input.matches(item, query),
+  );
 }
 
 interface SidebarProjectScopeMenuState {
@@ -1643,11 +1669,15 @@ export function resolveThreadStatusPill(input: {
   ) {
     return statusPill("starting", true);
   }
-  if (isThreadWaitingOnWork(thread)) {
+  if (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) {
     return statusPill("waiting");
   }
+  // A failed run goes to the inbox even while background work holds the thread.
   if (hasUnseenRunFailure(thread)) {
     return statusPill(thread.runtime?.lastErrorClass === "usage_limit" ? "limited" : "failed");
+  }
+  if (isThreadWaitingOnWork(thread)) {
+    return statusPill("waiting");
   }
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&

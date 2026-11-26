@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import {
   olderSettledViewRequestSetters,
   type OlderSettledScope,
@@ -425,6 +426,7 @@ export function useThreadListV2(input: {
         queuedThreadKeys: input.queuedThreadKeys,
         moveAvailability,
         shelfPreferencesLoading: !input.shelfPreferencesLoaded,
+        resolve: t,
       }),
     [
       layout,

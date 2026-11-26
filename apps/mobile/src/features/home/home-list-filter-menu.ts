@@ -1,3 +1,7 @@
+import { distinctEnvironmentLabels } from "@t3tools/client-runtime/connection";
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
+import type { WorkspaceEnvironment } from "../../state/workspaceModel";
 import {
   THREAD_LIST_STATUS_LABELS,
   ThreadListStatusFilter,
@@ -197,6 +201,24 @@ export function handleGroupByMenuEvent(event: string, handlers: ThreadListGroupi
 export interface HomeListFilterMenuEnvironment {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+}
+
+export function homeListFilterEnvironments(environments: ReadonlyArray<WorkspaceEnvironment>) {
+  const enabled = environments.filter((environment) => environment.isEnabled);
+  const labels = distinctEnvironmentLabels(
+    enabled.map(({ environmentLabel, displayUrl }) => ({
+      label: environmentLabel,
+      displayUrl,
+    })),
+  );
+  return Arr.sort(
+    enabled.map((environment, index) => ({
+      environmentId: environment.environmentId,
+      label: labels[index] ?? environment.environmentLabel,
+      connectionState: environment.connectionState,
+    })),
+    Order.mapInput(Order.String, (environment: { readonly label: string }) => environment.label),
+  );
 }
 
 export interface HomeListFilterMenuProject {

@@ -1,12 +1,13 @@
 import type { ThreadListSort } from "@t3tools/client-runtime/state/thread-sort";
 import type { ThreadListStatusFilter } from "@t3tools/client-runtime/state/thread-status";
 import type { EnvironmentId, SidebarProjectGroupingMode } from "@t3tools/contracts";
-import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { createContext, createElement, useContext, useState, type PropsWithChildren } from "react";
 
 import type { ThreadListFilters } from "../../persistence/mobile-preferences";
-import { updateMobilePreferencesAtom } from "../../state/preferences";
+import { saveMobilePreferences } from "../../state/preferences";
+import { useAtomCommand } from "../../state/use-atom-command";
 
 export interface HomeListOptions {
   readonly selectedEnvironmentId: EnvironmentId | null;
@@ -49,7 +50,7 @@ export function HomeListOptionsProvider({
   const registry = useContext(RegistryContext);
   const [optionsAtom] = useState(() => Atom.make(defaultHomeListOptions(savedFilters)));
   const options = useAtomValue(optionsAtom);
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   // Updates read the registry, so several in one event each build on the last and save it.
   const updateOptions = (patch: Partial<HomeListOptions>) => {
     const current = registry.get(optionsAtom);
@@ -62,7 +63,7 @@ export function HomeListOptionsProvider({
       next.selectedTags !== current.selectedTags ||
       next.sort !== current.sort
     ) {
-      savePreferences({
+      void savePreferences({
         threadListFilters: {
           environmentId: next.selectedEnvironmentId,
           projectKey: next.selectedProjectKey,

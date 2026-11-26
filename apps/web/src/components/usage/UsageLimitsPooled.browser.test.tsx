@@ -11,6 +11,8 @@ import { CHATGPT_USAGE_URL, limitAccountWorkspaces } from "@t3tools/shared/usage
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
+import "~/index.css";
+
 import { act, fakeTimers, render } from "../../../test/render";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
 import { AccountFailoverNotice } from "./UsageLimitsStatus";
@@ -306,4 +308,42 @@ it("labels freshness from the same observation time as the pool countdown", asyn
   await expect.element(screen.getByText("Checked just now")).toBeVisible();
   await screen.rerender(<UsageLimitsPooled presentations={presentations} now={now + 120_000} />);
   expect(screen.container.textContent).toContain("Checked 2m ago");
+});
+
+describe("UsageLimitsPooled next refill", () => {
+  it("skips elapsed resets while waiting for refreshed account data", async () => {
+    function account(instanceId: string, usedPercent: number, resetsAt: string): ServerProvider {
+      return {
+        ...managedChatGpt(instanceId, instanceId),
+        usageLimits: {
+          checkedAt,
+          windows: [{ id: "weekly", label: "Weekly", kind: "weekly", usedPercent, resetsAt }],
+        },
+      };
+    }
+    const presentations = new Map([
+      [
+        EnvironmentId.make("desk"),
+        {
+          entry: { target: { label: "Desk" } },
+          serverConfig: {
+            providers: [
+              account("Work", 20, "2026-10-25T17:00:00.000Z"),
+              account("Personal", 60, "2026-10-25T18:00:00.000Z"),
+            ],
+          },
+        },
+      ],
+    ]);
+    await using screen = await render(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse("2026-10-25T17:30:00Z")} />,
+    );
+    await expect.element(screen.getByText("↻ +30%", { exact: true })).toBeVisible();
+    await expect.element(screen.getByText("↻ +30% in 30m")).toBeVisible();
+
+    await screen.rerender(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse("2026-10-25T18:00:00Z")} />,
+    );
+    await expect.element(screen.getByText(/^↻ \+\d+%$/)).not.toBeInTheDocument();
+  });
 });

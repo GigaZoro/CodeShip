@@ -33,6 +33,7 @@ import {
   codexMcpListLaunchArgs,
   resolveCodexLaunchArgs,
 } from "../provider/codexLaunchArgs.ts";
+import { codexAppServerEnvironment } from "../provider/CodexProvider.ts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import {
   normalizeCliError,
@@ -52,7 +53,10 @@ const CODEX_METADATA_BINARY_ENV = "T3CODE_CODEX_METADATA_BINARY_PATH";
 const CODEX_METADATA_FLAG = "--codeship-metadata-no-mcp";
 const { binaryPath: defaultCodexBinary } = Schema.decodeSync(CodexSettings)({});
 // Plugins/apps add MCP servers; use trailing config overrides because --disable loses to user -c flags.
+// Codex also reads the legacy connectors key for apps.
 const CODEX_NO_PLUGIN_ARGS = [
+  "--config",
+  "features.connectors=false",
   "--config",
   "features.plugins=false",
   "--config",
@@ -422,7 +426,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             )) ||
           defaultCodexBinary);
       const env: NodeJS.ProcessEnv = {
-        ...effectiveEnvironment,
+        ...codexAppServerEnvironment(effectiveEnvironment),
         ...(effectiveConfig.homePath
           ? {
               CODEX_HOME: expandHomePath(

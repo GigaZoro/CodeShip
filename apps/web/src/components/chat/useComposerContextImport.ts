@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -8,6 +9,7 @@ import * as Schema from "effect/Schema";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
 import {
+  type ChatAttachment,
   type ComposerContextClipboardFragment,
   type ComposerContextRecord,
   type EnvironmentId,
@@ -43,6 +45,7 @@ import { collectInlineContextIds } from "../../lib/composerContextReferences";
 import { elementContextToPreviewAnnotation } from "../../lib/elementContext";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { pendingDraftWork } from "./pendingDraftWork";
+import { readComposerImageBytes } from "./composerAttachmentFiles";
 import { randomUUID } from "~/lib/utils";
 import { readPreparedConnection } from "~/state/session";
 import { resolveAssetUrl } from "~/assets/assetUrls";
@@ -56,7 +59,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { countPreparingComposerImages } from "./preparingComposerImages";
-import { t } from "~/i18n";
+import type { QueuedAttachmentContextBinding } from "./composerContextUndo";
+import { matchRestorableQueuedAttachment } from "./queuedMessageEdit";
 
 const isUnreachable = Schema.is(
   Schema.Union([ConnectionTransientError, ConnectionBlockedError, EnvironmentRpcUnavailableError]),
@@ -91,7 +95,9 @@ export function useComposerContextImport(input: {
   readonly composerFilesRef: ChatComposerProps["composerFilesRef"];
   readonly promptRef: RefObject<string>;
   readonly pendingThreadImportsRef: RefObject<Map<string, number>>;
-  readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => void;
+  readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => string[];
+  readonly removedQueuedAttachments?: ReadonlyArray<QueuedAttachmentContextBinding> | undefined;
+  readonly onRestoreQueuedAttachment?: ((attachment: ChatAttachment) => void) | undefined;
 }) {
   const {
     environmentId,
@@ -110,6 +116,8 @@ export function useComposerContextImport(input: {
     promptRef,
     pendingThreadImportsRef,
     addComposerFilesToDraft,
+    removedQueuedAttachments,
+    onRestoreQueuedAttachment,
   } = input;
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
@@ -195,6 +203,8 @@ export function useComposerContextImport(input: {
         fail(t("Downloading it from the source failed."));
         return;
       }
+      file = new File([blob], record.name, { type: record.mimeType || blob.type });
+      if (record.kind === "image") await readComposerImageBytes(file);
       // Question attachments have no inline reference; annotations can own their screenshots.
       const references = new Set(collectInlineContextIds(promptRef.current));
       if (
@@ -209,7 +219,6 @@ export function useComposerContextImport(input: {
         )
       )
         return;
-      file = new File([blob], record.name, { type: record.mimeType || blob.type });
     }
     // The draft these bytes belong to may have been sent or switched away from while they
     // downloaded. Dropping them here keeps them out of whatever draft is open now.
@@ -246,6 +255,7 @@ export function useComposerContextImport(input: {
             sizeBytes: file.size,
             previewUrl: URL.createObjectURL(file),
             file,
+            ...(record.source ? { source: record.source } : {}),
           },
         ],
         {
@@ -435,6 +445,19 @@ export function useComposerContextImport(input: {
         case "image":
         case "file": {
           if (skippedDependentAttachmentIds.has(record.contextId)) break;
+          if (questionAttachmentTarget === null && !conflicts) {
+            const restored = matchRestorableQueuedAttachment({
+              environmentId,
+              sourceEnvironmentId,
+              record,
+              removedQueuedAttachments: removedQueuedAttachments ?? [],
+            });
+            if (restored) {
+              onRestoreQueuedAttachment?.(restored.attachment);
+              rewritten.set(record.contextId, restored.contextId);
+              break;
+            }
+          }
           if (sourceEnvironmentId === null && !conflicts) {
             rewritten.set(record.contextId, record.contextId);
             break;

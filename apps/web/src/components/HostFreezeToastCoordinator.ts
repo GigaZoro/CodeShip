@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { hostFreezeNotice } from "@t3tools/client-runtime/connection";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -22,7 +23,7 @@ export function startHostFreezeToasts(): () => void {
             .get(environmentSummaries.identitiesAtom)
             .find((identity) => identity.environmentId === environmentId)?.label ??
           config.environment.label;
-        const notice = hostFreezeNotice(label, stall);
+        const notice = hostFreezeNotice(label, stall, t);
         if (notice !== null) {
           toastManager.add({ type: "warning", ...notice });
         }

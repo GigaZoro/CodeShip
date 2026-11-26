@@ -1,5 +1,9 @@
-import type { ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import {
+  linkBackBlockLabel,
+  linkBatchFailureLabel,
+  linkWithMintedCode,
+} from "@t3tools/client-runtime/link-batch";
 import {
   addLinkedMachineRoute,
   ANOTHER_ADDRESS,
@@ -12,21 +16,29 @@ import {
   type AuthMcpClientAccess,
   type EnvironmentId,
   type PeerLinkSummary,
+  peerLinkAccessAllowsLinkBack,
 } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { peerLinkHealth } from "@t3tools/client-runtime/state/peerLinks";
+import { peerLinkHealth, type PeerLinkHealth } from "@t3tools/client-runtime/state/peerLinks";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { PlusIcon } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
+import { useEnvironment } from "~/state/environments";
 import { mintPairingCodeOn } from "~/state/peerPairingCode";
-import { peerLinkEnvironment, useLinkableMachines, useOwnLinkUrls } from "~/state/peerLinks";
+import {
+  peerLinkEnvironment,
+  useLinkableMachines,
+  useOwnLinkUrls,
+  useLinkBackOffers,
+  useLinkThroughRoutes,
+} from "~/state/peerLinks";
 import { useEnvironments, useRelayEnvironmentDiscovery } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope, usePreparedConnection } from "~/state/session";
@@ -35,6 +47,7 @@ import { AddLinkedMachineAction } from "./AddLinkedMachineAction";
 import { accessConfig } from "../auth/ConnectAgentSurface";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogClose,
@@ -52,6 +65,7 @@ import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
 import { LinkAccessPicker } from "./LinkAccessPicker";
 import { LinkBackOption, toastLinkBackMissing } from "./LinkBackOption";
 import { LinkAddressWarning, LinkMachineSelect } from "./LinkMachineSelect";
+import { LinkSeveralEnvironmentsAction } from "./LinkSeveralEnvironments";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import { useNowMinute } from "../../hooks/useNowMinute";
@@ -89,16 +103,20 @@ export function LinkedEnvironmentsSettings({
   );
   const canLink = useAtomValue(peerLinkEnvironment.link.permissionAtom(environmentId));
   const search = searchableSetting("linked-environments");
+  // A batch needs at least two other machines this app has saved.
+  const otherMachines = useEnvironments().environments.length - 1;
   return (
     <SettingsSection
       {...(isSearchTarget ? { id: search.id } : {})}
       title={environmentLabel === null ? search.title : `${search.title} · ${environmentLabel}`}
       headerAction={
         canLink ? (
-          <LinkEnvironmentAction
-            environmentId={environmentId}
-            environmentLabel={environmentLabel}
-          />
+          <div className="flex items-center gap-2">
+            {otherMachines > 1 ? (
+              <LinkSeveralEnvironmentsAction environmentId={environmentId} />
+            ) : null}
+            <LinkEnvironmentAction environmentId={environmentId} />
+          </div>
         ) : null
       }
     >
@@ -136,9 +154,7 @@ function LinkedEnvironmentRow({
 }) {
   const nowMinute = useNowMinute();
   const health = peerLinkHealth(link, DateTime.makeUnsafe(nowMinute));
-  const unlink = useAtomCommand(peerLinkEnvironment.unlink, { label: t("unlink environment") });
   const canUnlink = useAtomValue(peerLinkEnvironment.unlink.permissionAtom(environmentId));
-  const [busy, setBusy] = useState(false);
   const { environments } = useEnvironments();
   const discovery = useRelayEnvironmentDiscovery();
   const addRoute = addLinkedMachineRoute({
@@ -146,32 +162,8 @@ function LinkedEnvironmentRow({
     connect: discovery.environments,
     link,
   });
-  const forget = async () => {
-    const confirmed = await (requestConfirmDialog(
-      t(
-        'Forget {name}? Agents here stop working there. Revoke "T3.CodeShip · …" in {name}\'s Connections to end the session there too.',
-        { name: link.label },
-      ),
-      { variant: "destructive" },
-    ) ?? Promise.resolve(false));
-    if (!confirmed) return;
-    setBusy(true);
-    const result = await unlink({ environmentId, input: { environmentId: link.environmentId } });
-    setBusy(false);
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      failureToast(t("Could not forget the link"), String(squashAtomCommandFailure(result)));
-    }
-  };
-  const status =
-    health.kind === "expired"
-      ? t("Expired. Link it again with a new pairing code.")
-      : health.kind === "unreachable"
-        ? (health.detail ?? t("Not answering right now."))
-        : health.kind === "failing"
-          ? health.detail
-          : health.expiresInDays !== null
-            ? tn(health.expiresInDays, "Expires in {count} day", "Expires in {count} days")
-            : t("Reachable");
+  const { busy, forget } = useForgetPeerLink(environmentId, link);
+  const status = peerLinkStatusText(health);
   return (
     <div className={ITEM_ROW_CLASSNAME}>
       <div className={ITEM_ROW_INNER_CLASSNAME}>
@@ -229,19 +221,85 @@ function LinkedEnvironmentRow({
   );
 }
 
-function LinkEnvironmentAction({
+function LinkEnvironmentAction({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <LinkEnvironmentDialog
+      environmentId={environmentId}
+      open={open}
+      onOpenChange={setOpen}
+      trigger={
+        <DialogTrigger
+          render={
+            <Button size="xs" variant="default">
+              <PlusIcon className="size-3" />
+              {t("Link")}
+            </Button>
+          }
+        />
+      }
+    />
+  );
+}
+
+/** What the link dialog opens with when something other than its own button opened it. */
+export interface LinkEnvironmentPrefill {
+  /** The machine to link to, by environment id, or `ANOTHER_ADDRESS` with `address`. */
+  readonly choice: string | null;
+  readonly address?: string;
+  /**
+   * With `address`: the machine there, and one of this app's that links to it at full access and
+   * so can get the pairing code from it.
+   */
+  readonly through?: {
+    readonly viaEnvironmentId: EnvironmentId;
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+  };
+}
+
+/**
+ * The one link flow. When this client is connected to the picked machine and may create pairing
+ * links there, it mints the code itself; otherwise it asks for one.
+ */
+export function LinkEnvironmentDialog({
   environmentId,
-  environmentLabel,
+  open,
+  onOpenChange,
+  trigger = null,
+  prefill,
 }: {
   readonly environmentId: EnvironmentId;
-  readonly environmentLabel: string | null;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly trigger?: ReactNode;
+  readonly prefill?: LinkEnvironmentPrefill;
 }) {
-  const [open, setOpen] = useState(false);
-  const machines = useLinkableMachines(environmentId, open);
+  const setOpen = onOpenChange;
+  // Named in the title: from the map, nothing else on screen says which machine is linking.
+  const source = useEnvironment(environmentId);
+  const saved = useLinkableMachines(environmentId, open);
+  const routes = useLinkThroughRoutes(environmentId, open);
+  // Machines this app has no entry for are still pickable when one of its environments links
+  // to them at full access.
+  const machines = [
+    ...saved,
+    ...[...routes.values()]
+      .filter((route) => saved.every((machine) => machine.environmentId !== route.environmentId))
+      .map((route) => ({
+        environmentId: route.environmentId,
+        label: route.label,
+        machine: "server" as const,
+        connected: false,
+        connectOnly: false,
+        linked: false,
+        urls: route.urls,
+      })),
+  ];
   const ownUrls = useOwnLinkUrls(environmentId);
   // Null until the user picks; with no other machines known, only an address is left.
-  const [choice, setChoice] = useState<string | null>(null);
-  const [address, setAddress] = useState("");
+  const [choice, setChoice] = useState<string | null>(prefill?.choice ?? null);
+  const [address, setAddress] = useState(prefill?.address ?? "");
   const [pairingCode, setPairingCode] = useState("");
   const [access, setAccess] = useState<AuthMcpClientAccess>("approval-required");
   // Also let the other machine reach this one. The access follows the one chosen above until
@@ -256,7 +314,29 @@ function LinkEnvironmentAction({
   const inFlight = useRef(false);
   const formId = useId();
   const link = useAtomCommand(peerLinkEnvironment.link, { label: t("link environment") });
+  const linkOnTarget = useAtomCommand(peerLinkEnvironment.link, {
+    label: "link environment back",
+    // The failure cause holds the request, and with it the code; keep it out of the console.
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const pairThrough = useAtomCommand(peerLinkEnvironment.pairLink, {
+    label: "pair link through a linked environment",
+    // The answer is a credential; keep it out of the console.
+    reportFailure: false,
+    reportDefect: false,
+  });
+  // Machines that would not give a code through a link, so the dialog asks for one instead.
+  const [throughFailed, setThroughFailed] = useState<ReadonlySet<EnvironmentId>>(new Set());
+  const [alsoLinkBack, setAlsoLinkBack] = useState(false);
   const selected = choice ?? (machines.length === 0 ? ANOTHER_ADDRESS : null);
+  // Only for the machine the dialog opened for: another choice or address is another machine.
+  const prefilledThrough =
+    prefill?.through !== undefined &&
+    selected === ANOTHER_ADDRESS &&
+    address === (prefill.address ?? "")
+      ? prefill.through
+      : null;
   const machine = machines.find((candidate) => candidate.environmentId === selected) ?? null;
   const targetId = machine?.environmentId ?? null;
   const connected = usePreparedConnection(targetId);
@@ -272,21 +352,75 @@ function LinkEnvironmentAction({
     Option.isSome(connected) &&
     mayMint &&
     !mintFailed.has(targetId);
+  // Minting with this client's own session there comes first: it needs no third machine.
+  const throughCandidate =
+    prefilledThrough ?? (targetId === null || canMint ? null : (routes.get(targetId) ?? null));
+  const via = useEnvironment(throughCandidate?.viaEnvironmentId ?? null);
+  // The environment holding the link refuses a level this client's session there does not hold.
+  const mayPairThrough = useAtomValue(
+    peerLinkEnvironment.pairLink.permissionAtom(
+      throughCandidate?.viaEnvironmentId ?? null,
+      throughCandidate === null
+        ? undefined
+        : { environmentId: throughCandidate.environmentId, access },
+    ),
+  );
+  const through =
+    throughCandidate !== null &&
+    via !== null &&
+    mayPairThrough &&
+    !throughFailed.has(throughCandidate.environmentId)
+      ? throughCandidate
+      : null;
+  const linkBack = useLinkBackOffers(environmentId, targetId === null ? [] : [targetId], open);
+  const backOffer = linkBack.offerFor(targetId);
   const ready =
-    selected !== null &&
-    (!needsAddress || address.trim().length > 0) &&
-    (canMint || pairingCode.trim().length > 0);
+    through !== null ||
+    (selected !== null &&
+      (!needsAddress || address.trim().length > 0) &&
+      (canMint || pairingCode.trim().length > 0));
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
     if (!next) {
-      setChoice(null);
-      setAddress("");
+      setChoice(prefill?.choice ?? null);
+      setAddress(prefill?.address ?? "");
       setPairingCode("");
       setAccess("approval-required");
       setBothWays(false);
       setReverseChoice(null);
       setMintFailed(new Set());
+      setThroughFailed(new Set());
+      setAlsoLinkBack(false);
     }
+  };
+  // Settles to what to link with, or null after reporting why the linked machine gave no code.
+  const resolveThrough = async (target: NonNullable<typeof through>) => {
+    const asked = await pairThrough({
+      environmentId: target.viaEnvironmentId,
+      input: { environmentId: target.environmentId, access },
+    });
+    if (asked._tag === "Success" && asked.value.type === "credential") {
+      const [url, ...alternateUrls] = asked.value.urls;
+      if (url !== undefined) {
+        return {
+          url,
+          ...(alternateUrls.length > 0 ? { alternateUrls } : {}),
+          expectedEnvironmentId: asked.value.environmentId,
+          expectedLabel: asked.value.label,
+          pairingCode: asked.value.credential,
+        };
+      }
+    }
+    if (asked._tag === "Failure" && isAtomCommandInterrupted(asked)) return null;
+    setThroughFailed((failed) => new Set(failed).add(target.environmentId));
+    failureToast(
+      t("{via} could not get a pairing code from {target}", {
+        via: via?.label ?? "",
+        target: target.label,
+      }),
+      t("Enter its address and a pairing code from it instead."),
+    );
+    return null;
   };
   // Settles to the code to link with, or null after reporting why there is none.
   const resolvePairingCode = async () => {
@@ -311,38 +445,75 @@ function LinkEnvironmentAction({
     if (inFlight.current || !ready || url === undefined) return;
     inFlight.current = true;
     setBusy(true);
-    const code = await resolvePairingCode();
+    const throughInput = through === null ? null : await resolveThrough(through);
+    const code = through === null ? await resolvePairingCode() : null;
     const result =
-      code === null
-        ? null
-        : await link({
-            environmentId,
-            input: {
-              url,
-              ...(alternateUrls.length > 0 ? { alternateUrls } : {}),
-              // A typed address links alone: only this app's own addresses name a machine.
-              ...(machine === null || needsAddress
-                ? {}
-                : { expectedEnvironmentId: machine.environmentId, expectedLabel: machine.label }),
-              pairingCode: code,
-              access,
-              ...(reverse === undefined ? {} : { reverse }),
+      through !== null
+        ? throughInput === null
+          ? null
+          : await link({
+              environmentId,
+              input: { ...throughInput, access, ...(reverse === undefined ? {} : { reverse }) },
+            })
+        : code === null
+          ? null
+          : await link({
+              environmentId,
+              input: {
+                url,
+                ...(alternateUrls.length > 0 ? { alternateUrls } : {}),
+                // A typed address links alone: only this app's own addresses name a machine.
+                ...(machine === null || needsAddress
+                  ? {}
+                  : { expectedEnvironmentId: machine.environmentId, expectedLabel: machine.label }),
+                pairingCode: code,
+                access,
+                ...(reverse === undefined ? {} : { reverse }),
+              },
+            });
+    // The link back is its own link, made on the other machine: it never undoes this one.
+    const back =
+      result?._tag === "Success" &&
+      !peerLinkAccessAllowsLinkBack(access) &&
+      alsoLinkBack &&
+      backOffer.kind === "offered" &&
+      linkBack.source !== null &&
+      targetId !== null &&
+      // A typed address can answer as another machine: the picked one links back only if it did.
+      result.value.environmentId === targetId
+        ? await linkWithMintedCode({
+            machine: linkBack.source,
+            access,
+            mint: mintPairingCodeOn,
+            link: async (input) => {
+              const reverse = await linkOnTarget({ environmentId: targetId, input });
+              return reverse._tag === "Success"
+                ? Result.succeed(reverse.value)
+                : Result.fail(squashAtomCommandFailure(reverse));
             },
-          });
+          })
+        : null;
     inFlight.current = false;
     setBusy(false);
     if (result === null) return;
     if (result._tag === "Success") {
-      const name = result.value.label;
-      const back = result.value.back;
-      if (reversing && back?.status !== "linked") {
-        // The link made here stands; only the way back is missing.
-        toastLinkBackMissing(name, environmentLabel);
+      if (reversing && result.value.back?.status !== "linked") {
+        toastLinkBackMissing(result.value.label, source?.label ?? null);
       } else {
+        const names = { source: source?.label ?? "", target: result.value.label };
         toastManager.add({
           type: "success",
-          title: reversing ? t("Linked {name} both ways", { name }) : t("Linked {name}", { name }),
+          title:
+            result.value.back?.status === "linked" || back?.kind === "linked"
+              ? t("Linked {source} and {target} both ways", names)
+              : t("Linked {label}", { label: result.value.label }),
         });
+        if (back?.kind === "failed") {
+          failureToast(
+            t("Could not link {target} back to {source}", names),
+            back.detail ?? linkBatchFailureLabel(back.failure, t),
+          );
+        }
       }
       handleOpenChange(false);
     } else if (!isAtomCommandInterrupted(result)) {
@@ -357,17 +528,18 @@ function LinkEnvironmentAction({
         handleOpenChange(next);
       }}
     >
-      <DialogTrigger
-        render={
-          <Button size="xs" variant="default">
-            <PlusIcon className="size-3" />
-            {t("Link")}
-          </Button>
-        }
-      />
+      {trigger}
       <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{t("Link an environment")}</DialogTitle>
+          <DialogTitle>
+            {source === null
+              ? t("Link an environment")
+              : through !== null
+                ? t("Link {source} to {target}", { source: source.label, target: through.label })
+                : machine === null
+                  ? t("Link {label} to another machine", { label: source.label })
+                  : t("Link {source} to {target}", { source: source.label, target: machine.label })}
+          </DialogTitle>
           <DialogDescription>
             {t(
               "Agents here can then launch, message and wait on threads there. It appears in that environment's Connections, where it can be revoked.",
@@ -384,12 +556,20 @@ function LinkEnvironmentAction({
               void submit();
             }}
           >
-            {machines.length > 0 ? (
+            {machines.length > 0 && (through === null || through !== prefilledThrough) ? (
               <LinkMachineSelect
                 machines={machines}
                 value={selected}
                 disabled={busy}
-                onChange={setChoice}
+                onChange={(next) => {
+                  // The opt-in names one machine: it does not carry over to another.
+                  if (next !== selected) {
+                    setAlsoLinkBack(false);
+                    setBothWays(false);
+                    setReverseChoice(null);
+                  }
+                  setChoice(next);
+                }}
               />
             ) : null}
             {machine?.linked ? (
@@ -397,7 +577,15 @@ function LinkEnvironmentAction({
                 {t("Already linked. Linking again renews it with the access you pick.")}
               </p>
             ) : null}
-            {needsAddress ? (
+            {through !== null ? (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "{via} links to {target} at full access, so it gets the pairing code. No code to paste.",
+                  { via: via?.label ?? "", target: through.label },
+                )}
+              </p>
+            ) : null}
+            {needsAddress && through === null ? (
               <label className="block space-y-1.5">
                 <span className="block text-xs font-medium text-foreground">{t("Address")}</span>
                 <Input
@@ -423,8 +611,10 @@ function LinkEnvironmentAction({
                 ) : null}
               </label>
             ) : null}
-            {needsAddress && address.trim() ? <LinkAddressWarning address={address} /> : null}
-            {selected === null || canMint ? null : (
+            {needsAddress && through === null && address.trim() ? (
+              <LinkAddressWarning address={address} />
+            ) : null}
+            {selected === null || canMint || through !== null ? null : (
               <label className="block space-y-1.5">
                 <span className="block text-xs font-medium text-foreground">
                   {t("Pairing code")}
@@ -453,16 +643,48 @@ function LinkEnvironmentAction({
               </label>
             )}
             <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
-            <LinkBackOption
-              name={otherName}
-              here={environmentLabel}
-              forwardAccess={access}
-              checked={bothWays}
-              onCheckedChange={setBothWays}
-              reverseAccess={reverseAccess}
-              onReverseAccessChange={setReverseChoice}
-              disabled={busy}
-            />
+            {peerLinkAccessAllowsLinkBack(access) ? (
+              <LinkBackOption
+                name={otherName}
+                here={source?.label ?? null}
+                forwardAccess={access}
+                checked={bothWays}
+                onCheckedChange={setBothWays}
+                reverseAccess={reverseAccess}
+                onReverseAccessChange={setReverseChoice}
+                disabled={busy}
+              />
+            ) : machine === null || source === null ? null : backOffer.kind === "offered" ? (
+              <label className="flex cursor-pointer items-start gap-2.5 text-sm has-data-disabled:cursor-default">
+                <Checkbox
+                  checked={alsoLinkBack}
+                  disabled={busy}
+                  onCheckedChange={setAlsoLinkBack}
+                />
+                <span className="min-w-0 space-y-0.5">
+                  <span className="block font-medium text-foreground">
+                    {t("Also link {target} back to {source}", {
+                      source: source.label,
+                      target: machine.label,
+                    })}
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    {t("Agents on {target} can then work on {source} too.", {
+                      source: source.label,
+                      target: machine.label,
+                    })}
+                  </span>
+                </span>
+              </label>
+            ) : backOffer.kind === "blocked" ? (
+              <p className="text-xs text-muted-foreground">
+                {linkBackBlockLabel(
+                  backOffer.reason,
+                  { source: source.label, target: machine.label },
+                  t,
+                )}
+              </p>
+            ) : null}
           </form>
         </DialogPanel>
         <DialogFooter variant="bare">
@@ -476,4 +698,51 @@ function LinkEnvironmentAction({
       </DialogPopup>
     </Dialog>
   );
+}
+
+/** What a link's health means for the user, in a sentence. */
+export function peerLinkStatusText(health: PeerLinkHealth): string {
+  return health.kind === "expired"
+    ? t("Expired. Link it again with a new pairing code.")
+    : health.kind === "unreachable"
+      ? (health.detail ?? t("Not answering right now."))
+      : health.kind === "failing"
+        ? health.detail
+        : health.expiresInDays !== null
+          ? tn(health.expiresInDays, "Expires in {count} day", "Expires in {count} days")
+          : t("Reachable");
+}
+
+/** Forgets `link` from `environmentId` after the user confirms. */
+export function useForgetPeerLink(environmentId: EnvironmentId, link: PeerLinkSummary) {
+  const unlink = useAtomCommand(peerLinkEnvironment.unlink, { label: "unlink environment" });
+  const [busy, setBusy] = useState(false);
+  const forget = async () => {
+    const confirmed = await (requestConfirmDialog(
+      t(
+        "Forget {label}? Agents here stop working there, and their session on {label} ends too if it answers.",
+        { label: link.label },
+      ),
+      { variant: "destructive" },
+    ) ?? Promise.resolve(false));
+    if (!confirmed) return;
+    setBusy(true);
+    const result = await unlink({ environmentId, input: { environmentId: link.environmentId } });
+    setBusy(false);
+    if (result._tag === "Success") {
+      if (result.value.removed && result.value.endedThere !== true) {
+        toastManager.add({
+          type: "warning",
+          title: t("{label} did not answer", { label: link.label }),
+          description: t(
+            'Revoke "T3.CodeShip · …" in {label}\'s Sharing & access to end the session there too.',
+            { label: link.label },
+          ),
+        });
+      }
+    } else if (!isAtomCommandInterrupted(result)) {
+      failureToast(t("Could not forget the link"), String(squashAtomCommandFailure(result)));
+    }
+  };
+  return { busy, forget };
 }

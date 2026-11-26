@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { UnifiedSettings } from "@t3tools/contracts";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -18,7 +19,7 @@ import {
   DraftId,
 } from "../../composerDraftStore";
 import { openPullRequestThreadDialog } from "./ChatOverlayHosts";
-import { t } from "~/i18n";
+
 interface PullRequestDraftThreadInput {
   readonly routeKind: "server" | "draft";
   readonly draftId: DraftId | null;

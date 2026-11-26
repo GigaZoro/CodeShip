@@ -1,11 +1,13 @@
+import { t } from "~/i18n";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
+
 import { FilterXIcon, PlusIcon, SearchIcon } from "lucide-react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { Button } from "../ui/button";
 import { PullRequestListGhost } from "./PullRequestGhosts";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
-import { t } from "~/i18n";
 
 function BranchMark({ joined }: { joined: boolean }) {
   return (
@@ -71,8 +73,8 @@ export function PullRequestListEmptyState({
   onLoadMore: () => void;
   onRefresh: () => void;
 }) {
-  const shownQuery = query.length > 48 ? `${query.slice(0, 48)}…` : query;
-
+  const shownQuery =
+    query.length > 48 ? `${query.slice(0, splitsSurrogatePair(query, 48) ? 47 : 48)}…` : query;
   if (!hasProjects) {
     return (
       <Empty>
@@ -107,7 +109,7 @@ export function PullRequestListEmptyState({
       <Empty>
         <BranchMark joined={false} />
         <EmptyHeader>
-          <EmptyTitle>{t("Nothing matches “{query}”", { query: shownQuery })}</EmptyTitle>
+          <EmptyTitle>{t("Nothing matches “{shownQuery}”", { shownQuery })}</EmptyTitle>
           <EmptyDescription>
             {t(
               "The hosts were searched for it. Try fewer words, or search by number, author or branch.",

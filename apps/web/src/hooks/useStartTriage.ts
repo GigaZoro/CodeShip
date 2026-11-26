@@ -1,5 +1,6 @@
+import { msg, t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { t } from "~/i18n";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -10,6 +11,7 @@ import { useRouter } from "@tanstack/react-router";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { currentClientMetadata } from "~/connection/platform";
+
 import { projectEnvironment } from "~/state/projects";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -20,7 +22,11 @@ import { useScratchProject } from "./useScratchProject";
 export const TRIAGE_CLI_COMMAND = "npx t3 triage";
 
 const copyTriageCliCommand = () =>
-  writeTextToClipboard(TRIAGE_CLI_COMMAND, t("command")).catch(() =>
+  writeTextToClipboard(TRIAGE_CLI_COMMAND, {
+    target: "command",
+    unavailableMessage: msg("Clipboard API is unavailable while copying command."),
+    failureMessage: msg("Failed to copy command to the clipboard."),
+  }).catch(() =>
     toastManager.add({
       type: "error",
       title: t("Could not copy. Type {command} instead.", { command: TRIAGE_CLI_COMMAND }),
@@ -46,12 +52,15 @@ export function useStartTriage() {
       stackedThreadToast({
         type: "error",
         title: t("Could not start triage"),
-        description: t("{error} Run {command} in a terminal on that machine instead.", {
-          error: description,
+        description: t("{description} Run {command} in a terminal on that machine instead.", {
+          description,
           command: TRIAGE_CLI_COMMAND,
         }),
         timeout: 0,
-        actionProps: { children: t("Copy command"), onClick: () => void copyTriageCliCommand() },
+        actionProps: {
+          children: t("Copy command"),
+          onClick: () => void copyTriageCliCommand(),
+        },
         // "Copy command" is the copy that helps here, not the error text.
         data: { hideCopyButton: true },
       }),
@@ -61,7 +70,7 @@ export function useStartTriage() {
   ) => {
     if (isAtomCommandInterrupted(result)) return;
     const error = squashAtomCommandFailure(result);
-    fail(error instanceof Error ? error.message : t("An error occurred."));
+    fail(thrownErrorMessage(error, t) ?? t("An error occurred."));
   };
 
   // `routeChanged` tells the steps the user went elsewhere while they waited;

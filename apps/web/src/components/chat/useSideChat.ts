@@ -1,6 +1,9 @@
+import { t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+
 import type { ModelSelection, RuntimeMode, ScopedThreadRef } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -16,11 +19,18 @@ import { readThreadShell, waitForThreadShell } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
-import { t } from "~/i18n";
+
+export type SideChatMessage = Pick<
+  StartThreadTurnInput["message"],
+  "text" | "attachments" | "context"
+> & { readonly titleSeed: string };
+
+// The server persists this initial name independently of the UI language.
+const STORED_SIDE_CHAT_NAME = "Side chat";
 
 /**
  * Starts side chats from `threadRef`, or offers none when it is null. `open` forks the
- * thread's latest stable point, sends `prompt` there with `readSettings()`, the parent
+ * thread's latest stable point, sends `message` there with `readSettings()`, the parent
  * composer's settings, and shows the tab. It resolves false when the side chat did not
  * start, or another one is still starting.
  */
@@ -47,15 +57,14 @@ export function useSideChat(input: {
   ) => {
     if (isAtomCommandInterrupted(failure)) return;
     const error = squashAtomCommandFailure(failure);
-    input.onError(error instanceof Error ? error.message : fallback);
+    input.onError(thrownErrorMessage(error, t) ?? fallback);
   };
-  const start = async (threadRef: ScopedThreadRef, prompt: string | undefined) => {
+  const start = async (threadRef: ScopedThreadRef, message: SideChatMessage | undefined) => {
     const { runtimeMode, modelSelection } = input.readSettings();
     const targetThreadId = newThreadId();
     const fork = await forkSideChat({
       environmentId: threadRef.environmentId,
-      // oxlint-disable-next-line t3code/no-untranslated-text -- stored thread title sent to the server
-      input: { sourceThreadId: threadRef.threadId, targetThreadId, title: "Side chat" },
+      input: { sourceThreadId: threadRef.threadId, targetThreadId, title: STORED_SIDE_CHAT_NAME },
     });
     if (fork._tag === "Failure") {
       reportFailure(fork, t("Could not start a side chat."));
@@ -90,16 +99,16 @@ export function useSideChat(input: {
         return false;
       }
     }
-    const text = prompt?.trim();
     // Send before showing the tab: closing a tab whose side chat has no run deletes it.
-    if (text) {
+    if (message) {
+      const { titleSeed, ...content } = message;
       const turn = await startThreadTurn({
         environmentId: threadRef.environmentId,
         input: {
           threadId: targetThreadId,
-          message: { messageId: newMessageId(), role: "user", text, attachments: [] },
+          message: { messageId: newMessageId(), role: "user", ...content },
           ...(modelSelection === undefined ? {} : { modelSelection }),
-          titleSeed: deriveThreadTitleSeed({ text, attachments: [] }),
+          titleSeed,
           runtimeMode,
           interactionMode: "default",
           createdAt: new Date().toISOString(),
@@ -113,14 +122,14 @@ export function useSideChat(input: {
     } else if (modelSelection !== undefined) {
       useComposerDraftStore.getState().setModelSelection(targetRef, modelSelection);
     }
-    useRightPanelStore.getState().openSideChat(threadRef, targetThreadId);
+    useRightPanelStore.getState().openThread(threadRef, targetThreadId);
     return true;
   };
-  const open = async (prompt?: string) => {
+  const open = async (message?: SideChatMessage) => {
     const { threadRef } = input;
     if (!threadRef || pendingRef.current) return false;
     pendingRef.current = true;
-    return start(threadRef, prompt).finally(() => {
+    return start(threadRef, message).finally(() => {
       pendingRef.current = false;
     });
   };

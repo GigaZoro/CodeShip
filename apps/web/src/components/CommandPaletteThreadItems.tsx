@@ -16,15 +16,17 @@ import {
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { MessageSquareIcon } from "lucide-react";
-import { useState } from "react";
+import { createContext, use, useState } from "react";
 
 import { useProviderEntryByEnvironmentAndInstanceId } from "../hooks/useEnvironmentProviderEntries";
-import { useVisibleThreadShells } from "../state/entities";
+import { useDelegatedUnderParent, useVisibleThreadShells } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { useThreadSearch } from "../state/queries";
 import { threadEnvironment } from "../state/threads";
+import { useStableCallback } from "../hooks/useStableCallback";
 import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams } from "../threadRoutes";
+import type { SidebarThreadSummary } from "../types";
 import {
   buildMessageMatchItem,
   buildThreadActionItems,
@@ -37,6 +39,22 @@ import {
   ThreadRowTrailingStatus,
   ThreadSearchPullRequestNumber,
 } from "./ThreadStatusIndicators";
+
+/**
+ * The query thread rows match a pull request number against. A context, so typing re-renders
+ * only the number, not every thread row.
+ */
+export const CommandPaletteThreadQueryContext = createContext("");
+
+function PaletteThreadPullRequestNumber({ thread }: { thread: SidebarThreadSummary }) {
+  return (
+    <ThreadSearchPullRequestNumber
+      thread={thread}
+      query={use(CommandPaletteThreadQueryContext)}
+      settled={thread.settledOverride === "settled"}
+    />
+  );
+}
 
 function useConnectedThreadSearch(query: string) {
   const { environments } = useEnvironments();
@@ -61,106 +79,125 @@ function useConnectedThreadSearch(query: string) {
   );
 }
 
+type PaletteActiveThread = { readonly environmentId: EnvironmentId; readonly id: ThreadId };
+
+/**
+ * Every visible thread as a palette item. Its own hook, so the rows are cached on the
+ * threads alone and keep their identity while the query changes.
+ */
+function useThreadActionItems(input: {
+  readonly activeThread: PaletteActiveThread | null;
+  readonly runThread: (thread: SidebarThreadSummary) => Promise<void>;
+}) {
+  const { activeThread, runThread } = input;
+
+  const threads = useVisibleThreadShells();
+  const delegatedUnderParent = useDelegatedUnderParent();
+  const { environments } = useEnvironments();
+  const { projectEnvironmentLocationById } = useEnvironmentLookups();
+  const providerEntryByEnvironmentAndInstanceId = useProviderEntryByEnvironmentAndInstanceId();
+  const { projectByKey } = useProjectLookups();
+  return buildThreadActionItems(
+    {
+      threads,
+      delegatedUnderParent,
+      ...(environments.length > 1
+        ? {
+            environmentLabelOf: (thread: (typeof threads)[number]) =>
+              projectEnvironmentLocationById.get(thread.environmentId)?.label ?? null,
+          }
+        : {}),
+      ...(activeThread ? { activeThread } : {}),
+      projectByKey,
+      icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+      renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
+      renderTrailingContent: (thread) => (
+        <>
+          <PaletteThreadPullRequestNumber thread={thread} />
+          <ThreadRowTrailingStatus thread={thread} />
+        </>
+      ),
+      renderDescription: (thread, { projectTitle }) => {
+        const modelInstanceId =
+          thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId;
+        const providerEntry =
+          providerEntryByEnvironmentAndInstanceId.get(
+            `${thread.environmentId}:${modelInstanceId}`,
+          ) ?? null;
+        return (
+          <ThreadCommandSubtitle
+            project={projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null}
+            projectTitle={projectTitle ?? null}
+            environmentLabel={
+              projectEnvironmentLocationById.get(thread.environmentId)?.label ?? t("Remote")
+            }
+            branch={thread.branch}
+            worktreePath={thread.worktreePath}
+            isCurrent={
+              thread.id === activeThread?.id && thread.environmentId === activeThread.environmentId
+            }
+            driverKind={providerEntry?.driverKind ?? null}
+            providerDisplayName={
+              thread.runtime?.providerName ?? providerEntry?.displayName ?? modelInstanceId
+            }
+            acpRegistryAgentId={providerEntry?.acpRegistryAgentId}
+            acpRegistryIconUrl={providerEntry?.acpRegistryIconUrl}
+          />
+        );
+      },
+      runThread,
+    },
+    t,
+  );
+}
+
 /**
  * Every visible thread as a palette item, plus, for a non-empty
  * `threadSearchQuery`, the threads whose messages match, best first.
  */
 export function useCommandPaletteThreadItems(input: {
-  readonly activeThread: { readonly environmentId: EnvironmentId; readonly id: ThreadId } | null;
+  readonly activeThread: PaletteActiveThread | null;
   readonly threadSearchQuery: string;
 }) {
   const { activeThread, threadSearchQuery } = input;
   const navigate = useNavigate();
-  const threads = useVisibleThreadShells();
-  const { projectEnvironmentLocationById } = useEnvironmentLookups();
-  const providerEntryByEnvironmentAndInstanceId = useProviderEntryByEnvironmentAndInstanceId();
   const messageSearch = useConnectedThreadSearch(threadSearchQuery);
-  const { projectByKey } = useProjectLookups();
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   // Ranking is relative to when the palette opened, so rows do not reorder as time passes.
   const [now] = useState(() => Date.now());
-
-  const { environments } = useEnvironments();
-  const threadItems = buildThreadActionItems({
-    threads,
-    ...(environments.length > 1
-      ? {
-          environmentLabelOf: (thread: (typeof threads)[number]) =>
-            projectEnvironmentLocationById.get(thread.environmentId)?.label ?? null,
-        }
-      : {}),
-    ...(activeThread ? { activeThread } : {}),
-    projectByKey,
-    icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
-    renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
-    renderTrailingContent: (thread) => (
-      <>
-        <ThreadSearchPullRequestNumber
-          thread={thread}
-          query={threadSearchQuery}
-          settled={thread.settledOverride === "settled"}
-        />
-        <ThreadRowTrailingStatus thread={thread} />
-      </>
-    ),
-    renderDescription: (thread, { projectTitle }) => {
-      const modelInstanceId =
-        thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId;
-      const providerEntry =
-        providerEntryByEnvironmentAndInstanceId.get(`${thread.environmentId}:${modelInstanceId}`) ??
-        null;
-      return (
-        <ThreadCommandSubtitle
-          project={projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null}
-          projectTitle={projectTitle ?? null}
-          environmentLabel={
-            projectEnvironmentLocationById.get(thread.environmentId)?.label ?? t("Remote")
-          }
-          branch={thread.branch}
-          worktreePath={thread.worktreePath}
-          isCurrent={
-            thread.id === activeThread?.id && thread.environmentId === activeThread.environmentId
-          }
-          driverKind={providerEntry?.driverKind ?? null}
-          providerDisplayName={
-            thread.runtime?.providerName ?? providerEntry?.displayName ?? modelInstanceId
-          }
-          acpRegistryAgentId={providerEntry?.acpRegistryAgentId}
-          acpRegistryIconUrl={providerEntry?.acpRegistryIconUrl}
-        />
-      );
-    },
-    runThread: async (thread) => {
-      // A pick sends its open with the query, always, so the server records
-      // it; the thread view then skips its own open. The open thread is no pick.
-      const isOpen =
-        activeThread?.environmentId === thread.environmentId && activeThread.id === thread.id;
-      if (threadSearchQuery.trim().length > 0 && !threadSearchQuery.startsWith(">") && !isOpen) {
-        // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
-        claimThreadOpen(thread.environmentId, thread.id, Date.now());
-      }
-      if (
-        threadSearchQuery.trim().length > 0 &&
-        !threadSearchQuery.startsWith(">") &&
-        thread.lastVisitedAt !== undefined &&
-        !isOpen
-      ) {
-        void visitThread({
-          environmentId: thread.environmentId,
-          input: {
-            threadId: thread.id,
-            visitedAt: thread.updatedAt,
-            opened: true,
-            searchQuery: pickedQuery(threadSearchQuery),
-          },
-        });
-      }
-      await navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+  // Rows already shown keep their places when a slower environment answers.
+  const [shownOrder, setShownOrder] = useState<ShownOrder | null>(null);
+  // Reads the query when picked, so the rows need not be rebuilt on every keystroke.
+  const runThread = useStableCallback(async (thread: SidebarThreadSummary) => {
+    // A pick sends its open with the query, always, so the server records
+    // it; the thread view then skips its own open. The open thread is no pick.
+    const isOpen =
+      activeThread?.environmentId === thread.environmentId && activeThread.id === thread.id;
+    if (threadSearchQuery.trim().length > 0 && !threadSearchQuery.startsWith(">") && !isOpen) {
+      claimThreadOpen(thread.environmentId, thread.id, Date.now());
+    }
+    if (
+      threadSearchQuery.trim().length > 0 &&
+      !threadSearchQuery.startsWith(">") &&
+      thread.lastVisitedAt !== undefined &&
+      !isOpen
+    ) {
+      void visitThread({
+        environmentId: thread.environmentId,
+        input: {
+          threadId: thread.id,
+          visitedAt: thread.updatedAt,
+          opened: true,
+          searchQuery: pickedQuery(threadSearchQuery),
+        },
       });
-    },
+    }
+    await navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+    });
   });
+  const threadItems = useThreadActionItems({ activeThread, runThread });
 
   const itemByValue = new Map(threadItems.map((item) => [item.value, item]));
   const itemForMatch = (match: EnvironmentThreadSearchMatch) =>
@@ -189,8 +226,6 @@ export function useCommandPaletteThreadItems(input: {
     ];
   });
 
-  // Rows already shown keep their places when a slower environment answers.
-  const [shownOrder, setShownOrder] = useState<ShownOrder | null>(null);
   const order = nextShownOrder(
     shownOrder,
     messageSearch.query,
@@ -208,5 +243,6 @@ export function useCommandPaletteThreadItems(input: {
     threadMessageItems,
     now,
     isSearchPending: messageSearch.isPending,
+    isSearchFailed: messageSearch.failed,
   };
 }

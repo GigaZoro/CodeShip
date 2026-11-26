@@ -129,7 +129,11 @@ export function ConnectionDiagnosisPanel({
   readonly onAddRoute: (() => void) | null;
 }) {
   const { copyToClipboard } = useCopyToClipboard({
-    target: t("connection diagnostics"),
+    target: {
+      target: "connection diagnostics",
+      unavailableMessage: msg("Clipboard API is unavailable while copying connection diagnostics."),
+      failureMessage: msg("Failed to copy connection diagnostics to the clipboard."),
+    },
     onError: (error) =>
       toastManager.add(
         stackedThreadToast({

@@ -350,7 +350,17 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     Effect.fn("ProjectEnrichmentService.refreshRepositoryIdentity")(function* (workspaceRoot) {
       // Remote-less folders hit this after every turn; publishing their unchanged null would
       // push a shell frame to every subscriber.
-      if ((yield* repositoryIdentityResolver.resolve(workspaceRoot, { refresh: true })) === null) {
+      if (
+        (yield* repositoryIdentityResolver
+          .resolve(workspaceRoot, { refresh: true })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logDebug("Could not refresh repository identity", { error }).pipe(
+                Effect.as(null),
+              ),
+            ),
+          )) === null
+      ) {
         return;
       }
       yield* Cache.invalidate(repositoryIdentityCache, workspaceRoot);

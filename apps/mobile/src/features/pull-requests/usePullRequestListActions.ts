@@ -8,7 +8,7 @@ import {
 import type { EnvironmentId, PullRequestAction } from "@t3tools/contracts";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { use, useRef, useState } from "react";
-import { Linking } from "react-native";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import type { MenuProps } from "../../components/ui/Menu.types";
 import { composerPullRequests } from "../../state/pull-requests";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -131,7 +131,7 @@ export function usePullRequestListActions(
       return;
     }
     if (action === "provider") {
-      void Linking.openURL(entry.url);
+      void tryOpenExternalUrl(entry.url, "pull-request");
       return;
     }
     if (action === "share") {

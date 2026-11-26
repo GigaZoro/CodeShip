@@ -1,7 +1,8 @@
+import { type Message, msg, t } from "~/i18n";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { capitalizeTerm } from "@t3tools/client-runtime/source-control-clients";
 import type { EnvironmentId, PullRequestRef, PullRequestReviewVerdict } from "@t3tools/contracts";
 import { CheckIcon, MessageSquareIcon, XCircleIcon } from "lucide-react";
+
 import { useEffect, useState, type ReactNode, type RefObject } from "react";
 
 import { TextFieldSpeechControls, useTextFieldSpeech } from "~/speech/useTextFieldSpeech";
@@ -18,16 +19,18 @@ import {
   usePendingReviewComments,
   usePullRequestReviewStore,
 } from "./pullRequestReviewStore";
-import { msg, t, type Message } from "~/i18n";
+
 import {
   PullRequestMarkdownTextarea,
   type PullRequestCompletionScope,
 } from "./PullRequestMarkdownTextarea";
 
+import type { ChangeRequestTermKind } from "./changeRequestTerm";
+
 const VERDICTS: ReadonlyArray<{
   readonly value: PullRequestReviewVerdict;
   readonly label: Message;
-  readonly sent: (term: string) => string;
+  readonly sent: (term: ChangeRequestTermKind) => string;
   readonly icon: ReactNode;
 }> = [
   {
@@ -39,7 +42,12 @@ const VERDICTS: ReadonlyArray<{
   {
     value: "approve",
     label: msg("Approve"),
-    sent: (term) => t("{term} approved", { term: capitalizeTerm(term) }),
+    sent: (term) =>
+      term === "mr"
+        ? t("Merge request approved")
+        : term === "cr"
+          ? t("Change request approved")
+          : t("Pull request approved"),
     icon: <CheckIcon className="size-3" />,
   },
   {
@@ -54,6 +62,7 @@ export function PullRequestReviewForm({
   environmentId,
   active,
   reference,
+  headSha,
   completionScope,
   term,
   verdicts,
@@ -62,20 +71,23 @@ export function PullRequestReviewForm({
   pending,
   onPendingChange,
   onSubmitted,
+  onRefused,
 }: {
   environmentId: EnvironmentId;
   /** False while the form stays mounted but hidden; dictation is cancelled then. */
   active: boolean;
   reference: PullRequestRef;
+  /** The head on screen, which the review is pinned to. */
+  headSha: string | undefined;
   completionScope: PullRequestCompletionScope | null;
-  /** The host's word for a change request, as in "pull request". */
-  term: string;
+  term: ChangeRequestTermKind;
   verdicts: ReadonlyArray<PullRequestReviewVerdict>;
   requestChangesSummaryRequired: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   pending: boolean;
   onPendingChange: (pending: boolean) => void;
   onSubmitted: () => void;
+  onRefused: () => void;
 }) {
   const [requestedVerdict, setRequestedVerdict] = useState<PullRequestReviewVerdict>("comment");
   const comments = usePendingReviewComments(reference);
@@ -115,6 +127,7 @@ export function PullRequestReviewForm({
       environmentId,
       input: {
         ...reference,
+        ...(headSha === undefined ? {} : { expectedHeadSha: headSha }),
         verdict: verdict.value,
         body: submittedBody,
         comments: submittedComments,
@@ -130,6 +143,7 @@ export function PullRequestReviewForm({
           t("The host refused the review. Your draft is still here to try again."),
         ),
       });
+      onRefused();
       return;
     }
     // Preserve comments and summary edits made during submission.

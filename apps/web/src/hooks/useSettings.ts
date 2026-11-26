@@ -1,5 +1,7 @@
-import { useRef, useSyncExternalStore, use } from "react";
 import { msg, t } from "~/i18n";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { useRef, useSyncExternalStore, use } from "react";
+
 import { useSyncExternalStoreWithSelector } from "use-sync-external-store/with-selector";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
@@ -64,6 +66,7 @@ import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useTheme } from "./useTheme";
+
 import {
   environmentSession,
   environmentSessionStatesAtom,
@@ -636,6 +639,14 @@ function useSharedSettingsSyncTargetIds(includePending = false): ReadonlyArray<E
   });
 }
 
+function deniedSettingsDescription(environmentLabel: string | null | undefined): string {
+  return environmentLabel == null
+    ? t("This connection lacks permission to change settings on the selected environment.")
+    : t("This connection lacks permission to change settings on {environments}.", {
+        environments: environmentLabel,
+      });
+}
+
 function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
   useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const persist = useAtomCommand(serverEnvironment.updateSettings, {
@@ -660,9 +671,8 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         description: t("Could not save on {label}: {error}", {
           label,
           error:
-            error instanceof Error
-              ? error.message
-              : t("The save failed. Try reconnecting and saving again."),
+            thrownErrorMessage(error, t) ??
+            t("The save failed. Try reconnecting and saving again."),
         }),
       });
     }
@@ -700,11 +710,9 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
       toastManager.add({
         type: "warning",
         title: t("Setting not saved"),
-        description: t("This connection lacks permission to change settings on {environment}.", {
-          environment:
-            environments.find((target) => target.environmentId === environmentId)?.label ??
-            t("the selected environment"),
-        }),
+        description: deniedSettingsDescription(
+          environments.find((target) => target.environmentId === environmentId)?.label,
+        ),
       });
     }
     if (Object.keys(serverPatch).length > 0 && canWriteServerPatch) {
@@ -831,9 +839,8 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
                 t("Could not save on {label}: {error}", {
                   label: write.label,
                   error:
-                    error instanceof Error
-                      ? error.message
-                      : t("The save failed. Try reconnecting and saving again."),
+                    thrownErrorMessage(error, t) ??
+                    t("The save failed. Try reconnecting and saving again."),
                 }),
               ];
             });

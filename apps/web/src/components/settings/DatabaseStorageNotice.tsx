@@ -1,3 +1,4 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -31,7 +32,7 @@ import {
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
-import { t } from "~/i18n";
+import { t, msg } from "~/i18n";
 
 const DismissedEnvironmentIds = Schema.Array(Schema.String);
 const reclaimPermissionsAtom = environmentAtomList(
@@ -59,7 +60,13 @@ export function DatabaseStorageNotice({
     [],
     DismissedEnvironmentIds,
   );
-  const { copyToClipboard } = useCopyToClipboard({ target: t("command") });
+  const { copyToClipboard } = useCopyToClipboard({
+    target: {
+      target: "command",
+      unavailableMessage: msg("Clipboard API is unavailable while copying command."),
+      failureMessage: msg("Failed to copy command to the clipboard."),
+    },
+  });
   const labelOf = (environmentId: EnvironmentId) =>
     environments.find((environment) => environment.environmentId === environmentId)?.label ??
     environmentId;
@@ -180,7 +187,10 @@ function ReclaimRow({
     toastManager.add({
       type: "error",
       title: t("Could not reclaim space on {environment}", { environment: label }),
-      description: error instanceof Error ? error.message : t("An error occurred."),
+      description:
+        error instanceof Error
+          ? (thrownErrorMessage(error) ?? error.message)
+          : t("An error occurred."),
     });
   };
   return (

@@ -26,7 +26,7 @@ import {
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
-import { SettingsSecretValue } from "./settingsSecretValue.ts";
+import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
 import {
@@ -358,6 +358,13 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 /**
+ * Where a plain click opens a subagent, a side chat or a linked environment's thread: beside the
+ * thread you are in, or in its place. A modified click opens it in the other one.
+ */
+export const SideThreadOpenTarget = Schema.Literals(["panel", "main"]);
+export type SideThreadOpenTarget = typeof SideThreadOpenTarget.Type;
+const DEFAULT_SIDE_THREAD_OPEN_TARGET: SideThreadOpenTarget = "panel";
+/**
  * What the address bar searches with when the input is not an address.
  * "custom" uses `browserCustomSearchUrl`, a template with `%s` for the query.
  */
@@ -406,6 +413,10 @@ export type AccentColorHue = (typeof ACCENT_COLOR_HUES)[number];
 /** `theme` keeps the active theme's own primary color. */
 export const AccentColor = Schema.Literals(["theme", ...ACCENT_COLOR_HUES]);
 export type AccentColor = typeof AccentColor.Type;
+
+/** How wide inline HTML previews grow: "chat" keeps them in the chat column. */
+export const HtmlPreviewWidth = Schema.Literals(["chat", "wide", "full"]);
+export type HtmlPreviewWidth = typeof HtmlPreviewWidth.Type;
 
 /** How the composer shows reasoning effort: the level's name, or rising bars. */
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
@@ -493,6 +504,9 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("comfortable" as const)),
   ),
   accentColor: AccentColor.pipe(Schema.withDecodingDefault(Effect.succeed("theme" as const))),
+  htmlPreviewWidth: HtmlPreviewWidth.pipe(
+    Schema.withDecodingDefault(Effect.succeed("chat" as const)),
+  ),
   effortDisplay: EffortDisplay.pipe(Schema.withDecodingDefault(Effect.succeed("label" as const))),
   loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   loadBalancingWeights: LoadBalancingWeights.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
@@ -557,6 +571,7 @@ export const ClientSettingsSchema = Schema.Struct({
   // Read by the Windows desktop app only: closing its window hides it behind a tray icon.
   closeWindowToTray: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  confirmTerminalClose: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadUnpin: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   diffFilesCollapsed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -612,6 +627,9 @@ export const ClientSettingsSchema = Schema.Struct({
   followUpBehavior: Schema.Literals(["queue", "steer", "restart"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("steer")),
   ),
+  sideThreadOpenTarget: SideThreadOpenTarget.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDE_THREAD_OPEN_TARGET)),
+  ),
   proactivePanelsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   showSkillsInSlashMenu: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // Null until the user flips the toggle; `resolveSidebarGrouping` then reads the older opt-ins.
@@ -665,6 +683,7 @@ export const ClientSettingsSchema = Schema.Struct({
   speechTranslateToEnglish: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   speechCustomWords: SpeechCustomWords.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   speechSilenceFiltering: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  speechStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   speechRemoveFillerWords: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   speechPostProcessingPrompt: SpeechPostProcessingPromptSettings.pipe(
     Schema.withDecodingDefault(
@@ -825,6 +844,10 @@ export interface ProviderSettingsFormAnnotation {
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
 
   readonly options?: ReadonlyArray<ProviderSettingsFormOption> | undefined;
+  /** Shows the field only while the named select field holds one of these values. */
+  readonly visibleWhen?:
+    | { readonly field: string; readonly values: ReadonlyArray<string> }
+    | undefined;
 }
 
 export function secretSettingsFields(schema: {
@@ -1079,6 +1102,10 @@ export const AntigravityAuthMethod = Schema.Literals(
   ANTIGRAVITY_AUTH_METHODS.map((method) => method.value),
 );
 export type AntigravityAuthMethod = typeof AntigravityAuthMethod.Type;
+const antigravityGcpFieldVisibility = {
+  field: "authMethod",
+  values: ["oauth-business", "agent-platform"],
+} satisfies ProviderSettingsFormAnnotation["visibleWhen"];
 
 export const AntigravitySettings = makeProviderSettingsSchema(
   {
@@ -1091,7 +1118,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Sign-in method",
         description:
-          "Google accounts use your subscription; API keys and Agent Platform bill usage.",
+          "Google account and Gemini Enterprise use your existing plan. Gemini API key and Agent Platform charge per use to your key or Google Cloud project.",
         providerSettingsForm: {
           control: "select",
           options: ANTIGRAVITY_AUTH_METHODS,
@@ -1109,6 +1136,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
           control: "password",
           placeholder: "Optional",
           clearWhenEmpty: "omit",
+          visibleWhen: { field: "authMethod", values: ["gemini-api-key", "agent-platform"] },
         },
       }),
     ),
@@ -1118,7 +1146,11 @@ export const AntigravitySettings = makeProviderSettingsSchema(
         title: "GCP project",
         description:
           "Required for Gemini Enterprise. Agent Platform uses it when no API key is set.",
-        providerSettingsForm: { placeholder: "my-project-id", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          placeholder: "my-project-id",
+          clearWhenEmpty: "omit",
+          visibleWhen: antigravityGcpFieldVisibility,
+        },
       }),
     ),
     gcpLocation: TrimmedString.pipe(
@@ -1126,7 +1158,11 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "GCP location",
         description: "Region for Gemini Enterprise or Agent Platform.",
-        providerSettingsForm: { placeholder: "us-central1", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          placeholder: "us-central1",
+          clearWhenEmpty: "omit",
+          visibleWhen: antigravityGcpFieldVisibility,
+        },
       }),
     ),
     binaryPath: TrimmedString.pipe(
@@ -1147,7 +1183,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
 export const UsageLimitSourceConfig = Schema.Struct({
-  kind: Schema.Literal("cliproxy"),
+  kind: Schema.Literals(["cliproxy", "http"]),
   label: Schema.optional(TrimmedNonEmptyString),
   url: TrimmedNonEmptyString,
   managementKey: SettingsSecretValue.pipe(
@@ -1356,6 +1392,10 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
 export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph"]);
 export type ResponseStreamingMode = typeof ResponseStreamingMode.Type;
+
+/** `on-request`: agents report only when the user asks. `auto`: they also report on their own. */
+export const AgentFeedbackMode = Schema.Literals(["off", "on-request", "auto"]);
+export type AgentFeedbackMode = typeof AgentFeedbackMode.Type;
 
 const StorageRetentionDays = Schema.NullOr(
   Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3650 })),
@@ -1597,6 +1637,17 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+export const DEFAULT_WORKFLOW_SKIPPED_RUNS_KEPT = 500;
+export const MAX_WORKFLOW_SKIPPED_RUNS_KEPT = 10_000;
+const WorkflowSkippedRunsKept = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: MAX_WORKFLOW_SKIPPED_RUNS_KEPT }),
+);
+
+const UsageHistoryRetentionDays = Schema.Union([
+  Schema.Int.check(Schema.isGreaterThan(0)),
+  Schema.Literal("unlimited"),
+]);
+
 const CloudSpeechCredential = SettingsSecretValue.pipe(
   Schema.withDecodingDefault(Effect.succeed("")),
 );
@@ -1634,6 +1685,9 @@ export const ServerSettings = Schema.Struct({
   skillAvailability: Schema.Literals(["provider", "shared"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("provider")),
   ),
+  agentFeedback: Schema.Struct({
+    mode: AgentFeedbackMode.pipe(Schema.withDecodingDefaultKey(Effect.succeed("off" as const))),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({ mode: "off" as const }))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Fork-only. Installs a new CodeShip release once no chat waits on work a restart would stop. */
@@ -1660,6 +1714,8 @@ export const ServerSettings = Schema.Struct({
   agentTerminalAccess: AgentTerminalAccess.pipe(
     Schema.withDecodingDefault(Effect.succeed("read" as const)),
   ),
+  /** Lets clients reach this machine's loopback ports over `/api/preview/tunnel`. */
+  enablePreviewTunnel: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   cloudSpeechCredentials: CloudSpeechCredentials.pipe(
     Schema.withDecodingDefault(Effect.succeed({ openai: "", xai: "", openrouter: "" })),
   ),
@@ -1808,6 +1864,12 @@ export const ServerSettings = Schema.Struct({
    * whole value; empty until a device publishes it.
    */
   deviceSettingsProfile: DeviceSettingsProfile.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** Beta: durable workflows from the workflows folder of the T3 home. Off runs none of them. */
+  workflowsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Skipped top-level runs kept per workflow; older ones are deleted. */
+  workflowSkippedRunsKept: WorkflowSkippedRunsKept.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKFLOW_SKIPPED_RUNS_KEPT)),
+  ),
   /** Beta: Claude and Codex predict the next prompt after completed turns. Codex follows a change at once; open Claude threads after they restart. */
   promptSuggestionsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
@@ -1931,6 +1993,10 @@ export const ServerSettings = Schema.Struct({
   ),
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+
+  usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(92)),
   ),
 
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(
@@ -2212,6 +2278,7 @@ export const ServerSettingsPatch = Schema.Struct({
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
+  agentFeedback: Schema.optionalKey(Schema.Struct({ mode: AgentFeedbackMode })),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   autoUpdateProviders: Schema.optionalKey(Schema.Boolean),
   installUpdatesAutomatically: Schema.optionalKey(Schema.Boolean),
@@ -2222,6 +2289,7 @@ export const ServerSettingsPatch = Schema.Struct({
   requireConnectDeviceApproval: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   agentTerminalAccess: Schema.optionalKey(AgentTerminalAccess),
+  enablePreviewTunnel: Schema.optionalKey(Schema.Boolean),
   cloudSpeechCredentials: Schema.optionalKey(
     Schema.Struct({
       openai: Schema.optionalKey(SettingsSecretValue),
@@ -2308,6 +2376,8 @@ export const ServerSettingsPatch = Schema.Struct({
   followSharedSettings: Schema.optionalKey(Schema.Boolean),
   /** Replaces the whole profile. */
   deviceSettingsProfile: Schema.optionalKey(DeviceSettingsProfile),
+  workflowsEnabled: Schema.optionalKey(Schema.Boolean),
+  workflowSkippedRunsKept: Schema.optionalKey(WorkflowSkippedRunsKept),
   promptSuggestionsEnabled: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
@@ -2372,6 +2442,8 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
 
+  usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
+
   usagePriceOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(UsageModelPriceOverride)),
   ),
@@ -2429,6 +2501,17 @@ export const ClientServerSettingsPatch = ServerSettingsPatch.mapFields(
   Struct.omit(["defaultTheme", "defaultThemeSetAt", "defaultAppearance", "defaultAppearanceSetAt"]),
 );
 
+/** The host runs saved project scripts, some without anyone asking: on worktree creation and on settle. */
+function carriesProjectScripts(patch: ServerSettingsPatch): boolean {
+  return (
+    patch.defaultProjectScripts !== undefined ||
+    Object.values(patch.projectScriptOverrides ?? {}).some((scripts) => scripts !== null) ||
+    Object.values(patch.projectSettingsOverrides ?? {}).some(
+      (overrides) => overrides?.defaultProjectScripts !== undefined,
+    )
+  );
+}
+
 export function requiredScopesForServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ReadonlyArray<AuthEnvironmentScope> {
@@ -2437,7 +2520,7 @@ export function requiredScopesForServerSettingsPatch(
   let changesAccess = false;
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
-    if (key === "requireConnectDeviceApproval") {
+    if (key === "requireConnectDeviceApproval" || key === "enablePreviewTunnel") {
       changesAccess = true;
     } else if (
       key === "providers" ||
@@ -2451,6 +2534,8 @@ export function requiredScopesForServerSettingsPatch(
       changesSettings = true;
     }
   }
+  // A reference can name any secret the store holds; choosing where one goes is provider authority.
+  if (containsSecretReference(patch)) changesProviders = true;
   // Removing a secret provider also clears the settings fields that read from it.
   if (Object.values(patch.secretProviders ?? {}).some((entry) => entry === null)) {
     changesSettings = true;
@@ -2459,6 +2544,8 @@ export function requiredScopesForServerSettingsPatch(
     ...(changesSettings || (!changesProviders && !changesAccess) ? [AuthSettingsWriteScope] : []),
     ...(changesProviders ? [AuthProvidersManageScope] : []),
     ...(changesAccess ? [AuthAccessWriteScope] : []),
+    // Saving a script is choosing a command for the host to run, wherever the patch carries it.
+    ...(carriesProjectScripts(patch) ? [AuthOrchestrationOperateScope] : []),
   ];
 }
 
@@ -2470,8 +2557,10 @@ export function requiredScopesForProjectMutation(
     return [AuthOrchestrationOperateScope];
   }
   return [
-    AuthOrchestrationOperateScope,
-    ...requiredScopesForServerSettingsPatch({ defaultProjectScripts: mutation.scripts }),
+    ...new Set([
+      AuthOrchestrationOperateScope,
+      ...requiredScopesForServerSettingsPatch({ defaultProjectScripts: mutation.scripts }),
+    ]),
   ];
 }
 
@@ -2482,6 +2571,7 @@ export const ClientSettingsPatch = Schema.Struct({
   chatWidth: Schema.optionalKey(ChatWidth),
   interfaceDensity: Schema.optionalKey(InterfaceDensity),
   accentColor: Schema.optionalKey(AccentColor),
+  htmlPreviewWidth: Schema.optionalKey(HtmlPreviewWidth),
   effortDisplay: Schema.optionalKey(EffortDisplay),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
@@ -2503,6 +2593,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmQuit: Schema.optionalKey(QuitConfirmationMode),
   closeWindowToTray: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
+  confirmTerminalClose: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
   diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
@@ -2530,6 +2621,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
   persistComposerContextStrip: Schema.optionalKey(Schema.Boolean),
   followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer", "restart"])),
+  sideThreadOpenTarget: Schema.optionalKey(SideThreadOpenTarget),
   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   sidebarGroupByProject: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
@@ -2555,6 +2647,7 @@ export const ClientSettingsPatch = Schema.Struct({
   speechTranslateToEnglish: Schema.optionalKey(Schema.Boolean),
   speechCustomWords: Schema.optionalKey(SpeechCustomWords),
   speechSilenceFiltering: Schema.optionalKey(Schema.Boolean),
+  speechStreaming: Schema.optionalKey(Schema.Boolean),
   speechRemoveFillerWords: Schema.optionalKey(Schema.Boolean),
   speechPostProcessingPrompt: Schema.optionalKey(SpeechPostProcessingPromptSettings),
   speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
