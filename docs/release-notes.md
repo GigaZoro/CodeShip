@@ -1,3 +1,7 @@
+## 2026-11-26 — Privileged fork workflows pin their actions
+
+- Workflows that can publish or access secrets now use commit-pinned actions. Release tests check each action reference and its version comment, including calls through reusable workflows and local actions.
+
 ## 2026-11-26 — Shared client code is checked for untranslated text
 
 - Text that web and mobile both show from the shared client package is now checked by the translation lint, so English that skips the translator is caught before it ships. Two labels it found, the working-agents count read by screen readers and the fallback workflow title, are now translated.
