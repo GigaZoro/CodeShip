@@ -218,7 +218,11 @@ describe("readAntigravityUsage", () => {
       yield* seedDatabase(path.join(dir, "effort.db"), (db) =>
         Effect.gen(function* () {
           yield* createTables(db);
-          for (const [idx, name] of ["gemini-4-argon-high", "gemini-4-argon"].entries()) {
+          for (const [idx, name] of [
+            "gemini-4-argon-high",
+            "gemini-4-neon-xhigh",
+            "gemini-4-argon",
+          ].entries()) {
             yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
               idx,
               new Uint8Array(protoBytes(1, protoText(19, name))),
@@ -235,6 +239,7 @@ describe("readAntigravityUsage", () => {
         records(result).map(({ model, rateModel }) => [model, rateModel]),
         [
           ["gemini-4-argon-high", "gemini-4-argon"],
+          ["gemini-4-neon-xhigh", "gemini-4-neon"],
           ["gemini-4-argon", undefined],
         ],
       );

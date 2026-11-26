@@ -104,7 +104,7 @@ const MODEL_IDS: Record<number, string> = {
 
 // ACP slugs append the thinking level, which shares the base model's price.
 function withRateModel(record: UsageRecord): UsageRecord {
-  const rateModel = record.model.replace(/-(?:low|medium|high)$/, "");
+  const rateModel = record.model.replace(/-(?:minimal|low|medium|x?high)$/, "");
   return rateModel === record.model ? record : { ...record, rateModel };
 }
 

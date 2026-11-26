@@ -6,6 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as EffectAcpErrors from "effect-acp/errors";
 
 import { parseAntigravityUsageReport, readAntigravityAcpQuota } from "./antigravityUsageLimits.ts";
 
@@ -64,51 +65,67 @@ describe("Antigravity subscription limits", () => {
 
   it.effect("only sends the built-in command after the qualified runtime advertises it", () =>
     Effect.gen(function* () {
+      const makeRuntime = (
+        version: string,
+        onStart: (queue: Queue.Queue<AcpSessionRuntimeEvent>) => Effect.Effect<void>,
+      ) =>
+        Effect.gen(function* () {
+          const queue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
+          let prompts = 0;
+          const runtime = {
+            start: () =>
+              onStart(queue).pipe(
+                Effect.as({
+                  sessionId: "test",
+                  modelConfigId: undefined,
+                  sessionSetupResult: { sessionId: "test" },
+                  initializeResult: {
+                    protocolVersion: 1,
+                    agentInfo: { name: "antigravity-acp", version },
+                  },
+                }),
+              ),
+            getEvents: () => Stream.fromQueue(queue),
+            drainEvents: Effect.gen(function* () {
+              const acknowledge = yield* Deferred.make<void>();
+              yield* Queue.offer(queue, { _tag: "EventStreamBarrier", acknowledge });
+              yield* Deferred.await(acknowledge);
+            }),
+            prompt: (request: {
+              readonly prompt: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+            }) =>
+              Effect.gen(function* () {
+                prompts++;
+                expect(request.prompt).toEqual([{ type: "text", text: "/usage" }]);
+                yield* Queue.offer(queue, { _tag: "ContentDelta", text: report, rawPayload: {} });
+                return { stopReason: "end_turn" as const };
+              }),
+          };
+          return { queue, runtime, getPrompts: () => prompts };
+        });
+
       for (const [version, names, probesQuota, lateAnnouncement] of [
         ["1.4.5", ["usage"], true],
         ["1.4.5", ["plan"], false],
+        ["1.4.5", ["usage"], true, true],
         ["1.5.2", ["usage"], true],
         ["1.5.2", ["plan"], false],
         ["1.5.2", ["usage"], true, true],
         ["1.3.0", ["usage"], false],
       ] as const) {
-        const queue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
         const sessionStarted = yield* Deferred.make<void>();
         const announcement = {
           _tag: "AvailableCommandsUpdated",
           rawPayload: {},
           availableCommands: names.map((name) => ({ name, description: name })),
         } as const;
-        let prompts = 0;
-        const probe = yield* readAntigravityAcpQuota({
-          start: () =>
-            Effect.gen(function* () {
-              if (!lateAnnouncement) yield* Queue.offer(queue, announcement);
-              yield* Deferred.succeed(sessionStarted, undefined);
-              return {
-                sessionId: "test",
-                modelConfigId: undefined,
-                sessionSetupResult: { sessionId: "test" },
-                initializeResult: {
-                  protocolVersion: 1,
-                  agentInfo: { name: "antigravity-acp", version },
-                },
-              };
-            }),
-          getEvents: () => Stream.fromQueue(queue),
-          drainEvents: Effect.gen(function* () {
-            const acknowledge = yield* Deferred.make<void>();
-            yield* Queue.offer(queue, { _tag: "EventStreamBarrier", acknowledge });
-            yield* Deferred.await(acknowledge);
+        const { queue, runtime, getPrompts } = yield* makeRuntime(version, (eventQueue) =>
+          Effect.gen(function* () {
+            if (!lateAnnouncement) yield* Queue.offer(eventQueue, announcement);
+            yield* Deferred.succeed(sessionStarted, undefined);
           }),
-          prompt: (request) =>
-            Effect.gen(function* () {
-              prompts++;
-              expect(request.prompt).toEqual([{ type: "text", text: "/usage" }]);
-              yield* Queue.offer(queue, { _tag: "ContentDelta", text: report, rawPayload: {} });
-              return { stopReason: "end_turn" as const };
-            }),
-        }).pipe(Effect.forkChild);
+        );
+        const probe = yield* readAntigravityAcpQuota(runtime).pipe(Effect.forkChild);
         if (lateAnnouncement) {
           yield* Deferred.await(sessionStarted);
           yield* TestClock.adjust("2 seconds");
@@ -117,12 +134,27 @@ describe("Antigravity subscription limits", () => {
         const result = yield* Fiber.join(probe);
         if (probesQuota) {
           expect(result.windows).toHaveLength(5);
-          expect(prompts).toBe(1);
+          expect(getPrompts()).toBe(1);
         } else {
           expect(result.unavailable?.reason).toBe("unsupported");
-          expect(prompts).toBe(0);
+          expect(getPrompts()).toBe(0);
         }
       }
+
+      // Connection termination before commands arrive fails the probe immediately without dispatching /usage.
+      const terminatedStart = yield* Deferred.make<void>();
+      const terminated = yield* makeRuntime("1.5.2", () =>
+        Deferred.succeed(terminatedStart, undefined).pipe(Effect.asVoid),
+      );
+      const terminatedFiber = yield* Effect.forkChild(readAntigravityAcpQuota(terminated.runtime));
+      yield* Deferred.await(terminatedStart);
+      yield* Queue.offer(terminated.queue, {
+        _tag: "ConnectionTerminated",
+        error: new EffectAcpErrors.AcpTransportError({ detail: "closed", cause: undefined }),
+      });
+      const terminatedResult = yield* Fiber.join(terminatedFiber);
+      expect(terminatedResult.unavailable?.reason).toBe("probeFailed");
+      expect(terminated.getPrompts()).toBe(0);
     }),
   );
 });

@@ -98,7 +98,8 @@ type QuotaRuntime = Pick<
 export const readAntigravityAcpQuota = Effect.fn("readAntigravityAcpQuota")(function* (
   runtime: QuotaRuntime,
 ) {
-  const advertisedUsage = yield* Deferred.make<boolean>();
+  const commandsReady = yield* Deferred.make<"supported" | "unsupported" | "terminated">();
+  let collecting = false;
   let report: string | undefined = "";
   yield* runtime.getEvents().pipe(
     Stream.runForEach((event) =>
@@ -107,10 +108,14 @@ export const readAntigravityAcpQuota = Effect.fn("readAntigravityAcpQuota")(func
           yield* Deferred.succeed(event.acknowledge, undefined);
         } else if (event._tag === "AvailableCommandsUpdated") {
           yield* Deferred.succeed(
-            advertisedUsage,
-            event.availableCommands.some((command) => command.name === "usage"),
+            commandsReady,
+            event.availableCommands.some((command) => command.name === "usage")
+              ? "supported"
+              : "unsupported",
           );
-        } else if (event._tag === "ContentDelta" && report !== undefined) {
+        } else if (event._tag === "ConnectionTerminated") {
+          yield* Deferred.succeed(commandsReady, "terminated");
+        } else if (collecting && event._tag === "ContentDelta" && report !== undefined) {
           report =
             report.length + event.text.length <= MAX_REPORT_LENGTH
               ? report + event.text
@@ -118,18 +123,24 @@ export const readAntigravityAcpQuota = Effect.fn("readAntigravityAcpQuota")(func
         }
       }),
     ),
+    Effect.ensuring(Deferred.succeed(commandsReady, "terminated")),
     Effect.forkScoped,
   );
   const started = yield* runtime.start();
-  const checkedAt = DateTime.formatIso(yield* DateTime.now);
   if (!supportsAntigravityAcpQuota(started.initializeResult.agentInfo?.version)) {
+    const checkedAt = DateTime.formatIso(yield* DateTime.now);
     return unavailableAntigravityLimits(checkedAt, "unsupported");
   }
   // Antigravity announces commands after session/new. The driver owns the probe timeout.
-  const advertised = yield* Deferred.await(advertisedUsage);
-  if (!advertised) {
+  const commands = yield* Deferred.await(commandsReady);
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  if (commands === "terminated") {
+    return unavailableAntigravityLimits(checkedAt, "probeFailed");
+  }
+  if (commands !== "supported") {
     return unavailableAntigravityLimits(checkedAt, "unsupported");
   }
+  collecting = true;
   const result = yield* runtime.prompt({ prompt: [{ type: "text", text: "/usage" }] });
   yield* runtime.drainEvents;
   return result.stopReason === "end_turn" && report !== undefined

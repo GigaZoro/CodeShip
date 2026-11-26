@@ -1,3 +1,8 @@
+## 2026-11-26 — Antigravity extra-high effort pricing and quota probe crash handling
+
+- Antigravity usage pricing now resolves `-xhigh` and `-minimal` effort model slugs to their base model rate.
+- When the Antigravity quota probe runtime exits before announcing commands, the probe now fails immediately instead of waiting for the 30-second timeout.
+
 ## 2026-11-26 — Single-executable server builds load Zod via createRequire
 
 - Fixed `build-exe` in fork releases by loading the external `zod` runtime dependency lazily through `createRequire` in `ClaudeAdapterV2` instead of a static ESM import.
