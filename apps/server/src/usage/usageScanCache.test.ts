@@ -423,6 +423,22 @@ describe("scan cache merge", () => {
     ...overrides,
   });
 
+  const codexReadAcrossMidnight = (resolvedIndex: 0 | 1) =>
+    row({
+      provider: "codex",
+      records: ["2026-08-01T23:59:59Z", "2026-08-02T00:00:01Z"].map((time, index) =>
+        record({
+          provider: "codex",
+          model: "gpt-5",
+          timestampMs: Date.parse(time),
+          dedupeKey: null,
+          ...(index === resolvedIndex
+            ? { speed: "fast" }
+            : { unresolvedServiceTierTurnId: "d9b9635f-1fc8-4d62-927a-cf8ed6499355" }),
+        }),
+      ),
+    });
+
   it.each([
     ["the later observation over a larger file", row({ observedAtMs: 2_001 }), row({ size: 900 })],
     [
@@ -465,6 +481,11 @@ describe("scan cache merge", () => {
           record({ unresolvedServiceTierTurnId: "turn-b" }),
         ],
       }),
+    ],
+    [
+      "the first record fast when two day windows each resolve one record of the same Codex turn",
+      codexReadAcrossMidnight(0),
+      codexReadAcrossMidnight(1),
     ],
     [
       "one of two reads that each resolved a different speed tier",
