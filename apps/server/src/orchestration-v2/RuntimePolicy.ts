@@ -55,7 +55,7 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
 
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
-/** A read-only guest link is open, and the thread's provider cannot refuse changes without asking. */
+/** The selected provider cannot isolate this guest turn on the host. */
 export class RuntimePolicyReadOnlyUnsupportedError extends Schema.TaggedError<RuntimePolicyReadOnlyUnsupportedError>()(
   "RuntimePolicyReadOnlyUnsupportedError",
   {
@@ -64,7 +64,7 @@ export class RuntimePolicyReadOnlyUnsupportedError extends Schema.TaggedError<Ru
   },
 ) {
   override get message(): string {
-    return "This thread has a read-only guest link, and its provider cannot block file changes. Switch the thread to a provider such as Codex or Claude, or close the guest link.";
+    return "This turn requires read-only guest access. Use a Claude thread on a Mac that supports guest analysis.";
   }
 }
 
@@ -169,6 +169,7 @@ export const layerEnforcingCeiling: Layer.Layer<
  * answer. The lowest ceiling keeps a provider mode the user picked from skipping the sandbox.
  */
 const readOnlyGuestPolicy = {
+  readOnlyGuestShare: true,
   runtimeMode: "approval-required",
   interactionMode: "default",
   approvalPolicy: "never",
@@ -210,7 +211,7 @@ export const layerFromProjectStore: Layer.Layer<
                       }),
                   ),
                 );
-          if (capabilities?.runtimePolicy.readOnlySandbox !== true) {
+          if (capabilities?.runtimePolicy.readOnlyGuestAnalysis !== true) {
             return yield* new RuntimePolicyReadOnlyUnsupportedError({
               threadId: input.thread.id,
               providerInstanceId: input.modelSelection.instanceId,

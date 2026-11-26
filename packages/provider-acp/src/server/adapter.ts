@@ -668,6 +668,8 @@ export const AcpProviderCapabilitiesV2 = {
     enforcement: "client-boundary",
     // The client policy denies every non-read tool call and terminal.
     readOnlySandbox: true,
+    // ACP agents can operate outside the client permission handlers.
+    readOnlyGuestAnalysis: false,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

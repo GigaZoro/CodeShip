@@ -103,7 +103,7 @@ const GUEST_SHARE_CREATE_MESSAGES = {
   read_failed: "Failed to read the shared thread.",
   changed: "The guest link changed while it was being created.",
   read_only_unsupported:
-    "This thread's provider cannot block file changes, so it cannot have a read-only guest link.",
+    "Read-only guest links require a Claude thread on a supported Mac. Choose Wait for me to review guest messages on this thread.",
   run_active:
     "Wait for the thread's run and background work to finish, or stop them, before you open a read-only guest link.",
 } as const;

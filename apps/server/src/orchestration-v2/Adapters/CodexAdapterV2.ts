@@ -360,6 +360,8 @@ export const CodexProviderCapabilitiesV2 = {
     enforcement: "native",
     // The OS sandbox refuses writes when approvals are off.
     readOnlySandbox: true,
+    // Configured MCP servers run outside the app-server's filesystem sandbox.
+    readOnlyGuestAnalysis: false,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 

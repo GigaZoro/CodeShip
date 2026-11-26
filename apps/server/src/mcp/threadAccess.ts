@@ -149,7 +149,7 @@ export const assertNotReadOnlyGuestThread = (
         new OrchestratorMcpFailure({
           code: "capability_denied",
           message:
-            "T3 tools are off while this thread has a read-only guest link. Its owner can close the link to use them.",
+            "T3 tools are off for read-only guest work. The owner can stop sharing and start a new turn to use them.",
         }),
       )
     : Effect.void;

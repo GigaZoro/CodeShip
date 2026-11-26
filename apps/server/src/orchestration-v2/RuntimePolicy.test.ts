@@ -97,7 +97,8 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
         Effect.succeed({
           runtimePolicy: {
             enforcement: "native",
-            readOnlySandbox: instanceId !== cursorInstanceId,
+            readOnlySandbox: true,
+            ...(instanceId === cursorInstanceId ? {} : { readOnlyGuestAnalysis: true }),
           },
         } as OrchestrationV2ProviderCapabilities),
     } as Pick<ProviderInstance["orchestrationAdapter"], "getCapabilities">,
@@ -194,6 +195,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
           approvalPolicy: resolved.approvalPolicy,
           sandboxPolicy: resolved.sandboxPolicy,
           maxRuntimeMode: resolved.maxRuntimeMode,
+          readOnlyGuestShare: resolved.readOnlyGuestShare,
         });
         const readOnlyPolicy = {
           runtimeMode: "approval-required",
@@ -201,6 +203,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
           approvalPolicy: "never",
           sandboxPolicy: { type: "readOnly" },
           maxRuntimeMode: "approval-required",
+          readOnlyGuestShare: true,
         };
 
         assert.deepStrictEqual(readOnlyFields(yield* resolve("read-only")), readOnlyPolicy);
@@ -211,6 +214,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
         const approve = yield* resolve("approve");
         assert.equal(approve.runtimeMode, "full-access");
         assert.equal(approve.interactionMode, "plan");
+        assert.isUndefined(approve.readOnlyGuestShare);
         const refused = yield* resolve("read-only", { instanceId: cursorInstanceId }).pipe(
           Effect.flip,
         );

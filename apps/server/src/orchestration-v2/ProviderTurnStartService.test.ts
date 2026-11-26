@@ -2072,6 +2072,28 @@ effectIt.effect("starts a restricted review without loading a shared skill", () 
   }),
 );
 
+effectIt.effect(
+  "passes guest skill mentions as plain text without loading the owner's skills",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Explain $review",
+        nativeTurn: true,
+        skillFailure: new ProviderSkills.ProviderSkillInvocationError({
+          skillName: "review",
+          reason: "unavailable",
+        }),
+      });
+      harness.resolveRuntimePolicy.mockReturnValue(
+        Effect.succeed({ cwd: "/tmp/native-account-command", readOnlyGuestShare: true } as never),
+      );
+      yield* harness.start;
+      expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
+        "Explain $review",
+      ]);
+    }),
+);
+
 effectIt.effect.each([
   {
     message: "DESCRIPTION is not valid ACP JSON",

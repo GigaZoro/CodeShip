@@ -2,6 +2,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import {
+  isReadOnlyGuestShare,
   MessageId,
   type NodeId,
   ProviderSessionId,
@@ -406,14 +407,22 @@ export const layer: Layer.Layer<
             });
           }
           let text = message.text;
-          if (message.createdBy === "user" && text.search(SKILL_MENTION_PATTERN) !== -1) {
+          if (
+            !run.readOnlyGuestShare &&
+            message.createdBy === "user" &&
+            text.search(SKILL_MENTION_PATTERN) !== -1
+          ) {
             const thread = yield* projections.getThread(input.threadId);
             const effective = resolveProjectSettings(
               yield* settings.getSettings,
               thread.projectId,
             ).settings;
-            // A restricted review loads no host skill; its adapter refuses the steer as sent.
-            if (effective.skillAvailability === "shared" && thread.reviewAssignment === undefined) {
+            // A restricted review or read-only guest turn loads no host skill.
+            if (
+              effective.skillAvailability === "shared" &&
+              thread.reviewAssignment === undefined &&
+              !isReadOnlyGuestShare(thread.guestShare)
+            ) {
               const project =
                 thread.worktreePath === null
                   ? yield* projects.getById(thread.projectId)

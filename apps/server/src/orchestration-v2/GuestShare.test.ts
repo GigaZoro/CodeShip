@@ -4,7 +4,9 @@ import {
   EventId,
   GuestMessageId,
   GuestShareId,
+  IDLE_COMPACTION_TEXT,
   MessageId,
+  type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -18,34 +20,41 @@ import * as Layer from "effect/Layer";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { claudeProviderCapabilitiesForHost } from "./Adapters/ClaudeAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
-import { GUEST_FAILURE, READ_ONLY_SHARE_RUN_ACTIVE } from "./GuestShareDecider.ts";
+import {
+  GUEST_FAILURE,
+  READ_ONLY_SHARE_RUN_ACTIVE,
+  READ_ONLY_SHARE_UNSUPPORTED,
+} from "./GuestShareDecider.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
-const instanceId = ProviderInstanceId.make("codex");
-const adapter = {
-  instanceId,
-  driver: ProviderDriverKind.make("codex"),
-  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
-  planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
-  openSession: () => Effect.die("No provider process needed for guest shares"),
-} as ProviderAdapter.ProviderAdapterV2["Service"];
+const instanceId = ProviderInstanceId.make("claudeAgent");
+const guestAdapter = (platform: NodeJS.Platform) =>
+  ({
+    instanceId,
+    driver: ProviderDriverKind.make("claudeAgent"),
+    getCapabilities: () => Effect.succeed(claudeProviderCapabilitiesForHost(platform)),
+    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+    openSession: () => Effect.die("No provider process needed for guest shares"),
+  }) as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
-const layerTest = Layer.mergeAll(
-  layerDatabase,
-  ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-  EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
-  ProviderReplayHarness.layerWithRegistry(
-    { name: "guest-share" },
-    ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: layerDatabase, runEffectWorker: false },
-  ),
-);
+const layerForHost = (platform: NodeJS.Platform) =>
+  Layer.mergeAll(
+    layerDatabase,
+    ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
+    EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
+    ProviderReplayHarness.layerWithRegistry(
+      { name: "guest-share" },
+      ProviderAdapterRegistry.layerFromAdapters([guestAdapter(platform)]),
+      { databaseLayer: layerDatabase, runEffectWorker: false },
+    ),
+  );
+const layerTest = layerForHost("darwin");
 
 const threadId = ThreadId.make("thread:guest-share");
 const shareId = GuestShareId.make("share:one");
@@ -59,7 +68,7 @@ const setup = Effect.gen(function* () {
     threadId,
     projectId: ProjectId.make("project:guest-share"),
     title: "Review me",
-    modelSelection: { instanceId, model: "gpt-5.1-codex" },
+    modelSelection: { instanceId, model: "claude-sonnet" },
     runtimeMode: "full-access",
     interactionMode: "default",
     branch: null,
@@ -378,12 +387,12 @@ it.effect("restarts the thread's provider session when a read-only link opens", 
           occurredAt: now,
           payload: {
             id: providerSessionId,
-            driver: ProviderDriverKind.make("codex"),
+            driver: ProviderDriverKind.make("claudeAgent"),
             providerInstanceId: instanceId,
             status: "ready",
             cwd: process.cwd(),
-            model: "gpt-5.1-codex",
-            capabilities: CodexProviderCapabilitiesV2,
+            model: "claude-sonnet",
+            capabilities: claudeProviderCapabilitiesForHost("darwin"),
             createdAt: now,
             updatedAt: now,
             lastError: null,
@@ -419,6 +428,21 @@ it.effect("restarts the thread's provider session when a read-only link opens", 
     assert.equal((yield* projections.getThread(threadId)).guestShare?.access, "read-only");
     assert.isTrue((yield* projections.getThreadShell(threadId))?.readOnlyGuestShare);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "keeps the owner-reviewed link on hosts that only support ordinary file restrictions",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* setup;
+      const refused = yield* Effect.flip(openReadOnly(orchestrator, "open-unsupported"));
+      assert.equal(
+        refused._tag === "OrchestratorDispatchError" ? refused.cause : refused._tag,
+        READ_ONLY_SHARE_UNSUPPORTED,
+      );
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      assert.equal((yield* projections.getThread(threadId)).guestShare?.access, "approve");
+    }).pipe(Effect.provide(layerForHost("linux"))),
 );
 
 it.effect("refuses a read-only link while a run is active", () =>
@@ -484,6 +508,15 @@ it.effect(
     Effect.gen(function* () {
       const orchestrator = yield* setup;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const readOnlyShell = Effect.gen(function* () {
+        const shell = yield* projections.getThreadShell(threadId);
+        const projection = yield* projections.getThreadProjection(threadId);
+        assert.equal(
+          shell?.readOnlyGuestShare,
+          ProjectionStore.threadShellFromProjection(projection).readOnlyGuestShare,
+        );
+        return shell?.readOnlyGuestShare;
+      });
       yield* openReadOnly(orchestrator, "open-read-only");
       yield* orchestrator.dispatch({
         type: "thread.guest-share.redeem",
@@ -519,6 +552,7 @@ it.effect(
         (run) => run.userMessageId === MessageId.make("send"),
       );
       assert.isTrue(guestRun?.readOnlyGuestShare);
+      assert.isTrue(yield* readOnlyShell);
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make("continue"),
@@ -539,5 +573,49 @@ it.effect(
           [MessageId.make("continue"), true],
         ],
       );
+      const finishRuns = (batch: ReadonlyArray<OrchestrationV2Run>) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          yield* (yield* EventSink.EventSinkV2).write({
+            commandId: CommandId.make(`finish-batch-${batch[0]!.id}`),
+            events: batch.map((run) => ({
+              id: EventId.make(`finish-${run.id}`),
+              type: "run.updated" as const,
+              threadId,
+              occurredAt: now,
+              payload: { ...run, status: "completed" as const, startedAt: now, completedAt: now },
+            })),
+          });
+        });
+      yield* finishRuns(runs);
+      assert.isTrue(yield* readOnlyShell);
+      for (const idleCompaction of ["beforeCacheExpires", "onReturn"] as const) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(idleCompaction),
+          threadId,
+          messageId: MessageId.make(idleCompaction),
+          text: IDLE_COMPACTION_TEXT,
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          idleCompaction,
+          createdBy: idleCompaction === "onReturn" ? "user" : "agent",
+          creationSource: idleCompaction === "onReturn" ? "web" : "server",
+        });
+      }
+      assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, runs.length);
+      assert.isTrue(yield* readOnlyShell);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("owner-work"),
+        threadId,
+        messageId: MessageId.make("owner-work"),
+        text: "Start my own work",
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      assert.isUndefined(yield* readOnlyShell);
     }).pipe(Effect.provide(layerTest)),
 );

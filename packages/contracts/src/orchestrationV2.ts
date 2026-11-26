@@ -380,11 +380,10 @@ export type OrchestrationV2CheckpointCapabilities =
 
 export const OrchestrationV2RuntimePolicyCapabilities = Schema.Struct({
   enforcement: Schema.Literals(["native", "client-boundary"]),
-  /**
-   * The adapter refuses every change under approvalPolicy "never" with a read-only sandbox,
-   * instead of asking or writing. Read-only guest links need it.
-   */
+  /** The adapter can enforce its read-only filesystem policy without asking for approval. */
   readOnlySandbox: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Guest turns also require isolation from external tools that could modify files. */
+  readOnlyGuestAnalysis: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2RuntimePolicyCapabilities =
   typeof OrchestrationV2RuntimePolicyCapabilities.Type;
@@ -1325,6 +1324,7 @@ export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   claudeAttachmentBudget: Schema.optional(
     Schema.Struct({ bytesUsed: NonNegativeInt, pagesUsed: NonNegativeInt }),
   ),
+  claudeReadOnlyGuestShare: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2ProviderThreadNativeMetadata =
   typeof OrchestrationV2ProviderThreadNativeMetadata.Type;
@@ -2459,7 +2459,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
   pendingGuestMessageCount: Schema.optional(NonNegativeInt),
-  /** Set only while a read-only guest link keeps the thread from changing the environment. */
+  /** The share or the last executed run restricts the thread's provider tools. */
   readOnlyGuestShare: Schema.optional(Schema.Literal(true)),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),

@@ -43,7 +43,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { CloudManagedEndpointRuntime } from "../cloud/ManagedEndpointRuntime.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { claudeProviderCapabilitiesForHost } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CommandOutputHub from "../orchestration-v2/CommandOutputHub.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
@@ -60,11 +60,11 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as GuestShareService from "./GuestShareService.ts";
 
-const instanceId = ProviderInstanceId.make("codex");
+const instanceId = ProviderInstanceId.make("claudeAgent");
 const adapter = {
   instanceId,
-  driver: ProviderDriverKind.make("codex"),
-  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+  driver: ProviderDriverKind.make("claudeAgent"),
+  getCapabilities: () => Effect.succeed(claudeProviderCapabilitiesForHost("darwin")),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process needed for guest shares"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
@@ -184,7 +184,7 @@ const shareThreadFor = Effect.fn(function* (
     threadId,
     projectId: ProjectId.make("project:guest-share-service"),
     title: "Review me",
-    modelSelection: { instanceId, model: "gpt-5.1-codex" },
+    modelSelection: { instanceId, model: "claude-sonnet" },
     runtimeMode: "full-access",
     interactionMode: "default",
     branch: null,
@@ -437,7 +437,7 @@ it.effect("shows the guest the thread's new model", () =>
       type: "thread.model-selection.set",
       commandId: CommandId.make("switch-model"),
       threadId,
-      modelSelection: { instanceId, model: "gpt-5.2-codex" },
+      modelSelection: { instanceId, model: "claude-opus" },
     });
     yield* orchestrator.dispatch({
       type: "thread.guest-share.close",
@@ -447,7 +447,7 @@ it.effect("shows the guest the thread's new model", () =>
     const views = Array.from(yield* Stream.runCollect(events)).flatMap((event) =>
       event.type === "view" ? [event.view.model.name] : [],
     );
-    assert.include(views, "gpt-5.2-codex");
+    assert.include(views, "claude-opus");
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -514,7 +514,7 @@ const writeItem = (
           id: EventId.make(`event:${id}`),
           type: "turn-item.updated",
           threadId,
-          driver: ProviderDriverKind.make("codex"),
+          driver: ProviderDriverKind.make("claudeAgent"),
           providerInstanceId: instanceId,
           occurredAt: now,
           payload: {
@@ -608,7 +608,7 @@ it.effect("pages the guest back through turns older than the stream's snapshot",
       id: EventId.make(`event:${id}`),
       type: "turn-item.updated" as const,
       threadId,
-      driver: ProviderDriverKind.make("codex"),
+      driver: ProviderDriverKind.make("claudeAgent"),
       providerInstanceId: instanceId,
       occurredAt: now,
       payload: {
@@ -1054,7 +1054,7 @@ it.effect("serves an image on the host only when an agent reply the guest sees s
       id: EventId.make(`event:${id}`),
       type: "turn-item.updated" as const,
       threadId: target.threadId,
-      driver: ProviderDriverKind.make("codex"),
+      driver: ProviderDriverKind.make("claudeAgent"),
       providerInstanceId: instanceId,
       occurredAt: now,
       payload: {
@@ -1228,7 +1228,7 @@ it.effect("keeps a connected guest's images while other shares come and go", () 
             id: EventId.make(`event:reply:${id}`),
             type: "turn-item.updated",
             threadId: id,
-            driver: ProviderDriverKind.make("codex"),
+            driver: ProviderDriverKind.make("claudeAgent"),
             providerInstanceId: instanceId,
             occurredAt: now,
             payload: {

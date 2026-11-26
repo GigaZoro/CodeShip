@@ -30,6 +30,7 @@ import {
   CommandId,
   type GuestMessageId,
   isAppOwnedTaskWork,
+  idleCompactionOf,
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
@@ -1072,6 +1073,23 @@ const typedByPersonInClient = (
   command.createdBy === "user" &&
   (command.creationSource === "web" || command.creationSource === "mobile") &&
   command.scheduledTaskId === undefined;
+
+function guestRunRestriction(
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
+  message: Pick<
+    OrchestrationV2ConversationMessage,
+    "createdBy" | "creationSource" | "scheduledTaskId" | "idleCompaction"
+  >,
+  sourceRunId?: RunId,
+): Pick<OrchestrationV2Run, "readOnlyGuestShare"> {
+  const automatic = !typedByPersonInClient(message) || message.idleCompaction !== undefined;
+  return isReadOnlyGuestShare(projection.thread.guestShare) ||
+    (sourceRunId !== undefined &&
+      projection.runs.some((run) => run.id === sourceRunId && run.readOnlyGuestShare)) ||
+    (automatic && latestExecutedRun(projection.runs)?.readOnlyGuestShare)
+    ? { readOnlyGuestShare: true }
+    : {};
+}
 
 const sameKnownDemand = (left: string | null | undefined, right: string | null | undefined) =>
   left != null && left === right;
@@ -2535,6 +2553,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const { queueHeldByUpdateDrain: _byDrain, ...queuedRunBase } = queuedRun;
       const startingRun: OrchestrationV2Run = {
         ...queuedRunBase,
+        ...guestRunRestriction(projection, queuedMessage),
         providerThreadId: queuedProviderThread.id,
         ordinal,
         status: needsWorkspacePreparation ? "preparing" : "starting",
@@ -3624,7 +3643,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               cause,
             }),
         ),
-      )).runtimePolicy.readOnlySandbox;
+      )).runtimePolicy.readOnlyGuestAnalysis === true;
     // Read here, in the thread's serialized dispatch, so two guest messages cannot both find it idle.
     // The provider's background work counts: a session restart would end it, and a guest's turn
     // would race it. A watched pull request is the server's, and can wait for days.
@@ -6377,14 +6396,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (skipped !== null) return skipped.cancelUnsettledEffects;
     }
-    // A run started under a read-only guest link stays read-only after the link closes, and so does
-    // a run that continues its work.
-    const continuedRunId = automaticSourceRunId ?? command.manualContinuationOfRunId;
-    const readOnlyGuestRun =
-      isReadOnlyGuestShare(projection.thread.guestShare) ||
-      projection.runs.some((run) => run.id === continuedRunId && run.readOnlyGuestShare === true)
-        ? { readOnlyGuestShare: true as const }
-        : {};
+    const readOnlyGuestRun = guestRunRestriction(
+      projection,
+      command,
+      automaticSourceRunId ?? command.manualContinuationOfRunId ?? command.demandSourceRunId,
+    );
+    // The read-only provider has no slash commands. Skip idle maintenance so the next owner send can proceed.
+    if (readOnlyGuestRun.readOnlyGuestShare && idleCompactionOf({ ...command, role: "user" }))
+      return;
     if (command.manualContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
       const stopped = latestRootProviderFailure(source ?? null, projection.turnItems);
@@ -6705,7 +6724,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const target = projection.runs.find((run) => run.id === targetRunId);
       if (target !== undefined) {
         const targetDemand = target.demandId ?? null;
-        if (incomingDemand === undefined) {
+        if (readOnlyGuestRun.readOnlyGuestShare && !target.readOnlyGuestShare) {
+          dispatchMode = { type: "queue_after_active" };
+        } else if (incomingDemand === undefined) {
           if (goalCommand === null) incomingDemand = targetDemand;
         } else if (!sameKnownDemand(incomingDemand, targetDemand)) {
           dispatchMode = { type: "queue_after_active" };
@@ -11220,6 +11241,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? null
         : parsedGoalCommand;
     const target = projection.runs.find((run) => run.id === command.targetRunId);
+    if (target !== undefined && queuedRun.readOnlyGuestShare && !target.readOnlyGuestShare) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Read-only guest work must run in a separate read-only turn.",
+      });
+    }
     // Promoting an owner's own input can redirect it. Guests and automated work retain their source.
     const ownerMessage =
       typedByPersonInClient(queuedMessage) &&
@@ -15770,6 +15798,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               // sender then fails only on a write that did not happen.
               command.type === "delegated_task.remote.complete" ||
               command.type === "thread.message.star" ||
+              (command.type === "message.dispatch" &&
+                idleCompactionOf({ ...command, role: "user" }) !== undefined) ||
               // Closing a share again, or after it ended, is not an error.
               command.type === "thread.guest-share.close" ||
               command.type === "provider-session.detach-idle" ||

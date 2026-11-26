@@ -2090,6 +2090,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
   it.effect("adds the session MCP server without replacing launch-argument servers", () =>
     Effect.gen(function* () {
+      const { runtimePolicy } = CodexAdapterV2.CodexProviderCapabilitiesV2;
+      assert.isTrue(runtimePolicy.readOnlySandbox);
+      assert.isFalse(runtimePolicy.readOnlyGuestAnalysis);
       const scenario = "launch-mcp-servers";
       yield* (yield* McpProviderSessions.McpProviderSessions).set({
         environmentId: EnvironmentId.make("environment-codex-mcp"),

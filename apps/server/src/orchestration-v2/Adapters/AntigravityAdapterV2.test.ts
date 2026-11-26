@@ -341,6 +341,9 @@ describe("AntigravityAdapterV2 client file system", () => {
       });
       assert.equal(initialize?.params?.clientInfo?.name, "zed");
       assert.isUndefined(writeTextFile);
+      const capabilities = yield* adapter.getCapabilities();
+      assert.isTrue(capabilities.runtimePolicy.readOnlySandbox);
+      assert.isFalse(capabilities.runtimePolicy.readOnlyGuestAnalysis);
       if (readTextFile === undefined) {
         return yield* Effect.die("Antigravity sessions must serve client file reads");
       }

@@ -1829,9 +1829,11 @@ export const layer: Layer.Layer<
         });
         let effectiveHandoffs = handoffs;
         let resumeFellBack = false;
-        // A restricted review's prompt reaches the model as attested, so no host skill expands into it.
+        // Restricted reviews and read-only guest turns never expand host skills into the prompt.
         const expandedText = yield* Effect.result(
-          message.createdBy === "user" && projection.thread.reviewAssignment === undefined
+          message.createdBy === "user" &&
+            projection.thread.reviewAssignment === undefined &&
+            !activeRuntimePolicy.readOnlyGuestShare
             ? providerSkills.expandSkillMentions({
                 text: message.text,
                 instanceId: activeRun.providerInstanceId,

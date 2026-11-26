@@ -252,7 +252,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const sharedConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
       processEnv.CLAUDE_CONFIG_DIR?.trim() ? sharedHome : undefined,
     );
-    // Runs before each Claude process too, so servers added in a terminal reach every account.
+    // Refresh before ordinary turns so servers added in a terminal reach every account.
     const copyMcpServers =
       accountHome === undefined
         ? Effect.void
@@ -301,14 +301,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     });
     const loginHome = loginHomes.activeHome;
     const baseConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(configuredHome);
-    const prepareLoginHome = (home: string) =>
+    const materializeLoginHome = (home: string) =>
       materializeClaudeAccountHome({ sharedHome: bindingHome, accountHome: home }).pipe(
-        Effect.andThen(
-          shareClaudeMcpServers({ sharedConfigPath: baseConfigPath, accountHome: home }),
-        ),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
       );
+    const copyLoginMcpServers = (home: string) =>
+      shareClaudeMcpServers({ sharedConfigPath: baseConfigPath, accountHome: home }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+    const prepareLoginHome = (home: string) =>
+      materializeLoginHome(home).pipe(Effect.andThen(copyLoginMcpServers(home)));
     if (loginHome) yield* prepareLoginHome(loginHome);
     const effectiveConfig = {
       ...config,
@@ -540,8 +544,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
         ),
-        prepareHome: copyMcpServers.pipe(
-          Effect.andThen(loginHome ? prepareLoginHome(loginHome) : Effect.void),
+        prepareHome: loginHome ? materializeLoginHome(loginHome) : Effect.void,
+        prepareMcp: copyMcpServers.pipe(
+          Effect.andThen(loginHome ? copyLoginMcpServers(loginHome) : Effect.void),
           Effect.andThen(ensureMcpSignInsFresh),
         ),
       },

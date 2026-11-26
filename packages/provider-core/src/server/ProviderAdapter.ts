@@ -55,6 +55,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   cwd: Schema.NullOr(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
+  /** Guest turns must also exclude tools and extensions that operate outside the file sandbox. */
+  readOnlyGuestShare: Schema.optional(Schema.Literal(true)),
   /**
    * The administrator's ceiling, when a managed policy sets one. `runtimeMode` is already under
    * it; adapters use it to refuse native mode choices a user makes beside T3.CodeShip's own.

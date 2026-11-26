@@ -40,17 +40,17 @@ the agent cannot change files. While the agent works, the guest waits to send th
   after you stop sharing.
 - Opening a read-only link restarts the thread's agent session, so wait for the current run and
   any background work to finish, or stop them first. A watched pull request does not hold it up.
-- Read-only links work with Codex, Claude, Grok, Antigravity, and fx. Threads on Cursor, OpenCode,
-  Pi, or Muse Code cannot have one, and switching a thread with a read-only link to one of those stops
-  its turns until you stop sharing.
-- On that thread the agent cannot use T3.CodeShip's own tools, including those that only read
-  other threads or projects, so the guest cannot reach the rest of your work through it.
-- Read-only does not hide anything: the agent can still read files outside the project, and the
-  guest sees whatever it reads. Other MCP servers you connected to the provider can still run:
-  Codex runs them, and Claude runs those you allowed without asking. Turn off any that can change
-  things before you share.
-- If a guest message cannot start, it waits for you to send or dismiss, as on a **Wait for me**
-  link.
+- Host the thread on a Mac and sign in to Claude locally with a personal Pro or Max account.
+  The agent can search and read files. Connected tools, plugins, and hooks are disabled.
+  CodeShip checks the account, managed settings, and the local sandbox before starting each guest turn.
+- On other hosts or providers, choose **Wait for me** to review each guest message yourself.
+  Switching to an unsupported provider during read-only sharing prevents new turns from starting.
+- The agent can read files outside the project. The guest can see what the agent reads and
+  includes in the thread.
+- If CodeShip cannot create a turn for a guest message, it waits for you to send or dismiss.
+  Once a turn exists, a provider refusal appears in the shared thread. For example, if Claude
+  cannot verify the account, switch to an eligible account and have the guest send the prompt again.
+  If the sandbox is unavailable, you can create a **Wait for me** link instead.
 
 ## What the guest sees
 

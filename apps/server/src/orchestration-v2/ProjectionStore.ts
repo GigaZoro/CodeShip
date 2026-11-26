@@ -24,6 +24,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   isUndeliveredFailure,
+  latestExecutedRun,
   latestRootProviderFailure,
   NON_WORK_TURN_ITEM_TYPES,
   latestUnheldRun,
@@ -958,8 +959,10 @@ export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, Projec
 export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
 
 // Absent unless set, so shells of the many threads without such a link stay as small as before.
-const readOnlyGuestShareField = (share: ThreadGuestShare | null | undefined) =>
-  isReadOnlyGuestShare(share) ? { readOnlyGuestShare: true as const } : {};
+const readOnlyGuestShareField = (
+  share: ThreadGuestShare | null | undefined,
+  lastRunReadOnly: boolean,
+) => (isReadOnlyGuestShare(share) || lastRunReadOnly ? { readOnlyGuestShare: true as const } : {});
 
 function upsertById<T extends { readonly id: string }>(items: ReadonlyArray<T>, next: T): Array<T> {
   const index = items.findIndex((item) => item.id === next.id);
@@ -1287,6 +1290,7 @@ type ShellThreadRow = {
   readonly latest_run_model_selection_json: string | null;
   readonly latest_run_stop_requested: number;
   readonly queue_held: number;
+  readonly last_run_read_only: number | null;
   readonly active_run_id: string | null;
   readonly active_run_status: string | null;
   readonly activity_run_status: string | null;
@@ -1932,7 +1936,10 @@ export function threadShellFromProjection(
     ),
     pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(projection.thread.guestShare),
-    ...readOnlyGuestShareField(projection.thread.guestShare),
+    ...readOnlyGuestShareField(
+      projection.thread.guestShare,
+      latestExecutedRun(projection.runs)?.readOnlyGuestShare === true,
+    ),
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     latestVisibleMessage: null,
@@ -2038,6 +2045,7 @@ function isActivityRunForShell(
 
 type ShellThreadState = {
   readonly thread: OrchestrationV2ThreadProjection["thread"];
+  readonly lastRunReadOnly: boolean;
   readonly latestRunId: RunId | null;
   readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
   readonly latestRunRequestedAt: DateTime.Utc | null;
@@ -2221,7 +2229,7 @@ function shellFromState(input: {
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
-    ...readOnlyGuestShareField(input.state.thread.guestShare),
+    ...readOnlyGuestShareField(input.state.thread.guestShare, input.state.lastRunReadOnly),
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
@@ -7368,6 +7376,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE held.thread_id = t.thread_id AND held.status = 'queued'
                   AND json_extract(held.payload_json, '$.queueHeld') IS 1
               ) AS queue_held,
+              json_extract(executed.payload_json, '$.readOnlyGuestShare') AS last_run_read_only,
               active.run_id AS active_run_id,
               active.status AS active_run_status,
               (
@@ -7525,7 +7534,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY candidate.ordinal DESC, candidate.run_id DESC
               LIMIT 1
             )
-            LEFT JOIN orchestration_v2_projection_runs blocked ON blocked.run_id = (
+            LEFT JOIN orchestration_v2_projection_runs executed ON executed.run_id = (
               SELECT candidate.run_id
               FROM orchestration_v2_projection_runs candidate
               WHERE candidate.thread_id = t.thread_id
@@ -7538,7 +7547,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY candidate.completed_at IS NULL DESC, candidate.completed_at DESC,
                 candidate.ordinal DESC, candidate.run_id DESC
               LIMIT 1
-            ) AND blocked.status = 'failed'
+            )
+            LEFT JOIN orchestration_v2_projection_runs blocked
+              ON executed.status = 'failed' AND blocked.run_id = executed.run_id
             WHERE t.deleted_at IS NULL${threadId === undefined ? sql`` : sql` AND t.thread_id = ${threadId}`}${
               projectId === undefined ? sql`` : sql` AND t.project_id = ${projectId}`
             }${
@@ -8187,6 +8198,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           latestRunCompletedAt,
           latestRunStopRequested,
           queueHeld: row.queue_held === 1,
+          lastRunReadOnly: row.last_run_read_only === 1,
           activeRunId: row.active_run_id === null ? null : RunId.make(row.active_run_id),
           blockedOnThreadWait: deriveBlockedOnThreadWait({
             activeRun:

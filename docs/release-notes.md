@@ -1,3 +1,7 @@
+## 2026-11-28 — Read-only guest links isolate connected tools
+
+- On supported Macs, guests can search and read files on Claude threads with a verified personal Pro or Max login. The guest turn runs with shell commands, connected tools, plugins, and hooks disabled. Choose **Wait for me** on other hosts or providers to review each guest message. A read-only turn keeps its restrictions after the link closes.
+
 ## 2026-11-28 — Antigravity Usage > Limits loads reliably and deduplicates accounts
 
 - Antigravity quota checks now run one at a time with a 90-second launch budget and never cache failed probes for 5 minutes, so refreshing multiple Antigravity accounts no longer times out into an empty **Usage > Limits** panel.

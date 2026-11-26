@@ -103,7 +103,7 @@ import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
-import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
+import * as ClaudeExecutable from "../../provider/Drivers/ClaudeExecutable.ts";
 import { ClaudeMcpSignInRenewalPendingError } from "../../provider/Drivers/ClaudeMcpSignInRenewal.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -309,6 +309,55 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.equal(optionsWith("dontAsk").permissionMode, "dontAsk");
   });
 
+  it.each([false, true])("isolates a read-only guest's SDK query (resume %s)", (resume) => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "guest-analysis",
+      resume,
+      cwd: "/workspace",
+      readOnlyGuestShare: true,
+      settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs: "--plugin-dir local-plugin" },
+      launchArgSettings: { permissions: { allow: ["Edit"] } },
+      mcpServers: { external: { type: "http", url: "http://localhost" } },
+    });
+    assert.deepEqual(options.tools, ["Read", "Glob", "Grep"]);
+    assert.strictEqual(options.persistSession, false);
+    assert.equal(options.permissionMode, "dontAsk");
+    assert.equal(options.pathToClaudeCodeExecutable, DEFAULT_CLAUDE_SETTINGS.binaryPath);
+    assert.isTrue(options.strictMcpConfig);
+    assert.isUndefined(options.mcpServers);
+    assert.isUndefined(options.extraArgs?.["plugin-dir"]);
+    assert.deepEqual(options.settingSources, []);
+    assert.include(options.settings, { disableAllHooks: true, autoMemoryEnabled: false });
+    assert.notProperty(options.settings, "permissions");
+    assert.property(options.extraArgs, "disable-slash-commands");
+  });
+
+  it("requires a verified personal Claude login even when no managed settings are cached", () => {
+    const status = {
+      loggedIn: true,
+      storedClaudeAiLogin: true,
+      apiProvider: "firstParty",
+      authMethod: "claude.ai",
+      subscriptionType: "max",
+    };
+    for (const subscriptionType of ["pro", "max", "ultra"]) {
+      assert.isTrue(ClaudeAdapterV2.isPersonalClaudeGuestLogin({ ...status, subscriptionType }));
+    }
+    for (const overrides of [
+      { loggedIn: false },
+      { subscriptionType: "team" },
+      { subscriptionType: undefined },
+      { authMethod: "oauth_token" },
+      { storedClaudeAiLogin: false },
+      { apiProvider: "gateway" },
+      { organizationSignInOrgId: "managed-org" },
+      { apiKeySource: "ANTHROPIC_API_KEY" },
+    ]) {
+      assert.isFalse(ClaudeAdapterV2.isPersonalClaudeGuestLogin({ ...status, ...overrides }));
+    }
+  });
+
   it.each([
     ["the selection's effort over a launch --effort", "claude-opus-5-5", "high", "high", undefined],
     [
@@ -454,6 +503,19 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       ClaudeAdapterV2.ClaudeProviderCapabilitiesV2.planning.supportsStructuredQuestions,
     );
   });
+
+  it.each([
+    ["darwin", true],
+    ["linux", false],
+    ["win32", false],
+  ] as const)(
+    "advertises read-only guest analysis on supported hosts (%s)",
+    (platform, supported) => {
+      const { runtimePolicy } = ClaudeAdapterV2.claudeProviderCapabilitiesForHost(platform);
+      assert.isTrue(runtimePolicy.readOnlySandbox);
+      assert.equal(runtimePolicy.readOnlyGuestAnalysis, supported);
+    },
+  );
 
   it("maps canonical read-only never policy to Claude dontAsk with read-only tools", () => {
     const queryPolicy = ClaudeAdapterV2.claudeRuntimeQueryPolicyForRuntimePolicy(
@@ -1710,7 +1772,10 @@ describe("ClaudeAdapterV2 executable path", () => {
         const { executablePaths } = yield* captureSdkExecutablePaths("claude").pipe(
           Effect.provideService(HostProcess.Platform, "win32"),
           Effect.provideService(SpawnExecutableResolution, () => `${npmDir}\\claude.cmd`),
-          Effect.provideService(ClaudeExecutableFileCheck, (filePath) => filePath === packageExe),
+          Effect.provideService(
+            ClaudeExecutable.ClaudeExecutableFileCheck,
+            (filePath) => filePath === packageExe,
+          ),
         );
 
         assert.deepEqual(executablePaths, [packageExe]);
@@ -1819,6 +1884,22 @@ describe("ClaudeAdapterV2 resumeThread", () => {
           },
         });
         assert.equal(saved.nativeThreadRef?.nativeId, "native-thread-saved");
+        const guestPolicy = { ...CLAUDE_TEST_RUNTIME_POLICY, readOnlyGuestShare: true as const };
+        const isolated = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy: guestPolicy,
+        });
+        for (const [providerThread, runtimePolicy] of [
+          [saved, guestPolicy],
+          [isolated, CLAUDE_TEST_RUNTIME_POLICY],
+          [isolated, guestPolicy],
+        ] as const) {
+          assert.equal(
+            (yield* Effect.flip(runtime.resumeThread({ providerThread, runtimePolicy })))._tag,
+            "ProviderAdapterResumeThreadError",
+          );
+        }
 
         const missing = yield* runtime.resumeThread({
           providerThread: {
@@ -2904,7 +2985,7 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 });
 
-function makeFakeClaudeCli(answerSetServers = true) {
+function makeFakeClaudeCli(answerSetServers = true, account?: ClaudeSdk.AccountInfo) {
   const spawns: Array<SpawnOptions> = [];
   const controlRequests: Array<object> = [];
   const stdins: Array<NodeStream.PassThrough> = [];
@@ -2941,7 +3022,7 @@ function makeFakeClaudeCli(answerSetServers = true) {
             ? { added: [], removed: [], errors: {} }
             : frame.request.subtype === "mcp_status"
               ? { mcpServers: [{ name: "t3-code", status: "connected" }] }
-              : {},
+              : { account },
         };
         stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
       }
@@ -2965,15 +3046,18 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
   const openWith = (
     cli: ReturnType<typeof makeFakeClaudeCli>,
     native?: ProviderEventLoggers.EventNdjsonLogger,
+    guest = false,
   ) =>
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       return yield* runner.open({
         threadId: ThreadId.make("thread-claude-mcp-channel"),
+        ...(guest ? { readOnlyGuestShare: true } : {}),
         providerSessionId: ProviderSessionId.make("provider-session-claude-mcp-channel"),
         options: {
           ...ClaudeAdapterV2.makeClaudeQueryOptions({
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+            readOnlyGuestShare: guest,
             nativeThreadId: "native-thread-claude-mcp-channel",
             resume: false,
             cwd: null,
@@ -3033,6 +3117,80 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
       assert.notInclude(spawned, "--mcp-config");
       assert.notInclude(spawned, "dummy-mcp-credential");
     }),
+  );
+
+  it.effect(
+    "requires a verified personal Claude login before the live query accepts guest prompts",
+    () =>
+      Effect.gen(function* () {
+        const personalStatus = {
+          loggedIn: true,
+          storedClaudeAiLogin: true,
+          authMethod: "claude.ai",
+          apiProvider: "firstParty",
+          subscriptionType: "max",
+        };
+        const status = (subscriptionType: string) =>
+          Effect.succeed({
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({ ...personalStatus, subscriptionType }),
+          });
+        let plan = "team";
+        using probe = vi
+          .spyOn(ClaudeExecutable, "runClaudeCli")
+          .mockImplementation((input) =>
+            input.args[0] === "--version"
+              ? Effect.succeed({ code: 0, stdout: "codex-cli 0.172.0", stderr: "" })
+              : status(plan),
+          );
+        const personal = makeFakeClaudeCli(true, {
+          apiProvider: "firstParty",
+          subscriptionType: "Claude Ultra",
+        });
+        yield* Effect.flip(openWith(personal, undefined, true));
+        assert.isEmpty(personal.spawns);
+        plan = "max";
+        const enterprise = makeFakeClaudeCli(true, {
+          apiProvider: "firstParty",
+          subscriptionType: "Claude Enterprise",
+        });
+        yield* Effect.flip(openWith(enterprise, undefined, true));
+        assert.lengthOf(enterprise.spawns, 1);
+        const session = yield* openWith(personal, undefined, true);
+        const launch = personal.spawns[0]!;
+        assert.includeMembers(launch.args, [
+          "sandbox",
+          "--permissions-profile",
+          "analysis",
+          "/opt/claude/cli.js",
+        ]);
+        assert.includeMembers(
+          [...probe.mock.lastCall![0].args],
+          ["sandbox", "--permissions-profile", "analysis", "auth", "status"],
+        );
+        const control = launch.env.CODEX_HOME!;
+        assert.include(
+          NodeFS.readFileSync(NodePath.join(control, "config.toml"), "utf8"),
+          "network_proxy = true",
+        );
+        plan = "enterprise";
+        let queued = false;
+        yield* Effect.flip(
+          session.offer(
+            ClaudeAdapterV2.makeClaudeUserMessage({ text: "Summarize the project." }),
+            () => {
+              queued = true;
+            },
+          ),
+        );
+        assert.isFalse(queued);
+        yield* session.close;
+        assert.isFalse(NodeFS.existsSync(control));
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(SpawnExecutableResolution, () => "/trusted/bin/codex"),
+      ),
   );
 });
 
@@ -3338,7 +3496,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly onAuthenticationFailed?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticationFailed"];
     readonly onAuthenticated?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticated"];
     readonly scopedLimitNames?: ClaudeAdapterV2.ClaudeAdapterV2Options["scopedLimitNames"];
-    readonly prepareHome?: ClaudeAdapterV2.ClaudeAdapterV2Options["prepareHome"];
+    readonly prepareMcp?: ClaudeAdapterV2.ClaudeAdapterV2Options["prepareMcp"];
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly setPermissionMode?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["setPermissionMode"];
@@ -3423,7 +3581,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           : {}),
         ...(options?.onAuthenticated ? { onAuthenticated: options.onAuthenticated } : {}),
         ...(options?.scopedLimitNames ? { scopedLimitNames: options.scopedLimitNames } : {}),
-        ...(options?.prepareHome ? { prepareHome: options.prepareHome } : {}),
+        ...(options?.prepareMcp ? { prepareMcp: options.prepareMcp } : {}),
         environment: options?.environment ?? {},
         attachmentsDir,
         fileSystem,
@@ -4760,7 +4918,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-remote-cwd-" });
         const remoteFile = path.join(home, "remote-settings.json");
         yield* useRealResolver();
-        const openWith = (launchArgs: string) =>
+        const openWith = (launchArgs: string, readOnlyGuestShare = false) =>
           Effect.scoped(
             Effect.gen(function* () {
               const harness = yield* makeWakeHarnessWithOptions({
@@ -4777,6 +4935,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
                     runtimeMode: "full-access",
                     interactionMode: "default",
+                    ...(readOnlyGuestShare ? { readOnlyGuestShare: true } : {}),
                     cwd,
                   }),
                 }),
@@ -4794,6 +4953,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         const restricted = yield* open;
+        const guest = openWith("--plugin-dir local-plugin", true);
+        assert.include(
+          makeProviderFailure({ cause: yield* Effect.flip(guest) }).message,
+          "administrator-managed",
+        );
         assert.equal(restricted.permissionMode, "default");
         assert.isUndefined(restricted.allowDangerouslySkipPermissions);
         yield* fileSystem.writeFileString(
@@ -4833,6 +4997,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* fileSystem.writeFileString(remoteFile, "{");
         assert.equal((yield* open).permissionMode, "auto");
         yield* fileSystem.remove(remoteFile);
+        assert.isTrue((yield* guest).strictMcpConfig);
         assert.equal((yield* open).permissionMode, "bypassPermissions");
         const launchRestricted = yield* openWith(
           `--settings '{"permissions":{"disableBypassPermissionsMode":"disable"}}'`,
@@ -7682,7 +7847,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   it.effect("has a start go again once an expired MCP sign-in Claude is renewing is fresh", () =>
     Effect.gen(function* () {
       const harness = yield* makeWakeHarnessWithOptions({
-        prepareHome: Effect.fail(new ClaudeMcpSignInRenewalPendingError()),
+        prepareMcp: Effect.fail(new ClaudeMcpSignInRenewalPendingError()),
       });
       // A continuation this session never asked for goes as a prompt, so it can go again too.
       for (const [createdBy, creationSource] of [
@@ -7711,6 +7876,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepInclude(error, { _tag: "ProviderAdapterTurnStartError", beforePrompt: true });
       }
       assert.isUndefined(harness.getOpenedOptions());
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-isolated-guest"),
+          text: "Explain this project.",
+          attachments: [],
+          runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, readOnlyGuestShare: true },
+        }),
+      );
+      assert.isTrue(harness.getOpenedOptions()?.strictMcpConfig);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

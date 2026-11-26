@@ -37,7 +37,8 @@ export const GUEST_FAILURE = {
 /** Why a read-only link cannot open. The link service tells the owner from these. */
 export const READ_ONLY_SHARE_RUN_ACTIVE =
   "A run or its background work owns the thread's provider session.";
-export const READ_ONLY_SHARE_UNSUPPORTED = "The thread's provider cannot run read-only.";
+export const READ_ONLY_SHARE_UNSUPPORTED =
+  "The thread's provider cannot isolate guest analysis on this machine.";
 
 const isExpired = (share: ThreadGuestShare, now: DateTime.Utc) =>
   DateTime.toEpochMillis(now) >= Date.parse(share.expiresAt);
