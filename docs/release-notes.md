@@ -1,3 +1,8 @@
+## 2026-11-26 — More accurate CPU waits for background commands
+
+- On Linux, commands can start while lower-priority threads use the CPUs. Work at a command’s own priority still counts when a process mixes thread priorities or its workers exit between readings.
+- A command queued during substantial niced CPU activity now reports the total niced share and how much was excluded from its busy reading.
+
 ## 2026-11-26 — A landing that stops frees main within minutes
 
 - A landing that crashes or whose machine sleeps now frees main within about 10 minutes instead of 3 hours: the lander renews its turn every few minutes while it rebases, checks and pushes, and a lander that lost its turn stops its checks, with every process they started, and pushes nothing. Main moves only in the push that gives back the lander's own lease, so a lander that never learned it lost its turn cannot move main. A waiting landing waits as long as the queue keeps moving.

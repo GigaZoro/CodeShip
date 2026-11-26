@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
-import { HeldNiceTimeUnreadable } from "./HeldNiceTime.ts";
+import { YieldingNiceTimeUnreadable } from "./YieldingNiceTime.ts";
 import {
   CPU_BUSY_SHARE_LIMIT,
   cpuShares,
@@ -31,13 +31,23 @@ describe("cpuShares", () => {
       core({ user: 150, sys: 90, idle: 860 }),
       core({ user: 230, nice: 10, sys: 30, idle: 830, irq: 0 }),
     ]);
-    assert.strictEqual(cpuShares(before, after)?.busy, 1 - 50 / 200);
+    assert.strictEqual(cpuShares(before, after)?.busyShare, 1 - 50 / 200);
   });
 
   it("counts only the time since the first sample, however much the cores had idled before", () => {
     const before = cpuTimesOf([core({ idle: 1_000_000 })]);
     const after = cpuTimesOf([core({ idle: 1_000_000, user: 100 })]);
-    assert.strictEqual(cpuShares(before, after)?.busy, 1);
+    assert.strictEqual(cpuShares(before, after)?.busyShare, 1);
+  });
+
+  it("caps observed lower-priority CPU time at the host's niced user time", () => {
+    const before = cpuTimesOf([core({})]);
+    const after = cpuTimesOf([core({ sys: 50, nice: 50 })]);
+    assert.deepStrictEqual(cpuShares(before, after, 70), {
+      busyShare: 0.5,
+      nicedShare: 0.5,
+      excludedShare: 0.5,
+    });
   });
 
   it("cannot compare samples of no cores, of other core counts or of no elapsed time", () => {
@@ -71,6 +81,7 @@ describe("CpuAdmission", () => {
       assert.deepStrictEqual(saturation, {
         busyShare: 0.98,
         nicedShare: 0,
+        excludedShare: 0,
         limit: CPU_BUSY_SHARE_LIMIT,
         cores: 1,
       });
@@ -107,89 +118,61 @@ describe("CpuAdmission", () => {
   );
 
   describe("niced time", () => {
-    // Four cores watched for 500 ms each: 2000 ticks pass in all.
-    const cores = (times: Partial<NodeOS.CpuInfo["times"]>) =>
-      cpuTimesOf(Array.from({ length: 4 }, () => core(times)));
-    const IDLE_CORES = cores({});
-    const sequence = <A>(values: ReadonlyArray<A>) => {
-      let next = 0;
-      return Effect.sync(() => values[Math.min(next++, values.length - 1)]!);
-    };
     const reading = (
-      before: ReadonlyArray<CpuTimes>,
-      after: ReadonlyArray<CpuTimes>,
-      heldNice: Effect.Effect<Map<string, number>, HeldNiceTimeUnreadable> = sequence([
-        new Map(),
-        new Map(),
-      ]),
+      times: Partial<NodeOS.CpuInfo["times"]>,
+      elapsed: Effect.Effect<number, YieldingNiceTimeUnreadable>,
     ) =>
       Effect.gen(function* () {
-        const admission = yield* make(sequence([before, after]), { heldNice });
+        let sampleIndex = 0;
+        const cpu = cpuTimesOf([core(times)])[0]!;
+        const sample = Effect.sync(() => {
+          const i = sampleIndex++;
+          return Array.from({ length: 4 }, () => ({
+            idle: cpu.idle * i,
+            nice: cpu.nice * i,
+            total: cpu.total * i,
+          }));
+        });
+        const admission = yield* make(sample, {
+          startYieldingNiceSample: Effect.succeed({ elapsed }),
+        });
         const read = yield* admission.saturation.pipe(Effect.forkChild({ startImmediately: true }));
-        yield* TestClock.adjust("500 millis");
+        yield* TestClock.adjust("1 second");
         return yield* Fiber.join(read);
       });
 
     it.effect("admits a command while low-priority work fills the CPUs", () =>
       Effect.gen(function* () {
-        // A niced soak: 490 of every 500 ticks are nice time.
-        const saturation = yield* reading(IDLE_CORES, cores({ user: 10, nice: 490 }));
+        const saturation = yield* reading({ user: 10, nice: 490 }, Effect.succeed(1960));
         assert.isNull(saturation);
       }),
     );
 
     it.effect("holds a command while normal-priority work fills the CPUs", () =>
       Effect.gen(function* () {
-        const saturation = yield* reading(IDLE_CORES, cores({ user: 400, sys: 90, nice: 10 }));
-        assert.strictEqual(saturation?.busyShare, 0.98);
-        assert.strictEqual(saturation?.nicedShare, 0.02);
+        const saturation = yield* reading({ user: 400, sys: 75, nice: 25 }, Effect.succeed(100));
+        assert.strictEqual(saturation?.busyShare, CPU_BUSY_SHARE_LIMIT);
+        assert.notMatch(describeCpuSaturation(saturation!), /niced/);
       }),
     );
 
-    it.effect("keeps counting the niced work of processes that do not give way", () =>
+    it.effect("reports how much niced work counted toward a hold", () =>
       Effect.gen(function* () {
-        // CodeShip runs its own commands niced: 1900 of the 1960 nice ticks are theirs.
-        const saturation = yield* reading(
-          IDLE_CORES,
-          cores({ user: 10, nice: 490 }),
-          sequence([
-            new Map([["10:1", 100]]),
-            new Map([
-              ["10:1", 1000],
-              ["11:2", 1000],
-            ]),
-          ]),
-        );
+        // Across four cores, only 60 of 1960 niced milliseconds ran below the command's priority.
+        const saturation = yield* reading({ user: 10, nice: 490 }, Effect.succeed(60));
         assert.strictEqual(saturation?.busyShare, 0.97);
-        assert.strictEqual(saturation?.nicedShare, 0.03);
+        assert.match(describeCpuSaturation(saturation!), /0\.98 niced.*0\.03 excluded/);
       }),
     );
 
-    it.effect("counts all niced time as busy when the niced processes cannot be read", () =>
+    it.effect("counts all niced time as busy when thread CPU time cannot be read", () =>
       Effect.gen(function* () {
         const saturation = yield* reading(
-          IDLE_CORES,
-          cores({ user: 10, nice: 490 }),
-          Effect.fail(new HeldNiceTimeUnreadable({ cause: "no /proc" })),
+          { user: 10, nice: 490 },
+          Effect.fail(new YieldingNiceTimeUnreadable({ cause: "no /proc" })),
         );
         assert.strictEqual(saturation?.busyShare, 1);
-      }),
-    );
-
-    it.effect("says how much of the load is low-priority work that gives way", () =>
-      Effect.gen(function* () {
-        const saturation = yield* reading(IDLE_CORES, cores({ user: 400, sys: 90, nice: 10 }));
-        const noNice = describeCpuSaturation({
-          busyShare: 0.98,
-          nicedShare: 0,
-          limit: 0.95,
-          cores: 4,
-        });
-        assert.notMatch(noNice, /low-priority/);
-        assert.match(
-          describeCpuSaturation({ ...saturation!, nicedShare: 0.4 }),
-          /another 0\.40 of the CPUs run low-priority work, which gives way to a command and is not counted/,
-        );
+        assert.match(describeCpuSaturation(saturation!), /0\.98 niced.*0\.00 excluded/);
       }),
     );
   });
