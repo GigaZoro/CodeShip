@@ -42,7 +42,7 @@ import {
 } from "@t3tools/contracts";
 import { isMissingExecutable } from "@t3tools/source-control-core/server/discovery";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
+import { quoteGitPatchPath, unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import {
   gitErrorLines,
   makeGitVcsDriverCore,
@@ -1103,6 +1103,78 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }),
     );
 
+  // On Git without check-rules, a cone checkout includes every file
+  // beneath a selected directory and the immediate files of each of its ancestors.
+  const selectedSparsePaths = Effect.fn("GitVcsDriver.selectedSparsePaths")(function* (
+    operation: string,
+    cwd: string,
+    paths: ReadonlyArray<string>,
+    configArgs: ReadonlyArray<string> = [],
+    env?: NodeJS.ProcessEnv,
+  ) {
+    const options = { operation, cwd, ...(env === undefined ? {} : { env }) };
+    const stdin = paths.join("\0") + "\0";
+    const rules = yield* execute({
+      ...options,
+      args: [...configArgs, "sparse-checkout", "check-rules", "-z"],
+      stdin,
+      // Git echoes only selected input bytes. Older Git writes its usage to stderr.
+      maxOutputBytes: Math.max(4_096, Buffer.byteLength(stdin)),
+      outputMode: "truncate",
+      allowNonZeroExit: true,
+    });
+    if (rules.exitCode === 0) return rules.stdout.split("\0").filter(Boolean);
+    const failed = new VcsProcessExitError({
+      operation,
+      command: "git sparse-checkout check-rules",
+      cwd,
+      exitCode: rules.exitCode,
+      detail: rules.stderr,
+    });
+    if (rules.exitCode !== 129) return yield* failed;
+    const config = yield* execute({
+      ...options,
+      args: [
+        ...configArgs,
+        "config",
+        "--bool",
+        "--get-regexp",
+        "^core\\.(sparsecheckoutcone|ignorecase)$",
+      ],
+      allowNonZeroExit: true,
+    });
+    const entries = config.stdout.split("\n");
+    if (!entries.includes("core.sparsecheckoutcone true")) return yield* failed;
+    const fold = entries.includes("core.ignorecase true")
+      ? (value: string) => value.toLowerCase()
+      : (value: string) => value;
+    const dirs = yield* execute({
+      ...options,
+      args: [...configArgs, "sparse-checkout", "list"],
+      outputMode: "error",
+    });
+    const recursive = new Set<string>();
+    const parents = new Set([""]);
+    for (const line of dirs.stdout.split("\n")) {
+      if (line.length === 0) continue;
+      let dir = fold(line.startsWith('"') ? unquoteGitPatchPath(line) : line);
+      recursive.add(dir);
+      while (dir.includes("/")) {
+        dir = dir.slice(0, dir.lastIndexOf("/"));
+        parents.add(dir);
+      }
+    }
+    return paths.filter((file) => {
+      let dir = fold(file.slice(0, Math.max(0, file.lastIndexOf("/"))));
+      if (parents.has(dir)) return true;
+      while (dir !== "") {
+        if (recursive.has(dir)) return true;
+        dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")));
+      }
+      return false;
+    });
+  });
+
   // Git reports relative paths from the physical cwd, which can differ from a symlink.
   const resolveGitCommonDir = Effect.fn("GitVcsDriver.resolveGitCommonDir")(function* (
     cwd: string,
@@ -1635,18 +1707,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             if (fallback) return false;
             if (skipped.length > 0) {
               const paths = skipped.map((entry) => entry.slice(entry.indexOf("\t") + 1));
-              const stdin = paths.join("\0") + "\0";
-              // check-rules echoes a subset of its input, so the input size bounds its output.
-              const rules = yield* execute({
-                operation,
-                cwd: input.cwd,
-                args: [...indexConfig, "sparse-checkout", "check-rules", "-z"],
-                stdin,
-                env: commitEnv,
-                maxOutputBytes: Buffer.byteLength(stdin),
-                outputMode: "error",
-              });
-              const selected = new Set(rules.stdout.split("\0"));
+              const selected = new Set(
+                yield* selectedSparsePaths(operation, input.cwd, paths, indexConfig, commitEnv),
+              );
               skipped.forEach((entry, index) => {
                 if (selected.has(paths[index]!)) flagged.push(entry);
               });
@@ -2415,19 +2478,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
               },
             });
             if (skipped.length === 0) return skipped;
-            const stdin = skipped.join("\0") + "\0";
-            // check-rules echoes a subset of its input, so the input size bounds its output.
-            const rules = yield* execute({
-              operation,
-              cwd: input.cwd,
-              args: ["sparse-checkout", "check-rules", "-z"],
-              stdin,
-              maxOutputBytes: Buffer.byteLength(stdin),
-              outputMode: "error",
-            });
-            return rules.stdout.split("\0").filter((entry) => entry.length > 0);
+            return yield* selectedSparsePaths(operation, input.cwd, skipped);
           }).pipe(
-            // A Git without ls-files --sparse or check-rules keeps the plain restore's result.
+            // If Git cannot determine the sparse selection, keep the plain restore’s result.
             Effect.orElseSucceed((): string[] => []),
           );
           if (manual.length > 0) {
