@@ -13,11 +13,17 @@ import { quoteRemoteArg, remoteDeviceEnvironment, remoteDeviceScript } from "./s
 
 const exec = NodeUtil.promisify(NodeChildProcess.execFile);
 
-const fakeHub = `import { createServer } from "node:http";
+// The hub serves /readyz and prints its session token in the startup link.
+const fakeHub = `import * as http from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync("hub-path", process.env.PATH);
-createServer((_, response) => response.end("ok")).listen(Number(process.argv[process.argv.indexOf("--port") + 1]), "127.0.0.1");
-`;
+const args = process.argv.slice(2);
+const token = args.includes("--require-token") ? "printed-token" : undefined;
+http.createServer((_request, response) => response.end("ok")).listen(Number(args[args.indexOf("--port") + 1]), "127.0.0.1", () => {
+  console.log("  Local:   http://localhost/" + (token ? "?token=" + token : ""));
+  console.log("state-dir=" + process.env.EXPO_DEVICE_HUB_STATE_DIR);
+});`;
+
 const executable = async (file: string, body = "exit 0") => {
   await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true });
   await NodeFSP.writeFile(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
@@ -162,6 +168,7 @@ it.effect.skipIf(isWindowsHost)(
         await completeSdk(firstSdk);
         await start({ ANDROID_HOME: firstSdk });
         const before = await readHub();
+        await NodeFSP.appendFile(NodePath.join(state, "hub.log"), "Попередній сеанс\n".repeat(40));
         await completeSdk(NodePath.join(home, "Android/Sdk"));
         await start();
         const after = await readHub();
@@ -308,17 +315,7 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         await completeSdk(NodePath.join(home, "sdk"));
         await NodeFSP.mkdir(NodePath.dirname(entry), { recursive: true });
         await NodeFSP.writeFile(NodePath.join(install, ".install-complete"), DEVICE_HUB_VERSION);
-        // Stands in for the hub: it serves /readyz and prints its startup link.
-        await NodeFSP.writeFile(
-          entry,
-          `import * as http from "node:http";
-const args = process.argv.slice(2);
-const token = args.includes("--require-token") ? "printed-token" : undefined;
-http.createServer((_request, response) => response.end("ok")).listen(Number(args[args.indexOf("--port") + 1]), "127.0.0.1", () => {
-  console.log("  Local:   http://localhost/" + (token ? "?token=" + token : ""));
-  console.log("state-dir=" + process.env.EXPO_DEVICE_HUB_STATE_DIR);
-});`,
-        );
+        await NodeFSP.writeFile(entry, fakeHub);
 
         const started = run("start");
         expect(started.stderr).toBe("");

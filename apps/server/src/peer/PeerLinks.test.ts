@@ -244,12 +244,14 @@ it.effect("the scoped worker renews at startup and on its hourly tick", () =>
       yield* a.links.start;
       yield* Queue.take(removed);
       const renewed = Option.getOrThrow(yield* a.links.get(box.environmentId));
-      expect(DateTime.isGreaterThan(renewed.expiresAt, original.expiresAt)).toBe(true);
+      expect(renewed.expiresAt).toEqual(DateTime.add(original.expiresAt, { days: 20 }));
+      // Make the local expiry stale again. The hourly exchange must restore the peer's
+      // deadline, which moves at most once per day even when a fresh bearer is requested.
       yield* a.sql`UPDATE peer_environment_links SET expires_at = ${DateTime.formatIso(original.expiresAt)}`;
       yield* TestClock.adjust(Duration.hours(1));
       yield* Queue.take(removed);
       expect(Option.getOrThrow(yield* a.links.get(box.environmentId)).expiresAt).toEqual(
-        DateTime.add(renewed.expiresAt, { hours: 1 }),
+        renewed.expiresAt,
       );
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

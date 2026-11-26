@@ -232,7 +232,7 @@ it.effect(
       expect(yield* auth.revokeMcpClientToken(current.token)).toBe(true);
       expect((yield* authenticate(independent.token)).sessionId).toBe(independent.sessionId);
       expect((yield* authenticate(ordinary.token)).sessionId).toBe(ordinary.sessionId);
-    }).pipe(Effect.provide(layerRenewal), Effect.provide(NodeCrypto.layer)),
+    }).pipe(Effect.provide(Layer.merge(layerRenewal, NodeCrypto.layer))),
 );
 
 it.effect("refuses expired, revoked, non-peer, wrong-resource and disabled peer renewal", () =>
