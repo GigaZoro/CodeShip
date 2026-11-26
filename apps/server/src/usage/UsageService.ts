@@ -688,11 +688,11 @@ export const make = Effect.gen(function* () {
       Effect.result,
     );
     if (removed._tag === "Success") {
-      failedDeletes.delete(name);
+      failedDeletes.delete(file);
       return true;
     }
-    if (!failedDeletes.has(name)) {
-      failedDeletes.add(name);
+    if (!failedDeletes.has(file)) {
+      failedDeletes.add(file);
       yield* Effect.logError("Could not delete saved transcript usage", {
         path: file,
         cause: removed.failure,

@@ -142,11 +142,12 @@ function pickScanEntry(held: CachedFile, incoming: CachedFile): CachedFile | und
   const left = JSON.stringify(heldTurns);
   const right = JSON.stringify(incomingTurns);
   if (left !== right) return right < left ? incoming : held;
+  // Tied older snapshots cannot cancel a required live reparse recorded during migration.
+  if (held.needsReparse !== incoming.needsReparse) return held.needsReparse ? held : incoming;
   const fileInfo = (entry: CachedFile) =>
     JSON.stringify([
       entry.provider,
       entry.mtimeMs,
-      entry.needsReparse,
       entry.legacy,
       entry.malformedRecords,
       entry.position.resumeOffset,
