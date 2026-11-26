@@ -9,7 +9,9 @@ import { useEffect } from "react";
 import { environmentCatalog } from "../../connection/catalog";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentShell } from "../../state/shell";
+import { serverEnvironment } from "../../state/server";
 import { threadFamilies } from "../../state/threads";
+import type { SidebarOmittedChild } from "../Sidebar.logic";
 
 const omittedByEnvironment = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get) => {
@@ -19,15 +21,22 @@ const omittedByEnvironment = Atom.family((environmentId: EnvironmentId) =>
 );
 
 const omittedChildren = Atom.make((get) => {
-  const children = new Map<string, ThreadId[]>();
+  const children = new Map<string, SidebarOmittedChild[]>();
   for (const environmentId of enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom))) {
     const omitted = get(omittedByEnvironment(environmentId));
     if (omitted === undefined) continue;
-    for (const [id, parentId] of Object.entries(omitted)) {
-      const key = scopedThreadKey(scopeThreadRef(environmentId, parentId));
+    const hidesTags = get(serverEnvironment.hiddenThreadTagsAtom(environmentId)) !== null;
+    for (const [id, parent] of Object.entries(omitted)) {
+      const delegated = typeof parent !== "string";
+      const key = scopedThreadKey(delegated ? parent : scopeThreadRef(environmentId, parent));
+      const hint = {
+        child: scopeThreadRef(environmentId, ThreadId.make(id)),
+        delegated,
+        hidesTags,
+      };
       const siblings = children.get(key);
-      if (siblings) siblings.push(ThreadId.make(id));
-      else children.set(key, [ThreadId.make(id)]);
+      if (siblings) siblings.push(hint);
+      else children.set(key, [hint]);
     }
   }
   return children;
@@ -39,13 +48,13 @@ export function useSidebarOmittedChildren() {
 
 export function SidebarTreeFamily(props: {
   readonly environmentId: EnvironmentId;
-  readonly rootThreadId: ThreadId;
+  readonly threadId: ThreadId;
 }) {
-  const { environmentId, rootThreadId } = props;
+  const { environmentId, threadId } = props;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retain the family's missing shell rows while the sidebar displays or filters its children
   useEffect(
-    () => threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId),
-    [environmentId, rootThreadId],
+    () => threadFamilies.mount(appAtomRegistry, environmentId, threadId),
+    [environmentId, threadId],
   );
   return null;
 }

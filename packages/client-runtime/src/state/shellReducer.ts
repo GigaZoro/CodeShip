@@ -236,7 +236,9 @@ export function applyShellStreamEvents(
 ): OrchestrationV2ShellSnapshot {
   const next = applyShellRowEvents(snapshot, events);
   if (next === snapshot || snapshot.omittedSidebarChildren === undefined) return next;
-  let remaining: Record<string, OrchestrationV2ThreadShell["id"]> | undefined;
+  let remaining:
+    | Record<string, NonNullable<OrchestrationV2ShellSnapshot["omittedSidebarChildren"]>[string]>
+    | undefined;
   let sequence = snapshot.snapshotSequence;
   for (const event of events) {
     if (event.sequence <= sequence) continue;

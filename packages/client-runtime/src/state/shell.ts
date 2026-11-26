@@ -384,13 +384,15 @@ function* makeShellState(options?: ShellOptions) {
       Effect.fn("EnvironmentShellState.makeSubscribeInput")(function* (session) {
         yield* Ref.set(activeSubscriptionSession, session);
         const { omitIdleSubagents, omitOlderSettled } = yield* session.initialConfig.pipe(
-          Effect.map((config) => ({
-            omitIdleSubagents:
+          Effect.map((config) => {
+            const canTrimChildren =
               config.shellThreadFamilies === true &&
-              (!options?.showSidebarChildren || config.shellSidebarChildIndex === true),
-            omitOlderSettled:
-              config.shellOlderSettled === true && config.shellThreadFamilies === true,
-          })),
+              (!options?.showSidebarChildren || config.shellSidebarChildIndex === true);
+            return {
+              omitIdleSubagents: canTrimChildren,
+              omitOlderSettled: canTrimChildren && config.shellOlderSettled === true,
+            };
+          }),
           Effect.orElseSucceed(() => ({ omitIdleSubagents: false, omitOlderSettled: false })),
         );
         yield* Ref.set(awaitingCompletion, true);

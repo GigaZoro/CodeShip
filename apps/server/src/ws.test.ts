@@ -473,6 +473,14 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       ...Array.from({ length: 25 }, (_, index) => shell(`recent-${index}`, null, null, 1)),
       shell("old", null, null, 30),
       { ...shell("native", "parent", null), creationSource: "provider" as const },
+      {
+        ...shell("delegated", null, null, 30),
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("origin"),
+          threadId: ThreadId.make("remote-parent"),
+          title: "Parent",
+        },
+      },
     ];
     const firstSnapshot = (input: {
       readonly omitIdleSubagents?: boolean;
@@ -533,7 +541,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
     assert.deepEqual(withoutChildren?.omittedSidebarChildren, { idle: "parent" });
     assert.deepEqual(
       withoutChildren?.threads.map((thread) => thread.id),
-      ["parent", "live", ...recent, "old"],
+      ["parent", "live", ...recent, "old", "delegated"],
     );
     const withoutOld = yield* firstSnapshot({ omitIdleSubagents: true, omitOlderSettled: true });
     assert.deepEqual(
@@ -541,8 +549,12 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       ["parent", "live", ...recent],
     );
     assert.deepEqual(withoutOld?.olderSettled?.counts, [
-      { projectId: ProjectId.make("project"), count: 1 },
+      { projectId: ProjectId.make("project"), count: 2 },
     ]);
+    assert.deepEqual(withoutOld?.omittedSidebarChildren, {
+      idle: "parent",
+      delegated: { environmentId: "origin", threadId: "remote-parent" },
+    });
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
 

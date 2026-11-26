@@ -1,4 +1,5 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { ScopedThreadRef } from "./environment.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -2571,8 +2572,10 @@ export const OrchestrationV2ShellSnapshot = Schema.Struct({
   ...OrchestrationV2ThreadShellSnapshot.fields,
   projects: Schema.Array(OrchestrationProjectShell),
   olderSettled: Schema.optionalKey(OrchestrationV2OlderSettledThreads),
-  /** Direct parent of each omitted app-owned child. Expanding that parent reads its family. */
-  omittedSidebarChildren: Schema.optionalKey(Schema.Record(Schema.String, ThreadId)),
+  /** Direct parent of each omitted child, scoped to the linked parent for a delegated chat. */
+  omittedSidebarChildren: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Union([ThreadId, ScopedThreadRef])),
+  ),
 });
 export type OrchestrationV2ShellSnapshot = typeof OrchestrationV2ShellSnapshot.Type;
 

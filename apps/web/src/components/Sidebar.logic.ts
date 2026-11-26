@@ -39,6 +39,7 @@ import {
   threadFolderKeyOf,
   type ContextMenuItem,
   type EnvironmentId,
+  type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { SidebarGrouping, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
@@ -739,6 +740,32 @@ function sidebarTreeParentKey(
   return thread.archivedAt !== null || isProviderNativeSubagentThread(thread)
     ? null
     : sidebarParentKey(thread, delegatedUnderParent);
+}
+
+export interface SidebarOmittedChild {
+  readonly child: ScopedThreadRef;
+  readonly delegated: boolean;
+  readonly hidesTags: boolean;
+}
+
+export function sidebarChildFamilyPlan(
+  parentRoot: ScopedThreadRef,
+  hints: readonly SidebarOmittedChild[],
+  loaded: ReadonlyMap<string, unknown>,
+  filtered: boolean,
+  expanded: boolean,
+) {
+  let missingCount = 0;
+  const families = new Map<string, ScopedThreadRef>();
+  for (const { child, delegated, hidesTags } of hints) {
+    const needsRow = filtered || hidesTags;
+    if (!needsRow && !loaded.has(scopedThreadKey(child))) missingCount++;
+    if (needsRow || expanded) {
+      const family = delegated ? child : parentRoot;
+      families.set(scopedThreadKey(family), family);
+    }
+  }
+  return { missingCount, families: [...families.values()] };
 }
 
 /** The open child chats nested under each sidebar row, by the parent's scoped key, newest first. */

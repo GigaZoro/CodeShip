@@ -16,6 +16,7 @@ import {
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
   groupSidebarTreeChildren,
+  sidebarChildFamilyPlan,
   resolveSidebarRoutePath,
   belongsInSidebarWorkingShelf,
   isSidebarEnvironmentDisconnected,
@@ -255,6 +256,29 @@ describe("sidebar chat tree", () => {
         tagFilter: new Set(["bug"]),
       }).size,
     ).toBe(0);
+  });
+
+  it("loads a delegated child's own family and counts filtered hints only after hydration", () => {
+    const remote = scopeThreadRef(linkedEnvironmentId, delegated.id);
+    const hints = [
+      { child: scopeThreadRef(environmentId, older.id), delegated: false, hidesTags: false },
+      { child: scopeThreadRef(environmentId, grandchild.id), delegated: false, hidesTags: false },
+      { child: remote, delegated: true, hidesTags: true },
+    ];
+    const loaded = new Map([[keyOf(older), older]]);
+    const rootRef = scopeThreadRef(environmentId, root.id);
+    expect(sidebarChildFamilyPlan(rootRef, hints, loaded, false, false)).toEqual({
+      missingCount: 1,
+      families: [remote],
+    });
+    expect(sidebarChildFamilyPlan(rootRef, hints, loaded, true, false)).toEqual({
+      missingCount: 0,
+      families: [rootRef, remote],
+    });
+    expect(sidebarChildFamilyPlan(rootRef, hints, loaded, false, true)).toEqual({
+      missingCount: 1,
+      families: [rootRef, remote],
+    });
   });
 
   it("resolves an open chat to the rows from its listed ancestor down to it", () => {
@@ -1565,6 +1589,33 @@ describe("resolveSidebarRouteReveal", () => {
         listsThread: () => true,
       }),
     ).toEqual({ pendingKey: null, widensScope: false });
+  });
+
+  it("preserves the chosen scope when a filter would still hide a nested delegate", () => {
+    const delegate = makeThreadFixture({
+      id: ThreadId.make("delegate"),
+      environmentId: EnvironmentId.make("linked"),
+    });
+    const delegateKey = scopedThreadKey(scopeThreadRef(delegate.environmentId, delegate.id));
+    for (const scope of [
+      scopedProjectKeys,
+      new Set([`${hidden.environmentId}:${hidden.projectId}`]),
+    ]) {
+      const resolve = (matchesTag: boolean) =>
+        resolveSidebarRouteReveal({
+          reveal: { observedKey: null, pendingKey: null, widenedKey: null },
+          routeKey: delegateKey,
+          sectionRowKey: hiddenKey,
+          descendants: [delegate],
+          isSearching: false,
+          scopedProjectKeys: scope,
+          delegatedUnderParent: new Set(),
+          findThread,
+          listsThread: (thread) => thread === hidden || matchesTag,
+        });
+      expect(resolve(false).widensScope).toBe(false);
+      expect(resolve(true).widensScope).toBe(true);
+    }
   });
 
   it("widens again for a thread reopened before the thread between them listed its row", () => {

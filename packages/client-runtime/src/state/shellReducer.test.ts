@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { v2Project, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
@@ -367,7 +367,11 @@ describe("applyShellStreamEvents", () => {
       projects: [{ ...v2Project, repositoryIdentity }, otherProject],
       threads: [a, b, unchanged],
       archivedThreads: [archived, oldArchive],
-      omittedSidebarChildren: { new: a.id, missing: a.id, other: b.id },
+      omittedSidebarChildren: {
+        new: { environmentId: EnvironmentId.make("remote-parent"), threadId: a.id },
+        missing: a.id,
+        other: b.id,
+      },
     };
     const events: Array<ShellStreamEvent> = [
       update(5, { ...b, title: "Renamed" }),

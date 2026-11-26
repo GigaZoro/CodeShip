@@ -86,6 +86,8 @@ import {
   RuntimeRequestId,
   CheckpointScopeId,
   CheckpointId,
+  EnvironmentId,
+  type ScopedThreadRef,
   ThreadId,
   TurnItemId,
   NodeId,
@@ -514,6 +516,7 @@ export interface ActiveShellIndexEntry extends Pick<
 > {
   /** False only when no run, request, work item, or watch can make the shell live. */
   readonly mayBeLive: boolean;
+  readonly delegatedFrom?: ScopedThreadRef | undefined;
 }
 
 export interface ActiveTurnWorkspace {
@@ -8270,6 +8273,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         readonly thread_id: string;
         readonly project_id: string;
         readonly creation_source: OrchestrationV2ThreadShell["creationSource"];
+        readonly delegator_environment_id: string | null;
+        readonly delegator_thread_id: string | null;
         readonly relationship_to_parent: string | null;
         readonly parent_thread_id: string | null;
         readonly root_thread_id: string;
@@ -8285,6 +8290,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           t.thread_id,
           t.project_id,
           json_extract(t.payload_json, '$.creationSource') AS creation_source,
+          json_extract(t.payload_json, '$.delegatedFrom.environmentId') AS delegator_environment_id,
+          json_extract(t.payload_json, '$.delegatedFrom.threadId') AS delegator_thread_id,
           json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationship_to_parent,
           json_extract(t.payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
           json_extract(t.payload_json, '$.lineage.rootThreadId') AS root_thread_id,
@@ -8337,6 +8344,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         id: ThreadId.make(row.thread_id),
         projectId: ProjectId.make(row.project_id),
         creationSource: row.creation_source,
+        ...(row.delegator_environment_id !== null && row.delegator_thread_id !== null
+          ? {
+              delegatedFrom: {
+                environmentId: EnvironmentId.make(row.delegator_environment_id),
+                threadId: ThreadId.make(row.delegator_thread_id),
+              },
+            }
+          : {}),
         lineage: {
           parentThreadId:
             row.parent_thread_id === null ? null : ThreadId.make(row.parent_thread_id),

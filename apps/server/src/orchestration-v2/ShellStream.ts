@@ -10,6 +10,7 @@ import type {
   OrchestrationV2ShellStreamItem,
   OrchestrationV2StoredEvent,
   ProjectId,
+  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -336,21 +337,20 @@ export const loadSubscriberShellSnapshot = Effect.fn("ShellStream.loadSubscriber
     });
     const facts = shellTrimFacts(read.index ?? base.threads);
     const snapshot = trimShellSnapshot(base, facts, { ...input.options, now: yield* DateTime.now });
-    if (input.options.omitIdleSubagents && read.index !== null) {
-      const sentSubagents = new Set(
-        snapshot.threads
-          .filter((thread) => facts.subagentThreadIds.has(thread.id))
-          .map((thread) => thread.id),
-      );
-      const omitted = read.index.flatMap((entry) =>
-        entry.lineage.relationshipToParent === "subagent" &&
-        entry.lineage.parentThreadId !== null &&
-        !sentSubagents.has(entry.id) &&
-        !isProviderNativeSubagentThread(entry)
-          ? [[entry.id, entry.lineage.parentThreadId] as const]
-          : [],
-      );
-      if (omitted.length > 0) {
+    if (read.index !== null) {
+      const sent = new Set(snapshot.threads.map((thread) => thread.id));
+      const omitted = new Map<ThreadId, ThreadId | ScopedThreadRef>();
+      for (const entry of read.index) {
+        if (sent.has(entry.id) || isProviderNativeSubagentThread(entry)) continue;
+        if (!isListedThreadLineage(entry.lineage)) {
+          if (entry.lineage.parentThreadId !== null)
+            omitted.set(entry.id, entry.lineage.parentThreadId);
+        } else if (entry.delegatedFrom !== undefined) {
+          const { environmentId, threadId } = entry.delegatedFrom;
+          omitted.set(entry.id, { environmentId, threadId });
+        }
+      }
+      if (omitted.size > 0) {
         return {
           snapshot: { ...snapshot, omittedSidebarChildren: Object.fromEntries(omitted) },
           subagentThreadIds: facts.subagentThreadIds,

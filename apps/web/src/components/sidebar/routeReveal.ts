@@ -74,12 +74,12 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
   readonly reveal: SidebarRouteReveal;
   readonly routeKey: string | null;
   readonly sectionRowKey?: string | null;
-  readonly descendantOutsideScope?: boolean;
+  readonly descendants?: readonly T[];
   readonly isSearching: boolean;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly findThread: (key: string) => T | undefined;
-  readonly listsThread: (thread: T) => boolean;
+  readonly listsThread: (thread: T, nested: boolean) => boolean;
 }): { readonly pendingKey: string | null; readonly widensScope: boolean } {
   const {
     reveal,
@@ -89,12 +89,16 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
     delegatedUnderParent,
     findThread,
     listsThread,
+    descendants = [],
   } = input;
   const pendingKey = pendingSidebarRouteReveal(reveal, routeKey);
   // Search results replace the thread list; the reveal waits for it to return.
   const thread =
     pendingKey === null || isSearching ? undefined : findThread(input.sectionRowKey ?? pendingKey);
-  if (thread !== undefined && !listsThread(thread)) {
+  if (
+    thread !== undefined &&
+    (!listsThread(thread, false) || !descendants.every((child) => listsThread(child, true)))
+  ) {
     // Widening could never show the row now, and a scope picked later stands; the row still
     // scrolls if it mounts later, e.g. once an approval resolves elsewhere.
     markSidebarRouteRevealWidened(reveal);
@@ -104,7 +108,9 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
     thread !== undefined &&
     reveal.widenedKey !== reveal.observedKey &&
     scopedProjectKeys !== null &&
-    (input.descendantOutsideScope === true ||
+    (descendants.some(
+      (child) => !scopedProjectKeys.has(`${child.environmentId}:${child.projectId}`),
+    ) ||
       filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent).length ===
         0) &&
     filterSidebarV2VisibleThreads([thread], null, delegatedUnderParent).length === 1;
