@@ -742,14 +742,24 @@ function sidebarTreeParentKey(
 }
 
 /** The open child chats nested under each sidebar row, by the parent's scoped key, newest first. */
-export function groupSidebarTreeChildren<T extends SidebarTreeThread>(
+export function groupSidebarTreeChildren<T extends EnvironmentThreadShell>(
   threads: readonly T[],
   delegatedUnderParent: ReadonlySet<string>,
+  filters?: Parameters<typeof matchesSidebarThreadFilters>[1] & {
+    readonly scopedProjectKeys: ReadonlySet<string> | null;
+  },
 ): ReadonlyMap<string, readonly T[]> {
   const children = new Map<string, T[]>();
   for (const thread of threads) {
     const parentKey = sidebarTreeParentKey(thread, delegatedUnderParent);
     if (parentKey === null) continue;
+    if (
+      filters &&
+      ((filters.scopedProjectKeys !== null &&
+        !filters.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)) ||
+        !matchesSidebarThreadFilters(thread, filters))
+    )
+      continue;
     const siblings = children.get(parentKey);
     if (siblings) siblings.push(thread);
     else children.set(parentKey, [thread]);

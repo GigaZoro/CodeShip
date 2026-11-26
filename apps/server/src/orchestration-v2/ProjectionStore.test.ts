@@ -98,6 +98,7 @@ const assertShellIndexCoversShells = Effect.fnUntraced(function* () {
     row: Pick<
       ProjectionStore.ActiveShellIndexEntry,
       | "id"
+      | "creationSource"
       | "projectId"
       | "lineage"
       | "settledOverride"
@@ -108,6 +109,7 @@ const assertShellIndexCoversShells = Effect.fnUntraced(function* () {
     >,
   ) => ({
     id: row.id,
+    creationSource: row.creationSource,
     projectId: row.projectId,
     lineage: row.lineage,
     settledOverride: row.settledOverride,

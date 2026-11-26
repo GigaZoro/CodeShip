@@ -129,7 +129,7 @@ export function mergeShellSnapshotProjects(
   return { ...next, projects: unchanged ? previous.projects : projects };
 }
 
-export function applyShellStreamEvent(
+function applySingleShellEvent(
   snapshot: OrchestrationV2ShellSnapshot,
   event: Exclude<
     OrchestrationV2ShellStreamItem,
@@ -222,13 +222,44 @@ export type ShellStreamEvent = Exclude<
   { readonly kind: "snapshot" } | { readonly kind: "synchronized" }
 >;
 
+export function applyShellStreamEvent(
+  snapshot: OrchestrationV2ShellSnapshot,
+  event: ShellStreamEvent,
+) {
+  return applyShellStreamEvents(snapshot, [event]);
+}
+
 /** Apply ordered deltas with one index and at most one new array per collection. */
 export function applyShellStreamEvents(
   snapshot: OrchestrationV2ShellSnapshot,
   events: ReadonlyArray<ShellStreamEvent>,
 ): OrchestrationV2ShellSnapshot {
+  const next = applyShellRowEvents(snapshot, events);
+  if (next === snapshot || snapshot.omittedSidebarChildren === undefined) return next;
+  let remaining: Record<string, OrchestrationV2ThreadShell["id"]> | undefined;
+  let sequence = snapshot.snapshotSequence;
+  for (const event of events) {
+    if (event.sequence <= sequence) continue;
+    sequence = event.sequence;
+    const id =
+      event.kind === "thread.updated"
+        ? event.thread.id
+        : event.kind === "thread.removed"
+          ? event.threadId
+          : null;
+    if (id === null || !Object.hasOwn(snapshot.omittedSidebarChildren, id)) continue;
+    remaining ??= { ...snapshot.omittedSidebarChildren };
+    delete remaining[id];
+  }
+  return remaining === undefined ? next : { ...next, omittedSidebarChildren: remaining };
+}
+
+function applyShellRowEvents(
+  snapshot: OrchestrationV2ShellSnapshot,
+  events: ReadonlyArray<ShellStreamEvent>,
+): OrchestrationV2ShellSnapshot {
   // Avoid indexing the whole shell for the common single-event delivery.
-  if (events.length === 1) return applyShellStreamEvent(snapshot, events[0]!);
+  if (events.length === 1) return applySingleShellEvent(snapshot, events[0]!);
   const projects = batchRows(snapshot.projects);
   const threads = batchRows(snapshot.threads);
   const archivedThreads = batchRows(snapshot.archivedThreads);

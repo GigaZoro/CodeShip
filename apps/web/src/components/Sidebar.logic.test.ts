@@ -238,6 +238,23 @@ describe("sidebar chat tree", () => {
     expect(keysUnder(fork)).toEqual([forkChild.id]);
     expect(keysUnder(native)).toEqual([underNative.id]);
     expect(children.has(keyOf(delegatedListed))).toBe(false);
+
+    const filters = {
+      scopedProjectKeys: new Set([`${environmentId}:${root.projectId}`]),
+      statusFilter: "all",
+      tagFilter: new Set<string>(),
+      locallyUnreadKeys: new Set<string>(),
+      now: root.createdAt,
+    } as const;
+    expect(
+      groupSidebarTreeChildren(threads, delegatedUnderParent, filters).get(keyOf(root)),
+    ).toEqual([sideChat, older]);
+    expect(
+      groupSidebarTreeChildren(threads, delegatedUnderParent, {
+        ...filters,
+        tagFilter: new Set(["bug"]),
+      }).size,
+    ).toBe(0);
   });
 
   it("resolves an open chat to the rows from its listed ancestor down to it", () => {
@@ -1519,6 +1536,20 @@ describe("resolveSidebarRouteReveal", () => {
         listsThread: () => true,
       }),
     ).toEqual({ pendingKey: hiddenKey, widensScope: true });
+
+    const reveal = { observedKey: "child-a", pendingKey: null, widenedKey: null };
+    expect(
+      resolveSidebarRouteReveal({
+        reveal,
+        routeKey: "child-b",
+        sectionRowKey: hiddenKey,
+        isSearching: false,
+        scopedProjectKeys,
+        delegatedUnderParent: new Set(),
+        findThread,
+        listsThread: () => true,
+      }),
+    ).toEqual({ pendingKey: "child-b", widensScope: true });
   });
 
   it("never widens for a thread whose reveal already completed", () => {

@@ -824,8 +824,9 @@ with what the thread knows, and the thread keeps working while you ask.
 On web and desktop, start a message with `/side` or `/btw`, then your question.
 You can also press `mod+;`, choose **Side chat** from the **+** menu in the right
 panel, or run **Start side chat** from the command palette. The side chat opens as
-a tab there, with its own composer. Side chats do not show in the
-sidebar. Find one again under **Side chats** in thread details.
+a tab there, with its own composer. To reopen it in that panel, expand the parent
+in the sidebar and select the side chat. You can also find it under **Side chats**
+in thread details.
 
 To read an existing thread alongside the current one, right-click its sidebar row and choose
 **Open in side panel**, or Alt-click (Option-click on Mac). In the command palette, highlight a

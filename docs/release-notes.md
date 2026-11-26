@@ -79,6 +79,11 @@
 
 - When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
 
+## 2026-11-26 — Child chats nest under their parent in the sidebar
+
+- On web and desktop, click the child count beside a chat’s title, or press Right Arrow on its row, to see its side chats, subagents and delegated tasks. Children appear newest first and can have children of their own. The sidebar remembers which chats you expanded.
+- Opening a child chat expands the chats above it and highlights its row. A side chat opens beside its parent. Subagents a provider runs on its own, such as Claude's Task tool, stay in the parent's **Agents** list, and archived child chats stay out of the tree.
+
 ## 2026-11-26 — Multi-provider support across Auto mode, usage, and mobile
 
 - Auto mode now discovers and labels every enabled provider for delegated work and independent reviews instead of assuming only Claude and Codex.
@@ -208,11 +213,6 @@
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
-
-## 2026-11-25 — Child chats nest under their parent in the sidebar
-
-- On web and desktop, a chat that started side chats, subagents or delegated tasks shows how many next to its title. Click the count, or press Right Arrow on the row, to list them underneath, newest first; a child chat with children of its own nests the same way. The sidebar remembers which chats you expanded.
-- Opening a child chat expands the chats above it and highlights its row. A side chat opens beside its parent. Subagents a provider runs on its own, such as Claude's Task tool, stay in the parent's **Agents** list, and archived child chats stay out of the tree.
 
 ## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
 

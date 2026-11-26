@@ -640,7 +640,7 @@ type SidebarThreadRowProps = {
   waitingSince?: number | null | undefined;
   isActive: boolean;
   // Set on the active row only; scrolls it into view when a reveal is owed.
-  revealRef?: ((row: HTMLElement, threadKey: string) => void) | undefined;
+  revealRef?: ((row: HTMLElement) => void) | undefined;
   // Unlike isActive, never true for the ancestor standing in for an open
   // subagent: drafts and PR clicks care about which composer is on screen.
   isRouteThread: boolean;
@@ -760,7 +760,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const { revealRef } = props;
   const rowRef = (row: HTMLElement | null) => {
-    if (row !== null) revealRef?.(row, threadKey);
+    if (row !== null) revealRef?.(row);
     return leaseRowRef(row);
   };
   const isRegeneratingTitle = thread.titleRegeneration != null;

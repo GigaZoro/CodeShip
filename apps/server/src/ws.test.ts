@@ -468,10 +468,11 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       }) as unknown as OrchestrationV2ThreadShell;
     const threads = [
       shell("parent", null, null),
-      shell("idle", "parent", null),
+      { ...shell("idle", "parent", null), creationSource: "mcp" as const },
       shell("live", "parent", "running"),
       ...Array.from({ length: 25 }, (_, index) => shell(`recent-${index}`, null, null, 1)),
       shell("old", null, null, 30),
+      { ...shell("native", "parent", null), creationSource: "provider" as const },
     ];
     const firstSnapshot = (input: {
       readonly omitIdleSubagents?: boolean;
@@ -529,6 +530,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
     );
     assert.isUndefined(full?.olderSettled);
     const withoutChildren = yield* firstSnapshot({ omitIdleSubagents: true });
+    assert.deepEqual(withoutChildren?.omittedSidebarChildren, { idle: "parent" });
     assert.deepEqual(
       withoutChildren?.threads.map((thread) => thread.id),
       ["parent", "live", ...recent, "old"],

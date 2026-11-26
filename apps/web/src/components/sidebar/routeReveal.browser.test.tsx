@@ -6,9 +6,22 @@ import {
   resolveSidebarRouteReveal,
   type SidebarRouteReveal,
   useActiveRowReveal,
+  useCollapsedRouteAncestors,
 } from "./routeReveal";
 
 const ROW_HEIGHT_PX = 24;
+
+function AncestorDisclosure({ routeKey }: { routeKey: string }) {
+  const [collapsed, setCollapsed] = useCollapsedRouteAncestors(routeKey);
+  return (
+    <button
+      aria-expanded={!collapsed.has("parent")}
+      onClick={() => setCollapsed(new Set(["parent"]))}
+    >
+      Parent
+    </button>
+  );
+}
 
 function RevealList(props: {
   readonly reveal: SidebarRouteReveal;
@@ -21,7 +34,7 @@ function RevealList(props: {
       {props.rowKeys.map((key) => (
         <li
           key={key}
-          ref={key === props.activeKey ? (row) => revealActiveRow(row, key) : undefined}
+          ref={key === props.activeKey ? revealActiveRow : undefined}
           tabIndex={-1}
           style={{ height: ROW_HEIGHT_PX }}
         >
@@ -37,6 +50,7 @@ function ResolvingRevealList(props: {
   readonly reveal: SidebarRouteReveal;
   readonly rowKeys: ReadonlyArray<string>;
   readonly activeKey: string;
+  readonly sectionRowKey?: string;
   readonly listed: boolean;
   readonly onResolved: (widensScope: boolean) => void;
 }) {
@@ -44,6 +58,7 @@ function ResolvingRevealList(props: {
   const { widensScope } = resolveSidebarRouteReveal({
     reveal: props.reveal,
     routeKey: props.activeKey,
+    sectionRowKey: props.sectionRowKey ?? props.activeKey,
     isSearching: false,
     scopedProjectKeys: new Set(["project"]),
     delegatedUnderParent: new Set(),
@@ -62,18 +77,41 @@ const newReveal = (): SidebarRouteReveal => ({
 });
 
 describe("useActiveRowReveal", () => {
-  it("scrolls an off-screen row into view when the route opens its thread", async () => {
+  it("reopens an ancestor after leaving and returning to its child", async () => {
+    await using screen = await render(
+      <AncestorDisclosure routeKey="child-a" />,
+      // The route arrives through props.
+      { router: false },
+    );
+    const parent = screen.getByRole("button", { name: "Parent" });
+    await parent.click();
+    await expect.element(parent).toHaveAttribute("aria-expanded", "false");
+    await screen.rerender(<AncestorDisclosure routeKey="child-b" />);
+    await screen.rerender(<AncestorDisclosure routeKey="child-a" />);
+    await expect.element(parent).toHaveAttribute("aria-expanded", "true");
+  });
+  it("scrolls an off-screen sibling into view when its route opens under the same section row", async () => {
     const reveal = newReveal();
     const keys = rowKeys(50);
+    const sibling = (activeKey: string) => (
+      <ResolvingRevealList
+        reveal={reveal}
+        rowKeys={keys}
+        activeKey={activeKey}
+        sectionRowKey="parent"
+        listed
+        onResolved={() => {}}
+      />
+    );
     await using screen = await render(
-      <RevealList reveal={reveal} rowKeys={keys} activeKey="thread-0" />,
+      sibling("thread-0"),
       // No router: the route arrives as the activeKey prop.
       { router: false },
     );
     const target = screen.getByText("thread-40", { exact: true });
     await expect.element(target).not.toBeInViewport();
 
-    await screen.rerender(<RevealList reveal={reveal} rowKeys={keys} activeKey="thread-40" />);
+    await screen.rerender(sibling("thread-40"));
 
     await expect.element(target).toBeInViewport();
   });

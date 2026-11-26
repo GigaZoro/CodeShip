@@ -367,6 +367,7 @@ describe("applyShellStreamEvents", () => {
       projects: [{ ...v2Project, repositoryIdentity }, otherProject],
       threads: [a, b, unchanged],
       archivedThreads: [archived, oldArchive],
+      omittedSidebarChildren: { new: a.id, missing: a.id, other: b.id },
     };
     const events: Array<ShellStreamEvent> = [
       update(5, { ...b, title: "Renamed" }),
@@ -387,9 +388,13 @@ describe("applyShellStreamEvents", () => {
       { kind: "project.removed", sequence: 18, projectId: v2Project.id },
       { kind: "project.updated", sequence: 19, project: v2Project },
     ];
-    const sequential = events.reduce(applyShellStreamEvent, seed);
+    const sequential = events.reduce<ReturnType<typeof applyShellStreamEvent>>(
+      applyShellStreamEvent,
+      seed,
+    );
     const next = applyShellStreamEvents(seed, events);
     expect(next).toEqual(sequential);
+    expect(next.omittedSidebarChildren).toEqual({ other: b.id });
     expect(next.threads.map((row) => row.id)).toEqual([unchanged.id, a.id, archived.id, added.id]);
     expect(next.threads[0]).toBe(unchanged);
     expect(next.threads[2]).toBe(archived);

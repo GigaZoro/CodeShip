@@ -503,6 +503,7 @@ export interface ShellSnapshotOptions {
 export interface ActiveShellIndexEntry extends Pick<
   OrchestrationV2ThreadShell,
   | "id"
+  | "creationSource"
   | "projectId"
   | "lineage"
   | "settledOverride"
@@ -8268,6 +8269,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const rows = yield* sql<{
         readonly thread_id: string;
         readonly project_id: string;
+        readonly creation_source: OrchestrationV2ThreadShell["creationSource"];
         readonly relationship_to_parent: string | null;
         readonly parent_thread_id: string | null;
         readonly root_thread_id: string;
@@ -8282,6 +8284,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         SELECT
           t.thread_id,
           t.project_id,
+          json_extract(t.payload_json, '$.creationSource') AS creation_source,
           json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationship_to_parent,
           json_extract(t.payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
           json_extract(t.payload_json, '$.lineage.rootThreadId') AS root_thread_id,
@@ -8333,6 +8336,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return rows.map((row): ActiveShellIndexEntry => ({
         id: ThreadId.make(row.thread_id),
         projectId: ProjectId.make(row.project_id),
+        creationSource: row.creation_source,
         lineage: {
           parentThreadId:
             row.parent_thread_id === null ? null : ThreadId.make(row.parent_thread_id),

@@ -830,6 +830,7 @@ describe("environment shell synchronization", () => {
         initialConfig: Effect.succeed({
           shellResumeCompletionMarker: true,
           shellThreadFamilies: true,
+          shellSidebarChildIndex: true,
           shellOlderSettled: true,
         } as never),
       };
@@ -862,7 +863,7 @@ describe("environment shell synchronization", () => {
             Effect.as(Option.some(LIVE_SHELL_SNAPSHOT)),
           ),
       });
-      const shellState = yield* makeEnvironmentShellState().pipe(
+      const shellState = yield* makeEnvironmentShellState({ showSidebarChildren: true }).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.provideService(Persistence.EnvironmentCacheStore, cache),
         Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),

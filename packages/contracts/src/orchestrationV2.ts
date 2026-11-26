@@ -2571,6 +2571,8 @@ export const OrchestrationV2ShellSnapshot = Schema.Struct({
   ...OrchestrationV2ThreadShellSnapshot.fields,
   projects: Schema.Array(OrchestrationProjectShell),
   olderSettled: Schema.optionalKey(OrchestrationV2OlderSettledThreads),
+  /** Direct parent of each omitted app-owned child. Expanding that parent reads its family. */
+  omittedSidebarChildren: Schema.optionalKey(Schema.Record(Schema.String, ThreadId)),
 });
 export type OrchestrationV2ShellSnapshot = typeof OrchestrationV2ShellSnapshot.Type;
 

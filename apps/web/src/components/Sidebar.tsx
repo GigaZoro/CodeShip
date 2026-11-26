@@ -326,8 +326,10 @@ import {
   markSidebarRouteRevealWidened,
   type SidebarRouteReveal,
   useActiveRowReveal,
+  useCollapsedRouteAncestors,
 } from "./sidebar/routeReveal";
 import { SETTLED_SHELF_EXPANDED_KEY } from "./sidebar/settledShelf";
+import { SidebarTreeFamily, useSidebarOmittedChildren } from "./sidebar/SidebarTreeFamily";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useReconnectEnvironment } from "../hooks/useReconnectEnvironment";
 import { copyThreadReference } from "../lib/copyThreadReference";
@@ -446,7 +448,6 @@ const TREE_EXPANDED_KEY = "t3code:sidebar:tree-expanded";
 const TREE_EXPANDED_MAX_KEYS = 500;
 const SidebarTreeExpandedKeys = Schema.Array(Schema.String);
 const EMPTY_TREE_EXPANDED: readonly string[] = [];
-const EMPTY_TREE_KEYS: ReadonlySet<string> = new Set();
 
 const inboxReturns = createInboxReturnTracker();
 
@@ -1838,7 +1839,17 @@ export default function Sidebar({
   // already lists the row; the active row's ref callback scrolls to it.
   const { widensScope: revealWidensScope } = resolveSidebarRouteReveal({
     reveal: routeReveal,
-    routeKey: routeRowThreadKey,
+    routeKey: routeThreadKey,
+    sectionRowKey: routeRowThreadKey,
+    descendantOutsideScope:
+      chosenScopeProjectKeys !== null &&
+      routePath.slice(1).some((key) => {
+        const thread = shellByKey.get(key);
+        return (
+          thread !== undefined &&
+          !chosenScopeProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)
+        );
+      }),
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
@@ -1889,8 +1900,34 @@ export default function Sidebar({
     setPersistedProjectScopeKeys,
     setPersistedMachineScopeIds,
   ]);
-  const revealActiveRow = useActiveRowReveal(routeReveal, routeRowThreadKey);
-  const treeChildren = groupSidebarTreeChildren(threads, delegatedUnderParent);
+  const revealActiveRow = useActiveRowReveal(routeReveal, routeThreadKey);
+  const scopedProjectKeys = revealWidensScope ? null : chosenScopeProjectKeys;
+  const treeChildren = groupSidebarTreeChildren(threads, delegatedUnderParent, {
+    scopedProjectKeys,
+    statusFilter,
+    tagFilter,
+    locallyUnreadKeys,
+    now: new Date(nowMs).toISOString(),
+  });
+  const omittedChildren = useSidebarOmittedChildren();
+  const filtersMayHideChildren = hasThreadFilters || scopedProjectKeys !== null;
+  const treeChildCount = (parent: EnvironmentThreadShell, parentKey: string) => {
+    const visibleCount = treeChildren.get(parentKey)?.length ?? 0;
+    if (filtersMayHideChildren) return visibleCount;
+    let count = visibleCount;
+    for (const id of omittedChildren.get(parentKey) ?? []) {
+      if (!shellByKey.has(scopedThreadKey(scopeThreadRef(parent.environmentId, id)))) count++;
+    }
+    return count;
+  };
+  const treeFamily = (parent: EnvironmentThreadShell, parentKey: string, expanded: boolean) =>
+    omittedChildren.has(parentKey) && (expanded || filtersMayHideChildren) ? (
+      <SidebarTreeFamily
+        key={`family:${parentKey}`}
+        environmentId={parent.environmentId}
+        rootThreadId={parent.lineage.rootThreadId}
+      />
+    ) : null;
   const [expandedTreeKeyList, setExpandedTreeKeyList] = useLocalStorage(
     TREE_EXPANDED_KEY,
     EMPTY_TREE_EXPANDED,
@@ -1898,12 +1935,7 @@ export default function Sidebar({
   );
   const expandedTreeKeys = new Set(expandedTreeKeyList);
   // The open thread's ancestors expand on their own; collapsing one holds until the route changes.
-  const [routeTreeCollapse, setRouteTreeCollapse] = useState<{
-    readonly routeKey: string | null;
-    readonly keys: ReadonlySet<string>;
-  }>({ routeKey: null, keys: EMPTY_TREE_KEYS });
-  const collapsedOnRoute =
-    routeTreeCollapse.routeKey === routeThreadKey ? routeTreeCollapse.keys : EMPTY_TREE_KEYS;
+  const [collapsedOnRoute, setCollapsedOnRoute] = useCollapsedRouteAncestors(routeThreadKey);
   const routeAncestorKeys = new Set(routePath.slice(0, -1));
   const isTreeExpanded = (key: string) =>
     expandedTreeKeys.has(key) || (routeAncestorKeys.has(key) && !collapsedOnRoute.has(key));
@@ -1917,17 +1949,19 @@ export default function Sidebar({
     const keys = new Set(collapsedOnRoute);
     if (expanded) keys.add(key);
     else keys.delete(key);
-    setRouteTreeCollapse({ routeKey: routeThreadKey, keys });
+    setCollapsedOnRoute(keys);
   });
   // The open thread's row, or its nearest ancestor's while a collapsed row hides it.
   let activeRowKey = routeRowThreadKey;
   for (let index = 1; index < routePath.length && isTreeExpanded(routePath[index - 1]!); index++) {
+    if (
+      !treeChildren
+        .get(routePath[index - 1]!)
+        ?.some((child) => threadShellKey(child) === routePath[index])
+    )
+      break;
     activeRowKey = routePath[index]!;
   }
-  const revealTreeRow = useStableCallback((row: HTMLElement) => {
-    if (routeRowThreadKey !== null) revealActiveRow(row, routeRowThreadKey);
-  });
-  // A side chat opens in its parent's side panel, where it is used.
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const scratchMachineLabelFor = (
     thread: Pick<SidebarThreadSummary, "environmentId" | "projectId">,
@@ -1977,7 +2011,6 @@ export default function Sidebar({
   });
   const scopedProjectGroups = revealWidensScope ? [] : chosenProjectGroups;
   const scopedProjectRefs = scopedProjectGroups.flatMap((project) => project.memberProjectRefs);
-  const scopedProjectKeys = revealWidensScope ? null : chosenScopeProjectKeys;
   const threadSearch = useThreadSearch(
     scopedMachineIds.length === 0
       ? connectedEnvironmentIds
@@ -4939,7 +4972,7 @@ export default function Sidebar({
                           const childKey = threadShellKey(child);
                           if (ancestors.has(childKey)) continue;
                           const rowId = `tree:${childKey}`;
-                          const childCount = treeChildren.get(childKey)?.length ?? 0;
+                          const childCount = treeChildCount(child, childKey);
                           const expanded = childCount > 0 && isTreeExpanded(childKey);
                           rows.push(
                             <SidebarChildThreadRow
@@ -4952,11 +4985,12 @@ export default function Sidebar({
                               childCount={childCount}
                               expanded={expanded}
                               isActive={activeRowKey === childKey}
-                              onReveal={activeRowKey === childKey ? revealTreeRow : undefined}
+                              onReveal={activeRowKey === childKey ? revealActiveRow : undefined}
                               onOpen={openTreeChild}
                               onToggleChildren={toggleTreeChildren}
                             />,
                           );
+                          rows.push(treeFamily(child, childKey, expanded));
                           if (expanded) {
                             rows.push(
                               ...renderTreeChildren(
@@ -4992,7 +5026,7 @@ export default function Sidebar({
                           renamingThreadKey === threadKey &&
                           (copy ? renamingCopy : !renamingCopy || !workingCopyKeys.has(threadKey));
                         const isCard = needsYou || section === "active" || section === "working";
-                        const childCount = copy ? 0 : (treeChildren.get(threadKey)?.length ?? 0);
+                        const childCount = copy ? 0 : treeChildCount(thread, threadKey);
                         const childrenExpanded = childCount > 0 && isTreeExpanded(threadKey);
                         // Pinned rows list one line each, as pinned tasks do; so does the Working
                         // shelf beside one-line folder rows.
@@ -5124,7 +5158,10 @@ export default function Sidebar({
                             onToggleChildren={toggleTreeChildren}
                           />
                         );
-                        if (!childrenExpanded) return [row];
+                        const family = copy
+                          ? null
+                          : treeFamily(thread, threadKey, childrenExpanded);
+                        if (!childrenExpanded) return [row, family];
                         const inset: SidebarTreeInset =
                           folder === undefined
                             ? "row"
@@ -5133,6 +5170,7 @@ export default function Sidebar({
                               : "folder";
                         return [
                           row,
+                          family,
                           ...renderTreeChildren(
                             threadKey,
                             threadKey,

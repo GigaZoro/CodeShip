@@ -17,6 +17,7 @@ import {
   isListedThreadLineage,
   isLiveSubagentShell,
   isOlderSettledThreadShell,
+  isProviderNativeSubagentThread,
   OrchestrationProjectShell as ProjectShellSchema,
   OrchestrationV2ThreadShell as ThreadShellSchema,
 } from "@t3tools/contracts";
@@ -334,8 +335,30 @@ export const loadSubscriberShellSnapshot = Effect.fn("ShellStream.loadSubscriber
       snapshotSequence: read.snapshotSequence,
     });
     const facts = shellTrimFacts(read.index ?? base.threads);
+    const snapshot = trimShellSnapshot(base, facts, { ...input.options, now: yield* DateTime.now });
+    if (input.options.omitIdleSubagents && read.index !== null) {
+      const sentSubagents = new Set(
+        snapshot.threads
+          .filter((thread) => facts.subagentThreadIds.has(thread.id))
+          .map((thread) => thread.id),
+      );
+      const omitted = read.index.flatMap((entry) =>
+        entry.lineage.relationshipToParent === "subagent" &&
+        entry.lineage.parentThreadId !== null &&
+        !sentSubagents.has(entry.id) &&
+        !isProviderNativeSubagentThread(entry)
+          ? [[entry.id, entry.lineage.parentThreadId] as const]
+          : [],
+      );
+      if (omitted.length > 0) {
+        return {
+          snapshot: { ...snapshot, omittedSidebarChildren: Object.fromEntries(omitted) },
+          subagentThreadIds: facts.subagentThreadIds,
+        };
+      }
+    }
     return {
-      snapshot: trimShellSnapshot(base, facts, { ...input.options, now: yield* DateTime.now }),
+      snapshot,
       subagentThreadIds: facts.subagentThreadIds,
     };
   },

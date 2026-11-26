@@ -83,7 +83,11 @@ function withoutDeferredPullRequests(value: DeferredShellSnapshot): Orchestratio
 
 const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = msg("Could not synchronize environment data.");
 
-export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")(function* () {
+interface ShellOptions {
+  readonly showSidebarChildren?: boolean;
+}
+
+function* makeShellState(options?: ShellOptions) {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   const cache = yield* Persistence.EnvironmentCacheStore;
   const snapshotLoader = yield* ShellSnapshotLoader.ShellSnapshotLoader;
@@ -381,7 +385,9 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         yield* Ref.set(activeSubscriptionSession, session);
         const { omitIdleSubagents, omitOlderSettled } = yield* session.initialConfig.pipe(
           Effect.map((config) => ({
-            omitIdleSubagents: config.shellThreadFamilies === true,
+            omitIdleSubagents:
+              config.shellThreadFamilies === true &&
+              (!options?.showSidebarChildren || config.shellSidebarChildIndex === true),
             omitOlderSettled:
               config.shellOlderSettled === true && config.shellThreadFamilies === true,
           })),
@@ -472,12 +478,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   );
 
   return state;
-});
+}
 
-function shellStateChanges(environmentId: EnvironmentId) {
+export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")(makeShellState);
+
+function shellStateChanges(environmentId: EnvironmentId, options?: ShellOptions) {
   return followStreamInEnvironment(
     environmentId,
-    Stream.unwrap(makeEnvironmentShellState().pipe(Effect.map(SubscriptionRef.changes))),
+    Stream.unwrap(makeEnvironmentShellState(options).pipe(Effect.map(SubscriptionRef.changes))),
   );
 }
 
@@ -603,9 +611,10 @@ export function createEnvironmentShellAtoms<R, E>(
     | R,
     E
   >,
+  options?: ShellOptions,
 ) {
   const stateAtom = Atom.family((environmentId: EnvironmentId) =>
-    runtime.atom(shellStateChanges(environmentId), {
+    runtime.atom(shellStateChanges(environmentId, options), {
       initialValue: EMPTY_SHELL_STATE,
     }),
   );
