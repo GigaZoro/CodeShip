@@ -521,6 +521,7 @@ function GuestThread({
             runningRunId={runningRunId}
             turnDiffSummaries={NO_TURN_DIFFS}
             runs={projection.runs}
+            threadDetailRef={null}
             routeThreadKey={threadKey}
             onOpenThread={ignore}
             supportsConversationRollback={false}

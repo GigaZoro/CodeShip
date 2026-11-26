@@ -3091,8 +3091,11 @@ describe("v2 run and attempt history", () => {
     const rowsFor = (
       replyCompletedSecond: number,
       runStatus: "running" | "completed" = "completed",
+      replacementOutput: TimelineEntry = assistantEntry("new-reply-entry", nextAttempt, 14),
+      expandedRunIds?: ReadonlySet<RunId>,
     ) =>
       deriveMessagesTimelineRows({
+        ...(expandedRunIds ? { expandedRunIds } : {}),
         timelineEntries: [
           {
             id: "initial-user-entry",
@@ -3134,7 +3137,7 @@ describe("v2 run and attempt history", () => {
               streaming: false,
             },
           },
-          assistantEntry("new-reply-entry", nextAttempt, 14),
+          replacementOutput,
         ],
         latestRun: {
           runId,
@@ -3163,6 +3166,26 @@ describe("v2 run and attempt history", () => {
         label: "Superseded attempt",
       });
       expect(rows.map((row) => row.id)).not.toContain("old-reply-entry");
+
+      const replacementTool: TimelineEntry = {
+        id: "replacement-tool",
+        kind: "work",
+        createdAt: at(13),
+        attempt: nextAttempt,
+        entry: { id: "replacement-tool", createdAt: at(13), runId, label: "Read", tone: "tool" },
+      };
+      for (const [expanded, expectedOwner] of [
+        [new Set<RunId>(), `turn-fold:${runId}`],
+        [new Set([runId]), `attempt-fold:${supersededAttempt.id}`],
+      ] as const) {
+        const rows = rowsFor(11, "completed", replacementTool, expanded);
+        const owners = rows.filter(
+          (row) =>
+            (row.kind === "turn-fold" || row.kind === "attempt-fold") &&
+            row.hiddenMessages?.some((message) => message.id === "old-reply-entry"),
+        );
+        expect(owners.map((row) => row.id)).toEqual([expectedOwner]);
+      }
     });
   });
 

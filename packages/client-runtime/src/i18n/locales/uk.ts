@@ -6917,6 +6917,7 @@ const catalog: MessageCatalog = {
   "Jump to next prompt": "Перейти до наступного запиту",
   "Jump to next starred message": "До наступного позначеного повідомлення",
   "Jump to previous prompt": "Перейти до попереднього запиту",
+  "Jump to starred message: {text}": "Перейти до позначеного зірочкою повідомлення: {text}",
   "just now": "щойно",
   Kagi: "Kagi",
   "KDE capture access is ready. Next, choose your shortcut.":
