@@ -2,6 +2,7 @@ import {
   type EnvironmentId,
   type ExecutionEnvironmentCapabilities,
   isMachineSharedSettingKey,
+  isSharedQuotaAwareSelection,
   type MachineSharedSettingKey,
   type ServerSettings,
   type ServerSettingsPatch,
@@ -113,6 +114,15 @@ function onlySharedSettings(patch: ServerSettingsPatch): ServerSettingsPatch {
   ) as ServerSettingsPatch;
 }
 
+function withoutQuotaAwareSelections(patch: ServerSettingsPatch): ServerSettingsPatch {
+  return Object.fromEntries(
+    Object.entries(patch).filter(([key, value]) => !isSharedQuotaAwareSelection(key, value)),
+  ) as ServerSettingsPatch;
+}
+
+const setsQuotaAwareSelection = (patch: ServerSettingsPatch) =>
+  sharedSettingKeysIn(patch).some((key) => isSharedQuotaAwareSelection(key, patch[key]));
+
 /** A machine as a client knows it: connected now or not, with the settings it last reported. */
 export interface SharedSettingsMachine {
   readonly environmentId: EnvironmentId;
@@ -128,6 +138,9 @@ export interface SharedSettingsMachine {
 function servesShareSettings(machine: SharedSettingsMachine): boolean {
   return machine.serverConfig?.environment?.capabilities.shareSettings === true;
 }
+
+const supportsQuotaAwareAuto = (machine: SharedSettingsMachine | undefined) =>
+  machine?.serverConfig?.environment?.capabilities.quotaAwareAuto === true;
 
 /**
  * Each shared setting `patch` sets, as the whole value `base` holds once the patch is applied, for
@@ -165,6 +178,7 @@ export interface MachineSettingsWrite {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly patch: ServerSettingsPatch;
+  readonly quotaAwareAutoUnavailable?: true;
 }
 
 export interface SharedSettingsGroupMember {
@@ -172,6 +186,7 @@ export interface SharedSettingsGroupMember {
   readonly previous: ServerSettings;
   /** It takes a server's stamped share; an older one takes the stamp, with the values in its patch. */
   readonly servesShareSettings: boolean;
+  readonly quotaAwareAuto?: true;
 }
 
 export interface SharedSettingsPlan<W extends MachineSettingsWrite> {
@@ -235,7 +250,22 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
     !input.writes.some((write) => patchSetsMachineSharedSetting(write.patch)) ||
     !hasSharedSettingsGroup(input.machines)
   ) {
-    return plain;
+    return plainSettingsWrites(
+      input.writes.map((write) => {
+        if (
+          !setsQuotaAwareSelection(write.patch) ||
+          supportsQuotaAwareAuto(
+            input.machines.find((machine) => machine.environmentId === write.environmentId),
+          )
+        )
+          return write;
+        return {
+          ...write,
+          patch: withoutQuotaAwareSelections(write.patch),
+          quotaAwareAutoUnavailable: true,
+        };
+      }),
+    );
   }
   const followers = input.machines.filter(followsSharedSettings);
   const connectedFollowers = followers.filter(isConnected);
@@ -244,13 +274,28 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
     .map(({ label }) => label);
   const stampers = connectedFollowers.filter(servesShareSettings);
   const candidates = stampers.length > 0 ? stampers : connectedFollowers;
-  const authority =
+  const preferred =
     candidates.find((machine) => machine.environmentId === input.origin) ?? candidates[0];
-  if (authority === undefined) {
+  if (preferred === undefined) {
     return { ...plain, writes: [], offlineFollowers, noFollowerConnected: true };
   }
   const stampedBy = stampers.length > 0 ? "server" : "client";
-  const sharedPatch = onlySharedSettings(input.sharedPatch(authority.serverConfig.settings));
+  const preferredPatch = onlySharedSettings(input.sharedPatch(preferred.serverConfig.settings));
+  const sharesAuto = setsQuotaAwareSelection(preferredPatch);
+  const authority =
+    sharesAuto && !supportsQuotaAwareAuto(preferred)
+      ? (stampers.find(supportsQuotaAwareAuto) ?? preferred)
+      : preferred;
+  const requestedPatch =
+    authority === preferred
+      ? preferredPatch
+      : onlySharedSettings(input.sharedPatch(authority.serverConfig.settings));
+  const missingAuthority =
+    sharesAuto && !(supportsQuotaAwareAuto(authority) && servesShareSettings(authority));
+  const sharedPatch = missingAuthority
+    ? withoutQuotaAwareSelections(requestedPatch)
+    : requestedPatch;
+  const keys = sharedSettingKeysIn(sharedPatch);
   // Stamped here, every follower carries the whole values, which a server would complete itself.
   const followerShared =
     stampedBy === "client"
@@ -270,6 +315,7 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
     writes: [
       {
         ...authorityWrite,
+        ...(missingAuthority ? { quotaAwareAutoUnavailable: true as const } : {}),
         patch: {
           ...withoutSharedSettings(authorityWrite.patch),
           ...(stampedBy === "client" ? followerShared : sharedPatch),
@@ -286,15 +332,25 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
         const patch = withoutSharedSettings(write.patch);
         return Object.keys(patch).length === 0 ? [] : [{ ...write, patch }];
       }),
-    ],
-    share: {
-      authority: authority.environmentId,
-      keys: sharedSettingKeysIn(sharedPatch),
-      stampedBy,
-    },
+    ].filter(
+      (write) =>
+        !missingAuthority ||
+        keys.length > 0 ||
+        write.environmentId === authority.environmentId ||
+        Object.keys(write.patch).length > 0,
+    ),
+    share:
+      missingAuthority && keys.length === 0
+        ? null
+        : {
+            authority: authority.environmentId,
+            keys,
+            stampedBy,
+          },
     offlineFollowers,
     sharedGroup: connectedFollowers.map((machine) => ({
       environmentId: machine.environmentId,
+      ...(supportsQuotaAwareAuto(machine) ? { quotaAwareAuto: true as const } : {}),
       previous: machine.serverConfig.settings,
       servesShareSettings: servesShareSettings(machine),
     })),
@@ -318,14 +374,10 @@ class SharedSettingsNotSavedError extends Error {
   }
 }
 
-/**
- * A seed for a group in which no follower stamps changes. Stamped by this client it would carry the
- * same stamp as another device's seed, and each follower would keep whichever arrived first.
- */
-class SharedSettingsSeedNotSentError extends Error {
+class SharedSettingsUpdateRequiredError extends Error {
   constructor() {
     super(t("Update older servers to save this setting."));
-    this.name = "SharedSettingsSeedNotSentError";
+    this.name = "SharedSettingsUpdateRequiredError";
   }
 }
 
@@ -378,7 +430,21 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
       _tag: "Failure",
       cause: Cause.die(error),
     }));
-  const update: typeof persist.update = (request) => settle(persist.update(request));
+  const incomplete = new Set(
+    plan.writes
+      .filter((write) => write.quotaAwareAutoUnavailable)
+      .map((write) => write.environmentId),
+  );
+  const requiresUpdate = (): SettingsWriteResult<ServerSettings> => ({
+    _tag: "Failure",
+    cause: Cause.fail(new SharedSettingsUpdateRequiredError()),
+  });
+  const update: typeof persist.update = async (request) => {
+    if (!incomplete.has(request.environmentId)) return settle(persist.update(request));
+    if (Object.keys(request.input.patch).length === 0) return requiresUpdate();
+    const result = await settle(persist.update(request));
+    return result._tag === "Failure" ? result : requiresUpdate();
+  };
   const share = plan.share;
   if (share === null) {
     return Promise.all(
@@ -406,7 +472,7 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
           sent: write.patch,
           result:
             seed && follower
-              ? { _tag: "Failure", cause: Cause.fail(new SharedSettingsSeedNotSentError()) }
+              ? { _tag: "Failure", cause: Cause.fail(new SharedSettingsUpdateRequiredError()) }
               : await update({
                   environmentId: write.environmentId,
                   input: follower ? { patch: write.patch, share: stamp } : { patch: write.patch },
@@ -439,7 +505,9 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
         return {
           write,
           sent: write.patch,
-          result: { _tag: "Success", value: result.value.settings },
+          result: write.quotaAwareAutoUnavailable
+            ? requiresUpdate()
+            : { _tag: "Success", value: result.value.settings },
           ...(superseded.length === 0 ? {} : { superseded }),
         };
       }
@@ -468,7 +536,7 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
       }
       const stamped = authority.value;
       // The values as the authority stored them, for keys this client knows.
-      const sent = {
+      const stampedPatch = {
         ...write.patch,
         ...Object.fromEntries(
           stamped.share.values.flatMap((value) =>
@@ -478,12 +546,20 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
           ),
         ),
       } as ServerSettingsPatch;
+      const takesShare = takesServerShare.has(write.environmentId);
+      // A stamp-only server can pick up the protected version later by pulling from a follower.
+      const takesAuto =
+        takesShare &&
+        plan.sharedGroup.some(
+          (member) => member.environmentId === write.environmentId && member.quotaAwareAuto,
+        );
+      const sent = takesAuto ? stampedPatch : withoutQuotaAwareSelections(stampedPatch);
       return {
         write,
         sent,
         result: await update({
           environmentId: write.environmentId,
-          input: takesServerShare.has(write.environmentId)
+          input: takesShare
             ? { patch: write.patch, share: stamped.share }
             : { patch: sent, share: stamped.share.stamp },
         }),

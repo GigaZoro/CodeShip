@@ -117,9 +117,20 @@ const SHARED_MODEL_SELECTION_KEYS: ReadonlySet<MachineSharedSettingKey> = new Se
   "reviewGuideModelSelection",
 ]);
 
+export function isSharedQuotaAwareSelection(key: string, value: unknown): boolean {
+  return (
+    SHARED_MODEL_SELECTION_KEYS.has(key as MachineSharedSettingKey) &&
+    typeof value === "object" &&
+    value !== null &&
+    "quotaAwareAuto" in value &&
+    value.quotaAwareAuto === true
+  );
+}
+
 /** The provider instance a shared model selection names, if `value` is one. */
 export function sharedSelectionInstanceId(key: string, value: unknown): string | undefined {
   if (!SHARED_MODEL_SELECTION_KEYS.has(key as MachineSharedSettingKey)) return undefined;
+  if (isSharedQuotaAwareSelection(key, value)) return undefined;
   if (typeof value !== "object" || value === null) return undefined;
   const instanceId = (value as { readonly instanceId?: unknown }).instanceId;
   return typeof instanceId === "string" ? instanceId : undefined;

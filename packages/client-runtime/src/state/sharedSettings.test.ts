@@ -101,6 +101,7 @@ describe("saving a change for all machines", () => {
       readonly connected?: boolean;
       /** A server from before `server.shareSettings`. */
       readonly older?: boolean;
+      readonly quotaAwareAuto?: boolean;
     } = {},
   ) => ({
     environmentId: EnvironmentId.make(id),
@@ -110,7 +111,12 @@ describe("saving a change for all machines", () => {
     },
     serverConfig: {
       settings: { ...DEFAULT_SERVER_SETTINGS, followSharedSettings: options.follows === true },
-      environment: { capabilities: { shareSettings: options.older !== true } },
+      environment: {
+        capabilities: {
+          shareSettings: options.older !== true,
+          quotaAwareAuto: options.quotaAwareAuto === true,
+        },
+      },
     },
   });
   const mac = machine("Mac", { follows: true });
@@ -312,6 +318,72 @@ describe("saving a change for all machines", () => {
         input: { patch: { finalReviewByDefault: true }, share: stamped.stamp },
       },
     ]);
+  });
+
+  it("stamps fresh Auto on a capable follower and sends older followers only supported values", async () => {
+    const capable = machine("Auto", { follows: true, quotaAwareAuto: true });
+    const selection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "astra",
+      quotaAwareAuto: true,
+    };
+    const patch = { defaultModelSelection: selection, finalReviewByDefault: true };
+    const saved = { ...DEFAULT_SERVER_SETTINGS, ...patch };
+    const protectedShare = {
+      ...stamped,
+      values: [
+        ...stamped.values,
+        { key: "defaultModelSelection", value: { quotaAwareAuto: selection } },
+      ],
+    };
+    const update = vi.fn(async (_request: unknown) => success(saved));
+    const share = vi.fn(async (_request: unknown) =>
+      success({ settings: saved, share: protectedShare }),
+    );
+    const planned = plan([mac, capable, oldPc], patch, mac);
+    expect(planned.share?.authority).toBe(capable.environmentId);
+    const savedGroup = await persistSharedSettingsWrites(planned, { update, share });
+    expect(
+      savedGroup
+        .filter(({ write }) => write.environmentId !== capable.environmentId)
+        .map(({ sent }) => sent),
+    ).toEqual([{ finalReviewByDefault: true }, { finalReviewByDefault: true }]);
+    expect(update).toHaveBeenCalledWith({
+      environmentId: mac.environmentId,
+      input: { patch: {}, share: protectedShare },
+    });
+    expect(update).toHaveBeenCalledWith({
+      environmentId: oldPc.environmentId,
+      input: { patch: { finalReviewByDefault: true }, share: stamped.stamp },
+    });
+    update.mockClear();
+    share.mockClear();
+    share.mockResolvedValueOnce(
+      success({ settings: saved, share: { ...protectedShare, values: [...stamped.values] } }),
+    );
+    const unsupported = await persistSharedSettingsWrites(plan([mac, oldPc], patch, mac), {
+      update,
+      share,
+    });
+    expect(unsupported.some(({ result }) => result._tag === "Failure")).toBe(true);
+    expect(share).toHaveBeenCalledWith({
+      environmentId: mac.environmentId,
+      input: { patch: { finalReviewByDefault: true } },
+    });
+    expect(update).toHaveBeenCalledWith({
+      environmentId: oldPc.environmentId,
+      input: { patch: { finalReviewByDefault: true }, share: stamped.stamp },
+    });
+    update.mockClear();
+    const plain = await persistSharedSettingsWrites(
+      plan([cpc], { ...patch, worktreesDirectory: "/work" }, cpc),
+      { update, share },
+    );
+    expect(plain[0]?.result._tag).toBe("Failure");
+    expect(update).toHaveBeenCalledWith({
+      environmentId: cpc.environmentId,
+      input: { patch: { finalReviewByDefault: true, worktreesDirectory: "/work" } },
+    });
   });
 
   it("stamps a change itself and sends it to every follower at once", async () => {

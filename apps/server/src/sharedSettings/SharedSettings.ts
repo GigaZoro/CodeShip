@@ -3,6 +3,7 @@ import {
   isMachineSharedSettingKey,
   isManagedSettingPath,
   isNewerSharedSetting,
+  isSharedQuotaAwareSelection,
   type MachineSharedSettingKey,
   MACHINE_SHARED_SETTING_KEYS,
   type ModelSelection,
@@ -114,10 +115,14 @@ const keyCodecs = (fields: Record<MachineSharedSettingKey, Schema.Top>) => {
 const patchCodec = keyCodecs(ServerSettingsPatch.fields);
 const valueCodec = keyCodecs(ServerSettings.fields);
 
+// Older decoders drop fields they do not know. An envelope makes them defer Auto instead of pinning its placeholder.
+const protectedSharedValue = (key: string, value: unknown) =>
+  isSharedQuotaAwareSelection(key, value) ? { quotaAwareAuto: value } : value;
+
 /** This machine's value of a setting, as JSON another machine can decode. */
 const encodeValue = (key: MachineSharedSettingKey, value: unknown) =>
   Schema.encodeUnknownEffect(patchCodec(key))({ [key]: value }).pipe(
-    Effect.map((encoded) => encoded[key]),
+    Effect.map((encoded) => protectedSharedValue(key, encoded[key])),
     Effect.mapError((cause) => new SharedSettingsError({ operation: "encode", cause })),
   );
 
@@ -658,9 +663,21 @@ const make = Effect.gen(function* () {
   ) {
     const key = entry.key;
     if (isMachineOnlySettingKey(key)) return Option.none<Candidate>();
+    const raw = protectedSharedValue(key, entry.value);
     let readable: Readable | undefined;
     if (isMachineSharedSettingKey(key)) {
-      const value = yield* decodeValue(key, entry.value).pipe(Effect.option);
+      const auto =
+        typeof raw === "object" &&
+        raw !== null &&
+        "quotaAwareAuto" in raw &&
+        isSharedQuotaAwareSelection(key, raw.quotaAwareAuto)
+          ? raw.quotaAwareAuto
+          : undefined;
+      const value =
+        auto !== undefined &&
+        (yield* environment.getDescriptor).capabilities.quotaAwareAuto !== true
+          ? Option.none()
+          : yield* decodeValue(key, auto ?? raw).pipe(Effect.option);
       if (Option.isSome(value)) readable = { kind: "setting", key, value: value.value };
     } else {
       const instanceId = sharedProviderInstanceIdOf(key);
@@ -671,7 +688,7 @@ const make = Effect.gen(function* () {
     }
     return Option.some<Candidate>({
       key,
-      raw: entry.value,
+      raw,
       readable,
       instanceDriver: entry.instanceDriver,
       stamp,
@@ -905,6 +922,15 @@ const make = Effect.gen(function* () {
       : now;
     const rows = yield* readRowsForWrite;
     const keys = sharedSettingKeysIn(patch);
+    if (
+      keys.some((key) => isSharedQuotaAwareSelection(key, patch[key])) &&
+      (yield* environment.getDescriptor).capabilities.quotaAwareAuto !== true
+    ) {
+      return yield* refuse(
+        "normalize",
+        new Error("This server cannot save quota-aware Auto as the authority."),
+      );
+    }
     const isFresh = (key: MachineSharedSettingKey) => {
       const versions = versionsOf(rows, key);
       return (
@@ -1302,7 +1328,7 @@ const make = Effect.gen(function* () {
         : [
             {
               key: row.settingKey,
-              value: value.value,
+              value: protectedSharedValue(row.settingKey, value.value),
               ...(row.instanceDriver === null ? {} : { instanceDriver: row.instanceDriver }),
               updatedAt: row.updatedAt,
               origin: row.origin as EnvironmentId,

@@ -9,6 +9,7 @@ import {
   type ManagedPolicySummary,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
   SHARED_SETTING_VALUE_MAX_BYTES,
@@ -22,6 +23,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -111,6 +113,7 @@ const machine = (
   managedPolicy: ManagedPolicySummary | undefined,
   environmentId: EnvironmentId,
   registrySync: Layer.Layer<ProviderInstanceRegistrySync.ProviderInstanceRegistrySync> = ProviderInstanceRegistrySync.layerTest,
+  quotaAwareAuto = false,
 ) => {
   const settings = Settings.layerTest({ followSharedSettings: true, ...overrides }, managedPolicy);
   const settingsSeen =
@@ -136,6 +139,7 @@ const machine = (
     Layer.provideMerge(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(environmentId),
+        getDescriptor: Effect.succeed({ capabilities: { quotaAwareAuto } } as never),
       }),
     ),
     Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
@@ -152,6 +156,7 @@ const run = <A, E>(
   seen?: (real: SettingsService) => SettingsService,
   managedPolicy?: ManagedPolicySummary,
   environmentId: EnvironmentId = HERE,
+  quotaAwareAuto = false,
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(NOW));
@@ -160,7 +165,19 @@ const run = <A, E>(
       const shared = yield* SharedSettings.SharedSettings;
       const settings = yield* Settings.ServerSettingsService;
       return yield* body(shared, settings, instances);
-    }).pipe(Effect.provide(machine(overrides, instances, seen, managedPolicy, environmentId)));
+    }).pipe(
+      Effect.provide(
+        machine(
+          overrides,
+          instances,
+          seen,
+          managedPolicy,
+          environmentId,
+          undefined,
+          quotaAwareAuto,
+        ),
+      ),
+    );
   });
 
 const served = (shared: SharedSettings.SharedSettings["Service"]) =>
@@ -715,6 +732,50 @@ it.effect("applies a model selection that names an instance this machine has", (
       });
     }),
   ),
+);
+
+it.effect("shares fresh Auto without binding a receiver to the originating account", () =>
+  Effect.gen(function* () {
+    const selection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6.2-astra",
+      quotaAwareAuto: true,
+    };
+    const saved = yield* run(
+      (shared) => shared.updateForAllMachines({ defaultModelSelection: selection }),
+      {},
+      undefined,
+      undefined,
+      HERE,
+      true,
+    );
+    const value = saved.share.values[0]!;
+    expect(value.instanceDriver).toBeUndefined();
+    const concreteDefault = Schema.Struct({
+      defaultModelSelection: ServerSettings.fields.defaultModelSelection,
+    });
+    expect(
+      Schema.decodeUnknownOption(concreteDefault)({ defaultModelSelection: value.value })._tag,
+    ).toBe("None");
+    for (const supported of [false, true]) {
+      yield* run(
+        (shared, settings, instances) =>
+          Effect.gen(function* () {
+            if (supported) yield* Ref.set(instances, ["third-provider"]);
+            yield* shared.update({}, saved.share);
+            expect((yield* settings.getSettings).defaultModelSelection).toEqual(
+              supported ? selection : null,
+            );
+            expect((yield* served(shared)).defaultModelSelection?.value).toEqual(value.value);
+          }),
+        {},
+        undefined,
+        undefined,
+        OTHER,
+        supported,
+      );
+    }
+  }),
 );
 
 it.effect("every shared key saves and is taken back as a version", () =>
