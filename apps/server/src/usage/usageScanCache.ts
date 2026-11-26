@@ -267,16 +267,20 @@ function sameItems<T>(own: readonly T[] | undefined, next: readonly T[]) {
   return (own?.length ?? 0) === next.length && next.every((item, index) => item === own?.[index]);
 }
 
-const readGroupsByVersion = new WeakMap<
-  CachedFile,
-  { keys: Set<string>; groups: readonly string[] }
->();
+type ReadGroups = { keys: Set<string>; groups: readonly string[] };
+const committedReadGroups = new WeakMap<CachedFile, ReadGroups>();
+const readGroupsWithTail = new WeakMap<CachedFile, ReadGroups>();
 
-function readGroupsOf(entry: CachedFile, key: string): readonly string[] {
-  let cached = readGroupsByVersion.get(entry);
+function readGroupsOf(entry: CachedFile, key: string, includeTail = false): readonly string[] {
+  // A tentative tail can witness coexistence only once its replacement is confirmed.
+  const useTail = includeTail && entry.tailRecords.length > 0;
+  const cache = useTail ? readGroupsWithTail : committedReadGroups;
+  let cached = cache.get(entry);
   if (cached === undefined) {
     const keys = new Set<string>();
-    const records = [...entry.records, ...entry.tailRecords].filter(canRetainUsageRecord);
+    const records = (useTail ? [...entry.records, ...entry.tailRecords] : entry.records).filter(
+      canRetainUsageRecord,
+    );
     // Index both directions so each ambiguous call sees its sibling without comparing every pair.
     for (let pass = 0; pass < 2 && records.length > 1; pass++) {
       const matcher = makeUsageRetentionMatcher(entry.provider, []);
@@ -287,7 +291,7 @@ function readGroupsOf(entry: CachedFile, key: string): readonly string[] {
       records.reverse();
     }
     cached = { keys, groups: keys.size > 1 ? [JSON.stringify([...keys].sort())] : [] };
-    readGroupsByVersion.set(entry, cached);
+    cache.set(entry, cached);
   }
   return cached.keys.has(key) ? cached.groups : [];
 }
@@ -330,7 +334,7 @@ function mergePeerTails(
     if (loseTail) {
       for (const record of loser.tailRecords) {
         if (!canRetainUsageRecord(record)) continue;
-        const readGroups = readGroupsOf(loser, record.dedupeKey);
+        const readGroups = readGroupsOf(loser, record.dedupeKey, true);
         add({
           record,
           seenMs: loser.observedAtMs,
@@ -411,6 +415,7 @@ function collectHistory(
     seenMs: number,
     sinceMs: number,
     source: CachedFile | SupersededRecord,
+    includeTail = false,
   ) {
     if (seenMs < floor || seenMs <= (otherProviderAtMs ?? -Infinity)) return;
     liveKeys ??= new Set(
@@ -419,7 +424,8 @@ function collectHistory(
     const key = record.dedupeKey;
     const liveCommitted = liveKeys.has(key) && !tailKeys.has(key);
     let original = "record" in source ? source : undefined;
-    let groups = "record" in source ? (source.readGroups ?? []) : readGroupsOf(source, key);
+    let groups =
+      "record" in source ? (source.readGroups ?? []) : readGroupsOf(source, key, includeTail);
     if (liveCommitted) {
       // A surviving exact key can still witness that a missing sibling was a different call.
       if (groups.length)
@@ -483,12 +489,33 @@ function collectHistory(
     }
   }
   carryHistory(winner);
-  return {
-    consider,
-    carryHistory,
-    sorted: () =>
-      [...retained.values()].sort((a, b) => (a.record.dedupeKey < b.record.dedupeKey ? -1 : 1)),
-  };
+  function sorted() {
+    // A late peer may supply one member after only its sibling kept the proof they coexisted.
+    const groups = new Set<string>();
+    for (const item of retained.values()) {
+      for (const group of item.readGroups ?? []) groups.add(group);
+    }
+    for (const group of groups) {
+      for (const key of keysOf(group)) {
+        const held = retained.get(key);
+        if (held?.readGroups?.some((own) => covers(own, group))) continue;
+        let source = held;
+        if (source === undefined) {
+          simultaneousRecords ??= new Map(
+            winner.records.map((record) => [record.dedupeKey, record]),
+          );
+          const live = simultaneousRecords.get(key);
+          if (!live || !canRetainUsageRecord(live)) continue;
+          source = { record: live, seenMs: winner.observedAtMs, sinceMs: winner.observedAtMs };
+        }
+        consider(source.record, source.seenMs, source.sinceMs, { ...source, readGroups: [group] });
+      }
+    }
+    return [...retained.values()].sort((a, b) =>
+      a.record.dedupeKey < b.record.dedupeKey ? -1 : 1,
+    );
+  }
+  return { consider, carryHistory, sorted };
 }
 
 function historyWithProvedTails(entry: CachedFile, proved: readonly SupersededRecord[]) {
@@ -541,7 +568,8 @@ export function carrySuperseded(
     // A local full re-read proves replacement immediately. Peer tails wait for size evidence.
     if (read !== undefined && read.retainedPrefix === undefined) {
       for (const record of loser.tailRecords) {
-        if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity, loser);
+        if (canRetainUsageRecord(record))
+          consider(record, loser.observedAtMs, Infinity, loser, true);
       }
     }
   }
