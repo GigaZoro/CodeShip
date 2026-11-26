@@ -5,8 +5,6 @@ import type {
   UsageSpeed,
 } from "@t3tools/provider-core/server/usage";
 import * as Schema from "effect/Schema";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Cache merges hash native keys synchronously without buffering the full transcript.
-import * as NodeCrypto from "node:crypto";
 
 import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import {
@@ -63,11 +61,13 @@ interface SupersededRecord {
   readonly seenMs: number;
   /** Observation after seenMs that found it gone; its retention counts from here. */
   readonly sinceMs: number;
-  /** Versions at seenMs that held this key alongside other keys. */
+  /** Groups of potentially overlapping native keys proved distinct by one version of the file. */
   readonly readGroups?: readonly string[];
 }
 
 type KeyedUsageRecord = UsageRecord & { readonly dedupeKey: string };
+type PriorRead = number | readonly [time: number, size: number];
+type PeerTail = Omit<SupersededRecord, "sinceMs"> & { readonly size: number };
 
 export interface CachedFile {
   readonly size: number;
@@ -93,8 +93,10 @@ export interface CachedFile {
    * qualifying provider identity can distinguish a displaced call from the current contents.
    */
   readonly superseded?: readonly SupersededRecord[];
-  /** Prior reads in the retention window, so a late peer can date a previously unknown record's replacement. */
-  readonly priorReads?: readonly number[];
+  /** Earlier observations date replacement and prove truncation of a peer's final line. */
+  readonly priorReads?: readonly PriorRead[];
+  /** A peer may report the intervening shorter version after we discard its old row. */
+  readonly peerTails?: readonly PeerTail[];
   /** Most recent expired read. A peer's earlier sighting cannot revive history absent by this read. */
   readonly expiredThroughMs?: number;
   /** The last read by a different provider invalidates earlier identities for this path. */
@@ -213,41 +215,153 @@ const recordIdentity = (record: UsageRecord) =>
     record.unresolvedServiceTierTurnId ?? null,
   ]);
 
-function firstReadAfter(priorReads: readonly number[], seenMs: number, lastRead: number) {
+const readTime = (read: PriorRead) => (typeof read === "number" ? read : read[0]);
+const readSize = (read: PriorRead) => (typeof read === "number" ? undefined : read[1]);
+const isPriorRead = (value: unknown): value is PriorRead =>
+  (typeof value === "number" && Number.isFinite(value)) ||
+  (Array.isArray(value) &&
+    value.length === 2 &&
+    Number.isFinite(value[0]) &&
+    Number.isSafeInteger(value[1]) &&
+    value[1] >= 0);
+
+function firstReadAfter(priorReads: readonly PriorRead[], seenMs: number, lastRead: PriorRead) {
   let low = 0;
   let high = priorReads.length;
   while (low < high) {
     const mid = Math.floor((low + high) / 2);
-    if (priorReads[mid]! <= seenMs) low = mid + 1;
+    if (readTime(priorReads[mid]!) <= seenMs) low = mid + 1;
     else high = mid;
   }
   return priorReads[low] ?? lastRead;
+}
+
+function mergePriorReads(winner: CachedFile, loser: CachedFile, minimum: number) {
+  const oldReads = loser.priorReads ?? [];
+  if (
+    winner.priorReads === undefined &&
+    winner.provider === loser.provider &&
+    loser.observedAtMs < winner.observedAtMs &&
+    readTime(oldReads[0] ?? loser.observedAtMs) > minimum
+  ) {
+    return [...oldReads, [loser.observedAtMs, loser.size] as const];
+  }
+  const times = new Map(winner.priorReads?.map((read) => [readTime(read), read]));
+  const add = (read: PriorRead) => {
+    const time = readTime(read);
+    const held = times.get(time);
+    if (held === undefined || (readSize(read) ?? -1) > (readSize(held) ?? -1)) {
+      times.set(time, read);
+    }
+  };
+  if (winner.provider === loser.provider) {
+    for (const read of oldReads) add(read);
+    add([loser.observedAtMs, loser.size]);
+  }
+  return [...times.values()]
+    .filter((read) => readTime(read) > minimum && readTime(read) < winner.observedAtMs)
+    .sort((a, b) => readTime(a) - readTime(b));
 }
 
 function sameItems<T>(own: readonly T[] | undefined, next: readonly T[]) {
   return (own?.length ?? 0) === next.length && next.every((item, index) => item === own?.[index]);
 }
 
-const readGroupsByVersion = new WeakMap<CachedFile, readonly string[]>();
+const readGroupsByVersion = new WeakMap<
+  CachedFile,
+  { keys: Set<string>; groups: readonly string[] }
+>();
 
-function readGroupsOf(entry: CachedFile): readonly string[] {
-  const cached = readGroupsByVersion.get(entry);
-  if (cached !== undefined) return cached;
-  let group: readonly string[] = [];
-  if (entry.records.length + entry.tailRecords.length > 1) {
-    const hash = NodeCrypto.createHash("sha256");
-    let count = 0;
-    for (const records of [entry.records, entry.tailRecords]) {
-      for (const { dedupeKey } of records) {
-        if (dedupeKey === null) continue;
-        hash.update(JSON.stringify(dedupeKey) + "\n");
-        count++;
+function readGroupsOf(entry: CachedFile, key: string): readonly string[] {
+  let cached = readGroupsByVersion.get(entry);
+  if (cached === undefined) {
+    const keys = new Set<string>();
+    const records = [...entry.records, ...entry.tailRecords].filter(canRetainUsageRecord);
+    // Index both directions so each ambiguous call sees its sibling without comparing every pair.
+    for (let pass = 0; pass < 2 && records.length > 1; pass++) {
+      const matcher = makeUsageRetentionMatcher(entry.provider, []);
+      for (const record of records) {
+        if (matcher.matches(record)) keys.add(record.dedupeKey);
+        matcher.add(record);
+      }
+      records.reverse();
+    }
+    cached = { keys, groups: keys.size > 1 ? [JSON.stringify([...keys].sort())] : [] };
+    readGroupsByVersion.set(entry, cached);
+  }
+  return cached.keys.has(key) ? cached.groups : [];
+}
+
+function groupMembers(group: string): readonly string[] | undefined {
+  if (!group.startsWith("[")) return undefined;
+  try {
+    const keys: unknown = JSON.parse(group);
+    if (isRecordArray(keys) && keys.length > 1 && keys.every((key) => typeof key === "string"))
+      return keys;
+  } catch {
+    return undefined;
+  }
+}
+
+function mergePeerTails(
+  winner: CachedFile,
+  loser: CachedFile,
+  floor: number,
+  otherProviderAtMs: number | undefined,
+  peer: boolean,
+) {
+  const loseTail = peer && loser.tailRecords.length > 0;
+  if (!winner.peerTails && !loser.peerTails && !loseTail) return [];
+  const candidates = new Map<string, PeerTail>();
+  function add(item: PeerTail) {
+    if (item.seenMs < floor || item.seenMs <= (otherProviderAtMs ?? -Infinity)) return;
+    const id = JSON.stringify([item.seenMs, item.record.dedupeKey, item.readGroups ?? []]);
+    const held = candidates.get(id);
+    if (
+      held === undefined ||
+      item.size > held.size ||
+      (item.size === held.size && recordIdentity(item.record) < recordIdentity(held.record))
+    )
+      candidates.set(id, item);
+  }
+  for (const item of winner.peerTails ?? []) add(item);
+  if (winner.provider === loser.provider) {
+    for (const item of loser.peerTails ?? []) add(item);
+    if (loseTail) {
+      for (const record of loser.tailRecords) {
+        if (!canRetainUsageRecord(record)) continue;
+        const readGroups = readGroupsOf(loser, record.dedupeKey);
+        add({
+          record,
+          seenMs: loser.observedAtMs,
+          size: loser.size,
+          ...(readGroups.length ? { readGroups } : {}),
+        });
       }
     }
-    if (count > 1) group = [hash.digest("base64url")];
   }
-  readGroupsByVersion.set(entry, group);
-  return group;
+  return [...candidates.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, item]) => item);
+}
+
+function provedTailReplacement(entry: CachedFile, tail: PeerTail) {
+  const next = firstReadAfter(entry.priorReads ?? [], tail.seenMs, [
+    entry.observedAtMs,
+    entry.size,
+  ]);
+  return readTime(next) > tail.seenMs && (readSize(next) ?? Infinity) < tail.size
+    ? readTime(next)
+    : undefined;
+}
+
+function provedPeerTails(entry: CachedFile, cutoffMs: number): readonly SupersededRecord[] {
+  return (
+    entry.peerTails?.flatMap((tail) => {
+      const sinceMs = provedTailReplacement(entry, tail);
+      if (sinceMs === undefined || sinceMs < cutoffMs) return [];
+      const { size: _size, ...record } = tail;
+      return [{ ...record, sinceMs }];
+    }) ?? []
+  );
 }
 
 interface ReadEvidence {
@@ -272,18 +386,39 @@ export function carrySuperseded(
     sameProvider ? loser.expiredThroughMs : undefined,
   );
   const floor = expiredThroughMs ?? -Infinity;
-  const times = new Set(winner.priorReads);
-  if (sameProvider) {
-    for (const time of loser.priorReads ?? []) times.add(time);
-    times.add(loser.observedAtMs);
-  }
-  const priorReads = [...times]
-    .filter(
-      (time) =>
-        time > floor && time > (otherProviderAtMs ?? -Infinity) && time < winner.observedAtMs,
-    )
-    .sort((a, b) => a - b);
+  const priorReads = mergePriorReads(
+    winner,
+    loser,
+    Math.max(floor, otherProviderAtMs ?? -Infinity),
+  );
+  const peerTails = mergePeerTails(winner, loser, floor, otherProviderAtMs, read === undefined);
 
+  const members = new Map<string, Set<string>>();
+  const covered = new Map<string, Map<string, boolean>>();
+  function keysOf(group: string) {
+    let keys = members.get(group);
+    if (!keys) {
+      keys = new Set(groupMembers(group));
+      members.set(group, keys);
+    }
+    return keys;
+  }
+  function covers(group: string, other: string) {
+    if (group === other) return true;
+    let tested = covered.get(group);
+    if (!tested) {
+      tested = new Map();
+      covered.set(group, tested);
+    }
+    const known = tested.get(other);
+    if (known !== undefined) return known;
+    const small = keysOf(other);
+    const large = keysOf(group);
+    const contains =
+      small.size > 0 && large.size > small.size && [...small].every((key) => large.has(key));
+    tested.set(other, contains);
+    return contains;
+  }
   const retained = new Map<string, SupersededRecord>();
   let liveKeys = read?.liveKeys;
   let simultaneousRecords: Map<string | null, UsageRecord> | undefined;
@@ -300,35 +435,49 @@ export function carrySuperseded(
     );
     const key = record.dedupeKey;
     const liveCommitted = liveKeys.has(key) && !tailKeys.has(key);
-    if (liveCommitted && seenMs !== winner.observedAtMs) return;
-    let groups = original === undefined ? readGroupsOf(loser) : (original.readGroups ?? []);
+    let groups = original === undefined ? readGroupsOf(loser, key) : (original.readGroups ?? []);
     if (liveCommitted) {
-      // The live version already witnesses its own group; retain any other simultaneous evidence.
-      if (groups.length) groups = groups.filter((group) => !readGroupsOf(winner).includes(group));
+      // A surviving exact key can still witness that a missing sibling was a different call.
+      if (groups.length)
+        groups = groups.filter(
+          (group) => !readGroupsOf(winner, key).some((own) => covers(own, group)),
+        );
+      if (seenMs !== winner.observedAtMs && groups.length === 0) return;
       simultaneousRecords ??= new Map(winner.records.map((live) => [live.dedupeKey, live]));
       const live = simultaneousRecords.get(key);
       if (
         live &&
         canRetainUsageRecord(live) &&
-        (sameRecord(live, record) || recordIdentity(live) <= recordIdentity(record))
+        (seenMs !== winner.observedAtMs ||
+          sameRecord(live, record) ||
+          recordIdentity(live) <= recordIdentity(record))
       ) {
         if (groups.length === 0) return;
         record = live;
+        if (seenMs < winner.observedAtMs) {
+          seenMs = winner.observedAtMs;
+          sinceMs = seenMs;
+        }
       }
     }
     const held = retained.get(key);
-    if (held !== undefined && held.seenMs > seenMs) return;
-    sinceMs = Math.min(sinceMs, firstReadAfter(priorReads, seenMs, winner.observedAtMs));
-    if (held?.seenMs === seenMs) {
-      sinceMs = Math.min(sinceMs, held.sinceMs);
+    sinceMs = Math.min(sinceMs, readTime(firstReadAfter(priorReads, seenMs, winner.observedAtMs)));
+    if (held !== undefined) {
       if (held.readGroups?.length && !sameItems(held.readGroups, groups)) {
-        groups = [...new Set([...groups, ...held.readGroups])].sort();
+        const all = [...new Set([...groups, ...held.readGroups])].sort();
+        groups = all.filter(
+          (group) => !all.some((other) => other !== group && covers(other, group)),
+        );
       }
+      if (held.seenMs === seenMs) sinceMs = Math.min(sinceMs, held.sinceMs);
       if (
-        held.record === record ||
-        sameRecord(held.record, record) ||
-        recordIdentity(held.record) <= recordIdentity(record)
+        held.seenMs > seenMs ||
+        (held.seenMs === seenMs &&
+          (sameRecord(held.record, record) ||
+            recordIdentity(held.record) <= recordIdentity(record)))
       ) {
+        if (held.seenMs > seenMs) sinceMs = held.sinceMs;
+        seenMs = held.seenMs;
         record = held.record;
         original = held;
       }
@@ -360,7 +509,7 @@ export function carrySuperseded(
     for (const record of loser.records) {
       if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity);
     }
-    // Only a full re-read proves the tentative line was replaced rather than completed.
+    // A local full re-read proves replacement immediately. Peer tails wait for size evidence.
     if (read !== undefined && read.retainedPrefix === undefined) {
       for (const record of loser.tailRecords) {
         if (canRetainUsageRecord(record)) consider(record, loser.observedAtMs, Infinity);
@@ -373,15 +522,17 @@ export function carrySuperseded(
   if (
     sameItems(winner.superseded, superseded) &&
     sameItems(winner.priorReads, priorReads) &&
+    sameItems(winner.peerTails, peerTails) &&
     winner.expiredThroughMs === expiredThroughMs &&
     winner.otherProviderAtMs === otherProviderAtMs
   )
     return winner;
-  const { superseded: _old, priorReads: _times, ...entry } = winner;
+  const { superseded: _old, priorReads: _times, peerTails: _tails, ...entry } = winner;
   return {
     ...entry,
     ...(superseded.length ? { superseded } : {}),
     ...(priorReads.length ? { priorReads } : {}),
+    ...(peerTails.length ? { peerTails } : {}),
     ...(expiredThroughMs === undefined ? {} : { expiredThroughMs }),
     ...(otherProviderAtMs === undefined ? {} : { otherProviderAtMs }),
   };
@@ -455,7 +606,13 @@ interface SerializedFile {
   readonly p: UsageProviderKind;
   readonly r: readonly SerializedRecord[];
   readonly t: readonly SerializedRecord[];
-  readonly pr?: readonly number[];
+  readonly pr?: readonly PriorRead[];
+  readonly pt?: readonly (readonly [
+    seenMs: number,
+    size: number,
+    record: SerializedRecord,
+    groups?: readonly number[],
+  ])[];
   readonly ex?: number;
   readonly op?: number;
   readonly groups?: readonly string[];
@@ -533,6 +690,23 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     r: entry.records.map(serializeRecord),
     t: entry.tailRecords.map(serializeRecord),
     ...(entry.priorReads === undefined ? {} : { pr: entry.priorReads }),
+    ...(entry.peerTails === undefined
+      ? {}
+      : {
+          pt: entry.peerTails.map(
+            ({ record, seenMs, size, readGroups }) =>
+              [
+                seenMs,
+                size,
+                serializeRecord(record),
+                ...(readGroups === undefined
+                  ? ([] as const)
+                  : ([
+                      readGroups.map((group) => intern(groups, (groupIndex ??= new Map()), group)),
+                    ] as const)),
+              ] as const,
+          ),
+        }),
     ...(entry.expiredThroughMs === undefined ? {} : { ex: entry.expiredThroughMs }),
     ...(entry.otherProviderAtMs === undefined ? {} : { op: entry.otherProviderAtMs }),
     ...(entry.superseded === undefined
@@ -772,7 +946,11 @@ export function decodeScanCache(
     const groups = entry.groups ?? [];
     if (
       !isRecordArray(groups) ||
-      !groups.every((group) => typeof group === "string" && /^[\w-]{43}$/.test(group))
+      !groups.every(
+        (group) =>
+          typeof group === "string" &&
+          (/^[\w-]{43}$/.test(group) || groupMembers(group) !== undefined),
+      )
     )
       continue;
     const superseded: SupersededRecord[] = [];
@@ -813,14 +991,45 @@ export function decodeScanCache(
       priorReads !== undefined &&
       (!Array.isArray(priorReads) ||
         priorReads.some(
-          (time, i) =>
-            !Number.isFinite(time) ||
-            time >= observedAtMs ||
-            time <= (entry.ex ?? -Infinity) ||
-            (i > 0 && time <= priorReads[i - 1]!),
+          (read, i) =>
+            !isPriorRead(read) ||
+            readTime(read) >= observedAtMs ||
+            readTime(read) <= (entry.ex ?? -Infinity) ||
+            (i > 0 && readTime(read) <= readTime(priorReads[i - 1]!)),
         ))
     )
       continue;
+    const peerTails: PeerTail[] = [];
+    if (entry.pt !== undefined) {
+      if (!isRecordArray(entry.pt)) continue;
+      const valid = entry.pt.every((item) => {
+        if (!isRecordArray(item) || (item.length !== 3 && item.length !== 4)) return false;
+        const [seenMs, size, rawRecord, refs] = item;
+        if (
+          typeof seenMs !== "number" ||
+          !Number.isFinite(seenMs) ||
+          seenMs > observedAtMs ||
+          typeof size !== "number" ||
+          !Number.isSafeInteger(size) ||
+          size < 0 ||
+          (refs !== undefined &&
+            (!isRecordArray(refs) ||
+              !refs.every(
+                (index) => Number.isInteger(index) && index >= 0 && index < groups.length,
+              )))
+        )
+          return false;
+        const decoded = decodeRecords([rawRecord], provider);
+        if (decoded === null) return false;
+        const record = decoded[0];
+        const readGroups = refs?.map((index) => groups[index]!);
+        if (record !== undefined && canRetainUsageRecord(record)) {
+          peerTails.push({ record, seenMs, size, ...(readGroups?.length ? { readGroups } : {}) });
+        }
+        return true;
+      });
+      if (!valid) continue;
+    }
     if (
       [entry.ex, entry.op].some(
         (time) => time !== undefined && (!Number.isFinite(time) || time > observedAtMs),
@@ -830,6 +1039,7 @@ export function decodeScanCache(
     const decoded: CachedFile = {
       ...(superseded.length ? { superseded } : {}),
       ...(priorReads?.length ? { priorReads } : {}),
+      ...(peerTails.length ? { peerTails } : {}),
       ...(entry.ex === undefined ? {} : { expiredThroughMs: entry.ex }),
       ...(entry.op === undefined ? {} : { otherProviderAtMs: entry.op }),
       size: entry.s,
@@ -879,82 +1089,190 @@ function makeStateValidators(
 export const isRetained = (entry: CachedFile, retentionCutoffMs: number): boolean =>
   (entry.missingSinceMs ?? entry.mtimeMs) >= retentionCutoffMs;
 
+/** Each existing call can represent one compatible member of a group proved distinct in a source file. */
+function unmatchedCalls(
+  provider: UsageProviderKind,
+  calls: readonly KeyedUsageRecord[],
+  existing: readonly UsageRecord[],
+) {
+  const possible = makeUsageRetentionMatcher(provider, calls);
+  const slots = existing
+    .filter((record) => !canRetainUsageRecord(record) || possible.matches(record))
+    .map((record) => makeUsageRetentionMatcher(provider, [record]));
+  const occupied = new Map<number, KeyedUsageRecord>();
+  return calls.filter((candidate) => {
+    if (occupied.size === slots.length) return true;
+    const from = new Map<KeyedUsageRecord, number | undefined>([[candidate, undefined]]);
+    const via = new Map<number, KeyedUsageRecord>();
+    for (const call of from.keys()) {
+      for (const [slot, matcher] of slots.entries()) {
+        if (via.has(slot) || !matcher.matches(call)) continue;
+        via.set(slot, call);
+        const previous = occupied.get(slot);
+        if (previous !== undefined) {
+          from.set(previous, slot);
+          continue;
+        }
+        // Reassign earlier aliases along this path so a call with only one possible match gets it.
+        let next: number | undefined = slot;
+        while (next !== undefined) {
+          const matched: KeyedUsageRecord = via.get(next)!;
+          occupied.set(next, matched);
+          next = from.get(matched);
+        }
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
 /** A replaced version's usage counts from when a read found it gone, as a deleted file's does. */
 export const retainedSuperseded = (
   entry: CachedFile,
   retentionCutoffMs: number,
   provider: UsageProviderKind,
 ): readonly UsageRecord[] => {
-  if (entry.superseded === undefined || entry.provider !== provider) return [];
-  const candidates = entry.superseded.filter((item) => item.sinceMs >= retentionCutoffMs);
+  if (entry.provider !== provider) return [];
+  const candidates = [
+    ...(entry.superseded ?? []).filter((item) => item.sinceMs >= retentionCutoffMs),
+    ...provedPeerTails(entry, retentionCutoffMs),
+  ];
   if (candidates.length === 0) return [];
-  const matcher = makeUsageRetentionMatcher(provider, entry.records);
-  for (const record of entry.tailRecords) matcher.add(record);
-  const groups = new Map<string, { id: string; seenMs: number; records: UsageRecord[] }>();
-  for (const { record, seenMs, readGroups } of candidates) {
-    for (const witness of readGroups ?? [null]) {
-      const id = JSON.stringify([seenMs, witness, witness === null ? record.dedupeKey : null]);
-      const group = groups.get(id);
-      if (group) group.records.push(record);
-      else groups.set(id, { id, seenMs, records: [record] });
+  const accepted = [...entry.records, ...entry.tailRecords];
+  const acceptedKeys = new Set(accepted.map((record) => record.dedupeKey));
+  const matcher = makeUsageRetentionMatcher(provider, accepted);
+  const groups = new Map<
+    string,
+    { id: string; seenMs: number; members: Set<string>; records: Map<string, SupersededRecord> }
+  >();
+  for (const item of candidates) {
+    const key = item.record.dedupeKey;
+    for (const witness of item.readGroups ?? [null]) {
+      const id = witness?.startsWith("[")
+        ? witness
+        : JSON.stringify([item.seenMs, witness, witness === null ? key : null]);
+      let group = groups.get(id);
+      if (group === undefined) {
+        group = {
+          id,
+          seenMs: item.seenMs,
+          members: new Set(witness ? groupMembers(witness) : undefined),
+          records: new Map(),
+        };
+        groups.set(id, group);
+      }
+      group.seenMs = Math.max(group.seenMs, item.seenMs);
+      group.members.add(key);
+      const old = group.records.get(key);
+      if (!old || old.seenMs < item.seenMs) group.records.set(key, item);
     }
   }
   const ordered = [...groups.values()].sort(
-    (a, b) => b.seenMs - a.seenMs || b.records.length - a.records.length || (a.id < b.id ? -1 : 1),
+    (a, b) => b.seenMs - a.seenMs || b.records.size - a.records.size || (a.id < b.id ? -1 : 1),
   );
   const kept: UsageRecord[] = [];
   for (const group of ordered) {
-    const start = kept.length;
-    for (const record of group.records) {
-      if (!matcher.matches(record)) kept.push(record);
+    const waiting = [...group.records.values()]
+      .map((item) => item.record)
+      .filter((record) => !acceptedKeys.has(record.dedupeKey));
+    if (!waiting.length) continue;
+    const distinct = waiting.filter((record) => !matcher.matches(record));
+    const ambiguous = waiting.filter((record) => matcher.matches(record));
+    if (ambiguous.length && group.members.size > 1) {
+      const otherCalls = accepted.filter(
+        (record) => record.dedupeKey === null || !group.members.has(record.dedupeKey),
+      );
+      for (const unmatched of unmatchedCalls(provider, ambiguous, otherCalls))
+        distinct.push(unmatched);
     }
-    // A simultaneous peer may have assigned new identities; only a single source version proves coexistence.
-    for (let i = start; i < kept.length; i++) matcher.add(kept[i]!);
+    for (const record of distinct) {
+      accepted.push(record);
+      acceptedKeys.add(record.dedupeKey);
+      matcher.add(record);
+      kept.push(record);
+    }
   }
   return kept;
 };
 
 export const hasRetainedSuperseded = (entry: CachedFile, retentionCutoffMs: number): boolean =>
-  entry.superseded?.some(({ sinceMs }) => sinceMs >= retentionCutoffMs) ?? false;
+  (entry.superseded?.some(({ sinceMs }) => sinceMs >= retentionCutoffMs) ?? false) ||
+  (entry.peerTails?.some(
+    (tail) => (provedTailReplacement(entry, tail) ?? -Infinity) >= retentionCutoffMs,
+  ) ??
+    false);
+
+export function afterEvictedRead(entry: CachedFile, throughMs: number): CachedFile | undefined {
+  if (entry.observedAtMs <= throughMs) return undefined;
+  const superseded = entry.superseded?.filter(({ seenMs }) => seenMs > throughMs) ?? [];
+  const peerTails = entry.peerTails?.filter(({ seenMs }) => seenMs > throughMs) ?? [];
+  const priorReads = entry.priorReads?.filter((read) => readTime(read) > throughMs) ?? [];
+  if (
+    sameItems(entry.superseded, superseded) &&
+    sameItems(entry.peerTails, peerTails) &&
+    sameItems(entry.priorReads, priorReads)
+  )
+    return entry;
+  const { superseded: _old, peerTails: _tails, priorReads: _reads, ...rest } = entry;
+  return {
+    ...rest,
+    ...(superseded.length ? { superseded } : {}),
+    ...(peerTails.length ? { peerTails } : {}),
+    ...(priorReads.length ? { priorReads } : {}),
+  };
+}
 
 export function pruneSuperseded(
   entry: CachedFile,
   nowMs: number,
   retentionCutoffMs: number,
 ): CachedFile {
-  if (entry.priorReads === undefined && entry.superseded === undefined) return entry;
+  if (
+    entry.priorReads === undefined &&
+    entry.superseded === undefined &&
+    entry.peerTails === undefined
+  )
+    return entry;
   const reads = entry.priorReads ?? [];
   const retained = entry.superseded ?? [];
+  const tails = entry.peerTails ?? [];
   if (
-    (reads[0] ?? entry.observedAtMs) >= retentionCutoffMs &&
+    readTime(reads[0] ?? entry.observedAtMs) >= retentionCutoffMs &&
     retained.every(({ sinceMs }) => sinceMs >= retentionCutoffMs && sinceMs <= nowMs)
   )
     return entry;
   let floor = entry.expiredThroughMs ?? -Infinity;
-  for (const time of reads) {
+  for (const read of reads) {
+    const time = readTime(read);
     if (time >= retentionCutoffMs) break;
     floor = Math.max(floor, time);
   }
   if (entry.observedAtMs < retentionCutoffMs) floor = entry.observedAtMs;
   for (const item of retained) {
     if (item.sinceMs < retentionCutoffMs)
-      floor = Math.max(floor, firstReadAfter(reads, item.seenMs, entry.observedAtMs));
+      floor = Math.max(floor, readTime(firstReadAfter(reads, item.seenMs, entry.observedAtMs)));
   }
-  const priorReads = reads.filter((time) => time > floor);
+  const priorReads = reads.filter((read) => readTime(read) > floor);
+  const peerTails = tails.filter(
+    ({ seenMs }) => readTime(firstReadAfter(reads, seenMs, entry.observedAtMs)) > floor,
+  );
   const superseded = retained
     .filter((item) => item.sinceMs >= retentionCutoffMs)
     .map((item) => (item.sinceMs <= nowMs ? item : { ...item, sinceMs: nowMs }));
   if (
     sameItems(reads, priorReads) &&
+    sameItems(tails, peerTails) &&
     sameItems(retained, superseded) &&
     floor === (entry.expiredThroughMs ?? -Infinity)
   )
     return entry;
-  const { superseded: _old, priorReads: _times, ...rest } = entry;
+  const { superseded: _old, priorReads: _times, peerTails: _tails, ...rest } = entry;
   return {
     ...rest,
     ...(superseded.length ? { superseded } : {}),
     ...(priorReads.length ? { priorReads } : {}),
+    ...(peerTails.length ? { peerTails } : {}),
     ...(Number.isFinite(floor) ? { expiredThroughMs: floor } : {}),
   };
 }

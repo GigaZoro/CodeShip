@@ -3987,6 +3987,12 @@ describe("UsageService", () => {
         assert.strictEqual(yield* outputTokensAfterRestart, 24);
         yield* TestClock.setTime(expiresAfter + 1);
         assert.strictEqual(yield* outputTokensAfterRestart, 12);
+
+        const expired = yield* onlySnapshot(stateDir);
+        assert.isEmpty(expired.document.files[transcript]?.r ?? []);
+        yield* seedSnapshot(stateDir, original.raw);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
       }).pipe(
         Effect.provide(layerService({ prefix: "usage-cache-restored-copy", home, settings })),
       );

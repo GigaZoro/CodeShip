@@ -576,6 +576,65 @@ describe("scan cache merge", () => {
     },
   );
 
+  it.each(["muse", "claude"] as const)(
+    "reserves a surviving %s call before matching its co-observed sibling",
+    (provider) => {
+      const call = (key: string) =>
+        record({
+          provider,
+          dedupeKey: provider === "muse" ? JSON.stringify(["muse", key]) : key,
+          totals: { ...record().totals, outputTokens: 5 },
+        });
+      const first = call("a:");
+      const second = call(provider === "muse" ? "b:" : ":request");
+      const both = row({ provider, observedAtMs: 10, records: [first, second] });
+      const surviving = row({ provider, observedAtMs: 20, records: [first] });
+      const empty = row({ provider, observedAtMs: 30, records: [] });
+      const tokens = (entry: CachedFile, cutoff = 0) =>
+        [...entry.records, ...retainedSuperseded(entry, cutoff, provider)].reduce(
+          (sum, record) => sum + record.totals.outputTokens,
+          0,
+        );
+      expect(tokens(mergeScanEntry(both, surviving))).toBe(10);
+      const renamed = row({
+        provider,
+        observedAtMs: 20,
+        records: [call(provider === "muse" ? "renamed" : "a:request")],
+      });
+      expect(tokens(mergeScanEntry(both, renamed))).toBe(10);
+      const elsewhere = (key: string) => ({
+        ...call(key),
+        sessionId: "elsewhere",
+        timestampMs: 100,
+      });
+      const twoSessions = {
+        ...both,
+        records: [first, second, elsewhere("z:"), elsewhere(":other")],
+      };
+      const mixed = mergeScanEntry(twoSessions, {
+        ...surviving,
+        records: [first, elsewhere("z:other")],
+      });
+      expect(tokens(mixed)).toBe(20);
+      expect(retainedSuperseded(mixed, 0, provider)).toContainEqual(second);
+      const merged = [both, surviving, empty].reduce(mergeScanEntry);
+      expect(tokens(merged)).toBe(10);
+      expect(tokens(merged, 21)).toBe(5);
+      expect(tokens(merged, 31)).toBe(0);
+      for (const order of [
+        [empty, both, surviving],
+        [surviving, empty, both],
+        [empty, surviving, both],
+      ]) {
+        const restored = decodeScanCache(
+          JSON.parse(encode(new Map([["/a", order.reduce(mergeScanEntry)]]))),
+          TEST_FORMAT_MAP,
+        ).get("/a");
+        expect(restored).toEqual(merged);
+      }
+    },
+  );
+
   it("discards older identities when a different provider read the same path", () => {
     const before = row({ observedAtMs: 10 });
     const switched = row({ observedAtMs: 20, provider: "codex", records: [] });
@@ -605,6 +664,32 @@ describe("scan cache merge", () => {
       liveKeys,
     });
     expect(retainedSuperseded(corrected, 3000, "claude")).toEqual(previous.tailRecords);
+  });
+
+  it("keeps peer EOF usage only when the next observed size proves a replacement", () => {
+    const previous = row({ size: 240, records: [], tailRecords: [record()] });
+    const reload = (entry: CachedFile) =>
+      decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
+    const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
+    const later = row({ observedAtMs: 4000, size: 300, records: [] });
+    for (const size of [0, 100, 240, 300]) {
+      const replacement = row({ observedAtMs: 3000, size, records: [] });
+      const expected = size < previous.size ? previous.tailRecords : [];
+      for (const order of [
+        [previous, replacement, later],
+        [previous, later, replacement],
+        [replacement, later, previous],
+      ]) {
+        const entry = order.reduce(merge);
+        expect(retainedSuperseded(entry, 3000, "claude")).toEqual(expected);
+        expect(retainedSuperseded(entry, 3001, "claude")).toEqual([]);
+      }
+    }
+    const completion = { ...later, observedAtMs: 2500 };
+    const truncation = { ...later, size: 0 };
+    expect(
+      retainedSuperseded([previous, truncation, completion].reduce(merge), 0, "claude"),
+    ).toEqual([]);
   });
 
   it("keeps the held row when nothing tells two rows apart", () => {
