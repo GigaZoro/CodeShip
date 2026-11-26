@@ -21,7 +21,12 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  holdProcessGroup,
+  isFifoHolderHeld,
+  releaseFifoHolder,
+  signalProcessGroup,
+} from "@t3tools/shared/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -101,6 +106,7 @@ const LAUNCH_STARTED = "launch-started";
 const LAUNCH_CANCELLED = "launch-cancelled";
 // PowerShell startup and WMI can each be slow on a loaded Windows host.
 const WINDOWS_LAUNCH_TIMEOUT = Duration.minutes(2);
+const HOLDER_FILE = "group-holder";
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
 // Read double the diagnostic tail so dense ANSI sequences do not crowd out final lines.
 const RESULT_TAIL_READ_BYTES = 8 * 1024;
@@ -728,7 +734,6 @@ const make = Effect.gen(function* () {
   const watched = new Map<string, CommandRunRow>();
   const launching = new Set<string>();
   const checking = new Set<string>();
-  const identityObservations = new Map<string, number>();
   const stopping = new Set<string>();
   const pendingStops = new Set<string>();
   const verified = new Map<string, { readonly key: string; readonly at: number }>();
@@ -790,10 +795,19 @@ const make = Effect.gen(function* () {
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
         Effect.provideService(HostProcess.Platform, platform),
         Effect.provideService(WindowsJobHost, windowsJobHost),
+        Effect.provideService(FileSystem.FileSystem, fs),
       ),
     );
-  const identityOf = Effect.fn("CommandRunner.identityOf")(function* (pid: number) {
-    if (platform === "linux") {
+  /**
+   * Linux reads the start in ticks since boot, which a step of the wall clock cannot move. A
+   * `recorded` identity that holds a wall-clock start, as records from before boot identities do,
+   * is read on that clock.
+   */
+  const identityOf = Effect.fn("CommandRunner.identityOf")(function* (
+    pid: number,
+    recorded: string | null = null,
+  ) {
+    if (platform === "linux" && identityTime(recorded) === undefined) {
       const read = yield* Effect.all([
         fs.readFileString(`/proc/${pid}/stat`),
         fs.readFileString("/proc/sys/kernel/random/boot_id"),
@@ -820,6 +834,8 @@ const make = Effect.gen(function* () {
   const logPathOf = (row: Pick<CommandRunRow, "directory">) => path.join(row.directory, LOG_FILE);
   const statusPathOf = (row: Pick<CommandRunRow, "directory">) =>
     path.join(row.directory, STATUS_FILE);
+  const holderPathOf = (row: Pick<CommandRunRow, "directory">) =>
+    path.join(row.directory, HOLDER_FILE);
 
   /** A file the wrapper wrote, with when it wrote it. */
   const readWrapperFile = (file: string) =>
@@ -869,11 +885,28 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /**
-   * Nothing a command started outlives a reboot, after which its pid can name anything. An exact
-   * identity answers this without the wall clock, which can step after the command started.
-   */
-  const rebootedSince = Effect.fn("CommandRunner.rebootedSince")(function* (
+  /** Whether its holder runs, which keeps the wrapper's pid from changing hands too. */
+  const isHeld = (row: Pick<CommandRunRow, "task_id" | "directory">) =>
+    windows
+      ? Effect.succeed(false)
+      : Effect.try(() => isFifoHolderHeld(holderPathOf(row))).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("command-runner.holder-check-failed", {
+              taskId: row.task_id,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+
+  /** Lets the group's number go once nothing will signal the group again. */
+  const releaseHolder = (directory: string) =>
+    windows
+      ? Effect.void
+      : Effect.try(() => releaseFifoHolder(path.join(directory, HOLDER_FILE))).pipe(
+          Effect.ignore({ log: true }),
+        );
+
+  const rebootedWithoutHolder = Effect.fn("CommandRunner.rebootedWithoutHolder")(function* (
     row: Pick<CommandRunRow, "process_identity" | "windows_created_at" | "started_at">,
   ) {
     if (row.process_identity?.startsWith("boot:")) {
@@ -884,6 +917,21 @@ const make = Effect.gen(function* () {
     if (row.windows_created_at !== null) return false;
     const now = yield* DateTime.now;
     return DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 > Date.parse(row.started_at);
+  });
+
+  /**
+   * Nothing a command started outlives a reboot, after which its pid can name anything. A holder
+   * that still runs proves there was none, whatever step the wall clock took since; otherwise an
+   * exact identity answers this without the wall clock.
+   */
+  const rebootedSince = Effect.fn("CommandRunner.rebootedSince")(function* (
+    row: Pick<
+      CommandRunRow,
+      "task_id" | "directory" | "process_identity" | "windows_created_at" | "started_at"
+    >,
+  ) {
+    if (yield* isHeld(row)) return false;
+    return yield* rebootedWithoutHolder(row);
   });
 
   /** An older Windows row whose live process matched its recorded millisecond keeps its FILETIME. */
@@ -919,10 +967,22 @@ const make = Effect.gen(function* () {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
     if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
-    if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
+    const held = yield* isHeld(row);
+    if (!held && (yield* rebootedWithoutHolder(row)))
+      return { lost_reason: "rebooted", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (probe.state === "unknown") return "unknown";
+    if (held) {
+      // No process can take the pid while the holder keeps its group, whatever a start read says.
+      if (row.process_identity !== null) return row.process_identity;
+      const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
+      return (
+        (named?.value === row.pid ? named.processIdentity : undefined) ??
+        (yield* identityOf(row.pid)) ??
+        "unknown"
+      );
+    }
     if (windows) {
       const observed = yield* windowsIdentityOf(row.pid);
       if (observed === undefined) return "unknown";
@@ -1047,29 +1107,40 @@ const make = Effect.gen(function* () {
   );
 
   const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (row: CommandRunRow) {
-    identityObservations.set(row.task_id, (identityObservations.get(row.task_id) ?? 0) + 1);
     return yield* readIdentity(row).pipe(
       Effect.tap((identity) =>
         typeof identity !== "string" && (forbidsSignals(identity) || isUnproven(identity))
           ? retainOwnershipLoss(row, identity)
           : Effect.void,
       ),
-      Effect.ensuring(
-        Effect.sync(() => {
-          const remaining = identityObservations.get(row.task_id)! - 1;
-          if (remaining === 0) identityObservations.delete(row.task_id);
-          else identityObservations.set(row.task_id, remaining);
-        }),
-      ),
     );
   });
 
-  /** SIGTERM to the whole group; escalation needs a fresh ownership check and confirmed absence. */
+  /**
+   * Whether the POSIX group's number is still the command's: while its holder or its verified
+   * wrapper runs. Once neither does, an unrelated group can take the number, which `kill(-pid, 0)`
+   * would count too.
+   */
+  const ownsGroup = Effect.fn("CommandRunner.ownsGroup")(function* (row: CommandRunRow) {
+    if (forbidsSignals(row)) return "not-ours" as const;
+    if (yield* isHeld(row)) return "owned" as const;
+    const identity = yield* isSameProcess(row);
+    if (identity === "unknown") return "unknown" as const;
+    if (typeof identity !== "string") return "not-ours" as const;
+    if (forbidsSignals(watched.get(row.task_id) ?? row)) return "not-ours" as const;
+    return "owned" as const;
+  });
+
+  /**
+   * SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period, each
+   * only while the group is still the command's.
+   */
   const killGroup = Effect.fn("CommandRunner.killGroup")(function* (row: CommandRunRow) {
     const signal = (name: NodeJS.Signals | 0) =>
       Effect.try({
         try: () => {
           try {
+            // oxlint-disable-next-line t3code/no-raw-process-group-signal -- ownsGroup just found its holder or wrapper keeping the number
             signalProcessGroup(row.pid!, name);
             return true;
           } catch (cause) {
@@ -1091,26 +1162,42 @@ const make = Effect.gen(function* () {
       });
     const current = watched.get(row.task_id);
     if (current === undefined || identityKey(current) !== identityKey(row)) return false;
-    if (forbidsSignals(current)) return true;
+    const initial = yield* ownsGroup(current);
+    if (initial === "unknown") return false;
+    if (initial === "not-ours") {
+      // Another program's group may have its number by now, so what the command left runs on.
+      yield* Effect.logWarning("command-runner.group-not-ours", {
+        taskId: row.task_id,
+        pid: row.pid,
+      });
+      return true;
+    }
     if (!(yield* signal("SIGTERM"))) return true;
-    const gone = yield* signal(0).pipe(
-      Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced(Duration.millis(200)) }),
+    const poll = Effect.gen(function* () {
+      const latest = watched.get(row.task_id);
+      if (latest === undefined || identityKey(latest) !== identityKey(row)) return "retry" as const;
+      const ownership = yield* ownsGroup(latest);
+      if (ownership === "unknown") return "retry" as const;
+      if (ownership === "not-ours") return "done" as const;
+      return (yield* signal(0)) ? ("alive" as const) : ("done" as const);
+    });
+    const settled = yield* poll.pipe(
+      Effect.repeat({
+        while: (state) => state === "alive",
+        schedule: Schedule.spaced(Duration.millis(200)),
+      }),
       Effect.timeoutOption(KILL_GRACE),
     );
-    if (Option.isSome(gone)) return true;
+    if (Option.isSome(settled)) return settled.value === "done";
     const latest = watched.get(row.task_id);
     if (latest === undefined || identityKey(latest) !== identityKey(row)) return false;
-    if (forbidsSignals(latest)) return true;
-    const identity = yield* isSameProcess(latest);
-    if (identity === "unknown") return false;
-    if (typeof identity !== "string" && forbidsSignals(identity)) return true;
-    if (
-      typeof identity !== "string" &&
-      (row.unit !== null || identityObservations.has(row.task_id))
-    )
-      return false;
-    if (forbidsSignals(watched.get(row.task_id) ?? latest)) return true;
+    const ownership = yield* ownsGroup(latest);
+    if (ownership === "unknown") return false;
+    if (ownership === "not-ours") return true;
     if (!(yield* signal("SIGKILL"))) return true;
+    const afterKill = yield* ownsGroup(latest);
+    if (afterKill === "unknown") return false;
+    if (afterKill === "not-ours") return true;
     return !(yield* signal(0));
   });
 
@@ -1166,21 +1253,7 @@ const make = Effect.gen(function* () {
     const pid = row.pid;
     if (pid !== null) {
       if (!windows) {
-        const same = yield* isSameProcess(row);
-        if (same === "unknown") return false;
-        if (
-          typeof same !== "string" &&
-          (same.lost_reason === "pid-reused" || same.lost_reason === "rebooted")
-        ) {
-          return !hasScope;
-        }
-        // An in-flight observation may still prove that this absent leader was a replacement.
-        if (typeof same !== "string" && identityObservations.has(row.task_id)) return false;
-        // Without a unit, a group can outlive its leader. Reuse followed by another leader's exit
-        // between probes remains unobservable; a recorded replacement must never reach this signal.
-        if (typeof same === "string" || (!hasScope && same.lost_reason === "gone")) {
-          if (!(yield* killGroup(row))) return false;
-        }
+        if (!(yield* killGroup(row))) return false;
       } else {
         // A legacy row has no job. A stop that left processes starts from them: their parents,
         // the root among them, may have ended, and the host cannot trace an orphan.
@@ -1245,10 +1318,11 @@ const make = Effect.gen(function* () {
     }
   };
 
-  /** Records a watched command's new state. */
+  /** Records a watched command's new state. Its group is never signalled once its end is delivered. */
   const settle = Effect.fn("CommandRunner.settle")(function* (row: CommandRunRow) {
     yield* writeRow(row);
     remember(row);
+    if (row.delivered_at !== null) yield* releaseHolder(row.directory);
   });
 
   const readTail = (row: CommandRunRow, maxChars: number = RESULT_FAILURE_TAIL_CHARS) =>
@@ -2234,7 +2308,7 @@ const make = Effect.gen(function* () {
     }
     if (!windows) {
       const { env, prefix } = posixLaunchEnvironment(hostCommandEnv, commandEnv);
-      const scoped = yield* agentScope.wrap({
+      const wrapper = {
         command: "/bin/sh",
         args: [
           "-c",
@@ -2250,6 +2324,15 @@ const make = Effect.gen(function* () {
           "-c",
           command,
         ],
+      };
+      // Its holder keeps the group's number, across restarts too, until the end is delivered.
+      const held =
+        holdProcessGroup(
+          { ...wrapper, cwd, env },
+          { fd: 3, fifo: path.join(directory, HOLDER_FILE) },
+        ) ?? wrapper;
+      const scoped = yield* agentScope.wrap({
+        ...held,
         name: "command",
         env,
         survivesRestart: true,
@@ -2991,7 +3074,7 @@ const make = Effect.gen(function* () {
         return { outcome: "unresolved" };
       }
       const pid = namedPid;
-      let identity = named.processIdentity;
+      let identity: string | null | undefined = named.processIdentity;
       if (identity === undefined) {
         if ((yield* readExitStatus(row)) !== undefined)
           return { outcome: "started", row: { ...row, pid, process_identity: null } };
@@ -3000,23 +3083,31 @@ const make = Effect.gen(function* () {
         const probe = probeProcess(pid);
         if (probe.state === "unknown") return { outcome: "unresolved" };
         if (probe.state === "alive") {
-          const startedAt = yield* startedAtOf(pid);
-          if (startedAt === undefined) return { outcome: "unresolved" };
-          const precision = windows ? 0 : 1_000;
-          if (
-            startedAt < Date.parse(row.started_at) - precision ||
-            startedAt > writtenAt + precision
-          )
-            return ended("pid-reused", pid);
-          // Its identity check then proves the process from the recorded millisecond or reports
-          // that nothing it holds can.
-          if (windows)
-            return {
-              outcome: "started",
-              row: { ...row, pid, process_identity: pid === row.pid ? row.process_identity : null },
-            };
-          identity = platform === "linux" ? yield* identityOf(pid) : timeIdentity(startedAt);
-          if (identity === undefined) return { outcome: "unresolved" };
+          if (!windows && (yield* isHeld(row))) {
+            identity = (yield* identityOf(pid)) ?? null;
+          } else {
+            const startedAt = yield* startedAtOf(pid);
+            if (startedAt === undefined) return { outcome: "unresolved" };
+            const precision = windows ? 0 : 1_000;
+            if (
+              startedAt < Date.parse(row.started_at) - precision ||
+              startedAt > writtenAt + precision
+            )
+              return ended("pid-reused", pid);
+            // Its identity check then proves the process from the recorded millisecond or reports
+            // that nothing it holds can.
+            if (windows)
+              return {
+                outcome: "started",
+                row: {
+                  ...row,
+                  pid,
+                  process_identity: pid === row.pid ? row.process_identity : null,
+                },
+              };
+            identity = platform === "linux" ? yield* identityOf(pid) : timeIdentity(startedAt);
+            if (identity === undefined) return { outcome: "unresolved" };
+          }
         } else return ended("gone", pid, probe.code);
       }
       return {
@@ -3124,12 +3215,11 @@ const make = Effect.gen(function* () {
       WHERE delivered_at IS NOT NULL AND delivered_at < ${cutoff}
     `;
     yield* Effect.forEach(old, (row) =>
-      fs
-        .remove(row.directory, { recursive: true, force: true })
-        .pipe(
-          Effect.andThen(sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`),
-          Effect.ignore({ log: true }),
-        ),
+      releaseHolder(row.directory).pipe(
+        Effect.andThen(fs.remove(row.directory, { recursive: true, force: true })),
+        Effect.andThen(sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`),
+        Effect.ignore({ log: true }),
+      ),
     );
     if (old.length > 0) {
       // Under the lock, so a log write that read the removed records is followed by another.
@@ -3159,6 +3249,7 @@ const make = Effect.gen(function* () {
           const info = yield* fs.stat(folder);
           const modified = Option.getOrUndefined(info.mtime)?.getTime();
           if (modified !== undefined && modified < cutoffMs) {
+            yield* releaseHolder(folder);
             yield* fs.remove(folder, { recursive: true, force: true });
           }
         }).pipe(Effect.ignore({ log: true })),

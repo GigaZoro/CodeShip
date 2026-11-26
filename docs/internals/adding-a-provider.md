@@ -107,6 +107,15 @@ produce catches them.
 - **A failed or stopped turn leaves nothing open.** Settle the turn's tool calls, subagents, and
   pending approvals and questions. Each terminal path needs its own replay: completion, Stop,
   provider failure, and process exit.
+- **A process group signalled after its leader exited.** On macOS and Linux an emptied group's
+  number can go to an unrelated program's group, and `kill(-pid, 0)` counts that group too.
+  Start a process through the server's `ChildProcessSpawner`, which holds each detached group
+  until its scope closes, or through `holdProcessGroup` and `ownProcessGroup` in
+  [`processGroup.ts`](../../packages/shared/src/processGroup.ts), whose holder keeps the number
+  reserved until the last signal. The holder runs in the leader's session but outside its process
+  tree, so a provider that stops a tree walks parent links, never a session; a group that must stay
+  ours across a server restart is held through `HoldThroughFifo`, and a later server stops it only
+  through `stopFifoHolderGroup`, which has the holder signal its group.
 - **Usage limits are not generic failures.** Classify quota and rate-limit errors as `usage_limit`
   with a reset time when the provider gives one, so the thread shows Limited and can resume.
 - **Paths and environment.** Test a symlinked workspace, such as macOS `/tmp`; an agent that

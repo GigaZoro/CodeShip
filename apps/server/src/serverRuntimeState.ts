@@ -177,14 +177,50 @@ export const readWindowsProcessNaming = Effect.fn("serverRuntimeState.readWindow
   },
 );
 
+/** Linux counts a process's start in USER_HZ ticks since boot, 100 a second wherever Node runs. */
+const LINUX_TICKS_PER_SECOND = 100;
+
+/** From /proc, as ps would read it, so a host without procps still tells processes apart. */
+const readLinuxProcessStartedAt = Effect.fn("serverRuntimeState.readLinuxProcessStartedAt")(
+  function* (pid: number) {
+    const fs = yield* FileSystem.FileSystem;
+    const files = yield* Effect.all([
+      fs.readFileString(`/proc/${pid}/stat`),
+      fs.readFileString("/proc/stat"),
+    ]).pipe(
+      Effect.match({
+        onSuccess: (value) => ({ _tag: "ok" as const, value }),
+        onFailure: (cause) =>
+          cause.reason._tag === "NotFound"
+            ? { _tag: "not-found" as const }
+            : { _tag: "error" as const },
+      }),
+    );
+    if (files._tag !== "ok") return files._tag;
+    const [stat, system] = files.value;
+    // The command name can hold spaces and parentheses; starttime is the 20th field after it.
+    const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    const bootedAt = /^btime (\d+)$/mu.exec(system)?.[1];
+    if (ticks === undefined || !/^\d+$/u.test(ticks) || bootedAt === undefined)
+      return "error" as const;
+    return Number(bootedAt) * 1_000 + (Number(ticks) * 1_000) / LINUX_TICKS_PER_SECOND;
+  },
+);
+
 /** Millisecond timestamps support runtime diagnostics; Windows stop ownership uses full FILETIME. */
 export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessStartedAt")(function* (
   pid: number,
   timeout: Duration.Input = Duration.seconds(2),
 ) {
-  if ((yield* HostProcess.Platform) === "win32") {
+  const platform = yield* HostProcess.Platform;
+  if (platform === "win32") {
     const identity = yield* readWindowsProcessIdentity(pid, timeout);
     return identity === undefined ? undefined : windowsCreationTimeMillis(identity);
+  }
+  if (platform === "linux") {
+    const startedAt = yield* readLinuxProcessStartedAt(pid);
+    if (typeof startedAt === "number") return startedAt;
+    if (startedAt === "error") return undefined;
   }
   const runner = yield* ProcessRunner.ProcessRunner;
   const result = yield* runner

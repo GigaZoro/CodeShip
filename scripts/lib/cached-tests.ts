@@ -18,9 +18,14 @@ const vitePlusTestDefaults = {
 // working directory. These suites rely on native shells, job control, or exec lookup.
 const darwinNativeProcessTests = [
   "apps/server/src/cli/triage.test.ts",
+  "apps/server/src/commandRunner/CommandRunner.test.ts",
+  "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts",
   "apps/server/src/preview/PortScanner.test.ts",
   "apps/server/src/process/WorkerProcessSpawner.test.ts",
   "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+  "apps/server/src/server.test.ts",
+  "packages/provider-opencode/src/server/OpenCodeServerLedger.test.ts",
+  "packages/shared/src/processGroup.test.ts",
   "scripts/release-desktop-workflow.test.ts",
 ];
 

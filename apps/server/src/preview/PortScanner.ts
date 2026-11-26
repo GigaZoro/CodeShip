@@ -6,7 +6,7 @@ import {
   type DiscoveredLocalServer,
   type PreviewStopLocalServerInput,
 } from "@t3tools/contracts";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalProcessGroup } from "@t3tools/shared/processGroup";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isLoopbackHost, LSOF_LOCAL_HOST_TOKENS } from "@t3tools/shared/preview";
 import * as Cause from "effect/Cause";
@@ -1106,6 +1106,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
     const signalGroup = (signal: "SIGTERM" | "SIGKILL") =>
       Effect.suspend(() => {
         try {
+          // oxlint-disable-next-line t3code/no-raw-process-group-signal -- not our spawn: the process table just listed it in this group
           signalProcessGroup(group, signal);
           return Effect.succeed(true);
         } catch (cause) {

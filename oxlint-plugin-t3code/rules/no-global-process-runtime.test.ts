@@ -53,6 +53,16 @@ describe("t3code/no-global-process-runtime", () => {
   );
 
   rule.invalid(
+    "reports process report reads",
+    `
+      export const header = process.report.getReport().header;
+    `,
+    (output) => {
+      assert.match(output, /Use HostProcess\.LinuxLibc/);
+    },
+  );
+
+  rule.invalid(
     "reports globalThis process platform reads",
     `
       export const terminalName = globalThis.process.platform === "win32" ? "xterm-color" : "xterm-256color";

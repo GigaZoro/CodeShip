@@ -460,11 +460,15 @@ own `ps` identity before taking the launch gate; legacy PID-only records require
 within the recorded launch and PID-file bounds. Persisted PID replacement or reboot evidence
 forbids further PID or process-group signals.
 A systemd unit owns its cleanup even after the leader exits; a failed scope with no processes left
-counts as stopped. Without a unit, as on macOS,
-cleanup may signal the surviving group only when no replacement has been observed. One window
-remains unobservable: the whole original group ends, a replacement leader reuses its PID, and
-that leader exits while its children live, all between two probes. Neither platform treats
-an I/O failure as a missing status file or a delay as proof that a launch cannot execute.
+counts as stopped. On POSIX hosts that can hold a group (with bash, and a first process that is an
+init known to reap orphans), a holder outside that group, reading a FIFO in the command's state
+folder, keeps the group's number from launch until the end is delivered, across restarts too. Before
+each signal the runner checks that the holder runs, or the wrapper under the identity recorded for
+it; once neither does it signals no group, since the number may be another's, and what the command
+started runs on unless it ran in an agent scope unit, whose stop ends it without a group signal. A
+running holder also proves the machine did not restart since launch, whatever step the wall clock
+took. Neither platform treats an I/O failure as a missing status file or a delay as proof that a
+launch cannot execute.
 
 Output goes to a capped log and exit status is published by atomic rename. The Windows
 command has a separate console so its Ctrl+C or console close cannot end the wrapper first.

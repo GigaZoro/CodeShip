@@ -44,7 +44,7 @@ import {
   withoutWindowsTreeEnding,
 } from "@t3tools/shared/windowsProcessTree";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalSpawnedGroup } from "@t3tools/shared/processGroup";
 import { redactProviderOutput } from "@t3tools/provider-core/server/providerOutput";
 import { appendAcpStderrTail } from "./stderr.ts";
 import {
@@ -1500,21 +1500,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   }
 
   const signalOwnedProcessGroup = (signal: NodeJS.Signals) =>
-    Effect.try({
-      try: () => {
-        signalProcessGroup(Number(child.pid), signal);
-        return true;
-      },
-      catch: (cause) =>
-        new AcpProcessGroupTerminationError({
-          cause,
-          detail: `Failed to signal ACP process group ${child.pid} with ${signal}`,
-        }),
-    }).pipe(
-      Effect.catch((error) => {
-        const cause = error.cause as NodeJS.ErrnoException | undefined;
-        return cause?.code === "ESRCH" ? Effect.succeed(false) : Effect.fail(error);
-      }),
+    signalSpawnedGroup(child, signal).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AcpProcessGroupTerminationError({
+            cause,
+            detail: `Failed to signal ACP process group ${child.pid} with ${signal}`,
+          }),
+      ),
     );
   const stopChildTree = stopWindowsTree.pipe(
     Effect.mapError(

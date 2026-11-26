@@ -198,7 +198,7 @@ import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { holdProcessGroup } from "@t3tools/shared/processGroup";
 import {
   claudeSignedOutMessage,
   ClaudeTermsReviewRequiredError,
@@ -401,24 +401,36 @@ const CLAUDE_TOOL_HEARTBEAT_INTERVAL_MS = 30_000;
 // The SDK's close gives the CLI this long to exit once its input ends before it escalates.
 const CLAUDE_CLOSE_GRACE = "2 seconds";
 
+// The pipe whose EOF tells the process keeping the CLI's group number to stop the group.
+const CLAUDE_STOP_FD = 3;
+// How long the CLI's group has after SIGTERM to end before SIGKILL.
+const CLAUDE_GROUP_STOP_SECONDS = 5;
+// Where nothing can hold the number, a member of the group stops it, which keeps the number its own.
+// It takes none of the options or TMOUT the environment may give a bash `sh`, which the CLI keeps.
+const CLAUDE_GROUP_WATCHER = `{ set +e; unset TMOUT; trap '' TERM; command read -r _ <&${CLAUDE_STOP_FD}; command kill -TERM 0; command -p sleep ${CLAUDE_GROUP_STOP_SECONDS}; command kill -KILL 0; } </dev/null >/dev/null 2>&1 &`;
 const CLAUDE_GROUP_WATCH_SCRIPT = [
-  "{ trap '' TERM; read -r _ <&3; kill -TERM 0; sleep 5; kill -KILL 0; } </dev/null >/dev/null 2>&1 &",
-  'exec "$@" 3<&-',
+  // Job control would start the watcher in a group of its own.
+  `case $- in *m*) set +m; ${CLAUDE_GROUP_WATCHER} set -m;; *) ${CLAUDE_GROUP_WATCHER} esac`,
+  `exec "$@" ${CLAUDE_STOP_FD}<&-`,
 ].join("\n");
 
 /**
- * Kill the CLI's group on exit to stop MCP grandchildren; `onExit` stops its agent scope for
- * setsid daemons. The CLI keeps working after its pipes close, so a watcher stops the group on
- * EOF from a pipe only this server holds, including when the server crashes.
+ * At its exit and when the server goes away, which the CLI outlives, EOF on a pipe only this server
+ * holds stops what is left of the CLI's group, such as its MCP servers, from the process that keeps
+ * the number: its holder, or a member. `onExit` stops its agent scope for setsid daemons.
  */
 export function spawnClaudeProcessGroup(
   options: ClaudeSpawnOptions,
   onExit?: () => void,
   onStderr?: (text: string) => void,
 ): ClaudeSpawnedProcess {
+  const held = holdProcessGroup(options, {
+    fd: CLAUDE_STOP_FD,
+    endGroupAfterSeconds: CLAUDE_GROUP_STOP_SECONDS,
+  });
   const child = NodeChildProcess.spawn(
-    "/bin/sh",
-    ["-c", CLAUDE_GROUP_WATCH_SCRIPT, "t3-claude", options.command, ...options.args],
+    held?.command ?? "/bin/sh",
+    held?.args ?? ["-c", CLAUDE_GROUP_WATCH_SCRIPT, "t3-claude", options.command, ...options.args],
     {
       cwd: options.cwd,
       env: options.env,
@@ -430,9 +442,7 @@ export function spawnClaudeProcessGroup(
   // Always drained, so a chatty CLI never blocks on a full stderr pipe.
   child.stderr?.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
   child.once("exit", () => {
-    try {
-      signalProcessGroup(child.pid ?? 0, "SIGKILL");
-    } catch {}
+    child.stdio[CLAUDE_STOP_FD]?.destroy();
     onExit?.();
   });
   // Node's typings make stdin and stdout nullable once stdio has a fourth entry; both are pipes.

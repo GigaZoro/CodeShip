@@ -24,6 +24,11 @@ import {
   WsRpcGroup,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import {
+  holdProcessGroup,
+  ownProcessGroup,
+  type OwnedProcessGroup,
+} from "@t3tools/shared/processGroup";
 
 import { GIT_OUTPUT_MAX_BYTES } from "../../../.github/scripts/git-history.cjs";
 const { values } = parseCommandLine({
@@ -205,16 +210,24 @@ await new Promise<void>((done) => reservation.close(() => done()));
 const port = address.port;
 const origin = `http://127.0.0.1:${port}`;
 const bootstrap = NodeCrypto.randomUUID();
+const SERVER_HOLDER_FD = 4;
 function startServer() {
+  const launch = {
+    command: process.execPath,
+    args: ["apps/server/src/bin.ts", "start", "--bootstrap-fd", "3", "--log-level", "debug"],
+    cwd: root,
+  };
+  const held = holdProcessGroup(launch, { fd: SERVER_HOLDER_FD });
   const server = NodeChildProcess.spawn(
-    process.execPath,
-    ["apps/server/src/bin.ts", "start", "--bootstrap-fd", "3", "--log-level", "debug"],
+    held?.command ?? launch.command,
+    held?.args ?? launch.args,
     {
       cwd: root,
       detached: true,
-      stdio: ["ignore", "pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", "pipe", held === undefined ? "ignore" : "pipe"],
     },
   );
+  const group = ownProcessGroup(server, held === undefined ? undefined : SERVER_HOLDER_FD);
   const bootstrapPipe = server.stdio[3];
   NodeAssert.ok(bootstrapPipe && "write" in bootstrapPipe);
   bootstrapPipe.end(
@@ -244,9 +257,9 @@ function startServer() {
     () => ready.reject(new Error("Server startup timed out")),
     60_000,
   );
-  return { server, ready: ready.promise.finally(() => clearTimeout(startupDeadline)) };
+  return { server, group, ready: ready.promise.finally(() => clearTimeout(startupDeadline)) };
 }
-let { server, ready } = startServer();
+let { server, group, ready } = startServer();
 const abort = new AbortController();
 const onSignal = () => abort.abort(new Error("Verification interrupted"));
 process.on("SIGINT", onSignal);
@@ -484,8 +497,8 @@ try {
   }).pipe(Effect.scoped, Effect.provide(layerProtocol), Effect.timeout(timeoutMs));
   const finished = await Effect.runPromise(program, { signal: abort.signal });
   verdict = finished;
-  await stopServer(server);
-  ({ server, ready } = startServer());
+  await stopServer(server, group);
+  ({ server, group, ready } = startServer());
   await ready;
   const restored = await fetch(`${origin}/api/orchestration/threads/${threadId}`, { headers });
   NodeAssert.ok(restored.ok, `Restart read failed: ${restored.status}`);
@@ -543,12 +556,15 @@ try {
   parentResponse?.destroy();
   gate.closeAllConnections();
   gate.close();
-  await stopServer(server);
+  await stopServer(server, group);
   process.off("SIGINT", onSignal);
   process.off("SIGTERM", onSignal);
 }
 
-async function stopServer(server: ReturnType<typeof NodeChildProcess.spawn>) {
+async function stopServer(
+  server: ReturnType<typeof NodeChildProcess.spawn>,
+  group: OwnedProcessGroup,
+) {
   if (server.exitCode === null && server.signalCode === null) {
     const stopped = new Promise<void>((done) => server.once("exit", () => done()));
     server.kill("SIGTERM");
@@ -556,11 +572,10 @@ async function stopServer(server: ReturnType<typeof NodeChildProcess.spawn>) {
     await stopped;
     clearTimeout(deadline);
   }
-  if (server.pid) {
-    try {
-      process.kill(-server.pid, "SIGKILL");
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
-    }
+  try {
+    group.signal("SIGKILL");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
   }
+  group.release();
 }

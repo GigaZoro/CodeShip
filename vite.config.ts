@@ -313,6 +313,7 @@ export default defineConfig({
       "t3code/no-platform-early-return-in-tests": "error",
       "t3code/no-polling-loop-in-tests": "error",
       "t3code/no-raw-mcp-registration": "error",
+      "t3code/no-raw-process-group-signal": "error",
       "t3code/no-raw-process-probe": "error",
       "t3code/no-raw-taskkill": "error",
       "t3code/no-retired-event-table": "error",
@@ -427,6 +428,10 @@ export default defineConfig({
       {
         files: ["packages/shared/src/processProbe.ts"],
         rules: { "t3code/no-raw-process-probe": "off" },
+      },
+      {
+        files: ["packages/shared/src/processGroup.ts", "packages/shared/src/processGroup.test.ts"],
+        rules: { "t3code/no-raw-process-group-signal": "off" },
       },
       {
         files: ["apps/web/src/**"],

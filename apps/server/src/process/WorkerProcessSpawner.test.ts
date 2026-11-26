@@ -4,6 +4,11 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  AWAIT_HOLDER_PYTHON,
+  hostHoldsProcessGroups,
+  watchFreedGroupSignals,
+} from "@t3tools/shared/testing/freedProcessGroups";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
 import { windowsFrameworkCompiler, WindowsJobHost } from "@t3tools/shared/windowsJob";
@@ -27,6 +32,18 @@ import { vi } from "vite-plus/test";
 import { timeoutProcessOption } from "./processDeadline.ts";
 import * as WorkerProcessSpawner from "./WorkerProcessSpawner.ts";
 
+// The worker records its signals to freed process groups while watchFreedGroupSignals is in scope.
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:worker_threads")>();
+  const { freedGroupsWorkerPreamble } = await import("@t3tools/shared/testing/freedProcessGroups");
+  class Worker extends actual.Worker {
+    constructor(source: string | URL, options?: import("node:worker_threads").WorkerOptions) {
+      super(options?.eval === true ? freedGroupsWorkerPreamble + String(source) : source, options);
+    }
+  }
+  return { ...actual, Worker };
+});
+
 const layer = WorkerProcessSpawner.layer.pipe(Layer.provide(NodeServices.layer));
 const node = (script: string, options?: ChildProcess.CommandOptions) =>
   ChildProcess.make(process.execPath, ["-e", script], options);
@@ -43,6 +60,9 @@ const errorLogs = () => {
   });
   return { messages, logged: Deferred.await(logged), layer: Logger.layer([logger]) };
 };
+
+// Where a POSIX host holds no group, nothing may signal one once its leader exited.
+const unheldPosix = !isWindowsHost && !hostHoldsProcessGroups(process.env);
 
 describe("WorkerProcessSpawner", () => {
   it.live.runIf(isWindowsHost)(
@@ -332,7 +352,7 @@ describe("WorkerProcessSpawner", () => {
       return leader;
     });
 
-  it.live("kill ends what a child left running after it exited", () =>
+  it.live.skipIf(unheldPosix)("kill ends what a child left running after it exited", () =>
     Effect.gen(function* () {
       const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const leader = yield* leaderThatLeftAChild(leftover);
@@ -343,23 +363,25 @@ describe("WorkerProcessSpawner", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
-  it.live("an interrupted command ends what its child left running after it exited", () =>
-    Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
-      const exited = yield* Deferred.make<void>();
-      const command = yield* Effect.forkScoped(
-        Effect.gen(function* () {
-          yield* leaderThatLeftAChild(leftover);
-          yield* Deferred.succeed(exited, undefined);
-          return yield* Effect.never;
-        }).pipe(Effect.scoped),
-      );
-      yield* Deferred.await(exited);
+  it.live.skipIf(unheldPosix)(
+    "an interrupted command ends what its child left running after it exited",
+    () =>
+      Effect.gen(function* () {
+        const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
+        const exited = yield* Deferred.make<void>();
+        const command = yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            yield* leaderThatLeftAChild(leftover);
+            yield* Deferred.succeed(exited, undefined);
+            return yield* Effect.never;
+          }).pipe(Effect.scoped),
+        );
+        yield* Deferred.await(exited);
 
-      yield* Fiber.interrupt(command);
+        yield* Fiber.interrupt(command);
 
-      yield* leftover.ended;
-    }).pipe(Effect.scoped, Effect.provide(layer)),
+        yield* leftover.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.live("releasing a failed command logs no error once nothing of it runs", () => {
@@ -373,97 +395,237 @@ describe("WorkerProcessSpawner", () => {
     }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
   });
 
-  // POSIX gives no process the pid of a group that still exists, so one holding it ended the group.
-  it.live.skipIf(isWindowsHost)(
-    "a stopped worker spares the group of a reaped leader whose pid another process took",
-    () =>
+  describe.skipIf(isWindowsHost)("a POSIX group after its leader's exit", () => {
+    it.live.each([
+      { through: "its release", end: Effect.void },
+      { through: "a stopped worker", end: WorkerProcessSpawner.__testing.stopWorker },
+    ])("spares a reused group whose leader exited, through $through", ({ end }) =>
       Effect.gen(function* () {
-        const leader = yield* node("", quiet);
-        yield* leader.exitCode;
+        const freed = yield* watchFreedGroupSignals;
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            // Bash would change BASHOPTS, so this command starts without a holder.
+            const leader = yield* node("", { ...quiet, extendEnv: true, env: { BASHOPTS: "" } });
+            yield* leader.exitCode;
+            freed.reuseWithoutLeader(leader.pid);
+            yield* end;
+          }),
+        );
+
+        assert.deepEqual(freed.signals(), []);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    it.live.skipIf(unheldPosix)(
+      "still gets the forced kill of a release that SIGTERM ended the leader of",
+      () =>
+        Effect.gen(function* () {
+          const pipe = yield* processPipe;
+          const staysOnTerm =
+            "process.on('SIGTERM', () => {});" +
+            " const s = require('node:net').connect(process.argv[1], () => s.write(String(process.pid)));" +
+            " s.on('error', () => {}); setTimeout(() => {}, 300_000);";
+          const leader =
+            `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(staysOnTerm)}, ${JSON.stringify(pipe.path)}], { stdio: 'ignore' });` +
+            " setInterval(() => {}, 1000);";
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* node(leader, { ...quiet, forceKillAfter: "200 millis" });
+              yield* pipe.started;
+            }),
+          );
+
+          yield* pipe.ended;
+        }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    // A member moves back into the group from a job of its own and exits there; that job, outside
+    // the group, never reaps it. The leader exits once the member has, which closes their pipe.
+    it.live("releases without error a group left with members that exited unreaped", () => {
+      const errors = errorLogs();
+      const unreapedMember = [
+        "import os, socket, sys, time",
+        "group = os.getpid(); r, w = os.pipe()",
+        "if os.fork() == 0:",
+        "  os.close(r); os.setpgid(0, 0)",
+        "  if os.fork() == 0: os.setpgid(0, group); os._exit(0)",
+        "  s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.send(str(os.getpid()).encode())",
+        "  os.close(w); time.sleep(300); os._exit(0)",
+        "os.close(w); os.read(r, 1)",
+      ].join("\n");
+      return Effect.gen(function* () {
+        const job = yield* processPipe;
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const leader = yield* ChildProcess.make(
+              "python3",
+              ["-c", unreapedMember, job.path],
+              quiet,
+            );
+            yield* leader.exitCode;
+            yield* job.started;
+          }),
+        );
+
+        assert.deepEqual(errors.messages, []);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(layer, errors.layer)));
+    });
+
+    // The command reports once its holder ended, which would first end the group were the command
+    // referenced.
+    it.live("of an unreferenced child survives a stopped worker", () =>
+      Effect.gen(function* () {
+        const pipe = yield* processPipe;
+        const outlivesHolder = [
+          AWAIT_HOLDER_PYTHON,
+          "import socket, time",
+          "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])",
+          "await_holder(lambda: None)",
+          "s.send(str(os.getpid()).encode()); time.sleep(300)",
+        ].join("\n");
+        const child = yield* ChildProcess.make("python3", ["-c", outlivesHolder, pipe.path], quiet);
+        yield* Effect.asVoid(child.unref);
+        yield* WorkerProcessSpawner.settle;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        const outcome = yield* Effect.raceFirst(
+          Effect.as(pipe.started, "survived"),
+          Effect.as(pipe.ended, "ended"),
+        );
+        assert.equal(outcome, "survived");
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    // Its holder reads EOF on the stopped worker's pipes and ends the group while it keeps the
+    // number; only it knows when the number stops being ours.
+    it.live.skipIf(unheldPosix)(
+      "of a referenced child ends through its holder with a stopped worker",
+      () =>
+        Effect.gen(function* () {
+          const pipe = yield* processPipe;
+          const reports =
+            "const s = require('node:net').connect(process.argv[1], () => s.write(String(process.pid)));" +
+            " s.on('error', () => {}); setInterval(() => {}, 1000);";
+          yield* ChildProcess.make(process.execPath, ["-e", reports, pipe.path], quiet);
+          const pid = yield* pipe.started;
+          const kill = yield* Effect.acquireRelease(
+            Effect.sync(() => vi.spyOn(process, "kill")),
+            (spy) => Effect.sync(() => spy.mockRestore()),
+          );
+
+          yield* WorkerProcessSpawner.__testing.stopWorker;
+
+          yield* pipe.ended;
+          assert.notInclude(
+            kill.mock.calls.map(([target]) => target),
+            -pid,
+          );
+        }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    // The command ends its holder, then reports; nothing else ends it once the worker stopped.
+    it.live("of a referenced child whose holder ended gets no signal from a stopped worker", () =>
+      Effect.gen(function* () {
+        const pipe = yield* processPipe;
+        const losesHolder = [
+          AWAIT_HOLDER_PYTHON,
+          "import signal, socket, time",
+          "def end_holder():",
+          "    for pid in holders():",
+          "        try: os.kill(pid, signal.SIGKILL)",
+          "        except ProcessLookupError: pass",
+          "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])",
+          "await_holder(end_holder)",
+          "s.send(str(os.getpid()).encode()); time.sleep(300)",
+        ].join("\n");
+        yield* ChildProcess.make("python3", ["-c", losesHolder, pipe.path], quiet);
+        const pid = yield* pipe.started;
+        yield* WorkerProcessSpawner.settle;
         const kill = yield* Effect.acquireRelease(
           Effect.sync(() => {
             const signal = process.kill.bind(process);
             return vi
               .spyOn(process, "kill")
-              .mockImplementation((pid, code) =>
-                pid === leader.pid && code === 0 ? true : signal(pid, code),
-              );
+              .mockImplementation((target, code) => target === -pid || signal(target, code));
           }),
           (spy) => Effect.sync(() => spy.mockRestore()),
         );
 
         yield* WorkerProcessSpawner.__testing.stopWorker;
 
-        assert.notDeepInclude(kill.mock.calls, [-leader.pid, "SIGKILL"]);
-      }).pipe(Effect.scoped, Effect.provide(layer)),
-  );
-
-  // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,
-  // which still holds its pid: stopped, or as a zombie if another process kills it there. It runs on
-  // once a stopped worker's thread, its tracer, has ended. libuv stops waiting for it at that stop,
-  // so once ended it stays a zombie until this process exits.
-  describe.runIf(isLinuxHost)("a leader Node reported as exited at a ptrace stop", () => {
-    const tracedStop = [
-      "import ctypes, os, signal, socket, sys, time",
-      "def hold(path):",
-      "    s = socket.socket(socket.AF_UNIX); s.connect(path); s.send(str(os.getpid()).encode()); return s",
-      "if os.fork() == 0:",
-      "    left = hold(sys.argv[2]); time.sleep(300); sys.exit()",
-      "led = hold(sys.argv[1])",
-      "if ctypes.CDLL(None).ptrace(0, 0, None, None) != 0: sys.exit(2)",
-      "os.kill(os.getpid(), signal.SIGSTOP)",
-      "time.sleep(300)",
-    ].join("\n");
-    const kill = (leader: ChildProcessSpawner.ChildProcessHandle) =>
-      leader.kill({ killSignal: "SIGKILL" });
-    const stopWorker = () => WorkerProcessSpawner.__testing.stopWorker;
-    const killedAtExit = WorkerProcessSpawner.__testing.leadersKilledAtExit;
-
-    it.live.each([
-      { state: "still stopped", atExit: Effect.void, through: "kill", end: kill },
-      { state: "still stopped", atExit: Effect.void, through: "a stopped worker", end: stopWorker },
-      { state: "killed as its exit arrived", atExit: killedAtExit, through: "kill", end: kill },
-      {
-        state: "killed as its exit arrived",
-        atExit: killedAtExit,
-        through: "a stopped worker",
-        end: stopWorker,
-      },
-    ])("$state, has its group ended through $through", ({ atExit, end }) =>
-      Effect.gen(function* () {
-        yield* atExit;
-        const led = yield* processPipe;
-        const left = yield* processPipe;
-        const leader = yield* ChildProcess.make(
-          "python3",
-          ["-c", tracedStop, led.path, left.path],
-          quiet,
+        assert.notInclude(
+          kill.mock.calls.map(([target]) => target),
+          -pid,
         );
-        assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
-        yield* left.started;
-
-        yield* end(leader);
-
-        yield* led.ended;
-        yield* left.ended;
       }).pipe(Effect.scoped, Effect.provide(layer)),
     );
   });
 
-  it.live.each([
-    { through: "a new worker", replacement: Effect.void },
-    { through: "no worker", replacement: WorkerProcessSpawner.__testing.failWorkerStarts },
-  ])(
-    "a stopped worker kills what a child left running after it exited, through $through",
-    ({ replacement }) =>
-      Effect.gen(function* () {
-        const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
-        yield* leaderThatLeftAChild(leftover);
-        yield* replacement;
+  // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,
+  // which still holds its pid. It runs on once a stopped worker's thread, its tracer, has ended.
+  // libuv stops waiting for it at that stop, so once ended it stays a zombie until this process exits.
+  describe.runIf(isLinuxHost && !unheldPosix)(
+    "a leader Node reported as exited at a ptrace stop",
+    () => {
+      const tracedStop = [
+        "import ctypes, os, signal, socket, sys, time",
+        "def hold(path):",
+        "    s = socket.socket(socket.AF_UNIX); s.connect(path); s.send(str(os.getpid()).encode()); return s",
+        "if os.fork() == 0:",
+        "    left = hold(sys.argv[2]); time.sleep(300); sys.exit()",
+        "led = hold(sys.argv[1])",
+        "if ctypes.CDLL(None).ptrace(0, 0, None, None) != 0: sys.exit(2)",
+        "os.kill(os.getpid(), signal.SIGSTOP)",
+        "time.sleep(300)",
+      ].join("\n");
+      const kill = (leader: ChildProcessSpawner.ChildProcessHandle) =>
+        leader.kill({ killSignal: "SIGKILL" });
+      const stopWorker = () => WorkerProcessSpawner.__testing.stopWorker;
 
-        yield* WorkerProcessSpawner.__testing.stopWorker;
+      it.live.each([
+        { through: "kill", end: kill },
+        { through: "a stopped worker", end: stopWorker },
+      ])("has its group ended through $through", ({ end }) =>
+        Effect.gen(function* () {
+          const led = yield* processPipe;
+          const left = yield* processPipe;
+          const leader = yield* ChildProcess.make(
+            "python3",
+            ["-c", tracedStop, led.path, left.path],
+            quiet,
+          );
+          assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+          yield* left.started;
 
-        yield* leftover.ended;
-      }).pipe(Effect.scoped, Effect.provide(layer)),
+          yield* end(leader);
+
+          yield* led.ended;
+          yield* left.ended;
+        }).pipe(Effect.scoped, Effect.provide(layer)),
+      );
+    },
   );
+
+  describe.skipIf(unheldPosix)("past its leader's exit", () => {
+    it.live.each([
+      { through: "a new worker", replacement: Effect.void },
+      { through: "no worker", replacement: WorkerProcessSpawner.__testing.failWorkerStarts },
+    ])(
+      "a stopped worker kills what a child left running after it exited, through $through",
+      ({ replacement }) =>
+        Effect.gen(function* () {
+          const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
+          yield* leaderThatLeftAChild(leftover);
+          yield* replacement;
+
+          yield* WorkerProcessSpawner.__testing.stopWorker;
+
+          yield* leftover.ended;
+        }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+  });
 });

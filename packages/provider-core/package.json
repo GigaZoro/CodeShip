@@ -107,10 +107,6 @@
       "types": "./src/server/pathExpansion.ts",
       "import": "./src/server/pathExpansion.ts"
     },
-    "./server/processGroup": {
-      "types": "./src/server/processGroup.ts",
-      "import": "./src/server/processGroup.ts"
-    },
     "./server/ProviderAdapter": {
       "types": "./src/server/ProviderAdapter.ts",
       "import": "./src/server/ProviderAdapter.ts"

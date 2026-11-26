@@ -1,3 +1,9 @@
+## 2026-11-28 — Safer process cleanup on macOS and Linux
+
+- Stopping a command or agent session now keeps its process group number reserved through cleanup on supported hosts. This prevents a late stop from reaching a different program that inherited the same number. Claude also cleans up its MCP servers when the CLI exits or CodeShip shuts down.
+- Background commands and OpenCode servers can retain their group across a CodeShip restart. If a process-spawner worker stops unexpectedly after losing its holder, its unheld group can keep running. Recovery of older OpenCode records without a holder still relies on a process identity check.
+- The holder adds about 2.2 ms to a command start on macOS and 0.5 ms on Linux in the measured workloads.
+
 ## 2026-11-28 — Chats move to another provider when every account of theirs is out of usage
 
 - With **Switch to another account, else resume when the limit resets** on, an Auto chat can continue on another provider when its own provider runs out of plan usage, even if the provider is holding an active turn. The chat shows the original provider's plan reset and the new provider, account and model. Queued messages follow the move, and the chat stays there when the original provider has room again. If all eligible providers are out, the chat waits for the earliest reset it can use.

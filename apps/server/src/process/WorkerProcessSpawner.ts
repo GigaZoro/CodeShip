@@ -3,7 +3,7 @@ import * as NodeWorkerThreads from "node:worker_threads";
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import { sleepAwake } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { HOLDER_LINES, holdProcessGroup } from "@t3tools/shared/processGroup";
 import {
   WindowsJobHost,
   attachWindowsJob,
@@ -39,14 +39,11 @@ const STOP_TREE_TIMEOUT_MS = 30_000;
 const workerSource = `
 const { parentPort } = require("node:worker_threads");
 const { spawn, execFile } = require("node:child_process");
-const { readFileSync } = require("node:fs");
 const { performance } = require("node:perf_hooks");
 const GRACE_MS = 1000;
 const POLL_MS = 10;
 const HIGH_WATER_BYTES = 1 << 20;
-const STAT_STATE = 0;
-const STAT_PPID = 1;
-const STAT_START_TIME = 19;
+const HOLDER_LINES = ${JSON.stringify(HOLDER_LINES)};
 const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
 const hostSpawnError = ${windowsHostSpawnError.toString()};
 const parseIdentity = ${parseWindowsProcessIdentity.toString()};
@@ -65,52 +62,19 @@ const reply = (id, seq, error) => {
 };
 const released = () => new Error("The child process handle was released");
 // A released entry stays until its exit and output have been relayed, so an unreferenced child's
-// output still reaches a reader after its scope closed.
+// output still reaches a reader after its scope closed, and until its last termination finished.
+// Nothing signals its group after that, so its holder quits and lets the number go.
 const retire = (entry) => {
-  if (entry.released && entry.exit !== null && entry.open.size === 0) children.delete(entry.id);
+  if (!entry.released || entry.exit === null || entry.open.size > 0 || entry.terminating > 0) return;
+  if (children.delete(entry.id) && entry.held) entry.holder.end(HOLDER_LINES.quit);
 };
 
-// EPERM means a process holds the pid that this one may not signal.
-const holdsPid = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
-  }
-};
-// The fields of /proc/<pid>/stat after the command name, which may itself hold spaces or parentheses.
-const procStat = (pid) => {
-  try {
-    const stat = readFileSync("/proc/" + pid + "/stat", "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  } catch {
-    return [];
-  }
-};
 const nap = new Int32Array(new SharedArrayBuffer(4));
-// Test hook: another process kills a leader at a ptrace stop as its exit arrives.
-const killAsExitArrives = (pid) => {
-  process.kill(pid, "SIGKILL");
-  const until = performance.now() + GRACE_MS;
-  while (procStat(pid)[STAT_STATE] !== "Z") {
-    if (performance.now() > until) throw new Error("Leader " + pid + " did not become a zombie");
-    Atomics.wait(nap, 0, 0, 1);
-  }
-};
-// Start times count clock ticks, so only this process's own child with the start time recorded at
-// spawn is the leader.
-const isLeader = (entry) => {
-  if (entry.startTime === undefined) return false;
-  const stat = procStat(entry.child.pid);
-  return stat[STAT_PPID] === String(process.pid) && stat[STAT_START_TIME] === entry.startTime;
-};
-// POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
-// process holding its pid means the group ended and its id may name another's.
-const groupEnded = (entry) => entry.exit !== null && entry.exit.reaped && holdsPid(entry.child.pid);
+// Until Node reports the leader's exit it is unreaped, and its pid still names the group. After
+// that only a holder (holdProcessGroup) keeps the number from an unrelated group.
 const isAlive = (entry) => {
   if (entry.exit === null) return true;
-  if (process.platform === "win32" || groupEnded(entry)) return false;
+  if (!entry.held) return false;
   try {
     process.kill(-entry.child.pid, 0);
     return true;
@@ -141,12 +105,14 @@ const signalGroup = (entry, signal, done) => {
       done(error);
     });
   }
-  if (groupEnded(entry)) return done(undefined);
+  if (!entry.detached) return entry.exit === null ? fallback() : done(undefined);
+  if (entry.exit !== null && !entry.held) return done(undefined);
   try {
     process.kill(-entry.child.pid, signal);
   } catch (error) {
-    // The leader exited and its group is empty, so nothing is left to signal.
-    if (entry.exit !== null && error.code === "ESRCH") return done(undefined);
+    // Once the leader exited, ESRCH or EPERM (no member could take it; see signalProcessGroup) means
+    // nothing of ours is left to signal.
+    if (entry.exit !== null && (error.code === "ESRCH" || error.code === "EPERM")) return done(undefined);
     return fallback();
   }
   done(undefined);
@@ -170,18 +136,25 @@ const whenExited = (entry, done) => {
   if (entry.exit !== null) done();
   else entry.child.once("exit", () => done());
 };
-const terminate = (entry, signal, forceKillAfterMs, done) =>
+const terminate = (entry, signal, forceKillAfterMs, done) => {
+  entry.terminating += 1;
+  const settle = (error) => {
+    entry.terminating -= 1;
+    retire(entry);
+    done(error);
+  };
   signalGroup(entry, signal, (error) => {
-    if (error !== undefined) return done(error);
-    const finish = () => whenExited(entry, () => done(undefined));
+    if (error !== undefined) return settle(error);
+    const finish = () => whenExited(entry, () => settle(undefined));
     if (forceKillAfterMs === undefined) return awaitGroup(entry, GRACE_MS, finish);
     awaitGroup(entry, forceKillAfterMs, () => {
       if (!isAlive(entry)) return finish();
       signalGroup(entry, "SIGKILL", (error) =>
-        error !== undefined ? done(error) : awaitGroup(entry, GRACE_MS, finish),
+        error !== undefined ? settle(error) : awaitGroup(entry, GRACE_MS, finish),
       );
     });
   });
+};
 
 const relayOutput = (entry, fd) => {
   const stream = entry.child.stdio[fd];
@@ -211,7 +184,7 @@ const relayOutput = (entry, fd) => {
   stream.on("error", (error) => close({ type: "streamError", id: entry.id, fd, error: describe(error) }));
 };
 
-const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, killLeaderAtExit, jobHost }) => {
+const start = ({ id, command, args, options, holderFd, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, jobHost }) => {
   if (stallMs > 0) Atomics.wait(nap, 0, 0, stallMs);
   let child;
   const job = jobHost ? { host: jobHost, name: "Global\\\\CodeShip.Job." + require("node:crypto").randomUUID() } : undefined;
@@ -231,18 +204,19 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     post({ type: "spawnFailed", id, error: describe(job ? hostSpawnError(job.host, error) : error) });
     return;
   }
+  const holder = holderFd === undefined ? null : child.stdio[holderFd];
   const entry = {
     id,
     child,
     root: { pid: child.pid, job },
     ownership: job ? child.stdio[ownershipFd] : undefined,
     refReplies: [],
-    // Until its exit event the child is unreaped, so the pid is still its own. Without a readable
-    // /proc it stays unknown and every exit counts as a reap, as on macOS.
-    startTime: process.platform === "linux" ? procStat(child.pid)[STAT_START_TIME] : undefined,
+    holder,
+    held: holder !== null,
     exit: null,
     started: false,
     released: false,
+    terminating: 0,
     discarding: false,
     detached: options.detached,
     encoding,
@@ -252,6 +226,16 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     open: new Set(outputs),
   };
   children.set(id, entry);
+  if (entry.held) {
+    // The parent ends a stopped worker's referenced children itself once their holder is gone.
+    const lost = () => {
+      if (!entry.held) return;
+      entry.held = false;
+      if (children.has(id)) post({ type: "unheld", id });
+    };
+    // Read only to learn of the holder's end.
+    holder.on("end", lost).on("close", lost).on("error", lost).resume();
+  }
   child.on("error", (error) => {
     // Later errors are failed kills, which signalGroup reports through child.kill's result.
     if (entry.started) return;
@@ -311,14 +295,10 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     });
   }
   child.on("exit", (code, signal) => {
-    if (killLeaderAtExit) killAsExitArrives(child.pid);
-    // Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node
-    // reports it as an exit. That leader still holds its pid, stopped or, once killed, as a zombie;
-    // any other holder took the pid after a real reap.
-    entry.exit = { code, signal, reaped: !isLeader(entry) };
-    post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
+    entry.exit = { code, signal };
+    post({ type: "exit", id, code, signal });
     // The Windows host ends its job before reporting the exit.
-    if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
+    if (code !== 0 && code !== null && entry.held) {
       try {
         process.kill(-child.pid, killSignal);
       } catch {
@@ -347,7 +327,7 @@ const discard = (entry) => {
 const leftBehind = (entry, referenced, interrupted) => {
   if (process.platform === "win32") return referenced && (interrupted || entry.open.size > 0);
   const failed = entry.exit.code !== 0 && entry.exit.code !== null;
-  return failed || (referenced && entry.detached);
+  return entry.held && (failed || referenced);
 };
 const release = (entry, { id, seq, referenced, interrupted, signal, forceKillAfterMs }) => {
   entry.released = true;
@@ -440,6 +420,10 @@ parentPort.on("message", (message) => {
       return terminate(entry, message.signal, message.forceKillAfterMs, (error) => reply(id, seq, error));
     case "release":
       return release(entry, message);
+    // At its pipe's end, as when this worker stops, a holder ends a referenced child's group.
+    case "ref":
+      if (entry.held) entry.holder.write(message.referenced ? HOLDER_LINES.end : HOLDER_LINES.spare);
+      return;
     // The caller was interrupted before it learned that this child started; it ends as on release.
     case "abandon":
       return release(entry, {
@@ -479,8 +463,8 @@ type WorkerEvent =
       readonly id: number;
       readonly code: number | null;
       readonly signal: string | null;
-      readonly reaped: boolean;
     }
+  | { readonly type: "unheld"; readonly id: number }
   | {
       readonly type: "done";
       readonly id: number;
@@ -522,9 +506,10 @@ interface RemoteChild {
   readonly connection: Connection;
   readonly command: ChildProcess.StandardCommand;
   readonly kills: Kills;
+  // A holder keeps the group's number past the leader's exit and ends the group if the worker stops,
+  // until the worker reports that it ended.
+  held: boolean;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
-  // The worker relayed an exit that reaped the leader, not a ptrace stop Node reports as one.
-  reaped: boolean;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
   starting: ((outcome: StartedChild | PlatformError.PlatformError) => void) | undefined;
@@ -658,7 +643,6 @@ let nextId = 0;
 let nextSeq = 0;
 let startStallMs = 0;
 let workerStartsFail = false;
-let killLeadersAtExit = false;
 
 // An idle worker must not keep the process alive; a referenced child or a pending request does.
 const hold = (connection: Connection) => {
@@ -692,15 +676,11 @@ const sigkill = (pid: number) => {
 const killOrphans = (children: Iterable<RemoteChild>) => {
   for (const child of children) {
     const root = child.root;
-    if (!child.referenced || root === undefined) continue;
-    // The worker's closed ownership pipe ends referenced Windows jobs, including unpublished roots.
-    if (child.kills === "tree") continue;
-    // As in the worker's groupEnded, a process holding a reaped leader's pid means the group ended. A
-    // leader the stopping worker reaped without relaying the exit goes unchecked, so its ids could
-    // name a process started in the moments since.
-    if (child.kills === "group") {
-      if (!(child.reaped && isProcessAlive(root.pid))) sigkill(-root.pid);
-    } else if (!child.reaped) sigkill(root.pid);
+    // A held POSIX group ends through its holder once the stopped worker's pipes close; a
+    // referenced Windows job ends through its closed ownership pipe, including unpublished roots.
+    if (!child.referenced || root === undefined || child.held || child.kills === "tree") continue;
+    // An unheld group can already have lost its leader and number before the worker relays the exit.
+    if (child.kills === "leader" && !Deferred.isDoneUnsafe(child.exit)) sigkill(root.pid);
   }
 };
 
@@ -780,13 +760,15 @@ const receive = (connection: Connection, event: WorkerEvent) => {
       return;
     }
     case "exit":
-      child.reaped = event.reaped;
       Deferred.doneUnsafe(child.exit, Exit.succeed([event.code, event.signal] as const));
       if (child.holdsWorker) {
         child.holdsWorker = false;
         unhold(connection);
       }
       retire(child);
+      return;
+    case "unheld":
+      child.held = false;
       return;
   }
 };
@@ -862,6 +844,7 @@ const launch = (
   message: object,
   outputs: ReadonlyMap<number, OutputQueue>,
   kills: Kills,
+  held: boolean,
   // Receives, once the worker started the Windows job host, what fails a start still pending.
   hosted?: Deferred.Deferred<(error: PlatformError.PlatformError) => void>,
 ) =>
@@ -879,8 +862,8 @@ const launch = (
       connection,
       command,
       kills,
+      held,
       exit: Deferred.makeUnsafe(),
-      reaped: false,
       outputs,
       open: new Set(outputs.keys()),
       starting: undefined,
@@ -932,7 +915,6 @@ const launch = (
       type: "spawn",
       id,
       stallMs: startStallMs,
-      killLeaderAtExit: killLeadersAtExit,
     });
     return Effect.sync(() => {
       abandon();
@@ -1008,6 +990,15 @@ const make = Effect.gen(function* () {
     const cwd = options.cwd;
     if (cwd !== undefined) yield* fs.access(cwd);
     const detached = options.detached ?? platform !== "win32";
+    const env = options.extendEnv ? { ...process.env, ...options.env } : options.env;
+    const holderFd = stdio.length;
+    const held =
+      platform === "win32" || !detached
+        ? undefined
+        : holdProcessGroup(
+            { command: command.command, args: command.args, cwd, env, shell: options.shell },
+            { fd: holderFd, endGroupAfterSeconds: 0 },
+          );
     const killSignal = options.killSignal ?? "SIGTERM";
     const forceKillAfterMs = forceKillMillis(options.forceKillAfter);
     const outputs = new Map<number, OutputQueue>();
@@ -1025,17 +1016,18 @@ const make = Effect.gen(function* () {
     const started = launch(
       command,
       {
-        command: command.command,
-        args: command.args,
+        command: held?.command ?? command.command,
+        args: held?.args ?? command.args,
         jobHost,
         options: {
           cwd,
-          env: options.extendEnv ? { ...process.env, ...options.env } : options.env,
-          stdio,
+          env,
+          stdio: held === undefined ? stdio : [...stdio, "pipe"],
           detached,
-          shell: options.shell,
+          shell: held === undefined ? options.shell : undefined,
           windowsHide: options.windowsHide ?? !detached,
         },
+        holderFd: held === undefined ? undefined : holderFd,
         outputs: outputFds,
         inputs: inputFds,
         encoding: stdinConfig.encoding,
@@ -1044,6 +1036,7 @@ const make = Effect.gen(function* () {
       },
       outputs,
       platform === "win32" ? "tree" : detached ? "group" : "leader",
+      held !== undefined,
       hosted,
     );
     const child = yield* Effect.acquireRelease(
@@ -1123,11 +1116,18 @@ const make = Effect.gen(function* () {
       }
     }
 
+    const setReferenced = Effect.fnUntraced(function* (referenced: boolean) {
+      if (child.root?.job !== undefined && !Deferred.isDoneUnsafe(child.exit)) {
+        yield* request(child, referenced ? "ref" : "unref", { type: "reference", referenced });
+      }
+      child.referenced = referenced;
+      if (child.held && child.connection.children.has(child.id)) {
+        post(child.connection, { type: "ref", id: child.id, referenced });
+      }
+    });
     const reref = Effect.gen(function* () {
       if (child.referenced) return;
-      if (child.root?.job !== undefined && !Deferred.isDoneUnsafe(child.exit))
-        yield* request(child, "ref", { type: "reference", referenced: true });
-      child.referenced = true;
+      yield* setReferenced(true);
       if (!Deferred.isDoneUnsafe(child.exit) && child.connection.stopped === undefined) {
         child.holdsWorker = true;
         hold(child.connection);
@@ -1156,9 +1156,7 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.andThen(Deferred.await(child.exit)), Effect.asVoid),
       unref: Effect.gen(function* () {
         if (child.referenced) {
-          if (child.root?.job !== undefined && !Deferred.isDoneUnsafe(child.exit))
-            yield* request(child, "unref", { type: "reference", referenced: false });
-          child.referenced = false;
+          yield* setReferenced(false);
           if (child.holdsWorker) {
             child.holdsWorker = false;
             unhold(child.connection);
@@ -1259,17 +1257,6 @@ export const __testing = {
     () =>
       Effect.sync(() => {
         workerStartsFail = false;
-      }),
-  ),
-  /** Within the scope, each Linux leader at a ptrace stop is killed as its exit arrives, before the
-   * worker looks at its pid. */
-  leadersKilledAtExit: Effect.acquireRelease(
-    Effect.sync(() => {
-      killLeadersAtExit = true;
-    }),
-    () =>
-      Effect.sync(() => {
-        killLeadersAtExit = false;
       }),
   ),
   /** Ends the worker the way a crash does; the next spawn starts a new one. */

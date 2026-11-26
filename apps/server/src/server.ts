@@ -253,6 +253,7 @@ import { acceptsPrivateNetworkConnection, localUrlHostForAddress } from "./start
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
+import { layerHeldProcessGroups } from "@t3tools/shared/processGroup";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   disableTailscaleServe,
@@ -488,6 +489,7 @@ const layerChildProcessSpawner = Layer.effect(
 
 export const layerPlatformServices = DocumentText.layer.pipe(
   Layer.provideMerge(layerChildProcessSpawner),
+  Layer.provideMerge(layerHeldProcessGroups),
   Layer.provideMerge(NodeServices.layer),
 );
 

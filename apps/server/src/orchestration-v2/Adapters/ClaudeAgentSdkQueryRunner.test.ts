@@ -25,11 +25,12 @@ import { vi } from "vite-plus/test";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { hostHoldsProcessGroups } from "@t3tools/shared/testing/freedProcessGroups";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
 import { probeProcess } from "@t3tools/shared/processProbe";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { holdProcessGroup, ownProcessGroup } from "@t3tools/shared/processGroup";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { sleepingTestClock } from "../testkit/DeterministicRuntime.ts";
 import {
@@ -666,6 +667,19 @@ it.effect.each([
   ),
 );
 
+/** Bash's own defaults: exported, they make `holdProcessGroup` start a command unheld. */
+const UNHOLDABLE_SHELLOPTS = "braceexpand:hashall:interactive-comments";
+// Not this process's environment, whose shell settings could leave a held row unheld.
+const HELD_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+const UNHELD_ENV = { ...HELD_ENV, SHELLOPTS: UNHOLDABLE_SHELLOPTS };
+
+/** That `cli` started with `env` runs held exactly where `held` says the host can hold it. */
+const assertHoldMode = (cli: string, env: NodeJS.ProcessEnv, held: boolean) =>
+  assert.strictEqual(
+    holdProcessGroup({ command: cli, args: [], env }, { fd: 3 }) !== undefined,
+    held && hostHoldsProcessGroups(env),
+  );
+
 function fakeClaudeCli(script: string): string {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cli-"));
   const cli = NodePath.join(dir, "claude");
@@ -673,7 +687,7 @@ function fakeClaudeCli(script: string): string {
   return cli;
 }
 
-const openFakeCli = (cli: string) =>
+const openFakeCli = (cli: string, env?: NodeJS.ProcessEnv) =>
   Effect.gen(function* () {
     const runner = yield* ClaudeAgentSdkQueryRunner;
     return yield* runner.open({
@@ -685,39 +699,45 @@ const openFakeCli = (cli: string) =>
         tools: [],
         permissionMode: "default",
         pathToClaudeCodeExecutable: cli,
+        ...(env === undefined ? {} : { env }),
       },
     });
   });
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
   // The leftover child holds a FIFO open; its death produces EOF without polling.
-  it.effect("stops what the CLI left running when the session closes", () =>
+  it.effect.each([
+    ["held where it can be", HELD_ENV, true],
+    ["unheld", UNHELD_ENV, false],
+  ] as const)("stops what the CLI left running when the session closes, %s", ([, env, held]) =>
     Effect.gen(function* () {
+      // The leftover runs until something ends it or `stop` ends.
       const cli = fakeClaudeCli(
-        [
-          'dir=$(dirname "$0")',
-          'sleep 600 > "$dir/alive" &',
-          'echo $! > "$dir/leftover.pid"',
-          "cat > /dev/null",
-        ].join("\n"),
+        ['dir=$(dirname "$0")', 'cat "$dir/stop" > "$dir/alive" &', "cat > /dev/null"].join("\n"),
       );
       const dir = NodePath.dirname(cli);
-      NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "alive")]);
+      const stop = NodePath.join(dir, "stop");
+      NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "alive"), stop]);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
+          // A leftover the session left running reads EOF; one it ended left no reader.
           try {
-            process.kill(Number(NodeFS.readFileSync(NodePath.join(dir, "leftover.pid"), "utf8")));
-          } catch {}
+            const { O_NONBLOCK, O_WRONLY } = NodeFS.constants;
+            NodeFS.closeSync(NodeFS.openSync(stop, O_WRONLY | O_NONBLOCK));
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code !== "ENXIO") throw cause;
+          }
           NodeFS.rmSync(dir, { recursive: true, force: true });
         }),
       );
+      assertHoldMode(cli, env, held);
       const alive = NodeFS.createReadStream(NodePath.join(dir, "alive"));
       const leftoverStarted = new Promise<void>((resolve) => alive.once("open", () => resolve()));
       const leftoverStopped = new Promise<void>((resolve) => alive.once("close", () => resolve()));
       alive.resume();
 
       const stopped = yield* Deferred.make<string>();
-      const session = yield* openFakeCli(cli).pipe(
+      const session = yield* openFakeCli(cli, env).pipe(
         Effect.provide(
           realQueryRunner.pipe(
             Layer.provide(
@@ -789,37 +809,118 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
 
   // The CLI keeps running its turn after its pipes close, so a server that
   // crashed would leave it working next to the session it resumes.
-  it.effect("stops the CLI when the server that started it goes away", () =>
+  it.effect.each([
+    ["held where it can be", HELD_ENV, true],
+    // Bash cannot pass an exported SHELLOPTS on as given, so nothing holds the group.
+    ["unheld", UNHELD_ENV, false],
+    // Where `sh` is bash, its watcher would take these options too.
+    ["unheld, with errexit", { ...HELD_ENV, SHELLOPTS: `${UNHOLDABLE_SHELLOPTS}:errexit` }, false],
+    [
+      "unheld, with job control",
+      { ...HELD_ENV, SHELLOPTS: `${UNHOLDABLE_SHELLOPTS}:monitor` },
+      false,
+    ],
+  ] as const)("stops the CLI when the server that started it goes away, %s", ([, env, held]) =>
     Effect.gen(function* () {
-      const cli = fakeClaudeCli(['dir=$(dirname "$0")', 'sleep 600 > "$dir/alive"'].join("\n"));
+      // As one process, as the CLI's own job control would start a child in another group.
+      const cli = fakeClaudeCli(
+        ['dir=$(dirname "$0")', 'exec sleep 600 > "$dir/alive"'].join("\n"),
+      );
       const dir = NodePath.dirname(cli);
+      assertHoldMode(cli, env, held);
       NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "alive")]);
       const child = spawnClaudeProcessGroup({
         command: cli,
         args: [],
         cwd: dir,
-        env: process.env,
+        env,
         // @effect-diagnostics-next-line abortControllerInEffect:off - This crash fixture closes pipes itself; aborting on test teardown raises an unrelated process error.
         signal: new AbortController().signal,
       }) as NodeChildProcess.ChildProcess;
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          try {
-            signalProcessGroup(child.pid ?? 0, "SIGKILL");
-          } catch {}
+          ownProcessGroup(child, undefined).signal("SIGKILL");
           NodeFS.rmSync(dir, { recursive: true, force: true });
         }),
       );
       const alive = NodeFS.createReadStream(NodePath.join(dir, "alive"));
       const turnStarted = new Promise<void>((resolve) => alive.once("open", () => resolve()));
       const turnStopped = new Promise<void>((resolve) => alive.once("close", () => resolve()));
+      const cliExited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
       alive.resume();
       yield* Effect.promise(() => turnStarted);
 
       // A dying server's descriptors close; the kernel would do this for it.
       for (const pipe of child.stdio) pipe?.destroy();
       yield* Effect.promise(() => turnStopped);
+      yield* Effect.promise(() => cliExited);
     }),
+  );
+
+  it.effect.each([
+    ["held where it can be", HELD_ENV, true],
+    // The group's other member is then the CLI's child.
+    ["unheld", UNHELD_ENV, false],
+  ] as const)(
+    "leaves the CLI's group to what keeps its number at the CLI's exit, %s",
+    ([, env, held]) =>
+      Effect.gen(function* () {
+        // Exits once SIGUSR1 ended the rest of its group and it reaped them, freeing the number.
+        const cli = fakeClaudeCli(
+          [
+            "exec python3 -c '",
+            "import os, signal",
+            "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})",
+            'print("started", flush=True)',
+            "signal.sigwait({signal.SIGUSR1})",
+            "try: os.waitpid(-1, 0)",
+            "except ChildProcessError: pass",
+            "'",
+          ].join("\n"),
+        );
+        const dir = NodePath.dirname(cli);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+        );
+        assertHoldMode(cli, env, held);
+        const exitHandled = Promise.withResolvers<void>();
+        const child = spawnClaudeProcessGroup(
+          {
+            command: cli,
+            args: [],
+            cwd: dir,
+            env,
+            // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI exits by itself, not by an abort.
+            signal: new AbortController().signal,
+          },
+          () => exitHandled.resolve(),
+        ) as NodeChildProcess.ChildProcess;
+        const started = new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+        yield* Effect.promise(() => started);
+
+        const group = -child.pid!;
+        const signalsToGroup = (pid: number, signal: string | number | undefined) =>
+          pid === group && signal !== 0 && signal !== "SIGUSR1";
+        // Recorded and not sent, as the number may be free once the CLI exits.
+        const send = process.kill.bind(process);
+        const kill = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi
+              .spyOn(process, "kill")
+              .mockImplementation((pid, signal) =>
+                signalsToGroup(pid, signal) ? true : send(pid, signal),
+              ),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        ownProcessGroup(child, undefined).signal("SIGUSR1");
+        yield* Effect.promise(() => exitHandled.promise);
+
+        assert.deepEqual(
+          kill.mock.calls.filter(([pid, signal]) => signalsToGroup(pid, signal)),
+          [],
+        );
+      }),
   );
 
   it.effect("marks the CLI's jobs with its thread and counts it as an agent until it exits", () => {

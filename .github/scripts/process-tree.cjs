@@ -10,6 +10,7 @@ const GONE_POLL_MS = 50;
 /** Signals every process of `group`; false when it has none left. */
 function signalGroup(group, name) {
   try {
+    // oxlint-disable-next-line t3code/no-raw-process-group-signal -- standalone script: anchor keeps the root group id and frozen parents keep child group ids
     process.kill(-group, name);
     return true;
   } catch (error) {
@@ -21,6 +22,7 @@ function signalGroup(group, name) {
 /** Whether `group` has a process we can signal ("alive"), only ones we cannot ("eperm"), or none ("gone"). */
 function probeGroup(group) {
   try {
+    // oxlint-disable-next-line t3code/no-raw-process-group-signal -- a probe, which delivers nothing
     process.kill(-group, 0);
     return "alive";
   } catch (error) {
@@ -239,6 +241,7 @@ function anchor(spec) {
       detached: true,
       stdio: "ignore",
     });
+    // oxlint-disable-next-line t3code/no-raw-process-group-signal -- anchor itself is live and leads this group
     stopper.on("error", () => process.kill(-process.pid, "SIGKILL"));
     stopper.unref();
   });

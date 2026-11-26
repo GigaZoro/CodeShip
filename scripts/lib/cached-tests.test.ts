@@ -48,16 +48,21 @@ describe("cachedTestTasks", () => {
       const files = [
         "apps/server/src/cli/triage.test.ts",
         "apps/server/src/cli/update.test.ts",
+        "apps/server/src/commandRunner/CommandRunner.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts",
         "apps/server/src/preview/PortScanner.test.ts",
         "apps/server/src/process/WorkerProcessSpawner.test.ts",
         "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "apps/server/src/server.test.ts",
+        "packages/provider-opencode/src/server/OpenCodeServerLedger.test.ts",
+        "packages/shared/src/processGroup.test.ts",
         "scripts/release-desktop-workflow.test.ts",
       ];
       const tasks = cachedTestTasks(JSON.stringify({ files, groupSize: 16 }), undefined, platform);
       const runs = tasks["test-cache"]!.dependsOn!.map((key) => tasks[key]!);
 
       expect(runs.filter(({ cache }) => cache === false)).toHaveLength(
-        platform === "darwin" ? 5 : 0,
+        platform === "darwin" ? 10 : 0,
       );
       for (const file of files) {
         const run = runs.find(({ command }) => command.includes(NodePath.basename(file)));
