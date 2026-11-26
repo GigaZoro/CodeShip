@@ -928,7 +928,14 @@ export function createThreadOutboxDelivery(): {
       modelSelection,
       runtimeMode: DEFAULT_RUNTIME_MODE,
     });
-    if (isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)) {
+    if (
+      isModelSelectionUnavailable(
+        serverConfig,
+        settings.modelSelection,
+        creation.projectId,
+        "fresh",
+      )
+    ) {
       const { title, detail } = describeUnavailableModelSelection(
         serverConfig,
         settings.modelSelection,
@@ -976,7 +983,14 @@ export function createThreadOutboxDelivery(): {
       serverEnvironment.configValueAtom(queuedMessage.environmentId),
     );
     if (!currentConfig) return false;
-    if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)) {
+    if (
+      isModelSelectionUnavailable(
+        currentConfig,
+        settings.modelSelection,
+        creation.projectId,
+        "fresh",
+      )
+    ) {
       const { title, detail } = describeUnavailableModelSelection(
         currentConfig,
         settings.modelSelection,

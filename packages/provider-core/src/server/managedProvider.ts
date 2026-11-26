@@ -24,11 +24,32 @@ import {
   resolveUsageLimitsAfterProbe,
   withoutResetFields,
 } from "./usageLimits.ts";
-import type { ManagedServerProvider } from "./snapshot.ts";
+import type { ManagedServerProvider, UsageLimitsPublisher } from "./snapshot.ts";
 
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
+  readonly usageGeneration: number;
+}
+
+function sameUsageOwner(before: ServerProvider, after: ServerProvider): boolean {
+  if (before.auth.status !== "authenticated" || after.auth.status !== "authenticated") return false;
+  const identities = [
+    [before.auth.email?.toLowerCase(), after.auth.email?.toLowerCase()],
+    [before.usageLimits?.accountKey, after.usageLimits?.accountKey],
+    [before.usageLimits?.credentialFingerprint, after.usageLimits?.credentialFingerprint],
+  ];
+  if (before.auth.workspaceId !== after.auth.workspaceId) return false;
+  const fields = [
+    ...identities,
+    [before.auth.type, after.auth.type],
+    [before.auth.profileId, after.auth.profileId],
+    [before.usageLimits?.plan, after.usageLimits?.plan],
+  ];
+  return (
+    identities.some(([a, b]) => a !== undefined && a === b) &&
+    fields.every(([a, b]) => a === undefined || b === undefined || a === b)
+  );
 }
 
 const UNATTENDED_RECHECK_MAX_DELAY_MS = 60 * 60 * 1000;
@@ -57,6 +78,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   readonly haveSettingsChanged: (previous: Settings, next: Settings) => boolean;
   readonly initialSnapshot: (settings: Settings) => Effect.Effect<ServerProvider>;
   readonly checkProvider: Effect.Effect<ServerProvider, ServerSettingsError>;
+  /** The status probe reads usage even when the previous probe returned no meters. */
+  readonly readsUsageOnRefresh?: boolean;
   readonly checkUsageLimits?: Effect.Effect<ServerProvider["usageLimits"]>;
   readonly invalidateUsageCache?: Effect.Effect<void>;
   readonly enrichSnapshot?: (input: {
@@ -87,6 +110,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
     enrichmentGeneration: 0,
+    usageGeneration: 0,
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
@@ -199,7 +223,12 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         );
         return [
           { snapshot, generation },
-          { snapshot, enrichmentGeneration: generation },
+          {
+            snapshot,
+            enrichmentGeneration: generation,
+            usageGeneration:
+              state.usageGeneration + Number(!sameUsageOwner(state.snapshot, snapshot)),
+          },
         ] as const;
       },
     );
@@ -214,24 +243,31 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       .pipe(Effect.map(({ snapshot }) => snapshot));
 
   // Providers call this on every token-usage tick, usually without changing the snapshot.
-  const applyUsageLimits: ManagedServerProvider["applyUsageLimits"] = Effect.fnUntraced(
-    function* (update) {
-      const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-        const usageLimits = applyUsageLimitsUpdate({
-          previous: state.snapshot.usageLimits,
-          update,
-          checkedAt: update.checkedAt,
+  const bindUsageLimits = Ref.get(snapshotStateRef).pipe(
+    Effect.map(({ usageGeneration }) =>
+      Effect.fnUntraced(function* (update: Parameters<UsageLimitsPublisher>[0]) {
+        const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+          if (
+            state.usageGeneration !== usageGeneration ||
+            state.snapshot.auth.status !== "authenticated"
+          )
+            return [null, state] as const;
+          const usageLimits = applyUsageLimitsUpdate({
+            previous: state.snapshot.usageLimits,
+            update,
+            checkedAt: update.checkedAt,
+          });
+          if (usageLimits === state.snapshot.usageLimits) {
+            return [null, state] as const;
+          }
+          const snapshot = withUsageLimits(state.snapshot, usageLimits);
+          return [snapshot, { ...state, snapshot }] as const;
         });
-        if (usageLimits === state.snapshot.usageLimits) {
-          return [null, state] as const;
+        if (snapshotToPublish !== null) {
+          yield* PubSub.publish(changesPubSub, snapshotToPublish);
         }
-        const snapshot = withUsageLimits(state.snapshot, usageLimits);
-        return [snapshot, { ...state, snapshot }] as const;
-      });
-      if (snapshotToPublish !== null) {
-        yield* PubSub.publish(changesPubSub, snapshotToPublish);
-      }
-    },
+      }),
+    ),
   );
 
   const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
@@ -274,7 +310,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     const { snapshot } = yield* Ref.get(snapshotStateRef);
     if (
       !snapshot.enabled ||
-      (!snapshot.usageLimits && !input.invalidateUsageCache && !input.checkUsageLimits) ||
+      (!snapshot.usageLimits &&
+        !input.readsUsageOnRefresh &&
+        !input.invalidateUsageCache &&
+        !input.checkUsageLimits) ||
       snapshot.usageLimits?.unavailable?.reason === "unsupported"
     )
       return;
@@ -332,7 +371,15 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         probed,
       });
       const snapshot = withUsageLimits(state.snapshot, usageLimits);
-      return [snapshot, { ...state, snapshot }] as const;
+      return [
+        snapshot,
+        {
+          ...state,
+          snapshot,
+          usageGeneration:
+            state.usageGeneration + Number(!sameUsageOwner(state.snapshot, snapshot)),
+        },
+      ] as const;
     });
     yield* PubSub.publish(changesPubSub, next);
   });
@@ -449,7 +496,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     refresh: input
       .resolveMaintenance({ fresh: true })
       .pipe(Effect.andThen(refreshSnapshot), Effect.tapError(Effect.logError), Effect.orDie),
-    applyUsageLimits,
+    bindUsageLimits,
     refreshUsage: refreshUsage(),
     refreshAfterRedemption,
     get streamChanges() {

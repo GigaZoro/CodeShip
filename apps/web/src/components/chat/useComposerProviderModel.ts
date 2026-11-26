@@ -92,7 +92,7 @@ export function useComposerProviderModel(
     composerModelOptions: modelState.modelOptions,
     selectedModel: modelState.selectedModel,
     selectedAutoAccount: modelState.autoAccount,
-    selectedQuotaAwareAuto: modelState.quotaAwareAuto,
+    quotaAwareAutoSelection: modelState.quotaAwareAutoSelection,
     composerProviderState,
   };
 }

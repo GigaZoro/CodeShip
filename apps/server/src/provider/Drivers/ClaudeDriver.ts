@@ -514,16 +514,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       {
         scopedLimitNames,
         // A newly reached limit is when Claude's resets matter, so it starts a read of them.
-        onUsageLimits: (update) =>
-          snapshot.applyUsageLimits(update).pipe(
-            Effect.andThen(snapshot.getSnapshot),
-            Effect.flatMap(({ usageLimits }) =>
-              usageLimits && !usageLimits.unavailable
-                ? limitResets.current(usageLimits)
-                : Effect.void,
-            ),
-            Effect.asVoid,
+        bindUsageLimits: Effect.suspend(() => snapshot.bindUsageLimits).pipe(
+          Effect.map(
+            (publish) => (update) =>
+              publish(update).pipe(
+                Effect.andThen(snapshot.getSnapshot),
+                Effect.flatMap(({ usageLimits }) =>
+                  usageLimits && !usageLimits.unavailable
+                    ? limitResets.current(usageLimits)
+                    : Effect.void,
+                ),
+                Effect.asVoid,
+              ),
           ),
+        ),
         onAuthenticationFailed: authenticationFailure.record.pipe(Effect.andThen(republishAuth)),
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),

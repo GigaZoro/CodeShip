@@ -394,7 +394,11 @@ export function resolveAutoModelSelection(
 export function resolveInheritedDefaultModelSelection(input: {
   readonly configs: ReadonlyMap<
     EnvironmentId,
-    { readonly settings: ServerSettings; readonly providers: ReadonlyArray<ServerProvider> }
+    {
+      readonly settings: ServerSettings;
+      readonly providers: ReadonlyArray<ServerProvider>;
+      readonly environment?: { readonly capabilities: { readonly quotaAwareAuto?: boolean } };
+    }
   >;
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId | null;
@@ -412,6 +416,10 @@ export function resolveInheritedDefaultModelSelection(input: {
   for (const [, source] of sources) {
     const selection = source.settings.defaultModelSelection;
     if (selection === null) continue;
+    if (selection.quotaAwareAuto === true) {
+      if (target.environment?.capabilities.quotaAwareAuto === true) return selection;
+      continue;
+    }
     const driver = source.providers.find(
       (provider) => provider.instanceId === selection.instanceId,
     )?.driver;

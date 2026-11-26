@@ -1266,7 +1266,10 @@ export function useComposerSend(input: ComposerSendInput) {
     const threadCreateModelSelection = withModelSelectionOptions(
       {
         ...ctxSelectedModelSelection,
-        model: ctxSelectedModel || activeProjectDefaultModelSelection?.model || DEFAULT_MODEL,
+        model:
+          ctxSelectedModelSelection.model ||
+          activeProjectDefaultModelSelection?.model ||
+          DEFAULT_MODEL,
       },
       ctxSelectedModelSelection.options,
     );

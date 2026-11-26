@@ -397,6 +397,21 @@ describe("mobile model options", () => {
     expect(isModelSelectionUnavailable(config, disabled, null)).toBe(true);
     expect(isModelSelectionUnavailable(config, removed, null)).toBe(false);
     expect(resolveSelectableModelSelection(null, disabled, null)).toBe(disabled);
+    const capable = {
+      ...config,
+      environment: { ...config.environment, capabilities: { quotaAwareAuto: true } },
+    } as ServerConfig;
+    for (const placeholder of [disabled, removed]) {
+      const auto = { ...placeholder, quotaAwareAuto: true };
+      expect(resolveSelectableModelSelection(capable, auto, null)).toBe(auto);
+      expect(resolveDefaultableModelSelection(capable, auto, null)).toBe(auto);
+      expect(isModelSelectionUnavailable(capable, auto, null, "fresh")).toBe(false);
+      expect(buildModelOptions(capable, auto, undefined, null)).toEqual([]);
+      expect(isModelSelectionUnavailable(config, auto, null, "fresh")).toBe(true);
+    }
+    expect(isModelSelectionUnavailable(capable, { ...disabled, quotaAwareAuto: true }, null)).toBe(
+      true,
+    );
   });
 
   it.each([

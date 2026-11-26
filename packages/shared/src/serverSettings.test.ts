@@ -197,6 +197,27 @@ describe("resolveInheritedDefaultModelSelection", () => {
     expect(resolve(configs, mac)?.model).toBe(opus.model);
     expect(resolve(configs)?.model).toBe(sonnet.model);
   });
+
+  it("inherits fresh Auto across machines with different providers", () => {
+    const auto = { ...opus, quotaAwareAuto: true };
+    const destination = machine(null, [
+      provider("custom", { driver: ProviderDriverKind.make("custom"), models: [model("local")] }),
+    ]);
+    const source = machine(auto, []);
+    const capable = { ...destination, environment: { capabilities: { quotaAwareAuto: true } } };
+    expect(
+      resolve([
+        [mac, source],
+        [pc, capable],
+      ]),
+    ).toEqual(auto);
+    expect(
+      resolve([
+        [mac, source],
+        [pc, destination],
+      ]),
+    ).toBeNull();
+  });
 });
 
 describe("serverSettings helpers", () => {

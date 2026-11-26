@@ -3833,6 +3833,9 @@ export default function ChatView(props: ChatViewProps) {
                               composerDraftTarget={composerDraftTarget}
                               environmentId={environmentId}
                               attachmentUploadsCapabilityKnown={attachmentUploadsCapabilityKnown}
+                              supportsQuotaAwareAuto={
+                                serverConfig?.environment.capabilities.quotaAwareAuto === true
+                              }
                               supportsAttachmentUploads={supportsAttachmentUploads}
                               supportsQuestionAttachments={supportsQuestionAttachments}
                               maxFileAttachmentBytes={maxFileAttachmentBytes}

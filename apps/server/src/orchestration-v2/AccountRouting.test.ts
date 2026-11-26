@@ -1430,12 +1430,19 @@ it.effect("reads a held account's usage at most hourly, and frees it once the us
             getProviders: Effect.succeed([
               provider(primary, { usageLimits: usage("2026-11-03T10:00:00.000Z", 40) }),
             ]),
-            // The first read still finds the window used up; the one an hour later finds room.
+            // A stream-only reply cannot establish which windows exist; the full read an hour later finds room.
             refreshInstance: () =>
               Effect.gen(function* () {
                 const count = yield* Ref.updateAndGet(reads, (value) => value + 1);
                 const now = DateTime.formatIso(yield* DateTime.now);
-                return [provider(primary, { usageLimits: usage(now, count === 1 ? 100 : 30) })];
+                return [
+                  provider(primary, {
+                    usageLimits: {
+                      ...usage(now, 30),
+                      ...(count === 1 ? { streamOnly: true as const } : {}),
+                    },
+                  }),
+                ];
               }),
           }),
         ),
@@ -2323,19 +2330,78 @@ describe("prepaid Codex credits", () => {
       expected: { credits: "not_enabled", reads: 1 },
     },
     {
+      name: "reads the plan when a stream advanced only the balance",
+      checkedAt: "2026-11-03T11:59:00.000Z",
+      planRead: "2026-11-03T11:00:00.000Z",
+      expected: { credits: "not_enabled", reads: 1 },
+    },
+    {
+      name: "reads the balance when only another window was reported",
+      checkedAt: "2026-11-03T11:59:00.000Z",
+      balanceRead: "2026-11-03T11:00:00.000Z",
+      expected: { credits: "not_enabled", reads: 1 },
+    },
+    {
+      name: "refreshes a retained applicable window even if the account read is recent",
+      checkedAt: "2026-11-03T11:59:00.000Z",
+      allowanceRead: "2026-11-03T11:00:00.000Z",
+      expected: { credits: "not_enabled", reads: 1 },
+    },
+    {
+      name: "cannot spend against old evidence when refresh returns the same reading",
+      checkedAt: "2026-11-03T11:00:00.000Z",
+      refreshUnavailable: true,
+      expected: { credits: "unverified", reads: 1 },
+    },
+    ...["apiKey", "amazonBedrock", "chatgpt"].map((authType) => ({
+      name: `leaves a pinned metered ${authType} account to its payer despite stale subscription telemetry`,
+      checkedAt: "2026-11-03T11:00:00.000Z",
+      meteredAuth: authType,
+      refreshUnavailable: true,
+      expected: { credits: undefined, reads: 0 },
+    })),
+    {
       name: "judges a recent reading as it stands",
       checkedAt: "2026-11-03T11:59:00.000Z",
       expected: { credits: undefined, reads: 0 },
     },
-  ] as const)("a turn that could spend credits $name", ({ checkedAt, expected }) =>
+  ] as const)("a turn that could spend credits $name", (row) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(nowMs);
       const reads = yield* Ref.make(0);
+      const { checkedAt, expected } = row;
+      const before = codexAccount(paid, { weeklyUsed: 30, checkedAt });
+      const mixed = {
+        ...before,
+        ...("meteredAuth" in row
+          ? {
+              auth: {
+                status: "authenticated" as const,
+                funding: "metered" as const,
+                type: row.meteredAuth,
+              },
+            }
+          : {}),
+        usageLimits: {
+          ...before.usageLimits!,
+          ...("planRead" in row
+            ? { accountReadAt: row.planRead, creditsObservedAt: checkedAt }
+            : {}),
+          ...("balanceRead" in row ? { creditsObservedAt: row.balanceRead } : {}),
+          ...("allowanceRead" in row
+            ? {
+                windows: before.usageLimits!.windows.map((window) =>
+                  window.kind === "weekly" ? { ...window, observedAt: row.allowanceRead } : window,
+                ),
+              }
+            : {}),
+        },
+      };
       // The reading in hand shows plan room; Codex has used the plan up since.
       const layer = routingLayer({
         optedIn: [],
-        reading: yield* Ref.make(codexAccount(paid, { weeklyUsed: 30, checkedAt })),
-        fresh: { reading: codexAccount(paid), reads },
+        reading: yield* Ref.make<ServerProvider>(mixed),
+        fresh: { reading: "refreshUnavailable" in row ? mixed : codexAccount(paid), reads },
       });
       const refusal = yield* AccountRouting.AccountRouting.use((routing) =>
         routing.creditRefusal({ threadId: allowed, instanceId: paid, model }),

@@ -15,6 +15,7 @@ import {
   type ServerSettings as ServerSettingsValue,
   type ThreadId,
 } from "@t3tools/contracts";
+import { fullReadAt, creditsReadAt } from "@t3tools/provider-core/server/usageLimits";
 import { mergedProviderInstanceEnvironmentName } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -34,6 +35,7 @@ import {
   usageHoldMs,
   usageScopeCoversModel,
   usageWindowLimitEnd,
+  usageWindowAppliesToModel,
 } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -170,9 +172,15 @@ const grantState = (provider: ServerProvider, input: LimitInput) =>
     input.creditAccess ?? PrepaidCreditSpend.NO_CREDIT_ACCESS,
   );
 
+const canSpendCodexPlanCredits = (provider: ServerProvider) =>
+  provider.driver === CODEX_DRIVER &&
+  isSubscriptionAccount(provider) &&
+  provider.auth.funding !== "metered" &&
+  provider.auth.type !== "amazonBedrock";
+
 /** How an account's prepaid credits stand for new work; null without credits T3 could spend. */
 export function creditUse(provider: ServerProvider, input: LimitInput): ProviderCreditUse | null {
-  if (!isSubscriptionAccount(provider)) return null;
+  if (!canSpendCodexPlanCredits(provider)) return null;
   const standing = codexCreditStanding(provider, input.nowMs);
   if (standing === null) return null;
   if (standing === "used_up") return "used_up";
@@ -184,6 +192,7 @@ export function creditUse(provider: ServerProvider, input: LimitInput): Provider
 /** Whether new work on this account would spend its prepaid credits rather than its plan. */
 function runsOnCredits(provider: ServerProvider, input: LimitInput, model: string | null): boolean {
   return (
+    canSpendCodexPlanCredits(provider) &&
     codexCreditStanding(provider, input.nowMs) === "usable" &&
     exhaustedUsageWindow(provider, input.nowMs, model) !== undefined &&
     grantState(provider, input) === "granted"
@@ -948,9 +957,18 @@ const HOLD_RELEASE_SCAN_MS = 60_000;
 type ReadingFrees = (provider: ServerProvider, nowMs: number) => boolean;
 /** The ten-minute Codex path frees only on Codex's explicit yes; silence leaves the hourly path. */
 const providerAllows: ReadingFrees = (provider) => provider.usageLimits?.usageAllowed === true;
-const usageHasRoom: ReadingFrees = (provider, nowMs) =>
-  provider.usageLimits?.usageAllowed !== false &&
-  exhaustedUsageWindow(provider, nowMs) === undefined;
+const usageHasRoom: ReadingFrees = (provider, nowMs) => {
+  const limits = provider.usageLimits;
+  const readAt = fullReadAt(limits);
+  if (!limits || !readAt) return false;
+  if (limits.usageAllowed !== undefined) return limits.usageAllowed;
+  // A partial window published after the full read cannot clear a persisted refusal.
+  return (
+    limits.windows.some((window) => usageWindowAppliesToModel(provider, window, null)) &&
+    limits.windows.every((window) => (window.observedAt ?? readAt) === readAt) &&
+    exhaustedUsageWindow(provider, nowMs) === undefined
+  );
+};
 
 /** The thread new work is for, which decides whether the prepaid credits the user allowed apply. */
 interface CreditRequest {
@@ -958,11 +976,13 @@ interface CreditRequest {
 }
 
 /** Why a turn may not start on an account: it would spend prepaid credits the user did not allow. */
-export interface CreditRefusal {
-  readonly credits: Exclude<PrepaidCreditSpend.CreditGrantState, "granted">;
-  /** When the plan usage it would run on comes back. */
-  readonly limitedUntil: string;
-}
+export type CreditRefusal =
+  | { readonly credits: "unverified" }
+  | {
+      readonly credits: Exclude<PrepaidCreditSpend.CreditGrantState, "granted">;
+      /** When the plan usage it would run on comes back. */
+      readonly limitedUntil: string;
+    };
 
 /** A turn running on prepaid credits its allowance no longer lets it spend. */
 export interface CreditOverrun {
@@ -972,6 +992,8 @@ export interface CreditOverrun {
 
 /** What a turn refused or stopped for a credit refusal tells the user. */
 export function creditRefusalMessage(refusal: CreditRefusal): string {
+  if (refusal.credits === "unverified")
+    return "Codex could not verify this account's current plan allowance and prepaid balance. Retry after the account's usage refreshes.";
   const used = `This account's plan usage is used up until ${refusal.limitedUntil}, and work on it now would spend its prepaid credits.`;
   switch (refusal.credits) {
     case "not_enabled":
@@ -1141,10 +1163,27 @@ const USAGE_PROBE_TIMEOUT = "20 seconds";
 const CREDIT_READING_MAX_AGE_MS = 2 * 60_000;
 
 /** A Codex account with prepaid credits whose reading is too old to judge spending them from. */
-const creditReadingIsStale = (provider: ServerProvider | undefined, nowMs: number) =>
-  provider?.usageLimits !== undefined &&
-  codexCreditStanding(provider, nowMs) !== null &&
-  !(nowMs - Date.parse(provider.usageLimits.checkedAt) <= CREDIT_READING_MAX_AGE_MS);
+function creditReadingIsStale(provider: ServerProvider | undefined, model: string, nowMs: number) {
+  if (
+    !provider?.usageLimits ||
+    !canSpendCodexPlanCredits(provider) ||
+    codexCreditStanding(provider, nowMs) === null
+  )
+    return false;
+  const limits = provider.usageLimits;
+  const full = fullReadAt(limits);
+  const relevant = limits.windows.filter(
+    (window) =>
+      window.id === "individual" ||
+      usageWindowAppliesToModel(provider, window, canonicalModel(provider, model)),
+  );
+  return [full, creditsReadAt(limits), ...relevant.map((window) => window.observedAt ?? full)].some(
+    (at) => {
+      const age = nowMs - Date.parse(at ?? "");
+      return !(age >= 0 && age <= CREDIT_READING_MAX_AGE_MS);
+    },
+  );
+}
 const MCP_LIST_CONCURRENCY = 4;
 
 /**
@@ -1343,7 +1382,7 @@ export const layer = Layer.effect(
           .pipe(Effect.timeout(USAGE_PROBE_TIMEOUT));
         const provider = providers.find((entry) => entry.instanceId === instanceId);
         const usage = provider?.usageLimits;
-        const readAtMs = Date.parse(usage?.accountReadAt ?? usage?.checkedAt ?? "");
+        const readAtMs = Date.parse(fullReadAt(usage) ?? "");
         if (
           provider === undefined ||
           usage === undefined ||
@@ -1375,12 +1414,14 @@ export const layer = Layer.effect(
     // spending credits it may not.
     const readCreditsFresh = Effect.fn("AccountRouting.readCreditsFresh")(function* (
       instanceId: ProviderInstanceId,
+      model: string,
       nowMs: number,
     ) {
       const providers = yield* providerRegistry.getProviders;
       if (
         !creditReadingIsStale(
           providers.find((entry) => entry.instanceId === instanceId),
+          model,
           nowMs,
         )
       )
@@ -1415,7 +1456,7 @@ export const layer = Layer.effect(
       readonly nowMs: number;
     }) {
       const { provider, nowMs } = input;
-      if (provider.usageLimits === undefined || !isSubscriptionAccount(provider)) return null;
+      if (provider.usageLimits === undefined || !canSpendCodexPlanCredits(provider)) return null;
       const window = exhaustedUsageWindow(provider, nowMs, canonicalModel(provider, input.model));
       if (window === undefined || codexCreditStanding(provider, nowMs) !== "usable") return null;
       const state = PrepaidCreditSpend.creditGrantState(
@@ -1653,9 +1694,11 @@ export const layer = Layer.effect(
       }),
       creditRefusal: Effect.fn("AccountRouting.creditRefusal")(function* (input) {
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const providers = yield* readCreditsFresh(input.instanceId, nowMs);
+        const providers = yield* readCreditsFresh(input.instanceId, input.model, nowMs);
         const provider = providers.find((entry) => entry.instanceId === input.instanceId);
         if (provider === undefined) return null;
+        if (creditReadingIsStale(provider, input.model, nowMs))
+          return { credits: "unverified" as const };
         return yield* judgeCredits({
           settings: yield* serverSettings.getSettings.pipe(Effect.orDie),
           providers,
@@ -1675,7 +1718,7 @@ export const layer = Layer.effect(
         const providers = yield* providerRegistry.getProviders;
         const onCredits = providers.filter(
           (provider) =>
-            isSubscriptionAccount(provider) &&
+            canSpendCodexPlanCredits(provider) &&
             codexCreditStanding(provider, nowMs) === "usable" &&
             exhaustedUsageWindow(provider, nowMs) !== undefined,
         );

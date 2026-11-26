@@ -325,6 +325,7 @@ export const CursorDriver: ProviderDriver<
       cursorKeychainUsageEnabled: settings.cursorKeychainUsageEnabled,
     });
     const snapshot = yield* makeManagedServerProvider<ReturnType<typeof snapshotSettings>>({
+      readsUsageOnRefresh: true,
       resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
       getSettings: host.settings.get.pipe(Effect.map(snapshotSettings)),
       streamSettings: host.settings.changes.pipe(Stream.map(snapshotSettings)),

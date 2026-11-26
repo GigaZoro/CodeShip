@@ -165,9 +165,13 @@ export function isModelSelectionUnavailable(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null | undefined,
   projectId: ProjectId | null,
+  context: "fresh" | "existing" = "existing",
 ): boolean {
   if (!config || !selection) {
     return false;
+  }
+  if (context === "fresh" && selection.quotaAwareAuto === true) {
+    return config.environment?.capabilities.quotaAwareAuto !== true;
   }
   const provider = config.providers.find(
     (candidate) => candidate.instanceId === selection.instanceId,
@@ -232,7 +236,7 @@ export function resolveSelectableModelSelection(
   selection: ModelSelection | null,
   projectId: ProjectId | null,
 ): ModelSelection | null {
-  if (!selection || !config) {
+  if (!selection || !config || selection.quotaAwareAuto === true) {
     return selection;
   }
   const provider = config.providers.find(
@@ -257,7 +261,7 @@ export function resolveDefaultableModelSelection(
   projectId: ProjectId | null,
 ): ModelSelection | null {
   const usable = resolveSelectableModelSelection(config, selection, projectId);
-  if (!usable || !config) {
+  if (!usable || !config || usable.quotaAwareAuto === true) {
     return usable;
   }
   const provider = config.providers.find((candidate) => candidate.instanceId === usable.instanceId);
@@ -404,6 +408,7 @@ export function buildModelOptions(
 
   if (
     fallbackModelSelection &&
+    fallbackModelSelection.quotaAwareAuto !== true &&
     (providerInstanceId === undefined ||
       fallbackModelSelection.instanceId === providerInstanceId) &&
     (!config?.settings?.providerModelPreferences?.[

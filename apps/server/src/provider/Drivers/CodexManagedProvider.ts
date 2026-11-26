@@ -23,6 +23,7 @@ import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapt
 import {
   makeCodexSetSkillEnabled,
   checkCodexProviderStatus,
+  codexPlanFunding,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
   readCodexStoredChatGptLogin,
@@ -190,7 +191,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       profileId: saved.value.clientId,
       status: "authenticated" as const,
       type: "chatgpt",
-      funding: "included" as const,
+      funding: "unknown" as const,
       label: "ChatGPT",
       ...(saved.value.email?.trim() ? { email: saved.value.email.trim() } : {}),
     };
@@ -235,12 +236,16 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           return [{ ...draft, models }, ownLimits] as const;
         }),
       ),
-      Effect.map(([draft, ownLimits]) =>
-        stamp({
+      Effect.map(([draft, ownLimits]) => {
+        const usageLimits = limitsToShow(ownLimits, draft.usageLimits, chatGptUsageLimits);
+        return stamp({
           ...draft,
-          auth: managedAuth,
+          auth: {
+            ...managedAuth,
+            funding: codexPlanFunding(usageLimits.plan),
+          },
           version: draft.version ?? executable.value.version,
-          usageLimits: limitsToShow(ownLimits, draft.usageLimits, chatGptUsageLimits),
+          usageLimits,
           models: draft.models.map((model) => ({
             ...model,
             ...(model.capabilities
@@ -261,8 +266,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 slashCommands: draft.slashCommands.filter((command) => command.name !== "feedback"),
               }
             : {}),
-        }),
-      ),
+        });
+      }),
       Effect.catch((error) =>
         Effect.gen(function* () {
           const ownLimits = yield* limits.read;
@@ -306,6 +311,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.provideService(Path.Path, path),
   );
   const snapshot = yield* makeManagedServerProvider({
+    readsUsageOnRefresh: true,
     resolveMaintenance: () => Effect.succeed({ provider: DRIVER, packageName: null, update: null }),
     getSettings: host.settings.get,
     streamSettings: host.settings.changes,
@@ -421,7 +427,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
-    onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    bindUsageLimits: Effect.suspend(() => snapshot.bindUsageLimits),
     // The check renews a rejected token once and signs the account out when ChatGPT refuses.
     onAuthenticationFailed: snapshot.refresh.pipe(Effect.ignoreCause({ log: true })),
     readSignedOut: runtime.auth.read.pipe(

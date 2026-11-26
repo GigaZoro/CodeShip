@@ -168,7 +168,7 @@ import {
   providerUsageFields,
   publishesUsage,
   usageLimitReason,
-  usageReadingStale,
+  staleUsageObservations,
 } from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -1753,18 +1753,20 @@ const make = Effect.gen(function* () {
         recheckBy,
       );
       if (!includeUsage) return yield* readiness;
-      const shouldRefresh = (provider: ServerProvider) =>
-        includeUsage(provider) &&
-        provider.usageLimits?.unavailable?.reason !== "unsupported" &&
-        usageReadingStale(provider, nowMs);
-      const instanceIds = providers.filter(shouldRefresh).map((provider) => provider.instanceId);
+      const staleObservations = (provider: ServerProvider) =>
+        includeUsage(provider) && provider.usageLimits?.unavailable?.reason !== "unsupported"
+          ? staleUsageObservations(provider, nowMs)
+          : [];
+      const instanceIds = providers
+        .filter((provider) => staleObservations(provider).length > 0)
+        .map((provider) => provider.instanceId);
       if (instanceIds.length === 0) return yield* readiness;
       const [health] = yield* Effect.all(
         [
           readiness,
           providerRegistry.refreshUsageIfStale({
             instanceIds,
-            shouldRefresh,
+            staleObservations,
             waitMs: recheckBy - nowMs,
           }),
         ],

@@ -32,6 +32,7 @@ import {
   ProviderSetupError,
   ProviderThreadId,
   ProviderTurnId,
+  type ProviderUsageLimitsUpdate,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -1474,7 +1475,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     answerRequest?: (method: string, params: unknown) => Effect.Effect<unknown> | undefined,
     onNotification: (method: string) => Effect.Effect<void> = () => Effect.void,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
-    onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
+    onUsageLimits?: Effect.Success<
+      NonNullable<CodexAdapterV2.CodexAdapterV2Options["bindUsageLimits"]>
+    >,
     chatGptSharingLimitReading?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitReading"],
     signInHooks: Pick<
       CodexAdapterV2.CodexAdapterV2Options,
@@ -1554,7 +1557,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         environment: {},
         clientFactory,
         crypto: yield* Crypto.Crypto,
-        ...(onUsageLimits ? { onUsageLimits } : {}),
+        ...(onUsageLimits ? { bindUsageLimits: Effect.succeed(onUsageLimits) } : {}),
         ...(chatGptSharingLimitReading ? { chatGptSharingLimitReading } : {}),
         ...signInHooks,
         fileSystem,
@@ -6308,7 +6311,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ],
         });
         const resetReceipt = yield* Deferred.make<void>();
-        const snapshotReceipt = yield* Deferred.make<void>();
+        const snapshotReceipt = yield* Deferred.make<ProviderUsageLimitsUpdate>();
         const rechecked = yield* Deferred.make<void>();
         const harness = yield* makeCodexReplayHarness(
           transcript,
@@ -6323,7 +6326,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           undefined,
           undefined,
           undefined,
-          () => Deferred.succeed(snapshotReceipt, undefined),
+          (update) => Deferred.succeed(snapshotReceipt, update).pipe(Effect.asVoid),
           "sharingResetAt" in scenario
             ? Effect.succeed({
                 resetAt: scenario.sharingResetAt,
@@ -6355,7 +6358,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if (scenario.name === "matching-details")
           assert.equal(terminal.failure.message, "Detailed provider allowance explanation.");
         if ("resetAfter" in scenario) {
-          yield* Deferred.await(snapshotReceipt);
+          assert.deepEqual((yield* Deferred.await(snapshotReceipt)).windows, [
+            {
+              id: "primary",
+              kind: "session",
+              label: "Session",
+              usedPercent: 100,
+              resetsAt: resetAt,
+              windowDurationMins: 300,
+            },
+          ]);
           assert.isFalse(
             harness.events.some(
               (event) =>

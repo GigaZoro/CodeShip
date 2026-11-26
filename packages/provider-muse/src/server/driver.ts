@@ -132,6 +132,7 @@ export const MuseDriver: ProviderDriver<
     });
     const signedOut = yield* makeMuseSignedOut(museSignedOutMessage(processEnvironment));
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<MuseSettings>>({
+      readsUsageOnRefresh: true,
       // Status refresh respects update checks; explicit updates use the resolver below.
       resolveMaintenance: (options) =>
         host.settings.get.pipe(

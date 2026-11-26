@@ -613,6 +613,7 @@ export function NewTaskDraftScreen(props: {
         selectedEnvironmentServerConfig,
         modelSelection,
         selectedProject.id,
+        "fresh",
       )
     ) {
       const { title, detail } = describeUnavailableModelSelection(

@@ -349,6 +349,7 @@ export interface ChatComposerProps {
   canOperateThread: boolean;
   attachmentUploadsCapabilityKnown: boolean;
   supportsAttachmentUploads: boolean;
+  supportsQuotaAwareAuto: boolean;
   supportsQuestionAttachments: boolean;
   maxFileAttachmentBytes: number | null;
   routeKind: "server" | "draft";
@@ -504,6 +505,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     canOperateThread,
     attachmentUploadsCapabilityKnown,
     supportsAttachmentUploads,
+    supportsQuotaAwareAuto,
     supportsQuestionAttachments,
     maxFileAttachmentBytes,
     routeKind,
@@ -877,7 +879,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerModelOptions,
     selectedModel,
     selectedAutoAccount,
-    selectedQuotaAwareAuto,
+    quotaAwareAutoSelection,
     composerProviderState,
   } = useComposerProviderModel({
     providerStatuses,
@@ -897,8 +899,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedInstanceId:
       activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
   });
-  const noProviderAvailable =
-    selectedProviderEntry === undefined && multipleModelSelections === null;
+  const freshAuto =
+    routeKind === "draft" && multipleModelSelections === null ? quotaAwareAutoSelection : null;
+  const noProviderAvailable = freshAuto
+    ? !supportsQuotaAwareAuto
+    : selectedProviderEntry === undefined && multipleModelSelections === null;
   const providerCatalogPending = noProviderAvailable && !providerCatalogKnown;
   const showProviderUnavailable = noProviderAvailable && !providerCatalogPending;
   const providerSetupInstanceId = noProviderAvailable
@@ -941,10 +946,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? undefined
       : clampManagedRuntimeMode(managedPolicy, compatibleRuntimeMode, compatibleRuntimeModes);
 
-  const providerSendBlockReason = getAntigravitySendBlockReason(
-    selectedProviderEntry?.snapshot,
-    selectedModel,
-  );
+  const providerSendBlockReason = freshAuto
+    ? null
+    : getAntigravitySendBlockReason(selectedProviderEntry?.snapshot, selectedModel);
   const sendDisabledReason =
     externalSendDisabledReason ??
     (multipleModelSelections?.length === 0 ? t("Select at least one model.") : null) ??
@@ -989,12 +993,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       availability: skillAvailability,
     });
 
-  const selectedPromptEffort = composerProviderState.promptEffort;
+  const selectedPromptEffort = freshAuto ? null : composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
-  const selectedModelSelection: ModelSelection = {
+  const selectedModelSelection: ModelSelection = freshAuto ?? {
     ...createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     ...(selectedAutoAccount ? { autoAccount: true } : {}),
-    ...(selectedQuotaAwareAuto ? { quotaAwareAuto: true } : {}),
+    ...(quotaAwareAutoSelection ? { quotaAwareAuto: true } : {}),
   };
   const autoPick = autoModeTarget({
     selection: selectedModelSelection,

@@ -8,6 +8,10 @@ import type * as Fiber from "effect/Fiber";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "./maintenance.ts";
 
+export type UsageLimitsPublisher = (
+  update: ProviderUsageLimitsUpdate & { readonly checkedAt: string },
+) => Effect.Effect<void>;
+
 export interface ManagedServerProvider {
   /** Cached; pass { fresh: true } before executing updates. */
   readonly resolveMaintenance: (options?: {
@@ -23,8 +27,6 @@ export interface ManagedServerProvider {
    */
   readonly refreshAfterRedemption: Effect.Effect<Fiber.Fiber<boolean>>;
   readonly streamChanges: Stream.Stream<ServerProvider>;
-  /** Merge windows by ID; updates with no usable window leave the snapshot untouched. */
-  readonly applyUsageLimits: (
-    update: ProviderUsageLimitsUpdate & { readonly checkedAt: string },
-  ) => Effect.Effect<void>;
+  /** Capture once when the native session opens. Its updates stop when the account changes. */
+  readonly bindUsageLimits: Effect.Effect<UsageLimitsPublisher>;
 }

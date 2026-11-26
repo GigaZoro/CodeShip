@@ -1645,7 +1645,7 @@ describe("composerDraftStore modelSelection", () => {
         settings: DEFAULT_UNIFIED_SETTINGS,
       });
       expect(pinned.autoAccount).toBe(false);
-      expect(pinned.quotaAwareAuto).toBe(false);
+      expect(pinned.quotaAwareAutoSelection).toBeNull();
     },
   );
 
@@ -1673,6 +1673,22 @@ describe("composerDraftStore modelSelection", () => {
     });
     expect(fallback.selectedModel).toBe(h.model().model);
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    const auto = { ...pick, quotaAwareAuto: true };
+    expect(
+      deriveEffectiveComposerModelState({
+        draft: {
+          activeProvider: pick.instanceId,
+          modelSelectionByProvider: { [primary.instanceId]: primary, [pick.instanceId]: auto },
+        },
+        providers: [],
+        selectedProvider: CODEX_DRIVER,
+        selectedInstanceId: CODEX_INSTANCE,
+        requestedInstanceId: CODEX_SECONDARY_INSTANCE,
+        threadModelSelection: h.model(),
+        projectModelSelection: null,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+      }).quotaAwareAutoSelection,
+    ).toEqual(auto);
 
     for (const modelSelection of [
       { ...pick, instanceId: CODEX_INSTANCE },

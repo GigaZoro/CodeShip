@@ -126,6 +126,40 @@ describe("applyUsageLimitsUpdate", () => {
     });
   });
 
+  it("keeps shared scope but drops a reset that passed before the next reading", () => {
+    const previous = {
+      checkedAt,
+      windows: [
+        {
+          ...weekly,
+          model: "a",
+          scope: { models: ["a", "b"] as const },
+          usedPercent: 100,
+          exhaustedSince: checkedAt,
+          resetsAt: "2026-09-03T12:00:02.000Z",
+        },
+      ],
+    };
+    const incoming = { ...weekly, usedPercent: 100, model: "a" };
+    const sparse = applyUsageLimitsUpdate({
+      previous,
+      checkedAt: later,
+      update: { windows: [incoming] },
+    });
+    const full = resolveUsageLimitsAfterProbe({
+      published: previous,
+      probed: { checkedAt: later, windows: [incoming] },
+    });
+    for (const result of [sparse, full]) {
+      expect(result?.windows[0]).toEqual({
+        ...incoming,
+        scope: { models: ["a", "b"] },
+        observedAt: later,
+        exhaustedSince: later,
+      });
+    }
+  });
+
   it("rejects a late meter retired by a full read while accepting an unseen meter after a sparse-only read", () => {
     const full = resolveUsageLimitsAfterProbe({
       published,
@@ -582,6 +616,29 @@ describe("resolveUsageLimitsAfterProbe", () => {
         }),
       ).toBe(lateBalance);
     }
+  });
+
+  it("retains a balance-only update across a failed probe and an older successful read", () => {
+    const newest = "2026-09-03T13:00:00.000Z";
+    const balance = applyUsageLimitsUpdate({
+      previous: undefined,
+      checkedAt: newest,
+      update: { windows: [], credits: { balance: "0", unlimited: false } },
+    });
+    const failed = resolveUsageLimitsAfterProbe({
+      published: balance,
+      probed: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+    });
+    const result = resolveUsageLimitsAfterProbe({
+      published: failed,
+      probed: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [session],
+        credits: { balance: "8", unlimited: false },
+      },
+    });
+    expect(result?.credits?.balance).toBe("0");
+    expect(result?.creditsObservedAt).toBe(newest);
   });
 
   it.each([

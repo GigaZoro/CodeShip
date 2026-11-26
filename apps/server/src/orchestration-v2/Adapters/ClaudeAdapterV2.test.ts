@@ -3064,7 +3064,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
 
   const makeWakeHarnessWithOptions = (options?: {
-    readonly onUsageLimits?: ClaudeAdapterV2.ClaudeAdapterV2Options["onUsageLimits"];
+    readonly onUsageLimits?: Effect.Success<
+      NonNullable<ClaudeAdapterV2.ClaudeAdapterV2Options["bindUsageLimits"]>
+    >;
     readonly onAuthenticationFailed?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticationFailed"];
     readonly onAuthenticated?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticated"];
     readonly scopedLimitNames?: ClaudeAdapterV2.ClaudeAdapterV2Options["scopedLimitNames"];
@@ -3144,7 +3146,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
-        ...(options?.onUsageLimits ? { onUsageLimits: options.onUsageLimits } : {}),
+        ...(options?.onUsageLimits
+          ? { bindUsageLimits: Effect.succeed(options.onUsageLimits) }
+          : {}),
         ...(options?.onAuthenticationFailed
           ? { onAuthenticationFailed: options.onAuthenticationFailed }
           : {}),

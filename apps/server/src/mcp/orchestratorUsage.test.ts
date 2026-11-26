@@ -8,7 +8,11 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
+import {
+  providerUsageFields,
+  publishesUsage,
+  staleUsageObservations,
+} from "./orchestratorUsage.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
 const decodeMeters = Schema.decodeUnknownSync(Schema.Array(OrchestratorMcpUsageMeter));
@@ -413,7 +417,7 @@ describe("providerUsageFields", () => {
   );
 });
 
-describe("usageReadingStale", () => {
+describe("staleUsageObservations", () => {
   const probedLongAgo = "2026-09-03T11:49:00.000Z";
   it.each([
     { name: "no reading", probedAt: probedLongAgo, stale: true },
@@ -456,8 +460,9 @@ describe("usageReadingStale", () => {
     },
   ])("reads again after ten minutes: $name", ({ probedAt, usage, stale = false }) => {
     const overrides = usage === undefined ? {} : { usageLimits: { windows: [], ...usage } };
-    expect(usageReadingStale(provider("codex", { checkedAt: probedAt, ...overrides }), now)).toBe(
-      stale,
-    );
+    expect(
+      staleUsageObservations(provider("codex", { checkedAt: probedAt, ...overrides }), now).length >
+        0,
+    ).toBe(stale);
   });
 });

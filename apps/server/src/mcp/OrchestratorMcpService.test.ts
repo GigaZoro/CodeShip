@@ -2122,10 +2122,11 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.sync(() => providers),
-          refreshUsageIfStale: ({ instanceIds, shouldRefresh }) =>
+          refreshUsageIfStale: ({ instanceIds, staleObservations }) =>
             Effect.sync(() => {
               assert.deepEqual(instanceIds, [stale.instanceId]);
-              assert.isFalse(shouldRefresh(instance("stale", now)));
+              assert.deepEqual(staleObservations(instance("stale", now)), []);
+              assert.deepEqual(staleObservations(stale), ["account", "window:quota"]);
               providers = [instance("stale", now), blocked, noAdapter, fresh, unsupported];
               return providers;
             }),

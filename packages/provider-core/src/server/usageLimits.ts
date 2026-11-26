@@ -89,28 +89,47 @@ function sameMembership(a: ServerProviderUsageWindow, b: ServerProviderUsageWind
   return (
     a.kind === b.kind &&
     !differs(a.model, b.model) &&
-    (aScope === undefined || bScope === undefined || sameScope(aScope, bScope))
+    (aScope === undefined ||
+      bScope === undefined ||
+      sameScope(aScope, bScope) ||
+      (a.model !== undefined &&
+        a.model === b.model &&
+        (a.scope === undefined || b.scope === undefined)))
   );
 }
 
-function sameWindow(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow): boolean {
+function samePeriod(
+  a: ServerProviderUsageWindow,
+  b: ServerProviderUsageWindow,
+  at: string,
+): boolean {
   return (
-    sameMembership(a, b) &&
+    (b.resetsAt !== undefined ||
+      a.resetsAt === undefined ||
+      Date.parse(a.resetsAt) > Date.parse(at)) &&
     !differs(a.resetsAt, b.resetsAt) &&
     !differs(a.windowDurationMins, b.windowDurationMins)
   );
+}
+
+function sameWindow(
+  a: ServerProviderUsageWindow,
+  b: ServerProviderUsageWindow,
+  at: string,
+): boolean {
+  return sameMembership(a, b) && samePeriod(a, b, at);
 }
 
 function observedAt(limits: ServerProviderUsageLimits, window: ServerProviderUsageWindow): string {
   return window.observedAt ?? limits.accountReadAt ?? limits.checkedAt;
 }
 
-function fullReadAt(limits: ServerProviderUsageLimits | undefined): string | undefined {
+export function fullReadAt(limits: ServerProviderUsageLimits | undefined): string | undefined {
   if (!limits || limits.streamOnly || limits.unavailable) return undefined;
   return limits.accountReadAt ?? limits.checkedAt;
 }
 
-function creditsReadAt(limits: ServerProviderUsageLimits | undefined): string | undefined {
+export function creditsReadAt(limits: ServerProviderUsageLimits | undefined): string | undefined {
   return limits?.creditsObservedAt ?? fullReadAt(limits);
 }
 
@@ -121,16 +140,15 @@ function newer(at: string | undefined, than: string | undefined): boolean {
 function withWindowMetadata(
   window: ServerProviderUsageWindow,
   before: ServerProviderUsageWindow | undefined,
+  at: string,
 ): ServerProviderUsageWindow {
   if (!before || !sameMembership(window, before)) return window;
-  const samePeriod =
-    !differs(window.resetsAt, before.resetsAt) &&
-    !differs(window.windowDurationMins, before.windowDurationMins);
+  const retainPeriod = samePeriod(before, window, at);
   return {
     ...(before.model !== undefined ? { model: before.model } : {}),
     ...(before.scope !== undefined ? { scope: before.scope } : {}),
-    ...(samePeriod && before.resetsAt !== undefined ? { resetsAt: before.resetsAt } : {}),
-    ...(samePeriod && before.windowDurationMins !== undefined
+    ...(retainPeriod && before.resetsAt !== undefined ? { resetsAt: before.resetsAt } : {}),
+    ...(retainPeriod && before.windowDurationMins !== undefined
       ? { windowDurationMins: before.windowDurationMins }
       : {}),
     ...window,
@@ -150,7 +168,7 @@ function trackExhaustion(
   const since =
     window.usedPercent < 100
       ? undefined
-      : before !== undefined && before.usedPercent >= 100 && sameWindow(before, window)
+      : before !== undefined && before.usedPercent >= 100 && sameWindow(before, window, checkedAt)
         ? (before.exhaustedSince ?? before.observedAt ?? previous.checkedAt)
         : checkedAt;
   if (window.exhaustedSince === since) return window;
@@ -216,9 +234,12 @@ export function applyUsageLimitsUpdate(input: {
     ) {
       continue;
     }
-    const same = existing !== undefined && sameWindow(existing, window);
+    const same = existing !== undefined && sameWindow(existing, window, observation);
     const next = trackExhaustion(
-      { ...withWindowMetadata(window, existing), usedPercent: clampPercent(window.usedPercent) },
+      {
+        ...withWindowMetadata(window, existing, observation),
+        usedPercent: clampPercent(window.usedPercent),
+      },
       { window: existing, checkedAt: existingObservation ?? previousCheckedAt },
       observation,
     );
@@ -318,7 +339,10 @@ export function resolveUsageLimitsAfterProbe(input: {
     probed.unavailable?.reason === "probeFailed" &&
     published &&
     (!published.unavailable ||
-      (published.unavailable.reason === "probeFailed" && published.windows.length > 0))
+      (published.unavailable.reason === "probeFailed" &&
+        (published.windows.length > 0 ||
+          published.creditsObservedAt !== undefined ||
+          published.credits !== undefined)))
   ) {
     // A probe that read the reset fields although its usage failed knows them better.
     const resetFields = resetFieldsOf(probed);
@@ -341,12 +365,12 @@ export function resolveUsageLimitsAfterProbe(input: {
     const previousObservation = before && published ? observedAt(published, before) : undefined;
     if (before && newer(previousObservation, observation)) {
       merged.set(window.id, {
-        ...withWindowMetadata(before, window),
+        ...withWindowMetadata(before, window, previousObservation!),
         observedAt: previousObservation,
       });
     } else {
       const next = trackExhaustion(
-        withWindowMetadata(window, before),
+        withWindowMetadata(window, before, observation),
         { window: before, checkedAt: previousObservation ?? observation },
         observation,
       );
@@ -370,7 +394,10 @@ export function resolveUsageLimitsAfterProbe(input: {
       const prior = atRead.get(window.id);
       return (
         newer(window.observedAt, accountReadAt) &&
-        usesUpAccount(window, prior && sameWindow(prior, window) ? prior : undefined)
+        usesUpAccount(
+          window,
+          prior && sameWindow(prior, window, window.observedAt!) ? prior : undefined,
+        )
       );
     });
   const creditSource =

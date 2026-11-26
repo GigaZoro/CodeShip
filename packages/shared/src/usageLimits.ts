@@ -117,7 +117,7 @@ function antigravityQuotaFamily(models: ServerProvider["models"], model: string)
 }
 
 /** Whether a rate window covers a canonical model slug. Pass null for account-wide windows. */
-function usageWindowAppliesToModel(
+export function usageWindowAppliesToModel(
   provider: Pick<ServerProvider, "driver" | "models">,
   window: ServerProviderUsageWindow,
   model: string | null,

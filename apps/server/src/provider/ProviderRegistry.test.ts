@@ -43,7 +43,11 @@ import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
-import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  codexWorkspaceFunding,
+  type CodexAppServerProviderSnapshot,
+} from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import { ClaudeTermsReviewRequiredError } from "./Drivers/ClaudeHome.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
@@ -531,6 +535,87 @@ it.layer(
         const unknown = yield* statusWithUsagePlan("unknown");
         assert.strictEqual(unknown.auth.label, "ChatGPT Pro 200 Subscription");
       }),
+    );
+
+    it.effect(
+      "requires destination funding for standard ChatGPT and excludes usage-based entitlements",
+      () =>
+        Effect.gen(function* () {
+          for (const [planType, funding] of [
+            ["pro", "unknown"],
+            ["enterprise_cbp_usage_based", "metered"],
+            ["self_serve_business_usage_based", "metered"],
+          ] as const) {
+            const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+              Effect.succeed(
+                makeCodexProbeSnapshot({
+                  account: {
+                    account: { type: "chatgpt", email: "member@example.test", planType: "pro" },
+                    requiresOpenaiAuth: true,
+                  },
+                  usesNativeOpenAiBackend: true,
+                  rateLimits: { accountId: "workspace", rateLimits: { planType } },
+                }),
+              ),
+            );
+            assert.equal(status.auth.funding, funding);
+            if (planType === "pro") assert.equal(status.auth.fundingScope, "workspace");
+          }
+        }),
+    );
+
+    it.effect(
+      "reads the backend in the destination working directory and binds the active entitlement",
+      () =>
+        Effect.gen(function* () {
+          const provider = {
+            checkedAt: "2026-11-26T12:00:00Z",
+            auth: {
+              status: "authenticated" as const,
+              type: "chatgpt",
+              workspaceId: "acct-live",
+              email: "member@example.test",
+            },
+          };
+          const read = (cwd: string, planType = "plus", accountId = "acct-live") => {
+            const client = {
+              request: (method: string, params: { cwd?: string } | null) => {
+                if (method === "config/read") {
+                  assert.equal(params?.cwd, cwd);
+                  if (cwd === "/redirected")
+                    return Effect.succeed({ config: { model_provider: "paid" } });
+                  if (cwd === "/shadowed")
+                    return Effect.succeed({
+                      config: {
+                        model_providers: { openai: { base_url: "https://metered.example" } },
+                      },
+                    });
+                  return Effect.succeed({ config: {} });
+                }
+                if (method === "account/read")
+                  return Effect.succeed({
+                    requiresOpenaiAuth: true,
+                    account: { type: "chatgpt", email: provider.auth.email, planType: "pro" },
+                  });
+                assert.equal(method, "account/rateLimits/read");
+                return Effect.succeed({
+                  accountId,
+                  rateLimits: { planType, primary: { usedPercent: 10, windowDurationMins: 300 } },
+                });
+              },
+            } as unknown as Parameters<typeof codexWorkspaceFunding>[0];
+            return codexWorkspaceFunding(client, { cwd, provider }, {});
+          };
+          assert.equal(yield* read("/subscription"), "included");
+          assert.equal(yield* read("/redirected"), "unknown");
+          assert.equal(yield* read("/shadowed"), "unknown");
+          assert.equal(yield* read("/subscription", "enterprise_cbp_usage_based"), "metered");
+          assert.equal(yield* read("/subscription", "plus", "other-workspace"), "unknown");
+          assert.equal(yield* read("/subscription", "enterprise"), "unknown");
+          assert.equal(yield* read("/subscription", "edu"), "unknown");
+          assert.equal(yield* read("/subscription", "self_serve_business_prolite"), "included");
+          assert.equal(yield* read("/subscription", "future-plan"), "unknown");
+        }),
     );
 
     it.effect("reads a ChatGPT-shared account's limits only through its own Codex login", () =>
@@ -1266,7 +1351,7 @@ it.layer(
                 getSnapshot: Effect.succeed(pendingProvider),
                 refresh: Ref.get(nextProvider),
                 streamChanges: Stream.empty,
-                applyUsageLimits: () => Effect.void,
+                bindUsageLimits: Effect.succeed(() => Effect.void),
                 refreshAfterRedemption: Effect.die("unused"),
               },
               orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -1402,7 +1487,7 @@ it.layer(
               getSnapshot: Effect.succeed(pendingProvider),
               refresh: Ref.get(nextProvider),
               streamChanges: Stream.empty,
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -1492,6 +1577,28 @@ it.layer(
         slashCommands: [],
         skills: [],
       } as const satisfies ServerProvider;
+
+      it("replaces cached thinking levels when the same model reports no options", () => {
+        const neon = {
+          slug: "gemini-neon",
+          name: "Neon",
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("thinking", "Thinking", [{ id: "xhigh", label: "Extra high" }]),
+            ],
+          }),
+        };
+        const cached = { ...previousProvider, models: [neon] };
+        const refreshed = (capabilities: ServerProvider["models"][number]["capabilities"]) =>
+          ProviderRegistry.mergeProviderSnapshot(cached, {
+            ...previousProvider,
+            models: [{ ...neon, capabilities }],
+          }).models[0]?.capabilities;
+        assert.deepStrictEqual(refreshed(null), neon.capabilities);
+        const noThinking = createModelCapabilities({ optionDescriptors: [] });
+        assert.deepStrictEqual(refreshed(noThinking), noThinking);
+      });
 
       it("clears models after sign-out, disable, uninstall, or an empty successful refresh", () => {
         const emptyProvider = {
@@ -1723,7 +1830,7 @@ it.layer(
               getSnapshot: Effect.succeed(provider),
               refresh: Effect.succeed(provider),
               streamChanges: Stream.empty,
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             snapshotForCwd: () =>
@@ -1825,7 +1932,7 @@ it.layer(
             getSnapshot: Effect.succeed(unhealthyProvider),
             refresh: Effect.succeed(unhealthyProvider),
             streamChanges: Stream.empty,
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           snapshotForCwd: () => Ref.get(scanResult),
@@ -1947,7 +2054,7 @@ it.layer(
                 return provider;
               }),
               streamChanges: Stream.empty,
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2041,7 +2148,7 @@ it.layer(
               yield* Ref.set(snapshot, fresh);
             }),
             streamChanges: Stream.empty,
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2074,7 +2181,8 @@ it.layer(
           const read = (waitMs: number) =>
             registry.refreshUsageIfStale({
               instanceIds: instances.map((entry) => entry.instanceId),
-              shouldRefresh: (provider) => !provider.usageLimits?.windows.length,
+              staleObservations: (provider) =>
+                provider.usageLimits?.windows.length ? [] : ["account"],
               waitMs,
             });
           const first = yield* read(1_000).pipe(Effect.forkChild);
@@ -2089,16 +2197,30 @@ it.layer(
           expect(yield* Ref.get(reads)).toBe(1);
           const missingWeek = registry.refreshUsageIfStale({
             instanceIds: [instanceId],
-            shouldRefresh: (provider) =>
-              !provider.usageLimits?.windows.some((window) => window.kind === "weekly"),
+            staleObservations: (provider) =>
+              provider.usageLimits?.windows.some((window) => window.kind === "weekly")
+                ? []
+                : ["weekly"],
             waitMs: 1_000,
           });
           yield* missingWeek;
           yield* missingWeek;
           expect(yield* Ref.get(reads)).toBe(2);
+          const missingSession = registry.refreshUsageIfStale({
+            instanceIds: [instanceId],
+            staleObservations: (provider) =>
+              provider.usageLimits?.windows.some((window) => window.kind === "session")
+                ? []
+                : ["session"],
+            waitMs: 1_000,
+          });
+          yield* missingSession;
+          yield* missingWeek;
+          yield* missingSession;
+          expect(yield* Ref.get(reads)).toBe(3);
           yield* TestClock.adjust("10 minutes");
           yield* missingWeek;
-          expect(yield* Ref.get(reads)).toBe(3);
+          expect(yield* Ref.get(reads)).toBe(4);
         }).pipe(
           Effect.provide(
             ProviderRegistry.layer.pipe(
@@ -2179,7 +2301,7 @@ it.layer(
             getSnapshot: Effect.succeed(initialProvider),
             refresh: Effect.succeed(refreshedProvider),
             streamChanges: Stream.fromPubSub(changes),
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2281,7 +2403,7 @@ it.layer(
             getSnapshot: Effect.succeed(initialProvider),
             refresh: Effect.succeed(initialProvider),
             streamChanges: Stream.fromPubSub(changes),
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2471,7 +2593,7 @@ it.layer(
               getSnapshot: Effect.succeed(initialProvider),
               refresh: Effect.succeed(authoritativeProvider),
               streamChanges: Stream.fromPubSub(changes),
-              applyUsageLimits: () => Effect.void,
+              bindUsageLimits: Effect.succeed(() => Effect.void),
               refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2576,7 +2698,7 @@ it.layer(
             getSnapshot: Effect.succeed(cachedProvider),
             refresh: Effect.die(new Error("simulated refresh failure")),
             streamChanges: Stream.empty,
-            applyUsageLimits: () => Effect.void,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
             refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],

@@ -145,6 +145,95 @@ const enrichedSnapshotSecond: ServerProvider = {
 };
 
 describe("makeManagedServerProvider", () => {
+  it.effect(
+    "binds sparse observations to the original account across plan and same-plan switches",
+    () =>
+      Effect.gen(function* () {
+        const account = (accountKey: string, plan: string): ServerProvider => ({
+          ...refreshedSnapshot,
+          usageLimits: {
+            checkedAt: refreshedSnapshot.checkedAt,
+            accountKey,
+            plan,
+            credits: { balance: "8", unlimited: false },
+            windows: [],
+          },
+        });
+        const a = account("A", "pro");
+        const snapshot = yield* Ref.make(a);
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: () => false,
+          initialSnapshot: () => Effect.succeed(a),
+          checkProvider: Ref.get(snapshot),
+          refreshOnInterval: false,
+        });
+        yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+        const publishA = yield* provider.bindUsageLimits;
+        const update = {
+          checkedAt: "2026-04-10T01:00:00.000Z",
+          windows: [
+            { id: "session", kind: "session" as const, label: "Session", usedPercent: 100 },
+          ],
+          credits: { balance: "0", unlimited: false },
+        };
+        yield* provider.refresh;
+        yield* publishA(update);
+        assert.strictEqual((yield* provider.getSnapshot).usageLimits?.credits?.balance, "0");
+        for (const next of [account("B", "team"), account("C", "team"), account("C", "pro"), a]) {
+          const old = yield* provider.bindUsageLimits;
+          yield* Ref.set(snapshot, next);
+          const switched = yield* provider.refresh;
+          yield* old(update);
+          yield* publishA(update);
+          assert.strictEqual(yield* provider.getSnapshot, switched);
+          assert.strictEqual(switched.usageLimits?.credits?.balance, "8");
+        }
+        const anonymous = {
+          ...a,
+          usageLimits: { checkedAt: a.checkedAt, plan: "pro", windows: [] },
+        };
+        yield* Ref.set(snapshot, anonymous);
+        yield* provider.refresh;
+        const unverified = yield* provider.bindUsageLimits;
+        const refreshed = yield* provider.refresh;
+        yield* unverified(update);
+        assert.strictEqual(yield* provider.getSnapshot, refreshed);
+      }).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
+  it.effect("retries usage reported by a status check after its first missing reading", () =>
+    Effect.gen(function* () {
+      const reads = yield* Ref.make(0);
+      const provider = yield* makeManagedServerProvider<TestSettings>({
+        resolveMaintenance: () => Effect.die("quota reads need no maintenance"),
+        getSettings: Effect.succeed({ enabled: true }),
+        streamSettings: Stream.empty,
+        haveSettingsChanged: () => false,
+        initialSnapshot: () => Effect.succeed(refreshedSnapshot),
+        readsUsageOnRefresh: true,
+        checkProvider: Ref.updateAndGet(reads, (n) => n + 1).pipe(
+          Effect.map((n) =>
+            n === 1
+              ? refreshedSnapshot
+              : {
+                  ...refreshedSnapshot,
+                  usageLimits: {
+                    checkedAt: refreshedSnapshot.checkedAt,
+                    windows: [
+                      { id: "session", kind: "session", label: "Session", usedPercent: 20 },
+                    ],
+                  },
+                },
+          ),
+        ),
+      });
+      yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+      yield* provider.refreshUsage!;
+      assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 20);
+    }).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
   it.effect("invalidates cached usage and queues one refresh behind an in-flight refresh", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -273,7 +362,7 @@ describe("makeManagedServerProvider", () => {
         yield* Deferred.await(probeStarted);
         assert.isUndefined((yield* provider.getSnapshot).usageLimits?.resetCredits);
         // A streamed update is no read of the account, so it confirms no reset.
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           ...usage("2026-04-10T00:00:02.500Z", 100),
           available: true,
         });
@@ -756,11 +845,14 @@ describe("makeManagedServerProvider", () => {
         );
         yield* Effect.yieldNow;
 
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:05:00.000Z",
           windows: [{ id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 25 }],
         });
-        yield* provider.applyUsageLimits({ checkedAt: "2026-04-10T00:06:00.000Z", windows: [] });
+        yield* (yield* provider.bindUsageLimits)({
+          checkedAt: "2026-04-10T00:06:00.000Z",
+          windows: [],
+        });
 
         const [update] = Array.from(yield* Fiber.join(updatesFiber));
         assert.deepStrictEqual(update?.usageLimits, {
@@ -846,7 +938,7 @@ describe("makeManagedServerProvider", () => {
           usedPercent: 60,
           observedAt: "2026-04-10T00:00:02.000Z",
         } as const;
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:02.000Z",
           windows: [liveWindow],
         });
@@ -900,7 +992,7 @@ describe("makeManagedServerProvider", () => {
           label: "Weekly",
           usedPercent: 20,
         } as const;
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:02.000Z",
           windows: [weekly],
         });
@@ -910,7 +1002,7 @@ describe("makeManagedServerProvider", () => {
           windows: [{ ...weekly, observedAt: "2026-04-10T00:00:02.000Z" }],
           unavailable: failedLimits.unavailable,
         });
-        yield* provider.applyUsageLimits({
+        yield* (yield* provider.bindUsageLimits)({
           checkedAt: "2026-04-10T00:00:03.000Z",
           windows: [{ ...weekly }],
         });

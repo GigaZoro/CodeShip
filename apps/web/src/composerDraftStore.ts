@@ -637,7 +637,7 @@ export interface EffectiveComposerModelState {
   modelOptions: ProviderOptionSelectionsByProvider | null;
   /** The server picks the account; see `ModelSelection.autoAccount`. */
   autoAccount: boolean;
-  quotaAwareAuto: boolean;
+  quotaAwareAutoSelection: ModelSelection | null;
 }
 
 interface ComposerDraftModelState {
@@ -1179,6 +1179,10 @@ export function deriveEffectiveComposerModelState(input: {
   const modelOptions = modelSelectionByProviderToOptions(optionSelections);
   // A draft pick decides alone: picking a model on one account pins the thread to it.
   const selection = activeSelection ?? input.threadModelSelection ?? input.projectModelSelection;
+  const requestedSelection = input.draft?.activeProvider
+    ? input.draft.modelSelectionByProvider?.[input.draft.activeProvider]
+    : undefined;
+  const routing = requestedSelection ?? selection;
 
   return {
     selectedModel,
@@ -1189,7 +1193,7 @@ export function deriveEffectiveComposerModelState(input: {
       selectedModel,
     }),
     autoAccount: selection?.autoAccount === true,
-    quotaAwareAuto: selection?.quotaAwareAuto === true,
+    quotaAwareAutoSelection: routing?.quotaAwareAuto === true ? routing : null,
   };
 }
 

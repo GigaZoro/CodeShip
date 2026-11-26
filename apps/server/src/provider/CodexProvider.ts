@@ -178,6 +178,25 @@ function codexAccountAuthLabel(
   return usageLabel ?? codexPlanLabel(account.planType);
 }
 
+/** Some workspace plans charge for every token, including while ordinary usage is allowed. */
+export function codexPlanFunding(plan: string | null | undefined) {
+  switch (plan) {
+    case "enterprise_cbp_usage_based":
+    case "self_serve_business_usage_based":
+      return "metered" as const;
+    case "free":
+    case "go":
+    case "plus":
+    case "pro":
+    case "prolite":
+    case "promax":
+    case "self_serve_business_prolite":
+      return "included" as const;
+    default:
+      return "unknown" as const;
+  }
+}
+
 export function codexPlanLabel(planType: string | null | undefined): string | undefined {
   switch (planType) {
     case "free":
@@ -686,10 +705,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     models,
     serviceTier: config?.service_tier ?? undefined,
     usesNativeOpenAiBackend:
-      config !== undefined &&
-      (config.model_provider ?? "openai") === "openai" &&
-      config["openai_base_url"] == null &&
-      !input.environment?.OPENAI_BASE_URL?.trim(),
+      config !== undefined && nativeCodexBackend(config, input.environment ?? {}),
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
     ...(storedLogin ? { storedLogin } : {}),
   } satisfies CodexAppServerProviderSnapshot;
@@ -819,6 +835,74 @@ export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCode
   },
 );
 
+function nativeCodexBackend(
+  config: CodexSchema.V2ConfigReadResponse__Config,
+  environment: NodeJS.ProcessEnv,
+) {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const redirected = (values: Record<string, unknown>) =>
+    (values.model_provider != null && values.model_provider !== "openai") ||
+    values.openai_base_url != null ||
+    values.chatgpt_base_url != null ||
+    (isRecord(values.model_providers) && Object.hasOwn(values.model_providers, "openai"));
+  if (
+    redirected(config) ||
+    environment.OPENAI_BASE_URL?.trim() ||
+    environment.CHATGPT_BASE_URL?.trim() ||
+    environment.CODEX_CHATGPT_BASE_URL?.trim()
+  )
+    return false;
+  if (config.profile == null) return true;
+  const profile =
+    typeof config.profile === "string" && isRecord(config.profiles)
+      ? config.profiles[config.profile]
+      : undefined;
+  return isRecord(profile) && !redirected(profile);
+}
+
+export const codexWorkspaceFunding = Effect.fn("CodexProvider.workspaceFunding")(
+  function* (
+    client: CodexClient.CodexAppServerClient["Service"],
+    input: {
+      readonly cwd: string;
+      readonly provider: Pick<ServerProvider, "auth" | "usageLimits" | "checkedAt">;
+    },
+    environment: NodeJS.ProcessEnv,
+  ) {
+    const { provider, cwd } = input;
+    if (
+      !provider.auth.workspaceId ||
+      !provider.auth.email ||
+      provider.auth.status !== "authenticated" ||
+      provider.auth.type !== "chatgpt"
+    )
+      return "unknown" as const;
+    const { config } = yield* client.request("config/read", { cwd, includeLayers: false });
+    if (!nativeCodexBackend(config, environment) || config.forced_login_method === "api")
+      return "unknown" as const;
+    if (
+      config.forced_chatgpt_workspace_id &&
+      ![config.forced_chatgpt_workspace_id].flat().includes(provider.auth.workspaceId)
+    )
+      return "unknown" as const;
+    const { account, requiresOpenaiAuth } = yield* client.request("account/read", {});
+    if (
+      !requiresOpenaiAuth ||
+      account?.type !== "chatgpt" ||
+      !sameCodexAccountEmail(account.email, provider.auth.email)
+    )
+      return "unknown" as const;
+    const read = yield* client.request("account/rateLimits/read", null);
+    if (read.accountId?.trim() !== provider.auth.workspaceId) return "unknown" as const;
+    const limits = codexRateLimitsToLimits({ read, checkedAt: provider.checkedAt });
+    if (provider.usageLimits?.plan !== undefined && limits.plan !== provider.usageLimits.plan)
+      return "unknown" as const;
+    return codexPlanFunding(limits.plan);
+  },
+  Effect.catchCause(() => Effect.succeed("unknown" as const)),
+);
+
 function accountProbeStatus({
   account,
   rateLimits,
@@ -842,13 +926,21 @@ function accountProbeStatus({
   const auth = {
     status: account.account ? ("authenticated" as const) : ("unknown" as const),
     funding:
-      account.account?.type === "apiKey"
+      account.account?.type === "apiKey" ||
+      account.account?.type === "amazonBedrock" ||
+      (account.account?.type === "chatgpt" &&
+        codexPlanFunding(
+          rateLimits && "rateLimits" in rateLimits
+            ? (rateLimits.rateLimitsByLimitId?.codex?.planType ??
+                rateLimits.rateLimits.planType ??
+                account.account.planType)
+            : account.account.planType,
+        ) === "metered")
         ? "metered"
-        : account.account?.type === "chatgpt" &&
-            account.requiresOpenaiAuth &&
-            usesNativeOpenAiBackend
-          ? "included"
-          : "unknown",
+        : "unknown",
+    ...(account.account?.type === "chatgpt" && account.requiresOpenaiAuth && usesNativeOpenAiBackend
+      ? { fundingScope: "workspace" as const }
+      : {}),
     ...(account.account?.type ? { type: account.account?.type } : {}),
     ...(authLabel ? { label: authLabel } : {}),
     ...(authEmail ? { email: authEmail } : {}),

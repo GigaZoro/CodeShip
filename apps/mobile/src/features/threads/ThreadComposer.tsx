@@ -495,6 +495,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       props.serverConfig,
       currentModelSelection,
       props.selectedThread.projectId,
+      props.isDraft ? "fresh" : "existing",
     );
   const selectedProviderStatus = (() => {
     if (!props.serverConfig) return null;

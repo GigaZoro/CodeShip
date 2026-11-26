@@ -28,6 +28,7 @@ import { makeCodexShellEnvironment } from "../codexShellEnvironment.ts";
 import {
   makeCodexSetSkillEnabled,
   checkCodexProviderStatus,
+  codexWorkspaceFunding,
   CODEX_NOT_FOUND_MESSAGE,
   makeMissingCodexProvider,
   makePendingCodexProvider,
@@ -302,7 +303,7 @@ export const CodexDriver: ProviderDriver<
         },
       },
       {
-        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        bindUsageLimits: Effect.suspend(() => snapshot.bindUsageLimits),
         // The probe reads a rejected login as signed out, which moves the run to another account.
         onAuthenticationFailed: Effect.suspend(() => snapshot.refresh).pipe(
           Effect.ignoreCause({ log: true }),
@@ -351,6 +352,7 @@ export const CodexDriver: ProviderDriver<
     );
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CodexSettings>>({
+      readsUsageOnRefresh: true,
       resolveMaintenance,
       getSettings: snapshotSettings.getSettings,
       streamSettings: snapshotSettings.streamSettings,
@@ -423,7 +425,7 @@ export const CodexDriver: ProviderDriver<
             ),
           );
 
-    const openClientIn = (homePath: string) =>
+    const openClientIn = (homePath: string, cwd = process.cwd()) =>
       acquireBinaryPath.pipe(
         Effect.flatMap((binaryPath) =>
           withCodexAppServerClient({
@@ -433,7 +435,7 @@ export const CodexDriver: ProviderDriver<
               resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
               privateMcpSignIns,
             ),
-            cwd: process.cwd(),
+            cwd,
             environment: processEnv,
           }),
         ),
@@ -517,6 +519,12 @@ export const CodexDriver: ProviderDriver<
       accentColor,
       enabled,
       snapshot,
+      fundingForWorkspace: (input) =>
+        openClientIn(effectiveConfig.homePath, input.cwd).pipe(
+          Effect.flatMap((client) => codexWorkspaceFunding(client, input, processEnv)),
+          Effect.scoped,
+          Effect.catchCause(() => Effect.succeed("unknown" as const)),
+        ),
       snapshotForCwd,
       consumeResetCredit,
       auth: auth.controller,

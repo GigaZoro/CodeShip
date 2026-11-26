@@ -20,16 +20,16 @@ export function publishesUsage(provider: ServerProvider): boolean {
   return provider.enabled;
 }
 
-export function usageReadingStale(provider: ServerProvider, now: number): boolean {
+export function staleUsageObservations(provider: ServerProvider, now: number): string[] {
   const limits = provider.usageLimits;
   const old = (at: string | undefined) =>
     at === undefined || now - Date.parse(at) > USAGE_READING_MAX_AGE_MS;
-  return (
-    limits?.streamOnly === true ||
-    old(limits?.accountReadAt ?? limits?.checkedAt) ||
-    limits?.windows.some((window) => window.observedAt !== undefined && old(window.observedAt)) ===
-      true
-  );
+  const accountRead = limits?.accountReadAt ?? limits?.checkedAt;
+  const stale = limits?.streamOnly || old(accountRead) ? ["account"] : [];
+  for (const window of limits?.windows ?? []) {
+    if (old(window.observedAt ?? accountRead)) stale.push(`window:${window.id}`);
+  }
+  return stale;
 }
 
 function meterId(driver: ServerProvider["driver"], window: ServerProviderUsageWindow): string {

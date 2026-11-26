@@ -4810,7 +4810,7 @@ export interface ClaudeAdapterV2Options {
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
-  readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  readonly bindUsageLimits?: ManagedServerProvider["bindUsageLimits"];
   /** A turn ended because Claude rejected this account's login; the account stops taking runs. */
   readonly onAuthenticationFailed?: Effect.Effect<void>;
   /** A turn ran on this account without a login failure, so a recorded failure no longer holds. */
@@ -4929,6 +4929,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     }),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
+        const onUsageLimits = adapterOptions.bindUsageLimits
+          ? yield* adapterOptions.bindUsageLimits
+          : undefined;
         const sessionScope = yield* Effect.scope;
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -8724,8 +8727,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : { overageIncluded: undefined };
             const update = claudeRateLimitEventToUpdate(rateLimitInfo, names);
             const now = yield* DateTime.now;
-            if (update && adapterOptions.onUsageLimits) {
-              yield* adapterOptions.onUsageLimits({
+            if (update && onUsageLimits) {
+              yield* onUsageLimits({
                 ...update,
                 checkedAt: DateTime.formatIso(now),
               });
@@ -12365,7 +12368,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     hooks: Pick<
       ClaudeAdapterV2Options,
       | "scopedLimitNames"
-      | "onUsageLimits"
+      | "bindUsageLimits"
       | "onAuthenticationFailed"
       | "onAuthenticated"
       | "prepareHome"
