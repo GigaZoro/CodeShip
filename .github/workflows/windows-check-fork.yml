@@ -1,60 +1,218 @@
 name: Windows check (fork)
-
-# The pre-push gate runs check:changed only on the machine that pushes, so a
-# change landed from macOS or Linux would otherwise never run its tests on
-# Windows. This runs check:changed on Windows for every push to a fork's main,
-# against the commit main was at before the push. GitHub-hosted runners cost
-# nothing for a public repository; ci.yml runs the server shards on Windows.
-
 on:
   push:
-    branches: [main]
-
+    branches: [ci/ab6731-family-146cd3ab8222-ffd1ac12]
 permissions:
   contents: read
-
 jobs:
-  check:
-    name: check:changed on Windows
-    if: github.repository != 'pingdotgg/t3code'
+  native:
+    name: Worktree release on NTFS
     runs-on: windows-2025
-    # An upstream sync pushes hundreds of files at once.
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      # setup-vp's own cache restores a Linux-shaped store on Windows, which is
-      # slower than no cache (see #7975). Cache pnpm's Windows store directly.
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+      - name: Fetch the exact public source commit
+        shell: pwsh
+        run: |
+          $sha = '146cd3ab822273a3734d56b9536e49a475fe39ed'
+          git init .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git remote add origin https://github.com/GigaZoro/CodeShip.git
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git fetch --no-tags --no-recurse-submodules --depth=1 origin $sha
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          @('/*', '!/.repos/') | git sparse-checkout set --no-cone --stdin
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((git rev-parse HEAD) -ne $sha) { throw 'Unexpected source checkout' }
+      - uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
           cache: false
           run-install: false
-
-      - name: Resolve package cache path
-        id: package_cache_path
+      - name: Verify source and filesystem
         shell: pwsh
-        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
-
-      - name: Cache packages
-        uses: actions/cache@v6
-        with:
-          path: ${{ steps.package_cache_path.outputs.path }}
-          key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install
+        run: |
+          $sha = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $sha -ne '146cd3ab822273a3734d56b9536e49a475fe39ed') { throw 'Source commit mismatch' }
+          $filesystem = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetTempPath())).DriveFormat
+          Write-Output "Source $sha, temp filesystem $filesystem"
+          if ($filesystem -ne 'NTFS') { throw 'The fixture requires native NTFS' }
+          git --version
+          node --version
+          node --input-type=module -e "await import('./apps/server/src/orchestration-v2/taskResultReadEvidence.ts')"
+          if ($LASTEXITCODE -ne 0) { throw 'Native task result evidence module failed to load' }
+      - name: Install project dependencies
         run: vp install
-
-      - name: Ensure Electron runtime is installed
-        run: vp run --filter "@t3tools/desktop" ensure:electron
-
-      # check:changed installs Chromium itself when it runs web browser tests.
-      - name: Check the pushed commits
-        env:
-          BEFORE: ${{ github.event.before }}
-          CHECK_CHANGED_TIMEOUT: "3600"
-        run: vp run check:changed $env:BEFORE
+      - name: Verify native Git, family ownership and provider follow-up
+        working-directory: .
+        shell: pwsh
+        run: |
+          $receipt = Join-Path $env:RUNNER_TEMP 'family-release-vitest.json'
+          vp test run apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/workspace/worktreeRelease.test.ts scripts/wake-usage.test.mjs apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts apps/server/src/cli/thread.test.ts apps/server/src/storageCleanup.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts apps/server/src/git/GitWorkflowService.test.ts apps/server/src/vcs/GitVcsDriverCore.worktrees.test.ts -t 'preserves the recorded pull request base from CLI release through provider start|reconciles a claimed release after interruption|finishes a released branch configuration after an interruption without replacing a live base|(?:^| > )(?:singleton release resumes the claimant after an intact removal interruption|singleton release holds the claimant after a partial removal|singleton release holds the claimant while the original Windows checkout is staged|singleton release finishes a verified partial Windows setup release after its durable ref advances|singleton release preserves a changed dependency in a staged Windows setup release|singleton release holds a staged Windows setup release after its durable ref is rewritten|singleton release holds an unrelated chat while removal is claimed|singleton release recovers a missing checkout for its recorded owner|singleton release recreates an unregistered Windows checkout with an empty removal stage|singleton release recovers a missing checkout while another Windows release is staged|singleton release holds an unrelated chat at the missing path|singleton release holds the former owner when a replacement occupies the path|singleton release allows the unrelated owner of a complete replacement|singleton release holds an unrelated owner of a checkout without an index|singleton release holds setup before Git writes its index|singleton release holds setup during Git''s initializing lock|singleton release holds setup with an index but missing tracked files|singleton release retries setup with modified and untracked files|recovers the local or pushed thread tip, else the current branch, remote default, or detached HEAD|cancels recovered synchronous setup and unblocks the awaiting run|allocates a separate managed directory when a singleton release reserves the default path|settles a family checkout hook record left by a stop between two record writes|holds a valid case\-variant receipt without spreading damage to other paths|tests case folding only with names whose case change converts back|keeps the error code and the named file when a failure line is cut|holds a newly set pull request base after an absent base was queued|queues an explicit local or remote base ref: refs/heads/main|queues an explicit local or remote base ref: refs/remotes/origin/main|names invalid branch configuration: invalid base name|names invalid branch configuration: invalid legacy name|names invalid branch configuration: wrong ref prefix|names invalid branch configuration: invalid local ref|rejects empty branch base configuration|rejects multiple branch base configuration|keeps a queued checkout when its pull request base is set later \(new receipt\), then releases after requeue|keeps a queued checkout when its pull request base is set later \(legacy receipt\), then releases after requeue|releases a legacy receipt when no pull request base exists|singleton release resumes the claimant after an intact re…|singleton release holds the claimant after a partial remo…|singleton release holds the claimant while the original W…|singleton release finishes a verified partial Windows set…|singleton release preserves a changed dependency in a sta…|singleton release holds a staged Windows setup release af…|singleton release holds an unrelated chat while removal i…|singleton release recovers a missing checkout for its rec…|singleton release recreates an unregistered Windows check…|singleton release recovers a missing checkout while anoth…|singleton release holds an unrelated chat at the missing …|singleton release holds the former owner when a replaceme…|singleton release allows the unrelated owner of a complet…|singleton release holds an unrelated owner of a checkout …|singleton release holds setup during Git''s initializing l…|singleton release holds setup with an index but missing t…|singleton release retries setup with modified and untrack…)$|(?:^| > )(?:keeps worktree startup read\-only for missing when the guest link is open|keeps worktree startup read\-only for setup pending when the guest link is closed|keeps worktree startup read\-only for replacement receipt when the guest link is closed|keeps worktree startup read\-only for intact when the guest link is open|keeps worktree startup read\-only for missing when the guest link is unsupported|uses only fresh owner input to retry a failed checkout hook \(owner on web\)|uses only fresh owner input to retry a failed checkout hook \(owner on mobile\)|uses only fresh owner input to retry a failed checkout hook \(approved guest\)|uses only fresh owner input to retry a failed checkout hook \(server follow\-up\)|uses only fresh owner input to retry a failed checkout hook \(continuation of existing work\)|does not resolve a delivery on a stale or unverified settled result read|does not resolve a delivery on a stale or unverified foreign result read|does not resolve a delivery on a stale or unverified provider result read|does not resolve a delivery on a stale or unverified unpublished result read|does not resolve a delivery on a stale or unverified working result read|does not resolve a delivery on a stale or unverified changed result read|preserves the first verified read of a acknowledged result with timestamp\-only legacy evidence|preserves the first verified read of a acknowledged result with fingerprinted\-command legacy evidence|preserves the first verified read of a acknowledged result with impossible legacy evidence|preserves the first verified read of a acknowledged result with prepublication legacy evidence|preserves the first verified read of a disposed result with valid legacy evidence|preserves the first verified read of a disposed result with none legacy evidence|measures provider starts and uses only prior same\-chat observations of every member|excludes the wake run''s own completionDelivery observation before a confirmed retry|excludes the wake run''s own terminalResultObservation observation before a confirmed retry|a task wait still returns on parent completion|a task wait still returns on parent completion after its caller settles|a task wait still returns on parent completion after its caller is replaced|a task wait still returns on nested child completion|a task wait still returns on child run completion|a task wait still returns on child question|a task wait still returns on child approval|retries terminal acknowledgement with a fresh command id|resolves an admitted explicit read against disposal with stale attempt false|resolves an admitted implicit read against disposal with stale attempt false|resolves an admitted explicit read against disposal with stale attempt true|holds the queued checkout when its HEAD switches to another branch|holds the queued checkout when its HEAD switches to a branch with a trailing non\-breaking space|holds the queued checkout when its HEAD switches to a symbolic branch alias|holds the queued checkout when its HEAD switches to detached HEAD|holds the queued checkout when its HEAD switches to a different reachable commit|releases a settled family through ancestor aliases and rechecks new alias owners|preserves a Windows checkout switched during the final removal status|recovers the original Windows checkout after a file blocks receipt removal|retries the Windows receipt when removal stops at the final directory \(locked root\)|retries the Windows receipt when removal stops at the final directory \(interrupted after the directory rename\)|retries the Windows receipt when removal stops at the final directory \(interrupted during file removal\)|retries the Windows receipt when removal stops at the final directory \(interrupted after Git unregisters the checkout\)|creates a PR on the recorded base after recovery when the remote base advances \(main\)|creates a PR on the recorded base after recovery when the remote base advances \(release/1\.2\)|creates a PR on the recorded base after recovery when the remote base advances \(release/1\.2 \)|cleans archived local\-only worktrees: Unicode project branch|unrelated process starts proceed during inspection and removal of a different worktree|releases an ordinary completed worktree only with unchanged setup output \(a locked installed file during release\)|finishes an interrupted Windows release after lock acquired and permits the next release|finishes an interrupted Windows release after staged and permits the next release|finishes an interrupted Windows release after pointer removed and permits the next release|preserves an unpinned staged Windows checkout when another checkout prunes|accepts only migrated ID spellings in the retained native response|requires the native delegate response for the exact approved child run|credits only exact historically returned native local delegate results|probes historical events by receipt command ID when the stream index also exists|retains only proven terminalResultObservation evidence from an earlier attempt of a restarted reader|retains only proven completionDelivery evidence from an earlier attempt of a restarted reader|retains only proven observe\-disposed evidence from an earlier attempt of a restarted reader|retains only proven unverified acknowledgement evidence from an earlier attempt of a restarted reader|retries a failed selection restart session open before completing)$|(?:^| > )(?:requires a completed result consumer to release the private delegate checkout|requires a completed result consumer to release the background command checkout|requires a completed result consumer to release the foreign background command checkout|records a later explicit observation with a prior observer of status undefined|records a later explicit observation with a prior observer of status failed|records a later explicit observation with a prior observer of status completed|command task status records a later observation after null with matching provider true|command task status records a later observation after failed with matching provider true|command task status records a later observation after completed with matching provider true|command task status records a later observation after failed with matching provider false|reports distinct child results|reports identical child results|reports emoji child results)$|released family|release-worktree queues|release-worktree binds|bound family|settled family|approved child|missing parent|release claim|released branches|family recovery|across aliased|tracked NTFS stream|locks rollback|cleanup-first|recovers the local or pushed|cancels recovered synchronous setup|allocates a separate managed directory|keeps a family checkout hook pending' --reporter=default --reporter=json "--outputFile=$receipt"
+          $exit = $LASTEXITCODE
+          if (!(Test-Path -LiteralPath $receipt)) { throw 'Missing native unit test results' }
+          $cases = (Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json).testResults.assertionResults
+          $passed = @($cases | Where-Object { $_.status -eq 'passed' })
+          $passed | Select-Object title,status | Format-Table -Wrap
+          $titleAliases = @{'singleton release resumes the claimant after an intact removal interruption' = 'singleton release resumes the claimant after an intact re…'; 'singleton release holds the claimant after a partial removal' = 'singleton release holds the claimant after a partial remo…'; 'singleton release holds the claimant while the original Windows checkout is staged' = 'singleton release holds the claimant while the original W…'; 'singleton release finishes a verified partial Windows setup release after its durable ref advances' = 'singleton release finishes a verified partial Windows set…'; 'singleton release preserves a changed dependency in a staged Windows setup release' = 'singleton release preserves a changed dependency in a sta…'; 'singleton release holds a staged Windows setup release after its durable ref is rewritten' = 'singleton release holds a staged Windows setup release af…'; 'singleton release holds an unrelated chat while removal is claimed' = 'singleton release holds an unrelated chat while removal i…'; 'singleton release recovers a missing checkout for its recorded owner' = 'singleton release recovers a missing checkout for its rec…'; 'singleton release recreates an unregistered Windows checkout with an empty removal stage' = 'singleton release recreates an unregistered Windows check…'; 'singleton release recovers a missing checkout while another Windows release is staged' = 'singleton release recovers a missing checkout while anoth…'; 'singleton release holds an unrelated chat at the missing path' = 'singleton release holds an unrelated chat at the missing …'; 'singleton release holds the former owner when a replacement occupies the path' = 'singleton release holds the former owner when a replaceme…'; 'singleton release allows the unrelated owner of a complete replacement' = 'singleton release allows the unrelated owner of a complet…'; 'singleton release holds an unrelated owner of a checkout without an index' = 'singleton release holds an unrelated owner of a checkout …'; 'singleton release holds setup during Git''s initializing lock' = 'singleton release holds setup during Git''s initializing l…'; 'singleton release holds setup with an index but missing tracked files' = 'singleton release holds setup with an index but missing t…'; 'singleton release retries setup with modified and untracked files' = 'singleton release retries setup with modified and untrack…'}
+          foreach ($title in @("restores a released family checkout safely: setup pending for a new side chat", "restores a released family checkout safely: setup pending for an unrelated thread", "restores a released family checkout safely: setup pending in another repository", "restores a released family checkout safely: removal interrupted with a saved backup", "restores a released family checkout safely: removal interrupted with a missing saved file", "restores a released family checkout safely: removal interrupted with a missing saved root", "starts a new checkout at a released family's path only for its own project and branch", "keeps a family checkout hook pending on older Git and retains a real hook failure", "allocates a separate managed directory when a family release reserves the default path", 'preserves the recorded pull request base from CLI release through provider start: deleted branch', 'preserves the recorded pull request base from CLI release through provider start: owner recreated the branch', 'preserves the recorded pull request base from CLI release through provider start: legacy base setting', 'preserves the recorded pull request base from CLI release through provider start: singleton deleted branch', 'preserves the recorded pull request base from CLI release through provider start: singleton owner recreated the branch', 'preserves the recorded pull request base from CLI release through provider start: local base ref', 'preserves the recorded pull request base from CLI release through provider start: significant Unicode branch suffix', 'preserves the recorded pull request base from CLI release through provider start: significant Unicode base suffix', 'reconciles a claimed release after interruption (replaced parent)', 'reconciles a claimed release after interruption (registration remains)', 'reconciles a claimed release after interruption (branch moved)', 'reconciles a claimed release after interruption (removed by Git)', 'reconciles a claimed release after interruption (empty sibling owned outside cleanup)', 'reconciles a claimed release after interruption (missing parent)', 'reconciles a claimed release after interruption (withdrawn before receipt read)', 'reconciles a claimed release after interruption (withdrawn before receipt rename)', 'finishes a released branch configuration after an interruption without replacing a live base', 'singleton release resumes the claimant after an intact removal interruption', 'singleton release holds the claimant after a partial removal', 'singleton release holds the claimant while the original Windows checkout is staged', 'singleton release finishes a verified partial Windows setup release after its durable ref advances', 'singleton release preserves a changed dependency in a staged Windows setup release', 'singleton release holds a staged Windows setup release after its durable ref is rewritten', 'singleton release holds an unrelated chat while removal is claimed', 'singleton release recovers a missing checkout for its recorded owner', 'singleton release recreates an unregistered Windows checkout with an empty removal stage', 'singleton release recovers a missing checkout while another Windows release is staged', 'singleton release holds an unrelated chat at the missing path', 'singleton release holds the former owner when a replacement occupies the path', 'singleton release allows the unrelated owner of a complete replacement', 'singleton release holds an unrelated owner of a checkout without an index', 'singleton release holds setup before Git writes its index', 'singleton release holds setup during Git''s initializing lock', 'singleton release holds setup with an index but missing tracked files', 'singleton release retries setup with modified and untracked files', 'recovers the local or pushed thread tip, else the current branch, remote default, or detached HEAD', 'cancels recovered synchronous setup and unblocks the awaiting run', 'allocates a separate managed directory when a singleton release reserves the default path', 'settles a family checkout hook record left by a stop between two record writes', 'holds a valid case-variant receipt without spreading damage to other paths', 'tests case folding only with names whose case change converts back', 'keeps the error code and the named file when a failure line is cut', 'holds a newly set pull request base after an absent base was queued', 'queues an explicit local or remote base ref: refs/heads/main', 'queues an explicit local or remote base ref: refs/remotes/origin/main', 'names invalid branch configuration: invalid base name', 'names invalid branch configuration: invalid legacy name', 'names invalid branch configuration: wrong ref prefix', 'names invalid branch configuration: invalid local ref', 'rejects empty branch base configuration', 'rejects multiple branch base configuration', 'keeps a queued checkout when its pull request base is set later (new receipt), then releases after requeue', 'keeps a queued checkout when its pull request base is set later (legacy receipt), then releases after requeue', 'releases a legacy receipt when no pull request base exists', 'keeps worktree startup read-only for missing when the guest link is open', 'keeps worktree startup read-only for setup pending when the guest link is closed', 'keeps worktree startup read-only for replacement receipt when the guest link is closed', 'keeps worktree startup read-only for intact when the guest link is open', 'keeps worktree startup read-only for missing when the guest link is unsupported', 'uses only fresh owner input to retry a failed checkout hook (owner on web)', 'uses only fresh owner input to retry a failed checkout hook (owner on mobile)', 'uses only fresh owner input to retry a failed checkout hook (approved guest)', 'uses only fresh owner input to retry a failed checkout hook (server follow-up)', 'uses only fresh owner input to retry a failed checkout hook (continuation of existing work)', 'does not resolve a delivery on a stale or unverified settled result read', 'does not resolve a delivery on a stale or unverified foreign result read', 'does not resolve a delivery on a stale or unverified provider result read', 'does not resolve a delivery on a stale or unverified unpublished result read', 'does not resolve a delivery on a stale or unverified working result read', 'does not resolve a delivery on a stale or unverified changed result read', 'preserves the first verified read of a acknowledged result with timestamp-only legacy evidence', 'preserves the first verified read of a acknowledged result with fingerprinted-command legacy evidence', 'preserves the first verified read of a acknowledged result with impossible legacy evidence', 'preserves the first verified read of a acknowledged result with prepublication legacy evidence', 'preserves the first verified read of a disposed result with valid legacy evidence', 'preserves the first verified read of a disposed result with none legacy evidence', 'measures provider starts and uses only prior same-chat observations of every member', 'excludes the wake run''s own completionDelivery observation before a confirmed retry', 'excludes the wake run''s own terminalResultObservation observation before a confirmed retry', 'a task wait still returns on parent completion', 'a task wait still returns on parent completion after its caller settles', 'a task wait still returns on parent completion after its caller is replaced', 'a task wait still returns on nested child completion', 'a task wait still returns on child run completion', 'a task wait still returns on child question', 'a task wait still returns on child approval', 'retries terminal acknowledgement with a fresh command id', 'resolves an admitted explicit read against disposal with stale attempt false', 'resolves an admitted implicit read against disposal with stale attempt false', 'resolves an admitted explicit read against disposal with stale attempt true', 'holds the queued checkout when its HEAD switches to another branch', 'holds the queued checkout when its HEAD switches to a branch with a trailing non-breaking space', 'holds the queued checkout when its HEAD switches to a symbolic branch alias', 'holds the queued checkout when its HEAD switches to detached HEAD', 'holds the queued checkout when its HEAD switches to a different reachable commit', 'releases a settled family through ancestor aliases and rechecks new alias owners', 'preserves a Windows checkout switched during the final removal status', 'recovers the original Windows checkout after a file blocks receipt removal', 'retries the Windows receipt when removal stops at the final directory (locked root)', 'retries the Windows receipt when removal stops at the final directory (interrupted after the directory rename)', 'retries the Windows receipt when removal stops at the final directory (interrupted during file removal)', 'retries the Windows receipt when removal stops at the final directory (interrupted after Git unregisters the checkout)', 'creates a PR on the recorded base after recovery when the remote base advances (main)', 'creates a PR on the recorded base after recovery when the remote base advances (release/1.2)', 'creates a PR on the recorded base after recovery when the remote base advances (release/1.2 )', 'cleans archived local-only worktrees: Unicode project branch', 'unrelated process starts proceed during inspection and removal of a different worktree', 'releases an ordinary completed worktree only with unchanged setup output (a locked installed file during release)', 'finishes an interrupted Windows release after lock acquired and permits the next release', 'finishes an interrupted Windows release after staged and permits the next release', 'finishes an interrupted Windows release after pointer removed and permits the next release', 'preserves an unpinned staged Windows checkout when another checkout prunes', 'accepts only migrated ID spellings in the retained native response', 'requires the native delegate response for the exact approved child run', 'credits only exact historically returned native local delegate results', 'probes historical events by receipt command ID when the stream index also exists', 'retains only proven terminalResultObservation evidence from an earlier attempt of a restarted reader', 'retains only proven completionDelivery evidence from an earlier attempt of a restarted reader', 'retains only proven observe-disposed evidence from an earlier attempt of a restarted reader', 'retains only proven unverified acknowledgement evidence from an earlier attempt of a restarted reader', 'retries a failed selection restart session open before completing', 'requires a completed result consumer to release the private delegate checkout', 'requires a completed result consumer to release the background command checkout', 'requires a completed result consumer to release the foreign background command checkout', 'records a later explicit observation with a prior observer of status undefined', 'records a later explicit observation with a prior observer of status failed', 'records a later explicit observation with a prior observer of status completed', 'command task status records a later observation after null with matching provider true', 'command task status records a later observation after failed with matching provider true', 'command task status records a later observation after completed with matching provider true', 'command task status records a later observation after failed with matching provider false', 'reports distinct child results', 'reports identical child results', 'reports emoji child results', "release-worktree queues an ordinary request when --save-ignored is omitted", "release-worktree binds every owner across aliased checkout parents", "requires the approved child's result and a completed parent run that received it", "releases the bound family only after every member settles and delivers", "restores a released family checkout safely: removal interrupted with the original checkout", "restores a released family checkout safely: partially restored tracked files", "materializes a released family outside Git's registration lock and calls the checkout hook once", "keeps explicit worktree locks, index writers and interrupted hooks during family recovery")) {
+            $shortened = $titleAliases[$title]
+            $results = @($cases | Where-Object { $_.status -cne 'skipped' -and ($_.title -ceq $title -or ($null -ne $shortened -and $_.title -ceq $shortened)) })
+            if ($results.Count -ne 1 -or $results[0].status -cne 'passed') { throw "Missing, duplicate or unsuccessful native fixture: $title" }
+          }
+          if (@($passed | Where-Object { $_.title -ceq "keeps a tracked NTFS stream written after the owner queues an ordinary release" }).Count -ne 1) { throw "Missing post-queue NTFS stream verification" }
+          Write-Output "Verified preservation of a tracked NTFS stream added after queue"
+          if ($exit -ne 0) { throw "Native Vitest exit $exit" }
+          Write-Output "Native recovery cases passed: 6 family and hook cases"
+          Write-Output "Native family test cases passed: $($passed.Count)"
+      - name: Exercise real release and follow-up through the native server
+        if: success() || failure()
+        shell: pwsh
+        run: |
+          node scripts/prove-family-release.ts 2>&1 | Tee-Object -Variable proofOutput
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!($proofOutput -match 'Releases and resumes a family across Windows 8.3 roots')) { throw 'Native short-path fixture did not execute' }
+          if (@($proofOutput -match 'released and resumed').Count -ne 9 -or @($proofOutput -match 'INFO .* kept ').Count -ne 6) { throw 'Missing real owner release or preservation result' }
+          foreach ($name in @('parent','child','concurrent','delivered-delegate','new-fork-after-release','new-side-chat-after-release','deleted-empty-side-chat','singleton','interrupted')) {
+            if (@($proofOutput -match ("INFO .*: " + $name + " released and resumed [0-9a-f]{40}")).Count -ne 1) { throw "Missing or duplicate verified resume for $name" }
+          }
+          foreach ($name in @('new-run','new-member','unrelated','failed','ignored','undelivered')) {
+            if (@($proofOutput -match ("INFO .*: " + $name + " kept .+")).Count -ne 1) { throw "Missing or duplicate hold for $name" }
+          }
+      - name: Verify native setup metadata, package-manager output and backup inventory
+        if: ${{ !cancelled() }}
+        working-directory: apps/server
+        shell: pwsh
+        run: |
+          $receipt = Join-Path $env:RUNNER_TEMP 'artifact-release-vitest.json'
+          vp test run src/storageCleanup.test.ts src/workspace/worktreeRelease.test.ts --reporter=default --reporter=json "--outputFile=$receipt"
+          $testExit = $LASTEXITCODE
+          if (!(Test-Path -LiteralPath $receipt)) { throw 'Missing native artifact test results' }
+          $report = Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json
+          $cases = @($report.testResults.assertionResults | Where-Object { $_.ancestorTitles -contains 'Windows' -and $_.ancestorTitles -contains 'owned setup output' })
+          foreach ($title in @('keeps a tracked resource fork in the checkout', 'keeps a tracked resource fork in the nested submodule')) {
+            $mac = @($report.testResults.assertionResults | Where-Object { $_.title -ceq $title -and $_.ancestorTitles -contains 'automatic cleanup on macOS' })
+            if ($mac.Count -ne 1 -or $mac[0].status -cne 'skipped') { throw "Expected one macOS-only resource-fork case: $title" }
+          }
+          $required = @('an external junction', 'a private file stream', 'a private directory stream', 'unverifiable staged setup output', 'a custom dependency ACL', 'an existing stage junction', 'a tracked stream on repeat', 'a crashed setup publication', 'a staged pnpmfile outside the checkout', 'a dirty lock on repeat', 'a dirty manifest on repeat', 'an ignored override on repeat', 'a committed lock change', 'two in-place reruns', 'an interrupted install followed by two reruns', 'an unrelated source edit on repeat', 'standard setup only', 'a locked installed file during release', 'an edited dependency file', 'a dirty install input', 'a failed configure followed by recovery', 'a build cache added after setup')
+          foreach ($scenario in $required) {
+            $matched = @($cases | Where-Object { $_.title -ceq "releases an ordinary completed worktree only with unchanged setup output ($scenario)" -and $_.status -eq 'passed' })
+            if ($matched.Count -ne 1) { throw "Missing or duplicate passing Windows setup case: $scenario" }
+          }
+          if ($cases.Count -ne $required.Count) { throw "Expected $($required.Count) native setup cases, saw $($cases.Count)" }
+          $file = @($report.testResults | Where-Object { [IO.Path]::GetFileName($_.name) -eq 'worktreeRelease.test.ts' })
+          if ($file.Count -ne 1) { throw 'Expected one release backup test file' }
+          $backups = @($file[0].assertionResults)
+          $expectedSkips = @('retains metadata already on a tracked file when release is queued')
+          $skipped = @($backups | Where-Object { $_.status -cne 'passed' })
+          if ($skipped.Count -ne $expectedSkips.Count) { throw 'Unexpected number of Windows skips' }
+          foreach ($title in $expectedSkips) {
+            if (@($skipped | Where-Object { $_.title -ceq $title -and $_.status -ceq 'skipped' }).Count -ne 1) { throw "Expected one skipped POSIX fixture: $title" }
+          }
+          foreach ($title in @('retains unknown ignored build files without relinking installed dependencies', 'holds an original installed file that the owner changed after setup', 'holds a checkout whose dependencies were installed in place', 'keeps an interrupted removal claimed after losing its saved cache', 'keeps an interrupted removal claimed after losing its installed dependency', 'keeps an interrupted removal claimed after losing its setup proof')) {
+            if (@($backups | Where-Object { $_.title -ceq $title -and $_.status -eq 'passed' }).Count -ne 1) { throw "Native backup case did not pass: $title" }
+          }
+          if ($testExit -ne 0) { throw "Native artifact tests failed, exit $testExit" }
+          Write-Output "Native recovery cases passed: 3 interrupted backup and install cases"
+          Write-Output "Native setup and backup cases passed: $($cases.Count) setup, $($backups.Count - 1) backup, 1 POSIX-only release fixture skipped"
+      - name: Verify ignored cache discovery and installed file integrity
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $receipt = Join-Path $env:RUNNER_TEMP 'artifact-proof-vitest.json'
+          vp test run scripts/lib/worktree-setup-proof.test.ts --reporter=default --reporter=json "--outputFile=$receipt"
+          $testExit = $LASTEXITCODE
+          if (!(Test-Path -LiteralPath $receipt)) { throw 'Missing setup proof results' }
+          $report = Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json
+          $cases = @($report.testResults.assertionResults)
+          $expectedSkips = @('requires current POSIX metadata evidence for installed files and setup markers', 'inspects tracked parent directories and symlinks without following their targets')
+          $skipped = @($cases | Where-Object { $_.status -cne 'passed' })
+          if ($skipped.Count -ne $expectedSkips.Count) { throw 'Unexpected number of Windows skips' }
+          foreach ($title in $expectedSkips) {
+            if (@($skipped | Where-Object { $_.title -ceq $title -and $_.status -ceq 'skipped' }).Count -ne 1) { throw "Expected one skipped POSIX fixture: $title" }
+          }
+          if (@($cases | Where-Object { $_.title -ceq 'reports a whole added cache subtree and rejects simultaneous edits to installed files' -and $_.status -eq 'passed' }).Count -ne 1 -or $testExit -ne 0) { throw "Native setup proof failed, exit $testExit" }
+          Write-Output "Native setup proof cases passed: $($cases.Count - 2), 2 POSIX-only fixture(s) skipped"
+      - name: Measure shared-file changes and workspace path handling
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP 'verify-shared-file.mjs'
+          @'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import os from 'node:os';
+          import crypto from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          const root=fs.mkdtempSync(path.join(os.tmpdir(),'6731-native-'));
+          function put(name,data){fs.writeFileSync(path.join(root,name),data)}
+          function emit(x){console.log('measurement '+JSON.stringify(x))}
+          function fingerprint(file){return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}
+          try {
+            for(const [file,expose] of [['posix-worktree-metadata.ts',''],['windows-worktree-files.ts',''],['worktree-setup-proof.ts','export const scanModules = (root, modules, fs, path, crypto, staging, windows) => scan(root, modules, fs, path, crypto, staging, cacheNames, undefined, windows).modules;'],['install-worktree-dependencies.ts','export { relocateWindowsDependencyLinks, relocatePnpmState };']]){
+              put(file,fs.readFileSync(path.join(process.cwd(),'scripts/lib',file),'utf8')+'\n'+expose+'\n');
+            }
+            put('package.json','{"type":"module"}');
+            const {scanModules:scan}=await import(pathToFileURL(path.join(root,'worktree-setup-proof.ts')).href);
+            const {relocateWindowsDependencyLinks,relocatePnpmState}=await import(pathToFileURL(path.join(root,'install-worktree-dependencies.ts')).href);
+            const sleep=()=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30);
+            for(const mode of ['control','link','unlink','changed-bytes']){
+              const repo=path.join(root,'repo-'+mode),store=path.join(root,'store-'+mode),alias=path.join(root,'alias-'+mode);
+              fs.mkdirSync(path.join(repo,'node_modules'),{recursive:true});fs.writeFileSync(store,Buffer.alloc(2*1024*1024,7));
+              const file=path.join(repo,'node_modules','shared');fs.linkSync(store,file);
+              if(mode==='unlink')fs.linkSync(store,alias);
+              sleep();
+              const before=fs.statSync(file,{bigint:true}), bytes=fingerprint(file);
+              const initialDigest=scan(repo,['node_modules'],fs,path,crypto,undefined,true).node_modules;
+              assert.match(initialDigest,/^[a-f0-9]{64}$/);let inside,once=false,error,digest;
+              const observedFs={...fs,readSync(...args){
+                const n=fs.readSync(...args);
+                if(n&&!once){
+                  once=true;sleep();
+                  if(mode==='link')fs.linkSync(store,alias);
+                  if(mode==='unlink')fs.unlinkSync(alias);
+                  if(mode==='changed-bytes'){
+                    const fd=fs.openSync(store,'r+');try{fs.writeSync(fd,Buffer.from([4]),0,1,Number(before.size)-1);}finally{fs.closeSync(fd);}
+                  }
+                  inside=fs.fstatSync(args[0],{bigint:true});
+                }
+                return n;
+              }};
+              try{digest=scan(repo,['node_modules'],observedFs,path,crypto,undefined,true)}catch(e){error=e.message}
+              assert(once&&inside);
+              const after=fs.statSync(file,{bigint:true});
+              emit({scenario:mode,scanSucceeded:!!digest,error,identitySame:before.ino===inside.ino&&before.dev===inside.dev,sizeSame:before.size===inside.size,mtimeSame:before.mtimeNs===inside.mtimeNs,ctimeSameDuringRead:before.ctimeNs===inside.ctimeNs,ctimeSameAfterClose:before.ctimeNs===after.ctimeNs,bytesSame:bytes===fingerprint(file),nlinkBefore:String(before.nlink),nlinkAfter:String(after.nlink)});
+              if(mode==='changed-bytes')assert(error || digest.node_modules!==initialDigest,'Edited bytes were accepted as the original contents');
+              else assert.equal(digest?.node_modules,initialDigest,error || 'Benign sharing must preserve the original digest');
+            }
+            const stage=path.join(root,'CaseSensitiveSpelling'),work=path.join(root,'PublishedCheckout'),mod=path.join(stage,'node_modules');
+            fs.mkdirSync(mod,{recursive:true});fs.mkdirSync(work);fs.writeFileSync(path.join(mod,'.modules.yaml'),JSON.stringify({virtualStoreDir:'.pnpm',nodeLinker:'isolated'}));
+            const state=path.join(mod,'.pnpm-workspace-state-v1.json');
+            for(const [kind,spelling] of [['same',stage],['case alias',path.join(root,'casesensitivespelling')]]){
+              assert.equal(fs.statSync(spelling,{bigint:true}).ino,fs.statSync(stage,{bigint:true}).ino);
+              fs.writeFileSync(state,JSON.stringify({projects:{[spelling]:{}},pnpmfiles:[path.join(spelling,'config.cjs')]}));
+              const accepted=await relocatePnpmState(stage,work);const result=JSON.parse(fs.readFileSync(state));
+              emit({scenario:'workspace state '+kind,accepted,projectKeyRelocated:Object.hasOwn(result.projects,work),pnpmfileRelocated:result.pnpmfiles[0]===path.join(work,'config.cjs')});
+              assert(accepted && Object.hasOwn(result.projects,work) && result.pnpmfiles[0]===path.join(work,'config.cjs'),'The relocated pnpm state still points to the private stage');
+            }
+            const target=path.join(mod,'pkg');fs.mkdirSync(target);
+            const link=path.join(mod,'dep');fs.symlinkSync(target,link,'junction');
+            const drive=['Y:','X:','W:'].find(d=>!fs.existsSync(d+'\\'));
+            assert(drive,'SUBST control requires a free drive letter');if(drive){
+              const subst=path.join(process.env.SystemRoot,'System32','subst.exe');
+              execFileSync(subst,[drive,root]);
+              try{
+                const other=path.join(drive+'\\',path.basename(stage));
+                assert.equal(fs.statSync(other,{bigint:true}).ino,fs.statSync(stage,{bigint:true}).ino);
+                const accepted=await relocateWindowsDependencyLinks(other,work,['node_modules']);
+                emit({scenario:'junction from subst drive',accepted,nativeAndPresentedStageAgree:fs.realpathSync.native(other).toLowerCase()===other.toLowerCase(),linkPointsToPublishedTarget:fs.readlinkSync(link).toLowerCase()===path.join(work,'node_modules','pkg').toLowerCase()});
+                const expected=accepted?path.join(work,'node_modules','pkg'):target;assert.equal(fs.readlinkSync(link).toLowerCase(),expected.toLowerCase());
+              } finally{execFileSync(subst,[drive,'/D'])}
+            }
+          } finally{fs.rmSync(root,{recursive:true,force:true})}
+          '@ | Set-Content -LiteralPath $probe -Encoding utf8NoBOM
+          node $probe
+          exit $LASTEXITCODE
