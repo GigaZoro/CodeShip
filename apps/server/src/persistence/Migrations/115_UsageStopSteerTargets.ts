@@ -19,8 +19,9 @@ export default Effect.gen(function* () {
     sql`EXISTS (
     SELECT 1 FROM orchestration_events steer
     WHERE ${commandedSteer}
-      AND steer.payload_json ->> 'runId' = attempt.run_id
-      AND steer.payload_json ->> 'nodeId' = attempt.root_node_id
+      -- Unary + removes TEXT affinity so SQLite can seek both JSON expression keys.
+      AND steer.payload_json ->> 'runId' = +attempt.run_id
+      AND steer.payload_json ->> 'nodeId' = +attempt.root_node_id
       AND steer.payload_json ->> 'messageId' IS NOT initiating.payload_json ->> 'userMessageId'
       AND NOT EXISTS (SELECT 1 FROM usage_stop_missed_steers missed
         WHERE missed.provider_turn_id = steer.payload_json ->> 'providerTurnId'

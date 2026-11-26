@@ -10708,6 +10708,12 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           });
           assert.equal(compacted.threadCount, 1);
           yield* runMigrations({ toMigrationInclusive: 115 });
+          const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+            SELECT classification, COUNT(*) FROM usage_stop_replay GROUP BY classification`;
+          assert.match(
+            plan.map((row) => row.detail).join("\n"),
+            /SEARCH steer USING (?:COVERING )?INDEX usage_stop_commanded_steer_idx \(<expr>=\? AND <expr>=\?\)/,
+          );
         }
         assert.deepEqual(
           yield* sql`SELECT classification, decisions, attributable_lost_tokens
