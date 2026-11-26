@@ -170,6 +170,7 @@ function startWithMissingWorktree(
       {
         id: runId,
         status: "starting",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex-personal"), model: "gpt-5.4" },
         rootNodeId,
         activeAttemptId: attemptId,
         providerThreadId,
@@ -374,6 +375,7 @@ function makeLocalCommandHarness(input: {
   /** Opens a session and starts an ordinary provider turn, like a prompt. */
   readonly nativeTurn?: boolean;
   readonly autoAccount?: boolean;
+  readonly quotaAwareAuto?: boolean;
   readonly otherAutoProvider?: boolean;
   readonly limitsReadFailure?: boolean;
   /** The thread is a delegated task's child. */
@@ -407,6 +409,7 @@ function makeLocalCommandHarness(input: {
       instanceId: newInstanceId,
       model: "gpt-5.4",
       ...(input.autoAccount ? { autoAccount: true } : {}),
+      ...(input.quotaAwareAuto ? { quotaAwareAuto: true } : {}),
     },
     providerThreadId,
     userMessageId: messageId,
@@ -2592,6 +2595,25 @@ effectIt.effect(
       ]);
       expect(projection.providerTurns).toEqual([]);
       expect(projection.checkpoints).toEqual([]);
+    }),
+);
+
+effectIt.effect(
+  "stops an unresolved Auto selection before it can use its placeholder account",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Review the diff",
+        nativeTurn: true,
+        quotaAwareAuto: true,
+      });
+      yield* harness.start;
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        { type: "error", failure: { class: "validation_error", code: "auto_route_unresolved" } },
+      ]);
     }),
 );
 

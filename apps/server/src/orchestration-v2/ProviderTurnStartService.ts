@@ -794,6 +794,25 @@ export const layer: Layer.Layer<
       const providerSessionId = providerThread.providerSessionId;
       const settleRunBeforeStart = (settled: Parameters<typeof settleUnstartedRun>[1]) =>
         settleUnstartedRun(unstarted, settled);
+      if (run.modelSelection.quotaAwareAuto === true) {
+        return yield* settleRunBeforeStart({
+          signal: "auto-route-unresolved",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Auto could not select a provider",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              code: "auto_route_unresolved",
+              message:
+                "This server could not resolve the Auto selection. Choose a provider or retry on a server that supports quota-aware Auto.",
+            }),
+          },
+        });
+      }
       // A process that sent nothing for a whole start step has stopped answering, and the retry
       // would wait on it again. One still sending events for other turns stays.
       const releaseSilentSession = (error: Error) =>
