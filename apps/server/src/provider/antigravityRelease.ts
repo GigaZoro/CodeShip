@@ -141,6 +141,14 @@ export const discoverAntigravityRelease = Effect.fn("AntigravityRelease.discover
   if (!binary || binary.archive !== expectedUrl || binary.cmd !== `./${pinned.executable.name}`) {
     return null;
   }
+  if (release.version === pinned.version) {
+    if (binary.sha256 !== pinned.sha256) {
+      yield* Effect.logWarning("Antigravity registry checksum differs from the bundled release", {
+        version: pinned.version,
+      });
+    }
+    return pinned;
+  }
   return {
     version: release.version,
     url: expectedUrl,

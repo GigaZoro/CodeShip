@@ -81,34 +81,51 @@ const check = (
   }).pipe(Effect.provide(NodeServices.layer));
 
 it.effect.each([
-  { name: "native stable", updateChannel: "stable", owned: true, canUpdate: true },
-  { name: "native dev", updateChannel: "dev", owned: true, canUpdate: false },
-  { name: "externally owned", updateChannel: "stable", owned: false, canUpdate: false },
-])("uses the fx updater only for $name installations", ({ updateChannel, owned, canUpdate }) =>
+  { name: "native stable", owner: "native", updateChannel: "stable", canUpdate: true },
+  { name: "native dev", owner: "native", updateChannel: "dev", canUpdate: false },
+  {
+    name: "development build on the stable update channel",
+    owner: "native",
+    updateChannel: "stable",
+    buildChannel: "dev",
+    canUpdate: false,
+  },
+  { name: "package-managed", owner: "package", updateChannel: "stable", canUpdate: false },
+  {
+    name: "symlink to package-managed fx",
+    owner: "symlink",
+    updateChannel: "stable",
+    canUpdate: false,
+  },
+])("reports canUpdate=$canUpdate for $name installations", (row) =>
   Effect.gen(function* () {
     const spawner = ChildProcessSpawner.make(() =>
-      Effect.succeed(processHandle(JSON.stringify({ update_channel: updateChannel }), 0)),
+      Effect.succeed(
+        processHandle(
+          JSON.stringify({ update_channel: row.updateChannel, build_channel: row.buildChannel }),
+          0,
+        ),
+      ),
     );
     const client = HttpClient.make((request) =>
       Effect.succeed(HttpClientResponse.fromWeb(request, new Response("v0.0.17\n"))),
     );
     const path = yield* Path.Path;
     const home = path.resolve("test-fx-home");
-    const executable = owned
-      ? path.join(home, ".local", "bin", "fx")
-      : path.join(home, "mise", "installs", "fx", "0.0.16", "fx");
+    const native = path.join(home, ".local", "bin", "fx");
+    const packaged = path.join(home, "mise", "installs", "fx", "0.0.16", "fx");
     const capabilities = yield* makeFxMaintenanceResolver(client)
       .resolve({
         binaryPath: "fx",
-        resolvedCommandPath: executable,
-        realCommandPath: executable,
+        resolvedCommandPath: row.owner === "package" ? packaged : native,
+        realCommandPath: row.owner === "native" ? native : packaged,
         env: { HOME: home },
         platform: "darwin",
       })
       .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
-    if (canUpdate) {
+    if (row.canUpdate) {
       assert.deepEqual(capabilities.update?.args, ["upgrade"]);
-      assert.equal(capabilities.update?.executable, executable);
+      assert.equal(capabilities.update?.executable, native);
       assert.equal(yield* capabilities.lookupLatestVersion!, "0.0.17");
     } else {
       assert.isNull(capabilities.update);

@@ -105,10 +105,10 @@ on the environment's machine; edit that file to add or remove them. While it lis
 any servers, T3.CodeShip stops using Antigravity to write thread titles and commit
 messages, because those servers start before T3.CodeShip can block their tools.
 
-Antigravity receives images and audio directly, and reads PDFs and text files as
-documents. With the managed runtime on macOS and Linux, an MP4 video up to 20 MiB
-is sent as video to Gemini models. Other attachments, and videos for other models, are passed as a
-saved file path for the agent to inspect with its tools.
+Antigravity receives images and audio directly and reads PDFs and text files as documents.
+On macOS and Linux, Antigravity ACP 1.4.5 and 1.5.2 send MP4 files up to 20 MiB as video to
+Gemini models. For larger videos, other runtimes or models, and other attachments, the agent
+gets the saved file path.
 
 ### Subagents
 

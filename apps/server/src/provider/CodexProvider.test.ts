@@ -1,6 +1,49 @@
 import { assert, it } from "@effect/vitest";
+import { CodexSettings } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { V2GetAccountResponse } from "effect-codex-app-server/schema";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import {
+  applyPreferredCodexDefaultModel,
+  checkCodexProviderStatus,
+  mapCodexModelCapabilities,
+} from "./CodexProvider.ts";
+
+const decodeSettings = Schema.decodeSync(CodexSettings);
+const decodeAccount = Schema.decodeUnknownSync(V2GetAccountResponse);
+
+it.effect.each([
+  {
+    account: { type: "amazonBedrock", usesCodexManagedCredentials: true },
+    label: "Amazon Bedrock",
+  },
+  { account: { type: "gcp" }, label: "Google Cloud Vertex AI" },
+])("reports $label as an authenticated metered Codex account", ({ account, label }) =>
+  Effect.gen(function* () {
+    const snapshot = yield* checkCodexProviderStatus(
+      decodeSettings({}),
+      () =>
+        Effect.succeed({
+          account: decodeAccount({ account, requiresOpenaiAuth: false }),
+          version: "0.172.0",
+          models: [],
+          skills: [],
+        }),
+      {},
+    );
+
+    assert.deepEqual(snapshot.auth, {
+      status: "authenticated",
+      type: account.type,
+      funding: "metered",
+      label,
+    });
+    assert.strictEqual(snapshot.status, "ready");
+    assert.strictEqual(snapshot.usageLimits?.unavailable?.reason, "unsupported");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({

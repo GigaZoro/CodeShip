@@ -338,6 +338,17 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       )
     );
   });
+  const requireInstallCompatibility = Effect.fn("CodexInstallation.requireInstallCompatibility")(
+    function* (version: string, operation: "start" | "verify") {
+      const advisory = yield* compatibility(version);
+      if (advisory?.status !== "supported")
+        return yield* installationError(
+          operation,
+          advisory?.message ??
+            "This Codex release is outside the supported range for this T3.CodeShip release.",
+        );
+    },
+  );
   const readActiveRelease = Effect.fn("CodexInstallation.readActiveRelease")(function* () {
     const active = yield* readRecord(activePath, ActiveRelease);
     return yield* completedRelease(active.version);
@@ -592,11 +603,6 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       const destination = path.join(managedDirectory, release.version);
       const activate = Effect.fn("CodexInstallation.activate")(
         function* () {
-          if (release !== asset && (yield* compatibility(release.version))?.status !== "supported")
-            return yield* installationError(
-              "verify",
-              "This Codex release is outside the supported range for this T3.CodeShip release.",
-            );
           const executable = yield* completedRelease(release.version);
           const temporary = yield* fs.makeTempDirectoryScoped({
             directory: managedDirectory,
@@ -607,6 +613,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
             mode: 0o600,
             flag: "wx",
           });
+          yield* requireInstallCompatibility(release.version, "verify");
           yield* fs.rename(pointer, activePath);
           const terminal = yield* SubscriptionRef.updateAndGet(
             state,
@@ -775,6 +782,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     current: ProviderInstallState,
     installed: CodexExecutable | null,
   ) {
+    yield* requireInstallCompatibility(release.version, "start");
     const operationId = yield* crypto
       .randomUUIDv4()
       .pipe(Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")));

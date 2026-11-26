@@ -250,6 +250,20 @@ function githubRelease(sha256: string, version = asset.version) {
   };
 }
 
+function manifestBlockingVersion(version: string): ModelManifest.ModelManifestData {
+  return {
+    ...ModelManifest.BUNDLED_MODEL_MANIFEST,
+    compatibility: (ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility ?? []).map((policy) =>
+      policy.driver === "codex"
+        ? {
+            ...policy,
+            ranges: [{ range: version, status: "broken" }, ...policy.ranges],
+          }
+        : policy,
+    ),
+  };
+}
+
 // These tests emulate POSIX hosts; a Windows filesystem reports no executable mode bits.
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallation", () => {
   it.effect.each([
@@ -422,7 +436,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect.each(["verified", "corrupt download"] as const)(
+  it.effect.each(["verified", "corrupt download", "policy changes after startup"] as const)(
     "upgrades an older managed installation when CodeShip starts: %s",
     (scenario) =>
       Effect.gen(function* () {
@@ -430,8 +444,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
         const { oldVersion } = first;
         const finishDownload = yield* Deferred.make<void>();
         const corrupt = scenario === "corrupt download";
+        const manifest = yield* Ref.make(ModelManifest.BUNDLED_MODEL_MANIFEST);
         const restarted = yield* makeHarness({
           baseDir: first.baseDir,
+          manifestCurrent: Ref.get(manifest),
           body: Stream.fromEffect(
             Deferred.await(finishDownload).pipe(Effect.as(corrupt ? archive.subarray(1) : archive)),
           ),
@@ -441,17 +457,20 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
         expect((yield* restarted.installation.start).operationId).toBe(pending.operationId);
         const oldLease = yield* restarted.installation.acquire();
         expect(oldLease.version).toBe(oldVersion);
+        if (scenario === "policy changes after startup")
+          yield* Ref.set(manifest, manifestBlockingVersion(asset.version));
         yield* Deferred.succeed(finishDownload, undefined);
-        const activeVersion = corrupt ? oldVersion : asset.version;
+        const succeeded = scenario === "verified";
+        const activeVersion = succeeded ? asset.version : oldVersion;
         expect(yield* terminalState(restarted.installation)).toMatchObject({
-          phase: corrupt ? "failed" : "succeeded",
+          phase: succeeded ? "succeeded" : "failed",
           source: "managed",
           installedVersion: activeVersion,
         });
         expect((yield* restarted.installation.resolve()).version).toBe(activeVersion);
         expect(yield* first.fs.exists(oldLease.executablePath)).toBe(true);
         expect(restarted.downloads()).toBe(1);
-        if (!corrupt) {
+        if (succeeded) {
           const reopened = yield* makeHarness({
             baseDir: first.baseDir,
             options: {
@@ -466,6 +485,33 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
           expect(reopened.downloads()).toBe(0);
         }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not download a blocked bundled Codex while upgrading at startup", () =>
+    Effect.gen(function* () {
+      const { baseDir, oldVersion } = yield* seedOlderRelease();
+      const { installation, downloads } = yield* makeHarness({
+        baseDir,
+        manifestCurrent: Effect.succeed(manifestBlockingVersion(asset.version)),
+      });
+      expect(yield* installation.state).toMatchObject({
+        phase: "failed",
+        installedVersion: oldVersion,
+      });
+      expect((yield* installation.resolve()).version).toBe(oldVersion);
+      expect(downloads()).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("reports a blocked bundled Codex before a first install", () =>
+    Effect.gen(function* () {
+      const { installation, downloads, fs } = yield* makeHarness({
+        manifestCurrent: Effect.succeed(manifestBlockingVersion(asset.version)),
+      });
+      expect(yield* Effect.flip(installation.start)).toMatchObject({ operation: "start" });
+      expect(downloads()).toBe(0);
+      expect(yield* fs.exists(installation.managedDirectory)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect.each(["verified", "corrupt"] as const)(
@@ -582,26 +628,14 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
         manifestCurrent: Ref.get(manifest),
       });
       expect((yield* installation.checkForUpdate)?.latestVersion).toBe(asset.version);
-      const blockVersion = (version: string) =>
-        Ref.set(manifest, {
-          ...ModelManifest.BUNDLED_MODEL_MANIFEST,
-          compatibility: (ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility ?? []).map((policy) =>
-            policy.driver === "codex"
-              ? {
-                  ...policy,
-                  ranges: [{ range: version, status: "broken" as const }, ...policy.ranges],
-                }
-              : policy,
-          ),
-        });
-      yield* blockVersion(asset.version);
+      yield* Ref.set(manifest, manifestBlockingVersion(asset.version));
       expect((yield* installation.checkForUpdate)?.latestVersion).toBeNull();
       expect(yield* Effect.flip(installation.startUpdate(asset.version))).toMatchObject({
         operation: "update",
       });
       expect(releaseChecks()).toBe(1);
       expect(downloads()).toBe(0);
-      yield* blockVersion(oldVersion);
+      yield* Ref.set(manifest, manifestBlockingVersion(oldVersion));
       expect(yield* Effect.flip(installation.resolve())).toMatchObject({ operation: "resolve" });
       expect(yield* installation.installedManagedVersion).toBe(oldVersion);
       expect(yield* installation.startUpdate(asset.version)).toMatchObject({

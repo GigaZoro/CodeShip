@@ -191,7 +191,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
       }).pipe(Effect.scoped),
   );
 
-  const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
+  const checkManagedAccount = (
+    replacementTiming: "unchanged" | "different-account" | "different-workspace",
+  ) =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
       const credentials = new Map<string, Uint8Array>();
@@ -213,28 +215,34 @@ it.layer(layerTest)("CodexDriver", (it) => {
       });
       yield* Effect.gen(function* () {
         const store = yield* ProviderCredentialStore.make("codex-chatgpt", instanceId);
+        const email = "account@example.test";
+        const workspaceToken = (id: string) =>
+          `e30.${Buffer.from(JSON.stringify({ email, "https://api.openai.com/auth": { chatgpt_account_id: id } })).toString("base64url")}.sig`;
+        const workspaceChange = replacementTiming === "different-workspace";
         const connection = {
           clientId: "oaiapp_test",
-          accessToken: "dummy-owned-access",
+          accessToken: workspaceChange ? workspaceToken("workspace-A") : "dummy-owned-access",
           refreshToken: "dummy-refresh",
           expiresAt: Number.MAX_SAFE_INTEGER,
           earliestRefreshAt: null,
           scopes: ["chatgpt.tokens.use.direct"],
           subject: "test-user",
-          email: "account@example.test",
+          email,
         };
         const json = yield* encodeCredentials(connection);
         yield* store.set(new TextEncoder().encode(json));
-        const replacement = yield* encodeCredentials({
-          clientId: "oaiapp_replacement",
-          subject: "replacement-user",
-          email: "replacement@example.test",
-          accessToken: "replacement-access",
-          refreshToken: "replacement-refresh",
-          expiresAt: Number.MAX_SAFE_INTEGER,
-          earliestRefreshAt: null,
-          scopes: ["chatgpt.tokens.use.direct"],
-        });
+        const replacement = yield* encodeCredentials(
+          workspaceChange
+            ? { ...connection, accessToken: workspaceToken("workspace-B") }
+            : {
+                ...connection,
+                clientId: "oaiapp_replacement",
+                subject: "replacement-user",
+                email: "replacement@example.test",
+                accessToken: "replacement-access",
+                refreshToken: "replacement-refresh",
+              },
+        );
         const replaceAccount = store.set(new TextEncoder().encode(replacement)).pipe(Effect.orDie);
         const executable = {
           executablePath: "/user/bin/codex",
@@ -250,11 +258,21 @@ it.layer(layerTest)("CodexDriver", (it) => {
           serverConfig.stateDir,
           instanceId,
         );
+        const fs = yield* FileSystem.FileSystem;
+        const connectLimitsForWorkspaceA = Effect.gen(function* () {
+          yield* fs.makeDirectory(limitsHome, { recursive: true });
+          yield* fs.writeFileString(
+            NodePath.join(limitsHome, "auth.json"),
+            JSON.stringify({ tokens: { id_token: workspaceToken("workspace-A") } }),
+          );
+        });
+        if (workspaceChange) yield* connectLimitsForWorkspaceA;
         const launches: Array<
           Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
         > = [];
 
         let togglingSkills = false;
+        let holdWorkspaceUsage = false;
         const skillWrites: Array<unknown> = [];
         const skillHomes: Array<unknown> = [];
         let interruptedChecks = 0;
@@ -332,6 +350,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
                         if (request.method === "initialized") return;
                         if (request.method === "skills/config/write")
                           skillWrites.push(request.params);
+                        if (holdWorkspaceUsage && request.method === "account/rateLimits/read") {
+                          holdWorkspaceUsage = false;
+                          yield* Deferred.succeed(probeEntered, undefined);
+                          yield* Deferred.await(resumeProbe);
+                        }
                         const replies: Record<string, unknown> = {
                           initialize: {
                             userAgent: "codex/test",
@@ -369,7 +392,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
                     getOutputFd: () => Stream.empty,
                   });
                 }
-                if (replacementTiming === "during-probe") {
+                if (replacementTiming === "different-account") {
                   yield* Deferred.succeed(probeEntered, undefined);
                   yield* Deferred.await(resumeProbe);
                 }
@@ -394,19 +417,35 @@ it.layer(layerTest)("CodexDriver", (it) => {
           Effect.forkScoped,
         );
         yield* Deferred.await(startupChecksInterrupted);
+        if (workspaceChange) {
+          const before = yield* instance.snapshot.refresh;
+          expect(before.auth.workspaceId).toBe("workspace-A");
+          expect(before.auth.funding).toBe("included");
+          expect(before.usageLimits?.windows.map((window) => window.usedPercent)).toEqual([78]);
+          catalogTokens.length = 0;
+          holdWorkspaceUsage = true;
+        }
         const refresh = yield* instance.snapshot.refresh.pipe(Effect.forkChild);
-        if (replacementTiming === "during-probe") {
+        if (replacementTiming !== "unchanged") {
           yield* Deferred.await(probeEntered);
           yield* replaceAccount;
           yield* Deferred.succeed(resumeProbe, undefined);
         }
         const restored = yield* Fiber.join(refresh);
-        if (replacementTiming === "during-probe") {
+        if (replacementTiming !== "unchanged") {
           // The catalog fetched before the account changed must never appear under the new sign-in.
-          expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
+          expect(catalogTokens).toEqual([`launch:Bearer ${connection.accessToken}`]);
           expect(restored.models).toEqual([]);
-          expect(restored.auth.email).toBe("replacement@example.test");
-          expect(restored.auth.profileId).toBe("oaiapp_replacement");
+          expect(restored.auth.email).toBe(workspaceChange ? email : "replacement@example.test");
+          expect(restored.auth.profileId).toBe(
+            workspaceChange ? connection.clientId : "oaiapp_replacement",
+          );
+          expect(restored.auth.workspaceId).toBe(workspaceChange ? "workspace-B" : undefined);
+          if (workspaceChange) {
+            expect(restored.auth.funding ?? "unknown").toBe("unknown");
+            expect(restored.usageLimits?.plan).toBeUndefined();
+            expect(restored.usageLimits?.windows).toEqual([]);
+          }
           return;
         }
         expect(
@@ -422,14 +461,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         ]);
         expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
         expect(restored.auth.email).toBe("account@example.test");
-        const workspaceToken = (id: string) =>
-          `e30.${Buffer.from(JSON.stringify({ email: connection.email, "https://api.openai.com/auth": { chatgpt_account_id: id } })).toString("base64url")}.sig`;
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.makeDirectory(limitsHome, { recursive: true });
-        yield* fs.writeFileString(
-          NodePath.join(limitsHome, "auth.json"),
-          JSON.stringify({ tokens: { id_token: workspaceToken("workspace-A") } }),
-        );
+        yield* connectLimitsForWorkspaceA;
         let included = restored;
         for (const id of ["workspace-A", "workspace-B", undefined]) {
           const tokens = yield* encodeCredentials({
@@ -588,7 +620,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.scoped);
   // regression: a sign-in that replaces the account mid-probe must not label the old
   // account's catalog with the new identity.
-  it.effect.each(["unchanged", "during-probe"] as const)(
+  it.effect.each(["unchanged", "different-account", "different-workspace"] as const)(
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
   );

@@ -295,6 +295,23 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
     }),
   );
 
+  it.effect("keeps the bundled checksum when the registry lists the same release", () =>
+    Effect.gen(function* () {
+      const bundledVersion = resolveAntigravityReleaseAsset(hostPlatform, "x64")!.version;
+      const { installation, validations } = yield* makeHarness({
+        previous: true,
+        registryVersion: bundledVersion,
+      });
+      expect(yield* installation.latestVersion).toBe(bundledVersion);
+      const result = yield* Effect.result(installation.upgrade(bundledVersion));
+      expect(result).toMatchObject({
+        failure: { detail: expect.stringContaining("SHA-256") },
+      });
+      expect(validations).toEqual([]);
+      yield* expectPreviousRelease(installation);
+    }),
+  );
+
   it.effect.each([
     { name: "prerelease", registryVersion: "1.5.3-rc.1" },
     {

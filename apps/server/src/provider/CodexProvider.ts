@@ -196,6 +196,10 @@ function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
 }
 
+function isMeteredCodexAccount(account: CodexSchema.V2GetAccountResponse["account"]) {
+  return account != null && account.type !== "chatgpt";
+}
+
 function codexAccountAuthLabel(
   account: CodexSchema.V2GetAccountResponse["account"],
   usagePlanType: string | null | undefined,
@@ -203,7 +207,7 @@ function codexAccountAuthLabel(
   if (!account) return undefined;
   if (account.type === "apiKey") return "OpenAI API Key";
   if (account.type === "amazonBedrock") return "Amazon Bedrock";
-  if (account.type !== "chatgpt") return undefined;
+  if (account.type === "gcp") return "Google Cloud Vertex AI";
   // account/read takes the plan from the cached login token; the usage read asks the backend.
   const usageLabel = usagePlanType === "unknown" ? undefined : codexPlanLabel(usagePlanType);
   return usageLabel ?? codexPlanLabel(account.planType);
@@ -703,21 +707,23 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       ),
       // Usage is an enrichment: a failure or a slow answer degrades to "no
       // usage this probe" rather than costing the account and models.
-      withCodexDiscoveryDeadline(
-        client.request("account/rateLimits/read", null),
-        deadlineMs,
-        RATE_LIMITS_PROBE_TIMEOUT_MS,
-      ).pipe(
-        Effect.map(
-          (response): CodexRateLimitsProbe =>
-            response ?? { failure: "Codex did not answer the usage request." },
-        ),
-        Effect.catch((error) =>
-          Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
-            Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
+      isMeteredCodexAccount(accountResponse.account)
+        ? Effect.void
+        : withCodexDiscoveryDeadline(
+            client.request("account/rateLimits/read", null),
+            deadlineMs,
+            RATE_LIMITS_PROBE_TIMEOUT_MS,
+          ).pipe(
+            Effect.map(
+              (response): CodexRateLimitsProbe =>
+                response ?? { failure: "Codex did not answer the usage request." },
+            ),
+            Effect.catch((error) =>
+              Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
+                Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
+              ),
+            ),
           ),
-        ),
-      ),
     ],
     { concurrency: "unbounded" },
   );
@@ -731,7 +737,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   return {
     account: accountResponse,
-    ...(rateLimits ? { rateLimits } : {}),
+    ...(rateLimits !== undefined ? { rateLimits } : {}),
     version,
     models,
     serviceTier: config?.service_tier ?? undefined,
@@ -964,8 +970,7 @@ function accountProbeStatus({
   const auth = {
     status: account.account ? ("authenticated" as const) : ("unknown" as const),
     funding:
-      account.account?.type === "apiKey" ||
-      account.account?.type === "amazonBedrock" ||
+      isMeteredCodexAccount(account.account) ||
       (account.account?.type === "chatgpt" &&
         codexPlanFunding(
           rateLimits && "rateLimits" in rateLimits
@@ -1120,17 +1125,16 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const accountStatus = managedAuth
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : login;
-  const usageLimits =
-    snapshot.account.account?.type === "apiKey"
-      ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
-      : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
-        ? makeUnavailableUsageLimits({
-            checkedAt,
-            reason: "probeFailed",
-            ...(accountStatus.message ? { message: accountStatus.message } : {}),
-            ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
-          })
-        : codexRateLimitsToLimits({ read: snapshot.rateLimits, checkedAt });
+  const usageLimits = isMeteredCodexAccount(snapshot.account.account)
+    ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
+    : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
+      ? makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "probeFailed",
+          ...(accountStatus.message ? { message: accountStatus.message } : {}),
+          ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
+        })
+      : codexRateLimitsToLimits({ read: snapshot.rateLimits, checkedAt });
   // A ChatGPT sharing token cannot read Codex limits; the home's own Codex login can. Its limits
   // are this account's only when the backend confirms that login is this account. A failed read
   // attributes nothing, so the saved login's identity hint is enough to report why it failed.

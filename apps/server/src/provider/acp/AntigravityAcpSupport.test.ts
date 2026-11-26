@@ -64,6 +64,7 @@ describe("Antigravity release gates", () => {
     { version: "1.4.4", filter: true, native: false },
     { version: "1.4.5", filter: true, native: true },
     { version: "1.4.6", filter: false, native: false },
+    { version: "1.5.2", filter: false, native: false },
     { version: "1.3.0", filter: false, native: false },
     { version: undefined, filter: false, native: false },
     { version: "unknown", filter: false, native: false },
@@ -377,6 +378,13 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       linked: true,
     },
     {
+      case: "Antigravity 1.5.2",
+      agentVersion: "1.5.2",
+      platform: "darwin" as const,
+      model: { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+      linked: true,
+    },
+    {
       case: "an opaque id named Gemini",
       model: { id: "agy-model", name: "Gemini 4 Carbon" },
       linked: true,
@@ -391,7 +399,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
     },
     {
       case: "an unqualified runtime",
-      agentVersion: "1.4.1",
+      agentVersion: "1.5.3",
       model: { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
       linked: false,
     },

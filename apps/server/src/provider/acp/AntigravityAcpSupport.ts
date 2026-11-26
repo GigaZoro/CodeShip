@@ -76,8 +76,8 @@ function antigravityWritesRunWorkflowSkill(version: string | null | undefined): 
 }
 
 /**
- * Releases T3 qualified for native range reads and linked video. On 1.4.5 the client-read path
- * sends a whole file to serve one line, and the native reader keeps diff edits.
+ * On 1.4.5 the client-read path sends a whole file to serve one line, and the native reader keeps
+ * diff edits.
  */
 export function isQualifiedAntigravityRelease(version: string | null | undefined): boolean {
   return version?.trim() === "1.4.5";
@@ -374,6 +374,8 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
   const path = yield* Path.Path;
   // The agent runs on this host.
   const platform = yield* HostProcess.Platform;
+  const agentVersion = input.agentVersion?.trim();
+  const supportsLinkedVideo = agentVersion === "1.4.5" || agentVersion === "1.5.2";
   const blocks: Array<EffectAcpSchema.ContentBlock> = [];
   const text = input.input?.trim();
   if (text) blocks.push({ type: "text", text });
@@ -392,7 +394,7 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
     const video =
       attachment.type === "file" &&
       mimeType === "video/mp4" &&
-      isQualifiedAntigravityRelease(input.agentVersion) &&
+      supportsLinkedVideo &&
       // The agent turns a file URI into a path with unquote(urlparse(uri).path), which drops
       // Windows drives and UNC hosts. Keep the saved path there until Google fixes it.
       platform !== "win32" &&
