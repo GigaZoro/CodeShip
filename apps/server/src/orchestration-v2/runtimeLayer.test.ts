@@ -11742,6 +11742,34 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         yield* replay("failed_attempt");
         yield* settle(continuation, "completed");
         yield* replay("recovered");
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const steer = projection.turnItems.find((item) => item.type === "user_message")!;
+        assert(continuation.rootNodeId !== null);
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make("recovery:delivered-user-steer"),
+              type: "turn-item.updated",
+              threadId,
+              runId: continuation.id,
+              nodeId: continuation.rootNodeId,
+              occurredAt: yield* DateTime.now,
+              payload: {
+                ...steer,
+                id: TurnItemId.make("recovery:delivered-user-steer"),
+                runId: continuation.id,
+                nodeId: continuation.rootNodeId,
+                messageId: MessageId.make("recovery:delivered-user-steer"),
+                inputIntent: "steer",
+                createdBy: "user",
+                text: "Do something else instead.",
+                status: "completed",
+                ordinal: Math.max(...projection.turnItems.map((item) => item.ordinal)) + 1,
+              },
+            },
+          ],
+        });
+        yield* replay("unknown");
       }
     }),
   );

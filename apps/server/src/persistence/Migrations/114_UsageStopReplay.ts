@@ -1,15 +1,23 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-// Usage reports read this database read-only, so the replay lives here. A stop without evidence has
-// no row and stays unknown. A decision names an attempt only when it ran the decision's own request
-// for the stopped run, so lineage needs no check here. No record attributes lost tokens.
+// Terminal stops use the source run's key. A provider hold belongs to its specific attempt.
+// Older receipts did not preserve that distinction.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE usage_stop_decisions ADD COLUMN occurrence_key TEXT`;
   yield* sql`CREATE VIEW usage_stop_replay AS
     WITH decisions AS (
-      SELECT d.source_key, d.observed_ms,
+      SELECT d.source_key, d.occurrence_key, d.observed_ms,
         CASE
+          WHEN d.occurrence_key IS NULL THEN 4
+          WHEN EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_turn_items steer
+            WHERE steer.node_id = attempt.root_node_id AND steer.run_id = attempt.run_id
+              AND steer.type = 'user_message' AND steer.status = 'completed'
+              AND steer.payload_json ->> 'createdBy' = 'user'
+              AND steer.payload_json ->> 'inputIntent' IN ('steer', 'promoted_queued_to_steer')
+          ) THEN 4
           WHEN attempt.status = 'completed' THEN 0
           -- Ended attempts, and dispatches that failed before any attempt ran, prove nothing.
           WHEN attempt.status = 'failed' THEN 1
@@ -30,10 +38,10 @@ export default Effect.gen(function* () {
       LEFT JOIN orchestration_v2_projection_run_attempts attempt
         ON attempt.attempt_id = created.payload_json ->> '$.id'
     )
-    SELECT source_key,
+    SELECT source_key, occurrence_key,
       CASE MIN(rank) WHEN 0 THEN 'recovered' WHEN 1 THEN 'failed_attempt' WHEN 2 THEN 'pinned'
         WHEN 3 THEN 'exhausted' ELSE 'unknown' END AS classification,
       COUNT(*) AS decisions, MIN(observed_ms) AS first_observed_ms,
       NULL AS attributable_lost_tokens
-    FROM decisions GROUP BY source_key`;
+    FROM decisions GROUP BY source_key, occurrence_key`;
 });

@@ -744,6 +744,42 @@ describe("limitRecoveryTarget", () => {
       }),
   );
 
+  it.effect("separates a held attempt and a later terminal stop on the same run", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const input = {
+        source: runId,
+        command: null,
+        nowMs: now,
+        evidence: {
+          reason: "switching_disabled" as const,
+          candidates: [],
+          omitted: 0,
+          selected: null,
+        },
+      };
+      yield* sql`INSERT INTO usage_stop_decisions
+        (decision_key, source_key, snapshot, observed_ms)
+        VALUES ('historical', ${evidenceKey(runId)}, '{"reason":"switching_disabled"}', ${now - 1})`;
+      yield* recordStopDecision({ ...input, heldAttempt: heldAttemptId });
+      yield* recordStopDecision({
+        ...input,
+        heldAttempt: undefined,
+        nowMs: now + 1,
+        evidence: { ...input.evidence, reason: "no_actionable_reset" },
+      });
+      assert.deepEqual(
+        yield* sql`SELECT classification, decisions FROM usage_stop_replay
+          WHERE source_key = ${evidenceKey(runId)} ORDER BY first_observed_ms`,
+        [
+          { classification: "unknown", decisions: 1 },
+          { classification: "pinned", decisions: 1 },
+          { classification: "unknown", decisions: 1 },
+        ],
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
   const fableAccount = (instanceId: string, driver = claude) =>
     provider(instanceId, { driver, models: [model("claude-fable-5-2", "Claude Fable 5.2")] });
   // Stops that dispatch nothing replay from the decision the sweep recorded about them.
