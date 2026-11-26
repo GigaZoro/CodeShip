@@ -1919,6 +1919,7 @@ export function createServerEnvironmentAtoms<R, E>(
         if (fallback !== undefined) return { ...fallback, partialReason: "scanTimedOut" as const };
         return yield* new UsageReadError({
           reason: "scanFailed",
+          // oxlint-disable-next-line t3code/no-untranslated-text -- Usage scan diagnostic detail.
           detail: "The usage scan timed out.",
         });
       }),

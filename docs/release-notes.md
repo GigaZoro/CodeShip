@@ -1,3 +1,7 @@
+## 2026-11-26 — Shared client code is checked for untranslated text
+
+- Text that web and mobile both show from the shared client package is now checked by the translation lint, so English that skips the translator is caught before it ships. Two labels it found, the working-agents count read by screen readers and the fallback workflow title, are now translated.
+
 ## 2026-11-26 — More precise provider quota readings
 
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
@@ -966,10 +970,6 @@
 ## 2026-11-18 — Upstream syncs check conflict resolutions against both parents
 
 - The upstream-sync skill now has every conflict resolution diffed against both parents, tests run through each package's own script with failures compared on the base, and protocol literals kept as upstream wrote them. No change to the app.
-
-## 2026-11-18 — Shared client code is checked for untranslated text
-
-- Text that web and mobile both show from the shared client package is now checked by the translation lint, so English that skips the translator is caught before it ships. Two labels it found, the working-agents count read by screen readers and the fallback workflow title, are now translated.
 
 ## 2026-11-18 — Server file locks always release
 

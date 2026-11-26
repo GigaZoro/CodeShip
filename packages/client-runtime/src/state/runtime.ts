@@ -812,6 +812,7 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
                     Effect.fail(
                       new EnvironmentRpcUnavailableError({
                         environmentId: target.environmentId,
+                        // oxlint-disable-next-line t3code/no-untranslated-text -- Clients translate the typed timeout reason.
                         message: "The request timed out.",
                         reason: "timeout",
                       }),
