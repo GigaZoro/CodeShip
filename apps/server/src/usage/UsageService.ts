@@ -169,13 +169,37 @@ const decodeSourceRows = Schema.decodeUnknownOption(
 const decodeFileRows = Schema.decodeUnknownOption(
   Schema.Struct({ files: Schema.Record(Schema.String, Schema.Unknown) }),
 );
+// Old snapshots stored just the cutoff. A tuple also dates the newest live record in an older-mtime file.
+const EvictedRead = Schema.Union([
+  Schema.Finite,
+  Schema.Tuple([Schema.NullOr(Schema.Finite), Schema.Finite]),
+]);
+type EvictedRead = typeof EvictedRead.Type;
+const evictedThrough = (read: EvictedRead | undefined) =>
+  typeof read === "number" ? read : (read?.[0] ?? -Infinity);
+const evictedRecordTime = (read: EvictedRead | undefined) =>
+  typeof read === "number" ? -Infinity : (read?.[1] ?? -Infinity);
+
+const coversEviction = (a: EvictedRead, b: EvictedRead) =>
+  evictedThrough(a) >= evictedThrough(b) && evictedRecordTime(a) >= evictedRecordTime(b);
+
+function mergeEviction(held: EvictedRead | undefined, incoming: EvictedRead): EvictedRead {
+  if (held === undefined) return incoming;
+  if (coversEviction(held, incoming)) return held;
+  if (coversEviction(incoming, held)) return incoming;
+  return [
+    Math.max(evictedThrough(held), evictedThrough(incoming)),
+    Math.max(evictedRecordTime(held), evictedRecordTime(incoming)),
+  ];
+}
+
 const decodeCacheShape = Schema.decodeUnknownOption(
   Schema.Struct({
     version: Schema.Int.check(Schema.isBetween({ minimum: 4, maximum: USAGE_SCAN_CACHE_VERSION })),
     models: Schema.Array(Schema.String),
     sessions: Schema.Array(Schema.String),
     importedV11: Schema.optionalKey(Schema.Array(Schema.String)),
-    evictedReads: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
+    evictedReads: Schema.optionalKey(Schema.Record(Schema.String, EvictedRead)),
   }),
 );
 
@@ -241,8 +265,20 @@ export const make = Effect.gen(function* () {
   const fileCache: ScanCache = new Map();
   // A peer can publish an arbitrarily old read under a new name, even after compaction.
   // Keep its per-path cutoff after the records themselves have been evicted.
-  const evictedReads = new Map<string, number>();
-  const unsavedEvictions = new Map<string, number>();
+  const evictedReads = new Map<string, EvictedRead>();
+  const unsavedEvictions = new Map<string, EvictedRead>();
+  const batchTimestamps = new WeakMap<readonly UsageRecord[], number>();
+  const latestRecordTime = (records: readonly UsageRecord[]) => {
+    const cached = batchTimestamps.get(records);
+    if (cached !== undefined) return cached;
+    const latest = records.reduce((max, record) => Math.max(max, record.timestampMs), -Infinity);
+    batchTimestamps.set(records, latest);
+    return latest;
+  };
+  const latestFileUsage = (entry: CachedFile) =>
+    Math.max(latestRecordTime(entry.records), latestRecordTime(entry.tailRecords));
+  const reachesWindow = (entry: CachedFile, windowStartMs: number) =>
+    entry.mtimeMs >= windowStartMs || latestFileUsage(entry) >= windowStartMs;
   const resolvedRecords = new WeakMap<UsageRecord, UsageRecord>();
   const correctedRecord = (record: UsageRecord) => resolvedRecords.get(record) ?? record;
   const correctedBatch = (records: readonly UsageRecord[]) =>
@@ -257,7 +293,7 @@ export const make = Effect.gen(function* () {
       nowMs,
       Math.max(
         fileCache.get(filePath)?.observedAtMs ?? -Infinity,
-        evictedReads.get(filePath) ?? -Infinity,
+        evictedThrough(evictedReads.get(filePath)),
       ) + 1,
     );
   const isWithinDirectory = (filePath: string, dir: string) => {
@@ -609,8 +645,8 @@ export const make = Effect.gen(function* () {
   ) => {
     let changed = false;
     for (const [file, row] of entries) {
-      const cutoff = evictedReads.get(file);
-      const incoming = cutoff === undefined ? row : afterEvictedRead(row, cutoff);
+      const cutoff = evictedThrough(evictedReads.get(file));
+      const incoming = Number.isFinite(cutoff) ? afterEvictedRead(row, cutoff) : row;
       if (incoming === undefined) continue;
       const held = fileCache.get(file);
       const merged = held === undefined ? incoming : mergeScanEntry(held, incoming);
@@ -650,13 +686,15 @@ export const make = Effect.gen(function* () {
     unreadInputs.delete(file);
     const decoded = yield* decodeDocument(raw.success);
     if (currentStore && decoded.version === USAGE_SCAN_CACHE_VERSION) {
-      for (const [filePath, throughMs] of Object.entries(decoded.metadata?.evictedReads ?? {})) {
-        if ((unsavedEvictions.get(filePath) ?? Infinity) <= throughMs)
-          unsavedEvictions.delete(filePath);
-        if (throughMs <= (evictedReads.get(filePath) ?? -Infinity)) continue;
-        evictedReads.set(filePath, throughMs);
+      for (const [filePath, incoming] of Object.entries(decoded.metadata?.evictedReads ?? {})) {
+        const previous = evictedReads.get(filePath);
+        const merged = mergeEviction(previous, incoming);
+        if (coversEviction(incoming, merged)) unsavedEvictions.delete(filePath);
+        if (merged === previous) continue;
+        evictedReads.set(filePath, merged);
+        const throughMs = evictedThrough(merged);
         const held = fileCache.get(filePath);
-        if (held !== undefined) {
+        if (held !== undefined && throughMs > evictedThrough(previous)) {
           const retained = afterEvictedRead(held, throughMs);
           if (retained === undefined) fileCache.delete(filePath);
           else if (retained !== held) fileCache.set(filePath, retained);
@@ -741,9 +779,16 @@ export const make = Effect.gen(function* () {
         : entry.observedAtMs < retentionCutoffMs
           ? entry.observedAtMs
           : entry.expiredThroughMs;
-    if (throughMs === undefined || throughMs <= (evictedReads.get(filePath) ?? -Infinity)) return;
-    evictedReads.set(filePath, throughMs);
-    unsavedEvictions.set(filePath, throughMs);
+    const previous = evictedReads.get(filePath);
+    const lastRecord = latestFileUsage(entry);
+    // A restored file may need rediscovery by its record time even after its cached rows expire.
+    const discover = entry.missingSinceMs === undefined && lastRecord > entry.mtimeMs;
+    const incoming = discover ? ([throughMs ?? null, lastRecord] as const) : throughMs;
+    if (incoming === undefined) return;
+    const merged = mergeEviction(previous, incoming);
+    if (merged === previous) return;
+    evictedReads.set(filePath, merged);
+    unsavedEvictions.set(filePath, merged);
   };
 
   // An old mtime on a file newly found missing starts deletion retention today. A file still
@@ -756,6 +801,9 @@ export const make = Effect.gen(function* () {
     for (const [filePath, retryAtMs] of expiredCheckRetryAt) {
       if (retryAtMs <= startedMs) expiredCheckRetryAt.delete(filePath);
     }
+    const hasRecentUsage = (entry: CachedFile) =>
+      latestFileUsage(entry) >= retentionCutoffMs ||
+      hasRetainedSuperseded(entry, retentionCutoffMs);
     let listedPaths: Set<string> | undefined;
     const wasListed = (file: string) => {
       listedPaths ??= new Set(
@@ -768,7 +816,7 @@ export const make = Effect.gen(function* () {
       if (
         entry.missingSinceMs === undefined &&
         !isRetained(entry, retentionCutoffMs) &&
-        !(hasRetainedSuperseded(entry, retentionCutoffMs) && wasListed(filePath)) &&
+        !(hasRecentUsage(entry) && wasListed(filePath)) &&
         !expiredCheckRetryAt.has(filePath)
       ) {
         unchecked.push([filePath, entry]);
@@ -790,7 +838,7 @@ export const make = Effect.gen(function* () {
             // A scan may have stored a newer row while the check ran.
             if (fileCache.get(filePath) !== entry) return;
             if (exists) {
-              if (hasRetainedSuperseded(entry, retentionCutoffMs)) return;
+              if (hasRecentUsage(entry)) return;
               evictFile(filePath, entry, retentionCutoffMs);
             } else {
               fileCache.set(filePath, markMissing(entry, nowMs));
@@ -1472,9 +1520,16 @@ export const make = Effect.gen(function* () {
     }
     const candidates = listing.files.filter((file) => {
       if (file.mtimeMs >= windowStartMs) return true;
-      // A backup can predate the window even when the version it replaced contributed to it.
+      // A changed file can have an older mtime than either version's usage.
       const held = fileCache.get(file.path);
-      return held?.provider === provider && held.mtimeMs >= windowStartMs;
+      if (
+        held?.provider === provider &&
+        (held.size !== file.size ||
+          held.mtimeMs !== file.mtimeMs ||
+          reachesWindow(held, windowStartMs))
+      )
+        return true;
+      return evictedRecordTime(evictedReads.get(file.path)) >= windowStartMs;
     });
     const read = yield* Effect.forEach(
       candidates,
@@ -1735,7 +1790,7 @@ export const make = Effect.gen(function* () {
         const index = liveIndex.get(filePath);
         const includeCached =
           index === undefined &&
-          entry.mtimeMs >= windowStartMs &&
+          reachesWindow(entry, windowStartMs) &&
           isRetained(entry, retentionCutoffMs);
         if (!includeCached && !hasRetainedSuperseded(entry, retentionCutoffMs)) continue;
         if (index === undefined && !isWithinDirectory(filePath, dir)) continue;
