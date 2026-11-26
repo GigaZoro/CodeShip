@@ -1,3 +1,7 @@
+## 2026-11-26 — Restoring a transcript preserves usage history
+
+- When an older Claude, Pi, or Muse transcript replaces a newer copy, Usage keeps identifiable records missing from the restored file for 92 days. Records shared by both copies count once, including after a restart.
+
 ## 2026-11-26 — Landing waiters stagger polls and report unconfirmed release
 
 - Waiting landers stagger their polls and reuse lease metadata until origin advertises a different lease commit, reducing redundant Git fetches.

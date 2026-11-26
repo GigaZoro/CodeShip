@@ -66,9 +66,11 @@ import {
   type TranscriptPathFailure,
 } from "./usageTranscriptReader.ts";
 import {
+  carrySuperseded,
   claimedLegacyScanCacheName,
   decodeScanCache,
   dedupeWithinFile,
+  hasRetainedSuperseded,
   isLegacyScanCacheFileName,
   isRetained,
   isFullSaveDue,
@@ -77,6 +79,9 @@ import {
   markPresent,
   mergeCachedSource,
   mergeScanEntry,
+  pruneSuperseded,
+  retainedSuperseded,
+  PREVIOUS_SCAN_CACHE_DIRECTORY_NAME,
   SCAN_CACHE_DIRECTORY_NAME,
   scanCacheDocumentPieces,
   scanCacheSnapshotName,
@@ -168,6 +173,7 @@ const decodeCacheShape = Schema.decodeUnknownOption(
     version: Schema.Int.check(Schema.isBetween({ minimum: 4, maximum: USAGE_SCAN_CACHE_VERSION })),
     models: Schema.Array(Schema.String),
     sessions: Schema.Array(Schema.String),
+    importedV11: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
 );
 
@@ -433,8 +439,10 @@ export const make = Effect.gen(function* () {
           .some(
             ([filePath, entry]) =>
               entry.provider === provider &&
-              isRetained(entry, retentionCutoffMs) &&
-              (entry.records.length + entry.tailRecords.length > 0 || entry.malformedRecords > 0) &&
+              ((isRetained(entry, retentionCutoffMs) &&
+                (entry.records.length + entry.tailRecords.length > 0 ||
+                  entry.malformedRecords > 0)) ||
+                hasRetainedSuperseded(entry, retentionCutoffMs)) &&
               isWithinDirectory(filePath, dir),
           );
         const volumeId =
@@ -461,6 +469,7 @@ export const make = Effect.gen(function* () {
   });
 
   const storeDir = path.join(config.stateDir, SCAN_CACHE_DIRECTORY_NAME);
+  const previousStoreDir = path.join(config.stateDir, PREVIOUS_SCAN_CACHE_DIRECTORY_NAME);
   const writerId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
   const platform = yield* HostProcess.Platform;
   let snapshotSeq = 0;
@@ -474,6 +483,10 @@ export const make = Effect.gen(function* () {
   const retirable = new Set<string>();
   /** Retirable names in an older format: their rows are saved again, so a full save retires them. */
   const olderFormatInputs = new Set<string>();
+  // A still-running v11 writer owns these immutable snapshots. Remember which ones a v12
+  // snapshot covers so a restart cannot reimport rows after their missing time expires.
+  const importedV11 = new Set<string>();
+  const unsavedImports = new Set<string>();
   const failedDeletes = new Set<string>();
   /** Characters in each name this process wrote or merged complete, to bound the store. */
   const storedChars = new Map<string, number>();
@@ -570,7 +583,8 @@ export const make = Effect.gen(function* () {
       ? Object.keys(sourceRows).length - sources.size
       : null;
     const complete = Option.isSome(shape) && entriesDropped === 0 && sourcesDropped === 0;
-    return { version, entries, sources, complete, entriesDropped, sourcesDropped };
+    const imports = Option.getOrUndefined(shape)?.importedV11 ?? [];
+    return { version, entries, sources, imports, complete, entriesDropped, sourcesDropped };
   });
 
   // Merging only adds or supersedes rows, so a row a scan just stored cannot be lost to disk.
@@ -601,38 +615,55 @@ export const make = Effect.gen(function* () {
     if (changed) generation += 1;
   };
 
-  const mergeSavedUsage = Effect.fn("UsageService.mergeSavedUsage")(function* (name: string) {
-    const file = path.join(storeDir, name);
-    const claimedPath = claimedFrom.get(name);
-    claimedFrom.delete(name);
+  const mergeSavedUsage = Effect.fn("UsageService.mergeSavedUsage")(function* (file: string) {
+    const currentStore = path.dirname(file) === storeDir;
+    const claimedPath = claimedFrom.get(file);
+    claimedFrom.delete(file);
     const raw = yield* fileSystem.readFileString(file).pipe(Effect.result);
     if (raw._tag === "Failure") {
       if (claimedPath !== undefined) clearGap("claim", claimedPath);
       if (raw.failure.reason._tag === "NotFound") {
         // Retired after a durable snapshot covered it: a relist finds that snapshot.
-        unreadInputs.delete(name);
+        unreadInputs.delete(file);
         clearGap("read", file);
         return "missing" as const;
       }
-      unreadInputs.add(name);
+      unreadInputs.add(file);
       yield* reportGap("read", file, raw.failure);
       return "unread" as const;
     }
-    unreadInputs.delete(name);
+    unreadInputs.delete(file);
     const decoded = yield* decodeDocument(raw.success);
-    mergeIntoMemory(decoded.entries, decoded.sources, decoded.version === USAGE_SCAN_CACHE_VERSION);
+    mergeIntoMemory(
+      decoded.entries,
+      decoded.sources,
+      currentStore && decoded.version === USAGE_SCAN_CACHE_VERSION,
+    );
     if (decoded.complete) {
-      mergedInputs.set(name, "complete");
-      retirable.add(name);
-      if (decoded.version !== USAGE_SCAN_CACHE_VERSION) olderFormatInputs.add(name);
-      storedChars.set(name, raw.success.length);
+      mergedInputs.set(file, "complete");
+      // A v11 writer may still append deltas that depend on its earlier snapshots.
+      if (currentStore) {
+        retirable.add(file);
+        if (decoded.version !== USAGE_SCAN_CACHE_VERSION) olderFormatInputs.add(file);
+        storedChars.set(file, raw.success.length);
+        if (decoded.version === USAGE_SCAN_CACHE_VERSION) {
+          for (const name of decoded.imports) {
+            if (isScanCacheInput(name)) importedV11.add(name);
+          }
+        }
+      } else {
+        const name = path.basename(file);
+        importedV11.add(name);
+        unsavedImports.add(name);
+        generation += 1;
+      }
       yield* recoverGap("read", file);
       if (claimedPath !== undefined) yield* recoverGap("claim", claimedPath);
       return "complete" as const;
     }
     // Kept and counted as far as it decodes: deleting it would lose what a newer build or a
     // repair could still read.
-    mergedInputs.set(name, "incomplete");
+    mergedInputs.set(file, "incomplete");
     clearGap("read", file);
     if (claimedPath !== undefined) clearGap("claim", claimedPath);
     yield* reportGap("incomplete", file, {
@@ -648,8 +679,7 @@ export const make = Effect.gen(function* () {
       ? Effect.void
       : Effect.scoped(Effect.flatMap(fileSystem.open(storeDir), (handle) => handle.sync));
 
-  const deleteSavedUsage = Effect.fn("UsageService.deleteSavedUsage")(function* (name: string) {
-    const file = path.join(storeDir, name);
+  const deleteSavedUsage = Effect.fn("UsageService.deleteSavedUsage")(function* (file: string) {
     const removed = yield* fileSystem.remove(file).pipe(
       Effect.catchIf(
         (error) => error.reason._tag === "NotFound",
@@ -671,24 +701,29 @@ export const make = Effect.gen(function* () {
     return false;
   });
 
-  /**
-   * Settles each row past retention by its last write before an answer picks rows. A file still
-   * there has aged out, so its row goes. A file gone since the last listing of its directory
-   * starts its missing time now, so its usage does not end early. A failed check counts as gone.
-   * Rows the pass does not settle before its time limit stay as they are for a later scan.
-   */
+  // An old mtime on a file newly found missing starts deletion retention today. A file still
+  // present can lose its cache row once its displaced records have also expired.
   const checkExpiredFiles = Effect.fn("UsageService.checkExpiredFiles")(function* (
     retentionCutoffMs: number,
+    listings: ReadonlyMap<string, Listing>,
   ) {
     const startedMs = yield* monotonicMillis;
     for (const [filePath, retryAtMs] of expiredCheckRetryAt) {
       if (retryAtMs <= startedMs) expiredCheckRetryAt.delete(filePath);
     }
+    let listedPaths: Set<string> | undefined;
+    const wasListed = (file: string) => {
+      listedPaths ??= new Set(
+        [...listings.values()].flatMap(({ files }) => files.map(({ path }) => path)),
+      );
+      return listedPaths.has(file);
+    };
     const unchecked: Array<readonly [string, CachedFile]> = [];
     for (const [filePath, entry] of fileCache) {
       if (
         entry.missingSinceMs === undefined &&
         !isRetained(entry, retentionCutoffMs) &&
+        !(hasRetainedSuperseded(entry, retentionCutoffMs) && wasListed(filePath)) &&
         !expiredCheckRetryAt.has(filePath)
       ) {
         unchecked.push([filePath, entry]);
@@ -709,8 +744,12 @@ export const make = Effect.gen(function* () {
             running.delete(filePath);
             // A scan may have stored a newer row while the check ran.
             if (fileCache.get(filePath) !== entry) return;
-            if (exists) fileCache.delete(filePath);
-            else fileCache.set(filePath, markMissing(entry, nowMs));
+            if (exists) {
+              if (hasRetainedSuperseded(entry, retentionCutoffMs)) return;
+              fileCache.delete(filePath);
+            } else {
+              fileCache.set(filePath, markMissing(entry, nowMs));
+            }
             generation += 1;
           }),
         ),
@@ -721,16 +760,22 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * Drops rows whose files went missing longer than retention ago, without touching the disk.
-   * A time ahead of the clock, as a process with its clock set ahead writes, counts from now.
-   * A row with a missing time drops a presence time ahead of the clock instead: kept, it would
-   * make merges discard the missing time as older than the file's return.
+   * Drops rows whose files went missing, and replaced versions' usage that went, longer than
+   * retention ago, without touching the disk. A time ahead of the clock counts from now. A row
+   * with a missing time drops a presence time ahead of the clock instead: kept, it would make
+   * merges discard the missing time as older than the file's return.
    */
   const dropExpired = Effect.fn("UsageService.dropExpired")(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
-    for (const [filePath, entry] of fileCache) {
+    const retentionCutoffMs = nowMs - CACHE_RETENTION_MS;
+    for (const [filePath, held] of fileCache) {
+      const entry = pruneSuperseded(held, nowMs, retentionCutoffMs);
       const { missingSinceMs, presentSinceMs, ...contents } = entry;
-      if (missingSinceMs !== undefined && missingSinceMs < nowMs - CACHE_RETENTION_MS) {
+      if (
+        missingSinceMs !== undefined &&
+        missingSinceMs < retentionCutoffMs &&
+        entry.superseded === undefined
+      ) {
         fileCache.delete(filePath);
       } else if ((missingSinceMs ?? 0) > nowMs || (presentSinceMs ?? 0) > nowMs) {
         fileCache.set(
@@ -739,6 +784,8 @@ export const make = Effect.gen(function* () {
             ? { ...contents, presentSinceMs: nowMs }
             : { ...contents, missingSinceMs: Math.min(missingSinceMs, nowMs) },
         );
+      } else if (entry !== held) {
+        fileCache.set(filePath, entry);
       } else continue;
       generation += 1;
     }
@@ -804,19 +851,26 @@ export const make = Effect.gen(function* () {
       ([key, source]) => durableSources.get(key) !== source,
     );
     const full = fullSaveDue(changedFiles.length);
-    if (!full && changedFiles.length === 0 && changedSources.length === 0) {
+    if (
+      !full &&
+      changedFiles.length === 0 &&
+      changedSources.length === 0 &&
+      unsavedImports.size === 0
+    ) {
       savedGeneration = capturedGeneration;
       return true;
     }
     const covered = [...retirable];
+    const imports = [...(full ? importedV11 : unsavedImports)];
     snapshotSeq += 1;
     const name = scanCacheSnapshotName(writerId, snapshotSeq);
     const file = path.join(storeDir, name);
-    ownSnapshots.add(name);
+    ownSnapshots.add(file);
     const written = yield* writeSnapshotFile(
       file,
       scanCacheDocumentPieces(full ? files : changedFiles, {
         sources: Object.fromEntries(full ? sources : changedSources),
+        ...(imports.length === 0 ? {} : { importedV11: imports }),
       }),
     ).pipe(Effect.result);
     if (written._tag === "Failure") {
@@ -826,7 +880,8 @@ export const make = Effect.gen(function* () {
       });
       return false;
     }
-    storedChars.set(name, written.success);
+    storedChars.set(file, written.success);
+    unsavedImports.clear();
     savedGeneration = capturedGeneration;
     if (!full) {
       for (const [changed, entry] of changedFiles) durableFiles.set(changed, entry);
@@ -838,7 +893,7 @@ export const make = Effect.gen(function* () {
     droppedRows.clear();
     // Only now is everything these names held durable in a snapshot of ours.
     for (const own of ownSnapshots) {
-      if (own !== name && (yield* deleteSavedUsage(own))) {
+      if (own !== file && (yield* deleteSavedUsage(own))) {
         ownSnapshots.delete(own);
         storedChars.delete(own);
       }
@@ -862,7 +917,7 @@ export const make = Effect.gen(function* () {
     const retryDue = (yield* monotonicMillis) >= retryCacheAt;
     const recoveredLists: string[] = [];
     const present = new Set<string>();
-    let storeListed = false;
+    const listedStores = new Set<string>();
     let mergedAllComplete = true;
 
     const list = Effect.fnUntraced(function* (dir: string) {
@@ -881,15 +936,22 @@ export const make = Effect.gen(function* () {
       if (savedUsageGaps.delete(gapKey("list", dir))) recoveredLists.push(dir);
       return listed.success;
     });
-    const listStore = Effect.gen(function* () {
-      const names = yield* list(storeDir);
-      if (names !== undefined) storeListed = true;
-      const inputs = (names ?? []).filter(isScanCacheInput);
-      for (const name of inputs) present.add(name);
+    const listStores = Effect.gen(function* () {
+      const inputs: string[] = [];
+      for (const dir of [storeDir, previousStoreDir]) {
+        const names = yield* list(dir);
+        if (names === undefined) continue;
+        listedStores.add(dir);
+        for (const name of names.filter(isScanCacheInput)) {
+          const file = path.join(dir, name);
+          present.add(file);
+          inputs.push(file);
+        }
+      }
       return inputs;
     });
 
-    let pending = yield* listStore;
+    let pending = yield* listStores;
     let missing = false;
     const stateNames = yield* list(config.stateDir);
     if (stateNames !== undefined) {
@@ -903,16 +965,14 @@ export const make = Effect.gen(function* () {
         if (!retryDue && savedUsageGaps.has(gapKey("claim", legacyPath))) continue;
         const claimId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
         const claimedName = claimedLegacyScanCacheName(claimId, legacyName);
+        const claimedFile = path.join(storeDir, claimedName);
         const claimed = yield* fileSystem
           .makeDirectory(storeDir, { recursive: true })
-          .pipe(
-            Effect.andThen(fileSystem.rename(legacyPath, path.join(storeDir, claimedName))),
-            Effect.result,
-          );
+          .pipe(Effect.andThen(fileSystem.rename(legacyPath, claimedFile)), Effect.result);
         if (claimed._tag === "Success") {
-          claimedFrom.set(claimedName, legacyPath);
-          present.add(claimedName);
-          pending.push(claimedName);
+          claimedFrom.set(claimedFile, legacyPath);
+          present.add(claimedFile);
+          pending.push(claimedFile);
         } else if (claimed.failure.reason._tag === "NotFound") {
           // A peer claimed it first; its claim, or the snapshot that covers it, is in the store.
           clearGap("claim", legacyPath);
@@ -925,6 +985,10 @@ export const make = Effect.gen(function* () {
 
     for (let relists = 0; ; relists += 1) {
       for (const name of pending) {
+        if (path.dirname(name) === previousStoreDir) {
+          if (missing) break;
+          if (importedV11.has(path.basename(name))) continue;
+        }
         if (ownSnapshots.has(name) || mergedInputs.has(name)) continue;
         if (unreadInputs.has(name) && !retryDue) continue;
         const outcome = yield* mergeSavedUsage(name);
@@ -938,13 +1002,13 @@ export const make = Effect.gen(function* () {
         break;
       }
       missing = false;
-      pending = yield* listStore;
+      pending = yield* listStores;
     }
 
-    if (storeListed) {
+    if (listedStores.size > 0) {
       // Names are never reused, so a name the store no longer lists needs no tracking.
       for (const name of [...mergedInputs.keys(), ...ownSnapshots]) {
-        if (present.has(name)) continue;
+        if (!listedStores.has(path.dirname(name)) || present.has(name)) continue;
         mergedInputs.delete(name);
         ownSnapshots.delete(name);
         retirable.delete(name);
@@ -953,7 +1017,7 @@ export const make = Effect.gen(function* () {
         storedChars.delete(name);
       }
       for (const gap of savedUsageGaps.values()) {
-        if (path.dirname(gap.path) !== storeDir || present.has(path.basename(gap.path))) continue;
+        if (!listedStores.has(path.dirname(gap.path)) || present.has(gap.path)) continue;
         if (gap.kind === "incomplete") {
           clearGap("incomplete", gap.path);
           yield* Effect.logWarning(
@@ -962,11 +1026,16 @@ export const make = Effect.gen(function* () {
           );
         } else if (gap.kind === "read") {
           clearGap("read", gap.path);
-          unreadInputs.delete(path.basename(gap.path));
+          unreadInputs.delete(gap.path);
         }
       }
     }
 
+    if (listedStores.has(previousStoreDir)) {
+      for (const name of importedV11) {
+        if (!present.has(path.join(previousStoreDir, name))) importedV11.delete(name);
+      }
+    }
     const needsWrite = write && (generation !== savedGeneration || fullSaveDue(0));
     const saved = needsWrite ? yield* writeSnapshot() : true;
 
@@ -1074,7 +1143,6 @@ export const make = Effect.gen(function* () {
     Effect.forkIn(scope),
   );
 
-  /** The earliest first record wins duplicate credit, with byte-ordered paths breaking ties. */
   const readFileRecords = Effect.fn("UsageService.readFileRecords")(function* (
     filePath: string,
     size: number,
@@ -1086,7 +1154,6 @@ export const make = Effect.gen(function* () {
     readonly records: readonly UsageRecord[];
     readonly malformedRecords: number;
     readonly failure?: TranscriptPathFailure;
-    readonly update?: Omit<CachedFile, "observedAtMs">;
   }> {
     const cached = fileCache.get(filePath);
     // Provider is part of the identity: if both providers were ever pointed
@@ -1166,18 +1233,30 @@ export const make = Effect.gen(function* () {
     const records = dedupeWithinFile([...base, ...parsed.records], seen);
     const tailRecords = dedupeWithinFile(parsed.tailRecords, seen);
 
+    const row: CachedFile = {
+      size,
+      mtimeMs,
+      provider,
+      observedAtMs: observedAt(filePath, yield* Clock.currentTimeMillis),
+      records: correctedBatch(records),
+      tailRecords: correctedBatch(tailRecords),
+      malformedRecords: parsed.malformedRecords,
+      position: parsed.position,
+    };
+    const held = fileCache.get(filePath);
+    fileCache.set(
+      filePath,
+      held === undefined
+        ? row
+        : carrySuperseded(row, held, {
+            liveKeys: seen,
+            ...(parsed.resumed && cached !== undefined ? { retainedPrefix: cached } : {}),
+          }),
+    );
+    generation += 1;
     return {
       records: tailRecords.length === 0 ? records : [...records, ...tailRecords],
       malformedRecords: parsed.malformedRecords,
-      update: {
-        size,
-        mtimeMs,
-        provider,
-        records,
-        tailRecords,
-        malformedRecords: parsed.malformedRecords,
-        position: parsed.position,
-      },
     };
   });
 
@@ -1339,26 +1418,20 @@ export const make = Effect.gen(function* () {
     if (listing.failures.length === 0) {
       recordMissing(provider, dir, new Set(listing.files.map((file) => file.path)), listedAtMs);
     }
-    const candidates = listing.files.filter((file) => file.mtimeMs >= windowStartMs);
+    const candidates = listing.files.filter((file) => {
+      if (file.mtimeMs >= windowStartMs) return true;
+      // A backup can predate the window even when the version it replaced contributed to it.
+      const held = fileCache.get(file.path);
+      return held?.provider === provider && held.mtimeMs >= windowStartMs;
+    });
     const read = yield* Effect.forEach(
       candidates,
       (file) =>
         readFileRecords(file.path, file.size, file.mtimeMs, provider, format, onProgress).pipe(
-          Effect.flatMap(({ records, malformedRecords, failure, update }) =>
-            Effect.gen(function* () {
-              onProgress();
-              if (update !== undefined) {
-                fileCache.set(file.path, {
-                  ...update,
-                  observedAtMs: observedAt(file.path, yield* Clock.currentTimeMillis),
-                  records: correctedBatch(update.records),
-                  tailRecords: correctedBatch(update.tailRecords),
-                });
-                generation += 1;
-              }
-              return { path: file.path, records, malformedRecords, failure };
-            }),
-          ),
+          Effect.map((result) => {
+            onProgress();
+            return { path: file.path, ...result };
+          }),
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
@@ -1509,7 +1582,7 @@ export const make = Effect.gen(function* () {
     const transcripts = yield* Effect.forEach(dirs, (dir) =>
       scanTranscriptDir(dir, windowStartMs, scanListings, onProgress),
     );
-    yield* checkExpiredFiles(retentionCutoffMs);
+    yield* checkExpiredFiles(retentionCutoffMs, scanListings);
 
     yield* Fiber.join(rateLoad);
     const window = {
@@ -1599,24 +1672,27 @@ export const make = Effect.gen(function* () {
     flight?: ScanFlight,
   ) {
     const { hourlyWindow, windowStartMs, retentionCutoffMs, startedAtMs } = window;
-    // Deleted transcripts' saved usage still aggregates and deduplicates normally.
+    // Deleted transcripts' and replaced versions' saved usage aggregates and deduplicates normally.
     const filesByDir = scannedDirs.map(({ provider, dir, files }) => {
       const retainedFiles = [...(files ?? [])];
-      const livePaths = new Set(retainedFiles.map((file) => file.path));
+      const liveIndex = new Map(retainedFiles.map((file, index) => [file.path, index]));
       for (const [filePath, entry] of fileCache) {
-        if (
-          entry.provider !== provider ||
-          entry.mtimeMs < windowStartMs ||
-          !isRetained(entry, retentionCutoffMs) ||
-          livePaths.has(filePath) ||
-          !isWithinDirectory(filePath, dir)
-        )
-          continue;
-        retainedFiles.push({
-          path: filePath,
-          records: [...entry.records, ...entry.tailRecords],
-          malformedRecords: entry.malformedRecords,
-        });
+        if (entry.provider !== provider || !isWithinDirectory(filePath, dir)) continue;
+        const index = liveIndex.get(filePath);
+        const superseded = retainedSuperseded(entry, retentionCutoffMs, provider);
+        if (index !== undefined) {
+          if (superseded.length === 0) continue;
+          const file = retainedFiles[index]!;
+          retainedFiles[index] = { ...file, records: [...file.records, ...superseded] };
+        } else if (entry.mtimeMs >= windowStartMs && isRetained(entry, retentionCutoffMs)) {
+          retainedFiles.push({
+            path: filePath,
+            records: [...entry.records, ...entry.tailRecords, ...superseded],
+            malformedRecords: entry.malformedRecords,
+          });
+        } else if (superseded.length > 0) {
+          retainedFiles.push({ path: filePath, records: superseded, malformedRecords: 0 });
+        }
       }
       return retainedFiles;
     });

@@ -62,6 +62,7 @@ import {
   SCAN_CACHE_DIRECTORY_NAME,
   SCAN_CACHE_PIECE_CHARS,
   scanCacheDocumentPieces,
+  scanCacheSnapshotName,
   USAGE_SCAN_CACHE_VERSION,
   type ScanCache,
 } from "./usageScanCache.ts";
@@ -3852,33 +3853,71 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
-  it.live("migrates snapshots from the v11 directory without modifying them", () =>
+  it.live("migrates snapshots from the v11 directory without reviving expired usage", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
       yield* writeTranscriptAtCursorNow(transcript, 5);
+      const sibling = NodePath.join(NodePath.dirname(transcript), "v11-delta.jsonl");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(sibling, claudeLine(2, 7));
+        await NodeFSP.utimes(sibling, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
 
       yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
         const active = yield* onlySnapshot(stateDir);
         const oldDir = NodePath.join(stateDir, "usage-scan-cache-v11");
-        const oldName = NodePath.basename(active.path);
+        const oldWriter = "00000000-0000-4000-8000-000000000000";
+        const oldName = scanCacheSnapshotName(oldWriter, 1);
+        const deltaName = scanCacheSnapshotName(oldWriter, 2);
         const oldPath = NodePath.join(oldDir, oldName);
-        const oldContents = encodeUnknownJsonString({ ...active.document, version: 11 });
+        const deltaPath = NodePath.join(oldDir, deltaName);
+        const oldContents = encodeUnknownJsonString({
+          ...active.document,
+          version: 11,
+          files: { [transcript]: active.document.files[transcript] },
+        });
+        const deltaContents = encodeUnknownJsonString({
+          ...active.document,
+          version: 11,
+          files: { [sibling]: active.document.files[sibling] },
+        });
         yield* fs.remove(active.path);
         yield* fs.remove(transcript);
+        yield* fs.remove(sibling);
         yield* fs.makeDirectory(oldDir, { recursive: true });
         yield* fs.writeFileString(oldPath, oldContents);
 
         assert.strictEqual(yield* outputTokensAfterRestart, 5);
-        assert.deepStrictEqual(yield* fs.readDirectory(oldDir), [oldName]);
-        assert.strictEqual(yield* fs.readFileString(oldPath), oldContents);
         const migrated = yield* onlySnapshot(stateDir);
         assert.strictEqual(migrated.document.version, 12);
-        yield* fs.remove(oldPath);
+        const aside = NodePath.join(stateDir, oldName);
+        yield* fs.rename(oldPath, aside);
         assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* fs.rename(aside, oldPath);
+
+        yield* Effect.gen(function* () {
+          const current = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* current.readSummary(WINDOW)), 5);
+          yield* current.awaitPersisted;
+          yield* fs.writeFileString(deltaPath, deltaContents);
+          yield* current.readSummary(WINDOW);
+          yield* current.awaitPersisted;
+          assert.strictEqual(totalOutputTokens(yield* current.readSummary(WINDOW)), 12);
+          yield* current.awaitPersisted;
+        }).pipe(Effect.scoped);
+
+        yield* TestClock.setTime(CURSOR_NOW + 92 * DAY_MS);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+        yield* TestClock.adjust("1 millis");
+        assert.strictEqual(yield* outputTokensAfterRestart, 0);
+        assert.strictEqual(yield* outputTokensAfterRestart, 0);
+        assert.sameMembers(yield* fs.readDirectory(oldDir), [oldName, deltaName]);
+        assert.strictEqual(yield* fs.readFileString(oldPath), oldContents);
+        assert.strictEqual(yield* fs.readFileString(deltaPath), deltaContents);
       }).pipe(
         Effect.provide(layerService({ prefix: "usage-cache-v11-migration", home, settings })),
       );
