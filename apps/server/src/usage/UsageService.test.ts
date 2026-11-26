@@ -3948,7 +3948,7 @@ describe("UsageService", () => {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
       const shared = claudeLine(1, 5);
-      const olderMtime = CURSOR_NOW - DAY_MS;
+      const olderMtime = Date.parse("2026-07-20T12:00:00Z");
       const sibling = NodePath.join(NodePath.dirname(transcript), "sibling.jsonl");
       yield* Effect.promise(async () => {
         await NodeFSP.writeFile(transcript, shared + claudeLine(2, 12));
@@ -3976,6 +3976,8 @@ describe("UsageService", () => {
         assert.deepStrictEqual(Object.keys(delta.document.files), [transcript]);
         assert.strictEqual(delta.document.files[transcript]?.m, olderMtime);
         assert.lengthOf(delta.document.files[transcript]!.r, 1);
+        assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 24);
+        yield* writer.awaitPersisted;
 
         // Enough redundant snapshots make the peer compact the delta and original into one.
         yield* seedSnapshot(stateDir, original.raw);
