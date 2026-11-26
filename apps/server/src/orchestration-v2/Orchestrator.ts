@@ -33,7 +33,6 @@ import {
   type GuestMessageId,
   isAppOwnedTaskWork,
   isCompactionCommandMessage,
-  isOrchestrationV2TerminalRunStatus,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MAX_THREAD_STARRED_MESSAGES,
