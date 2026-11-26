@@ -1,3 +1,7 @@
+## 2026-11-27 — Cursor text generation exposes accepted requests
+
+- The Cursor adapter reports when the SDK accepts a request, including requests that later return an invalid title. Setup failures produce no dispatch signal.
+
 ## 2026-11-27 — Headroom-aware account routing and soft-drain avoidance
 
 - New Auto threads and usage-limit failovers now avoid soft-draining accounts and spread across healthy accounts by remaining quota headroom (preferring accounts with a live usage reading over unread ones, and breaking ties by soonest weekly reset and then saved account order), while scheduled runs still spend expiring weekly quota first and plan usage / MCP sign-in precedence remain unchanged. Active threads, explicit named launches, and delegated tasks on a healthy parent account stay sticky to preserve prompt caches unless hard-limited or outranked on plan/MCP precedence.

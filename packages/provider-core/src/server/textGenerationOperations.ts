@@ -1,3 +1,4 @@
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -21,6 +22,14 @@ import {
 } from "./textGenerationUtils.ts";
 
 export type Operation = Exclude<keyof ProviderTextGeneration, "supportsInvestigation">;
+
+/** Observers must be synchronous and nonthrowing. SDK acceptance can arrive after interruption. */
+export const OnDispatch = Context.Reference<() => void>(
+  "t3/provider-core/textGeneration/OnDispatch",
+  {
+    defaultValue: () => () => {},
+  },
+);
 
 export interface Request<S extends Schema.Top> {
   readonly operation: Operation;

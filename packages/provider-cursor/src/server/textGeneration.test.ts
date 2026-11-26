@@ -1,5 +1,6 @@
 import type { RunResult } from "@cursor/sdk";
 import { ProviderInstanceId, ProviderSetupError, TextGenerationError } from "@t3tools/contracts";
+import { OnDispatch } from "@t3tools/provider-core/server/textGenerationOperations";
 import { CursorSettings } from "../settings.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -194,10 +195,38 @@ describe("CursorTextGeneration", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect("observes an accepted run before its finished title fails validation", () =>
+    Effect.gen(function* () {
+      const onDispatch = vi.fn();
+      let observedBeforeWait = false;
+      cursorSdkMock.prompt.mockImplementationOnce(async () => {
+        observedBeforeWait = onDispatch.mock.calls.length === 1;
+        return { id: "invalid-title", status: "finished", result: '{"title":123}' };
+      });
+      const generation = yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
+      const failure = yield* Effect.flip(
+        generation
+          .generateThreadTitle({
+            cwd: "/workspace",
+            message: "Title",
+            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+          })
+          .pipe(Effect.provideService(OnDispatch, onDispatch)),
+      );
+      expect(cursorSdkMock.send).toHaveBeenCalledOnce();
+      expect(onDispatch).toHaveBeenCalledExactlyOnceWith();
+      expect(failure).toBeInstanceOf(TextGenerationError);
+      expect(failure.operation).toBe("generateThreadTitle");
+      expect(failure.detail).toBe("Cursor SDK returned invalid structured output.");
+      expect(observedBeforeWait).toBe(true);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect.each(["error", "cancelled"] as const)(
     "rejects a %s Cursor SDK run that includes valid title JSON",
     (status) =>
       Effect.gen(function* () {
+        const onDispatch = vi.fn();
         const promptResult = {
           id: "run-cursor-partial-title-test",
           status,
@@ -208,15 +237,18 @@ describe("CursorTextGeneration", () => {
           CURSOR_API_KEY: "test-cursor-key",
         });
         const failure = yield* Effect.flip(
-          generation.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "Fix the reconnect spinner after a resumed session.",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("cursor"),
-              model: "composer-2",
-            },
-          }),
+          generation
+            .generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Fix the reconnect spinner after a resumed session.",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("cursor"),
+                model: "composer-2",
+              },
+            })
+            .pipe(Effect.provideService(OnDispatch, onDispatch)),
         );
+        expect(onDispatch).toHaveBeenCalledExactlyOnceWith();
         expect(failure).toBeInstanceOf(TextGenerationError);
         expect(failure.operation).toBe("generateThreadTitle");
         expect(failure.detail).toBe(
@@ -230,15 +262,20 @@ describe("CursorTextGeneration", () => {
 
   it.effect("fails closed when ambient sandbox policy can expand write access", () =>
     Effect.gen(function* () {
+      const onDispatch = vi.fn();
       hasCustomPolicy = true;
       const generation = yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
       const failure = yield* Effect.flip(
-        generation.generateThreadTitle({
-          cwd: "/real-workspace",
-          message: "Title",
-          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
-        }),
+        generation
+          .generateThreadTitle({
+            cwd: "/real-workspace",
+            message: "Title",
+            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+          })
+          .pipe(Effect.provideService(OnDispatch, onDispatch)),
       );
+      expect(cursorSdkMock.send).not.toHaveBeenCalled();
+      expect(onDispatch).not.toHaveBeenCalled();
       expect(failure.detail).toContain("custom ~/.cursor/sandbox.json");
       expect(cursorSdkMock.prompt).not.toHaveBeenCalled();
     }).pipe(Effect.provide(layerTest)),

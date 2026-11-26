@@ -181,9 +181,11 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
             ),
           { interruptible: true },
         );
+        const onDispatch = yield* TextGenerationOperations.OnDispatch;
         const run = yield* Effect.tryPromise((signal) =>
           agent.send(prompt).then((run) => {
             if (signal.aborted) void run.cancel().catch(() => undefined);
+            onDispatch();
             return run;
           }),
         );
