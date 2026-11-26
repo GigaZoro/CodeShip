@@ -427,7 +427,7 @@ function landingCommit(cwd, data, parent) {
 /**
  * Gives the lease `sha` of `turn` back unless another lander took it; `pending` is a renewal of `sha` whose answer was
  * lost. A passing failure of origin is tried again as `acquire` does, for `failingMs` of `awakeClock`: a turn left held
- * stalls every lander.
+ * stalls every lander. True once neither lease can still be used to push main.
  */
 function release(
   { failingMs = FAILING_MS, pollMs = POLL_MS, sleep = sleepSync, awakeClock = awakeNow, ...lease },
@@ -438,11 +438,10 @@ function release(
   for (let first = true; ; first = false) {
     let failure;
     try {
-      // A compare-and-swap: a lease another lander took meanwhile stays theirs.
-      const held = pending === null ? sha : remoteLease(lease);
-      if (held === sha || held === pending) moveLease(lease, held, null);
+      // Deleting the old lease fences a delayed renewal. If the renewal won, only its own commit may be deleted.
+      if (!moveLease(lease, sha, null) && pending !== null) moveLease(lease, pending, null);
       forgetHolder(lease.cwd, turn);
-      return;
+      return true;
     } catch (error) {
       failure = error;
     }
@@ -461,7 +460,7 @@ function release(
       process.stderr.write(
         `landing turn: the turn may stay held until its lease expires: ${failure.message}\n`,
       );
-      return;
+      return false;
     }
     if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
     sleep(pollMs);
@@ -665,7 +664,7 @@ async function withTurn(
   const awakeClock = options.awakeClock ?? awakeNow;
   const turn = acquire(options);
   const lost = new AbortController();
-  // The lease commit origin holds for the turn, null once the push to main gave it back.
+  // The last confirmed lease. Null once the push or the release has finished handling it.
   let current = turn;
   // A renewal of `current` whose answer was lost, which origin may hold instead.
   let pending = null;
@@ -676,13 +675,24 @@ async function withTurn(
     lost.abort(new Error(reason));
   };
   const loseTaken = () => lose("another lander took the lease after it ran out.");
-  /** Learns from origin whether a renewal whose answer was lost applied. False when origin holds neither commit. */
+  const forgetTurn = () => {
+    current = null;
+    forgetHolder(options.cwd, turn);
+  };
+  /** Resends the same conditional renewal: reading the old commit alone cannot rule out a late write. */
   const settle = () => {
     if (pending === null) return true;
-    const held = remoteLease(options);
-    if (held === pending) current = pending;
+    const took = moveLease(options, current, pending);
+    if (took) current = pending;
+    else forgetTurn();
     pending = null;
-    return held === current;
+    return took;
+  };
+  const releaseTurn = () => {
+    if (current === null) return true;
+    const released = release(options, current, { pending, turn });
+    current = null;
+    return released;
   };
   /**
    * Whether origin's `branch` is at `candidate` or descends from it: once a push that gave back the lease reached
@@ -715,7 +725,7 @@ async function withTurn(
       try {
         if (!settle()) return false;
         const expiresAt = Math.min(at + LEASE_TTL_MS, turnEnd(data));
-        const renewed = landingCommit(
+        pending = landingCommit(
           options.cwd,
           {
             ...data,
@@ -726,11 +736,7 @@ async function withTurn(
           },
           current,
         );
-        pending = renewed;
-        const took = moveLease(options, current, renewed);
-        pending = null;
-        if (!took) return false;
-        current = renewed;
+        if (!settle()) return false;
         failing = false;
       } catch (error) {
         if (!(error instanceof RemoteFailure)) {
@@ -755,77 +761,72 @@ async function withTurn(
     // a Mac's sleep, so a push that ran out of it with less time awake runs again, on a renewed lease.
     const pushMain = async (branch, commit) => {
       cancel();
-      // The last push sent. One git reports failed may still reach origin, even after a later renewal, and give the lease
-      // back.
-      let pushed = null;
-      const unknown = (error) =>
-        new Error(
-          `git push failed, and whether it landed is unknown: ${pushed.stderr}\n${error.message}`,
+      let sent = false;
+      let pushMessage = "";
+      let failure;
+      try {
+        while (renew() && !lost.signal.aborted && settle()) {
+          const started = awakeClock();
+          const expiresAt = Date.parse(JSON.parse(leaseLine(options.cwd, current)).expires_at);
+          const leftMs = Math.min(mainCallMs, expiresAt - now());
+          if (leftMs <= 0) {
+            lose("the lease ran out before the push.");
+            break;
+          }
+          // A failed push can still land. Keep local waiters from taking this turn until its lease is given back.
+          recordHolder(options.cwd, turn, { pushing: true });
+          sent = true;
+          const pushed = await gitAsync(
+            options.cwd,
+            [
+              "push",
+              "--quiet",
+              "--atomic",
+              `--force-with-lease=${LEASE_REF}:${current}`,
+              options.remote,
+              `${commit}:refs/heads/${branch}`,
+              `:${LEASE_REF}`,
+            ],
+            { env: { [TURN_ENV]: turn }, allowFailure: true, timeoutMs: leftMs, after },
+          );
+          if (pushed.ok) {
+            forgetTurn();
+            return true;
+          }
+          pushMessage = pushed.stderr;
+          if (remoteLease(options) !== current) {
+            // A different lease already rules out this delayed write. Only main still needs checking.
+            forgetTurn();
+            break;
+          }
+          if (!pushed.timedOut || awakeClock() - started >= leftMs) {
+            failure = new Error(`git push failed: ${pushMessage}`);
+            break;
+          }
+        }
+      } catch (error) {
+        if (!sent) throw error;
+        failure = error;
+      }
+      if (!sent) {
+        loseTaken();
+        return false;
+      }
+      // A failed push can win after the first readback. Once its conditional release finishes, the push can no
+      // longer change main, so this read decides even when another turn has already advanced main.
+      const released = releaseTurn();
+      try {
+        if (await mainHolds(branch, commit)) return true;
+        if (!released) throw new Error("could not confirm the release of the push's lease.");
+      } catch (error) {
+        throw new Error(
+          `git push failed, and whether it landed is unknown: ${pushMessage || failure?.message || ""}\n${error.message}`,
           { cause: error },
         );
-      /** Once origin holds no lease of the turn after a push: the push landed if main holds `commit`. */
-      const gaveBack = async () => {
-        let landed;
-        try {
-          landed = await mainHolds(branch, commit);
-        } catch (error) {
-          throw unknown(error);
-        }
-        current = null;
-        if (!landed) lose("another lander took the lease before the push.");
-        return landed;
-      };
-      for (;;) {
-        // Whether origin still holds the turn's lease.
-        let ours;
-        try {
-          ours = renew() && settle();
-        } catch (error) {
-          throw pushed === null ? error : unknown(error);
-        }
-        if (lost.signal.aborted) return false;
-        if (!ours) {
-          if (pushed !== null) return await gaveBack();
-          loseTaken();
-          return false;
-        }
-        const started = awakeClock();
-        const expiresAt = Date.parse(JSON.parse(leaseLine(options.cwd, current)).expires_at);
-        const leftMs = Math.min(mainCallMs, expiresAt - now());
-        if (leftMs <= 0) {
-          lose("the lease ran out before the push.");
-          return false;
-        }
-        // A push that failed may still land, so the record shows it in flight until the turn is given back, and no
-        // waiter here takes the turn over meanwhile.
-        recordHolder(options.cwd, turn, { pushing: true });
-        pushed = await gitAsync(
-          options.cwd,
-          [
-            "push",
-            "--quiet",
-            "--atomic",
-            `--force-with-lease=${LEASE_REF}:${current}`,
-            options.remote,
-            `${commit}:refs/heads/${branch}`,
-            `:${LEASE_REF}`,
-          ],
-          { env: { [TURN_ENV]: turn }, allowFailure: true, timeoutMs: leftMs, after },
-        );
-        if (pushed.ok) {
-          current = null;
-          return true;
-        }
-        let held;
-        try {
-          held = remoteLease(options);
-        } catch (error) {
-          throw unknown(error);
-        }
-        if (held !== current) return await gaveBack();
-        if (pushed.timedOut && awakeClock() - started < leftMs) continue;
-        throw new Error(`git push failed: ${pushed.stderr}`);
       }
+      if (failure) throw failure;
+      lose("another lander took the lease before the push.");
+      return false;
     };
     // A take confirmed late, after a lost answer, has already spent part of its lease.
     if (Date.parse(data.expires_at) - now() < LEASE_TTL_MS - LEASE_RENEW_MS) renewHeld();
@@ -833,9 +834,7 @@ async function withTurn(
     return await run(turn, lost.signal, pushMain);
   } finally {
     cancel();
-    // A compare-and-swap: a lease another lander took meanwhile stays theirs.
-    if (current !== null) release(options, current, { pending, turn });
-    else forgetHolder(options.cwd, turn);
+    releaseTurn();
   }
 }
 

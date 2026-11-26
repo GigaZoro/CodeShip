@@ -59,6 +59,7 @@ const fixture = (root) => {
     ".github/scripts/lease-queue.cjs",
     ".github/scripts/bounded-git.cjs",
     ".github/scripts/process-tree.cjs",
+    "packages/shared/src/windowsProcessTreeScript.ts",
   ]) {
     write(file, fs.readFileSync(path.join(repoRoot, file), "utf8"));
   }
