@@ -42,6 +42,7 @@ import {
   readHostedSupportsUpdateDrain,
   runWithHostedUpdateDrain,
   usePendingLocalInstall,
+  usePendingLocalInstallTurns,
   usePendingLocalInstallWork,
 } from "./localInstallWait";
 import { PendingLocalInstallDialog } from "./PendingLocalInstallDialog";
@@ -255,6 +256,7 @@ function SidebarUpdateControl() {
   const run = useUpdateEverythingRun();
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
+  const pendingTurns = usePendingLocalInstallTurns();
   const isRunningEverything = run !== null;
   const { iconStatus, showUpdateDetails } = resolveSidebarUpdatePresentation({
     action: pendingAction,
@@ -264,7 +266,7 @@ function SidebarUpdateControl() {
   });
   const tooltip =
     pendingInstall !== null
-      ? restartHoldTooltip(pendingWork)
+      ? restartHoldTooltip(pendingWork, pendingTurns)
       : runsEverything && !isWaitingOnRecheck
         ? everything.summary
         : state &&

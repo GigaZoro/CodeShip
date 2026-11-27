@@ -12,6 +12,8 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as Option from "effect/Option";
+import * as UpdateDrain from "../cloud/updateDrain.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -74,6 +76,10 @@ export const make = Effect.gen(function* () {
       yield* due.record(readVersion, Infinity, nowMs);
       return;
     }
+    if (yield* UpdateDrain.isDraining()) {
+      yield* due.record(readVersion, Infinity, nowMs);
+      return;
+    }
     const shortage = yield* currentShortage(nowMs);
     if (shortage === null) {
       yield* dispatch({
@@ -124,6 +130,15 @@ export const layer = Layer.effectDiscard(
       ),
     );
     yield* forkParked(Queue.take(wakes).pipe(Effect.andThen(sweepOnWake), Effect.forever));
+    yield* forkParked(
+      UpdateDrain.watchDraining.pipe(
+        Stream.zipWithPrevious,
+        Stream.filter(
+          ([previous, current]) => Option.isSome(previous) && previous.value && !current,
+        ),
+        Stream.runForEach(() => Queue.offer(wakes, undefined)),
+      ),
+    );
     yield* forkParked(
       sink
         .stream({ afterSequence })

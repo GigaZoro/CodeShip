@@ -115,7 +115,12 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
-import { isDrainingRef, UpdateDrain, watchDrainingRef } from "../cloud/updateDrain.ts";
+import {
+  isDrainingRef,
+  tryAdmitStartRef,
+  UpdateDrain,
+  watchDrainingRef,
+} from "../cloud/updateDrain.ts";
 import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -1440,6 +1445,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const updateDrain = yield* UpdateDrain;
+  // Carries the atomic tryAdmitStartRef decision from dispatchWithReceiptEffect through
+  // dispatchOnce and eventSink.commitCommand so draining checks and run commits never race.
+  class UpdateDrainAdmission extends Context.Reference<boolean | undefined>(
+    "t3/orchestration-v2/UpdateDrainAdmission",
+    { defaultValue: () => undefined },
+  ) {}
+  const isUpdateDraining = Effect.gen(function* () {
+    const admitted = yield* UpdateDrainAdmission;
+    return admitted === undefined ? yield* isDrainingRef(updateDrain) : !admitted;
+  });
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
   const { managedPolicy } = serverSettings;
   const runtimeModeCeiling: RuntimeModeCeiling | undefined =
@@ -2017,7 +2032,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (storedQueuedRun === undefined) {
         return;
       }
-      if (yield* isDrainingRef(updateDrain)) {
+      if (!(yield* tryAdmitStartRef(updateDrain))) {
         const storedMessage = projection.messages.find(
           (candidate) => candidate.id === storedQueuedRun.userMessageId,
         );
@@ -2861,6 +2876,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
     (effect, threadId, options?) =>
       effect.pipe(
+        Effect.scoped,
         Effect.catch((cause) => failQueuedRunStart(threadId, cause, options?.queuedRunId)),
       ),
   );
@@ -6998,7 +7014,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const bufferedProviderWake =
       command.createdBy === "agent" && command.creationSource === "provider";
     const updateDraining =
-      !options?.bypassUpdateDrain && !bufferedProviderWake && (yield* isDrainingRef(updateDrain));
+      !options?.bypassUpdateDrain && !bufferedProviderWake && (yield* isUpdateDraining);
     const queueForUpdateDrain =
       updateDraining &&
       queueBehindRun === undefined &&
@@ -11992,6 +12008,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
       runIds: [command.runId],
     });
+    if (yield* isUpdateDraining) return;
     const run = runs.find((candidate) => candidate.id === command.runId);
     // A person's message or Stop may have got to it first.
     if (run === undefined || !orchestrationV2RunAwaitsMemory(run)) return;
@@ -15503,13 +15520,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         const now = yield* DateTime.now;
         const queued = projection.runs.filter((run) => run.status === "queued");
-        // Resuming the queue or Send now is a start asked for by hand.
-        const revived = yield* reviveLatestRestartCutRun(
-          command,
-          { runs: projection.runs, waitsForMemory: false },
-          events,
-          effects,
-        );
+        const draining = yield* isUpdateDraining;
+        // Resuming the queue or Send now is a start asked for by hand; during an update drain,
+        // release manual holds but keep the queue held by update drain and skip reviving cut runs.
+        const revived = draining
+          ? false
+          : yield* reviveLatestRestartCutRun(
+              command,
+              { runs: projection.runs, waitsForMemory: false },
+              events,
+              effects,
+            );
         // The revived message goes first; the one Send now picked still goes right after it.
         const sendNowOrder =
           revived && selectedRun !== undefined
@@ -15520,6 +15541,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : undefined;
         for (const run of queued) {
           const position = sendNowOrder?.findIndex((other) => other.id === run.id);
+          const unheld = draining
+            ? { ...withQueueHold(run, false), queueHeldByUpdateDrain: true }
+            : withQueueHold(run, false);
           yield* emit(
             events,
             command,
@@ -15529,10 +15553,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             runId: run.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload:
-              position === undefined
-                ? withQueueHold(run, false)
-                : { ...withQueueHold(run, false), queuePosition: position + 1 },
+            payload: position === undefined ? unheld : { ...unheld, queuePosition: position + 1 },
           });
         }
         if (queued.length === 0) {
@@ -15711,161 +15732,189 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    const decision = yield* dispatchOnce(command, sideChatIds).pipe(
-      Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
-      Effect.filterOrFail(
-        (planned) =>
-          planned.events.length > 0 ||
-          command.type === "thread.background-work.settle" ||
-          command.type === "thread.interrupt.unresponsive" ||
-          // Someone may have answered, or the run is attended.
-          command.type === "runtime-request.decline-unattended" ||
-          command.type === "thread.stop" ||
-          command.type === "subagent.stop" ||
-          // A report the task already holds, or a stop a newer one superseded, is done; its
-          // sender then fails only on a write that did not happen.
-          command.type === "delegated_task.remote.complete" ||
-          command.type === "thread.message.star" ||
-          // Closing a share again, or after it ended, is not an error.
-          command.type === "thread.guest-share.close" ||
-          command.type === "provider-session.detach-idle" ||
-          // A person's message or Stop got to the waiting run first.
-          command.type === "run.memory-admit" ||
-          command.type === "run.memory-wait" ||
-          (command.type === "thread.delete" && command.onlyIfUnused === true),
-        (_planned) =>
-          new OrchestratorDispatchError({
+    const committedOrResult = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const admitted = yield* tryAdmitStartRef(updateDrain);
+        const decision = yield* dispatchOnce(command, sideChatIds).pipe(
+          Effect.provideService(UpdateDrainAdmission, admitted),
+          Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
+          Effect.filterOrFail(
+            (planned) =>
+              planned.events.length > 0 ||
+              command.type === "thread.background-work.settle" ||
+              command.type === "thread.interrupt.unresponsive" ||
+              // Someone may have answered, or the run is attended.
+              command.type === "runtime-request.decline-unattended" ||
+              command.type === "thread.stop" ||
+              command.type === "subagent.stop" ||
+              // A report the task already holds, or a stop a newer one superseded, is done; its
+              // sender then fails only on a write that did not happen.
+              command.type === "delegated_task.remote.complete" ||
+              command.type === "thread.message.star" ||
+              // Closing a share again, or after it ended, is not an error.
+              command.type === "thread.guest-share.close" ||
+              command.type === "provider-session.detach-idle" ||
+              // A person's message or Stop got to the waiting run first.
+              command.type === "run.memory-admit" ||
+              command.type === "run.memory-wait" ||
+              (command.type === "thread.delete" && command.onlyIfUnused === true),
+            (_planned) =>
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "Command produced no domain events.",
+              }),
+          ),
+          Effect.result,
+        );
+
+        if (Result.isFailure(decision)) {
+          const cause = decision.failure;
+          // A refusal based on current thread state, modes or a review round must allow a retry when they change.
+          if (
+            cause._tag === "OrchestratorSendTargetUnavailableError" ||
+            cause._tag === "OrchestratorThreadAboveModeLimitError" ||
+            cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
+            cause._tag === "OrchestratorContinuationSnoozedError" ||
+            cause._tag === "OrchestratorReviewRoundLimitError"
+          ) {
+            return yield* cause;
+          }
+          // Resolving a turn's policy refuses the same way, from inside the decision.
+          const ceiling = runtimePolicyCeilingCause(cause);
+          if (ceiling !== undefined) {
+            const { threadId, runtimeMode, maxRuntimeMode, organization } = ceiling;
+            return yield* new OrchestratorRuntimeModeAboveCeilingError({
+              commandId: command.commandId,
+              threadId,
+              refused: "turn",
+              runtimeMode,
+              maxRuntimeMode,
+              organization,
+            });
+          }
+          const rejectedAt = yield* DateTime.now;
+          const { receipt, inserted } = yield* eventSink
+            .commitRejectedCommand({
+              commandId: command.commandId,
+              threadId: commandThreadId(command),
+              commandType: command.type,
+              rejectedAt,
+              error:
+                cause._tag === "OrchestratorMessageStarError" &&
+                command.type === "thread.message.star"
+                  ? encodeMessageStarReceiptError({
+                      messageId: command.messageId,
+                      starred: command.starred,
+                      reason: cause.reason,
+                    })
+                  : cause instanceof Error
+                    ? cause.message
+                    : String(cause),
+            })
+            .pipe(mapDispatchError(command));
+          if (!inserted) {
+            return {
+              _tag: "replay" as const,
+              result: yield* replayCommandReceipt(command, receipt),
+            };
+          }
+          if (command.type === "queued-run.edit" && cause._tag === "OrchestratorDispatchError") {
+            return yield* new OrchestratorCommandRejectedError({
+              commandId: cause.commandId,
+              commandType: cause.commandType,
+              cause: cause.cause,
+            });
+          }
+          return yield* cause;
+        }
+
+        const plan = decision.success;
+        if (plan.events.length === 0 && plan.effects.length === 0) {
+          // A settle that ended nothing still records its receipt: a replayed Stop
+          // effect then finds it instead of settling work that appeared since.
+          const { resultSequence, inserted } = yield* Effect.gen(function* () {
+            const sequence = yield* eventSink.latestSequence({
+              threadId: commandThreadId(command),
+            });
+            const inserted = yield* commandReceipts.insertIfAbsent({
+              commandId: command.commandId,
+              threadId: commandThreadId(command),
+              commandType: command.type,
+              acceptedAt: yield* DateTime.now,
+              resultSequence: sequence,
+              status: "accepted",
+              error: null,
+            });
+            return { resultSequence: sequence, inserted };
+          }).pipe(mapDispatchError(command));
+          if (!inserted) {
+            const winner = yield* commandReceipts.getByCommandId(command.commandId).pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () => Effect.fail(`Command ${command.commandId} has no thread receipt.`),
+                  onSome: Effect.succeed,
+                }),
+              ),
+              mapDispatchError(command),
+            );
+            return {
+              _tag: "replay" as const,
+              result: yield* replayCommandReceipt(command, winner),
+            };
+          }
+          return {
+            _tag: "replay" as const,
+            result: { sequence: resultSequence, storedEvents: [] },
+          };
+        }
+        const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
+        const committed = yield* eventSink
+          .commitCommand({
+            commandId: command.commandId,
+            threadId: commandThreadId(command),
+            commandType: command.type,
+            acceptedAt,
+            events: plan.events,
+            effects: plan.effects,
+            ...(plan.cancelUnsettledEffects === undefined
+              ? {}
+              : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+            ...(command.type === "thread.auto-settle"
+              ? {
+                  autoSettleGuard: {
+                    snapshotAt: command.snapshotAt,
+                    ...(command.parentResultKey === undefined
+                      ? {}
+                      : { parentResultKey: command.parentResultKey }),
+                  },
+                }
+              : {}),
+          })
+          .pipe(mapDispatchError(command));
+
+        if (committed.rejectedByGuard === true) {
+          return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
-            cause: "Command produced no domain events.",
-          }),
-      ),
-      Effect.result,
+            cause:
+              committed.receipt.error ??
+              `Thread ${commandThreadId(command)} changed before automatic settlement.`,
+          });
+        }
+        if (!committed.committed) {
+          return {
+            _tag: "replay" as const,
+            result: yield* replayCommandReceipt(command, committed.receipt, committed.storedEvents),
+          };
+        }
+        return { _tag: "committed" as const, committed };
+      }),
     );
-
-    if (Result.isFailure(decision)) {
-      const cause = decision.failure;
-      // A refusal based on current thread state, modes or a review round must allow a retry when they change.
-      if (
-        cause._tag === "OrchestratorSendTargetUnavailableError" ||
-        cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-        cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
-        cause._tag === "OrchestratorContinuationSnoozedError" ||
-        cause._tag === "OrchestratorReviewRoundLimitError"
-      ) {
-        return yield* cause;
-      }
-      // Resolving a turn's policy refuses the same way, from inside the decision.
-      const ceiling = runtimePolicyCeilingCause(cause);
-      if (ceiling !== undefined) {
-        const { threadId, runtimeMode, maxRuntimeMode, organization } = ceiling;
-        return yield* new OrchestratorRuntimeModeAboveCeilingError({
-          commandId: command.commandId,
-          threadId,
-          refused: "turn",
-          runtimeMode,
-          maxRuntimeMode,
-          organization,
-        });
-      }
-      const rejectedAt = yield* DateTime.now;
-      const { receipt, inserted } = yield* eventSink
-        .commitRejectedCommand({
-          commandId: command.commandId,
-          threadId: commandThreadId(command),
-          commandType: command.type,
-          rejectedAt,
-          error:
-            cause._tag === "OrchestratorMessageStarError" && command.type === "thread.message.star"
-              ? encodeMessageStarReceiptError({
-                  messageId: command.messageId,
-                  starred: command.starred,
-                  reason: cause.reason,
-                })
-              : cause instanceof Error
-                ? cause.message
-                : String(cause),
-        })
-        .pipe(mapDispatchError(command));
-      if (!inserted) return yield* replayCommandReceipt(command, receipt);
-      if (command.type === "queued-run.edit" && cause._tag === "OrchestratorDispatchError") {
-        return yield* new OrchestratorCommandRejectedError({
-          commandId: cause.commandId,
-          commandType: cause.commandType,
-          cause: cause.cause,
-        });
-      }
-      return yield* cause;
+    if (committedOrResult._tag === "replay") {
+      return committedOrResult.result;
     }
-
-    const plan = decision.success;
-    if (plan.events.length === 0 && plan.effects.length === 0) {
-      // A settle that ended nothing still records its receipt: a replayed Stop
-      // effect then finds it instead of settling work that appeared since.
-      const { resultSequence, inserted } = yield* Effect.gen(function* () {
-        const sequence = yield* eventSink.latestSequence({ threadId: commandThreadId(command) });
-        const inserted = yield* commandReceipts.insertIfAbsent({
-          commandId: command.commandId,
-          threadId: commandThreadId(command),
-          commandType: command.type,
-          acceptedAt: yield* DateTime.now,
-          resultSequence: sequence,
-          status: "accepted",
-          error: null,
-        });
-        return { resultSequence: sequence, inserted };
-      }).pipe(mapDispatchError(command));
-      if (!inserted) {
-        const winner = yield* commandReceipts.getByCommandId(command.commandId).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.fail(`Command ${command.commandId} has no thread receipt.`),
-              onSome: Effect.succeed,
-            }),
-          ),
-          mapDispatchError(command),
-        );
-        return yield* replayCommandReceipt(command, winner);
-      }
-      return { sequence: resultSequence, storedEvents: [] };
-    }
-    const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
-    const committed = yield* eventSink
-      .commitCommand({
-        commandId: command.commandId,
-        threadId: commandThreadId(command),
-        commandType: command.type,
-        acceptedAt,
-        events: plan.events,
-        effects: plan.effects,
-        ...(plan.cancelUnsettledEffects === undefined
-          ? {}
-          : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
-        ...(command.type === "thread.auto-settle"
-          ? {
-              autoSettleGuard: {
-                snapshotAt: command.snapshotAt,
-                ...(command.parentResultKey === undefined
-                  ? {}
-                  : { parentResultKey: command.parentResultKey }),
-              },
-            }
-          : {}),
-      })
-      .pipe(mapDispatchError(command));
-
-    if (committed.rejectedByGuard === true) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause:
-          committed.receipt.error ??
-          `Thread ${commandThreadId(command)} changed before automatic settlement.`,
-      });
-    }
-    if (!committed.committed) {
-      return yield* replayCommandReceipt(command, committed.receipt, committed.storedEvents);
-    }
+    const { committed } = committedOrResult;
     if (
       command.type === "queue.resume" ||
       command.type === "queued-run.start" ||

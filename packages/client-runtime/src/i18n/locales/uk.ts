@@ -14705,6 +14705,7 @@ const catalog: MessageCatalog = {
   "Waiting on approvals": "Очікування підтверджень",
   "Waiting on helpers": "Очікування помічників",
   "Waits for background work": "Очікує фонові завдання",
+  "Waits for running chats": "Очікує активні чати",
   "Waits for running tool calls": "Очікує виклики інструментів, що виконуються",
   Wake: "Повернути",
   "Wake {title} now": "Розбудити {title} зараз",

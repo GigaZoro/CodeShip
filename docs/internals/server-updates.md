@@ -207,8 +207,11 @@ Manual updates ("Update when it finishes" and remote server updates) use the sam
 server advertises the `updateDrain` capability: clients open the streaming `server.drainForUpdate`
 RPC, which calls `UpdateDrain.drainUntilClosed` and streams `OrchestrationV2RestartHold` with
 `draining: true`. Clients wait with `untilRestartHoldIsEmpty` (waiting for both background work and
-running turns) and keep the stream open across the restart handoff so no new turn slips in;
-cancelling or disconnecting closes the stream and releases the holder immediately. Older servers
+running turns) and keep the stream open across the restart handoff; once the server accepts a
+boot-service or desktop handoff, it acquires a bounded server-side `UpdateDrain` lease until
+shutdown so closing the client stream after `complete` cannot release held work into a dying
+process. Cancelling or disconnecting before handoff closes the stream and releases the holder
+immediately. Older servers
 without `updateDrain` fall back to `server.watchRestartHold` and `untilListedRestartHoldWorkEnds`.
 
 ## Recovering interrupted threads

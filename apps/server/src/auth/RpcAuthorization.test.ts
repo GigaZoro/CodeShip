@@ -24,9 +24,13 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as RpcTest from "effect/rpc/RpcTest";
+import * as UpdateDrain from "../cloud/updateDrain.ts";
 
 import {
   RPC_REQUIRED_SCOPES,
@@ -529,4 +533,66 @@ it.effect("checks orchestration writes and requires provider management for /log
     yield* manager[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](message("manager", "/logout"));
     expect(handled).toEqual(["hello", "star", "manager"]);
   }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "server.drainForUpdate requires AuthEnvironmentMaintainScope, holds UpdateDrain while open, and releases on close",
+  () =>
+    Effect.gen(function* () {
+      const drainRef = yield* SubscriptionRef.make<UpdateDrain.DrainState>({
+        holders: 0,
+        admitting: 0,
+      });
+      const tested = [WS_METHODS.serverDrainForUpdate] as const;
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+            !(tested as ReadonlyArray<string>).includes(tag),
+        ),
+      );
+      const handler = group.toLayerHandler(WS_METHODS.serverDrainForUpdate, () =>
+        Stream.unwrap(
+          UpdateDrain.drainUntilClosed.pipe(
+            Effect.provideService(UpdateDrain.UpdateDrain, drainRef),
+            Effect.as(
+              UpdateDrain.watchDrainingRef(drainRef).pipe(
+                Stream.map((draining) => ({
+                  work: [],
+                  runningTurns: [],
+                  commands: [],
+                  ...(draining ? { draining: true as const } : {}),
+                })),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const reader = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handler, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+      );
+      expect(
+        yield* reader[WS_METHODS.serverDrainForUpdate]({}).pipe(Stream.runHead, Effect.flip),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthEnvironmentMaintainScope,
+      });
+      expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+
+      const maintainer = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(handler, RpcAuthorization.layer([AuthEnvironmentMaintainScope])),
+        ),
+      );
+      const seen = yield* Queue.unbounded<boolean | undefined>();
+      const streamFiber = yield* maintainer[WS_METHODS.serverDrainForUpdate]({}).pipe(
+        Stream.runForEach((hold) => Queue.offer(seen, hold.draining)),
+        Effect.forkChild,
+      );
+      expect(yield* Queue.take(seen)).toBe(true);
+      expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+
+      yield* Fiber.interrupt(streamFiber);
+      expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+    }).pipe(Effect.scoped),
 );
