@@ -449,6 +449,8 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
           startTurn: () => options.startTurn ?? Effect.void,
+          compactThread: () => Effect.void,
+          adoptTurn: () => Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -1566,6 +1568,89 @@ it.effect(
         });
         assert.isTrue(yield* release(sibling));
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
+    }),
+);
+
+it.effect.each(["compactThread", "adoptTurn"] as const)(
+  "ProviderSessionManagerV2 keeps a session busy through %s until its turn ends",
+  (operation) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread-provider-session-manager-busy-${operation}`);
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now,
+        });
+        const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+        const turnInput = {
+          appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+          threadId,
+          runId,
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+          rootNodeId: idAllocator.derive.rootNode({ runId }),
+          providerThread,
+          message: {
+            createdBy: "user" as const,
+            creationSource: "web" as const,
+            messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+            text: "turn",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        };
+        if (operation === "compactThread") {
+          yield* runtime.compactThread!(turnInput);
+        } else {
+          yield* runtime.adoptTurn!({
+            turnInput,
+            providerTurn: {
+              id: idAllocator.derive.providerTurn({
+                driver: CODEX_DRIVER,
+                nativeTurnId: "native-turn-adopted",
+              }),
+              providerThreadId: providerThread.id,
+              nodeId: turnInput.rootNodeId,
+              runAttemptId: turnInput.attemptId,
+              nativeTurnRef: null,
+              ordinal: 1,
+              status: "running",
+              startedAt: now,
+              completedAt: null,
+            },
+            turnItems: [],
+          });
+        }
+
+        // The turn runs on: an idle release now would stop the provider mid-turn.
+        yield* TestClock.adjust("2 seconds");
+        yield* Effect.yieldNow;
+        assert.isTrue(yield* manager.isLive(providerSessionId));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
     }),
 );
 
