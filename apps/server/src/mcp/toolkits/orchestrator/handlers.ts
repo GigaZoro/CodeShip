@@ -1,4 +1,7 @@
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  type OrchestratorMcpReviewAssignmentInput,
+} from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
@@ -13,6 +16,13 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+
+// Untraced: the service method it calls is the span.
+const reviewAssignment = Effect.fnUntraced(function* (input: OrchestratorMcpReviewAssignmentInput) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+  return yield* service.reviewAssignment(scope, input);
+});
 
 const handlers = {
   orchestrator_capabilities: McpToolAccess.reads((input) =>
@@ -79,20 +89,17 @@ const handlers = {
         ),
     },
   ),
-  t3_review_assignment: McpToolAccess.actsAsCaller(
-    (input) =>
-      Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.McpInvocationContext;
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.reviewAssignment(scope, input);
-      }),
-    {
+  t3_review_assignment: McpToolAccess.either(
+    (input) => input.action === "register",
+    McpToolAccess.actsAsCaller(reviewAssignment, {
       caller: (caller) =>
         assertFullAccess(
           caller,
-          "t3_review_assignment reads files as the T3.CodeShip server, so it needs this thread in Full access and default mode.",
+          "Registering review material reads files as the T3.CodeShip server, so it needs this thread in Full access and default mode.",
         ),
-    },
+    }),
+    // Revoking only takes access away, so a thread no longer in Full access can still revoke.
+    McpToolAccess.actsAsCaller(reviewAssignment),
   ),
   schedule_task: McpToolAccess.either(
     (input) => input.scheduledTaskId === undefined,

@@ -558,6 +558,8 @@ export const layerWithOptions = (
           readonly threadId: ThreadId;
           readonly providerInstanceId: ProviderInstanceId;
           readonly assignment: OrchestrationV2ReviewAssignment;
+          /** The thread that delegated the review, which must hold the assignment. */
+          readonly owner: ThreadId | undefined;
         }) {
           const refuse = (reason: string) =>
             Effect.fail(new McpProviderSession.ReviewAssignmentRefusedError({ reason }));
@@ -571,6 +573,8 @@ export const layerWithOptions = (
           if (driver === undefined || !RESTRICTED_REVIEW_DRIVERS.has(driver)) {
             return yield* refuse("this provider cannot verify its session before inference");
           }
+          const owner = input.owner;
+          if (owner === undefined) return yield* refuse("the review has no delegating thread");
           const assignments = reviewAssignments.value;
           return yield* mcpPrepareLock.withLock(
             input.threadId,
@@ -591,6 +595,7 @@ export const layerWithOptions = (
                 const session = yield* assignments.openSession({
                   threadId: input.threadId,
                   handle: input.assignment.handle,
+                  owner,
                   providerInstanceId: input.providerInstanceId,
                 });
                 opened = true;
@@ -659,7 +664,12 @@ export const layerWithOptions = (
         );
         const assignment = declaredAssignment ?? thread?.reviewAssignment;
         if (assignment !== undefined) {
-          return yield* prepareReviewMcpSession({ threadId, providerInstanceId, assignment });
+          return yield* prepareReviewMcpSession({
+            threadId,
+            providerInstanceId,
+            assignment,
+            owner: thread?.lineage.parentThreadId ?? undefined,
+          });
         }
         return yield* prepareOrdinaryMcpSession(threadId, providerInstanceId);
       });

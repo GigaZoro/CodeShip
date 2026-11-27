@@ -1707,7 +1707,14 @@ it.effect.each(["fails", "is interrupted"] as const)(
           threadId,
         });
         yield* eventSink.write({
-          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator,
+              threadId,
+              now,
+              delegatedBy: reviewBroker.owner,
+            }),
+          ],
         });
 
         const opening = manager.open({
@@ -1825,7 +1832,7 @@ it.effect("ProviderSessionManagerV2 never hands a review credential to an ordina
             idAllocator,
             threadId,
             now,
-            delegatedBy: ThreadId.make("thread-provider-session-manager-review-parent"),
+            delegatedBy: reviewBroker.owner,
           }),
         ],
       });

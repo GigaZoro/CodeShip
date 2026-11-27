@@ -1,8 +1,8 @@
 ## 2026-11-27 — Register material for assignment-isolated reviews
 
 - The new `t3_review_assignment` MCP tool registers files for an assignment-isolated review and returns a handle the server picks; pass it to `delegate_task` with `isolation: { type: "assignment", handle }`. The files are copied when you register them (up to 256 files and 8 MiB per assignment), so later edits do not change what the reviewer reads, and `task_status` read receipts carry each file's size and SHA-256. `revoke` ends the handle.
-- Only the thread that registered a handle can review with it or revoke it, and only in Full access and default mode. A review whose assignment is revoked or replaced while Claude starts is refused before inference.
-- Assignment-isolated reviews now start on Claude Code 2.1.332. That version no longer lists its built-in tools, so every review was refused before inference; the check now reads which kinds of context Claude reports loading, and still refuses a session with built-in tools, skills, instruction files, subagents or anything it does not recognize.
+- Only the thread that registered a handle can review with it or revoke it. Registering needs Full access and default mode; revoking works in any mode. A review whose assignment is revoked or replaced while Claude starts is refused before inference.
+- Assignment-isolated reviews now start on Claude Code 2.1.332. That version no longer lists its built-in tools, so every review was refused before inference; the check now reads which kinds of context Claude reports loading, and still refuses a session with built-in tools, skills, instruction files, subagents, MCP server instructions, deferred tools or anything it does not recognize.
 
 ## 2026-11-27 — Landing checks stop at the first failure and keep the machine
 

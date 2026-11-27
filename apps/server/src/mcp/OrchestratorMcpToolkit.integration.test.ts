@@ -776,6 +776,7 @@ describe("orchestrator MCP toolkit", () => {
             mode: "async",
             clientRequestId: "delegate-remote-1",
           });
+          expect(remoteCollided.isError).toBe(true);
           expect(remoteCollided.content).toEqual([
             expect.objectContaining({
               text: expect.stringMatching(
@@ -1314,6 +1315,7 @@ describe("orchestrator MCP toolkit", () => {
         expect(registered.handle).not.toBe(handle);
         // The accepted key keeps its assignment: a retry cannot turn this review into another one.
         const switched = yield* review.delegate(registered.handle, "delegate-restricted-review-1");
+        expect(switched.isError).toBe(true);
         expect(switched.content).toEqual([
           expect.objectContaining({
             text: expect.stringMatching(/invalid_request[\s\S]*accepted with different isolation/),
@@ -1333,6 +1335,7 @@ describe("orchestrator MCP toolkit", () => {
           registered.handle,
           "delegate-restricted-review-3",
         );
+        expect(afterRevoke.isError).toBe(true);
         expect(afterRevoke.content).toEqual([
           expect.objectContaining({
             text: expect.stringMatching(/invalid_request[\s\S]*registered no review assignment/),

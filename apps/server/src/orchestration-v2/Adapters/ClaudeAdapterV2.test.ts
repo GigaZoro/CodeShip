@@ -3558,6 +3558,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ["a skill", { skills: 1 }],
     ["a subagent definition", { agents: ["general-purpose"] }],
     ["built-in tools it does not name", { contextRows: ["system_prompt", "system_tools"] }],
+    [
+      "MCP server instructions",
+      { contextRows: ["system_prompt", "mcp_tools", "mcp_instructions"] },
+    ],
+    ["deferred MCP tools", { contextRows: ["system_prompt", "mcp_tools_deferred"] }],
     ["a context row without an id", { contextRows: ["system_prompt", null] }],
     ["no context rows", { contextRows: [] }],
     [

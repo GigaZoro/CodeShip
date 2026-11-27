@@ -2105,12 +2105,11 @@ export function claudeQueryInspection(input: {
 }
 
 // Context a restricted review may hold. Claude 2.1.332 names no built-in tool and lists skills only
-// when it has some, so a system_tools, skills, memory_files, custom_agents or unknown row refuses.
+// when it has some, so any other row refuses: built-in tools, skills, memory files, agents, MCP
+// instructions (the review server sends none) and deferred MCP tools (loading one takes a built-in).
 const RESTRICTED_CLAUDE_REVIEW_CONTEXT_ROWS: ReadonlySet<string> = new Set([
   "system_prompt",
   "mcp_tools",
-  "mcp_tools_deferred",
-  "mcp_instructions",
   "messages",
   "autocompact_buffer",
   "free_space",

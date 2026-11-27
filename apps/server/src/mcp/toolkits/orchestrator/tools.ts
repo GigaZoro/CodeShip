@@ -173,7 +173,7 @@ const CommandRunTool = Tool.make("t3_command_run", {
 
 const ReviewAssignmentTool = Tool.make("t3_review_assignment", {
   description:
-    "`register` snapshots files under a new handle for `delegate_task` with `isolation:{type:'assignment',handle}`: that reviewer reads only them. `revoke` ends the handle. Full access only.",
+    "`register` snapshots files under a new handle for `delegate_task` with `isolation:{type:'assignment',handle}`: that reviewer reads only them. `revoke` ends the handle. `register` needs Full access.",
   parameters: OrchestratorMcpReviewAssignmentInput,
   success: OrchestratorMcpReviewAssignmentResult,
   failure: OrchestratorMcpFailure,

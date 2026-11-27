@@ -33,7 +33,7 @@ const openReviewWith = Effect.fn(function* (
     },
     ...(recordSession === undefined ? {} : { recordSession }),
   });
-  const session = yield* registry.openSession({ threadId, handle, providerInstanceId });
+  const session = yield* registry.openSession({ threadId, handle, owner, providerInstanceId });
   const evidence: McpProviderSession.ReviewAssignmentSessionEvidence = {
     runId: "run-1",
     driver: "claudeAgent",
@@ -100,7 +100,12 @@ it.effect.each([
 it.effect("refuses to attest a session the thread has since replaced", () =>
   Effect.gen(function* () {
     const { registry, session, evidence } = yield* openReview;
-    const replacement = yield* registry.openSession({ threadId, handle, providerInstanceId });
+    const replacement = yield* registry.openSession({
+      threadId,
+      handle,
+      owner,
+      providerInstanceId,
+    });
 
     const refusal = yield* session.attest(evidence).pipe(Effect.flip);
 
@@ -181,6 +186,58 @@ it.effect.each([
   }).pipe(Effect.provide(registryLayer)),
 );
 
+it.effect("refuses a session whose assignment is revoked while its workspace is made", () =>
+  Effect.gen(function* () {
+    let started!: () => void;
+    const making = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gatedFileSystem = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (fileSystem) => ({
+        ...fileSystem,
+        makeDirectory: (path, options) =>
+          Effect.sync(started).pipe(
+            Effect.andThen(Effect.promise(() => released)),
+            Effect.andThen(fileSystem.makeDirectory(path, options)),
+          ),
+      })),
+    );
+
+    yield* Effect.gen(function* () {
+      const registry = yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry;
+      yield* registry.register({
+        handle,
+        owner,
+        allowedReads: [pin],
+        read: async () => new TextEncoder().encode("const answer = 42;\n"),
+        record: async () => undefined,
+      });
+      const opening = yield* registry
+        .openSession({ threadId, handle, owner, providerInstanceId })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => making);
+      yield* registry.revoke({ owner, handle });
+      release();
+      const refusal = yield* Fiber.join(opening);
+
+      assert.equal(refusal.reason, "the assignment is not registered");
+      assert.isUndefined(yield* registry.evidence(threadId));
+    }).pipe(
+      Effect.provide(
+        ReviewAssignmentRegistry.layer.pipe(
+          Layer.provide(gatedFileSystem),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    );
+  }),
+);
+
 it.effect("disarms reads when a later run of the session fails its check", () =>
   Effect.gen(function* () {
     const { registry, session, evidence } = yield* openReview;
@@ -237,9 +294,13 @@ it.effect("serves a snapshot of registered files under a new handle, owned by it
       owner: stranger,
       handle: registered.handle,
     });
+    const openedByStranger = yield* registry
+      .openSession({ threadId, handle: registered.handle, owner: stranger, providerInstanceId })
+      .pipe(Effect.flip);
     const session = yield* registry.openSession({
       threadId,
       handle: registered.handle,
+      owner,
       providerInstanceId,
     });
     yield* session.attest({
@@ -277,6 +338,7 @@ it.effect("serves a snapshot of registered files under a new handle, owned by it
       [registered.material[0]?.sha256],
     );
     assert.deepEqual([ownedElsewhere, revokedByStranger], [false, false]);
+    assert.equal(openedByStranger.reason, "the assignment is not registered");
     assert.deepEqual([revoked, revokedAgain], [true, false]);
     assert.equal(afterRevoke._tag, "ReviewMaterialUnavailableError");
   }).pipe(Effect.provide(registryLayer)),
@@ -327,7 +389,7 @@ it.effect("drops the oldest idle assignment, never one a session reads, when it 
         record: async () => undefined,
       });
     for (let index = 0; index < 256; index += 1) yield* registerNumbered(index);
-    yield* registry.openSession({ threadId, handle: "assignment-0", providerInstanceId });
+    yield* registry.openSession({ threadId, handle: "assignment-0", owner, providerInstanceId });
 
     yield* registerNumbered(256);
     const held = yield* Effect.forEach([0, 1, 2, 256], (index) =>

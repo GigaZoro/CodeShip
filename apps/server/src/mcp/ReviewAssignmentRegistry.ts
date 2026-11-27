@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 /** One assignment's read broker. Its pins are the only bytes a restricted reviewer can reach. */
 export interface ReviewAssignmentBroker {
@@ -156,10 +157,14 @@ export class ReviewAssignmentRegistry extends Context.Service<
       readonly owner: ThreadId;
       readonly handle: string;
     }) => Effect.Effect<boolean>;
-    /** A fresh, empty working directory and the attestation callback for one restricted thread. */
+    /**
+     * A fresh, empty working directory and the attestation callback for one restricted thread.
+     * `owner` is the thread that delegated the review; only its own registration opens.
+     */
     readonly openSession: (input: {
       readonly threadId: ThreadId;
       readonly handle: string;
+      readonly owner: ThreadId;
       readonly providerInstanceId: ProviderInstanceId;
     }) => Effect.Effect<
       McpProviderSession.ReviewAssignmentSession,
@@ -222,6 +227,11 @@ const make = Effect.gen(function* () {
   );
 
   const currentBroker = (handle: string) => registrations.get(handle)?.broker;
+  // A handle answers only to the thread that registered it.
+  const ownedBroker = (input: { readonly owner: ThreadId; readonly handle: string }) => {
+    const broker = currentBroker(input.handle);
+    return broker?.owner === input.owner ? broker : undefined;
+  };
 
   // Checks and inserts with no yield between them, so no other registration lands in between.
   const add = Effect.fn("ReviewAssignmentRegistry.add")(function* (
@@ -309,9 +319,12 @@ const make = Effect.gen(function* () {
         `an assignment holds at most ${MAX_ASSIGNMENT_BYTES} bytes`,
       );
       if (total + Number(info.size) > MAX_ASSIGNMENT_BYTES) return yield* tooLarge;
-      const bytes = yield* fileSystem.readFile(entry.file).pipe(Effect.mapError(unreadable));
+      // One byte past the room left, so a file that grew since stat, or one whose size stat does
+      // not report, refuses without being read whole.
+      const bytes = yield* Stream.mkUint8Array(
+        fileSystem.stream(entry.file, { bytesToRead: MAX_ASSIGNMENT_BYTES - total + 1 }),
+      ).pipe(Effect.mapError(unreadable));
       total += bytes.byteLength;
-      // The file can grow between stat and read.
       if (total > MAX_ASSIGNMENT_BYTES) return yield* tooLarge;
       if (!isUtf8(bytes)) return yield* refuse("unreadable_material", "file is not UTF-8 text");
       contents.set(pinKey(pin), bytes);
@@ -343,7 +356,7 @@ const make = Effect.gen(function* () {
   const revoke = Effect.fn("ReviewAssignmentRegistry.revoke")(
     (input: { readonly owner: ThreadId; readonly handle: string }) =>
       Effect.sync(() => {
-        if (currentBroker(input.handle)?.owner !== input.owner) return false;
+        if (ownedBroker(input) === undefined) return false;
         registrations.delete(input.handle);
         return true;
       }),
@@ -352,14 +365,15 @@ const make = Effect.gen(function* () {
   const openSession = Effect.fn("ReviewAssignmentRegistry.openSession")(function* (input: {
     readonly threadId: ThreadId;
     readonly handle: string;
+    readonly owner: ThreadId;
     readonly providerInstanceId: ProviderInstanceId;
   }) {
-    const broker = currentBroker(input.handle);
-    if (broker === undefined) {
-      return yield* new McpProviderSession.ReviewAssignmentRefusedError({
-        reason: "the assignment is not registered",
-      });
-    }
+    const notRegistered = new McpProviderSession.ReviewAssignmentRefusedError({
+      reason: "the assignment is not registered",
+    });
+    // Another thread's handle refuses as an unknown one, so a reviewer learns nothing about it.
+    const broker = ownedBroker(input);
+    if (broker === undefined) return yield* notRegistered;
     sessions.delete(input.threadId);
     // The same path for every session of a thread, so a provider can resume its own transcript.
     // Uninterruptible, so a workspace on disk always has the session closeSession removes it by.
@@ -372,6 +386,11 @@ const make = Effect.gen(function* () {
         );
         yield* fileSystem.remove(workspace, { recursive: true, force: true });
         yield* fileSystem.makeDirectory(workspace);
+        // Revoked or evicted during the file work: refuse now rather than at attestation.
+        if (currentBroker(input.handle) !== broker) {
+          yield* removeWorkspace(workspace);
+          return undefined;
+        }
         const opened: OpenSession = {
           handle: input.handle,
           broker,
@@ -391,6 +410,7 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
+    if (session === undefined) return yield* notRegistered;
 
     const attest = Effect.fn("ReviewAssignmentRegistry.attest")(function* (
       evidence: McpProviderSession.ReviewAssignmentSessionEvidence,
@@ -531,7 +551,7 @@ const make = Effect.gen(function* () {
 
   const isRegistered = Effect.fn("ReviewAssignmentRegistry.isRegistered")(
     (input: { readonly owner: ThreadId; readonly handle: string }) =>
-      Effect.sync(() => currentBroker(input.handle)?.owner === input.owner),
+      Effect.sync(() => ownedBroker(input) !== undefined),
   );
 
   return ReviewAssignmentRegistry.of({
