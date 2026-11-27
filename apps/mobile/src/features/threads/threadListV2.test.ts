@@ -914,6 +914,71 @@ describe("thread list folders", () => {
     ]);
   });
 
+  it("lists finished, not seen threads the user started after Needs you, newest first, and drops them from a search", () => {
+    const finished = (
+      id: string,
+      completedAt: string,
+      extra: Partial<EnvironmentThreadShell> = {},
+    ) =>
+      makeThread({
+        id: ThreadId.make(id),
+        title: id,
+        projectId: projectA,
+        lastVisitedAt: "2026-06-01T09:00:00.000Z",
+        latestRun: {
+          runId: RunId.make(`${id}-run`),
+          status: "completed",
+          requestedAt: "2026-06-01T08:00:00.000Z",
+          startedAt: "2026-06-01T08:00:00.000Z",
+          completedAt,
+          assistantMessageId: null,
+        },
+        ...extra,
+      });
+    const input = {
+      threads: [
+        finished("older", "2026-06-01T10:00:00.000Z"),
+        finished("newer", "2026-06-01T11:00:00.000Z"),
+        finished("scheduled", "2026-06-01T12:00:00.000Z", { createdBy: "agent" }),
+        makeThread({ id: ThreadId.make("approval"), title: "Approval", hasPendingApprovals: true }),
+      ],
+      environmentId: null,
+      now: NOW,
+    };
+    const layout = buildThreadListV2Items({ ...input, searchQuery: "" });
+
+    const listed = buildThreadListV2ListItems({
+      items: layout.items,
+      pendingTasks: [],
+      needsYouCount: layout.needsYouCount,
+      finishedNotSeenCount: layout.finishedNotSeenCount,
+    }).map((item) => (item.type === "v2-thread" ? item.item.thread.id : item.type));
+
+    expect({
+      finished: layout.items
+        .filter((item) => item.finishedNotSeen === true)
+        .map((item) => item.thread.id),
+      needsYouCount: layout.needsYouCount,
+      listed,
+      search: buildThreadListV2Items({ ...input, searchQuery: "older" }).finishedNotSeenCount,
+    }).toEqual({
+      finished: ["newer", "older"],
+      needsYouCount: 1,
+      // The finished threads also list in their normal shelf, as copies in this one.
+      listed: [
+        "v2-needs-you",
+        "approval",
+        "v2-finished-not-seen",
+        "newer",
+        "older",
+        "newer",
+        "older",
+        "scheduled",
+      ],
+      search: 0,
+    });
+  });
+
   it("nests project folders in an open machine folder, and a closed one lists the open thread", () => {
     const remote = EnvironmentId.make("environment-remote");
     const machine = (id: EnvironmentId, expanded: boolean): ThreadListV2Folder => ({

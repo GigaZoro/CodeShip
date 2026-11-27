@@ -28,7 +28,8 @@ import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { type EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { SidebarNeedsYouPanel } from "./sidebar/SidebarNeedsYouPanel";
-import { NeedsYouBoxRow } from "./sidebar/NeedsYouBoxRow";
+import { FinishedNotSeenRow, NeedsYouBoxRow } from "./sidebar/NeedsYouBoxRow";
+import { markCaughtUp, useAwaySince } from "./sidebar/whileAwayPresence";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -66,6 +67,10 @@ import {
   nextNeedsYouThread,
   threadAwaitsUser,
 } from "@t3tools/client-runtime/state/thread-inbox";
+import {
+  collectFinishedNotSeen,
+  summarizeWhileAway,
+} from "@t3tools/client-runtime/state/needs-you-triage";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
 import {
   nextShownOrder,
@@ -1219,10 +1224,17 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     });
   // Ignores the project scope, not the status and tag filters the user picked: a thread waiting
   // on the user must not hide in a folder, shelf, or project filter.
-  const needsYou = collectNeedsYouThreads(
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(matchesFilters),
-    { now: preciseNow },
-  );
+  const awaitingCandidates = filterSidebarV2VisibleThreads(
+    threads,
+    null,
+    delegatedUnderParent,
+  ).filter(matchesFilters);
+  const needsYou = collectNeedsYouThreads(awaitingCandidates, { now: preciseNow });
+  // Listed in the box beside Needs you, never counted with it; the threads keep their sections too.
+  const finishedNotSeenThreads = collectFinishedNotSeen(awaitingCandidates, {
+    now: preciseNow,
+    locallyUnread: (thread) => input.locallyUnreadKeys.has(threadShellKey(thread)),
+  });
   // Put-off threads still wait on the user, so they stay out of the other sections too.
   const needsYouThreads = [...needsYou.threads, ...needsYou.later];
   const needsYouKeys = new Set(needsYouThreads.map(threadShellKey));
@@ -1301,6 +1313,8 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     needsYouNowThreads: needsYou.threads,
     needsYouLaterThreads: needsYou.later,
     needsYouSinceOf: needsYou.sinceOf,
+    finishedNotSeenThreads,
+    boxCandidateThreads: awaitingCandidates,
     pinnedThreads:
       optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
         ? sortedPinned
@@ -1539,6 +1553,15 @@ function readRouteThreadKey(router: AnyRouter): string | null {
   return ref === null ? null : scopedThreadKey(ref);
 }
 
+/** Long enough to reach Undo by keyboard after settling from the Needs you box. */
+const BOX_SETTLE_UNDO_MS = 8_000;
+
+type SettleOptions = {
+  coSettlingKeys?: ReadonlySet<string>;
+  unmergedWorkConfirmed?: boolean;
+  undoNoticeMs?: number;
+};
+
 export default function Sidebar({
   routeReveal,
   needsYouPanelTarget,
@@ -1725,6 +1748,7 @@ export default function Sidebar({
       : null;
   const [renamingTitle, setRenamingTitle] = useState("");
   const settlingThreadKeysRef = useRef(new Set<string>());
+  const [triageAnnouncement, setTriageAnnouncement] = useState("");
   const threadListRef = useRef<HTMLUListElement | null>(null);
   const sidebarContentRef = useRef<HTMLDivElement | null>(null);
   const dragLabelOffsetRef = useRef(0);
@@ -1997,6 +2021,8 @@ export default function Sidebar({
     needsYouNowThreads,
     needsYouLaterThreads,
     needsYouSinceOf,
+    finishedNotSeenThreads,
+    boxCandidateThreads,
     pinnedThreads,
     draggableThreadKeys,
     activeReorderableThreadKeys,
@@ -2078,6 +2104,22 @@ export default function Sidebar({
         : null,
     },
   });
+  const awaySince = useAwaySince();
+  const awaySummary =
+    awaySince === null
+      ? null
+      : summarizeWhileAway({
+          threads: boxCandidateThreads,
+          needsYou: needsYouNowThreads,
+          finishedNotSeen: finishedNotSeenThreads,
+          awaySince,
+        });
+  const whileAway =
+    awaySummary !== null && awaySummary.blocked + awaySummary.finished + awaySummary.recovered > 0
+      ? awaySummary
+      : null;
+  const needsYouBoxShown =
+    needsYouThreads.length > 0 || finishedNotSeenThreads.length > 0 || whileAway !== null;
 
   // Siblings share a parent: the list's top level, or one machine folder.
   const projectFolderSiblings = (folderKey: string): SidebarProjectFolder[] => {
@@ -2723,10 +2765,7 @@ export default function Sidebar({
         : () => void router.navigate({ to: "/" });
   };
 
-  const attemptSettle = (
-    threadRef: ScopedThreadRef,
-    opts: { coSettlingKeys?: ReadonlySet<string>; unmergedWorkConfirmed?: boolean } = {},
-  ) => {
+  const attemptSettle = (threadRef: ScopedThreadRef, opts: SettleOptions = {}) => {
     void (async () => {
       const threadKey = scopedThreadKey(threadRef);
       if (settlingThreadKeysRef.current.has(threadKey)) return;
@@ -2734,6 +2773,7 @@ export default function Sidebar({
       const navigateAfterSettle = planForwardNavigation(threadKey, opts.coSettlingKeys);
       const result = await settleThread(threadRef, {
         unmergedWorkConfirmed: opts.unmergedWorkConfirmed ?? false,
+        ...(opts.undoNoticeMs === undefined ? {} : { undoNoticeMs: opts.undoNoticeMs }),
       });
       settlingThreadKeysRef.current.delete(threadKey);
       if (result._tag === "Failure") {
@@ -2764,7 +2804,7 @@ export default function Sidebar({
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's settle handler in the module-level settleAndAdvance registry
   useEffect(() => registerSettleAndAdvance(attemptSettle), [attemptSettle]);
-  const settleThreads = (threadKeys: readonly string[]) => {
+  const settleThreads = (threadKeys: readonly string[], undoNoticeMs?: number) => {
     const coSettlingKeys = new Set(threadKeys);
     const threadRefs = threadKeys.flatMap((threadKey) => {
       const thread = threadByKeyRef.current.get(threadKey);
@@ -2776,7 +2816,11 @@ export default function Sidebar({
     void confirmSettlingUnmergedWork(threadRefs).then((confirmed) => {
       if (!confirmed) return;
       for (const threadRef of threadRefs) {
-        attemptSettle(threadRef, { coSettlingKeys, unmergedWorkConfirmed: true });
+        attemptSettle(threadRef, {
+          coSettlingKeys,
+          unmergedWorkConfirmed: true,
+          ...(undoNoticeMs === undefined ? {} : { undoNoticeMs }),
+        });
       }
     });
   };
@@ -2809,6 +2853,11 @@ export default function Sidebar({
     }
     return result._tag === "Success";
   };
+  const settleFromBox = (threadRef: ScopedThreadRef) =>
+    attemptSettle(threadRef, { undoNoticeMs: BOX_SETTLE_UNDO_MS });
+  // One question about unmerged work for the whole section; the settles share one Undo notice.
+  const settleAllFinished = () =>
+    settleThreads(finishedNotSeenThreads.map(threadShellKey), BOX_SETTLE_UNDO_MS);
   const putBackNeedsYou = (threadRef: ScopedThreadRef) => {
     void attemptSetLater(threadRef, false);
   };
@@ -5029,7 +5078,7 @@ export default function Sidebar({
                           />,
                         );
                       }
-                      if (needsYouPanelTarget !== null && needsYouThreads.length > 0) {
+                      if (needsYouPanelTarget !== null && needsYouBoxShown) {
                         const renderBoxRow = (
                           thread: EnvironmentThreadShell,
                           placement: "box" | "later",
@@ -5056,7 +5105,24 @@ export default function Sidebar({
                               onOpen={navigateToThread}
                               onDecideLater={decideLater}
                               onPutBack={putBackNeedsYou}
-                              onSettle={attemptSettle}
+                              onSettle={settleFromBox}
+                              onAnnounce={setTriageAnnouncement}
+                            />
+                          );
+                        };
+                        const renderFinishedRow = (thread: EnvironmentThreadShell) => {
+                          const threadKey = threadShellKey(thread);
+                          const projectKey = `${thread.environmentId}:${thread.projectId}` as const;
+                          return (
+                            <FinishedNotSeenRow
+                              key={threadKey}
+                              thread={thread}
+                              isOpen={routeThreadKey === threadKey}
+                              project={projectByKey.get(projectKey) ?? null}
+                              projectDisplayName={projectDisplayNameByKey.get(projectKey) ?? null}
+                              settlementSupported={serverConfigs.has(thread.environmentId)}
+                              onOpen={navigateToThread}
+                              onSettle={settleFromBox}
                             />
                           );
                         };
@@ -5067,9 +5133,25 @@ export default function Sidebar({
                               laterRows={needsYouLaterThreads.map((thread) =>
                                 renderBoxRow(thread, "later"),
                               )}
+                              finishedRows={finishedNotSeenThreads.map(renderFinishedRow)}
+                              onSettleAllFinished={settleAllFinished}
+                              whileAway={whileAway}
+                              onCaughtUp={markCaughtUp}
                             />,
                             needsYouPanelTarget,
                             "details-column-foot",
+                          ),
+                        );
+                      }
+                      if (needsYouPanelTarget !== null) {
+                        // Outlives the box, so answering its last request is still announced.
+                        items.push(
+                          createPortal(
+                            <div role="status" className="sr-only">
+                              {triageAnnouncement}
+                            </div>,
+                            needsYouPanelTarget,
+                            "needs-you-announcer",
                           ),
                         );
                       }

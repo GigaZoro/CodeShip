@@ -45,6 +45,8 @@ export function eventPathContainsSelector(event: Event, selector: string): boole
 }
 
 const SECRET_REQUEST_SELECTOR = '[data-v2-item-type="secret_request"]';
+/** A list whose rows answer letter keys themselves, such as the Needs you box. */
+export const OWNS_LETTER_KEYS_ATTRIBUTE = "data-owns-letter-keys";
 const SURFACE_LAUNCHER_KEYS_ATTRIBUTE = "data-surface-launcher-keys";
 
 // The right-panel launcher registers its own window capture listener when it
@@ -65,6 +67,7 @@ export function shouldRedirectInputToComposer(event: Event): boolean {
   if (eventPathContainsSelector(event, SECRET_REQUEST_SELECTOR)) return false;
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_EDITABLE_SELECTOR)) return false;
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_INTERACTIVE_SELECTOR)) return false;
+  if (eventPathContainsSelector(event, `[${OWNS_LETTER_KEYS_ATTRIBUTE}]`)) return false;
   if (document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)) return false;
   return true;
 }
