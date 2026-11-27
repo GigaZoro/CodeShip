@@ -45,7 +45,10 @@ import {
   makeAntigravityUserInputResponse,
   normalizeAntigravityToolCall,
 } from "../../provider/acp/AntigravityProtocol.ts";
-import { isAntigravitySignInRequiredError } from "../../provider/antigravityAuthSupport.ts";
+import {
+  ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
+  isAntigravitySignInRequiredError,
+} from "../../provider/antigravityAuthSupport.ts";
 import {
   AcpProviderCapabilitiesV2,
   makeAcpAdapterV2,
@@ -287,6 +290,7 @@ export function makeAntigravityAcpAdapterFlavor(
     // ACP 1.3.0 treats /compact as ordinary model input.
     supportsCompaction: false,
     requiresSignIn: isAntigravitySignInRequiredError,
+    signInRequiredMessage: ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
     // 1.4.5 returns the root trajectory's Gemini usageMetadata delta; 1.4.1 returns none.
     reportsPerTurnPromptUsage: true,
     geminiPromptUsage: true,

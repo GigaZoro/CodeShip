@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   type ChatAttachment,
   MessageId,
   type ModelSelection,
@@ -303,6 +304,7 @@ export interface AcpAdapterV2Flavor {
     ) => Effect.Effect<OrchestrationV2ProviderFailure | undefined>
   >;
   readonly requiresSignIn?: (cause: unknown) => boolean;
+  readonly signInRequiredMessage?: string;
   /**
    * Runs before attachment paths, T3 instructions and native slash-command detection,
    * so a rewrite can turn the user's text into a native command.
@@ -1659,6 +1661,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const continuationRequests = options.continuationRequests;
   const postSettleContinuationEnabled =
     flavor.enablePostSettleContinuation === true && continuationRequests !== undefined;
+  const signInRequiredFailure = (cause: unknown): OrchestrationV2ProviderFailure | undefined =>
+    flavor.requiresSignIn?.(cause) === true
+      ? makeProviderFailure({
+          message:
+            flavor.signInRequiredMessage ??
+            "This account's sign-in was rejected. Sign in again in Settings → Providers & models.",
+          code: AUTHENTICATION_FAILED_FAILURE_CODE,
+          class: "provider_error",
+        })
+      : undefined;
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
@@ -2327,9 +2339,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* finalizeTurn(
                   context,
                   "failed",
-                  failure === undefined || failure.class === "provider_error"
-                    ? makeProviderFailure({ class: "transport_error", cause: error })
-                    : failure,
+                  signInRequiredFailure(error) ??
+                    (failure === undefined || failure.class === "provider_error"
+                      ? makeProviderFailure({ class: "transport_error", cause: error })
+                      : failure),
                 );
               }
             }),
@@ -4903,19 +4916,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
-        const idleErrorFailure = (error: EffectAcpSchema.PromptResponse["error"]) =>
-          flavor.promptFailure?.(
-            new EffectAcpErrors.AcpRequestError({
-              code: error?.code ?? -32603,
-              errorMessage: error?.message ?? "Provider turn failed.",
-              ...(error?.data === undefined ? {} : { data: error.data }),
-            }),
-          ) ??
-          makeProviderFailure({
-            message: error?.message,
-            code: error == null ? null : String(error.code),
-            class: providerErrorClass(error?.message),
+        const idleErrorFailure = (error: EffectAcpSchema.PromptResponse["error"]) => {
+          const requestError = new EffectAcpErrors.AcpRequestError({
+            code: error?.code ?? -32603,
+            errorMessage: error?.message ?? "Provider turn failed.",
+            ...(error?.data === undefined ? {} : { data: error.data }),
           });
+          return (
+            signInRequiredFailure(requestError) ??
+            flavor.promptFailure?.(requestError) ??
+            makeProviderFailure({
+              message: error?.message,
+              code: error == null ? null : String(error.code),
+              class: providerErrorClass(error?.message),
+            })
+          );
+        };
 
         const settleIdleWork = Effect.fnUntraced(function* (
           context: ActiveAcpTurn,
@@ -8403,7 +8419,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* finalizeTurn(
                       context,
                       interrupted ? "interrupted" : "failed",
-                      flavor.promptFailure?.(failure) ??
+                      signInRequiredFailure(failure) ??
+                        flavor.promptFailure?.(failure) ??
                         makeProviderFailure({
                           cause: failure,
                           // Only classifies; the provider's own text stays out of the message.
@@ -9315,15 +9332,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
       },
       (effect, input) =>
         effect.pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapter.ProviderAdapterOpenSessionError({
-                driver,
-                providerSessionId: input.providerSessionId,
-                ...(flavor.requiresSignIn?.(cause) === true ? { requiresSignIn: true } : {}),
-                cause,
-              }),
-          ),
+          Effect.mapError((cause) => {
+            const failure = signInRequiredFailure(cause);
+            return new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver,
+              providerSessionId: input.providerSessionId,
+              ...(failure === undefined ? {} : { requiresSignIn: true, failure }),
+              cause,
+            });
+          }),
         ),
     ),
   });

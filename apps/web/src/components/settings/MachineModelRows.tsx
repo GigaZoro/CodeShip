@@ -10,8 +10,8 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts";
 import {
-  autoModeModelFor,
   autoModePick,
+  effectiveAutoModeModelFor,
   resolveAutoModelSelection,
   supportsAutoCoordinator,
 } from "@t3tools/shared/serverSettings";
@@ -281,7 +281,7 @@ export function AutoModeModelRow() {
       {groups.map((accounts) => {
         const driver = accounts[0]!.driver;
         const name = providerName(driver);
-        const autoModel = autoModeModelFor(settings, driver);
+        const autoModel = effectiveAutoModeModelFor(settings, driver, accounts);
         const choices = autoModeModelChoices(accounts, settings);
         const stored = settings.autoModeModels[driver];
         return (

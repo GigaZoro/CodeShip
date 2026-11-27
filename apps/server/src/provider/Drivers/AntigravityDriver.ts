@@ -334,20 +334,16 @@ export const AntigravityDriver: ProviderDriver<
           runtimeTempDirectory,
         }),
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
+      const notifyAuthRequired = (cause: unknown): Effect.Effect<void> =>
+        !quotaOnly &&
+        input.onAuthorizationUrl === undefined &&
+        isAntigravitySignInRequiredError(cause)
+          ? provider.onAuthRequired
+          : Effect.void;
       return {
         ...runtime,
-        start: () =>
-          runtime
-            .start()
-            .pipe(
-              Effect.tapError((cause): Effect.Effect<void> =>
-                !quotaOnly &&
-                input.onAuthorizationUrl === undefined &&
-                isAntigravitySignInRequiredError(cause)
-                  ? provider.onAuthRequired
-                  : Effect.void,
-              ),
-            ),
+        start: () => runtime.start().pipe(Effect.tapError(notifyAuthRequired)),
+        prompt: (request) => runtime.prompt(request).pipe(Effect.tapError(notifyAuthRequired)),
       };
     });
 

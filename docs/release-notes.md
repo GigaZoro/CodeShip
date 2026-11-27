@@ -1,3 +1,7 @@
+## 2026-11-28 — Auto mode and account failover now include Antigravity
+
+- When every Claude and Codex account is out of usage, new Auto mode chats can fail over to Antigravity (choosing Gemini 4 Neon with headroom before falling back to Antigravity's Claude Opus pool), and Antigravity now participates in multi-account failover, Auto primary provider selection, Settings Auto model defaults, and signed-out login recovery.
+
 ## 2026-11-28 — Per-repository cap of 4 concurrent implementation threads across linked machines
 
 - Automated launches (`delegate_task`, `create_threads`, `t3_thread_launch`, and due scheduled tasks) now enforce a fleet-wide cap of 4 concurrent active or landing implementation threads per repository (overridable via `T3CODE_REPO_IMPLEMENTATION_CAP`), counting local and reachable linked environments without double-counting repository alias keys and failing open on unreachable or older peers.

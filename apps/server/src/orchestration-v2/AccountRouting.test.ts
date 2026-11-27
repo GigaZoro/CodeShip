@@ -636,6 +636,99 @@ describe("routeAutoAccount", () => {
         autoAccount: true,
       });
     });
+
+    it("routes an unsaved Antigravity Auto primary across Gemini accounts before falling back to Claude Opus", () => {
+      const antigravity = ProviderDriverKind.make("antigravity");
+      const agFirst = ProviderInstanceId.make("ag_first");
+      const agSecond = ProviderInstanceId.make("ag_second");
+      const thinkingXhigh = {
+        optionDescriptors: [
+          {
+            id: "thinking_level",
+            label: "Thinking",
+            type: "select" as const,
+            options: [{ id: "xhigh", label: "Extra high" }],
+          },
+        ],
+      };
+      const agModels = [
+        {
+          slug: "claude-opus-5-5",
+          name: "Claude Opus 5.5",
+          aliases: ["antigravity-default"],
+          isDefault: true,
+          isCustom: false,
+          capabilities: null,
+        },
+        {
+          slug: "gemini-4-neon",
+          name: "Gemini 4 Neon",
+          aliases: [],
+          isDefault: false,
+          isCustom: false,
+          capabilities: thinkingXhigh,
+        },
+      ];
+      const ag = (id: ProviderInstanceId, geminiUsed: number, thirdPartyUsed: number) =>
+        provider(id, {
+          driver: antigravity,
+          models: agModels,
+          usageLimits: {
+            checkedAt: "2026-11-03T11:59:00.000Z",
+            windows: [
+              {
+                id: "gemini-5h",
+                kind: "session",
+                label: "Gemini",
+                usedPercent: geminiUsed,
+                resetsAt: "2026-11-04T06:00:00.000Z",
+              },
+              {
+                id: "3p-5h",
+                kind: "session",
+                label: "Third-party",
+                usedPercent: thirdPartyUsed,
+                resetsAt: "2026-11-04T12:00:00.000Z",
+              },
+            ],
+          },
+        });
+      const routeAg = (providers: ReadonlyArray<ServerProvider>) =>
+        routeAutoAccount({
+          selection: { instanceId: agFirst, model: "antigravity-default", autoAccount: true },
+          projectId,
+          currentInstanceId: null,
+          started: false,
+          mcpSignInsNeeded: signIns(),
+          providers,
+          settings: {
+            ...settings([agFirst, agSecond]),
+            autoModeProvider: antigravity,
+            autoModeModels: {},
+            providerInstances: {
+              [agFirst]: { driver: antigravity, enabled: true },
+              [agSecond]: { driver: antigravity, enabled: true },
+            },
+          },
+          recordedLimits: new Map(),
+          nowMs,
+        });
+
+      // First account's Gemini is exhausted, second account's Gemini is free -> picks second on Gemini Neon.
+      assert.deepEqual(routeAg([ag(agFirst, 100, 0), ag(agSecond, 10, 100)]), {
+        instanceId: agSecond,
+        model: "gemini-4-neon",
+        options: [{ id: "thinking_level", value: "xhigh" }],
+        autoAccount: true,
+      });
+
+      // Both accounts' Gemini is exhausted, first account's 3P is free -> falls back to Claude Opus on first.
+      assert.deepEqual(routeAg([ag(agFirst, 100, 10), ag(agSecond, 100, 100)]), {
+        instanceId: agFirst,
+        model: "claude-opus-5-5",
+        autoAccount: true,
+      });
+    });
   });
 
   it("leaves a pinned selection on the account it names", () => {
@@ -1527,6 +1620,146 @@ describe("cross-provider launch routing", () => {
       delegates: [],
     });
     assert.includeMembers([...(block?.accounts ?? [])], [primary, second]);
+  });
+
+  it("fails over an Auto launch to Antigravity's top Auto profile when Claude and Codex are exhausted, even if antigravity-default aliases an exhausted third-party model", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const agMain = ProviderInstanceId.make("antigravity_main");
+    const agSpare = ProviderInstanceId.make("antigravity_spare");
+    const neonReset = "2026-11-04T06:00:00.000Z";
+    const thirdPartyReset = "2026-11-04T12:00:00.000Z";
+    const thinkingXhigh = {
+      optionDescriptors: [
+        {
+          id: "thinking_level",
+          label: "Thinking",
+          type: "select" as const,
+          options: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+            { id: "xhigh", label: "Extra high" },
+          ],
+        },
+      ],
+    };
+    const agModels = [
+      {
+        slug: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        aliases: ["antigravity-default"],
+        isDefault: true,
+        isCustom: false,
+        capabilities: null,
+      },
+      {
+        slug: "gemini-4-neon",
+        name: "Gemini 4 Neon",
+        aliases: [],
+        isDefault: false,
+        isCustom: false,
+        capabilities: thinkingXhigh,
+      },
+    ];
+    const agAccount = (
+      id: ProviderInstanceId,
+      geminiUsed: number,
+      thirdPartyUsed: number,
+    ): ServerProvider =>
+      provider(id, {
+        driver: antigravity,
+        models: agModels,
+        usageLimits: {
+          checkedAt: "2026-11-03T11:59:00.000Z",
+          windows: [
+            {
+              id: "gemini-5h",
+              kind: "session",
+              label: "Gemini",
+              usedPercent: geminiUsed,
+              resetsAt: neonReset,
+            },
+            {
+              id: "3p-5h",
+              kind: "session",
+              label: "Third-party",
+              usedPercent: thirdPartyUsed,
+              resetsAt: thirdPartyReset,
+            },
+          ],
+        },
+      });
+    const base = input([primary, second, codexMain, codexSpare, museMain]);
+    const makeContext = (agProviders: ReadonlyArray<ServerProvider>) => ({
+      ...base,
+      selection: auto,
+      scheduled: false,
+      providers: [...base.providers, ...agProviders],
+      settings: {
+        ...base.settings,
+        providerInstanceFailoverOrder: [
+          primary,
+          second,
+          codexMain,
+          codexSpare,
+          museMain,
+          agMain,
+          agSpare,
+        ],
+        providerInstances: {
+          ...base.settings.providerInstances,
+          [agMain]: { driver: antigravity, enabled: true },
+          [agSpare]: { driver: antigravity, enabled: true },
+        },
+      },
+    });
+
+    // Main Antigravity account has 3P exhausted (and aliased by antigravity-default) but Gemini free.
+    const geminiContext = makeContext([agAccount(agMain, 10, 100), agAccount(agSpare, 20, 0)]);
+    const geminiRoute = failoverLimitedLaunch(geminiContext);
+    assert.deepEqual(geminiRoute.failover, {
+      reason: "usageLimit",
+      crossProviderFrom: primary,
+    });
+    assert.include(geminiRoute.selection, {
+      instanceId: agMain,
+      model: "gemini-4-neon",
+      autoAccount: true,
+    });
+    assert.deepEqual(geminiRoute.selection.options, [{ id: "thinking_level", value: "xhigh" }]);
+    assert.isNull(usageBlock({ ...geminiContext, delegates: [] }));
+
+    // When Gemini is exhausted on all Antigravity accounts, falls back to rank-2 Claude Opus 3P.
+    const thirdPartyContext = makeContext([
+      agAccount(agMain, 100, 100),
+      agAccount(agSpare, 100, 5),
+    ]);
+    const thirdPartyRoute = failoverLimitedLaunch(thirdPartyContext);
+    assert.deepEqual(thirdPartyRoute.failover, {
+      reason: "usageLimit",
+      crossProviderFrom: primary,
+    });
+    assert.include(thirdPartyRoute.selection, {
+      instanceId: agSpare,
+      model: "claude-opus-5-5",
+      autoAccount: true,
+    });
+    assert.isNull(usageBlock({ ...thirdPartyContext, delegates: [] }));
+
+    // When both Gemini and 3P pools are exhausted on every Antigravity account, reports the earliest reset.
+    const allExhaustedContext = makeContext([
+      agAccount(agMain, 100, 100),
+      agAccount(agSpare, 100, 100),
+    ]);
+    assert.isNull(failoverLimitedLaunch(allExhaustedContext).failover);
+    const block = usageBlock({ ...allExhaustedContext, delegates: [] });
+    assert.isNotNull(block);
+    assert.equal(block.until, codexReset);
+    assert.equal(
+      block.accounts.filter((id) => id === agMain).length,
+      1,
+      "antigravity accounts should not be duplicated across profile ranks",
+    );
   });
 });
 

@@ -1798,12 +1798,30 @@ function limitedUntil(provider: ServerProvider, now: number): string | null | un
     return undefined;
   const limits = provider.usageLimits;
   let latest: number | undefined;
+  let earliestPoolEnd: number | undefined;
+  let hasLivePoolWindow = false;
+  let allPoolWindowsExhausted = true;
   for (const window of limits?.windows ?? []) {
-    if (window.usedPercent < 100 || !usageWindowAppliesToModel(provider, window, null)) continue;
     const end = usageWindowLimitEnd(limits!, window);
-    if (end > now) latest = Math.max(latest ?? end, end);
+    if (end <= now) continue;
+    if (usageWindowAppliesToModel(provider, window, null)) {
+      if (window.usedPercent >= 100) latest = Math.max(latest ?? end, end);
+      continue;
+    }
+    if (provider.driver === "antigravity") {
+      const scope = usageWindowScope(provider.driver, window);
+      if (scope === "spending-cap" || scope === "unknown") continue;
+      hasLivePoolWindow = true;
+      if (window.usedPercent < 100) {
+        allPoolWindowsExhausted = false;
+      } else {
+        earliestPoolEnd = Math.min(earliestPoolEnd ?? end, end);
+      }
+    }
   }
-  return latest === undefined ? undefined : DateTime.formatIso(DateTime.makeUnsafe(latest));
+  const until =
+    latest ?? (hasLivePoolWindow && allPoolWindowsExhausted ? earliestPoolEnd : undefined);
+  return until === undefined ? undefined : DateTime.formatIso(DateTime.makeUnsafe(until));
 }
 
 function earliest(times: ReadonlyArray<string | null>): string | null {

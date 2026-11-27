@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
+  AntigravitySettings,
   CodexSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -9,12 +10,17 @@ import {
   type ServerProvider,
   type ServerProviderAuthStatus,
 } from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { makeMuseSignedOut } from "@t3tools/provider-muse/testing";
 import { materializeReplayTranscriptWorkspace } from "@t3tools/provider-testing/replayTranscript";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {
   ACCOUNT_FAILOVER_DRIVERS,
   type AccountFailoverDriver,
 } from "@t3tools/shared/serverSettings";
+import * as EffectAcpErrors from "effect-acp/errors";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -24,8 +30,11 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import { makeAntigravityProvider } from "../../provider/AntigravityProvider.ts";
+import { isAntigravitySignInRequiredError } from "../../provider/antigravityAuthSupport.ts";
 import { makeClaudeAuthenticationFailure } from "../../provider/claudeSignedOut.ts";
 import { checkCodexProviderStatus } from "../../provider/CodexProvider.ts";
+import { makeAntigravityAdapterV2 } from "../Adapters/AntigravityAdapterV2.ts";
 import { makeClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { makeCodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import {
@@ -33,22 +42,39 @@ import {
   materializeMuseReplayWorkspace,
 } from "../Adapters/MuseAdapterV2.testkit.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
+import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
+import * as CommandOutputRecorder from "./CommandOutputRecorder.ts";
+import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   assertBaseProjection,
   CLAUDE_MODEL_SELECTION,
   CLAUDE_RESULT_IS_ERROR_PROMPT,
   CODEX_MODEL_SELECTION,
+  materializeFixtureInput,
   MUSE_MODEL_SELECTION,
   projectionFor,
   type ProviderOrchestratorReplayVariant,
 } from "./fixtures/shared.ts";
-import type { OrchestratorV2ScenarioResult } from "./OrchestratorScenario.ts";
-import type { OrchestratorV2ProviderReplayHarness } from "./ProviderReplayHarness.ts";
+import {
+  runOrchestratorV2Scenario,
+  type OrchestratorV2ScenarioResult,
+} from "./OrchestratorScenario.ts";
+import {
+  layerWithRegistry,
+  type OrchestratorV2ProviderReplayHarness,
+} from "./ProviderReplayHarness.ts";
 import { runReplayFixture, type ReplayFixtureRun } from "./ProviderReplayFixtures.ts";
 
 const FIXTURE_NAME = "rejected_login";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({ binaryPath: "/nonexistent/codex" });
+const ANTIGRAVITY_SETTINGS = Schema.decodeSync(AntigravitySettings)({ enabled: true });
+const ANTIGRAVITY_INITIALIZE = {
+  protocolVersion: 1,
+  agentCapabilities: { loadSession: true },
+  authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
+  agentInfo: { name: "antigravity-acp", title: "Google Antigravity", version: "1.0.0" },
+};
 
 type DatabaseLayer = NonNullable<
   ReplayFixtureRun<ProviderReplayTranscript, never>["databaseLayer"]
@@ -190,6 +216,86 @@ const CASES = {
       });
       const snapshot = yield* signedOut.apply(probed("muse", "unknown"));
       return { result, authStatus: snapshot.auth.status };
+    }),
+  },
+  antigravity: {
+    run: Effect.fn("RejectedLogin.antigravity")(function* (databaseLayer: DatabaseLayer) {
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const instanceId = ProviderInstanceId.make("antigravity");
+          const driver = ProviderDriverKind.make("antigravity");
+          const provider = yield* makeAntigravityProvider(ANTIGRAVITY_SETTINGS, {
+            stampIdentity: (snapshot) => Effect.succeed({ ...snapshot, instanceId, driver }),
+            probe: Effect.succeed(ANTIGRAVITY_INITIALIZE),
+            supportsTextGeneration: Effect.succeed(true),
+          }).pipe(Effect.provide(TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer))));
+          yield* provider.snapshot.refresh;
+
+          const workspace = yield* checkpointWorkspace(FIXTURE_NAME);
+          const materialized = yield* materializeFixtureInput({
+            scenario: FIXTURE_NAME,
+            fixtureInput: { steps: [{ type: "message", text: CLAUDE_RESULT_IS_ERROR_PROMPT }] },
+            driver,
+            modelSelection: { instanceId, model: "gemini-4-neon" },
+          }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
+          const scenario = {
+            name: `${FIXTURE_NAME}/${driver}`,
+            commands: materialized.commands,
+            steps: materialized.steps,
+            projectionThreadIds: materialized.projectionThreadIds,
+            runtimePolicyOverride: { cwd: workspace },
+          };
+          const registryLayer = ProviderAdapterRegistry.layerFromAdaptersEffect(
+            Effect.gen(function* () {
+              return [
+                yield* makeAntigravityAdapterV2({
+                  instanceId,
+                  selfInvocation: yield* resolveSelfInvocation(),
+                  makeRuntime: () =>
+                    Effect.fail(EffectAcpErrors.AcpRequestError.authRequired()).pipe(
+                      Effect.tapError((cause) =>
+                        isAntigravitySignInRequiredError(cause)
+                          ? provider.onAuthRequired
+                          : Effect.void,
+                      ),
+                    ),
+                  withProcess: (_stop, task) => task,
+                  // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+                  defaultModel: Effect.succeed(undefined),
+                }),
+              ];
+            }),
+          ).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+                NodeServices.layer,
+                IdAllocator.layer,
+              ),
+            ),
+          );
+          const layer = layerWithRegistry(scenario, registryLayer, { databaseLayer });
+          const result = yield* Effect.gen(function* () {
+            const scenarioResult = yield* runOrchestratorV2Scenario(scenario);
+            const recorder = yield* CommandOutputRecorder.CommandOutputRecorder;
+            return { ...scenarioResult, commandOutput: yield* recorder.snapshot };
+          }).pipe(Effect.provide(layer), provideDeterministicTestRuntime);
+
+          const projection = projectionFor(result, FIXTURE_NAME);
+          const [run] = projection.runs;
+          assert.equal(run?.status, "failed");
+          const error = projection.turnItems.find(
+            (item) =>
+              item.runId === run?.id && item.type === "error" && item.nodeId === run.rootNodeId,
+          );
+          if (error?.type !== "error") {
+            throw new Error("the rejected login left no error on the run");
+          }
+          assert.equal(error.failure.code, AUTHENTICATION_FAILED_FAILURE_CODE);
+          const snapshot = yield* provider.snapshot.getSnapshot;
+          return { result, authStatus: snapshot.auth.status };
+        }),
+      ).pipe(Effect.orDie);
     }),
   },
 } satisfies Record<AccountFailoverDriver, RejectedLoginCase>;

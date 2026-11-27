@@ -1019,6 +1019,7 @@ describe("supportsAccountFailover", () => {
     ["codex", true],
     ["claudeAgent", true],
     ["muse", true],
+    ["antigravity", true],
     ["cursor", false],
     ["grok", false],
     ["opencode", false],
@@ -1213,6 +1214,56 @@ describe("Auto mode", () => {
     expect(resolve(auto("claude_second"), false, { autoModeModels: {} })).toEqual({
       instanceId: "claude_first",
       model: "claude-opus-5-5",
+      autoAccount: true,
+    });
+  });
+
+  it("picks Antigravity's ranked native Auto profile when no Antigravity Auto model is saved", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const agId = ProviderInstanceId.make("antigravity_main");
+    const agAccount = {
+      ...account("antigravity_main", antigravity, []),
+      models: [
+        {
+          slug: "claude-opus-5-5",
+          name: "Claude Opus 5.5",
+          aliases: ["antigravity-default"],
+          isDefault: true,
+        },
+        {
+          slug: "gemini-4-neon",
+          name: "Gemini 4 Neon",
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "thinking_level",
+                label: "Thinking",
+                type: "select" as const,
+                options: [
+                  { id: "high", label: "High" },
+                  { id: "xhigh", label: "Extra high" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    };
+    expect(
+      autoModePick({
+        settings: {
+          ...settings,
+          autoModeProvider: antigravity,
+          autoModeModels: {},
+          providerInstances: { [agId]: { driver: antigravity, enabled: true } },
+        },
+        accounts: [agAccount],
+        projectId: null,
+      }),
+    ).toEqual({
+      instanceId: agId,
+      model: "gemini-4-neon",
+      options: [{ id: "thinking_level", value: "xhigh" }],
       autoAccount: true,
     });
   });

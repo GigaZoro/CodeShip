@@ -116,7 +116,7 @@ export function defaultTextGenerationModel(driver: ProviderDriverKind): string {
 
 // Only these drivers report a usage-limit reset time and a rejected login, which failover needs to
 // skip an account that cannot run.
-export const ACCOUNT_FAILOVER_DRIVERS = ["codex", "claudeAgent", "muse"] as const;
+export const ACCOUNT_FAILOVER_DRIVERS = ["codex", "claudeAgent", "muse", "antigravity"] as const;
 export type AccountFailoverDriver = (typeof ACCOUNT_FAILOVER_DRIVERS)[number];
 const accountFailoverDrivers: ReadonlySet<string> = new Set(ACCOUNT_FAILOVER_DRIVERS);
 
@@ -160,7 +160,13 @@ type RunnableAccount = Pick<
 type AutoModeAccount = RunnableAccount & {
   readonly driver: ProviderDriverKind;
   readonly models: ReadonlyArray<
-    SelectableModelOption & { readonly capabilities?: ModelCapabilities | null | undefined }
+    SelectableModelOption & {
+      readonly capabilities?: ModelCapabilities | null | undefined;
+      readonly nativeModelFamily?: string | undefined;
+      readonly isDefault?: boolean | undefined;
+      readonly isCustom?: boolean | undefined;
+      readonly isLegacy?: boolean | undefined;
+    }
   >;
 };
 
@@ -255,11 +261,13 @@ const NATIVE_AUTO_PROFILES = new Map<string, ReadonlyArray<NativeAutoProfile>>([
   ],
 ]);
 
-type AutoProfileModel = Pick<
-  ServerProviderModel,
-  "slug" | "nativeModelFamily" | "isDefault" | "capabilities"
-> &
-  Partial<Pick<ServerProviderModel, "isCustom" | "isLegacy">>;
+type AutoProfileModel = Pick<ServerProviderModel, "slug"> & {
+  readonly nativeModelFamily?: ServerProviderModel["nativeModelFamily"] | undefined;
+  readonly isDefault?: ServerProviderModel["isDefault"] | undefined;
+  readonly capabilities?: ServerProviderModel["capabilities"] | undefined;
+  readonly isCustom?: ServerProviderModel["isCustom"] | undefined;
+  readonly isLegacy?: ServerProviderModel["isLegacy"] | undefined;
+};
 
 interface AutoProfileAccount {
   readonly instanceId: ProviderInstanceId;
@@ -353,6 +361,60 @@ export function firstByRank<T>(ranked: ReadonlyArray<ReadonlyArray<() => T | nul
   return null;
 }
 
+/**
+ * Whether Auto mode should resolve `account` through its ranked native Auto profiles instead of
+ * `auto.model`: no Auto model is saved for the driver, the driver has native profiles, and the
+ * account does not list the provider's default slug directly (for example Antigravity's
+ * `antigravity-default` placeholder alias).
+ */
+function usesNativeAutoProfiles(
+  settings: Pick<ServerSettings, "autoModeModels">,
+  account: Pick<AutoProfileAccount, "driver" | "models">,
+  auto: AutoModeModel,
+): boolean {
+  return (
+    settings.autoModeModels[account.driver] === undefined &&
+    NATIVE_AUTO_PROFILES.has(account.driver) &&
+    !account.models.some((candidate) => candidate.slug === auto.model)
+  );
+}
+
+/**
+ * Ranked native Auto profile choices for `account` when no Auto model is saved for its driver and
+ * its catalog does not list the default slug directly; null when `autoModeModelFor` applies.
+ */
+export function autoModeProfileSelections(
+  settings: Pick<ServerSettings, "autoModeModels">,
+  account: AutoProfileAccount,
+  acceptsModel: (slug: string) => boolean = () => true,
+): ReadonlyArray<() => ModelSelection | null> | null {
+  const auto = autoModeModelFor(settings, account.driver);
+  if (auto === null || !usesNativeAutoProfiles(settings, account, auto)) return null;
+  return quotaAwareAutoProfiles(account, acceptsModel);
+}
+
+/**
+ * What Auto runs on `driver` across `accounts` (for UI display and defaults): the saved Auto
+ * model, else the top native Auto profile when accounts do not list the default slug directly,
+ * else `autoModeModelFor`.
+ */
+export function effectiveAutoModeModelFor(
+  settings: Pick<ServerSettings, "autoModeModels">,
+  driver: ProviderDriverKind,
+  accounts: ReadonlyArray<AutoProfileAccount>,
+): AutoModeModel | null {
+  const auto = autoModeModelFor(settings, driver);
+  if (auto === null || settings.autoModeModels[driver] !== undefined) return auto;
+  const pick = firstByRank(
+    accounts
+      .filter((account) => account.driver === driver)
+      .map((account) => autoModeProfileSelections(settings, account) ?? []),
+  );
+  return pick === null
+    ? auto
+    : { model: pick.model, ...(pick.options?.length ? { options: pick.options } : {}) };
+}
+
 interface AutoModeInput {
   readonly settings: AutoModeSettings;
   readonly accounts: ReadonlyArray<AutoModeAccount>;
@@ -412,21 +474,35 @@ function autoModeSelection(account: AutoModeAccount, auto: AutoModeModel): Model
   };
 }
 
+function pickAutoModeAccount(
+  settings: AutoModeInput["settings"],
+  run: NonNullable<ReturnType<typeof autoModeRun>>,
+): ModelSelection | null {
+  const choice = firstByRank(
+    run.accounts.map((candidate) =>
+      usesNativeAutoProfiles(settings, candidate, run.auto)
+        ? quotaAwareAutoProfiles(candidate)
+        : [
+            () =>
+              resolveSelectableModel(candidate.driver, run.auto.model, candidate.models) !== null
+                ? autoModeSelection(candidate, run.auto)
+                : null,
+          ],
+    ),
+  );
+  if (choice !== null) return { ...choice, autoAccount: true };
+  // With no catalog listing the model (one still loading), the first account runs it and its
+  // provider reports what it lacks.
+  return run.accounts[0] === undefined ? null : autoModeSelection(run.accounts[0], run.auto);
+}
+
 /**
  * What a new Auto thread starts on, or null while Auto cannot run: the primary provider's Auto
  * model on its first account that can run in the project and offers that model.
  */
 export function autoModePick(input: AutoModeInput): ModelSelection | null {
   const run = autoModeRun(input, null);
-  if (run === null) return null;
-  // With no catalog listing the model (one still loading), the first account runs it and its
-  // provider reports what it lacks.
-  const account =
-    run.accounts.find(
-      (candidate) =>
-        resolveSelectableModel(candidate.driver, run.auto.model, candidate.models) !== null,
-    ) ?? run.accounts[0];
-  return account === undefined ? null : autoModeSelection(account, run.auto);
+  return run === null ? null : pickAutoModeAccount(input.settings, run);
 }
 
 /**
@@ -442,15 +518,17 @@ export function autoModeTarget(
   const own = input.accounts.find((account) => account.instanceId === input.selection.instanceId);
   const run = own === undefined ? null : autoModeRun(input, own.driver);
   if (own === undefined || run === null) return null;
-  const target =
+  if (
     input.background === true &&
     !isProviderInstanceBackgroundAllowed(input.settings, own.instanceId)
-      ? (run.accounts.find(
-          (candidate) =>
-            resolveSelectableModel(candidate.driver, run.auto.model, candidate.models) !== null,
-        ) ?? run.accounts[0])
-      : own;
-  return target === undefined ? null : autoModeSelection(target, run.auto);
+  ) {
+    return pickAutoModeAccount(input.settings, run);
+  }
+  if (usesNativeAutoProfiles(input.settings, own, run.auto)) {
+    const choice = firstByRank([quotaAwareAutoProfiles(own)]);
+    if (choice !== null) return { ...choice, autoAccount: true };
+  }
+  return autoModeSelection(own, run.auto);
 }
 
 /** What an Auto pick runs (see `autoModeTarget`); with Auto mode off, it runs as it names. */

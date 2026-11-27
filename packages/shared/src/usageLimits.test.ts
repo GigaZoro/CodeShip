@@ -2567,6 +2567,54 @@ describe("accountFailoverStatus", () => {
       ),
     ).toEqual({ kind: "ready", active: "a" });
   });
+
+  it("treats an Antigravity account as ready while any quota pool has room, and switches once all live pools are exhausted", () => {
+    const ag = (
+      id: string,
+      windows: ReadonlyArray<{ id: string; usedPercent: number; resetsAt: string }>,
+    ) =>
+      account(id, {
+        driver: ProviderDriverKind.make("antigravity"),
+        usageLimits: {
+          checkedAt: "2026-09-03T11:00:00.000Z",
+          windows: windows.map((entry) => ({
+            ...window,
+            ...entry,
+          })),
+        },
+      });
+    const check = (providers: readonly ServerProvider[]) =>
+      ids(
+        accountFailoverStatus({
+          driver: ProviderDriverKind.make("antigravity"),
+          providers,
+          settings: { failoverLimitedThreads: true, providerInstanceFailoverOrder: [] },
+          now,
+        }),
+      );
+
+    // Third-party pool exhausted, Gemini pool still has room -> account remains ready.
+    expect(
+      check([
+        ag("a", [
+          { id: "gemini-5h", usedPercent: 10, resetsAt: "2026-09-03T14:00:00.000Z" },
+          { id: "3p-5h", usedPercent: 100, resetsAt: "2026-09-03T16:00:00.000Z" },
+        ]),
+        ag("b", [{ id: "gemini-5h", usedPercent: 0, resetsAt: "2026-09-03T14:00:00.000Z" }]),
+      ]),
+    ).toEqual({ kind: "ready", active: "a" });
+
+    // Every live pool on `a` exhausted -> switches to `b`, reporting earliest pool reset.
+    expect(
+      check([
+        ag("a", [
+          { id: "gemini-5h", usedPercent: 100, resetsAt: "2026-09-03T14:00:00.000Z" },
+          { id: "3p-5h", usedPercent: 100, resetsAt: "2026-09-03T16:00:00.000Z" },
+        ]),
+        ag("b", [{ id: "gemini-5h", usedPercent: 0, resetsAt: "2026-09-03T14:00:00.000Z" }]),
+      ]),
+    ).toEqual({ kind: "switched", active: "b", limited: ["a"], until: "2026-09-03T14:00:00.000Z" });
+  });
 });
 
 describe("softDrainingUsageWindow", () => {

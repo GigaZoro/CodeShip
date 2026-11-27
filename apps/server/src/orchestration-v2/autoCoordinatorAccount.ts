@@ -9,6 +9,7 @@ import {
 import { createModelSelection, offeredOptionSelections } from "@t3tools/shared/model";
 import {
   autoModeModelFor,
+  effectiveAutoModeModelFor,
   firstByRank,
   orderProviderInstancesForFailover,
   quotaAwareAutoProfiles,
@@ -137,7 +138,7 @@ export function autoCoordinatorBriefInput(
   return {
     driver: input.driver,
     model: input.selection.model,
-    primary: autoModeModelFor(input.settings, input.driver),
+    primary: effectiveAutoModeModelFor(input.settings, input.driver, own ? [own] : input.providers),
     ...(otherReviewer === undefined ? {} : { otherReviewer }),
     ...(ownReviewer === undefined ? {} : { ownReviewer }),
     models:

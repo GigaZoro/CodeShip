@@ -1,4 +1,5 @@
 import {
+  type AutoModeModel,
   CodexSettings,
   isProviderInstanceBackgroundAllowed,
   type ModelSelection,
@@ -25,11 +26,14 @@ import {
   acceptedOptionSelections,
   modelPicksEqual,
   resolveSelectableModel,
+  withModelSelectionOptions,
 } from "@t3tools/shared/model";
 import {
   activeAutoModeProvider,
   autoModeModelFor,
+  autoModeProfileSelections,
   canAccountRun,
+  effectiveAutoModeModelFor,
   orderProviderInstancesForFailover,
   resolveAutoModelSelection,
   supportsAccountFailover,
@@ -652,14 +656,54 @@ export function resolveAutoRoute(
     started: input.started,
     background: isBackgroundContext(input),
   });
-  const driver = input.providers.find(
-    (provider) => provider.instanceId === selection.instanceId,
-  )?.driver;
+  const provider = input.providers.find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  const driver = provider?.driver;
   const auto =
-    selection === input.selection || driver === undefined
+    selection === input.selection ||
+    driver === undefined ||
+    (provider !== undefined && autoModeProfileSelections(input.settings, provider) !== null)
       ? null
       : autoModeModelFor(input.settings, driver);
   return { selection, driver, searchModel: auto?.model ?? selection.model };
+}
+
+/**
+ * Ranked Auto models for `driver` across `providers`: the saved Auto model when configured,
+ * otherwise native Auto profiles in rank order across the driver's accounts (e.g. Antigravity
+ * Gemini before third-party Claude Opus), falling back to `autoModeModelFor`.
+ */
+function autoDriverCandidates(
+  settings: AccountRoutingContext["settings"],
+  providers: ReadonlyArray<ServerProvider>,
+  driver: ProviderDriverKind,
+): ReadonlyArray<AutoModeModel> {
+  const auto = autoModeModelFor(settings, driver);
+  if (auto === null) return [];
+  if (settings.autoModeModels[driver] !== undefined) return [auto];
+  const accounts = orderProviderInstancesForFailover(
+    settings.providerInstanceFailoverOrder,
+    providers.filter((provider) => provider.driver === driver),
+  );
+  const profileLists = accounts.map(
+    (account) => autoModeProfileSelections(settings, account) ?? [],
+  );
+  const maxRank = profileLists.reduce((max, list) => Math.max(max, list.length), 0);
+  const candidates: Array<AutoModeModel> = [];
+  const seen = new Set<string>();
+  for (let rank = 0; rank < maxRank; rank += 1) {
+    for (const profiles of profileLists) {
+      const choice = profiles[rank]?.() ?? null;
+      if (choice === null || seen.has(choice.model)) continue;
+      seen.add(choice.model);
+      candidates.push({
+        model: choice.model,
+        ...(choice.options?.length ? { options: choice.options } : {}),
+      });
+    }
+  }
+  return candidates.length > 0 ? candidates : [auto];
 }
 
 function applyRequestComplexity(input: {
@@ -719,7 +763,9 @@ function applyRequestComplexity(input: {
     account: chosenAccount,
     started: input.started,
     previousModel: input.started ? input.previousSelection?.model : undefined,
-    configuredAuto: autoModeModelFor(input.context.settings, chosenAccount.driver),
+    configuredAuto: effectiveAutoModeModelFor(input.context.settings, chosenAccount.driver, [
+      chosenAccount,
+    ]),
     modelHasRoom,
   });
 }
@@ -828,16 +874,20 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
       input.observe && input.settings.failoverLimitedThreads
         ? accountsWithRoom(backgroundSearch, input.observe)
         : undefined;
-    const pickTarget = () => {
+    const candidates = autoDriverCandidates(input.settings, input.providers, driver);
+    const pickForSearch = (
+      candidateSearch: AccountSearch,
+      withRoomList: ReadonlyArray<ReturnType<typeof accountsWithRoom>[number]>,
+    ) => {
       if (current !== undefined) {
-        const model = modelWithRoom(current, search);
+        const model = modelWithRoom(current, candidateSearch);
         if (model !== null) {
           const keep = { instanceId: current.instanceId, model };
           const onCredits = runsOnCredits(current, input, canonicalModel(current, model));
           const signedIn = pendingSignIns(input, current.instanceId).length === 0;
           if (!onCredits && signedIn && !billingPriority) return keep;
           // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
-          const top = (observed ?? accountsWithRoom(backgroundSearch))[0];
+          const top = withRoomList[0];
           if (top === undefined || top.instanceId === current.instanceId) return keep;
           const better = input.providers.find((provider) => provider.instanceId === top.instanceId);
           if (
@@ -855,8 +905,109 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
             : keep;
         }
       }
-      const withRoom = (observed ?? accountsWithRoom(backgroundSearch))[0];
-      if (withRoom !== undefined) return withRoom;
+      return withRoomList[0];
+    };
+    const optionsFor = (
+      instanceId: ProviderInstanceId,
+      model: string,
+      candidateOptions: AutoModeModel["options"],
+    ) => {
+      const provider = input.providers.find((candidate) => candidate.instanceId === instanceId);
+      const descriptors = provider?.models.find((candidate) => candidate.slug === model)
+        ?.capabilities?.optionDescriptors;
+      return acceptedOptionSelections(descriptors, candidateOptions);
+    };
+    const pickTarget = ():
+      | {
+          readonly instanceId: ProviderInstanceId;
+          readonly model: string;
+          readonly options?: AutoModeModel["options"];
+          readonly replaceOptions: boolean;
+        }
+      | undefined => {
+      if (candidates.length > 1) {
+        for (const candidate of candidates) {
+          const candidateSearch =
+            candidate.model === searchModel ? search : { ...search, model: candidate.model };
+          const candidateBackgroundSearch =
+            candidate.model === searchModel
+              ? backgroundSearch
+              : { ...backgroundSearch, model: candidate.model };
+          const withRoomList =
+            candidate.model === searchModel
+              ? (observed ?? accountsWithRoom(candidateBackgroundSearch))
+              : accountsWithRoom(candidateBackgroundSearch);
+          const picked = pickForSearch(candidateSearch, withRoomList);
+          if (picked !== undefined) {
+            return {
+              instanceId: picked.instanceId,
+              model: picked.model,
+              options: optionsFor(picked.instanceId, picked.model, candidate.options),
+              replaceOptions: true,
+            };
+          }
+        }
+        const named = input.providers.find(
+          (provider) => provider.instanceId === selection.instanceId,
+        );
+        const keep =
+          current ??
+          (named !== undefined &&
+          !isSubscriptionAccount(named) &&
+          isProviderInstanceBackgroundAllowed(input.settings, named.instanceId)
+            ? named
+            : undefined);
+        if (keep !== undefined) {
+          const keepBaseSearch = keep === current ? search : backgroundSearch;
+          for (const candidate of candidates) {
+            const kept = runnableModel(keep, { ...keepBaseSearch, model: candidate.model });
+            if (kept !== null) {
+              return {
+                instanceId: keep.instanceId,
+                model: kept,
+                options: optionsFor(keep.instanceId, kept, candidate.options),
+                replaceOptions: true,
+              };
+            }
+          }
+        }
+        let earliest:
+          | {
+              readonly instanceId: ProviderInstanceId;
+              readonly model: string;
+              readonly end: number | null;
+              readonly options: AutoModeModel["options"];
+            }
+          | undefined;
+        for (const candidate of candidates) {
+          const waitOn = firstAccountWithRoomAgain({
+            ...backgroundSearch,
+            model: candidate.model,
+          });
+          if (waitOn === undefined) continue;
+          const waitAt = waitOn.end ?? input.nowMs;
+          if (earliest === undefined || waitAt < (earliest.end ?? input.nowMs)) {
+            earliest = {
+              instanceId: waitOn.instanceId,
+              model: waitOn.model,
+              end: waitOn.end,
+              options: optionsFor(waitOn.instanceId, waitOn.model, candidate.options),
+            };
+          }
+        }
+        return earliest !== undefined
+          ? {
+              instanceId: earliest.instanceId,
+              model: earliest.model,
+              options: earliest.options,
+              replaceOptions: true,
+            }
+          : current === undefined
+            ? undefined
+            : { instanceId: current.instanceId, model: selection.model, replaceOptions: false };
+      }
+      const picked = pickForSearch(search, observed ?? accountsWithRoom(backgroundSearch));
+      if (picked !== undefined) return { ...picked, replaceOptions: false };
       // No subscription account has room. A thread keeps an account that can still run, and a new
       // one starts on its named account when that has no usage limits (an API key).
       const named = input.providers.find(
@@ -875,19 +1026,29 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         keep === undefined
           ? null
           : runnableModel(keep, keep === current ? search : backgroundSearch);
-      if (keep !== undefined && kept !== null) return { instanceId: keep.instanceId, model: kept };
+      if (keep !== undefined && kept !== null) {
+        return { instanceId: keep.instanceId, model: kept, replaceOptions: false };
+      }
       const waitOn = firstAccountWithRoomAgain(backgroundSearch);
-      return waitOn !== undefined || current === undefined
-        ? waitOn
-        : { instanceId: current.instanceId, model: selection.model };
+      return waitOn !== undefined
+        ? { instanceId: waitOn.instanceId, model: waitOn.model, replaceOptions: false }
+        : current === undefined
+          ? undefined
+          : { instanceId: current.instanceId, model: selection.model, replaceOptions: false };
     };
     const target =
       input.settings.failoverLimitedThreads || billingPriority ? pickTarget() : undefined;
     const routed =
-      target === undefined ||
-      (target.instanceId === selection.instanceId && target.model === selection.model)
+      target === undefined
         ? selection
-        : { ...selection, instanceId: target.instanceId, model: target.model };
+        : target.replaceOptions
+          ? withModelSelectionOptions(
+              { ...selection, instanceId: target.instanceId, model: target.model },
+              target.options,
+            )
+          : target.instanceId === selection.instanceId && target.model === selection.model
+            ? selection
+            : { ...selection, instanceId: target.instanceId, model: target.model };
     const tuned = applyRequestComplexity({
       context: input,
       selection: routed,
@@ -923,35 +1084,70 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
     preferredModel: string | null,
     observe?: ObserveAccount,
   ) => {
-    const auto = autoModeModelFor(input.settings, candidateDriver);
-    const inRoom =
-      input.settings.failoverLimitedThreads && preferredModel !== null
-        ? accountsWithRoom(
+    const autoCandidates = autoDriverCandidates(input.settings, input.providers, candidateDriver);
+    const primaryAuto =
+      autoCandidates[0] ??
+      effectiveAutoModeModelFor(input.settings, candidateDriver, input.providers);
+    const orderedAutoCandidates =
+      preferredModel !== null &&
+      autoCandidates.every((candidate) => candidate.model !== preferredModel)
+        ? [
             {
-              ...input,
-              background,
-              driver: candidateDriver,
               model: preferredModel,
-              preferEarliestReset: input.scheduled === true,
+              ...(primaryAuto?.options ? { options: primaryAuto.options } : {}),
             },
-            observe,
-          )
-        : [];
-    for (const account of inRoom) {
-      const provider = input.providers.find((entry) => entry.instanceId === account.instanceId);
-      if (!account.onCredits && provider?.usageLimits?.usageAllowed === false) {
-        continue;
+            ...autoCandidates,
+          ]
+        : autoCandidates.length > 0
+          ? autoCandidates
+          : preferredModel === null
+            ? []
+            : [
+                {
+                  model: preferredModel,
+                  ...(primaryAuto?.options ? { options: primaryAuto.options } : {}),
+                },
+              ];
+    const prioritizedAutoCandidates = [
+      ...orderedAutoCandidates.filter(
+        (candidate) =>
+          !excludedFamilies.has(vendorFamilyOfDriver(candidateDriver, candidate.model)),
+      ),
+      ...orderedAutoCandidates.filter((candidate) =>
+        excludedFamilies.has(vendorFamilyOfDriver(candidateDriver, candidate.model)),
+      ),
+    ];
+    let observedOnce = false;
+    if (input.settings.failoverLimitedThreads) {
+      for (const candidate of prioritizedAutoCandidates) {
+        const inRoom = accountsWithRoom(
+          {
+            ...input,
+            background,
+            driver: candidateDriver,
+            model: candidate.model,
+            preferEarliestReset: input.scheduled === true,
+          },
+          !observedOnce ? observe : undefined,
+        );
+        observedOnce = true;
+        for (const account of inRoom) {
+          const provider = input.providers.find((entry) => entry.instanceId === account.instanceId);
+          if (!account.onCredits && provider?.usageLimits?.usageAllowed === false) {
+            continue;
+          }
+          const descriptors = provider?.models.find((model) => model.slug === account.model)
+            ?.capabilities?.optionDescriptors;
+          pushCandidate({
+            instanceId: account.instanceId,
+            driver: candidateDriver,
+            model: account.model,
+            options: acceptedOptionSelections(descriptors, candidate.options),
+            hasQuota: true,
+            limitEndMs: input.nowMs,
+          });
+        }
       }
-      const descriptors = provider?.models.find((model) => model.slug === account.model)
-        ?.capabilities?.optionDescriptors;
-      pushCandidate({
-        instanceId: account.instanceId,
-        driver: candidateDriver,
-        model: account.model,
-        options: acceptedOptionSelections(descriptors, auto?.options),
-        hasQuota: true,
-        limitEndMs: input.nowMs,
-      });
     }
     const orderedProviders = orderProviderInstancesForFailover(
       input.settings.providerInstanceFailoverOrder,
@@ -960,6 +1156,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
           provider.driver === candidateDriver && !seenInstances.has(provider.instanceId),
       ),
     );
+    const preferredNonExcluded = prioritizedAutoCandidates[0]?.model ?? preferredModel;
     for (const provider of orderedProviders) {
       if (
         !canAccountRun(provider, input.settings, input.projectId, { background }) ||
@@ -970,7 +1167,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
       const chosenModel = resolveCandidateModelForProvider(
         provider,
         input,
-        preferredModel,
+        preferredNonExcluded,
         excludedFamilies,
       );
       if (chosenModel === null) continue;
@@ -980,6 +1177,9 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         provider.usageLimits?.usageAllowed !== false;
       const descriptors = provider.models.find((model) => model.slug === chosenModel)?.capabilities
         ?.optionDescriptors;
+      const matchedCandidate = prioritizedAutoCandidates.find(
+        (candidate) => candidate.model === chosenModel,
+      );
       const hasRoomNow =
         ((!isSubscriptionAccount(provider) && !isPayPerUseAccount(provider)) ||
           (limitEnd === null && usageAllowed)) &&
@@ -991,7 +1191,10 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         instanceId: provider.instanceId,
         driver: candidateDriver,
         model: chosenModel,
-        options: acceptedOptionSelections(descriptors, auto?.options),
+        options: acceptedOptionSelections(
+          descriptors,
+          matchedCandidate?.options ?? primaryAuto?.options,
+        ),
         hasQuota: hasRoomNow,
         limitEndMs: limitEnd ?? input.nowMs,
       });
@@ -1006,7 +1209,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
   )) {
     if (visitedDrivers.has(provider.driver)) continue;
     visitedDrivers.add(provider.driver);
-    const auto = autoModeModelFor(input.settings, provider.driver);
+    const auto = effectiveAutoModeModelFor(input.settings, provider.driver, input.providers);
     addDriverCandidates(provider.driver, auto?.model ?? null);
   }
 
@@ -1028,7 +1231,6 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
           ...(chosen.options && chosen.options.length > 0 ? { options: chosen.options } : {}),
           autoAccount: true as const,
         };
-
   const tuned = applyRequestComplexity({
     context: input,
     selection: routed,
@@ -1185,8 +1387,7 @@ function alternateLaunches(
   )) {
     if (!supportsAccountFailover(provider.driver) || drivers.has(provider.driver)) continue;
     drivers.add(provider.driver);
-    const auto = autoModeModelFor(input.settings, provider.driver);
-    if (auto !== null) {
+    for (const auto of autoDriverCandidates(input.settings, eligible, provider.driver)) {
       searches.push({
         selection: {
           instanceId: provider.instanceId,
@@ -1259,16 +1460,29 @@ export function failoverLimitedLaunch(
       : undefined;
     const account = named ?? accounts[0];
     if (account !== undefined) {
+      const targetProvider = input.providers.find(
+        (candidate) => candidate.instanceId === account.instanceId,
+      );
+      const targetDescriptors = targetProvider?.models.find(
+        (candidate) => candidate.slug === account.model,
+      )?.capabilities?.optionDescriptors;
+      const routedBase: ModelSelection = {
+        ...selection,
+        instanceId: account.instanceId,
+        model: account.model,
+      };
+      const routedSelection = preferNamed
+        ? routedBase
+        : withModelSelectionOptions(
+            routedBase,
+            acceptedOptionSelections(targetDescriptors, selection.options),
+          );
       matches.push({
         instanceId: account.instanceId,
         driver,
         selection: applyRequestComplexity({
           context: input,
-          selection: {
-            ...selection,
-            instanceId: account.instanceId,
-            model: account.model,
-          },
+          selection: routedSelection,
           requestPrompt: input.selection.autoAccount === true ? input.requestPrompt : undefined,
           started: false,
           routingConstraints:
@@ -1360,6 +1574,37 @@ function selectionWait(
   const own = input.providers.find((provider) => provider.instanceId === selection.instanceId);
   if (own === undefined) return null;
   const switching = input.settings.failoverLimitedThreads && supportsAccountFailover(own.driver);
+  if (input.selection.autoAccount === true && switching) {
+    const candidates = autoDriverCandidates(input.settings, input.providers, own.driver);
+    if (candidates.length > 1) {
+      const waits: Array<UsageWait> = [];
+      for (const candidate of candidates) {
+        const accounts = input.providers.flatMap((provider) => {
+          const model =
+            provider.instanceId === own.instanceId
+              ? runnableModel(provider, { ...input, model: candidate.model })
+              : provider.driver === own.driver
+                ? usableModel(provider, { ...input, background: true, model: candidate.model })
+                : null;
+          return model === null
+            ? []
+            : [
+                {
+                  instanceId: provider.instanceId,
+                  end: accountLimitEnd(provider, input, model),
+                },
+              ];
+        });
+        if (accounts.length === 0) continue;
+        const wait = waitForRoom(own.driver, accounts);
+        if (wait === null) return null;
+        waits.push(wait);
+      }
+      if (waits.length === 0) return null;
+      const first = waits.reduce((earliest, wait) => (wait.end < earliest.end ? wait : earliest));
+      return { ...first, accounts: [...new Set(waits.flatMap((wait) => wait.accounts))] };
+    }
+  }
   const peerModel =
     input.selection.autoAccount === true
       ? resolveAutoRoute({ ...input, started: false }).searchModel
@@ -1407,7 +1652,7 @@ function launchWait(input: AccountRoutingContext & LaunchInput): UsageWait | nul
     waits.push(wait);
   }
   const first = waits.reduce((earliest, wait) => (wait.end < earliest.end ? wait : earliest));
-  return { ...first, accounts: waits.flatMap((wait) => wait.accounts) };
+  return { ...first, accounts: [...new Set(waits.flatMap((wait) => wait.accounts))] };
 }
 
 /** Delegation can use any account of the provider that can run in the project. */
