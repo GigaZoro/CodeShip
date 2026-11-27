@@ -291,6 +291,43 @@ describe("check:changed", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("stops at the first failing test group under the landing turn", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* slotDirectory;
+      const cache = NodePath.join(directory, "cache");
+      const version = NodePath.join(cache, "v18");
+      yield* fs.makeDirectory(version, { recursive: true });
+      const request = {
+        files: ["apps/server/a.test.ts", "packages/client-runtime/d.test.ts"],
+        groupSize: 1,
+        uncached: [],
+      };
+      const [server, independent] = cachedTestTasks(JSON.stringify(request))["test-cache"]!
+        .dependsOn!;
+      let runs = 0;
+      const result = yield* runTestGroups(
+        cache,
+        NodePath.join(directory, "request.json"),
+        request,
+        2,
+        "linux",
+        () =>
+          Effect.gen(function* () {
+            runs++;
+            yield* fs.writeFileString(
+              NodePath.join(version, "last-summary.json"),
+              JSON.stringify({ tasks: [failed(server!, 1), failed(independent!, 137)] }),
+            );
+            return { ok: false, output: "a failed\n" };
+          }).pipe(Effect.orDie),
+        { landing: true },
+      );
+      assert.strictEqual(runs, 1);
+      assert.isFalse(result.ok);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each([true, false])(
     "retries a sleep-affected group once and uses the retry's result (%s)",
     (passes) =>
@@ -705,6 +742,52 @@ describe("check:changed", () => {
         ],
       );
     }),
+  );
+
+  it.effect.each([true, false])(
+    "stops every other step at the first failure only under the landing turn (%s)",
+    (landing) =>
+      Effect.gen(function* () {
+        const interrupted = yield* Deferred.make<void>();
+        const failing = yield* Deferred.make<void>();
+        const fiber = yield* runSteps(
+          [
+            {
+              name: "long",
+              run: () =>
+                Deferred.succeed(failing, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+                ),
+            },
+            {
+              name: "fails",
+              run: () =>
+                Deferred.await(failing).pipe(Effect.as({ ok: false, output: "lint error" })),
+            },
+            { name: "waits for a slot", run: () => Effect.succeed({ ok: true, output: "" }) },
+          ],
+          { concurrency: 2, timeoutSeconds: 60, slotDirectory: yield* slotDirectory, landing },
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 minute");
+        const results = yield* Fiber.join(fiber);
+
+        assert.deepStrictEqual(
+          results.map(({ name, outcome }) => [name, outcome]),
+          landing
+            ? [
+                ["long", "STOPPED"],
+                ["fails", "FAIL"],
+                ["waits for a slot", "STOPPED"],
+              ]
+            : [
+                ["long", "TIMEOUT"],
+                ["fails", "FAIL"],
+                ["waits for a slot", "pass"],
+              ],
+        );
+        assert.isTrue(yield* Deferred.isDone(interrupted));
+      }),
   );
 
   it.effect("does not count a Mac's sleep against a step's timeout", () =>

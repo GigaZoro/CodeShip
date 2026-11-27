@@ -247,7 +247,8 @@ changed paths. One nobody edited was written inside the checkout by a check or a
 write under the system temp folder or a gitignored folder instead. Test groups run concurrently within the test step's worker
 budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
 group after another group fails, the test step runs it again and reports failures across the full
-selection. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,
+selection. A run under the landing turn stops at its first failure instead, since it can no longer pass: the first step to end
+`FAIL` or `TIMEOUT` stops the others, which report `STOPPED`, and the first failing test group ends the test step. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,
 even after a timeout or interruption, it publishes passed groups if HEAD and runtime inputs still
 match. A change to either fails the test step. A force-killed run leaves its unpublished results in
 the private copy. A HEAD's cache is removed after three days without a run. Retries across worktrees
