@@ -212,21 +212,41 @@ export function autoModeModelFor(
   return model === undefined ? null : typeof model === "string" ? { model } : model;
 }
 
-const NATIVE_AUTO_PROFILES = new Map([
+// Both `claude-opus-5-5` and the older `claude-4.6-opus` naming.
+const CLAUDE_OPUS_FAMILY =
+  /^(?:claude[ -])?(?:(\d+(?:[.-]\d+)*)[ -])?opus\b(?:[ .-]+(\d+(?:[.-]\d+)*))?/i;
+
+interface NativeAutoProfile {
+  readonly family: RegExp;
+  readonly optionId: string;
+  /** "required" skips a model without xhigh; "offered" sets xhigh only where the model lists it. */
+  readonly xhigh: "required" | "offered";
+}
+
+/** Each driver's Auto profiles, best first. */
+const NATIVE_AUTO_PROFILES = new Map<string, ReadonlyArray<NativeAutoProfile>>([
   [
     "antigravity",
-    {
-      family: /^gemini-(?:(\d+(?:[.-]\d+)*)-)?neon\b(?:[.-]+(\d+(?:[.-]\d+)*))?/i,
-      optionId: "thinking_level",
-    },
+    [
+      {
+        family: /^gemini-(?:(\d+(?:[.-]\d+)*)-)?neon\b(?:[.-]+(\d+(?:[.-]\d+)*))?/i,
+        optionId: "thinking_level",
+        xhigh: "required",
+      },
+      // Claude draws on Antigravity's third-party quota, apart from Gemini's, and may list no xhigh.
+      { family: CLAUDE_OPUS_FAMILY, optionId: "thinking_level", xhigh: "offered" },
+    ],
   ],
-  [
-    "claudeAgent",
-    { family: /^(?:claude[ -])?opus\b(?:[ .-]+(\d+(?:[.-]\d+)*))?/i, optionId: "effort" },
-  ],
+  ["claudeAgent", [{ family: CLAUDE_OPUS_FAMILY, optionId: "effort", xhigh: "required" }]],
   [
     "codex",
-    { family: /^(?:openai\.)?gpt[ -](\d+(?:\.\d+)*)[ -]astra\b/i, optionId: "reasoningEffort" },
+    [
+      {
+        family: /^(?:openai\.)?gpt[ -](\d+(?:\.\d+)*)[ -]astra\b/i,
+        optionId: "reasoningEffort",
+        xhigh: "required",
+      },
+    ],
   ],
 ]);
 
@@ -236,61 +256,96 @@ type AutoProfileModel = Pick<
 > &
   Partial<Pick<ServerProviderModel, "isCustom" | "isLegacy">>;
 
-/**
- * Profile advertised by one account for fresh Auto work. The caller decides which accounts
- * may run and verifies required options at dispatch.
- */
-export function resolveQuotaAwareAutoProfile(
-  account: {
-    readonly instanceId: ProviderInstanceId;
-    readonly driver: ProviderDriverKind;
-    readonly models: ReadonlyArray<AutoProfileModel>;
-  },
-  acceptsModel: (slug: string) => boolean = () => true,
-): ModelSelection | null {
-  const native = NATIVE_AUTO_PROFILES.get(account.driver);
-  if (native === undefined) {
-    const model =
-      account.models.find((model) => model.isDefault && acceptsModel(model.slug)) ??
-      account.models.find(
-        (model) => !model.isDefault && !model.isLegacy && acceptsModel(model.slug),
-      ) ??
-      account.models.find(
-        (model) => !model.isDefault && model.isLegacy && acceptsModel(model.slug),
-      );
-    return model === undefined ? null : createModelSelection(account.instanceId, model.slug);
-  }
+interface AutoProfileAccount {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly models: ReadonlyArray<AutoProfileModel>;
+}
 
+/** A driver without a native profile: its default, else a current model, else a legacy one. */
+function fallbackAutoProfile(
+  account: AutoProfileAccount,
+  acceptsModel: (slug: string) => boolean,
+): ModelSelection | null {
+  const model =
+    account.models.find((model) => model.isDefault && acceptsModel(model.slug)) ??
+    account.models.find(
+      (model) => !model.isDefault && !model.isLegacy && acceptsModel(model.slug),
+    ) ??
+    account.models.find((model) => !model.isDefault && model.isLegacy && acceptsModel(model.slug));
+  return model === undefined ? null : createModelSelection(account.instanceId, model.slug);
+}
+
+/** The newest model of `profile`'s family on `account` that it accepts. */
+function nativeAutoProfile(
+  account: AutoProfileAccount,
+  profile: NativeAutoProfile,
+  acceptsModel: (slug: string) => boolean,
+): ModelSelection | null {
   const eligible = account.models.flatMap((model) => {
     if (model.isCustom) return [];
     const identity =
       account.driver === "antigravity"
         ? (antigravityModelFamily(model.slug) ?? model.nativeModelFamily)
         : model.slug;
-    const match = identity === undefined ? null : native.family.exec(identity);
+    const match = identity === undefined ? null : profile.family.exec(identity);
     if (match === null) return [];
     const version = match[1] ?? match[2];
     const option = model.capabilities?.optionDescriptors?.find(
-      (option) => option.id === native.optionId,
+      (option) => option.id === profile.optionId,
     );
-    return option?.type === "select" &&
+    const xhigh =
+      option?.type === "select" &&
       option.options.some((choice) => choice.id === "xhigh") &&
-      !option.promptInjectedValues?.includes("xhigh")
-      ? [{ model, version: version?.replaceAll("-", ".") ?? "" }]
+      !option.promptInjectedValues?.includes("xhigh");
+    return xhigh || profile.xhigh === "offered"
+      ? [{ model, xhigh, version: version?.replaceAll("-", ".") ?? "" }]
       : [];
   });
   const preferred = eligible
     .sort(
       (left, right) =>
         right.version.localeCompare(left.version, "en", { numeric: true }) ||
+        Number(right.xhigh) - Number(left.xhigh) ||
         Number(right.model.isDefault === true) - Number(left.model.isDefault === true),
     )
     .find(({ model }) => acceptsModel(model.slug));
   return preferred === undefined
     ? null
-    : createModelSelection(account.instanceId, preferred.model.slug, [
-        { id: native.optionId, value: "xhigh" },
-      ]);
+    : createModelSelection(
+        account.instanceId,
+        preferred.model.slug,
+        preferred.xhigh ? [{ id: profile.optionId, value: "xhigh" }] : undefined,
+      );
+}
+
+/**
+ * Each Auto profile `account` offers for fresh work, best first, as a choice that yields null when
+ * it accepts none of that profile's models. The caller decides which accounts may run and verifies
+ * required options at dispatch.
+ */
+export function quotaAwareAutoProfiles(
+  account: AutoProfileAccount,
+  acceptsModel: (slug: string) => boolean = () => true,
+): ReadonlyArray<() => ModelSelection | null> {
+  const native = NATIVE_AUTO_PROFILES.get(account.driver);
+  return native === undefined
+    ? [() => fallbackAutoProfile(account, acceptsModel)]
+    : native.map((profile) => () => nativeAutoProfile(account, profile, acceptsModel));
+}
+
+/**
+ * The best rank any account fills, on the first account (in the order given) that fills it, so a
+ * lesser choice on an earlier account never beats a better one on a later account.
+ */
+export function firstByRank<T>(ranked: ReadonlyArray<ReadonlyArray<() => T | null>>): T | null {
+  for (let rank = 0; rank < Math.max(0, ...ranked.map((choices) => choices.length)); rank++) {
+    for (const choices of ranked) {
+      const choice = choices[rank]?.() ?? null;
+      if (choice !== null) return choice;
+    }
+  }
+  return null;
 }
 
 interface AutoModeInput {

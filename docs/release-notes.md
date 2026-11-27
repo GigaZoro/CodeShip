@@ -1,3 +1,7 @@
+## 2026-11-27 — Antigravity reviews on Claude Opus when Gemini runs out
+
+- When every Antigravity account has used up its Gemini quota, Auto mode's cross-provider review runs on Antigravity's Claude Opus on an account whose separate Claude/GPT-OSS quota has room, instead of offering no Antigravity reviewer. Gemini 4 Neon on any account with room still comes first.
+
 ## 2026-11-27 — The calmer UI stays calm
 
 - Maintainers: a new UI feature now claims an existing slot or removes something. `docs/internals/web-ui.md` names the slots (thread notices, sidebar row status, thread details, the rail and the composer controls), and a test caps how many thread details show by default, how many rail items there are and how many composer controls show at rest, so raising a cap is a visible, reviewed change.

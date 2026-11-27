@@ -23,13 +23,14 @@ import {
   applyServerSettingsPatch,
   autoModePick,
   fallbackTextGenerationModelSelection,
+  firstByRank,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
+  quotaAwareAutoProfiles,
   resolveAutoModelSelection,
   resolveInheritedDefaultModelSelection,
-  resolveQuotaAwareAutoProfile,
   resolveReviewGuideModelSelection,
   resolveSourceControlWriterModelSelection,
   supportsAccountFailover,
@@ -1263,7 +1264,9 @@ describe("Auto mode", () => {
   });
 });
 
-describe("resolveQuotaAwareAutoProfile", () => {
+describe("quotaAwareAutoProfiles", () => {
+  const resolveQuotaAwareAutoProfile = (...args: Parameters<typeof quotaAwareAutoProfiles>) =>
+    firstByRank([quotaAwareAutoProfiles(...args)]);
   const model = (slug: string, optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor>) => ({
     slug,
     name: slug,
@@ -1373,6 +1376,43 @@ describe("resolveQuotaAwareAutoProfile", () => {
 
   it("returns no profile for an empty catalog", () => {
     expect(resolveQuotaAwareAutoProfile(account("custom_adapter", []))).toBeNull();
+  });
+
+  it("falls back from Antigravity's Neon to Claude Opus, at xhigh only where offered", () => {
+    const thinking = (values: ReadonlyArray<string>) => [select("thinking_level", values)];
+    const models = [
+      model("gemini-4-neon", thinking(["high", "xhigh"])),
+      model("claude-opus-5-9", thinking(["low", "high", "xhigh"])),
+      model("claude-opus-5-10", thinking(["low", "high"])),
+      { ...model("agy-opus", thinking(["low", "xhigh"])), nativeModelFamily: "claude-5.10-opus" },
+    ];
+    const destination = account("antigravity", models);
+    const noNeon = (slug: string) => slug !== "gemini-4-neon";
+
+    expect(resolveQuotaAwareAutoProfile(destination)?.model).toBe("gemini-4-neon");
+    expect(resolveQuotaAwareAutoProfile(destination, noNeon)).toEqual({
+      instanceId: destination.instanceId,
+      model: "agy-opus",
+      options: [{ id: "thinking_level", value: "xhigh" }],
+    });
+    expect(
+      resolveQuotaAwareAutoProfile(destination, (slug) => noNeon(slug) && slug !== "agy-opus"),
+    ).toEqual({ instanceId: destination.instanceId, model: "claude-opus-5-10" });
+  });
+
+  it("prefers a better profile on a later account over a fallback on an earlier one", () => {
+    const thinking = [select("thinking_level", ["xhigh"])];
+    const opusOnly = account("antigravity", [model("claude-opus-5-5", thinking)]);
+    const withNeon = {
+      ...account("antigravity", [model("gemini-4-neon", thinking)]),
+      instanceId: ProviderInstanceId.make("antigravity_second"),
+    };
+    const ranked = (accounts: ReadonlyArray<typeof opusOnly>) =>
+      firstByRank(accounts.map((entry) => quotaAwareAutoProfiles(entry)))?.instanceId;
+
+    expect(ranked([opusOnly, withNeon])).toBe(withNeon.instanceId);
+    expect(ranked([opusOnly])).toBe(opusOnly.instanceId);
+    expect(ranked([])).toBeUndefined();
   });
 });
 

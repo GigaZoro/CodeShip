@@ -5,11 +5,12 @@ import {
   type ProviderInstanceId,
   type ProjectId,
 } from "@t3tools/contracts";
-import { offeredOptionSelections } from "@t3tools/shared/model";
+import { createModelSelection, offeredOptionSelections } from "@t3tools/shared/model";
 import {
   autoModeModelFor,
+  firstByRank,
   orderProviderInstancesForFailover,
-  resolveQuotaAwareAutoProfile,
+  quotaAwareAutoProfiles,
 } from "@t3tools/shared/serverSettings";
 import { exhaustedModelUsageWindow } from "@t3tools/shared/usageLimits";
 import { providerConstraints } from "../provider/providerConstraints.ts";
@@ -72,42 +73,46 @@ export function autoCoordinatorAccounts(input: AutoCoordinatorContext) {
 /**
  * `driver`'s reviewer on its first account with room: its Settings primary, even if legacy. An
  * unsaved default the catalog lists only as an alias (Antigravity's `antigravity-default`) stands
- * for the session's current model, so the account's Auto profile reviews instead.
+ * for the session's current model, so those accounts review on their Auto profile instead.
  */
 function reviewerOn(input: AutoCoordinatorContext, driver: ProviderDriverKind) {
   const saved = input.settings.autoModeModels[driver] !== undefined;
   const primary = autoModeModelFor(input.settings, driver);
-  for (const account of delegateAccounts(input, driver)) {
-    if (
+  // The primary ranks with an account's best profile, so failover order decides between them.
+  const choice = firstByRank(
+    delegateAccounts(input, driver).map((account) =>
       primary !== null &&
       (saved || account.models.some((candidate) => candidate.slug === primary.model))
-    ) {
-      // The account's own id for the model: delegate_task rejects a display name it does not list.
-      const model = modelWithRoom(account, { ...input, model: primary.model });
-      if (model === null) continue;
-      return {
-        model,
-        providerInstanceId: account.instanceId,
-        options: offeredOptionSelections(
-          account.models.find((candidate) => candidate.slug === model)?.capabilities
-            ?.optionDescriptors,
-          primary.options,
-        ),
+        ? [
+            () => {
+              // The account's own id: delegate_task rejects a display name it does not list.
+              const model = modelWithRoom(account, { ...input, model: primary.model });
+              return model === null
+                ? null
+                : createModelSelection(
+                    account.instanceId,
+                    model,
+                    offeredOptionSelections(
+                      account.models.find((candidate) => candidate.slug === model)?.capabilities
+                        ?.optionDescriptors,
+                      primary.options,
+                    ),
+                  );
+            },
+          ]
+        : quotaAwareAutoProfiles(
+            account,
+            (slug) => modelWithRoom(account, { ...input, model: slug }) !== null,
+          ),
+    ),
+  );
+  return choice === null
+    ? undefined
+    : {
+        model: choice.model,
+        providerInstanceId: choice.instanceId,
+        options: choice.options ?? [],
       };
-    }
-    const profile = resolveQuotaAwareAutoProfile(
-      account,
-      (slug) => modelWithRoom(account, { ...input, model: slug }) !== null,
-    );
-    if (profile !== null) {
-      return {
-        model: profile.model,
-        providerInstanceId: account.instanceId,
-        options: profile.options ?? [],
-      };
-    }
-  }
-  return undefined;
 }
 
 export function autoCoordinatorBriefInput(
