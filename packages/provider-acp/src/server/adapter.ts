@@ -8600,9 +8600,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
                     now,
                   });
+                  // A replacement keeps the row's stored pin so startTurn reports only a real change.
                   const providerThread =
                     threadInput.forceNewNativeThread && threadInput.existingProviderThread
-                      ? { ...created, id: threadInput.existingProviderThread.id }
+                      ? {
+                          ...created,
+                          id: threadInput.existingProviderThread.id,
+                          pinnedSystemInstructions:
+                            threadInput.existingProviderThread.pinnedSystemInstructions ?? null,
+                        }
                       : created;
                   yield* Ref.update(providerThreadByNativeSessionId, (current) =>
                     new Map(current).set(sessionId, providerThread),

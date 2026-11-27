@@ -1422,7 +1422,8 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
         ]);
 
-        // A replacement native session starts with the current prompt and stores it again.
+        // A replacement native session starts with the current prompt. It keeps the row's stored
+        // pin, so an unchanged pin is not stored again and a stale one is.
         const replacedThread = yield* session3.ensureThread({
           threadId,
           modelSelection,
@@ -1430,8 +1431,24 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           forceNewNativeThread: true,
           existingProviderThread: { ...storedThread1, nativeThreadRef: null },
         });
-        assert.isNull(replacedThread.pinnedSystemInstructions ?? null);
-        assert.deepEqual(yield* runTurn(session3, replacedThread), [
+        assert.deepEqual(
+          replacedThread.pinnedSystemInstructions,
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        );
+        assert.deepEqual(yield* runTurn(session3, replacedThread), []);
+        const replacedStaleThread = yield* session3.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          forceNewNativeThread: true,
+          existingProviderThread: {
+            ...storedThread1,
+            nativeThreadRef: null,
+            pinnedSystemInstructions: staleKeyPinned,
+          },
+        });
+        assert.deepEqual(replacedStaleThread.pinnedSystemInstructions, staleKeyPinned);
+        assert.deepEqual(yield* runTurn(session3, replacedStaleThread), [
           ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
         ]);
 
@@ -1455,7 +1472,11 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           request?.params?._meta?.antigravity?.systemPrompt?.append;
         assert.deepEqual(
           requests.filter((request) => request.method === "session/new").map(appendOf),
-          [PULL_REQUEST_LINKING_INSTRUCTIONS, PULL_REQUEST_LINKING_INSTRUCTIONS],
+          [
+            PULL_REQUEST_LINKING_INSTRUCTIONS,
+            PULL_REQUEST_LINKING_INSTRUCTIONS,
+            PULL_REQUEST_LINKING_INSTRUCTIONS,
+          ],
         );
         assert.deepEqual(
           requests

@@ -13026,8 +13026,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   turnInput.providerThread.pinnedSystemInstructions,
                 )
               ) {
+                // The remembered thread carries the live roster and goal; the turn input can be older.
+                const liveProviderThread =
+                  (yield* Ref.get(lastProviderThreadByNativeThread)).get(nativeThreadId) ??
+                  turnInput.providerThread;
                 const updatedProviderThread: OrchestrationV2ProviderThread = {
-                  ...turnInput.providerThread,
+                  ...liveProviderThread,
                   providerSessionId: session.id,
                   status: "active",
                   pinnedSystemInstructions,
