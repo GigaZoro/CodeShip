@@ -1029,6 +1029,7 @@ export interface AcpSessionActivationOptions {
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly httpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly sessionMeta?: AcpSessionRuntimeOptions["sessionMeta"];
 }
 
 export class AcpSessionRuntime extends Context.Service<
@@ -2090,8 +2091,11 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     return activationOptions?.mcpServers ?? options.mcpServers ?? [];
   };
 
-  const sessionSetupFields = (initializeResult: EffectAcpSchema.InitializeResponse) => {
-    const meta = options.sessionMeta?.(initializeResult);
+  const sessionSetupFields = (
+    initializeResult: EffectAcpSchema.InitializeResponse,
+    activationOptions?: AcpSessionActivationOptions,
+  ) => {
+    const meta = (activationOptions?.sessionMeta ?? options.sessionMeta)?.(initializeResult);
     return {
       ...(options.additionalDirectories?.length
         ? { additionalDirectories: options.additionalDirectories }
@@ -2390,7 +2394,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           const requestPayload = {
             sessionId,
             cwd: options.cwd,
-            ...sessionSetupFields(started.initializeResult),
+            ...sessionSetupFields(started.initializeResult, activationOptions),
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.LoadSessionRequest;
           return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
@@ -2403,7 +2407,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           const requestPayload = {
             sessionId,
             cwd: options.cwd,
-            ...sessionSetupFields(started.initializeResult),
+            ...sessionSetupFields(started.initializeResult, activationOptions),
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
           return runLoggedRequest(
@@ -2420,7 +2424,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           const requestPayload = {
             sessionId,
             cwd: options.cwd,
-            ...sessionSetupFields(started.initializeResult),
+            ...sessionSetupFields(started.initializeResult, activationOptions),
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ForkSessionRequest;
           return runLoggedRequest(

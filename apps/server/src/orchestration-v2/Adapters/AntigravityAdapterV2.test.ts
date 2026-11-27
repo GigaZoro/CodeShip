@@ -27,6 +27,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -1245,6 +1246,133 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           assert.notInclude(append, "systemPrompt");
           assert.include(sent, "<pull_request_linking>");
         }
+      }).pipe(Effect.provide(layerSession), Effect.scoped),
+  );
+
+  it.effect(
+    "pins systemPrompt.append on new 1.4.5 sessions, replays it on resume, and refreshes on forced replacement",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const crypto = yield* Crypto.Crypto;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const logs = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-antigravity-pin-" });
+        const requestLog = path.join(logs, "requests.ndjson");
+        const instanceId = ProviderInstanceId.make("antigravity-pin-test");
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: (input) =>
+            makeAntigravityAcpRuntime({
+              ...input,
+              childProcessSpawner,
+              spawn: {
+                command: process.execPath,
+                args: [mockAgentPath],
+                cwd: input.cwd,
+                env: {
+                  T3_ACP_ANTIGRAVITY: "1",
+                  T3_ACP_AGENT_VERSION: "1.4.5",
+                  T3_ACP_REQUEST_LOG_PATH: requestLog,
+                },
+              },
+            }).pipe(Effect.provideService(Crypto.Crypto, crypto)),
+          withProcess: (_stop, task) => task,
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+          defaultModel: Effect.succeed(undefined),
+        });
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-ag-pin-ws-" });
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const threadId = ThreadId.make("thread-antigravity-pin");
+        const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+
+        // New thread pins the current binary's PR-linking system prompt.
+        const session1 = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-1"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread1 = yield* session1.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal(providerThread1.pinnedSystemInstructions, PULL_REQUEST_LINKING_INSTRUCTIONS);
+
+        // Resuming after a simulated binary wording change replays the pinned string verbatim.
+        const legacyPinned =
+          "<pull_request_linking>Old binary Antigravity wording</pull_request_linking>";
+        const session2 = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-2"),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: providerThread1.nativeThreadRef!.nativeId!,
+          initialPinnedSystemInstructions: legacyPinned,
+        });
+        const resumedThread = yield* session2.resumeThread({
+          providerThread: {
+            ...providerThread1,
+            pinnedSystemInstructions: legacyPinned,
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal(resumedThread.pinnedSystemInstructions, legacyPinned);
+
+        // Replacing the native session clears the legacy pin and uses the current binary's prompt.
+        const replacedThread = yield* session2.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          forceNewNativeThread: true,
+          existingProviderThread: resumedThread,
+        });
+        assert.equal(replacedThread.pinnedSystemInstructions, PULL_REQUEST_LINKING_INSTRUCTIONS);
+
+        const requests = (yield* fileSystem.readFileString(requestLog))
+          .trim()
+          .split("\n")
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                readonly method?: string;
+                readonly params?: {
+                  readonly _meta?: {
+                    readonly antigravity?: {
+                      readonly systemPrompt?: { readonly append?: string };
+                    };
+                  };
+                };
+              },
+          );
+        const sessionNews = requests.filter((request) => request.method === "session/new");
+        const sessionActivations = requests.filter(
+          (request) => request.method === "session/load" || request.method === "session/resume",
+        );
+        assert.lengthOf(sessionNews, 2);
+        assert.equal(
+          sessionNews[0]?.params?._meta?.antigravity?.systemPrompt?.append,
+          PULL_REQUEST_LINKING_INSTRUCTIONS,
+        );
+        assert.equal(
+          sessionNews[1]?.params?._meta?.antigravity?.systemPrompt?.append,
+          PULL_REQUEST_LINKING_INSTRUCTIONS,
+        );
+        assert.isNotEmpty(sessionActivations);
+        assert.equal(
+          sessionActivations[0]?.params?._meta?.antigravity?.systemPrompt?.append,
+          legacyPinned,
+        );
       }).pipe(Effect.provide(layerSession), Effect.scoped),
   );
 });

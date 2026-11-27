@@ -111,7 +111,11 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
+import {
+  buildCodexAdditionalContext,
+  parsePinnedCodexAdditionalContext,
+  serializePinnedCodexAdditionalContext,
+} from "../../provider/CodexDeveloperInstructions.ts";
 import {
   describeMcpElicitation,
   toMcpElicitationResponse,
@@ -767,95 +771,114 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   }
 }
 
-export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
-  function* (input: {
-    readonly nativeThreadId: string;
-    readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
-    readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
-    readonly modelSelection: ModelSelection;
-    readonly hasT3Mcp?: boolean;
-    readonly browserToolsAvailable?: boolean;
-    readonly deviceToolsAvailable?: boolean;
-    /** ChatGPT token sharing does not accept service tiers. */
-    readonly omitServiceTier?: boolean;
-    readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
-    readonly autoModeInstructions?: string;
-  }) {
-    const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    const approvalPolicy =
-      input.runtimePolicy.approvalPolicy === undefined
-        ? runtimeModeDefaults.approvalPolicy
-        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
-      input.runtimePolicy.sandboxPolicy === undefined
-        ? runtimeModeDefaults.sandboxPolicy
-        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
-    const selectedEffort =
-      getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
-      codexDefaultReasoningEffortOverride(input.modelSelection.model);
-    const effort =
-      selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
-    const serviceTier =
-      input.omitServiceTier === true
-        ? undefined
-        : getCodexServiceTierOptionValue(input.modelSelection);
-    // MCP-written app context must be quoted user input, not developer instructions.
-    const appContext = Object.fromEntries(
-      (input.appContext ?? []).map((entry) => [
-        entry.key,
-        { kind: "untrusted" as const, value: entry.text },
-      ]),
-    );
-    const t3Context =
-      input.hasT3Mcp === true
-        ? buildCodexAdditionalContext(
-            { model: input.modelSelection.model, reasoningEffort: effort ?? undefined },
-            {
-              browser: input.browserToolsAvailable ?? true,
-              device: input.deviceToolsAvailable ?? false,
-            },
-          )
-        : undefined;
-    const additionalContext =
-      t3Context === undefined &&
-      Object.keys(appContext).length === 0 &&
-      input.autoModeInstructions === undefined
-        ? undefined
-        : {
-            ...t3Context,
-            ...appContext,
-            ...(input.autoModeInstructions === undefined
-              ? {}
-              : {
-                  [AUTO_MODE_CONTEXT_KEY]: {
-                    kind: "application",
-                    value: input.autoModeInstructions,
-                  },
-                }),
-          };
-    return yield* decodeCodexTurnStartParamsWithCollaborationMode({
-      threadId: input.nativeThreadId,
-      input: input.codexInput,
-      ...(additionalContext ? { additionalContext } : {}),
-      cwd: input.runtimePolicy.cwd,
-      model: input.modelSelection.model,
-      // Catalogues can default summaries to "none"; request them explicitly on every turn.
-      summary: "detailed",
-      // Omitting the reviewer on resume preserves the previous Auto reviewer.
-      approvalsReviewer: runtimeModeDefaults.approvalsReviewer,
-      ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
-      ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-      ...(effort === undefined ? {} : { effort }),
-      ...(serviceTier === undefined ? {} : { serviceTier }),
-      // Codex supplies its own mode instructions; send both modes to clear Plan on exit.
-      collaborationMode: {
-        mode: input.runtimePolicy.interactionMode,
-        settings: {
-          model: input.modelSelection.model,
-          ...(effort === undefined ? {} : { reasoning_effort: effort }),
-        },
+const buildCodexTurnStartParamsWithPinned = Effect.fn(
+  "CodexAdapterV2.buildCodexTurnStartParamsWithPinned",
+)(function* (input: {
+  readonly nativeThreadId: string;
+  readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
+  readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly modelSelection: ModelSelection;
+  readonly hasT3Mcp?: boolean;
+  readonly browserToolsAvailable?: boolean;
+  readonly deviceToolsAvailable?: boolean;
+  readonly pinnedSystemInstructions?: string | null;
+  /** ChatGPT token sharing does not accept service tiers. */
+  readonly omitServiceTier?: boolean;
+  readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
+  readonly autoModeInstructions?: string;
+}) {
+  const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
+  const approvalPolicy =
+    input.runtimePolicy.approvalPolicy === undefined
+      ? runtimeModeDefaults.approvalPolicy
+      : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
+  const sandboxPolicy =
+    input.runtimePolicy.sandboxPolicy === undefined
+      ? runtimeModeDefaults.sandboxPolicy
+      : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+  const selectedEffort =
+    getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
+    codexDefaultReasoningEffortOverride(input.modelSelection.model);
+  const effort =
+    selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
+  const serviceTier =
+    input.omitServiceTier === true
+      ? undefined
+      : getCodexServiceTierOptionValue(input.modelSelection);
+  // MCP-written app context must be quoted user input, not developer instructions.
+  const appContext = Object.fromEntries(
+    (input.appContext ?? []).map((entry) => [
+      entry.key,
+      { kind: "untrusted" as const, value: entry.text },
+    ]),
+  );
+  const parsedPinned =
+    input.hasT3Mcp === true
+      ? parsePinnedCodexAdditionalContext(input.pinnedSystemInstructions)
+      : undefined;
+  const t3Context =
+    input.hasT3Mcp === true
+      ? (parsedPinned ??
+        buildCodexAdditionalContext(
+          { model: input.modelSelection.model, reasoningEffort: effort ?? undefined },
+          {
+            browser: input.browserToolsAvailable ?? true,
+            device: input.deviceToolsAvailable ?? false,
+          },
+        ))
+      : undefined;
+  const pinnedSystemInstructions =
+    t3Context === undefined
+      ? undefined
+      : parsedPinned !== undefined && input.pinnedSystemInstructions != null
+        ? input.pinnedSystemInstructions
+        : serializePinnedCodexAdditionalContext(t3Context);
+  const additionalContext =
+    t3Context === undefined &&
+    Object.keys(appContext).length === 0 &&
+    input.autoModeInstructions === undefined
+      ? undefined
+      : {
+          ...t3Context,
+          ...appContext,
+          ...(input.autoModeInstructions === undefined
+            ? {}
+            : {
+                [AUTO_MODE_CONTEXT_KEY]: {
+                  kind: "application",
+                  value: input.autoModeInstructions,
+                },
+              }),
+        };
+  const params = yield* decodeCodexTurnStartParamsWithCollaborationMode({
+    threadId: input.nativeThreadId,
+    input: input.codexInput,
+    ...(additionalContext ? { additionalContext } : {}),
+    cwd: input.runtimePolicy.cwd,
+    model: input.modelSelection.model,
+    // Catalogues can default summaries to "none"; request them explicitly on every turn.
+    summary: "detailed",
+    // Omitting the reviewer on resume preserves the previous Auto reviewer.
+    approvalsReviewer: runtimeModeDefaults.approvalsReviewer,
+    ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+    ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+    ...(effort === undefined ? {} : { effort }),
+    ...(serviceTier === undefined ? {} : { serviceTier }),
+    // Codex supplies its own mode instructions; send both modes to clear Plan on exit.
+    collaborationMode: {
+      mode: input.runtimePolicy.interactionMode,
+      settings: {
+        model: input.modelSelection.model,
+        ...(effort === undefined ? {} : { reasoning_effort: effort }),
       },
-    });
+    },
+  });
+  return { params, pinnedSystemInstructions };
+});
+
+export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
+  function* (input: Parameters<typeof buildCodexTurnStartParamsWithPinned>[0]) {
+    return (yield* buildCodexTurnStartParamsWithPinned(input)).params;
   },
 );
 
@@ -905,6 +928,7 @@ function providerThreadFromCodexThread(input: {
     readonly updatedAt: number;
   };
   readonly forkedFrom?: OrchestrationV2ProviderThread["forkedFrom"];
+  readonly pinnedSystemInstructions?: OrchestrationV2ProviderThread["pinnedSystemInstructions"];
 }): OrchestrationV2ProviderThread {
   return {
     id: input.idAllocator.derive.providerThread({
@@ -927,6 +951,9 @@ function providerThreadFromCodexThread(input: {
     lastRunOrdinal: null,
     handoffIds: [],
     forkedFrom: input.forkedFrom ?? null,
+    ...(input.pinnedSystemInstructions === undefined
+      ? {}
+      : { pinnedSystemInstructions: input.pinnedSystemInstructions }),
     createdAt: codexTimestamp(input.thread.createdAt),
     updatedAt: codexTimestamp(input.thread.updatedAt),
   };
@@ -2201,6 +2228,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const turnTerminalizationPermit = yield* Semaphore.make(1);
         const goalsByNativeThread = new Map<string, OrchestrationV2ProviderGoal | null>();
         const rootProviderThreads = new Map<string, OrchestrationV2ProviderThread>();
+        const pinnedSystemInstructionsByNativeThread = new Map<string, string>();
         const goalHolds = new Map<string, CodexGoalHold>();
         const continuedRuns = new Map<ProviderTurnId, Array<ActiveCodexTurnContext>>();
         const capacityContinuations = new Map<
@@ -2220,8 +2248,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             isDescendantCodexTurn(candidate, ancestor),
           );
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) => {
+          if (event.type === "provider_thread.updated") {
+            const nativeThreadId = event.providerThread.nativeThreadRef?.nativeId;
+            const pinnedSystemInstructions =
+              nativeThreadId == null
+                ? undefined
+                : pinnedSystemInstructionsByNativeThread.get(nativeThreadId);
+            if (
+              pinnedSystemInstructions !== undefined &&
+              event.providerThread.pinnedSystemInstructions !== pinnedSystemInstructions
+            ) {
+              event = {
+                ...event,
+                providerThread: {
+                  ...event.providerThread,
+                  pinnedSystemInstructions,
+                },
+              };
+            }
+          }
+          return Queue.offer(events, event).pipe(Effect.asVoid);
+        };
 
         const emitImageWorkState =
           /* Provider events include streaming deltas; avoid a span for each update. */
@@ -6970,20 +7018,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
-            const turnStartParams = yield* buildCodexTurnStartParams({
-              nativeThreadId: threadId,
-              codexInput,
-              runtimePolicy: turnInput.runtimePolicy,
-              modelSelection: turnInput.modelSelection,
-              hasT3Mcp: mcpSession !== undefined,
-              browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
-              deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
-              omitServiceTier: adapterOptions.resolveRuntime !== undefined,
-              ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
-              ...(turnInput.autoModeInstructions === undefined
-                ? {}
-                : { autoModeInstructions: turnInput.autoModeInstructions }),
-            });
+            const existingPinned =
+              turnInput.providerThread.pinnedSystemInstructions ??
+              pinnedSystemInstructionsByNativeThread.get(threadId) ??
+              null;
+            const { params: turnStartParams, pinnedSystemInstructions } =
+              yield* buildCodexTurnStartParamsWithPinned({
+                nativeThreadId: threadId,
+                codexInput,
+                runtimePolicy: turnInput.runtimePolicy,
+                modelSelection: turnInput.modelSelection,
+                hasT3Mcp: mcpSession !== undefined,
+                browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
+                deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
+                ...(existingPinned === null ? {} : { pinnedSystemInstructions: existingPinned }),
+                omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+                ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
+                ...(turnInput.autoModeInstructions === undefined
+                  ? {}
+                  : { autoModeInstructions: turnInput.autoModeInstructions }),
+              });
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);
               updated.set(threadId, turnInput);
@@ -7014,6 +7068,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 detail:
                   "Codex returned a turn belonging to an earlier run. Stop the existing turn before retrying this message.",
               });
+            }
+            if (pinnedSystemInstructions !== undefined) {
+              pinnedSystemInstructionsByNativeThread.set(threadId, pinnedSystemInstructions);
+              if (pinnedSystemInstructions !== turnInput.providerThread.pinnedSystemInstructions) {
+                const baseProviderThread =
+                  rootProviderThreads.get(threadId) ?? turnInput.providerThread;
+                const updatedProviderThread: OrchestrationV2ProviderThread = {
+                  ...baseProviderThread,
+                  providerSessionId: input.providerSessionId,
+                  status: "active",
+                  pinnedSystemInstructions,
+                  updatedAt: yield* DateTime.now,
+                };
+                rootProviderThreads.set(threadId, updatedProviderThread);
+                yield* emitProviderEvent({
+                  type: "provider_thread.updated",
+                  driver: CODEX_PROVIDER,
+                  providerThread: updatedProviderThread,
+                });
+              }
             }
             // A turn/started notification may have registered and completed this turn already.
             if ((yield* Ref.get(pendingRootTurns)).get(threadId) !== turnInput) return;
@@ -8154,9 +8228,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 Effect.andThen(revertCodexThread(client, threadId, numTurns)),
               );
               turnTokenUsageByThread.delete(threadId);
+              const resetPinned = threadInput.target.type === "thread_start";
+              if (resetPinned) {
+                pinnedSystemInstructionsByNativeThread.delete(threadId);
+              }
               return {
                 providerThread: {
                   ...threadInput.providerThread,
+                  ...(resetPinned ? { pinnedSystemInstructions: null } : {}),
                   nativeThreadRef: {
                     driver: CODEX_PROVIDER,
                     nativeId: response.thread.id,
@@ -8243,6 +8322,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 )).thread;
               }
+              const inheritedPinnedSystemInstructions =
+                threadInput.sourceProviderThread.pinnedSystemInstructions ??
+                pinnedSystemInstructionsByNativeThread.get(threadId) ??
+                null;
+              if (inheritedPinnedSystemInstructions !== null) {
+                pinnedSystemInstructionsByNativeThread.set(
+                  forkedThread.id,
+                  inheritedPinnedSystemInstructions,
+                );
+              }
               return providerThreadFromCodexThread({
                 appThreadId: threadInput.targetThreadId,
                 idAllocator,
@@ -8256,6 +8345,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ? {}
                     : { providerTurnId: threadInput.providerTurnId }),
                 },
+                ...(inheritedPinnedSystemInstructions === null
+                  ? {}
+                  : { pinnedSystemInstructions: inheritedPinnedSystemInstructions }),
               });
             },
             (effect, threadInput) =>

@@ -661,6 +661,19 @@ const layerBase: Layer.Layer<
       );
     });
 
+    let hasPinnedSystemInstructionsColumnCached = false;
+    const hasPinnedSystemInstructionsColumn = Effect.gen(function* () {
+      if (hasPinnedSystemInstructionsColumnCached) return true;
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(orchestration_v2_projection_provider_threads)
+      `;
+      if (columns.some((column) => column.name === "pinned_system_instructions")) {
+        hasPinnedSystemInstructionsColumnCached = true;
+        return true;
+      }
+      return false;
+    });
+
     const writeIfProviderThreadUnchangedEffect = Effect.fn(
       "orchestrationV2.EventSink.writeIfProviderThreadUnchanged",
     )(function* (input: Parameters<EventSinkV2Shape["writeIfProviderThreadUnchanged"]>[0]) {
@@ -668,17 +681,38 @@ const layerBase: Layer.Layer<
         "orchestration_v2.event_count": input.events.length,
         "orchestration_v2.provider_thread_id": input.expected.id,
       });
-      const expectedJson = yield* ProjectionStore.encodeProviderThreadPayload(input.expected);
+      const expectedRow = yield* ProjectionStore.encodeProviderThreadStoredRow(input.expected);
 
       return yield* commitThenPublish(
         Effect.gen(function* () {
-          const rows = yield* sql<{ readonly payload_json: string }>`
-            SELECT payload_json
-            FROM orchestration_v2_projection_provider_threads
-            WHERE provider_thread_id = ${input.expected.id}
-            LIMIT 1
-          `;
-          if (rows[0]?.payload_json !== expectedJson) {
+          const hasPinnedColumn = yield* hasPinnedSystemInstructionsColumn;
+          const unchanged = hasPinnedColumn
+            ? yield* sql<{
+                readonly payload_json: string;
+                readonly pinned_system_instructions: string | null;
+              }>`
+                SELECT payload_json, pinned_system_instructions
+                FROM orchestration_v2_projection_provider_threads
+                WHERE provider_thread_id = ${input.expected.id}
+                LIMIT 1
+              `.pipe(
+                Effect.map((rows) => {
+                  const current = rows[0];
+                  return (
+                    current !== undefined &&
+                    current.payload_json === expectedRow.storedPayloadJson &&
+                    (current.pinned_system_instructions ?? null) ===
+                      expectedRow.pinnedSystemInstructions
+                  );
+                }),
+              )
+            : yield* sql<{ readonly payload_json: string }>`
+                SELECT payload_json
+                FROM orchestration_v2_projection_provider_threads
+                WHERE provider_thread_id = ${input.expected.id}
+                LIMIT 1
+              `.pipe(Effect.map((rows) => rows[0]?.payload_json === expectedRow.payloadJson));
+          if (!unchanged) {
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,

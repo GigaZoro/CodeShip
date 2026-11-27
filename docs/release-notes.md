@@ -1,3 +1,7 @@
+## 2026-11-27 — Pin thread system instructions across server updates
+
+- Resumed Claude, Codex, and Antigravity chats now reuse the static system instruction block pinned when their native session started, keeping provider prompt caches intact across CodeShip server updates while new threads pick up the updated binary's instructions.
+
 ## 2026-11-27 — Faster landing-turn tests and release-notes-only changes
 
 - Maintainers: the landing-turn tests now run as six files in parallel, so their `node --test` step takes about a minute instead of five, within the check budget's free slots. A new lint rule keeps each `.github/scripts` test file under 1,500 lines.

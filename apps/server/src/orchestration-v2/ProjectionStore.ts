@@ -1357,7 +1357,7 @@ const encodeSubagentPayload = Schema.encodeEffect(
 const encodeProviderSessionPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2ProviderSessionJsonSchema),
 );
-export const encodeProviderThreadPayload = Schema.encodeEffect(
+const encodeProviderThreadPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2ProviderThreadJsonSchema),
 );
 const encodeProviderTurnPayload = Schema.encodeEffect(
@@ -1416,6 +1416,26 @@ const decodeProviderSessionPayload = Schema.decodeUnknownEffect(
 const decodeProviderThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ProviderThreadJsonSchema),
 );
+const stripProviderThreadPinnedSystemInstructions = (payload: Record<string, unknown>): string => {
+  if (!("pinnedSystemInstructions" in payload)) return JSON.stringify(payload);
+  const { pinnedSystemInstructions: _pinned, ...rest } = payload;
+  return JSON.stringify(rest);
+};
+export const encodeProviderThreadStoredRow = (providerThread: OrchestrationV2ProviderThread) =>
+  Effect.map(encodeProviderThreadPayload(providerThread), (payloadJson) => {
+    const payload = parseEncodedPayload(payloadJson);
+    return {
+      payload,
+      payloadJson,
+      storedPayloadJson: stripProviderThreadPinnedSystemInstructions(payload),
+      pinnedSystemInstructions: providerThread.pinnedSystemInstructions ?? null,
+    };
+  });
+// Stored in its own column so shell reads never load it and payload_json never duplicates it.
+const providerThreadPayloadSql = (alias?: string): string => {
+  const prefix = alias === undefined ? "" : `${alias}.`;
+  return `CASE WHEN ${prefix}pinned_system_instructions IS NOT NULL AND json_valid(${prefix}payload_json) THEN json_set(${prefix}payload_json, '$.pinnedSystemInstructions', ${prefix}pinned_system_instructions) ELSE ${prefix}payload_json END`;
+};
 const decodeProviderTurnPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ProviderTurnJsonSchema),
 );
@@ -2255,6 +2275,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
 
+    let hasPinnedSystemInstructionsColumnCached = false;
+    const hasPinnedSystemInstructionsColumn = Effect.gen(function* () {
+      if (hasPinnedSystemInstructionsColumnCached) return true;
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(orchestration_v2_projection_provider_threads)
+      `;
+      if (columns.some((column) => column.name === "pinned_system_instructions")) {
+        hasPinnedSystemInstructionsColumnCached = true;
+        return true;
+      }
+      return false;
+    });
+    const selectProviderThreadPayloadSql = (alias?: string) =>
+      Effect.map(hasPinnedSystemInstructionsColumn, (hasColumn) =>
+        hasColumn
+          ? providerThreadPayloadSql(alias)
+          : `${alias === undefined ? "" : `${alias}.`}payload_json`,
+      );
+
     const inlineWorkOutput = sql`item.type = 'dynamic_tool' AND (
       item.payload_json LIKE '%htmlRender%' OR item.payload_json LIKE ${`%${MCP_APP_OUTPUT_KEY}%`}
       OR item.payload_json LIKE '%"viewedImagePath"%'
@@ -2688,51 +2727,100 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               break;
             }
             case "provider-thread.updated": {
-              const payloadJson = yield* encodeProviderThreadPayload(event.payload);
-              const payload = parseEncodedPayload(payloadJson);
-              yield* sql`
-              INSERT INTO orchestration_v2_projection_provider_threads (
-                provider_thread_id,
-                thread_id,
-                owner_node_id,
-                provider,
-                driver,
-                provider_instance_id,
-                provider_session_id,
-                status,
-                first_run_ordinal,
-                last_run_ordinal,
-                updated_at,
-                payload_json
-              )
-              VALUES (
-                ${event.payload.id},
-                ${event.payload.appThreadId},
-                ${event.payload.ownerNodeId},
-                ${event.payload.providerInstanceId},
-                ${event.payload.driver},
-                ${event.payload.providerInstanceId},
-                ${event.payload.providerSessionId},
-                ${event.payload.status},
-                ${event.payload.firstRunOrdinal},
-                ${event.payload.lastRunOrdinal},
-                ${stringField(payload, "updatedAt")},
-                ${payloadJson}
-              )
-              ON CONFLICT(provider_thread_id)
-              DO UPDATE SET
-                thread_id = excluded.thread_id,
-                owner_node_id = excluded.owner_node_id,
-                provider = excluded.provider,
-                driver = excluded.driver,
-                provider_instance_id = excluded.provider_instance_id,
-                provider_session_id = excluded.provider_session_id,
-                status = excluded.status,
-                first_run_ordinal = excluded.first_run_ordinal,
-                last_run_ordinal = excluded.last_run_ordinal,
-                updated_at = excluded.updated_at,
-                payload_json = excluded.payload_json
-            `;
+              const { payload, payloadJson, storedPayloadJson, pinnedSystemInstructions } =
+                yield* encodeProviderThreadStoredRow(event.payload);
+              if (yield* hasPinnedSystemInstructionsColumn) {
+                yield* sql`
+                INSERT INTO orchestration_v2_projection_provider_threads (
+                  provider_thread_id,
+                  thread_id,
+                  owner_node_id,
+                  provider,
+                  driver,
+                  provider_instance_id,
+                  provider_session_id,
+                  status,
+                  first_run_ordinal,
+                  last_run_ordinal,
+                  updated_at,
+                  pinned_system_instructions,
+                  payload_json
+                )
+                VALUES (
+                  ${event.payload.id},
+                  ${event.payload.appThreadId},
+                  ${event.payload.ownerNodeId},
+                  ${event.payload.providerInstanceId},
+                  ${event.payload.driver},
+                  ${event.payload.providerInstanceId},
+                  ${event.payload.providerSessionId},
+                  ${event.payload.status},
+                  ${event.payload.firstRunOrdinal},
+                  ${event.payload.lastRunOrdinal},
+                  ${stringField(payload, "updatedAt")},
+                  ${pinnedSystemInstructions},
+                  ${storedPayloadJson}
+                )
+                ON CONFLICT(provider_thread_id)
+                DO UPDATE SET
+                  thread_id = excluded.thread_id,
+                  owner_node_id = excluded.owner_node_id,
+                  provider = excluded.provider,
+                  driver = excluded.driver,
+                  provider_instance_id = excluded.provider_instance_id,
+                  provider_session_id = excluded.provider_session_id,
+                  status = excluded.status,
+                  first_run_ordinal = excluded.first_run_ordinal,
+                  last_run_ordinal = excluded.last_run_ordinal,
+                  updated_at = excluded.updated_at,
+                  pinned_system_instructions = excluded.pinned_system_instructions,
+                  payload_json = excluded.payload_json
+              `;
+              } else {
+                yield* sql`
+                INSERT INTO orchestration_v2_projection_provider_threads (
+                  provider_thread_id,
+                  thread_id,
+                  owner_node_id,
+                  provider,
+                  driver,
+                  provider_instance_id,
+                  provider_session_id,
+                  status,
+                  first_run_ordinal,
+                  last_run_ordinal,
+                  updated_at,
+                  payload_json
+                )
+                VALUES (
+                  ${event.payload.id},
+                  ${event.payload.appThreadId},
+                  ${event.payload.ownerNodeId},
+                  ${event.payload.providerInstanceId},
+                  ${event.payload.driver},
+                  ${event.payload.providerInstanceId},
+                  ${event.payload.providerSessionId},
+                  ${event.payload.status},
+                  ${event.payload.firstRunOrdinal},
+                  ${event.payload.lastRunOrdinal},
+                  ${stringField(payload, "updatedAt")},
+                  ${payloadJson}
+                )
+                ON CONFLICT(provider_thread_id)
+                DO UPDATE SET
+                  thread_id = excluded.thread_id,
+                  owner_node_id = excluded.owner_node_id,
+                  provider = excluded.provider,
+                  driver = excluded.driver,
+                  provider_instance_id = excluded.provider_instance_id,
+                  provider_session_id = excluded.provider_session_id,
+                  status = excluded.status,
+                  first_run_ordinal = excluded.first_run_ordinal,
+                  last_run_ordinal = excluded.last_run_ordinal,
+                  updated_at = excluded.updated_at,
+                  payload_json = excluded.payload_json
+              `;
+              }
               if (
                 event.payload.appThreadId !== null &&
                 !isQueuedProviderThreadPlaceholder(event.payload)
@@ -3823,9 +3911,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           `,
           fields !== undefined && !fields.includes("providerThreads")
             ? Effect.succeed([])
-            : window === undefined
-              ? sql<PayloadRow>`
-            SELECT payload_json
+            : Effect.flatMap(selectProviderThreadPayloadSql(), (payloadSql) =>
+                window === undefined
+                  ? sql<PayloadRow>`
+            SELECT ${sql.literal(payloadSql)} AS payload_json
             FROM orchestration_v2_projection_provider_threads
             WHERE thread_id = ${threadId}
                OR owner_node_id IN (
@@ -3841,8 +3930,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                )
             ORDER BY COALESCE(first_run_ordinal, 0), provider_thread_id ASC
           `
-              : sql<PayloadRow>`
-            SELECT payload_json FROM orchestration_v2_projection_provider_threads
+                  : sql<PayloadRow>`
+            SELECT ${sql.literal(payloadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads
             WHERE (thread_id = ${threadId} AND status = 'active')
               OR provider_thread_id IN (SELECT value FROM json_each(${cohortProviderThreadIds}))
               OR owner_node_id IN (SELECT value FROM json_each(${cohortNodeIds}))
@@ -3850,6 +3939,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND provider_thread_id = ${latestTodoList?.provider_thread_id ?? null})
             ORDER BY COALESCE(first_run_ordinal, 0), provider_thread_id ASC
           `,
+              ),
           fields !== undefined && !fields.includes("providerTurns")
             ? Effect.succeed([])
             : window === undefined
@@ -5320,6 +5410,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             decode: (payload) => decodeContextTransferPayload(payload),
           },
         ];
+        const providerThreadSql = yield* selectProviderThreadPayloadSql();
         const pageSize = 500;
         for (const table of tables) {
           let afterRowId = 0;
@@ -5334,7 +5425,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT rowid AS row_id, ${sql(table.id)} AS entity_id,
                 ${sql(table.name === "context_transfers" ? "source_thread_id" : "thread_id")} AS thread_id,
                 ${table.name === "context_transfers" ? sql`target_thread_id` : sql`NULL`} AS target_thread_id,
-                ${table.name === "nodes" ? sql.literal(`${nodePayloadSql()} AS payload_json`) : table.name === "turn_items" ? sql.literal(`${turnItemPayloadSql()} AS payload_json`) : sql`payload_json`}
+                ${
+                  table.name === "nodes"
+                    ? sql.literal(`${nodePayloadSql()} AS payload_json`)
+                    : table.name === "turn_items"
+                      ? sql.literal(`${turnItemPayloadSql()} AS payload_json`)
+                      : table.name === "provider_threads"
+                        ? sql.literal(`${providerThreadSql} AS payload_json`)
+                        : sql`payload_json`
+                }
               FROM ${sql(`orchestration_v2_projection_${table.name}`)}
               WHERE rowid > ${afterRowId}
               ORDER BY rowid ASC LIMIT ${pageSize}
@@ -5418,8 +5517,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT payload_json FROM orchestration_v2_projection_subagents
               WHERE thread_id = ${threadId} AND status NOT IN ('interrupted','failed','cancelled') ORDER BY subagent_id ASC
             `.pipe(Effect.flatMap(decodeRows(decodeSubagentPayload, threadId)));
+            const providerThreadSql = yield* selectProviderThreadPayloadSql();
             const providerThreads = yield* sql<PayloadRow>`
-              SELECT payload_json FROM orchestration_v2_projection_provider_threads
+              SELECT ${sql.literal(providerThreadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads
               WHERE thread_id = ${threadId} ORDER BY COALESCE(first_run_ordinal, 0), provider_thread_id ASC
             `.pipe(Effect.flatMap(decodeRows(decodeProviderThreadPayload, threadId)));
             const providerTurns = yield* sql<PayloadRow>`
@@ -5528,6 +5628,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           if (threadRows[0] === undefined) {
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
           }
+          const providerThreadSql = yield* selectProviderThreadPayloadSql("provider_thread");
           const [
             thread,
             runRows,
@@ -5687,7 +5788,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY session.updated_at ASC, session.provider_session_id ASC
             `,
             sql<PayloadRow>`
-              SELECT provider_thread.payload_json
+              SELECT ${sql.literal(providerThreadSql)} AS payload_json
               FROM orchestration_v2_projection_provider_threads AS provider_thread
               WHERE (
                   provider_thread.thread_id = ${threadId}
@@ -6043,8 +6144,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         .withTransaction(
           Effect.gen(function* () {
             yield* requireThread(threadId);
+            const providerThreadSql = yield* selectProviderThreadPayloadSql();
             const [threadRows, turnRows, attemptRows, messageRows] = yield* Effect.all([
-              sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads
+              sql<PayloadRow>`SELECT ${sql.literal(providerThreadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads
             WHERE provider_thread_id = ${target.providerThreadId} AND (
               thread_id = ${threadId}
               OR owner_node_id IN (SELECT node_id FROM orchestration_v2_projection_nodes WHERE thread_id = ${threadId})
@@ -6102,8 +6204,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               rows[0] === undefined ? undefined : yield* decodeRunPayload(rows[0].payload_json);
             if (run === undefined)
               return { run, providerThread: undefined, providerTurn: undefined };
+            const providerThreadSql = yield* selectProviderThreadPayloadSql();
             const threadRows =
-              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${run.providerThreadId}`;
+              yield* sql<PayloadRow>`SELECT ${sql.literal(providerThreadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${run.providerThreadId}`;
             const turnRows =
               yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_turns
           WHERE provider_thread_id = ${run.providerThreadId}
@@ -6140,11 +6243,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE binding.thread_id = ${threadId}
           ORDER BY session.updated_at ASC, session.provider_session_id ASC
         `;
+            const providerThreadSql =
+              targetInstanceId === undefined ? "" : yield* selectProviderThreadPayloadSql();
             const threadRows =
               targetInstanceId === undefined
                 ? []
                 : yield* sql<PayloadRow>`
-          SELECT payload_json FROM orchestration_v2_projection_provider_threads
+          SELECT ${sql.literal(providerThreadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads
           WHERE provider_thread_id = ${thread.activeProviderThreadId}
              OR provider_thread_id = (
                SELECT provider_thread_id FROM orchestration_v2_projection_provider_threads
@@ -6279,12 +6384,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               runRows[0] === undefined
                 ? undefined
                 : yield* decodeRunPayload(runRows[0].payload_json);
+            const providerThreadSql = yield* selectProviderThreadPayloadSql();
             const [nodeRows, scopeRows, providerRows, readyRows] = yield* Effect.all([
               sql<PayloadRow>`SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId} AND node_id = ${run?.rootNodeId ?? null}`,
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoint_scopes
             WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId}`,
-              sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads
+              sql<PayloadRow>`SELECT ${sql.literal(providerThreadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads
             WHERE provider_thread_id = ${run?.providerThreadId ?? null}
               AND (thread_id = ${threadId}
                 OR owner_node_id IN (SELECT node_id FROM orchestration_v2_projection_nodes WHERE thread_id = ${threadId})
@@ -6322,8 +6428,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         .withTransaction(
           Effect.gen(function* () {
             const thread = yield* getThread(threadId);
+            const providerThreadSql = yield* selectProviderThreadPayloadSql();
             const [providerRows, checkpointRows, scopeRows] = yield* Effect.all([
-              sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads
+              sql<PayloadRow>`SELECT ${sql.literal(providerThreadSql)} AS payload_json FROM orchestration_v2_projection_provider_threads
             WHERE provider_thread_id = ${target.providerThreadId}
               AND (thread_id = ${threadId}
                 OR owner_node_id IN (SELECT node_id FROM orchestration_v2_projection_nodes WHERE thread_id = ${threadId})

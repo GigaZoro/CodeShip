@@ -448,6 +448,7 @@ export interface ProviderAdapterV2OpenSessionInput {
   readonly resumeFromSession?: OrchestrationV2ProviderSession;
   readonly initialNativeThreadId?: string;
   readonly initialProviderItemIdentityVersion?: 2;
+  readonly initialPinnedSystemInstructions?: string;
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
