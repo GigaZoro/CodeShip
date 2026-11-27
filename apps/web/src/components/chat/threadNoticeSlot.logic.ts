@@ -1,7 +1,7 @@
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
 /** Most urgent first. A notice's tier decides whether it takes the slot and whether it is coloured. */
-export const THREAD_NOTICE_TIERS = [
+const THREAD_NOTICE_TIERS = [
   "sendBlocking",
   "needsYou",
   "failure",
