@@ -51,6 +51,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as ReviewAssignmentRegistry from "./ReviewAssignmentRegistry.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkBack from "../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
@@ -249,6 +250,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const layerTest = layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provideMerge(ReviewAssignmentRegistry.layer),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
@@ -355,17 +357,65 @@ describe("orchestrator MCP toolkit", () => {
 
           const delegationStartSequence =
             yield* orchestrator.getThreadEventSequence(parentThreadId);
-          for (const providerInstanceId of ["codex", "claudeAgent"]) {
+          yield* (yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry)
+            .register({
+              handle: "synthetic-assignment",
+              allowedReads: [{ handle: "synthetic-assignment", side: "head", path: "src/app.ts" }],
+              read: async () => new Uint8Array(),
+              record: async () => undefined,
+            })
+            .pipe(Effect.orDie);
+          const assignment = { type: "assignment", handle: "synthetic-assignment" } as const;
+          for (const [args, code, reason] of [
+            [
+              { target: { providerInstanceId: "codex" }, isolation: assignment },
+              "restricted_review_unsupported",
+              "needs a Claude account",
+            ],
+            [
+              {
+                target: { providerInstanceId: "codex" },
+                isolation: { type: "assignment", handle: "unregistered-assignment" },
+              },
+              "invalid_request",
+              "not registered",
+            ],
+            [{ auto: true, isolation: assignment }, "restricted_review_unsupported", "auto:true"],
+            [
+              {
+                target: { providerInstanceId: "codex" },
+                runtimeMode: "full-access",
+                isolation: assignment,
+              },
+              "restricted_review_unsupported",
+              "omit runtimeMode",
+            ],
+            [
+              {
+                target: { providerInstanceId: "codex", environmentId: "environment:other" },
+                isolation: assignment,
+              },
+              "restricted_review_unsupported",
+              "only in this environment",
+            ],
+            [
+              {
+                target: { providerInstanceId: "codex", projectId: "project:other" },
+                isolation: assignment,
+              },
+              "restricted_review_unsupported",
+              "Omit target.projectId",
+            ],
+          ] as const) {
             const refused = yield* invoke("delegate_task", {
               task: delegatedPrompt,
-              target: { providerInstanceId },
-              isolation: { type: "assignment", handle: "synthetic-assignment" },
+              ...args,
               clientRequestId: "delegate-codex-replay-1",
             });
             expect(refused.isError).toBe(true);
             expect(refused.content).toEqual([
               expect.objectContaining({
-                text: expect.stringContaining("restricted_review_unsupported"),
+                text: expect.stringMatching(new RegExp(`${code}[\\s\\S]*${reason}`)),
               }),
             ]);
           }

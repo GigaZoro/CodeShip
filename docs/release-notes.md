@@ -1,3 +1,9 @@
+## 2026-11-27 — Assignment-isolated reviews on Claude
+
+- `delegate_task` with `isolation: { type: "assignment", handle }` now starts a Claude review that can only read the material its registered assignment allows. The session has no built-in tools, settings files, plugins, skills, hooks or other MCP servers, and it runs in an empty folder outside every checkout.
+- Before the first prompt reaches the model, CodeShip asks Claude what it loaded and records the run, account digest, model, effort, tools, servers and prompt digest. A session that reports anything extra ends before inference, and the turn fails as not retryable.
+- Codex, `auto: true`, remote environments, other projects, non-default runtime or interaction modes, attachments, auto mode and ultracode are refused before any model runs. A restricted review takes no steering.
+
 ## 2026-11-27 — One-shot text generation keeps one usage row per accepted call
 
 - Titles, branch names, commit messages, PR text, review guides and manual-step reviews now leave one usage record per provider call the provider accepted, kept in the local database with its driver, account, operation, demand, outcome and the provider error. A request that fails before it is sent leaves no record, an accepted Cursor request that returns an invalid reply leaves one with unknown token counts, and measured counts (including zero) are kept as reported.

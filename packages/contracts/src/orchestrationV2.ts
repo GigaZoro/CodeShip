@@ -142,6 +142,15 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
 });
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
 
+export const ReviewAssignmentHandle = Schema.String.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
+);
+
+/** A delegated reviewer whose only tool reads this assignment through the server's read broker. */
+export const OrchestrationV2ReviewAssignment = Schema.Struct({ handle: ReviewAssignmentHandle });
+export type OrchestrationV2ReviewAssignment = typeof OrchestrationV2ReviewAssignment.Type;
+
 export const OrchestrationV2NativeRefStrength = Schema.Literals(["strong", "weak", "none"]);
 export type OrchestrationV2NativeRefStrength = typeof OrchestrationV2NativeRefStrength.Type;
 
@@ -486,6 +495,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  reviewAssignment: Schema.optional(OrchestrationV2ReviewAssignment),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -4129,6 +4139,8 @@ export type OrchestrationV2ServerCommand =
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;
       readonly launchAlreadyRouted?: true;
+      /** Server-only: the delegate tool validated it, so a client cannot start a restricted child. */
+      readonly reviewAssignment?: OrchestrationV2ReviewAssignment;
     })
   | OrchestrationV2InternalCommand;
 

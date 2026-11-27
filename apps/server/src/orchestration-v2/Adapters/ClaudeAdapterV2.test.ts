@@ -65,6 +65,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -166,6 +167,16 @@ const CLAUDE_TEST_RESTART_MODEL_SELECTION = {
   model: "claude-haiku-4-5-20251001",
   options: [{ id: "thinking", value: false }],
 } satisfies ModelSelection;
+const isReviewRefusal = Schema.is(McpProviderSession.ReviewAssignmentRefusedError);
+const reviewRefusalIn = (error: unknown) => {
+  let cause = error;
+  while (typeof cause === "object" && cause !== null) {
+    if (isReviewRefusal(cause)) return cause;
+    cause = "cause" in cause ? cause.cause : undefined;
+  }
+  return undefined;
+};
+
 const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
   runtimeMode: "full-access",
   interactionMode: "default",
@@ -3095,6 +3106,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly streamError?: unknown;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
+    readonly inspect?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["inspect"];
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -3242,6 +3254,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               processQueues.push(sdkMessages);
               return {
                 messages,
+                ...(options?.inspect === undefined ? {} : { inspect: options.inspect }),
                 offer: (message) =>
                   Effect.sync(() => {
                     offeredMessages.push(message);
@@ -3357,6 +3370,218 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  const REVIEW_SERVER = McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER;
+  const REVIEW_TOOL = `mcp__${REVIEW_SERVER}__${McpProviderSession.REVIEW_ASSIGNMENT_TOOL}`;
+  const reviewInspection: ClaudeAdapterV2.ClaudeQueryInspection = {
+    model: "claude-sonnet-4-6",
+    account: { email: "reviewer@example.com", organization: "Example" },
+    mcpServers: [
+      {
+        name: REVIEW_SERVER,
+        status: "connected",
+        tools: [McpProviderSession.REVIEW_ASSIGNMENT_TOOL],
+      },
+    ],
+    mcpTools: [{ name: REVIEW_TOOL, serverName: REVIEW_SERVER }],
+    builtinTools: [],
+    memoryFiles: [],
+    agents: [],
+    skills: 0,
+    systemPromptSections: [],
+  };
+  // A restricted review thread: its policy and its MCP session name the same assignment.
+  const makeReviewHarness = (
+    inspect: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["inspect"],
+    attest: (
+      evidence: McpProviderSession.ReviewAssignmentSessionEvidence,
+    ) => Effect.Effect<void, McpProviderSession.ReviewAssignmentRefusedError> = () => Effect.void,
+  ) =>
+    Effect.gen(function* () {
+      const closes = yield* Ref.make(0);
+      const harness = yield* makeWakeHarnessWithOptions({
+        ...(inspect === undefined ? {} : { inspect }),
+        close: () => Ref.update(closes, (count) => count + 1),
+      });
+      const cwd = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+        prefix: "t3-claude-review-",
+      });
+      const attested: Array<{
+        readonly evidence: McpProviderSession.ReviewAssignmentSessionEvidence;
+        readonly promptsOffered: number;
+      }> = [];
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
+        environmentId: EnvironmentId.make("environment-claude-review"),
+        threadId: harness.threadId,
+        providerSessionId: "mcp-session-claude-review",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:43123/mcp/review",
+        authorizationHeader: "Bearer review-token",
+        browserToolsAvailable: false,
+        reviewAssignment: {
+          handle: "assignment-1",
+          cwd,
+          attest: (evidence) =>
+            Effect.sync(() => {
+              attested.push({ evidence, promptsOffered: harness.offeredMessages.length });
+            }).pipe(Effect.andThen(attest(evidence))),
+        },
+      });
+      const turnInput = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("review-0"),
+        text: "Review the assignment",
+        attachments: [],
+        nativeThreadHasTurns: false,
+        runtimePolicy: {
+          ...CLAUDE_TEST_RUNTIME_POLICY,
+          reviewAssignment: { handle: "assignment-1" },
+        },
+      });
+      return { harness, cwd, attested, closes, turnInput };
+    });
+
+  it.effect("attests a restricted review's session before its prompt reaches Claude", () =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+
+      yield* review.harness.runtime.startTurn(review.turnInput);
+
+      assert.deepEqual(
+        review.attested.map((entry) => entry.promptsOffered),
+        [0],
+      );
+      assert.lengthOf(review.harness.offeredMessages, 1);
+      assert.deepInclude(review.attested[0]?.evidence, {
+        runId: review.turnInput.runId,
+        driver: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        cwd: review.cwd,
+        effectiveTools: [`${REVIEW_SERVER}/${McpProviderSession.REVIEW_ASSIGNMENT_TOOL}`],
+        mcpServers: [REVIEW_SERVER],
+        promptDigest: McpProviderSession.reviewEvidenceDigest(
+          review.harness.offeredMessages[0]?.message.content,
+        ),
+      });
+      assert.notInclude(JSON.stringify(review.attested), "reviewer@example.com");
+      const options = review.harness.getOpenedOptions();
+      assert.deepInclude(options, {
+        tools: [],
+        allowedTools: [REVIEW_TOOL],
+        permissionMode: "dontAsk",
+        settingSources: [],
+        strictMcpConfig: true,
+        plugins: [],
+        skills: [],
+        cwd: review.cwd,
+      });
+      assert.deepEqual(Object.keys(options?.mcpServers ?? {}), [REVIEW_SERVER]);
+      assert.isUndefined(options?.hooks);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    ["a built-in tool", { builtinTools: ["Bash"] }],
+    ["an instruction file", { memoryFiles: ["/home/user/.claude/CLAUDE.md"] }],
+    ["a skill", { skills: 1 }],
+    ["a subagent definition", { agents: ["general-purpose"] }],
+    ["no list of built-in tools", { builtinTools: null }],
+    [
+      "another MCP server",
+      {
+        mcpServers: [
+          ...reviewInspection.mcpServers,
+          { name: "t3-code", status: "connected", tools: ["delegate_task"] },
+        ],
+      },
+    ],
+    [
+      "the assignment server not connected",
+      { mcpServers: [{ name: REVIEW_SERVER, status: "pending", tools: [] }] },
+    ],
+  ] as const)("refuses a restricted review whose Claude session reports %s", ([, change]) =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(
+        Effect.succeed({ ...reviewInspection, ...change }),
+        // Stands in for the registry, which refuses any tool or server but the assignment's.
+        (evidence) =>
+          evidence.effectiveTools.length === 1 && evidence.mcpServers.length === 1
+            ? Effect.void
+            : Effect.fail(
+                new McpProviderSession.ReviewAssignmentRefusedError({ reason: "extra surface" }),
+              ),
+      );
+
+      const refused = yield* review.harness.runtime.startTurn(review.turnInput).pipe(Effect.flip);
+
+      assert.instanceOf(reviewRefusalIn(refused), McpProviderSession.ReviewAssignmentRefusedError);
+      assert.deepInclude(makeProviderFailure({ cause: refused }), {
+        code: "restricted_review_refused",
+        retryable: false,
+      });
+      assert.lengthOf(review.harness.offeredMessages, 0);
+      assert.equal(yield* Ref.get(review.closes), 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("refuses a restricted review on a runner that cannot report its session", () =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(undefined);
+
+      const refused = yield* review.harness.runtime.startTurn(review.turnInput).pipe(Effect.flip);
+
+      assert.instanceOf(reviewRefusalIn(refused), McpProviderSession.ReviewAssignmentRefusedError);
+      assert.lengthOf(review.attested, 0);
+      assert.lengthOf(review.harness.offeredMessages, 0);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("takes no steering into a restricted review", () =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+      yield* review.harness.runtime.startTurn(review.turnInput);
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+
+      const refused = yield* review.harness.runtime
+        .steerTurn({
+          threadId: review.harness.threadId,
+          runId: review.turnInput.runId,
+          providerThread: review.harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${review.turnInput.attemptId}`,
+          }),
+          message: review.turnInput.message,
+        })
+        .pipe(Effect.flip);
+
+      assert.isTrue(
+        Predicate.isTagged(
+          "cause" in refused ? refused.cause : undefined,
+          "ProviderAdapterProtocolError",
+        ),
+      );
+      assert.lengthOf(review.harness.offeredMessages, 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
 
   it.effect("sends the tagged Auto brief on every turn, including after a rollback", () =>
     Effect.gen(function* () {

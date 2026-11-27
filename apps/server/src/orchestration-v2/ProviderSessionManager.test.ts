@@ -1567,6 +1567,80 @@ it.effect(
 );
 
 it.effect(
+  "ProviderSessionManagerV2 never starts a restricted review on a driver that cannot verify it",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const started = yield* Ref.make(0);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-restricted-review");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+
+        const refused = yield* Effect.flip(
+          runtime
+            .startTurn({
+              appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+              threadId,
+              runId,
+              runOrdinal: 1,
+              providerTurnOrdinal: 1,
+              attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+              rootNodeId: idAllocator.derive.rootNode({ runId }),
+              providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+              message: {
+                createdBy: "user",
+                creationSource: "web",
+                messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+                text: "review",
+                attachments: [],
+              },
+              modelSelection,
+              runtimePolicy: { ...runtimePolicy, reviewAssignment: { handle: "assignment-1" } },
+            })
+            .pipe(
+              Effect.andThen(Effect.die("the review turn reached a driver that cannot verify it")),
+            ),
+        );
+
+        assert.equal(yield* Ref.get(started), 0);
+        assert.equal(refused._tag, "ProviderAdapterTurnStartError");
+        // Not a resendable start: a retry would meet the same refusal.
+        assert.notProperty(refused, "beforePrompt");
+        assert.instanceOf(
+          "cause" in refused ? refused.cause : undefined,
+          McpProviderSession.ReviewAssignmentRefusedError,
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            startTurn: Ref.update(started, (count) => count + 1),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
   "ProviderSessionManagerV2 releases a runtime only once it sent nothing for the window",
   () =>
     Effect.gen(function* () {

@@ -106,9 +106,13 @@ export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2
       runtimeMode: input.thread.runtimeMode,
       interactionMode: input.thread.interactionMode,
       cwd: input.thread.worktreePath,
+      ...reviewAssignmentPolicy(input.thread),
     });
   }),
 });
+
+const reviewAssignmentPolicy = (thread: OrchestrationV2AppThread) =>
+  thread.reviewAssignment === undefined ? {} : { reviewAssignment: thread.reviewAssignment };
 
 function providerRuntimeMode(
   runtimeMode: RuntimeMode,
@@ -248,6 +252,7 @@ export const layerFromProjectStore: Layer.Layer<
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
           ...(readOnly ? readOnlyGuestPolicy : {}),
+          ...reviewAssignmentPolicy(input.thread),
         });
       }),
     });

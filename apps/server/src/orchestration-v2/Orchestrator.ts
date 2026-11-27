@@ -1506,10 +1506,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly adapter: ProviderAdapter.ProviderAdapterV2["Service"];
     readonly providerInstanceId: ProviderInstanceId;
     readonly threadId: ThreadId;
+    readonly thread: Pick<OrchestrationV2AppThread, "reviewAssignment">;
   }) =>
     input.adapter.getCapabilities().pipe(
       Effect.flatMap((capabilities) =>
-        capabilities.sessions.supportsMultipleProviderThreadsPerSession
+        // A restricted reviewer runs in its own provider process, never in the instance's shared one.
+        capabilities.sessions.supportsMultipleProviderThreadsPerSession &&
+        input.thread.reviewAssignment === undefined
           ? Effect.succeed(
               idAllocator.derive.providerSession({
                 providerInstanceId: input.providerInstanceId,
@@ -2455,6 +2458,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               adapter,
               providerInstanceId: queuedRun.providerInstanceId,
               threadId,
+              thread: projection.thread,
             }),
           ),
           Effect.mapError(
@@ -5748,6 +5752,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             adapter: targetAdapter,
             providerInstanceId: input.modelSelection.instanceId,
             threadId: input.command.threadId,
+            thread: input.projection.thread,
           }),
         ));
       const targetProviderThreadBase: OrchestrationV2ProviderThread =
@@ -7316,6 +7321,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             adapter,
             providerInstanceId: modelSelection.instanceId,
             threadId: command.threadId,
+            thread: projection.thread,
           }),
         ));
       const providerThreadId =
@@ -7712,6 +7718,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           adapter,
           providerInstanceId: modelSelection.instanceId,
           threadId: command.threadId,
+          thread: projection.thread,
         }),
       ));
     const existingProviderSession = projection.providerSessions.find(
@@ -8743,6 +8750,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         interactionMode: command.interactionMode,
         ...(command.projectId === undefined ? {} : { projectId: command.projectId }),
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
+        ...(command.reviewAssignment === undefined
+          ? {}
+          : { reviewAssignment: command.reviewAssignment }),
       };
       // A local MCP credential can outlive a run. Without a run-bound invocation, different owners are ambiguous.
       const parentDemand = parentRun.demandId ?? null;

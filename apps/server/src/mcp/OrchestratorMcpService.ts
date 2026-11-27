@@ -13,6 +13,7 @@ import {
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   TurnItemId,
+  type OrchestrationV2ReviewAssignment,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -179,6 +180,11 @@ import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as CommandRunner from "../commandRunner/CommandRunner.ts";
+import * as ReviewAssignmentRegistry from "./ReviewAssignmentRegistry.ts";
+import {
+  RESTRICTED_REVIEW_DRIVERS,
+  RESTRICTED_REVIEW_RUNTIME_MODE,
+} from "./ReviewAssignmentRegistry.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -1357,6 +1363,52 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
   const commandRunner = yield* CommandRunner.CommandRunner;
+  // Optional so runtimes without the trusted read broker refuse every assignment-isolated review.
+  const reviewAssignments = yield* Effect.serviceOption(
+    ReviewAssignmentRegistry.ReviewAssignmentRegistry,
+  );
+
+  /** Everything a restricted review needs that the request alone can show, checked before any reuse or forwarding. */
+  const requireRestrictableReview = Effect.fn("OrchestratorMcpService.requireRestrictableReview")(
+    function* (
+      input: OrchestratorMcpDelegateTaskInput,
+      assignment: OrchestrationV2ReviewAssignment,
+    ) {
+      if (Option.isNone(reviewAssignments)) {
+        return yield* failure(
+          "restricted_review_unsupported",
+          "Assignment isolation is unavailable in this environment.",
+        );
+      }
+      if (!(yield* reviewAssignments.value.isRegistered(assignment.handle))) {
+        return yield* failure("invalid_request", "The review assignment is not registered here.");
+      }
+      if (input.auto === true) {
+        return yield* failure(
+          "restricted_review_unsupported",
+          "Assignment isolation binds one native account. Pass target instead of auto:true.",
+        );
+      }
+      if (input.target?.environmentId !== undefined) {
+        return yield* failure(
+          "restricted_review_unsupported",
+          "Assignment isolation runs only in this environment, where its read broker is registered.",
+        );
+      }
+      if (input.runtimeMode !== undefined && input.runtimeMode !== RESTRICTED_REVIEW_RUNTIME_MODE) {
+        return yield* failure(
+          "restricted_review_unsupported",
+          `An assignment-isolated review runs ${RESTRICTED_REVIEW_RUNTIME_MODE}; omit runtimeMode.`,
+        );
+      }
+      if (input.interactionMode !== undefined && input.interactionMode !== "default") {
+        return yield* failure(
+          "restricted_review_unsupported",
+          "An assignment-isolated review runs in the default interaction mode; omit interactionMode.",
+        );
+      }
+    },
+  );
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2134,10 +2186,15 @@ const make = Effect.gen(function* () {
         model: task.model,
       };
     const reviewRound = reviewRoundText(task.review);
+    const reviewEvidence =
+      childControls.thread.reviewAssignment === undefined || Option.isNone(reviewAssignments)
+        ? undefined
+        : yield* reviewAssignments.value.evidence(task.childThreadId);
     const result = {
       taskId: task.id,
       childThreadId: task.childThreadId,
       ...(reviewRound === undefined ? {} : { reviewRound }),
+      ...(reviewEvidence === undefined ? {} : { reviewEvidence }),
       link: formatThreadLink({
         environmentId: scope.environmentId,
         threadId: task.childThreadId,
@@ -3488,12 +3545,9 @@ const make = Effect.gen(function* () {
       yield* requireCapability(callerScope);
       const scope = yield* requireThreadScope(callerScope, "delegate_task");
       // Refuse before receipt reuse or peer forwarding can turn a restricted request into ordinary work.
-      if (typeof input.isolation === "object") {
-        return yield* failure(
-          "restricted_review_unsupported",
-          "Assignment isolation is unavailable. The native adapters cannot verify all model inputs and tools before inference.",
-        );
-      }
+      const reviewAssignment =
+        typeof input.isolation === "object" ? { handle: input.isolation.handle } : undefined;
+      if (reviewAssignment !== undefined) yield* requireRestrictableReview(input, reviewAssignment);
       if (input.auto === true && input.target !== undefined) {
         return yield* failure("invalid_request", "Pass auto:true or target, not both.");
       }
@@ -3511,6 +3565,16 @@ const make = Effect.gen(function* () {
       const parent = yield* threadManagement
         .getThreadRecords(scope.thread.threadId, ["runs", "subagents"], { subagentIds: taskIds })
         .pipe(Effect.mapError(threadManagementFailure));
+      if (
+        reviewAssignment !== undefined &&
+        input.target?.projectId !== undefined &&
+        input.target.projectId !== parent.thread.projectId
+      ) {
+        return yield* failure(
+          "restricted_review_unsupported",
+          "An assignment-isolated review runs in an empty workspace of this thread's project. Omit target.projectId.",
+        );
+      }
       const parentRun = parent.runs
         .filter(ThreadManagementService.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -3666,12 +3730,27 @@ const make = Effect.gen(function* () {
                       }).pipe(Effect.andThen(resolveDelegateTarget(parent.thread.modelSelection))),
                   ),
                 );
+      // The evidence binds one native account, so a restricted review never moves to another.
       const primaryTarget =
-        input.auto === false && committedThread === null
+        (input.auto === false || reviewAssignment !== undefined) && committedThread === null
           ? { ...resolved, modelSelection: withAutoAccount(resolved.modelSelection, false) }
           : resolved;
+      if (reviewAssignment !== undefined) {
+        const driver = providers.find(
+          (provider) => provider.instanceId === primaryTarget.modelSelection.instanceId,
+        )?.driver;
+        if (driver === undefined || !RESTRICTED_REVIEW_DRIVERS.has(driver)) {
+          return yield* failure(
+            "restricted_review_unsupported",
+            "Assignment isolation needs a Claude account: only its sessions are verified before inference.",
+          );
+        }
+      }
       const route =
-        !isRetryOfAcceptedDelegation && input.target === undefined && Option.isSome(accountRouting)
+        !isRetryOfAcceptedDelegation &&
+        input.target === undefined &&
+        reviewAssignment === undefined &&
+        Option.isSome(accountRouting)
           ? yield* accountRouting.value.failoverLaunch({
               selection: primaryTarget.modelSelection,
               projectId,
@@ -3701,15 +3780,14 @@ const make = Effect.gen(function* () {
         );
         yield* requireMemoryForDelegation(memoryAdmission, peerLinks);
       }
-      const runtimeMode = yield* resolveRuntimeMode(
-        parent.thread.runtimeMode,
-        input.runtimeMode,
-        target,
-      );
-      const interactionMode = yield* resolveInteractionMode(
-        parent.thread.interactionMode,
-        input.interactionMode,
-      );
+      const runtimeMode =
+        reviewAssignment === undefined
+          ? yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, target)
+          : RESTRICTED_REVIEW_RUNTIME_MODE;
+      const interactionMode =
+        reviewAssignment === undefined
+          ? yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode)
+          : "default";
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(foreignProjectId ?? parent.thread.projectId);
@@ -3770,6 +3848,7 @@ const make = Effect.gen(function* () {
           // only needed if the parent settled first (timeout, disconnect).
           completionWake: input.mode === "wait" ? "settled_only" : "always",
           ...(review === undefined ? {} : { review }),
+          ...(reviewAssignment === undefined ? {} : { reviewAssignment }),
         })
         .pipe(
           Effect.mapError((error) =>

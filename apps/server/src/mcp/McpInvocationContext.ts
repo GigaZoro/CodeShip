@@ -27,8 +27,15 @@ const ALL_MCP_CAPABILITIES = [
   "worktree",
   "device",
   "pull-requests",
+  // A restricted reviewer's credential grants only this, and only on `/mcp/review-assignment`.
+  "review-assignment",
 ] as const;
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
+
+/** The one assignment a restricted reviewer's credential may read. */
+export interface McpReviewAssignmentScope {
+  readonly handle: string;
+}
 
 export interface McpThreadCaller {
   readonly threadId: ThreadId;
@@ -143,6 +150,7 @@ export interface McpInvocationScope {
   readonly client: McpClientCaller | undefined;
   /** False while the Linked environments beta is off here; `/mcp` reads it per request. */
   readonly linkedEnvironments?: boolean;
+  readonly assignment?: McpReviewAssignmentScope;
 }
 
 /**

@@ -65,6 +65,7 @@ import {
   OrchestrationV2RunStatus,
   OrchestrationV2TaskCommand,
   OrchestrationV2TurnItemStatus,
+  ReviewAssignmentHandle,
 } from "./orchestrationV2.ts";
 import { CanonicalModelSelection, ModelSelection } from "./modelSelection.ts";
 import { SharedSettingVersion } from "./sharedSettings.ts";
@@ -209,14 +210,9 @@ export const OrchestratorMcpTerminalDelegatedTaskStatus = Schema.Literals([
 export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
-const ReviewMaterialHandle = Schema.String.check(
-  Schema.isMaxLength(256),
-  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
-);
-
 export const ReviewMaterialRead = Schema.Struct({
-  handle: ReviewMaterialHandle,
-  side: Schema.optionalKey(ReviewMaterialHandle),
+  handle: ReviewAssignmentHandle,
+  side: Schema.optionalKey(ReviewAssignmentHandle),
   path: Schema.optionalKey(
     Schema.String.check(
       Schema.isMaxLength(4096),
@@ -233,8 +229,37 @@ export type ReviewMaterialRead = typeof ReviewMaterialRead.Type;
 
 const AssignmentIsolation = Schema.Struct({
   type: Schema.Literal("assignment"),
-  handle: ReviewMaterialHandle,
+  handle: ReviewAssignmentHandle,
 });
+
+/** What a restricted reviewer's native session ran with, checked before its first prompt. */
+export const ReviewSessionEvidence = Schema.Struct({
+  assignmentHandle: ReviewAssignmentHandle,
+  runId: RunId,
+  providerInstanceId: ProviderInstanceId,
+  driver: Schema.Literal("claudeAgent"),
+  /** SHA-256 of the native account's identity, so the account is bound without disclosing it. */
+  nativeAccount: Schema.String,
+  model: Schema.String,
+  effort: Schema.NullOr(Schema.String),
+  effectiveTools: Schema.Array(Schema.String),
+  mcpServers: Schema.Array(Schema.String),
+  cwd: Schema.String,
+  instructionDigest: Schema.String,
+  promptDigest: Schema.String,
+  verifiedBeforeInference: Schema.Literal(true),
+});
+export type ReviewSessionEvidence = typeof ReviewSessionEvidence.Type;
+
+export const ReviewMaterialReceipt = Schema.Struct({
+  runId: RunId,
+  handle: ReviewAssignmentHandle,
+  side: Schema.optionalKey(ReviewAssignmentHandle),
+  path: Schema.optionalKey(Schema.String),
+  byteLength: NonNegativeInt,
+  sha256: Schema.String,
+});
+export type ReviewMaterialReceipt = typeof ReviewMaterialReceipt.Type;
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
@@ -318,6 +343,13 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   next: Schema.optional(OrchestratorMcpRunningTaskNext),
   /** A review task's round in its parent thread, such as "Review round 2 of 3 in this chat." */
   reviewRound: Schema.optional(Schema.String),
+  /** Assignment isolation only: each run's verified session and every read the broker served. */
+  reviewEvidence: Schema.optional(
+    Schema.Struct({
+      sessions: Schema.Array(ReviewSessionEvidence),
+      receipts: Schema.Array(ReviewMaterialReceipt),
+    }),
+  ),
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
 
