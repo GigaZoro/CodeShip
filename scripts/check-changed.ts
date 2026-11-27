@@ -2147,14 +2147,21 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       command(`typecheck ${name}`, ["run", "--cache", "--filter", name, "typecheck"]),
     ),
     ...(vitestTests.length > 0 ? [testStep] : []),
-    ...batched(nodeTests, (batch, part) =>
-      isolatedCommand(`node --test (${batch.length} files)${part}`, [
-        "exec",
-        "node",
-        "--test",
-        ...batch,
-      ]),
-    ),
+    // node --test runs each file in its own process, so the step holds a slot for each it runs at once.
+    ...batched(nodeTests, (batch, part) => ({
+      name: `node --test (${batch.length} files)${part}`,
+      workers: batch.length,
+      run: (slots: number, collect: (chunk: string) => void) =>
+        spawnVpIsolated(
+          fs,
+          spawner,
+          platform,
+          ["exec", "node", "--test", `--test-concurrency=${slots}`, ...batch],
+          root,
+          {},
+          collect,
+        ),
+    })),
     ...batched(
       compilerApps.flatMap((app) => app.pattern),
       (batch, part) => ({
