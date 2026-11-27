@@ -50,6 +50,9 @@
       --color-danger: #fcebec;
       --color-danger-border: rgba(251, 44, 54, 0.32);
       --color-danger-foreground: #c10007;
+      --color-calm-status-quiet: #6f6f79;
+      --color-calm-status-attention: #bb4d00;
+      --color-calm-status-alarm: #c10007;
       --color-update: #e0e6f7;
       --color-update-foreground: #1b4ed8;
       --color-input: #ffffff;
@@ -214,6 +217,9 @@
       --color-danger: #301214;
       --color-danger-border: rgba(251, 65, 74, 0.32);
       --color-danger-foreground: #ff6467;
+      --color-calm-status-quiet: #818181;
+      --color-calm-status-attention: #ffb900;
+      --color-calm-status-alarm: #ff6467;
       --color-update: #121b34;
       --color-update-foreground: #51a2ff;
       --color-input: #111111;
@@ -378,6 +384,9 @@
       --color-danger: #fde4f1;
       --color-danger-border: rgba(247, 8, 108, 0.32);
       --color-danger-foreground: #9d174d;
+      --color-calm-status-quiet: #8d1255;
+      --color-calm-status-attention: #994608;
+      --color-calm-status-alarm: #9d174d;
       --color-update: #fadfef;
       --color-update-foreground: #ac1668;
       --color-input: #faf3fb;
@@ -542,6 +551,9 @@
       --color-danger: #331a2b;
       --color-danger-border: rgba(157, 23, 77, 0.32);
       --color-danger-foreground: #fbd0e8;
+      --color-calm-status-quiet: #e7d0dd;
+      --color-calm-status-attention: #fbbf24;
+      --color-calm-status-alarm: #fbd0e8;
       --color-update: #37152b;
       --color-update-foreground: #fbd0e8;
       --color-input: #29232d;
@@ -706,6 +718,9 @@
       --color-danger: #f4e7e5;
       --color-danger-border: rgba(251, 44, 54, 0.32);
       --color-danger-foreground: #c10007;
+      --color-calm-status-quiet: #645f64;
+      --color-calm-status-attention: #a44200;
+      --color-calm-status-alarm: #c10007;
       --color-update: #d0e3da;
       --color-update-foreground: #125134;
       --color-input: #f3f7f4;
@@ -870,6 +885,9 @@
       --color-danger: #3f2c28;
       --color-danger-border: rgba(251, 65, 74, 0.32);
       --color-danger-foreground: #ff6668;
+      --color-calm-status-quiet: #c3c8c6;
+      --color-calm-status-attention: #ffbc09;
+      --color-calm-status-alarm: #ffb4b4;
       --color-update: #345f48;
       --color-update-foreground: #9ee4be;
       --color-input: #1b2821;
@@ -1034,6 +1052,9 @@
       --color-danger: #f5e6e9;
       --color-danger-border: rgba(251, 44, 54, 0.32);
       --color-danger-foreground: #c10007;
+      --color-calm-status-quiet: #655e68;
+      --color-calm-status-attention: #a34300;
+      --color-calm-status-alarm: #c10007;
       --color-update: #d4e1ed;
       --color-update-foreground: #194a72;
       --color-input: #f5f7f8;
@@ -1198,6 +1219,9 @@
       --color-danger: #3c2630;
       --color-danger-border: rgba(251, 65, 74, 0.32);
       --color-danger-foreground: #ff6467;
+      --color-calm-status-quiet: #b7bbc2;
+      --color-calm-status-attention: #ffb900;
+      --color-calm-status-alarm: #ffa1a3;
       --color-update: #345269;
       --color-update-foreground: #a2d2f4;
       --color-input: #17212b;
@@ -1362,6 +1386,9 @@
       --color-danger: #f9e7e6;
       --color-danger-border: rgba(251, 44, 54, 0.32);
       --color-danger-foreground: #c10007;
+      --color-calm-status-quiet: #685e64;
+      --color-calm-status-attention: #a44300;
+      --color-calm-status-alarm: #c10007;
       --color-update: #edddd5;
       --color-update-foreground: #71381b;
       --color-input: #f9f7f5;
@@ -1526,6 +1553,9 @@
       --color-danger: #4a2321;
       --color-danger-border: rgba(251, 65, 74, 0.32);
       --color-danger-foreground: #ff6467;
+      --color-calm-status-quiet: #c0b8b5;
+      --color-calm-status-attention: #ffb900;
+      --color-calm-status-alarm: #ffa0a1;
       --color-update: #684631;
       --color-update-foreground: #f5bd9a;
       --color-input: #291e1a;
@@ -1690,6 +1720,9 @@
       --color-danger: #f8e6ea;
       --color-danger-border: rgba(251, 44, 54, 0.32);
       --color-danger-foreground: #c10007;
+      --color-calm-status-quiet: #665d68;
+      --color-calm-status-attention: #a34300;
+      --color-calm-status-alarm: #c10007;
       --color-update: #e2ddef;
       --color-update-foreground: #4a3678;
       --color-input: #f8f7f9;
@@ -1854,6 +1887,9 @@
       --color-danger: #40202e;
       --color-danger-border: rgba(251, 65, 74, 0.32);
       --color-danger-foreground: #ff6467;
+      --color-calm-status-quiet: #aba7b4;
+      --color-calm-status-attention: #ffb900;
+      --color-calm-status-alarm: #ff8486;
       --color-update: #463969;
       --color-update-foreground: #bfabf7;
       --color-input: #1d1929;

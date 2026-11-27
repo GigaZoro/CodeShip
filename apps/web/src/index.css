@@ -628,9 +628,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   transform: translateY(calc(-500% / 6));
 
   @media (prefers-reduced-motion: no-preference) {
-    animation: working-spark 660ms steps(6, jump-none) infinite alternate;
-    animation-play-state: var(--visible-animation-state, paused);
-    will-change: var(--visible-animation-will-change, auto);
+    :root:not([data-status-colors="calm"]) & {
+      animation: working-spark 660ms steps(6, jump-none) infinite alternate;
+      animation-play-state: var(--visible-animation-state, paused);
+      will-change: var(--visible-animation-will-change, auto);
+    }
   }
 }
 
@@ -691,6 +693,13 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     opacity: 0;
     will-change: auto;
   }
+
+  /* Calm keeps live rows still; their glyph and label already say they are live. */
+  :root[data-status-colors="calm"] & {
+    animation: none;
+    opacity: 0;
+    will-change: auto;
+  }
 }
 
 @utility live-activity-focus-counter {
@@ -700,6 +709,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   will-change: var(--visible-animation-will-change, auto);
 
   @media (prefers-reduced-motion: reduce), (forced-colors: active) {
+    animation: none;
+    will-change: auto;
+  }
+
+  :root[data-status-colors="calm"] & {
     animation: none;
     will-change: auto;
   }
@@ -2687,9 +2701,7 @@ code {
 
   & :is(.chat-markdown, .composer-tiptap) .chat-markdown-codeblock,
   & .chat-markdown pre,
-  & [data-superseded-attempt-id],
-  & [data-slot="sidebar-nav-rail"],
-  & [data-slot="composer-host"]::after {
+  & [data-slot="sidebar-nav-rail"] {
     border-color: transparent;
   }
 
@@ -2697,14 +2709,13 @@ code {
     max-inline-size: var(--calm-prose-measure);
   }
 
-  & [data-slot="badge"] {
+  /* Control-sized badges sit beside controls and keep their height; callers keep their widths. */
+  & [data-slot="badge"]:not([data-badge-size="control"]) {
     block-size: calc(var(--spacing) * 5.5);
-    min-inline-size: calc(var(--spacing) * 5.5);
     border-radius: var(--control-radius);
 
     @media (width >= 40rem) {
       block-size: calc(var(--spacing) * 4.5);
-      min-inline-size: calc(var(--spacing) * 4.5);
     }
   }
 

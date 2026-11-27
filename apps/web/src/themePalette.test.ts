@@ -583,19 +583,26 @@ describe("calm status colors", () => {
   };
 
   // Calm paints every status in one of these colors (THREAD_STATUS_TONE_SALIENCE), as text and as
-  // dots, on sidebar rows in every state and on canvas lists; text needs 4.5:1, which covers 3:1.
+  // dots: on sidebar rows in every state, on canvas lists and their hovered rows (bg-accent), and on
+  // command palette rows (ui/command.tsx); text needs 4.5:1, which covers 3:1.
   it("keeps every calm status color at AA on every surface it is painted on", () => {
     const failures: string[] = [];
     for (const { name, colors } of palettes) {
       const variables = calmStatusVariables(colors);
       const canvas = opaque(colors.canvas, "#ffffff");
       const sidebar = opaque(colors.sidebar, canvas);
+      const popover = opaque(colors.surfaceOverlay, canvas);
       const surfaces = {
         canvas,
         sidebar,
         sidebarRowHover: opaque(colors.sidebarRowHover, sidebar),
         sidebarRowActive: opaque(colors.sidebarRowActive, sidebar),
         sidebarRowSelected: opaque(colors.sidebarRowSelected, sidebar),
+        listRowHover: opaque(colors.accentSurface, canvas),
+        popover,
+        paletteRowSelected: opaque(colors.text, popover, 0.06),
+        paletteRowHighlighted: opaque(colors.text, popover, 0.09),
+        paletteRowActive: opaque(colors.accentSurface, popover),
       };
       for (const [salience, variable] of Object.entries(CALM_STATUS_VARIABLES)) {
         for (const [surfaceName, surface] of Object.entries(surfaces)) {
