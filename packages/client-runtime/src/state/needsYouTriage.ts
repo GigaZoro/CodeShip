@@ -69,7 +69,7 @@ export function collectFinishedNotSeen<T extends FinishedNotSeenInput>(
 export interface WhileAwaySummary {
   /** What waits on the user now. */
   readonly blocked: number;
-  /** Finished, not seen, and finished after the user left. */
+  /** Finished, not seen, and finished while the user was away. */
   readonly finished: number;
   /** Threads the user started that hit a usage limit and continued by themselves while away. */
   readonly recovered: number;
@@ -88,36 +88,50 @@ type WhileAwayInput = Pick<
 const keyOf = (thread: Pick<EnvironmentThreadShell, "environmentId" | "id">) =>
   `${thread.environmentId}:${thread.id}`;
 
+/** When the user left and when they came back, in epoch ms. */
+export interface AwayWindow {
+  readonly since: number;
+  readonly until: number;
+}
+
+const timeOf = (iso: string | null | undefined) => toSortableTimestamp(iso ?? undefined) ?? 0;
+const within = (at: number, away: AwayWindow) => at >= away.since && at <= away.until;
+
 /**
- * What changed since the user left at `awaySince` (epoch ms). A limited run that resumed by
- * itself counts once, as recovered, even when it has finished since.
+ * What changed while the user was away. A limited run that resumed by itself counts once, as
+ * recovered, even when it has finished since. The server keeps `limitRecovery` until the
+ * thread is settled, so only a limit that reset while the user was away, followed by a newer
+ * run, counts as recovered.
  */
 export function summarizeWhileAway<T extends WhileAwayInput>(input: {
   readonly threads: readonly T[];
   readonly needsYou: readonly unknown[];
   readonly finishedNotSeen: readonly T[];
-  readonly awaySince: number;
+  readonly away: AwayWindow;
 }): WhileAwaySummary {
   const recovered = new Set<string>();
   for (const thread of input.threads) {
     const recovery = thread.limitRecovery;
     const run = thread.latestRun;
     if (
-      thread.createdBy === "user" &&
-      thread.archivedAt === null &&
-      thread.deletedAt === null &&
-      recovery != null &&
-      run !== null &&
-      run.runId !== recovery.runId &&
-      (toSortableTimestamp(run.requestedAt ?? undefined) ?? 0) >= input.awaySince
-    ) {
+      thread.createdBy !== "user" ||
+      thread.archivedAt !== null ||
+      thread.deletedAt !== null ||
+      recovery == null ||
+      !recovery.autoResume ||
+      run === null ||
+      run.runId === recovery.runId
+    )
+      continue;
+    const resetAt = timeOf(recovery.resetAt);
+    const requestedAt = timeOf(run.requestedAt);
+    if (within(resetAt, input.away) && within(requestedAt, input.away) && requestedAt >= resetAt) {
       recovered.add(keyOf(thread));
     }
   }
   const finished = input.finishedNotSeen.filter(
     (thread) =>
-      !recovered.has(keyOf(thread)) &&
-      (toSortableTimestamp(thread.latestRun?.completedAt ?? undefined) ?? 0) >= input.awaySince,
+      !recovered.has(keyOf(thread)) && within(timeOf(thread.latestRun?.completedAt), input.away),
   ).length;
   return { blocked: input.needsYou.length, finished, recovered: recovered.size };
 }
@@ -134,7 +148,7 @@ export function createPresenceTracker(options: {
   readonly save: (presentAt: number) => void;
 }) {
   let presentAt = options.load();
-  let awaySince: number | null = null;
+  let away: AwayWindow | null = null;
   let savedAt = Number.NEGATIVE_INFINITY;
   const listeners = new Set<() => void>();
   const notify = () => {
@@ -151,13 +165,14 @@ export function createPresenceTracker(options: {
         listeners.delete(listener);
       };
     },
-    /** When the user left, while the box should show what changed since; otherwise null. */
-    getAwaySince: () => awaySince,
+    /** The last absence, while the box should show what changed during it; otherwise null. */
+    getAway: () => away,
     /** The user did something, or the window came back. */
     present() {
       const at = options.now();
-      if (presentAt !== null && at - presentAt >= WHILE_AWAY_MIN_MS && awaySince === null) {
-        awaySince = presentAt;
+      if (presentAt !== null && at - presentAt >= WHILE_AWAY_MIN_MS) {
+        // Until the user catches up, a second absence extends the first one.
+        away = { since: away?.since ?? presentAt, until: at };
         notify();
       }
       presentAt = at;
@@ -172,8 +187,8 @@ export function createPresenceTracker(options: {
     },
     /** "Caught up": the strip goes until the user is away again. */
     caughtUp() {
-      if (awaySince === null) return;
-      awaySince = null;
+      if (away === null) return;
+      away = null;
       notify();
     },
   };

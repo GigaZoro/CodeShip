@@ -11065,11 +11065,11 @@ const catalog: MessageCatalog = {
   "Settle a thread when its pull request merges. Closed pull requests still settle automatically.":
     "Завершувати чат, коли його пул-реквест злито. Закриті пул-реквести так само завершують чат автоматично.",
   "Settle all": "Завершити всі",
-  "Settle all {count} finished threads": {
-    one: "Завершити {count} виконаний чат",
-    few: "Завершити всі {count} виконані чати",
-    many: "Завершити всі {count} виконаних чатів",
-    other: "Завершити всі {count} виконаного чату",
+  "Settle all, {count} finished threads": {
+    one: "Завершити всі, {count} виконаний чат",
+    few: "Завершити всі, {count} виконані чати",
+    many: "Завершити всі, {count} виконаних чатів",
+    other: "Завершити всі, {count} виконаного чату",
   },
   "Settle finished threads": "Завершити готові чати",
   "Settle thread": "Завершити чат",

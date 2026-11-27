@@ -29,7 +29,7 @@ import { type EnvironmentServerConfig } from "@t3tools/client-runtime/connection
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { SidebarNeedsYouPanel } from "./sidebar/SidebarNeedsYouPanel";
 import { FinishedNotSeenRow, NeedsYouBoxRow } from "./sidebar/NeedsYouBoxRow";
-import { markCaughtUp, useAwaySince } from "./sidebar/whileAwayPresence";
+import { markCaughtUp, useAway } from "./sidebar/whileAwayPresence";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -1748,7 +1748,6 @@ export default function Sidebar({
       : null;
   const [renamingTitle, setRenamingTitle] = useState("");
   const settlingThreadKeysRef = useRef(new Set<string>());
-  const [triageAnnouncement, setTriageAnnouncement] = useState("");
   const threadListRef = useRef<HTMLUListElement | null>(null);
   const sidebarContentRef = useRef<HTMLDivElement | null>(null);
   const dragLabelOffsetRef = useRef(0);
@@ -2104,20 +2103,20 @@ export default function Sidebar({
         : null,
     },
   });
-  const awaySince = useAwaySince();
+  const away = useAway();
   const awaySummary =
-    awaySince === null
+    away === null
       ? null
       : summarizeWhileAway({
           threads: boxCandidateThreads,
           needsYou: needsYouNowThreads,
           finishedNotSeen: finishedNotSeenThreads,
-          awaySince,
+          away,
         });
+  // Only what happened while away decides it, so the strip never appears mid-session; its
+  // blocked line counts the box's rows now.
   const whileAway =
-    awaySummary !== null && awaySummary.blocked + awaySummary.finished + awaySummary.recovered > 0
-      ? awaySummary
-      : null;
+    awaySummary !== null && awaySummary.finished + awaySummary.recovered > 0 ? awaySummary : null;
   const needsYouBoxShown =
     needsYouThreads.length > 0 || finishedNotSeenThreads.length > 0 || whileAway !== null;
 
@@ -5106,7 +5105,6 @@ export default function Sidebar({
                               onDecideLater={decideLater}
                               onPutBack={putBackNeedsYou}
                               onSettle={settleFromBox}
-                              onAnnounce={setTriageAnnouncement}
                             />
                           );
                         };
@@ -5140,18 +5138,6 @@ export default function Sidebar({
                             />,
                             needsYouPanelTarget,
                             "details-column-foot",
-                          ),
-                        );
-                      }
-                      if (needsYouPanelTarget !== null) {
-                        // Outlives the box, so answering its last request is still announced.
-                        items.push(
-                          createPortal(
-                            <div role="status" className="sr-only">
-                              {triageAnnouncement}
-                            </div>,
-                            needsYouPanelTarget,
-                            "needs-you-announcer",
                           ),
                         );
                       }

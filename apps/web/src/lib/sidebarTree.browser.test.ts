@@ -73,6 +73,11 @@ describe("sidebar keyboard navigation", () => {
     press(second, "j", { metaKey: true });
     press(second, "k");
     expect(document.activeElement).toBe(first);
+    // Caps Lock, and a Ukrainian layout where the J key types "о".
+    press(first, "J");
+    expect(document.activeElement).toBe(second);
+    press(second, "л", { code: "KeyK" });
+    expect(document.activeElement).toBe(first);
   });
 
   it("expands a group before entering its first child and returns to the parent", async () => {

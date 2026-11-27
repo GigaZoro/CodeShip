@@ -31,6 +31,7 @@ export function SidebarNeedsYouPanel(props: {
   const [laterOpen, setLaterOpen] = useState(false);
   const [finishedOpen, setFinishedOpen] = useState(true);
   const needsYou = props.rows.length + props.laterRows.length > 0;
+  const hasRows = needsYou || props.finishedRows.length > 0;
   return (
     <section
       {...workspaceAreaProps("needs-you", 6, t("Needs you"))}
@@ -48,57 +49,59 @@ export function SidebarNeedsYouPanel(props: {
           <SidebarNeedsYouHeader count={props.rows.length} />
         </ul>
       ) : null}
-      <ul
-        ref={attachTriageTree}
-        role="tree"
-        aria-label={t("Threads needing you")}
-        className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
-      >
-        {props.rows}
-        {props.laterRows.length > 0 ? (
-          <>
-            <GroupRow
-              id={NEEDS_YOU_LATER_ROW_ID}
-              divided={props.rows.length > 0}
-              open={laterOpen}
-              onToggle={() => setLaterOpen((open) => !open)}
-              label={t("Later")}
-              count={props.laterRows.length}
-            />
-            {laterOpen ? props.laterRows : null}
-          </>
-        ) : null}
-        {props.finishedRows.length > 0 ? (
-          <>
-            <GroupRow
-              id={FINISHED_NOT_SEEN_ROW_ID}
-              divided={needsYou}
-              open={finishedOpen}
-              onToggle={() => setFinishedOpen((open) => !open)}
-              onSettle={props.onSettleAllFinished}
-              label={t("Finished, not seen")}
-              count={props.finishedRows.length}
-              action={
-                <InlineButton
-                  tone="muted"
-                  aria-label={tn(
-                    props.finishedRows.length,
-                    "Settle {count} finished thread",
-                    "Settle all {count} finished threads",
-                  )}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    props.onSettleAllFinished();
-                  }}
-                >
-                  {t("Settle all")}
-                </InlineButton>
-              }
-            />
-            {finishedOpen ? props.finishedRows : null}
-          </>
-        ) : null}
-      </ul>
+      {hasRows ? (
+        <ul
+          ref={attachTriageTree}
+          role="tree"
+          aria-label={t("Threads needing you")}
+          className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
+        >
+          {props.rows}
+          {props.laterRows.length > 0 ? (
+            <>
+              <GroupRow
+                id={NEEDS_YOU_LATER_ROW_ID}
+                divided={props.rows.length > 0}
+                open={laterOpen}
+                onToggle={() => setLaterOpen((open) => !open)}
+                label={t("Later")}
+                count={props.laterRows.length}
+              />
+              {laterOpen ? props.laterRows : null}
+            </>
+          ) : null}
+          {props.finishedRows.length > 0 ? (
+            <>
+              <GroupRow
+                id={FINISHED_NOT_SEEN_ROW_ID}
+                divided={needsYou}
+                open={finishedOpen}
+                onToggle={() => setFinishedOpen((open) => !open)}
+                onSettle={props.onSettleAllFinished}
+                label={t("Finished, not seen")}
+                count={props.finishedRows.length}
+                action={
+                  <InlineButton
+                    tone="muted"
+                    aria-label={tn(
+                      props.finishedRows.length,
+                      "Settle all, {count} finished thread",
+                      "Settle all, {count} finished threads",
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onSettleAllFinished();
+                    }}
+                  >
+                    {t("Settle all")}
+                  </InlineButton>
+                }
+              />
+              {finishedOpen ? props.finishedRows : null}
+            </>
+          ) : null}
+        </ul>
+      ) : null}
       <TriageHint />
     </section>
   );
@@ -123,6 +126,7 @@ function GroupRow(props: {
         role="treeitem"
         tabIndex={-1}
         data-sidebar-row={props.id}
+        aria-label={t("{label} ({count})", { label: props.label, count: props.count })}
         aria-expanded={props.open}
         onClick={props.onToggle}
         onKeyDown={handleKeyDown}

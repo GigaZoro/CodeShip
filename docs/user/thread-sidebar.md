@@ -103,9 +103,9 @@ since you last opened them. They don't count toward the Needs you badges. Open o
 `E`, or choose **Settle all** to settle them together, with **Undo** for 8 seconds. Mobile shows the
 same section with **Settle all** at the top of the thread list.
 
-When you come back after at least 15 minutes away, **While you were away** at the top of the box
-says how many threads need you now, how many finished, and how many recovered on their own, for
-example after a usage limit reset. **Caught up** clears it until the next time you are away.
+When you come back after at least 15 minutes away and threads finished, or recovered on their own
+after a usage limit reset, **While you were away** at the top of the box says how many, and how
+many need you now. **Caught up** clears it until the next time you are away.
 
 Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command palette, to open each
 waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.

@@ -1,4 +1,7 @@
-import { createPresenceTracker } from "@t3tools/client-runtime/state/needs-you-triage";
+import {
+  type AwayWindow,
+  createPresenceTracker,
+} from "@t3tools/client-runtime/state/needs-you-triage";
 import { useSyncExternalStore } from "react";
 
 const STORAGE_KEY = "t3code:needs-you:present-at";
@@ -32,9 +35,14 @@ function presence() {
     if (document.visibilityState === "visible") created.present();
     else created.left();
   };
-  for (const type of ["pointerdown", "keydown", "wheel", "focus"] as const) {
+  // Pointer up, not down: the strip may mount on return, and must not move what is being clicked.
+  for (const type of ["pointerup", "keydown", "wheel"] as const) {
     window.addEventListener(type, present, { capture: true, passive: true });
   }
+  // The app moves focus itself; only the window gaining focus means the user is back.
+  window.addEventListener("focus", (event) => {
+    if (event.target === window) created.present();
+  });
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("pagehide", () => created.left());
   created.present();
@@ -42,11 +50,11 @@ function presence() {
   return created;
 }
 
-/** When the user left, while the Needs you box should say what changed since; otherwise null. */
-export function useAwaySince(): number | null {
+/** The user's last absence, while the Needs you box should say what changed in it. */
+export function useAway(): AwayWindow | null {
   return useSyncExternalStore(
     (listener) => presence().subscribe(listener),
-    () => presence().getAwaySince(),
+    () => presence().getAway(),
     () => null,
   );
 }

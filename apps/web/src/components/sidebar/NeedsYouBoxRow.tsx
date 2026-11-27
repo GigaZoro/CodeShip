@@ -30,6 +30,8 @@ import {
 } from "react";
 
 import { t } from "~/i18n";
+import { announce } from "~/lib/announce";
+import { latinLetterOf } from "~/lib/sidebarTree";
 import { cn } from "~/lib/utils";
 import { requestWorkspaceContentFocus } from "~/lib/workspaceFocus";
 import { useEnvironmentScope } from "../../state/session";
@@ -73,11 +75,13 @@ export function handleTriageKeyDown(
     event.nativeEvent.isComposing
   )
     return;
+  const letter = latinLetterOf(event);
   if (event.key === "Enter") actions.open?.();
   else if (event.key === "Escape") requestWorkspaceContentFocus();
-  else if (event.key in TRIAGE_KEYS)
-    actions[TRIAGE_KEYS[event.key as keyof typeof TRIAGE_KEYS]]?.();
-  else return;
+  else if (letter in TRIAGE_KEYS) {
+    // A held key would act again on the row that takes focus next.
+    if (!event.repeat) actions[TRIAGE_KEYS[letter as keyof typeof TRIAGE_KEYS]]?.();
+  } else return;
   event.preventDefault();
   event.stopPropagation();
 }
@@ -128,16 +132,20 @@ function ApprovalRequest(props: {
   const [error, setError] = useState<string | null>(null);
   const summary = approval ? firstLine(approval.detail || approval.requestKind) : props.fallback;
   const live = props.answerable && approval?.responseCapability === "live";
+  // Stays set after a success: the request lingers until the pending list drops it.
+  const answeredRef = useRef<RuntimeRequestId | null>(null);
   const answer = async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
-    if (!canRespond || responding) return;
+    if (!canRespond || responding || answeredRef.current === requestId) return;
     setResponding(true);
     setError(null);
     const result = await respond({
       environmentId: props.threadRef.environmentId,
       input: { threadId: props.threadRef.threadId, requestId, decision },
     });
-    if (result._tag === "Success") props.onAnswered(decision);
-    else if (!isAtomCommandInterrupted(result)) {
+    if (result._tag === "Success") {
+      answeredRef.current = requestId;
+      props.onAnswered(decision);
+    } else if (!isAtomCommandInterrupted(result)) {
       const failure = squashAtomCommandFailure(result);
       setError(
         failure instanceof Error ? failure.message : t("Failed to submit approval decision."),
@@ -289,8 +297,6 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
   onDecideLater: (threadRef: ScopedThreadRef) => void;
   onPutBack: (threadRef: ScopedThreadRef) => void;
   onSettle: (threadRef: ScopedThreadRef) => void;
-  /** Says what a key did when nothing else, such as a toast, says it. */
-  onAnnounce: (message: string) => void;
 }) {
   const { thread } = props;
   const approvalRef = useRef<ApprovalHandle>(null);
@@ -406,10 +412,11 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
             answerable={!props.isOpen}
             handle={approvalRef}
             onAnswered={(decision) =>
-              props.onAnnounce(
+              announce(
                 decision === "decline"
                   ? t("Declined: {title}", { title: thread.title })
                   : t("Approved: {title}", { title: thread.title }),
+                "needs-you-triage",
               )
             }
           />

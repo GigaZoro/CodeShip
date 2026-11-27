@@ -382,8 +382,8 @@ export const ThreadListV2FinishedNotSeenHeader = memo(
           label: t("Settle all"),
           accessibilityLabel: tn(
             props.count,
-            "Settle {count} finished thread",
-            "Settle all {count} finished threads",
+            "Settle all, {count} finished thread",
+            "Settle all, {count} finished threads",
           ),
           onPress: props.onSettleAll,
         }}

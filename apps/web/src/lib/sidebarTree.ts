@@ -24,6 +24,18 @@ export function attachSidebarTree(element: HTMLElement | null) {
   return element ? installSidebarTree(element) : undefined;
 }
 
+/**
+ * The Latin letter a key press stands for, with Caps Lock on or on a non-Latin layout, where
+ * the key's position names it; any other key unchanged.
+ */
+export function latinLetterOf(event: Pick<KeyboardEvent, "key" | "code">): string {
+  if (/^[a-z]$/i.test(event.key)) return event.key.toLowerCase();
+  if (event.key.length === 1 && /^Key[A-Z]$/.test(event.code)) {
+    return event.code.slice(3).toLowerCase();
+  }
+  return event.key;
+}
+
 /** The Needs you box's tree, where J and K also move, since its rows take no typing. */
 export function attachTriageTree(element: HTMLElement | null) {
   return element ? installSidebarTree(element, { letterKeys: true }) : undefined;
@@ -185,7 +197,7 @@ export function installSidebarTree(
     if (index < 0) return;
     let target: HTMLElement | undefined;
     const key = options.letterKeys
-      ? ({ j: "ArrowDown", k: "ArrowUp" }[event.key] ?? event.key)
+      ? ({ j: "ArrowDown", k: "ArrowUp" }[latinLetterOf(event)] ?? event.key)
       : event.key;
     switch (key) {
       case "ArrowDown":

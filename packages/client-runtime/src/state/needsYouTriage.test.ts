@@ -119,8 +119,11 @@ describe("collectFinishedNotSeen", () => {
 });
 
 describe("summarizeWhileAway", () => {
-  it("counts what is blocked, what finished, and what recovered by itself since the user left", () => {
-    const awaySince = Date.parse("2026-06-01T09:30:00.000Z");
+  it("counts what is blocked, and what finished or recovered by itself while the user was away", () => {
+    const away = {
+      since: Date.parse("2026-06-01T09:30:00.000Z"),
+      until: Date.parse("2026-06-01T11:45:00.000Z"),
+    };
     const blocked = shell("blocked", { run: "failed" });
     const finishedAway = shell("finished-away", { completedAt: "2026-06-01T10:00:00.000Z" });
     const finishedBefore = {
@@ -140,6 +143,37 @@ describe("summarizeWhileAway", () => {
         autoResume: true,
       },
     };
+    // Finished after the user came back: they were there to see it.
+    const finishedAfterReturn = shell("finished-after-return", {
+      completedAt: "2026-06-01T11:50:00.000Z",
+    });
+    // A limit that reset long before the user left; a later run is just a new run.
+    const oldLimit = {
+      ...shell("old-limit", {
+        runId: "reply",
+        requestedAt: "2026-06-01T10:30:00.000Z",
+        completedAt: "2026-06-01T10:40:00.000Z",
+      }),
+      limitRecovery: {
+        runId: RunId.make("limited-last-week"),
+        resetAt: "2026-05-25T10:00:00.000Z",
+        autoResume: true,
+      },
+    };
+    // The user chose to resume by hand, so nothing recovered by itself.
+    const manual = {
+      ...shell("manual", {
+        runId: "manual-run",
+        requestedAt: "2026-06-01T10:30:00.000Z",
+        completedAt: "2026-06-01T10:40:00.000Z",
+        lastVisitedAt: "2026-06-01T11:00:00.000Z",
+      }),
+      limitRecovery: {
+        runId: RunId.make("manual-limited"),
+        resetAt: "2026-06-01T10:00:00.000Z",
+        autoResume: false,
+      },
+    };
     const stillLimited = {
       ...shell("still-limited", { runId: "limited-2", lastVisitedAt: "2026-06-01T11:30:00.000Z" }),
       limitRecovery: {
@@ -148,16 +182,25 @@ describe("summarizeWhileAway", () => {
         autoResume: true,
       },
     };
-    const threads = [blocked, finishedAway, finishedBefore, recovered, stillLimited];
+    const threads = [
+      blocked,
+      finishedAway,
+      finishedBefore,
+      recovered,
+      stillLimited,
+      finishedAfterReturn,
+      oldLimit,
+      manual,
+    ];
     const needsYou = collectNeedsYouThreads(threads, { now });
     expect(
       summarizeWhileAway({
         threads,
         needsYou: needsYou.threads,
         finishedNotSeen: collectFinishedNotSeen(threads, { now }),
-        awaySince,
+        away,
       }),
-    ).toEqual({ blocked: 1, finished: 1, recovered: 1 });
+    ).toEqual({ blocked: 1, finished: 2, recovered: 1 });
   });
 });
 
@@ -183,15 +226,24 @@ describe("createPresenceTracker", () => {
     const { presence, at } = tracker(null);
     at(1_000);
     presence.present();
-    expect(presence.getAwaySince()).toBeNull();
+    expect(presence.getAway()).toBeNull();
     at(2_000);
     presence.left();
     at(2_000 + WHILE_AWAY_MIN_MS - 1);
     presence.present();
-    expect(presence.getAwaySince()).toBeNull();
+    expect(presence.getAway()).toBeNull();
     at(2_000 + 2 * WHILE_AWAY_MIN_MS);
     presence.present();
-    expect(presence.getAwaySince()).toBe(2_000 + WHILE_AWAY_MIN_MS - 1);
+    const away = { since: 2_000 + WHILE_AWAY_MIN_MS - 1, until: 2_000 + 2 * WHILE_AWAY_MIN_MS };
+    expect(presence.getAway()).toEqual(away);
+    const shown = presence.getAway();
+    at(2_000 + 2 * WHILE_AWAY_MIN_MS + 1_000);
+    presence.present();
+    expect(presence.getAway()).toBe(shown);
+    // Away again before catching up: the strip keeps counting from the first absence.
+    at(2_000 + 4 * WHILE_AWAY_MIN_MS);
+    presence.present();
+    expect(presence.getAway()).toEqual({ since: away.since, until: 2_000 + 4 * WHILE_AWAY_MIN_MS });
   });
 
   it("measures from the stored presence across restarts, and caught up clears it", () => {
@@ -200,9 +252,9 @@ describe("createPresenceTracker", () => {
     presence.subscribe(() => changes++);
     at(5_000 + WHILE_AWAY_MIN_MS);
     presence.present();
-    expect(presence.getAwaySince()).toBe(5_000);
+    expect(presence.getAway()).toEqual({ since: 5_000, until: 5_000 + WHILE_AWAY_MIN_MS });
     presence.caughtUp();
-    expect([presence.getAwaySince(), changes]).toEqual([null, 2]);
+    expect([presence.getAway(), changes]).toEqual([null, 2]);
     expect(saved).toEqual([5_000 + WHILE_AWAY_MIN_MS]);
   });
 });
