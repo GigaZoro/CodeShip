@@ -1,3 +1,7 @@
+## 2026-11-27 — Claude turns survive a slow settings read
+
+- When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
+
 ## 2026-11-26 — Antigravity extra-high effort pricing and quota probe crash handling
 
 - Antigravity usage pricing now resolves `-xhigh` and `-minimal` effort model slugs to their base model rate.

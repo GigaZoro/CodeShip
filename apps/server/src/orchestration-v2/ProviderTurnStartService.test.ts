@@ -72,6 +72,7 @@ import {
 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
+import { ClaudeSettingsResolveError } from "../provider/Drivers/ClaudeSettingsCascade.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -2415,6 +2416,25 @@ effectIt.effect.each([
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
+  // regression: a settings read a busy machine held past its deadline settled the run as a refusal
+  {
+    case: "for Claude settings the account worker could not read in time",
+    cause: "settings read timed out",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: undefined,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  {
+    case: "for Claude settings the account worker failed to read",
+    cause: "settings read failed",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: undefined,
+    class: "provider_error",
+    code: null,
+  },
   // Refusals only the user can fix win over a sleep or a wake.
   {
     case: "30 seconds after a wake, for an account the provider turned away",
@@ -2459,6 +2479,14 @@ effectIt.effect.each([
       "missing --append-system-prompt text": new ClaudeAppendSystemPromptMissingValueError({
         flag: "--append-system-prompt",
       }),
+      "settings read timed out": new ClaudeSettingsResolveError({
+        phase: "account-worker",
+        kind: "timeout",
+      }),
+      "settings read failed": new ClaudeSettingsResolveError({
+        phase: "account-worker",
+        kind: "nonzero-exit",
+      }),
     } as const;
     const cause = Object.hasOwn(causes, row.cause)
       ? causes[row.cause as keyof typeof causes]
@@ -2496,6 +2524,8 @@ effectIt.effect.each([
       },
       "MCP registration timed out": { message: registrationTimeout.message },
       "missing --append-system-prompt text": { message: cause.message },
+      "settings read timed out": { message: cause.message },
+      "settings read failed": { message: cause.message },
     } as const;
     expect(failures).toEqual([
       expect.objectContaining({

@@ -233,13 +233,21 @@ const refusedBeforePrompt = (error: unknown): boolean =>
       (isProviderAdapterTurnStartError(cause) && cause.beforePrompt === true),
   );
 
+// A busy machine can hold the worker that reads another account's settings past its deadline even
+// after its own retry. That says nothing about the settings, so waiting fixes it.
+const isClaudeSettingsTimeout = (cause: object) =>
+  Predicate.isTagged(cause, "ClaudeSettingsResolveError") &&
+  Predicate.hasProperty(cause, "kind") &&
+  cause.kind === "timeout";
+
 /** A sign-in, an account the provider turns away (HTTP 401 or 403), or a setup refusal: no retry fixes it. */
 const refusedUntilChanged = (error: unknown): boolean =>
   causedBy(
     error,
     (cause) =>
       (isProviderAdapterOpenSessionError(cause) && cause.requiresSignIn === true) ||
-      SETUP_REFUSAL_TAGS.some((tag) => Predicate.isTagged(cause, tag)) ||
+      (SETUP_REFUSAL_TAGS.some((tag) => Predicate.isTagged(cause, tag)) &&
+        !isClaudeSettingsTimeout(cause)) ||
       (Predicate.hasProperty(cause, "status") && (cause.status === 401 || cause.status === 403)),
   );
 
@@ -272,6 +280,7 @@ function unstartedTurnFailure(
       wait?.stalled === true ||
       (wait?.afterWake === true && (!explained || causedBy(error, isAfterWakeTimeout))) ||
       isProviderStartStepTimeoutError(error) ||
+      causedBy(error, isClaudeSettingsTimeout) ||
       [shown?.message, providerFailureDiagnostic(error)].some(
         (text) => providerErrorClass(text) === "transport_error",
       ));

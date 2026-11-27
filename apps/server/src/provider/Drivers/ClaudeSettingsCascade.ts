@@ -91,6 +91,24 @@ export const claudeSettingsWorkerFailureKind = (
   }
 };
 
+/**
+ * A busy machine can hold the account worker's start past its deadline. The read changes nothing,
+ * so a timed-out one is read once more, sparing the turn a restart; every other failure is the
+ * worker's real answer.
+ */
+export const retryTimedOutClaudeWorker = <A, E, R>(read: Effect.Effect<A, E, R>) =>
+  read.pipe(
+    Effect.tapError((error) =>
+      claudeSettingsWorkerFailureKind(error) === "timeout"
+        ? Effect.logWarning("Claude's account settings worker timed out.")
+        : Effect.void,
+    ),
+    Effect.retry({
+      times: 1,
+      while: (error) => claudeSettingsWorkerFailureKind(error) === "timeout",
+    }),
+  );
+
 export class ClaudeProjectConfigRootError extends Schema.TaggedError<ClaudeProjectConfigRootError>()(
   "ClaudeProjectConfigRootError",
   { path: Schema.String },
@@ -317,6 +335,7 @@ const resolveClaudeSettingsFiles = Effect.fn("ClaudeAdapterV2.resolveSettingsFil
         input: encodeClaudeJson(reads),
         environment: { ...environment, CLAUDE_CONFIG_DIR: homePath },
       }).pipe(
+        retryTimedOutClaudeWorker,
         Effect.flatMap(decodeClaudeSettingsReadSources),
         Effect.mapError(
           (cause) =>
