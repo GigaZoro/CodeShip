@@ -403,6 +403,8 @@ export const make = Effect.gen(function* () {
     // Requests paused for interception continue once it ends.
     resetDebuggee(tab, "Fetch.disable", {});
     resetDebuggee(tab, "Page.setInterceptFileChooserDialog", { enabled: false });
+    // A server that denied downloads would otherwise keep the person's downloads blocked.
+    resetDebuggee(tab, "Page.setDownloadBehavior", { behavior: "default" });
     if (tab.screencasts.size > 0) resetDebuggee(tab, "Page.stopScreencast", {});
   };
 

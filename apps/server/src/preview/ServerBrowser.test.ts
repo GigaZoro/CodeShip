@@ -843,6 +843,52 @@ it.effect("an agent closes a tab the desktop let go without waiting for it to co
   ).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "an agent acting on a tab the desktop let go hears why by its deadline, and the tab closes if it never returns",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const events = yield* manager.subscribeEvents;
+        desktopRendersNext = true;
+        const opened = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        yield* Effect.promise(() => desktopDetachReady.promise);
+        desktopTabs.delete(opened.tabId!);
+        desktopAttach = "waits";
+        desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
+        yield* Effect.promise(() => desktopReleased.promise);
+
+        const acting = yield* broker
+          .invoke<PreviewAutomationStatus>({
+            scope,
+            tabId: PreviewTabId.make(opened.tabId!),
+            operation: "snapshot",
+            input: {},
+          })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.promise(() => desktopAttachWaits.promise);
+        yield* TestClock.adjust("15 seconds");
+        const error = yield* Fiber.join(acting);
+        yield* TestClock.adjust("45 seconds");
+        yield* PubSub.take(events).pipe(
+          Effect.repeat({
+            until: (event) => event.type === "closed" && event.tabId === opened.tabId,
+          }),
+        );
+        const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+        expect(error).toMatchObject({ _tag: "PreviewAutomationExecutionError" });
+        expect(error.message).toContain("has not shown this tab");
+        expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.effect("a tab that fails to set up releases its desktop page or headless context", () =>
   Effect.scoped(
     Effect.gen(function* () {

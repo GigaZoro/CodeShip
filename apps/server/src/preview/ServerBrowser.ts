@@ -48,6 +48,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { constVoid } from "effect/Function";
 import * as Layer from "effect/Layer";
@@ -1413,6 +1414,13 @@ const make = Effect.gen(function* () {
             { cause },
           ),
         );
+        // A tab the desktop never shows has no page to drive, and would stay listed without one.
+        if (cause instanceof DesktopAttachTimeoutError)
+          runFork(
+            manager
+              .close({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
+              .pipe(Effect.ignore),
+          );
         throw cause;
       })
       .finally(() => {
@@ -1423,13 +1431,18 @@ const make = Effect.gen(function* () {
     return opening;
   };
 
+  const listedServerSession = Effect.fn("ServerBrowser.listedServerSession")(function* (
+    threadId: string,
+    tabId: string,
+  ) {
+    const { sessions } = yield* manager.list({ threadId: ThreadId.make(threadId) });
+    return sessions.find((session) => session.tabId === tabId && session.runtime === "server");
+  });
+
   const findTab = Effect.fn("ServerBrowser.findTab")(function* (threadId: string, tabId: string) {
     const existing = tabs.get(tabKey(threadId, tabId));
     if (existing) return existing;
-    const { sessions } = yield* manager.list({ threadId: ThreadId.make(threadId) });
-    const snapshot = sessions.find(
-      (session) => session.tabId === tabId && session.runtime === "server",
-    );
+    const snapshot = yield* listedServerSession(threadId, tabId);
     if (!snapshot) return yield* new ServerBrowserTabNotFoundError({ threadId, tabId });
     return yield* Effect.tryPromise({
       try: () => ensureTab(snapshot),
@@ -1872,7 +1885,35 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const requireTab = async (request: PreviewAutomationRequest) => {
+  /**
+   * A listed tab, started if it has no page yet. A tab the desktop let go waits up to a minute for
+   * it to return, longer than a request may take, so the request says why it has no page by its
+   * own deadline instead of timing out without a reason; the wait goes on behind it.
+   */
+  const listedTab = async (threadId: string, tabId: string, deadlineMs: number) => {
+    const existing = tabs.get(tabKey(threadId, tabId));
+    if (existing) return existing;
+    const snapshot = await runPromise(listedServerSession(threadId, tabId));
+    if (!snapshot) return undefined;
+    const started = await runPromise(
+      Effect.tryPromise({
+        // A tab closed while it waited is no longer open: requireTab says so.
+        try: () =>
+          ensureTab(snapshot).catch((cause: unknown) => {
+            if (isTabNotFound(cause)) return undefined;
+            throw cause;
+          }),
+        catch: ServerBrowserPage.toOperationError,
+      }).pipe(Effect.timeoutOption(Duration.millis(Math.max(0, deadlineMs - performance.now())))),
+    );
+    if (Option.isSome(started)) return started.value;
+    throw new ServerBrowserPage.ServerBrowserOperationError(
+      "PreviewAutomationExecutionError",
+      `The desktop app has not shown this tab yet, so it has no page to act on. CodeShip waits up to ${DESKTOP_BROWSER_ATTACH_WAIT_MS / 1000} seconds for it, then closes the tab rather than run it in the server's headless browser without the desktop profile's sign-ins. Try again shortly, or call preview_open.`,
+    );
+  };
+
+  const requireTab = async (request: PreviewAutomationRequest, deadlineMs: number) => {
     if (!request.agentSessionId)
       throw new BrowserControlInterrupted("The agent session is missing. Reconnect the provider.");
     const owned = [...tabs.values()].filter(
@@ -1886,9 +1927,7 @@ const make = Effect.gen(function* () {
     const tab =
       request.tabId === undefined
         ? latestThreadTab(request.threadId, request.agentSessionId)
-        : await runPromise(
-            findTab(request.threadId, request.tabId).pipe(Effect.orElseSucceed(constVoid)),
-          );
+        : await listedTab(request.threadId, request.tabId, deadlineMs);
     if (!tab) {
       throw new ServerBrowserPage.ServerBrowserOperationError(
         "PreviewAutomationTabNotFoundError",
@@ -1927,10 +1966,7 @@ const make = Effect.gen(function* () {
 
   /** The agent that opened a listed server session: `null` for a user's tab, `undefined` when none is listed. */
   const serverSessionOwner = async (threadId: ThreadId, tabId: string) => {
-    const { sessions } = await runPromise(manager.list({ threadId }));
-    const snapshot = sessions.find(
-      (session) => session.tabId === tabId && session.runtime === "server",
-    );
+    const snapshot = await runPromise(listedServerSession(threadId, tabId));
     return snapshot === undefined ? undefined : (snapshot.automationOwner ?? null);
   };
 
@@ -2107,7 +2143,7 @@ const make = Effect.gen(function* () {
         return {};
       }
     }
-    const tab = await requireTab(request);
+    const tab = await requireTab(request, deadlineMs);
     if (!tab.desktop) ran.headless = true;
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
@@ -2316,17 +2352,7 @@ const make = Effect.gen(function* () {
         const key = tabKey(snapshot.threadId, snapshot.tabId);
         const userTab = snapshot.automationOwner === undefined;
         if (!userTab && !pendingTabs.has(key) && !tabs.has(key)) return;
-        inTabOrder(key, () =>
-          ensureTab(snapshot).then(constVoid, (cause: unknown) => {
-            // openTab closes an agent's tab itself; a user's would stay listed with no page behind it.
-            if (userTab && cause instanceof DesktopAttachTimeoutError)
-              runFork(
-                manager
-                  .close({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
-                  .pipe(Effect.ignore),
-              );
-          }),
-        );
+        inTabOrder(key, () => ensureTab(snapshot).then(constVoid, constVoid));
         return;
       }
       const key = tabKey(event.threadId, event.tabId);
@@ -2761,10 +2787,7 @@ const make = Effect.gen(function* () {
     Stream.runForEach((key) =>
       Effect.gen(function* () {
         if (tabs.has(tabKey(key.threadId, key.tabId))) return;
-        const { sessions } = yield* manager.list({ threadId: ThreadId.make(key.threadId) });
-        const snapshot = sessions.find(
-          (session) => session.tabId === key.tabId && session.runtime === "server",
-        );
+        const snapshot = yield* listedServerSession(key.threadId, key.tabId);
         if (snapshot) yield* Effect.promise(() => ensureTab(snapshot).catch(constVoid));
       }).pipe(Effect.ignore),
     ),

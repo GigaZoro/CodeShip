@@ -38,6 +38,7 @@ const RELAY_RESETS: ReadonlyArray<readonly [string, Record<string, unknown>]> = 
   ["Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }],
   ["Fetch.disable", {}],
   ["Page.setInterceptFileChooserDialog", { enabled: false }],
+  ["Page.setDownloadBehavior", { behavior: "default" }],
 ];
 const SCREENCAST_RESET = ["Page.stopScreencast", {}] as const;
 
@@ -46,6 +47,8 @@ const makeDebuggee = (
   options: {
     readonly deferFocus?: boolean;
     readonly refuse?: (method: string, sessionId: string | undefined) => boolean;
+    /** Methods a relay sends with a reset's params, held like any other command instead. */
+    readonly hold?: ReadonlyArray<string>;
   } = {},
 ) => {
   const emitter = new NodeEvents.EventEmitter();
@@ -82,6 +85,7 @@ const makeDebuggee = (
           screencastCommands.push({ method, params });
         }
         if (
+          !options.hold?.includes(method) &&
           [...RELAY_RESETS, SCREENCAST_RESET].some(
             ([resetMethod, resetParams]) =>
               resetMethod === method && NodeUtil.isDeepStrictEqual(resetParams, params),
@@ -1250,7 +1254,7 @@ describe("DesktopBrowserHost", () => {
   it.effect("saves a server tab's download under its CDP guid where the server asked", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
-      const debuggee = makeDebuggee();
+      const debuggee = makeDebuggee({ hold: ["Page.setDownloadBehavior"] });
       host.attach(key, debuggee.tab);
       const replies = yield* watchReplies(host);
       const paths: Array<string> = [];
@@ -1285,7 +1289,7 @@ describe("DesktopBrowserHost", () => {
   it.effect("forgets where a server it let go asked downloads to go", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
-      const debuggee = makeDebuggee();
+      const debuggee = makeDebuggee({ hold: ["Page.setDownloadBehavior"] });
       host.attach(key, debuggee.tab);
       const replies = yield* watchReplies(host);
       const paths: Array<string> = [];

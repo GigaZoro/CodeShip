@@ -255,10 +255,12 @@ continue. Read-only connections can watch without changing the page.
 
 On a host running the desktop app, an agent's tab opens in the desktop app,
 with the sign-ins of its browser profile. When no desktop window is open to
-show it, the tab runs in the host's headless browser, which does not have those
-sign-ins, and the agent's results say `headless`. If the desktop app is open but
-does not show the tab within a minute, opening the tab fails instead of running
-it without those sign-ins.
+show it, or the host has no desktop app, the tab runs in the host's headless
+browser, which does not have those sign-ins, and the agent's results say
+`headless`. If the desktop app is open but does not show the tab within a
+minute, opening the tab fails instead of running it without those sign-ins, and
+a tab the desktop app stops showing closes if it does not come back within a
+minute.
 
 While you have control, the tab works with your device: text the page copies or
 cuts goes to your clipboard, a file picker on the page opens your device's
