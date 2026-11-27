@@ -13,6 +13,7 @@ import {
   mergeScanEntry,
   SCAN_CACHE_PIECE_CHARS,
   scanCacheDocumentPieces,
+  settleTailGroups,
   type CachedFile,
   type CachedSource,
   type ScanCache,
@@ -41,6 +42,13 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
     ...overrides,
   };
 }
+
+const museCall = (id: string, outputTokens: number) =>
+  record({
+    provider: "muse",
+    dedupeKey: JSON.stringify(["muse", id]),
+    totals: { ...record().totals, outputTokens },
+  });
 
 function position(overrides: Partial<CachedFile["position"]> = {}): CachedFile["position"] {
   return {
@@ -71,6 +79,8 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 
 const encode = (cache: ScanCache, extra: Readonly<Record<string, unknown>> = {}) =>
   [...scanCacheDocumentPieces(cache, extra)].join("");
+const reload = (entry: CachedFile) =>
+  decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
 
 describe("scan cache round trip", () => {
   it("restores cached history unchanged except for Claude local placeholders", () => {
@@ -504,8 +514,6 @@ describe("scan cache merge", () => {
     const snapshots = ["a:", "b:", "a:", "c:", "d:"].map((dedupeKey, index) =>
       row({ observedAtMs: (index + 1) * 10, records: [record({ dedupeKey })] }),
     );
-    const reload = (entry: CachedFile) =>
-      decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
     const merged = snapshots.reduce(mergeScanEntry);
     for (const order of [
       [4, 3, 2, 1, 0],
@@ -543,6 +551,8 @@ describe("scan cache merge", () => {
     expect(retainedSuperseded(merged, 0, "claude")).toHaveLength(1);
     expect(mergeScanEntry(mergeScanEntry(later, smaller), larger)).toEqual(merged);
     expect(mergeScanEntry(mergeScanEntry(later, larger), smaller)).toEqual(merged);
+    const clockBehind = reload(pruneSuperseded(tied, 1_500, 1_480));
+    expect(mergeScanEntry(clockBehind, reload(clockBehind))).toEqual(clockBehind);
   });
 
   it.each(["claude", "muse"] as const)(
@@ -560,15 +570,13 @@ describe("scan cache merge", () => {
       const renamed = row({ provider, records: [call(2)] });
       const firstOnly = row({ provider, records: [call(0)] });
       const replaced = row({ provider, observedAtMs: 3000, records: [] });
-      const readBack = (entry: CachedFile) =>
-        decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
       const merged = [both, firstOnly, renamed, replaced].reduce(mergeScanEntry);
       for (const order of [
         [replaced, renamed, firstOnly, both],
         [firstOnly, renamed, replaced, both],
         [replaced, both, firstOnly, renamed],
       ]) {
-        expect(order.reduce((a, b) => readBack(mergeScanEntry(a, b)))).toEqual(merged);
+        expect(order.reduce((a, b) => reload(mergeScanEntry(a, b)))).toEqual(merged);
       }
       expect(retainedSuperseded(merged, 0, provider)).toEqual(both.records);
       expect(
@@ -669,8 +677,6 @@ describe("scan cache merge", () => {
 
   it("keeps peer EOF usage only when the next observed size proves a replacement", () => {
     const previous = row({ size: 240, records: [], tailRecords: [record()] });
-    const reload = (entry: CachedFile) =>
-      decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
     const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
     const later = row({ observedAtMs: 4000, size: 300, records: [] });
     for (const size of [0, 100, 240, 300]) {
@@ -694,15 +700,9 @@ describe("scan cache merge", () => {
   });
 
   it("keeps the latest confirmed value and expiry for a call first witnessed at EOF", () => {
-    const call = (id: string, outputTokens: number) =>
-      record({
-        provider: "muse",
-        dedupeKey: JSON.stringify(["muse", id]),
-        totals: { ...record().totals, outputTokens },
-      });
-    const old = call("A", 1);
-    const sibling = call("B", 2);
-    const latest = call("A", 99);
+    const old = museCall("A", 1);
+    const sibling = museCall("B", 2);
+    const latest = museCall("A", 99);
     const first = row({
       provider: "muse",
       observedAtMs: 10,
@@ -713,8 +713,6 @@ describe("scan cache merge", () => {
     const empty = row({ provider: "muse", observedAtMs: 20, size: 0, records: [] });
     const returned = row({ provider: "muse", observedAtMs: 30, size: 80, records: [latest] });
     const last = row({ provider: "muse", observedAtMs: 40, size: 90, records: [sibling] });
-    const reload = (entry: CachedFile) =>
-      decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
     const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
     const orders = (rows: readonly CachedFile[]): CachedFile[][] =>
       rows.length === 0
@@ -770,6 +768,29 @@ describe("scan cache merge", () => {
       ),
     ).toBe(false);
     expect(retainedSuperseded(reload(pruneSuperseded(lateFirst, 123, 31)), 31, "muse")).toEqual([]);
+  });
+
+  it("proves a peer EOF tail only from the read right after it, not one past expired reads", () => {
+    const prune = (entry: CachedFile) => reload(pruneSuperseded(entry, 351, 331));
+    const held = row({
+      provider: "muse",
+      observedAtMs: 330,
+      records: [museCall("B", 3)],
+      tailRecords: [museCall("D", 7)],
+      priorReads: [[328, 100]],
+      expiredThroughMs: 327,
+    });
+    const peer = row({
+      provider: "muse",
+      observedAtMs: 134,
+      size: 200,
+      records: [museCall("A", 1)],
+      tailRecords: [museCall("D", 7)],
+      expiredThroughMs: 134,
+    });
+    const prunedFirst = prune(mergeScanEntry(prune(held), peer));
+    expect(prunedFirst.peerTailGroups).toBeUndefined();
+    expect(prunedFirst).toEqual(prune(mergeScanEntry(held, peer)));
   });
 
   it("keeps the held row when nothing tells two rows apart", () => {
@@ -838,5 +859,185 @@ describe("scan cache merge", () => {
     expect(mergeCachedSource(filled, earlier)).toBe(filled);
     expect(mergeCachedSource(later, moved)).toBe(later);
     expect(mergeCachedSource({ dir: "/projects", volumeId: "1:2" }, later)).toEqual(filled);
+  });
+});
+
+describe("scan cache retention", () => {
+  const RETENTION_MS = 20;
+  const KEYS = ["A", "B", "C", "D"];
+  const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
+  const answers = (entry: CachedFile, cutoffMs: number) =>
+    [cutoffMs, cutoffMs + 5, cutoffMs + 15].map((at) => retainedSuperseded(entry, at, "muse"));
+
+  /** Mulberry32, so every failure replays from its seed. */
+  function random(seed: number) {
+    let state = seed;
+    return () => {
+      state = (state + 0x6d2b79f5) | 0;
+      let value = Math.imul(state ^ (state >>> 15), 1 | state);
+      value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function fileVersion(next: () => number, atMs: number): CachedFile {
+    const records = KEYS.filter(() => next() < 0.4).map((id) =>
+      museCall(id, 1 + Math.floor(next() * 3)),
+    );
+    const tail = next() < 0.5 ? KEYS[Math.floor(next() * KEYS.length)]! : undefined;
+    return {
+      size: Math.floor(next() * 5) * 50,
+      mtimeMs: atMs,
+      observedAtMs: atMs,
+      provider: "muse",
+      records,
+      tailRecords:
+        tail === undefined || records.some((item) => item.dedupeKey === museCall(tail, 7).dedupeKey)
+          ? []
+          : [museCall(tail, 7)],
+      malformedRecords: 0,
+      position: position(),
+    };
+  }
+
+  interface PeerStep {
+    readonly label: string;
+    readonly nowMs: number;
+    readonly held: CachedFile;
+    /** Prunes as this peer's next save does, settling what no unretired input can change. */
+    readonly prune: (entry: CachedFile) => CachedFile;
+  }
+
+  interface PeerVisits {
+    readonly merge?: (step: PeerStep, input: CachedFile) => void;
+    readonly stale?: (step: PeerStep, input: CachedFile) => void;
+    readonly row?: (step: PeerStep) => void;
+  }
+
+  /**
+   * Three peers read one changing file, merge each other's snapshots in random order and prune.
+   * A full save that leaves no unmerged peer snapshot settles everything before its cutoff.
+   */
+  function runPeers(seed: number, steps: number, visits: PeerVisits) {
+    const next = random(seed);
+    const held: (CachedFile | undefined)[] = [undefined, undefined, undefined];
+    const settledThroughMs = held.map(() => -Infinity);
+    const merged = held.map(() => new Set<CachedFile>());
+    let snapshots: { readonly writer: number; readonly row: CachedFile }[] = [];
+    const written: CachedFile[] = [];
+    let file = fileVersion(next, 0);
+    let quietUntilMs = 0;
+    for (let nowMs = 1; nowMs <= steps; nowMs++) {
+      if (nowMs >= quietUntilMs && next() < 0.03)
+        quietUntilMs = nowMs + Math.floor(RETENTION_MS * (1 + next()));
+      if (nowMs >= quietUntilMs && next() < 0.4) file = fileVersion(next, nowMs);
+      for (let peer = 0; peer < held.length; peer++) {
+        const prune = (entry: CachedFile) =>
+          reload(
+            settleTailGroups(
+              pruneSuperseded(entry, nowMs, nowMs - RETENTION_MS),
+              settledThroughMs[peer]!,
+            ),
+          );
+        const step = (entry: CachedFile): PeerStep => ({
+          label: `seed ${seed}, peer ${peer} at ${nowMs}`,
+          nowMs,
+          held: entry,
+          prune,
+        });
+        const own = held[peer];
+        if (next() < 0.3 && own?.mtimeMs !== file.mtimeMs) {
+          const read = { ...file, observedAtMs: nowMs };
+          const liveKeys = new Set(read.records.map((item) => item.dedupeKey!));
+          held[peer] = own === undefined ? read : reload(carrySuperseded(read, own, { liveKeys }));
+        }
+        if (held[peer] !== undefined && next() < 0.6) {
+          const inputs = snapshots.filter(
+            (item) => item.writer !== peer && !merged[peer]!.has(item.row),
+          );
+          for (let index = inputs.length - 1; index > 0; index--) {
+            const other = Math.floor(next() * (index + 1));
+            [inputs[index], inputs[other]] = [inputs[other]!, inputs[index]!];
+          }
+          for (const input of inputs) {
+            merged[peer]!.add(input.row);
+            visits.merge?.(step(held[peer]!), input.row);
+            held[peer] = merge(held[peer]!, input.row);
+          }
+        }
+        if (held[peer] !== undefined && next() < 0.25) {
+          held[peer] = prune(held[peer]!);
+          if (next() < 0.3) {
+            snapshots = snapshots.filter(
+              (item) => item.writer !== peer && !merged[peer]!.has(item.row),
+            );
+            if (snapshots.length === 0) settledThroughMs[peer] = nowMs - RETENTION_MS;
+          }
+          snapshots.push({ writer: peer, row: held[peer]! });
+          written.push(held[peer]!);
+        }
+        const current = held[peer];
+        if (current === undefined) continue;
+        if (written.length > 0 && next() < 0.3)
+          visits.stale?.(step(current), written[Math.floor(next() * written.length)]!);
+        visits.row?.(step(current));
+      }
+    }
+  }
+
+  it("saves the same row whichever order peers merge and prune, for every saved field", () => {
+    for (let seed = 1; seed <= 6; seed++) {
+      runPeers(seed, 10 * RETENTION_MS, {
+        merge: ({ label, nowMs, held, prune }, input) => {
+          const expected = prune(mergeScanEntry(held, input));
+          expect(prune(mergeScanEntry(prune(held), input)), label).toEqual(expected);
+          expect(prune(mergeScanEntry(input, held)), label).toEqual(expected);
+          // Pruning the input first can drop a tail group the held row's live keys still name.
+          expect(
+            answers(prune(mergeScanEntry(prune(held), prune(input))), nowMs - RETENTION_MS),
+            label,
+          ).toEqual(answers(expected, nowMs - RETENTION_MS));
+        },
+        stale: ({ label, nowMs, held, prune }, input) => {
+          // An old row's tail can need a read that only the unpruned held row still has (AB#7268).
+          expect(
+            answers(prune(mergeScanEntry(prune(held), input)), nowMs - RETENTION_MS),
+            label,
+          ).toEqual(answers(prune(mergeScanEntry(held, input)), nowMs - RETENTION_MS));
+        },
+        row: ({ label, held }) => {
+          expect(merge(held, reload(held)), label).toEqual(held);
+          const behindMs = held.observedAtMs - 5;
+          const behind = reload(pruneSuperseded(held, behindMs, behindMs - RETENTION_MS));
+          expect(merge(behind, reload(behind)), label).toEqual(behind);
+        },
+      });
+    }
+  });
+
+  it("keeps saved metadata bounded through a long peer history", () => {
+    const largest = { superseded: 0, priorReads: 0, peerTails: 0, peerTailGroups: 0 };
+    for (let seed = 1; seed <= 6; seed++) {
+      runPeers(seed, 60 * RETENTION_MS, {
+        row: ({ label, nowMs, held, prune }) => {
+          const saved = prune(held);
+          const cutoffMs = nowMs - RETENTION_MS;
+          expect(answers(saved, cutoffMs), label).toEqual(
+            answers(reload(pruneSuperseded(held, nowMs, cutoffMs)), cutoffMs),
+          );
+          for (const key of Object.keys(largest) as (keyof typeof largest)[])
+            largest[key] = Math.max(largest[key], saved[key]?.length ?? 0);
+        },
+      });
+    }
+    const bounds = {
+      superseded: KEYS.length * 4,
+      priorReads: RETENTION_MS + 1,
+      peerTails: RETENTION_MS + 1,
+      // One settled proof per group of keys, plus the groups whose next read is recent.
+      peerTailGroups: 2 ** KEYS.length + RETENTION_MS,
+    };
+    for (const key of Object.keys(bounds) as (keyof typeof bounds)[])
+      expect(largest[key], key).toBeLessThanOrEqual(bounds[key]);
   });
 });

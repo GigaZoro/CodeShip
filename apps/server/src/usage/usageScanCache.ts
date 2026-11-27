@@ -226,6 +226,9 @@ const recordIdentity = (record: UsageRecord) =>
 
 const readTime = (read: PriorRead) => (typeof read === "number" ? read : read[0]);
 const readSize = (read: PriorRead) => (typeof read === "number" ? undefined : read[1]);
+/** A smaller next read proves the EOF tail was rewritten rather than completed. */
+const provesReplacement = (next: PriorRead, tailSize: number) =>
+  (readSize(next) ?? Infinity) < tailSize;
 const isPriorRead = (value: unknown): value is PriorRead =>
   (typeof value === "number" && Number.isFinite(value)) ||
   (Array.isArray(value) &&
@@ -355,7 +358,9 @@ function mergePeerTails(
   return [...candidates.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, item]) => item);
 }
 
-function firstSuccessor(entry: CachedFile, seenMs: number) {
+function firstSuccessor(entry: CachedFile, seenMs: number): PriorRead {
+  // An expired read may have come first, so only a row that kept every later read knows.
+  if ((entry.expiredThroughMs ?? -Infinity) > seenMs) return seenMs;
   return firstReadAfter(entry.priorReads ?? [], seenMs, [entry.observedAtMs, entry.size]);
 }
 
@@ -413,6 +418,27 @@ function relevantTailGroups(
   return groups.filter(({ group }) => groupMembers(group)?.some((key) => keys.has(key)));
 }
 
+/**
+ * Once no input can hold a read before `throughMs`, a group whose next read is earlier is final.
+ * Queries read only which groups are proved, so one proof per group answers them all.
+ */
+export function settleTailGroups(entry: CachedFile, throughMs: number): CachedFile {
+  const groups = entry.peerTailGroups;
+  if (groups === undefined) return entry;
+  const proofs = new Map<string, PeerTailGroup>();
+  for (const item of groups) {
+    if (readTime(item.next) >= throughMs || !provesReplacement(item.next, item.size)) continue;
+    const held = proofs.get(item.group);
+    if (held === undefined || held.seenMs < item.seenMs) proofs.set(item.group, item);
+  }
+  const peerTailGroups = groups.filter(
+    (item) => readTime(item.next) >= throughMs || proofs.get(item.group) === item,
+  );
+  if (peerTailGroups.length === groups.length) return entry;
+  const { peerTailGroups: _groups, ...rest } = entry;
+  return peerTailGroups.length ? { ...rest, peerTailGroups } : rest;
+}
+
 function expiredTailGroups(
   tails: readonly PeerTail[],
   floor: number,
@@ -432,7 +458,7 @@ function expiredTailGroups(
 
 function provedTailReplacement(entry: CachedFile, tail: PeerTail) {
   const next = firstSuccessor(entry, tail.seenMs);
-  return readTime(next) > tail.seenMs && (readSize(next) ?? Infinity) < tail.size
+  return readTime(next) > tail.seenMs && provesReplacement(next, tail.size)
     ? readTime(next)
     : undefined;
 }
@@ -602,7 +628,7 @@ function historyWithProvedTails(entry: CachedFile, proved: readonly SupersededRe
   const conditional =
     entry.superseded?.length || proved.length
       ? (entry.peerTailGroups
-          ?.filter((item) => (readSize(item.next) ?? Infinity) < item.size)
+          ?.filter((item) => provesReplacement(item.next, item.size))
           .map((item) => item.group) ?? [])
       : [];
   if (proved.length === 0 && conditional.length === 0) return entry.superseded ?? [];
@@ -1445,14 +1471,23 @@ export function pruneSuperseded(
     entry.superseded === undefined &&
     entry.peerTails === undefined &&
     entry.peerTailGroups === undefined
-  )
-    return entry;
+  ) {
+    // The read itself expires too, so a floor the row already keeps rises to it as it would below.
+    return entry.expiredThroughMs !== undefined &&
+      entry.observedAtMs < retentionCutoffMs &&
+      entry.expiredThroughMs < entry.observedAtMs
+      ? { ...entry, expiredThroughMs: entry.observedAtMs }
+      : entry;
+  }
   const reads = entry.priorReads ?? [];
   const retained = entry.superseded ?? [];
   const tails = entry.peerTails ?? [];
+  // A merge dates a sighting by this read from the read itself, so only earlier ones cap at now.
+  const capOf = (item: SupersededRecord) =>
+    item.seenMs === entry.observedAtMs ? Math.max(nowMs, entry.observedAtMs) : nowMs;
   if (
     readTime(reads[0] ?? entry.observedAtMs) >= retentionCutoffMs &&
-    retained.every(({ sinceMs }) => sinceMs >= retentionCutoffMs && sinceMs <= nowMs)
+    retained.every((item) => item.sinceMs >= retentionCutoffMs && item.sinceMs <= capOf(item))
   )
     return entry;
   let floor = entry.expiredThroughMs ?? -Infinity;
@@ -1461,7 +1496,7 @@ export function pruneSuperseded(
     if (time >= retentionCutoffMs) break;
     floor = Math.max(floor, time);
   }
-  if (entry.observedAtMs < retentionCutoffMs) floor = entry.observedAtMs;
+  if (entry.observedAtMs < retentionCutoffMs) floor = Math.max(floor, entry.observedAtMs);
   for (const item of retained) {
     if (item.sinceMs < retentionCutoffMs) floor = Math.max(floor, item.sinceMs);
   }
@@ -1486,7 +1521,7 @@ export function pruneSuperseded(
       liveKeys ??= new Set(entry.records.map((record) => record.dedupeKey));
       return liveKeys.has(item.record.dedupeKey);
     })
-    .map((item) => (item.sinceMs <= nowMs ? item : { ...item, sinceMs: nowMs }));
+    .map((item) => (item.sinceMs <= capOf(item) ? item : { ...item, sinceMs: capOf(item) }));
   const peerTailGroups = relevantTailGroups(mergedGroups, entry, superseded, peerTails);
   if (
     sameItems(reads, priorReads) &&
