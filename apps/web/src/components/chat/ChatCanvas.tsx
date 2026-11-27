@@ -14,7 +14,6 @@ import {
   selectCanvasMeasurements,
   type ChatCanvasStore,
 } from "./canvasStore";
-import { selectThreadPanelOpen, useRightPanelStore } from "../../rightPanelStore";
 import { observeResize } from "../../lib/observeResize";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { NeedsYouSlotContext } from "../sidebar/needsYouColumn";
@@ -62,6 +61,7 @@ export function ChatCanvas({
   detailsCardTopInset = 0,
   hostsNeedsYou = false,
   rightPanelOpen = false,
+  detailsCardInlineOpen,
   children,
   ...props
 }: Omit<ComponentProps<"div">, "className" | "style" | "ref"> & {
@@ -76,6 +76,8 @@ export function ChatCanvas({
   detailsCardTopInset?: number;
   /** Offers the foot of the details column to Needs you; side chats leave it to the main chat. */
   hostsNeedsYou?: boolean;
+  /** Whether the thread's details column is open, so the chat and preview keep out of it. */
+  detailsCardInlineOpen: boolean;
 }) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const widthProbeRef = useRef<HTMLDivElement | null>(null);
@@ -173,11 +175,6 @@ export function ChatCanvas({
     rightPanelOpen,
     needsYouSlot,
   ]);
-  const detailsCardInlineOpen = useRightPanelStore((state) =>
-    threadRef === null
-      ? false
-      : selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
-  );
   const model = resolveChatCanvasModel({
     measurements,
     detailsCardMeasurement,

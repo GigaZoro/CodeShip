@@ -18,10 +18,13 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 /** One assignment's read broker. Its pins are the only bytes a restricted reviewer can reach. */
 export interface ReviewAssignmentBroker {
   readonly handle: string;
+  /** The thread that registered it: only that thread can delegate a review of it or revoke it. */
+  readonly owner: ThreadId;
   readonly allowedReads: ReadonlyArray<ReviewMaterialRead>;
   readonly read: (request: ReviewMaterialRead) => Promise<Uint8Array>;
   readonly record: (receipt: ReviewMaterialReceipt) => Promise<void>;
@@ -35,11 +38,29 @@ export interface ReviewAssignmentEvidence {
 
 export class ReviewAssignmentRegistrationError extends Schema.TaggedError<ReviewAssignmentRegistrationError>()(
   "ReviewAssignmentRegistrationError",
-  { reason: Schema.Literals(["duplicate_handle", "invalid_pins", "foreign_pin"]) },
+  {
+    reason: Schema.Literals([
+      "duplicate_handle",
+      "invalid_pins",
+      "foreign_pin",
+      "unreadable_material",
+      "too_large",
+      "registry_full",
+    ]),
+    detail: Schema.optional(Schema.String),
+  },
 ) {
   override get message() {
-    return `Review assignment registration refused: ${this.reason}.`;
+    return `Review assignment registration refused: ${this.reason}${this.detail === undefined ? "" : ` (${this.detail})`}.`;
   }
+}
+
+/** A file `registerFiles` snapshotted, as the reviewer reads it and as its receipts will show it. */
+export interface ReviewAssignmentSnapshot {
+  readonly side?: string;
+  readonly path?: string;
+  readonly byteLength: number;
+  readonly sha256: string;
 }
 
 export class ReviewMaterialUnavailableError extends Schema.TaggedError<ReviewMaterialUnavailableError>()(
@@ -66,15 +87,38 @@ const RESTRICTED_REVIEW_SERVERS: ReadonlyArray<string> = [
 ];
 // Evidence outlives the child's provider session so task_status can still report it.
 const MAX_RETAINED_THREADS = 256;
+// Registrations live until revoked or a restart; past these, the oldest without an open session go.
+const MAX_REGISTRATIONS = 256;
+const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+const MAX_ASSIGNMENT_BYTES = 8 * 1024 * 1024;
 
 const decodeRead = Schema.decodeUnknownOption(ReviewMaterialRead, { onExcessProperty: "error" });
 const decodeEvidence = Schema.decodeUnknownOption(ReviewSessionEvidence);
 const isSha256 = (value: string) => /^[0-9a-f]{64}$/.test(value);
 const sameList = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
   left.length === right.length && left.every((entry, index) => entry === right[index]);
+const pinKey = (pin: { readonly side?: string; readonly path?: string }) =>
+  JSON.stringify([pin.side ?? null, pin.path ?? null]);
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const isUtf8 = (bytes: Uint8Array) => {
+  try {
+    utf8.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+interface Registration {
+  readonly broker: ReviewAssignmentBroker;
+  /** Bytes held in memory for a snapshot; zero for a broker that reads elsewhere. */
+  readonly bytes: number;
+}
 
 interface OpenSession {
   readonly handle: string;
+  /** The registration it opened against: a revoked or replaced one serves and attests nothing. */
+  readonly broker: ReviewAssignmentBroker;
   readonly providerInstanceId: ProviderInstanceId;
   readonly cwd: string;
   /** Reads are refused until a run of this session passes its pre-inference check. */
@@ -92,12 +136,35 @@ export class ReviewAssignmentRegistry extends Context.Service<
     readonly register: (
       broker: ReviewAssignmentBroker,
     ) => Effect.Effect<void, ReviewAssignmentRegistrationError>;
-    readonly unregister: (handle: string) => Effect.Effect<void>;
-    readonly isRegistered: (handle: string) => Effect.Effect<boolean>;
-    /** A fresh, empty working directory and the attestation callback for one restricted thread. */
+    /** Reads each file once, now, and registers the bytes under a new, unguessable handle. */
+    readonly registerFiles: (input: {
+      readonly owner: ThreadId;
+      readonly material: ReadonlyArray<{
+        readonly side?: string;
+        readonly path?: string;
+        readonly file: string;
+      }>;
+    }) => Effect.Effect<
+      { readonly handle: string; readonly material: ReadonlyArray<ReviewAssignmentSnapshot> },
+      ReviewAssignmentRegistrationError
+    >;
+    /** Whether `owner` held the registration, which is now gone. */
+    readonly revoke: (input: {
+      readonly owner: ThreadId;
+      readonly handle: string;
+    }) => Effect.Effect<boolean>;
+    readonly isRegistered: (input: {
+      readonly owner: ThreadId;
+      readonly handle: string;
+    }) => Effect.Effect<boolean>;
+    /**
+     * A fresh, empty working directory and the attestation callback for one restricted thread.
+     * `owner` is the thread that delegated the review; only its own registration opens.
+     */
     readonly openSession: (input: {
       readonly threadId: ThreadId;
       readonly handle: string;
+      readonly owner: ThreadId;
       readonly providerInstanceId: ProviderInstanceId;
     }) => Effect.Effect<
       McpProviderSession.ReviewAssignmentSession,
@@ -115,7 +182,7 @@ export class ReviewAssignmentRegistry extends Context.Service<
 const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const brokers = new Map<string, ReviewAssignmentBroker>();
+  const registrations = new Map<string, Registration>();
   const sessions = new Map<ThreadId, OpenSession>();
   const records = new Map<ThreadId, ThreadRecord>();
 
@@ -159,39 +226,154 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  const register = Effect.fn("ReviewAssignmentRegistry.register")(function* (
+  const currentBroker = (handle: string) => registrations.get(handle)?.broker;
+  // A handle answers only to the thread that registered it.
+  const ownedBroker = (input: { readonly owner: ThreadId; readonly handle: string }) => {
+    const broker = currentBroker(input.handle);
+    return broker?.owner === input.owner ? broker : undefined;
+  };
+
+  // Checks and inserts with no yield between them, so no other registration lands in between.
+  const add = Effect.fn("ReviewAssignmentRegistry.add")(function* (
     broker: ReviewAssignmentBroker,
+    bytes: number,
   ) {
-    if (brokers.has(broker.handle)) {
-      return yield* new ReviewAssignmentRegistrationError({ reason: "duplicate_handle" });
-    }
+    const refusal = (reason: ReviewAssignmentRegistrationError["reason"]) =>
+      new ReviewAssignmentRegistrationError({ reason });
+    if (registrations.has(broker.handle)) return yield* refusal("duplicate_handle");
     const pins = broker.allowedReads.map((pin) => decodeRead(pin));
-    if (pins.length === 0 || pins.some((pin) => pin._tag === "None")) {
-      return yield* new ReviewAssignmentRegistrationError({ reason: "invalid_pins" });
+    if (
+      pins.length === 0 ||
+      pins.some((pin) => pin._tag === "None") ||
+      new Set(broker.allowedReads.map(pinKey)).size !== pins.length
+    ) {
+      return yield* refusal("invalid_pins");
     }
     // bindReviewMaterial matches pins exactly; a pin under another handle would leak that assignment.
     if (pins.some((pin) => pin._tag === "Some" && pin.value.handle !== broker.handle)) {
-      return yield* new ReviewAssignmentRegistrationError({ reason: "foreign_pin" });
+      return yield* refusal("foreign_pin");
     }
-    brokers.set(broker.handle, broker);
+    let count = registrations.size + 1;
+    let held = bytes;
+    for (const registration of registrations.values()) held += registration.bytes;
+    const dropped: Array<string> = [];
+    // Oldest first; an assignment a session still reads stays.
+    for (const [handle, registration] of registrations) {
+      if (count <= MAX_REGISTRATIONS && held <= MAX_SNAPSHOT_BYTES) break;
+      if ([...sessions.values()].some((session) => session.broker === registration.broker)) {
+        continue;
+      }
+      dropped.push(handle);
+      count -= 1;
+      held -= registration.bytes;
+    }
+    if (count > MAX_REGISTRATIONS || held > MAX_SNAPSHOT_BYTES) {
+      return yield* refusal("registry_full");
+    }
+    for (const handle of dropped) registrations.delete(handle);
+    registrations.set(broker.handle, { broker, bytes });
+    if (dropped.length > 0) {
+      yield* Effect.logWarning("dropped the oldest idle review assignments to make room", {
+        dropped: dropped.length,
+      });
+    }
   });
 
-  const unregister = Effect.fn("ReviewAssignmentRegistry.unregister")((handle: string) =>
-    Effect.sync(() => {
-      brokers.delete(handle);
-    }),
+  const register = Effect.fn("ReviewAssignmentRegistry.register")(
+    (broker: ReviewAssignmentBroker) => add(broker, 0),
+  );
+
+  const registerFiles = Effect.fn("ReviewAssignmentRegistry.registerFiles")(function* (input: {
+    readonly owner: ThreadId;
+    readonly material: ReadonlyArray<{
+      readonly side?: string;
+      readonly path?: string;
+      readonly file: string;
+    }>;
+  }) {
+    const handle = `ra-${NodeCrypto.randomBytes(16).toString("base64url")}`;
+    const contents = new Map<string, Uint8Array>();
+    const pins: Array<{ readonly side?: string; readonly path?: string }> = [];
+    const snapshots: Array<ReviewAssignmentSnapshot> = [];
+    let total = 0;
+    for (const [index, entry] of input.material.entries()) {
+      const refuse = (reason: ReviewAssignmentRegistrationError["reason"], detail: string) =>
+        new ReviewAssignmentRegistrationError({ reason, detail: `material[${index}]: ${detail}` });
+      const pin = {
+        ...(entry.side === undefined ? {} : { side: entry.side }),
+        ...(entry.path === undefined ? {} : { path: entry.path }),
+      };
+      if (contents.has(pinKey(pin))) {
+        return yield* refuse("invalid_pins", "repeats an earlier side and path");
+      }
+      if (!path.isAbsolute(entry.file)) {
+        return yield* refuse("unreadable_material", "file is not an absolute path");
+      }
+      const unreadable = () => refuse("unreadable_material", "file cannot be read");
+      const info = yield* fileSystem.stat(entry.file).pipe(Effect.mapError(unreadable));
+      if (info.type !== "File") {
+        return yield* refuse("unreadable_material", "file is not a regular file");
+      }
+      const tooLarge = refuse(
+        "too_large",
+        `an assignment holds at most ${MAX_ASSIGNMENT_BYTES} bytes`,
+      );
+      if (total + Number(info.size) > MAX_ASSIGNMENT_BYTES) return yield* tooLarge;
+      // One byte past the room left, so a file that grew since stat, or one whose size stat does
+      // not report, refuses without being read whole.
+      const bytes = yield* Stream.mkUint8Array(
+        fileSystem.stream(entry.file, { bytesToRead: MAX_ASSIGNMENT_BYTES - total + 1 }),
+      ).pipe(Effect.mapError(unreadable));
+      total += bytes.byteLength;
+      if (total > MAX_ASSIGNMENT_BYTES) return yield* tooLarge;
+      if (!isUtf8(bytes)) return yield* refuse("unreadable_material", "file is not UTF-8 text");
+      contents.set(pinKey(pin), bytes);
+      pins.push(pin);
+      snapshots.push({
+        ...pin,
+        byteLength: bytes.byteLength,
+        sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+    yield* add(
+      {
+        handle,
+        owner: input.owner,
+        allowedReads: pins.map((pin) => ({ handle, ...pin })),
+        read: async (request) => {
+          const bytes = contents.get(pinKey(request));
+          if (bytes === undefined) throw new Error("Read outside assignment.");
+          return bytes;
+        },
+        // The registry keeps every receipt for task_status; the snapshot has nowhere else to put one.
+        record: async () => undefined,
+      },
+      total,
+    );
+    return { handle, material: snapshots };
+  });
+
+  const revoke = Effect.fn("ReviewAssignmentRegistry.revoke")(
+    (input: { readonly owner: ThreadId; readonly handle: string }) =>
+      Effect.sync(() => {
+        if (ownedBroker(input) === undefined) return false;
+        registrations.delete(input.handle);
+        return true;
+      }),
   );
 
   const openSession = Effect.fn("ReviewAssignmentRegistry.openSession")(function* (input: {
     readonly threadId: ThreadId;
     readonly handle: string;
+    readonly owner: ThreadId;
     readonly providerInstanceId: ProviderInstanceId;
   }) {
-    if (!brokers.has(input.handle)) {
-      return yield* new McpProviderSession.ReviewAssignmentRefusedError({
-        reason: "the assignment is not registered",
-      });
-    }
+    const notRegistered = new McpProviderSession.ReviewAssignmentRefusedError({
+      reason: "the assignment is not registered",
+    });
+    // Another thread's handle refuses as an unknown one, so a reviewer learns nothing about it.
+    const broker = ownedBroker(input);
+    if (broker === undefined) return yield* notRegistered;
     sessions.delete(input.threadId);
     // The same path for every session of a thread, so a provider can resume its own transcript.
     // Uninterruptible, so a workspace on disk always has the session closeSession removes it by.
@@ -204,8 +386,14 @@ const make = Effect.gen(function* () {
         );
         yield* fileSystem.remove(workspace, { recursive: true, force: true });
         yield* fileSystem.makeDirectory(workspace);
+        // Revoked or evicted during the file work: refuse now rather than at attestation.
+        if (currentBroker(input.handle) !== broker) {
+          yield* removeWorkspace(workspace);
+          return undefined;
+        }
         const opened: OpenSession = {
           handle: input.handle,
+          broker,
           providerInstanceId: input.providerInstanceId,
           cwd: workspace,
           attestedRunId: undefined,
@@ -222,6 +410,7 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
+    if (session === undefined) return yield* notRegistered;
 
     const attest = Effect.fn("ReviewAssignmentRegistry.attest")(function* (
       evidence: McpProviderSession.ReviewAssignmentSessionEvidence,
@@ -233,7 +422,9 @@ const make = Effect.gen(function* () {
       if (sessions.get(input.threadId) !== session) {
         return yield* refuse("the restricted session was closed");
       }
-      if (!brokers.has(session.handle)) return yield* refuse("the assignment is not registered");
+      if (currentBroker(session.handle) !== session.broker) {
+        return yield* refuse("the assignment is not registered");
+      }
       if (evidence.cwd !== session.cwd)
         return yield* refuse("the working directory is not isolated");
       if (!sameList(evidence.effectiveTools, RESTRICTED_REVIEW_TOOLS)) {
@@ -260,7 +451,7 @@ const make = Effect.gen(function* () {
       }
       const verified = decoded.value;
       // The assignment's own record comes first: evidence and reads exist only for a session it holds.
-      const recordSession = brokers.get(session.handle)?.recordSession;
+      const recordSession = session.broker.recordSession;
       if (recordSession !== undefined) {
         yield* Effect.tryPromise({
           try: () => recordSession(verified),
@@ -270,9 +461,12 @@ const make = Effect.gen(function* () {
             }),
         });
       }
-      // The session can close, or the assignment end, while its record is written.
-      if (sessions.get(input.threadId) !== session || !brokers.has(session.handle)) {
+      // The session can close, or the assignment end or be replaced, while its record is written.
+      if (sessions.get(input.threadId) !== session) {
         return yield* refuse("the restricted session was closed");
+      }
+      if (currentBroker(session.handle) !== session.broker) {
+        return yield* refuse("the assignment is not registered");
       }
       const record = recordFor(input.threadId);
       if (!record.sessions.some((entry) => entry.runId === verified.runId)) {
@@ -311,16 +505,16 @@ const make = Effect.gen(function* () {
     input: unknown,
   ) {
     const session = sessions.get(caller.threadId);
-    const broker = brokers.get(caller.handle);
     const runId = session?.attestedRunId;
     if (
       session === undefined ||
       session.handle !== caller.handle ||
-      broker === undefined ||
+      currentBroker(caller.handle) !== session.broker ||
       runId === undefined
     ) {
       return yield* new ReviewMaterialUnavailableError();
     }
+    const broker = session.broker;
     const record = recordFor(caller.threadId);
     const bound = bindReviewMaterial({
       allowedReads: broker.allowedReads,
@@ -360,13 +554,15 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  const isRegistered = Effect.fn("ReviewAssignmentRegistry.isRegistered")((handle: string) =>
-    Effect.sync(() => brokers.has(handle)),
+  const isRegistered = Effect.fn("ReviewAssignmentRegistry.isRegistered")(
+    (input: { readonly owner: ThreadId; readonly handle: string }) =>
+      Effect.sync(() => ownedBroker(input) !== undefined),
   );
 
   return ReviewAssignmentRegistry.of({
     register,
-    unregister,
+    registerFiles,
+    revoke,
     isRegistered,
     openSession,
     closeSession,

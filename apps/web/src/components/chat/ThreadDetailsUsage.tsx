@@ -12,6 +12,8 @@ import {
   paceOf,
   paceRemainingPercent,
   remainingPercent,
+  type UsageLimitTone,
+  usageLimitTone,
 } from "@t3tools/shared/usageLimits";
 import { formatDuration, limitsNotice } from "@t3tools/shared/usageLimitsCopy";
 import { Link } from "@tanstack/react-router";
@@ -48,15 +50,7 @@ export interface ThreadDetailsUsageInput {
   readonly contextWindow: ContextWindowSnapshot | null;
 }
 
-type UsageTone = "error" | "warning" | null;
-
-function limitTone(left: number): UsageTone {
-  if (left <= 10) return "error";
-  if (left <= 20) return "warning";
-  return null;
-}
-
-/** The selected provider's limit windows. Each row reads as room left and opens the usage page. */
+/** The selected provider's limit windows. Each row reads as room left. */
 export function ThreadDetailsUsage({
   providerInstanceId,
   model,
@@ -196,7 +190,7 @@ function LimitRow({
     <UsageRow
       label={window.label}
       fill={left}
-      tone={limitTone(left)}
+      tone={usageLimitTone(left)}
       tick={timeLeft}
       value={`${left}%`}
       ariaValue={t("{left}% left", { left })}
@@ -244,7 +238,7 @@ function PoolRow({ window, now }: { readonly window: LimitPoolWindow; readonly n
     <UsageRow
       label={window.label}
       fill={left}
-      tone={limitTone(left)}
+      tone={usageLimitTone(left)}
       value={`${left}%`}
       ariaValue={t("{left}% left", { left })}
       opensUsage
@@ -299,7 +293,7 @@ function UsageRow({
   readonly label: string;
   /** Bar fill from 0 to 100. Null hides the bar. */
   readonly fill: number | null;
-  readonly tone: UsageTone;
+  readonly tone: UsageLimitTone;
   /** A marker on the bar, from 0 to 100. */
   readonly tick?: number | null;
   readonly value: string;

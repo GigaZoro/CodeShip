@@ -2458,8 +2458,10 @@ it.effect(
       Effect.gen(function* () {
         const credentials = yield* McpSessionRegistry.McpSessionRegistry;
         const assignments = yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry;
+        const owner = ThreadId.make("thread-review-route-owner");
         yield* assignments.register({
           handle,
+          owner,
           allowedReads: [pin],
           read: async () => new TextEncoder().encode("const answer = 42;\n"),
           record: async () => undefined,
@@ -2469,6 +2471,7 @@ it.effect(
             const session = yield* assignments.openSession({
               threadId: thread,
               handle,
+              owner,
               providerInstanceId: claude,
             });
             const issued = yield* credentials.issue({

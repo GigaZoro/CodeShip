@@ -31,6 +31,7 @@ const PRODUCER_TIERS = {
   extensionStatus: { error: "providerStatus", otherwise: "providerStatus" },
   freshSession: { error: "info", otherwise: "info" },
   replyTo: { error: "info", otherwise: "info" },
+  providerStatus: { error: "providerStatus", otherwise: "providerStatus" },
   usageLimits: { error: "info", otherwise: "info" },
   linkedEnvironment: { error: "sendBlocking", otherwise: "sendBlocking" },
 } as const satisfies Record<

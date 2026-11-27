@@ -57,6 +57,7 @@ const fixture = (root) => {
     ".github/scripts/git-history.cjs",
     ".github/scripts/check-changed-receipt.cjs",
     ".github/scripts/landing-turn.cjs",
+    ".github/scripts/landing-record.cjs",
     ".github/scripts/lease-queue.cjs",
     ".github/scripts/bounded-git.cjs",
     ".github/scripts/process-tree.cjs",

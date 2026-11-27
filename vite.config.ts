@@ -775,6 +775,12 @@ export default defineConfig({
           "t3code/no-mobile-uniwind-theme-escape-hatches": ["error", { allowUniwindTheme: true }],
         },
       },
+      {
+        // node --test runs a file's tests one at a time, so one big file sets check:changed's pace.
+        // Split it by area and move what the files share into a testkit.
+        files: [".github/scripts/**/*.test.cjs"],
+        rules: { "eslint/max-lines": ["error", { max: 1500 }] },
+      },
     ],
     options: {
       reportUnusedDisableDirectives: "error",

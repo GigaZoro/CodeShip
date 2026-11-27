@@ -1648,7 +1648,6 @@ const catalog: MessageCatalog = {
     "{label}: залишилося {remaining}%, до кінця періоду {timeLeft}% часу, {resetsIn}",
   "{label}: {summary}": "{label}: {summary}",
   "{label}: {value}": "{label}: {value}",
-  "{label}: Disabled in settings.": "{label}: вимкнено в налаштуваннях.",
   "{label}: Off": "{label}: вимкнено",
   "{label}: On": "{label}: увімкнено",
   "{label}: show {scopes}": "{label}: показати {scopes}",
@@ -1861,6 +1860,7 @@ const catalog: MessageCatalog = {
     "{path}:{start}–{end} немає в завантажених змінах.",
   "{pending} of {total} running": "Виконується {pending} із {total}",
   "{percent} from cache": "{percent} з кешу",
+  "{percent}% context": "{percent}% контексту",
   "{percent}% done": "Виконано {percent}%",
   "{percent}% downloaded": "Завантажено {percent}%",
   "{percent}% downloaded · Tap to cancel": "Завантажено {percent}% · Торкніться, щоб скасувати",
@@ -1920,7 +1920,6 @@ const catalog: MessageCatalog = {
   "{provider} protocol": "Протокол {provider}",
   "{provider} provider has limited availability.": "Провайдер {provider} має обмежену доступність.",
   "{provider} provider is unavailable.": "Провайдер {provider} недоступний.",
-  "{provider} provider status": "Стан провайдера {provider}",
   "{provider} still needs an update": "{provider} досі потребує оновлення",
   "{provider} token": "Токен {provider}",
   "{provider} update failed": "Не вдалося оновити {provider}",
@@ -1938,6 +1937,7 @@ const catalog: MessageCatalog = {
   "{provider}, {window}, {remaining} percent remaining. {reset}. {detail}.":
     "{provider}, {window}, залишок у відсотках: {remaining}. {reset}. {detail}.",
   "{provider}. {detail}.": "{provider}. {detail}.",
+  "{provider}: {status}": "{provider}: {status}",
   "{providerName} is temporarily limiting requests, so this diff couldn't be loaded. Try again after the limit resets, or view the changes on {providerName}.":
     "{providerName} тимчасово обмежує запити, тому не вдалося завантажити ці зміни. Спробуйте після скидання ліміту або перегляньте зміни на {providerName}.",
   "{providerName} rate limit reached": "Досягнуто ліміту запитів {providerName}",
@@ -4589,6 +4589,7 @@ const catalog: MessageCatalog = {
   "Close this page and start the sign-in again from your agent.":
     "Закрийте цю сторінку й почніть вхід знову зі свого агента.",
   "Close thread": "Закрити чат",
+  "Close thread details": "Закрити подробиці чату",
   "Close to the right": "Закрити праворуч",
   "Close tools": "Закрити інструменти",
   "Close transcription models": "Закрити моделі транскрипції",
@@ -6861,10 +6862,7 @@ const catalog: MessageCatalog = {
   Disk: "Диск",
   Dismiss: "Закрити",
   "Dismiss ({shortcut})": "Закрити ({shortcut})",
-  "Dismiss {provider} provider disabled": "Закрити сповіщення про вимкнення провайдера {provider}",
-  "Dismiss {provider} provider error": "Закрити сповіщення про помилку провайдера {provider}",
-  "Dismiss {provider} provider ready": "Закрити сповіщення про готовність провайдера {provider}",
-  "Dismiss {provider} provider warning": "Закрити попередження провайдера {provider}",
+  "Dismiss {provider} provider notice": "Закрити сповіщення провайдера {provider}",
   "Dismiss branch change notice": "Закрити сповіщення про зміну гілки",
   "Dismiss device error": "Закрити помилку пристрою",
   "Dismiss device warning for {host}": "Закрити попередження про пристрої для {host}",
@@ -7330,6 +7328,7 @@ const catalog: MessageCatalog = {
   "Error background": "Тло помилки",
   "Error report": "Звіт про помилку",
   "Error text": "Текст помилки",
+  Essentials: "Основне",
   "Estimated API-equivalent cost of the turns scheduled task runs started.":
     "Орієнтовна вартість за цінами API для ходів, які почали запуски запланованих завдань.",
   "Evaluate an expression in Visual Studio": "Обчислити вираз у Visual Studio",
@@ -10969,7 +10968,6 @@ const catalog: MessageCatalog = {
   "Not on: {machines}": "Не на: {machines}",
   "Not read on this machine yet. Saving or the next run reads it.":
     "На цій машині ще не прочитано. Збереження або наступний запуск прочитає його.",
-  "Not ready": "Не готово",
   "Not ready yet. Finish the step above.": "Ще не готово. Завершіть крок вище.",
   "Not reported": "Не повідомлено",
   "Not responding to Stop": "Немає відповіді на «Зупинити»",
@@ -11986,6 +11984,7 @@ const catalog: MessageCatalog = {
   "Preparing...": "Підготовка...",
   "Presentation template": "Шаблон презентації",
   "Preset…": "Набір…",
+  Presets: "Набори",
   "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to {alternate} instead for one message.":
     "Натисніть {modifier} + Enter для однорядкових запитів або {modifier} + Shift + Enter для багаторядкових, щоб для одного повідомлення {alternate}.",
   "Press {modifier} + Enter to {alternate} instead for one message.":
@@ -17804,6 +17803,7 @@ const catalog: MessageCatalog = {
   "Thread deleted, but navigation failed": "Чат видалено, але перехід не вдався",
   "thread details": "відомості про чат",
   "Thread details": "Подробиці чату",
+  "Thread details:": "Подробиці чату:",
   "Thread details: {enabled} of {total} on": "Відомості про чат: увімкнено {enabled} із {total}",
   "Thread exported": "Чат експортовано",
   "Thread failed": "Помилка в чаті",

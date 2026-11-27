@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { TIMED_OUT_STATUS } = require("./bounded-git.cjs");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
+const { startLandingRecord } = require("./landing-record.cjs");
 const { QUEUE_STALE_MS, createQueueWaiter, machineTag } = require("./lease-queue.cjs");
 const { STOP_TREE_MS, spawnChild, spawnTree } = require("./process-tree.cjs");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
@@ -22,6 +23,8 @@ const BUDGET_MERGE_CONFIG = [
   ],
 ];
 const TURN_ENV = "T3_LANDING_TURN";
+// What a landing's relaunch after its rebase gets of the first process's record.
+const RECORD_ENV = "T3_LANDING_RECORD";
 const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -198,10 +201,14 @@ function turnOf(held, holder) {
   return typeof turn === "string" && OBJECT_ID.test(turn) ? turn : null;
 }
 
+/** The Git folder every worktree of this clone shares. */
+function commonGitDir(cwd) {
+  return git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout;
+}
+
 /** The landers of the turns taken from this clone, in its own Git folder, so no machine or path reaches origin. */
 function holderDir(cwd) {
-  const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout;
-  return path.join(common, "landing-turn");
+  return path.join(commonGitDir(cwd), "landing-turn");
 }
 
 function holderFile(cwd, turn) {
@@ -1001,10 +1008,14 @@ async function rebaseOnto(cwd, base) {
       config: [...MERGE_DRIVER_CONFIG, ...BUDGET_MERGE_CONFIG],
     });
   } catch (error) {
-    if (stoppedRebase(cwd)) await gitAsync(cwd, ["rebase", "--abort"], { allowFailure: true });
+    if (stoppedRebase(cwd)) {
+      error.landingStatus = "conflict";
+      await gitAsync(cwd, ["rebase", "--abort"], { allowFailure: true });
+    }
     throw error;
   }
 }
+
 /**
  * Other local worktrees whose branch is ahead of `base` and changes a file HEAD changes, with the shared files.
  * Agents search main before building something, so work parked on another worktree's branch stays invisible until
@@ -1075,28 +1086,55 @@ async function withPrivateCheckout({ cwd, commit }, run) {
 }
 
 /**
- * Lands HEAD on main: checks before the wait, again under the turn only if main moved.
- * Optional `finalize` runs under the turn on the final candidate SHA before checks or push;
- * any candidate or base drift afterwards aborts without attempting a push.
+ * Lands HEAD on main: checks before the wait, again under the turn only if main moved. `finalize` runs under the turn
+ * on that candidate first, and drift afterwards aborts. Every end appends one record (landing-record.cjs) but a rebase
+ * before the wait: `onRebased` gets its state, which the relaunch takes as `carried`.
  */
 async function land({
-  cwd,
-  remote,
-  check,
-  finalize,
-  rebased,
-  branch = "main",
-  mainCallMs = MAIN_CALL_MS,
-  after = runAfter,
-  turnClock = () => performance.now(),
   now = Date.now,
-  awakeClock = awakeNow,
-  report = (text) => console.error(text),
-  ...rest
+  recordClock = () => performance.now(),
+  carried,
+  onRebased = () => {},
+  ...options
 }) {
+  const record = startLandingRecord({ now, clock: recordClock, carried });
+  let status;
+  try {
+    const result = await runLanding({ ...options, now }, record);
+    status = result.status;
+    if (status === "rebased") onRebased(record.carry());
+    return result;
+  } catch (error) {
+    status = error?.landingStatus ?? "error";
+    throw error;
+  } finally {
+    if (status !== "rebased") record.write(() => commonGitDir(options.cwd), status);
+  }
+}
+
+async function runLanding(
+  {
+    cwd,
+    remote,
+    check,
+    finalize,
+    rebased,
+    branch = "main",
+    mainCallMs = MAIN_CALL_MS,
+    after = runAfter,
+    turnClock = () => performance.now(),
+    now,
+    awakeClock = awakeNow,
+    report = (text) => console.error(text),
+    ...rest
+  },
+  record,
+) {
   const mainCall = { timeoutMs: mainCallMs, awakeClock, after };
   // Read first, so the checks below, these on the working tree included, are for this commit.
   let tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+  const { stdout: topic } = git(cwd, ["branch", "--show-current"], { allowFailure: true });
+  record.note({ branch: topic || null, head: tip });
   if (rebased && tip !== rebased.head) return { status: "head-moved" };
   // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
   // so the pre-push hook would refuse it only after the whole check.
@@ -1112,6 +1150,7 @@ async function land({
   // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
   // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
   const checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
+  record.note({ base: checked });
   // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
   if (!rebased) {
     const overlap = formatOverlaps(overlappingWorktrees({ cwd, base: checked }));
@@ -1121,7 +1160,7 @@ async function land({
   if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
   if (!holds(cwd, checked)) {
     if (rebased) return { status: "head-moved" };
-    await rebaseOnto(cwd, checked);
+    await record.time("rebase", () => rebaseOnto(cwd, checked));
     return { status: "rebased", base: checked, head: git(cwd, ["rev-parse", "HEAD"]).stdout };
   }
   // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
@@ -1129,14 +1168,21 @@ async function land({
     withPrivateCheckout({ cwd, commit: tip }, (directory) =>
       check(turn, base, budgetSeconds, directory, signal),
     );
-  if (!(await checkTip(null, checked))) return { status: "check-failed" };
+  if (!(await record.time("preWaitCheck", () => checkTip(null, checked)))) {
+    return { status: "check-failed" };
+  }
+  record.note({ stage: "waiting" });
+  const waited = record.begin("waitForTurn");
   const { result, releaseConfirmed } = await runWithTurn(
     { cwd, remote, now, mainCallMs, after, awakeClock, ...rest },
     async (turn, signal, pushMain) => {
+      waited();
+      record.note({ stage: "under-turn" });
       const turnStarted = turnClock();
       const leftMs = turnEnd(JSON.parse(leaseLine(cwd, turn))) - now();
       const lostTurn = () => ({ status: "lost-turn", reason: signal.reason.message });
       const base = await fetchMain(cwd, remote, branch, turn, mainCall);
+      record.note({ base });
       // The checks passed for this commit, not for one checked out during the wait or this fetch.
       const headAfterFetch = git(cwd, ["rev-parse", "HEAD"]).stdout;
       if (headAfterFetch !== tip) {
@@ -1144,8 +1190,9 @@ async function land({
       }
       const rebasedUnderTurn = base !== checked;
       if (rebasedUnderTurn) {
-        await rebaseOnto(cwd, base);
+        await record.time("rebase", () => rebaseOnto(cwd, base));
         tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+        record.note({ head: tip });
       }
       if (signal.aborted) return lostTurn();
       const verifyUnchanged = async (expectedTip, expectedBase) => {
@@ -1164,16 +1211,18 @@ async function land({
         const finalizedTip = tip;
         const finalizedBase = base;
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-        const approved = await withPrivateCheckout({ cwd, commit: finalizedTip }, (directory) =>
-          finalize({
-            turn,
-            commit: finalizedTip,
-            base: finalizedBase,
-            rebased: rebasedUnderTurn,
-            budgetSeconds: budget,
-            directory,
-            signal,
-          }),
+        const approved = await record.time("finalize", () =>
+          withPrivateCheckout({ cwd, commit: finalizedTip }, (directory) =>
+            finalize({
+              turn,
+              commit: finalizedTip,
+              base: finalizedBase,
+              rebased: rebasedUnderTurn,
+              budgetSeconds: budget,
+              directory,
+              signal,
+            }),
+          ),
         );
         if (signal.aborted) return lostTurn();
         if (!approved) {
@@ -1184,16 +1233,19 @@ async function land({
       }
       if (rebasedUnderTurn) {
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-        const passed = await checkTip(turn, base, budget, signal);
+        const passed = await record.time("underTurnCheck", () =>
+          checkTip(turn, base, budget, signal),
+        );
         if (signal.aborted) return lostTurn();
         if (!passed) return { status: "check-failed" };
         const drift = await verifyUnchanged(tip, base);
         if (drift) return drift;
       }
-      if (!(await pushMain(branch, tip))) return lostTurn();
+      if (!(await record.time("push", () => pushMain(branch, tip)))) return lostTurn();
       return { status: "landed", commit: tip };
     },
   );
+  record.note({ releaseConfirmed });
   return releaseConfirmed ? result : { ...result, releaseConfirmed };
 }
 
@@ -1317,13 +1369,19 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
       console.error(USAGE);
       return 2;
     }
-    keepAwake();
     const { rebased, finalizeCommand } = parsed;
+    // Taken out of the environment, so no child process inherits it.
+    const carried = rebased ? process.env[RECORD_ENV] : undefined;
+    delete process.env[RECORD_ENV];
+    keepAwake();
+    let carry;
     const result = await land({
       cwd,
       remote: "origin",
       ...(failingMs === undefined ? {} : { failingMs }),
       rebased,
+      carried,
+      onRebased: (state) => (carry = state),
       finalize:
         finalize ??
         (finalizeCommand
@@ -1350,6 +1408,7 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
           {
             cwd,
             stdio: "inherit",
+            env: { ...process.env, [RECORD_ENV]: carry },
           },
         ).status ?? 1
       );
@@ -1424,6 +1483,7 @@ module.exports = {
   BOOT_ID,
   LEASE_REF,
   TURN_ENV,
+  RECORD_ENV,
   FINAL_COMMIT_ENV,
   FINAL_BASE_ENV,
   FINAL_REBASED_ENV,

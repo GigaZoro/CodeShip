@@ -12,6 +12,8 @@ import {
   type LimitAccount,
   type LimitPoolWindow,
   type LimitPresentations,
+  type UsageLimitTone,
+  usageLimitTone,
 } from "@t3tools/shared/usageLimits";
 
 import { providerColors } from "../features/usage/providerColors";
@@ -44,6 +46,7 @@ export interface WidgetLimitAccount {
   color?: string;
   /** Absent when this account does not report the window. */
   remaining?: number;
+  tone?: UsageLimitTone;
   refill?: number;
   resetsAt?: number;
   reset?: string;
@@ -64,6 +67,8 @@ export interface SubscriptionUsageSnapshot {
       kind?: string;
       label: string;
       remaining: number;
+      /** Computed here because the widget runtime cannot import the shared threshold. */
+      tone: UsageLimitTone;
       reset: string;
       accounts?: WidgetLimitAccount[];
     }>;
@@ -130,9 +135,12 @@ function widgetAccounts(window: LimitPoolWindow, resolve: typeof t): WidgetLimit
     const resetsAt = column.window.resetsAt ? Date.parse(column.window.resetsAt) : NaN;
     // A reset at or before the observation already happened.
     const reset = resetsAt > checkedAt;
+    const rem = remainingPercent(column.window);
+    const tone = usageLimitTone(rem);
     return {
       ...account,
-      remaining: remainingPercent(column.window),
+      remaining: rem,
+      ...(tone !== null && { tone }),
       refill: reset ? column.refillPercent : 0,
       ...(reset && {
         resetsAt,
@@ -278,6 +286,7 @@ function subscriptionUsageProps(
               kind: window.kind,
               label: window.label,
               remaining: Math.round(window.remainingPercent),
+              tone: usageLimitTone(Math.round(window.remainingPercent)),
               reset: window.resets[0]
                 ? isUpcoming(window.resets[0])
                   ? resolve(msg("Next reset {time}"), { time: resetTime(window.resets[0].at) })

@@ -210,6 +210,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   return (
     <ThreadDetailsCard
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
+      isDraft={isDraft}
       anchor={props.anchor}
       handle={props.handle}
       contentKey={`${THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])

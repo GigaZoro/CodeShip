@@ -143,7 +143,6 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
     contentHeight / Math.max(1, shown.length + (hidden > 0 ? 1 : 0)),
   );
 
-  const low = (remaining: number) => remaining <= 10;
   const timeLeft = (account: WidgetLimitAccount) =>
     account.resetsAt && account.durationMs
       ? Math.max(0, Math.min(1, (account.resetsAt - now) / account.durationMs))
@@ -222,7 +221,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
               </Text>
             ) : null}
             <Text
-              color={low(account.remaining) ? colors.error : colors.onSurface}
+              color={account.tone === "error" ? colors.error : colors.onSurface}
               maxLines={1}
               style={{ fontSize: 10, fontWeight: "bold" }}
             >
@@ -247,7 +246,11 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
   };
 
   const bar = (line: Extract<Line, { type: "window" }>, barWidth: number, barHeight: number) => {
-    const fallback: WidgetLimitAccount = { name: line.provider, remaining: line.window.remaining };
+    const fallback: WidgetLimitAccount = {
+      name: line.provider,
+      remaining: line.window.remaining,
+      tone: line.window.tone,
+    };
     const listed = line.window.accounts ?? [];
     // Glance rows hold at most ten children: five segments and their gaps.
     const accounts = listed.length > 0 && listed.length <= 5 ? listed : [fallback];
@@ -268,9 +271,13 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
     );
   };
 
-  const percentText = (remaining: number, fontSize: number) => (
+  const percentText = (
+    remaining: number,
+    tone: "error" | "warning" | null | undefined,
+    fontSize: number,
+  ) => (
     <Text
-      color={low(remaining) ? colors.error : colors.onSurface}
+      color={tone === "error" ? colors.error : colors.onSurface}
       maxLines={1}
       style={{ fontSize, fontWeight: "bold" }}
     >
@@ -308,7 +315,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
           </Text>
           {bar(line, contentWidth - labelWidth - 40, 6)}
           <Box contentAlignment="centerEnd" modifiers={[width(40)]}>
-            {percentText(line.window.remaining, 10)}
+            {percentText(line.window.remaining, line.window.tone, 10)}
           </Box>
         </Row>
       );
@@ -319,7 +326,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
             {label}
           </Text>
           <Row verticalAlignment="bottom">
-            {percentText(line.window.remaining, 18)}
+            {percentText(line.window.remaining, line.window.tone, 18)}
             <Text
               color={colors.muted}
               maxLines={1}

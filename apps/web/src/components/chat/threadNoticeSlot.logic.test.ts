@@ -54,6 +54,10 @@ const PRODUCER_ROWS = {
   extensionStatus: [["default", "providerStatus", "default"]],
   freshSession: [["info", "info", "info"]],
   replyTo: [["default", "info", "default"]],
+  providerStatus: [
+    ["error", "providerStatus", "default"],
+    ["warning", "providerStatus", "default"],
+  ],
   usageLimits: [["info", "info", "info"]],
   linkedEnvironment: [
     ["warning", "sendBlocking", "warning"],

@@ -9,6 +9,7 @@ import {
   type LimitAccount,
   type LimitPool,
   type LimitPoolWindow,
+  usageLimitTone,
 } from "@t3tools/shared/usageLimits";
 import { Fragment } from "react";
 
@@ -26,9 +27,7 @@ export function useLimitAccounts() {
 }
 
 export function limitTone(remainingPercent: number): ProgressRingTone {
-  if (remainingPercent <= 10) return "error";
-  if (remainingPercent <= 25) return "warning";
-  return "default";
+  return usageLimitTone(remainingPercent) ?? "default";
 }
 
 const toneTextClassName: Record<ProgressRingTone, string> = {

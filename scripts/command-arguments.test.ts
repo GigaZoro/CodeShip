@@ -295,6 +295,8 @@ const EXEMPT: Readonly<Record<string, string>> = {
     "covered by the replay recorder parser tests",
   "./build-desktop-artifact.ts": "reads it only in the probe it runs in a child Node",
   "./mobile-native-client.ts": "reads it only in the code it runs with node -e",
+  "../.github/scripts/landing-turn.testkit.cjs":
+    "reads it only in the signal script it writes for a child Node",
   "./npm-launcher/t3.mjs": "passes its command line to the t3 executable, which checks it",
   "./profile-startup.mjs": "passes its command line to the dev runner, which checks it",
 };

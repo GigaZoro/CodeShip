@@ -241,7 +241,7 @@ function SubscriptionUsage(
                   lineLimit(1),
                   layoutPriority(1),
                   foregroundStyle(
-                    window.remaining <= 10 && !monochrome
+                    window.tone === "error" && !monochrome
                       ? (palette?.danger ??
                           (widgetEnvironment.colorScheme === "light" ? "#dc2626" : "#fca5a5"))
                       : primary,

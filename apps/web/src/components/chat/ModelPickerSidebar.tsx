@@ -1,4 +1,4 @@
-import { t, msg } from "~/i18n";
+import { t } from "~/i18n";
 import { Toolbar } from "@base-ui/react/toolbar";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from "react";
@@ -6,32 +6,26 @@ import { RouteIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-
+import { deriveProviderStatus } from "../settings/providerStatus";
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 
-function describeUnavailableInstance(entry: ProviderInstanceEntry, resolve: typeof t): string {
+export function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   const label = entry.displayName;
-  // An unavailable instance (a driver this build lacks or the policy leaves out) says why instead.
-  if ((!entry.enabled && entry.isAvailable) || entry.status === "disabled") {
-    return resolve(msg("{label}: Disabled in settings."), { label });
-  }
-  if (entry.status === "ready" && entry.isAvailable) {
-    return label;
-  }
-  const kind =
-    entry.status === "error"
-      ? t("Unavailable")
-      : entry.status === "warning"
-        ? t("Limited")
-        : t("Not ready");
-  const message = entry.snapshot.message?.trim();
+  // A project override changes the entry's enabled state, not its snapshot's.
+  const { key, headline, detail } = deriveProviderStatus(
+    entry.enabled === entry.snapshot.enabled
+      ? entry.snapshot
+      : { ...entry.snapshot, enabled: entry.enabled },
+  );
+  if (key === "ready") return label;
+  const message = detail?.trim();
   return message
-    ? t("{label}: {kind}. {message}", { label, kind, message })
-    : t("{label}: {kind}.", { label, kind });
+    ? t("{label}: {kind}. {message}", { label, kind: headline, message })
+    : t("{label}: {kind}.", { label, kind: headline });
 }
 
 const PICKER_TOOLTIP_SIDE = "left" as const;
@@ -176,7 +170,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const showInstanceBadge = shouldShowInstanceBadge(entry, props.instanceEntries);
 
             const tooltip = isUnavailable
-              ? describeUnavailableInstance(entry, t)
+              ? describeUnavailableInstance(entry)
               : isContextDisabled
                 ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)
                 : entry.displayName;

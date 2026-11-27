@@ -2096,6 +2096,7 @@ const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const reviewPolicy = { ...runtimePolicy, reviewAssignment: { handle: "assignment-1" } };
 const reviewBroker: ReviewAssignmentRegistry.ReviewAssignmentBroker = {
   handle: "assignment-1",
+  owner: ThreadId.make("thread-review-owner"),
   allowedReads: [{ handle: "assignment-1", side: "head", path: "src/app.ts" }],
   read: async () => new TextEncoder().encode("const answer = 42;\n"),
   record: async () => undefined,
@@ -2125,7 +2126,14 @@ it.effect.each(["fails", "is interrupted"] as const)(
           threadId,
         });
         yield* eventSink.write({
-          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator,
+              threadId,
+              now,
+              delegatedBy: reviewBroker.owner,
+            }),
+          ],
         });
 
         const opening = manager.open({
@@ -2243,7 +2251,7 @@ it.effect("ProviderSessionManagerV2 never hands a review credential to an ordina
             idAllocator,
             threadId,
             now,
-            delegatedBy: ThreadId.make("thread-provider-session-manager-review-parent"),
+            delegatedBy: reviewBroker.owner,
           }),
         ],
       });

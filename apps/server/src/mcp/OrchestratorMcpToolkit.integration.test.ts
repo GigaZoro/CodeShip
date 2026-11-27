@@ -12,6 +12,7 @@ import {
   MessageId,
   type ModelSelection,
   OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpReviewAssignmentResult,
   OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadReadResult,
@@ -22,6 +23,7 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -33,6 +35,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import { McpSchema, McpServer } from "effect/ai";
+import { HttpRouter } from "effect/http";
 
 import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
@@ -49,6 +52,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import {
@@ -71,6 +75,7 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkBack from "../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PortScanner from "../preview/PortScanner.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
@@ -105,6 +110,9 @@ const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
   OrchestratorMcpThreadInterruptResult,
 );
 const decodeThreadSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
+const decodeReviewAssignmentResult = Schema.decodeUnknownEffect(
+  OrchestratorMcpReviewAssignmentResult,
+);
 
 const claudeSettings = Schema.decodeSync(ClaudeSettings)({});
 
@@ -252,6 +260,271 @@ const layerUnreachedServices = Layer.mergeAll(
   Layer.mock(SecretResolver.SecretResolver)({}),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
+const reviewServer = McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER;
+const reviewTool = McpProviderSession.REVIEW_ASSIGNMENT_TOOL;
+
+/** The registries a review's credential and assignment live in, on a real HTTP server. */
+const layerReviewRegistries = Layer.mergeAll(
+  McpSessionRegistry.layer,
+  ReviewAssignmentRegistry.layer,
+).pipe(
+  Layer.provide(
+    Layer.mock(ServerEnvironment.ServerEnvironment)({
+      getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:mcp-replay")),
+    }),
+  ),
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(IdAllocator.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+);
+
+const layerClaudeQueryRunner = ClaudeAdapterV2.layerQueryRunner.pipe(
+  Layer.provide(PortScanner.layerTest),
+  Layer.provide(Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined })),
+  Layer.provide(NodeServices.layer),
+);
+
+/** The parent stays mid-turn without a Claude process, so it can delegate. */
+const busyParentSession: ClaudeAdapterV2.ClaudeAgentSdkQuerySession = {
+  messages: Stream.never,
+  offer: () => Effect.void,
+  setModel: () => Effect.void,
+  applyFlagSettings: () => Effect.void,
+  setPermissionMode: () => Effect.void,
+  backgroundTasks: () => Effect.succeed(false),
+  stopTask: () => Effect.void,
+  renameSession: () => Effect.void,
+  mcpServerStatus: Effect.succeed([]),
+  readMcpResource: () => Effect.succeed({ contents: [] }),
+  mcpAuthenticate: () => Effect.succeed(null),
+  mcpSubmitOAuthCallbackUrl: () => Effect.void,
+  reconnectMcpServer: () => Effect.void,
+  callMcpTool: () => Effect.die("unused"),
+  listPermissionRules: Effect.succeed([]),
+  interrupt: Effect.void,
+  close: Effect.void,
+};
+
+/**
+ * A Claude parent thread mid-turn whose `delegate_task` launches assignment-isolated reviewers
+ * through `reviewRunner`, with the reviewers' MCP route served where their credentials point.
+ */
+const openRestrictedClaudeReview = Effect.fn("openRestrictedClaudeReview")(function* (options: {
+  readonly name: string;
+  readonly model: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly reviewRunner: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape;
+}) {
+  const cwd = yield* checkpointWorkspace(options.name);
+  const credentials = yield* McpSessionRegistry.McpSessionRegistry;
+  const assignments = yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const instanceId = ProviderInstanceId.make("claudeAgent");
+  const selection = { instanceId, model: options.model };
+  const queryRunner: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape = {
+    ...options.reviewRunner,
+    open: (input) =>
+      input.options.mcpServers?.[reviewServer] === undefined
+        ? Effect.succeed(busyParentSession)
+        : options.reviewRunner.open(input),
+  };
+  const adapterOptions = {
+    instanceId,
+    settings: claudeSettings,
+    environment: options.environment,
+    attachmentsDir: cwd,
+    fileSystem,
+    path: yield* Path.Path,
+    random: yield* SecureRandom.SecureRandom,
+    idAllocator: yield* IdAllocator.IdAllocatorV2,
+    queryRunner,
+  };
+  // Built inside each registry so the adapter shares that graph's MCP sessions.
+  const layerClaudeAdapters = Layer.unwrap(
+    Effect.map(
+      ClaudeAdapterV2.makeClaudeAdapterV2(adapterOptions),
+      ProviderAdapterRegistry.layerSingle,
+    ),
+  ).pipe(Layer.provide(NodeServices.layer));
+  const layerSharedRegistries = Layer.mergeAll(
+    Layer.succeed(McpSessionRegistry.McpSessionRegistry, credentials),
+    Layer.succeed(ReviewAssignmentRegistry.ReviewAssignmentRegistry, assignments),
+  );
+  const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
+    { name: options.name },
+    layerClaudeAdapters,
+    { mcp: layerSharedRegistries },
+  );
+  const layerOrchestration = Layer.merge(
+    layerOrchestrator,
+    ThreadManagementService.layer.pipe(
+      Layer.provide(layerOrchestrator),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+    ),
+  );
+  const layerToolkit = layerOrchestratorToolkit.pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(layerSharedRegistries),
+    Layer.provideMerge(layerOrchestration),
+    Layer.provide(layerClaudeAdapters.pipe(Layer.provide(McpProviderSessions.layer))),
+    Layer.provide(
+      ProviderRegistryMock.layer([
+        makeProviderSnapshot({
+          instanceId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          model: options.model,
+        }),
+      ]),
+    ),
+    Layer.provideMerge(
+      SecretRequests.layer.pipe(
+        Layer.provide(layerMemorySecretStore),
+        Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
+        Layer.provide(layerOrchestration),
+      ),
+    ),
+    Layer.provide(layerUnreachedServices),
+  );
+  const layerReviewRoute = HttpRouter.serve(McpHttpServer.layerReviewAssignment, {
+    disableListenLog: true,
+    disableLogger: true,
+  }).pipe(
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(layerSharedRegistries),
+    Layer.provide(layerOrchestration),
+  );
+  const context = yield* Layer.build(Layer.merge(layerToolkit, layerReviewRoute));
+  const orchestrator = Context.get(context, Orchestrator.OrchestratorV2);
+  const server = Context.get(context, McpServer.McpServer);
+
+  const parentCreate = yield* orchestrator.dispatch({
+    type: "thread.create",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make("command:restricted-review-parent:create"),
+    threadId: parentThreadId,
+    projectId,
+    title: "Restricted review parent",
+    modelSelection: selection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: cwd,
+  });
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make("command:restricted-review-parent:start"),
+    threadId: parentThreadId,
+    messageId: MessageId.make("message:restricted-review-parent:start"),
+    text: parentPrompt,
+    attachments: [],
+    modelSelection: selection,
+    dispatchMode: { type: "start_immediately" },
+  });
+  yield* orchestrator
+    .streamStoredEventsFrom({ threadId: parentThreadId, afterSequence: parentCreate.sequence })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "provider-turn.updated" &&
+          stored.event.payload.status === "running",
+      ),
+      Stream.runHead,
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.die("Parent provider turn did not start."),
+          onSome: () => Effect.void,
+        }),
+      ),
+    );
+
+  const invocation: McpInvocationContext.McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment:mcp-replay"),
+    requestNamespace: "mcp-provider-session-restricted-review-parent",
+    thread: {
+      threadId: parentThreadId,
+      providerSessionId: "mcp-provider-session-restricted-review-parent",
+      providerInstanceId: instanceId,
+    },
+    client: undefined,
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 1,
+  };
+  const invoke = (name: string, args: Record<string, unknown>) =>
+    server
+      .callTool({ name, arguments: args })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+  const delegate = (assignment: string, clientRequestId: string, task = delegatedPrompt) =>
+    invoke("delegate_task", {
+      task,
+      target: { providerInstanceId: instanceId, model: options.model },
+      isolation: { type: "assignment", handle: assignment },
+      mode: "async",
+      clientRequestId,
+    });
+  const reviewAssignment = (args: Record<string, unknown>) =>
+    invoke("t3_review_assignment", args).pipe(
+      Effect.flatMap((call) => decodeReviewAssignmentResult(call.structuredContent)),
+      Effect.orDie,
+    );
+  /** Delegates a review, waits for its result to reach the parent, and reads its `task_status`. */
+  const runReview = Effect.fn("runReview")(function* (
+    assignment: string,
+    clientRequestId: string,
+    task?: string,
+  ) {
+    const afterSequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+    const call = yield* delegate(assignment, clientRequestId, task);
+    if (call.isError === true) {
+      return yield* Effect.die(new Error(JSON.stringify(call.content)));
+    }
+    const started = yield* decodeDelegateTaskResult(call.structuredContent).pipe(Effect.orDie);
+    yield* orchestrator.streamStoredEventsFrom({ threadId: parentThreadId, afterSequence }).pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "context-transfer.created" &&
+          stored.event.payload.type === "subagent_result" &&
+          stored.event.payload.sourceThreadId === started.childThreadId,
+      ),
+      Stream.runHead,
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.die("The review's result transfer was not created."),
+          onSome: () => Effect.void,
+        }),
+      ),
+    );
+    return yield* invoke("task_status", { taskId: started.taskId }).pipe(
+      Effect.flatMap((status) => decodeDelegateTaskResult(status.structuredContent)),
+      Effect.orDie,
+    );
+  });
+  /** Registers one file through `t3_review_assignment`, as an evaluator outside the server does. */
+  const registerFile = Effect.fn("registerFile")(function* (path: string, content: string) {
+    const directory = yield* fileSystem.makeTempDirectoryScoped();
+    const file = `${directory}/material`;
+    yield* fileSystem.writeFileString(file, content);
+    return yield* reviewAssignment({
+      action: "register",
+      material: [{ side: "head", path, file }],
+    });
+  });
+  return {
+    cwd,
+    instanceId,
+    delegate,
+    runReview,
+    registerFile,
+    revoke: (handle: string) => reviewAssignment({ action: "revoke", handle }),
+  };
+});
+
 describe("orchestrator MCP toolkit", () => {
   it.live.each([
     { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
@@ -312,10 +585,42 @@ describe("orchestrator MCP toolkit", () => {
           model: codexModel,
         }),
       ]);
+      // Records a task in another environment as the real delegation does, with no link to reach.
+      const layerRemoteDelegation = Layer.unwrap(
+        Effect.gen(function* () {
+          const threads = yield* ThreadManagementService.ThreadManagementService;
+          return Layer.mock(RemoteDelegation.RemoteDelegation)({
+            delegate: (scope, parent, input, { commandId }) =>
+              threads
+                .dispatch({
+                  type: "delegated_task.remote.request",
+                  commandId,
+                  parentThreadId: scope.thread.threadId,
+                  parentRunId: parent.runId,
+                  parentNodeId: parent.nodeId,
+                  task: input.task,
+                  driver: ProviderDriverKind.make("remote"),
+                  modelSelection: { instanceId: codexInstanceId, model: codexModel },
+                  remoteChild: {
+                    environmentId: EnvironmentId.make("environment:box"),
+                    threadId: ThreadId.make("thread:on-the-box"),
+                    label: "Box",
+                  },
+                  completionWake: "always",
+                })
+                .pipe(
+                  Effect.as({ taskId: IdAllocator.derive.delegatedTaskNode({ commandId }) }),
+                  Effect.orDie,
+                ),
+            runStatus: () => Effect.succeed(null),
+          });
+        }),
+      ).pipe(Layer.provide(layerOrchestration));
       const layerTest = layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provideMerge(ReviewAssignmentRegistry.layer),
         Layer.provideMerge(layerOrchestration),
+        Layer.provide(layerRemoteDelegation),
         Layer.provide(
           CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript).pipe(
             Layer.provide(McpProviderSessions.layer),
@@ -345,7 +650,6 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(layerOrchestration),
           ),
         ),
-        Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
         Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       );
 
@@ -422,6 +726,7 @@ describe("orchestrator MCP toolkit", () => {
         yield* (yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry)
           .register({
             handle: "synthetic-assignment",
+            owner: parentThreadId,
             allowedReads: [{ handle: "synthetic-assignment", side: "head", path: "src/app.ts" }],
             read: async () => new Uint8Array(),
             record: async () => undefined,
@@ -440,7 +745,7 @@ describe("orchestrator MCP toolkit", () => {
               isolation: { type: "assignment", handle: "unregistered-assignment" },
             },
             "invalid_request",
-            "not registered",
+            "registered no review assignment",
           ],
           [{ auto: true, isolation: assignment }, "restricted_review_unsupported", "auto:true"],
           [
@@ -509,6 +814,33 @@ describe("orchestrator MCP toolkit", () => {
         expect(collided.content).toEqual([
           expect.objectContaining({
             text: expect.stringMatching(/invalid_request[\s\S]*accepted with different isolation/),
+          }),
+        ]);
+        // Nor a task accepted in another environment, where no read broker holds the assignment.
+        const remoteCall = yield* invoke("delegate_task", {
+          task: delegatedPrompt,
+          target: {
+            providerInstanceId: codexInstanceId,
+            model: codexModel,
+            environmentId: "environment:box",
+          },
+          mode: "async",
+          clientRequestId: "delegate-remote-1",
+        });
+        expect(remoteCall.isError).not.toBe(true);
+        const remoteCollided = yield* invoke("delegate_task", {
+          task: delegatedPrompt,
+          target: { providerInstanceId: codexInstanceId, model: codexModel },
+          isolation: assignment,
+          mode: "async",
+          clientRequestId: "delegate-remote-1",
+        });
+        expect(remoteCollided.isError).toBe(true);
+        expect(remoteCollided.content).toEqual([
+          expect.objectContaining({
+            text: expect.stringMatching(
+              /restricted_review_unsupported[\s\S]*accepted as a task in another environment/,
+            ),
           }),
         ]);
         yield* orchestrator
@@ -952,16 +1284,11 @@ describe("orchestrator MCP toolkit", () => {
   it.live("runs an assignment-isolated Claude review and reports what it verified and read", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("restricted-claude-review");
         const credentials = yield* McpSessionRegistry.McpSessionRegistry;
         const assignments = yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry;
-        const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
         const claudeModel = "claude-sonnet-4-6";
-        const claudeSelection = { instanceId: claudeInstanceId, model: claudeModel };
         const handle = "restricted-review-assignment";
         const pin = { handle, side: "head", path: "src/app.ts" } as const;
-        const reviewServer = McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER;
-        const reviewTool = McpProviderSession.REVIEW_ASSIGNMENT_TOOL;
         const frame = (value: unknown) => value as SDKMessage;
         const answer = (sessionId: string, text: string) => [
           frame({
@@ -1000,9 +1327,9 @@ describe("orchestrator MCP toolkit", () => {
         ];
         let sessionCount = 0;
         const reviewLaunches: Array<string | undefined> = [];
-        // A fake Claude process: the parent stays busy, and the reviewer reads its pin through the
-        // credential the session manager issued before it answers.
-        const queryRunner: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape = {
+        // A fake Claude reviewer: it reads its pin through the credential the session manager
+        // issued before it answers.
+        const reviewRunner: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape = {
           allocateSessionId: Effect.sync(() => `restricted-review-session-${++sessionCount}`),
           open: ({ options }) =>
             Effect.gen(function* () {
@@ -1013,7 +1340,7 @@ describe("orchestrator MCP toolkit", () => {
                 review !== undefined && "headers" in review
                   ? review.headers?.["Authorization"]
                   : undefined;
-              if (review !== undefined) reviewLaunches.push(options.cwd);
+              reviewLaunches.push(options.cwd);
               const readPin = Effect.gen(function* () {
                 const scope = yield* credentials.resolve(
                   (authorization ?? "").replace(/^Bearer /, ""),
@@ -1024,33 +1351,28 @@ describe("orchestrator MCP toolkit", () => {
                 const material = yield* assignments
                   .readMaterial(
                     { threadId: scope.thread.threadId, handle: scope.assignment.handle },
-                    pin,
+                    { ...pin, handle: scope.assignment.handle },
                   )
                   .pipe(Effect.orDie);
                 yield* Queue.offerAll(sdkMessages, answer(sessionId, `Reviewed ${material}`));
               });
               return {
                 messages: Stream.fromQueue(sdkMessages),
-                ...(review === undefined
-                  ? {}
-                  : {
-                      inspect: Effect.succeed({
-                        model: claudeModel,
-                        account: { email: "reviewer@example.com" },
-                        mcpServers: [
-                          { name: reviewServer, status: "connected", tools: [reviewTool] },
-                        ],
-                        mcpTools: [
-                          { name: `mcp__${reviewServer}__${reviewTool}`, serverName: reviewServer },
-                        ],
-                        builtinTools: [],
-                        memoryFiles: [],
-                        agents: [],
-                        skills: 0,
-                        systemPromptSections: [],
-                      }),
-                    }),
-                offer: () => (review === undefined ? Effect.void : readPin),
+                inspect: Effect.succeed({
+                  model: claudeModel,
+                  account: { email: "reviewer@example.com" },
+                  mcpServers: [{ name: reviewServer, status: "connected", tools: [reviewTool] }],
+                  mcpTools: [
+                    { name: `mcp__${reviewServer}__${reviewTool}`, serverName: reviewServer },
+                  ],
+                  builtinTools: [],
+                  memoryFiles: [],
+                  agents: [],
+                  skills: 0,
+                  systemPromptSections: [],
+                  contextRows: ["system_prompt", "mcp_tools"],
+                }),
+                offer: () => readPin,
                 setModel: () => Effect.void,
                 applyFlagSettings: () => Effect.void,
                 setPermissionMode: () => Effect.void,
@@ -1073,244 +1395,147 @@ describe("orchestrator MCP toolkit", () => {
           subagentModel: () => Effect.succeed(null),
           assertComplete: Effect.void,
         };
-        const adapterOptions = {
-          instanceId: claudeInstanceId,
-          settings: claudeSettings,
+        const review = yield* openRestrictedClaudeReview({
+          name: "restricted-claude-review",
+          model: claudeModel,
           environment: {},
-          attachmentsDir: cwd,
-          fileSystem: yield* FileSystem.FileSystem,
-          path: yield* Path.Path,
-          random: yield* SecureRandom.SecureRandom,
-          idAllocator: yield* IdAllocator.IdAllocatorV2,
-          queryRunner,
-        };
-        // Built inside each registry so the adapter shares that graph's MCP sessions.
-        const layerClaudeAdapters = Layer.unwrap(
-          Effect.map(
-            ClaudeAdapterV2.makeClaudeAdapterV2(adapterOptions),
-            ProviderAdapterRegistry.layerSingle,
-          ),
-        ).pipe(Layer.provide(NodeServices.layer));
-        const layerSharedRegistries = Layer.mergeAll(
-          Layer.succeed(McpSessionRegistry.McpSessionRegistry, credentials),
-          Layer.succeed(ReviewAssignmentRegistry.ReviewAssignmentRegistry, assignments),
-        );
-        const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
-          { name: "restricted-claude-review" },
-          layerClaudeAdapters,
-          { mcp: layerSharedRegistries },
-        );
-        const layerOrchestration = Layer.merge(
-          layerOrchestrator,
-          ThreadManagementService.layer.pipe(
-            Layer.provide(layerOrchestrator),
-            Layer.provide(ServerSettings.layerTest()),
-            Layer.provide(
-              CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
-            ),
-          ),
-        );
-        const layerTest = layerOrchestratorToolkit.pipe(
-          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-          Layer.provideMerge(layerSharedRegistries),
-          Layer.provideMerge(layerOrchestration),
-          Layer.provide(layerClaudeAdapters.pipe(Layer.provide(McpProviderSessions.layer))),
-          Layer.provide(
-            ProviderRegistryMock.layer([
-              makeProviderSnapshot({
-                instanceId: claudeInstanceId,
-                driver: ProviderDriverKind.make("claudeAgent"),
-                model: claudeModel,
-              }),
-            ]),
-          ),
-          Layer.provideMerge(
-            SecretRequests.layer.pipe(
-              Layer.provide(layerMemorySecretStore),
-              Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
-              Layer.provide(layerOrchestration),
-            ),
-          ),
-          Layer.provide(layerUnreachedServices),
-        );
+          reviewRunner,
+        });
+        const recorded: Array<unknown> = [];
+        yield* assignments
+          .register({
+            handle,
+            owner: parentThreadId,
+            allowedReads: [pin],
+            read: async () => new TextEncoder().encode("const answer = 42;\n"),
+            record: async (receipt) => void recorded.push(receipt),
+          })
+          .pipe(Effect.orDie);
 
-        yield* Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const server = yield* McpServer.McpServer;
-          const parentCreate = yield* orchestrator.dispatch({
-            type: "thread.create",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make("command:restricted-review-parent:create"),
-            threadId: parentThreadId,
-            projectId,
-            title: "Restricted review parent",
-            modelSelection: claudeSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: cwd,
-          });
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make("command:restricted-review-parent:start"),
-            threadId: parentThreadId,
-            messageId: MessageId.make("message:restricted-review-parent:start"),
-            text: parentPrompt,
-            attachments: [],
-            modelSelection: claudeSelection,
-            dispatchMode: { type: "start_immediately" },
-          });
-          yield* orchestrator
-            .streamStoredEventsFrom({
-              threadId: parentThreadId,
-              afterSequence: parentCreate.sequence,
-            })
-            .pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "provider-turn.updated" &&
-                  stored.event.payload.status === "running",
-              ),
-              Stream.runHead,
-              Effect.flatMap(
-                Option.match({
-                  onNone: () => Effect.die("Parent provider turn did not start."),
-                  onSome: () => Effect.void,
-                }),
-              ),
-            );
-          const recorded: Array<unknown> = [];
-          yield* assignments
-            .register({
+        const status = yield* review.runReview(handle, "delegate-restricted-review-1");
+        expect(status).toMatchObject({
+          status: "completed",
+          summary: "Reviewed const answer = 42;\n",
+        });
+        // The reviewer ran in the assignment's own empty workspace, never the parent's checkout.
+        expect(reviewLaunches).toHaveLength(1);
+        const reviewCwd = reviewLaunches[0];
+        expect(reviewCwd).not.toBe(review.cwd);
+        expect(status.reviewEvidence).toEqual({
+          sessions: [
+            expect.objectContaining({
+              assignmentHandle: handle,
+              runId: status.childRunId,
+              providerInstanceId: review.instanceId,
+              driver: "claudeAgent",
+              model: claudeModel,
+              effectiveTools: [`${reviewServer}/${reviewTool}`],
+              mcpServers: [reviewServer],
+              cwd: reviewCwd,
+              verifiedBeforeInference: true,
+            }),
+          ],
+          receipts: [
+            expect.objectContaining({
+              runId: status.childRunId,
               handle,
-              allowedReads: [pin],
-              read: async () => new TextEncoder().encode("const answer = 42;\n"),
-              record: async (receipt) => void recorded.push(receipt),
-            })
-            .pipe(Effect.orDie);
-          const invocation: McpInvocationContext.McpInvocationScope = {
-            environmentId: EnvironmentId.make("environment:mcp-replay"),
-            requestNamespace: "mcp-provider-session-restricted-review-parent",
-            thread: {
-              threadId: parentThreadId,
-              providerSessionId: "mcp-provider-session-restricted-review-parent",
-              providerInstanceId: claudeInstanceId,
-            },
-            client: undefined,
-            capabilities: new Set(["orchestration"]),
-            issuedAt: 1,
-          };
-          const delegate = () =>
-            server
-              .callTool({
-                name: "delegate_task",
-                arguments: {
-                  task: delegatedPrompt,
-                  target: { providerInstanceId: claudeInstanceId, model: claudeModel },
-                  isolation: { type: "assignment", handle },
-                  mode: "async",
-                  clientRequestId: "delegate-restricted-review-1",
-                },
-              })
-              .pipe(
-                Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-                Effect.provideService(McpSchema.McpServerClient, client),
-              );
-          const delegationStartSequence =
-            yield* orchestrator.getThreadEventSequence(parentThreadId);
-          const startedCall = yield* delegate();
-          expect(startedCall.isError).not.toBe(true);
-          const started = yield* decodeDelegateTaskResult(startedCall.structuredContent).pipe(
-            Effect.orDie,
-          );
-          yield* orchestrator
-            .streamStoredEventsFrom({
-              threadId: parentThreadId,
-              afterSequence: delegationStartSequence,
-            })
-            .pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "context-transfer.created" &&
-                  stored.event.payload.type === "subagent_result" &&
-                  stored.event.payload.sourceThreadId === started.childThreadId,
-              ),
-              Stream.runHead,
-              Effect.flatMap(
-                Option.match({
-                  onNone: () => Effect.die("The review's result transfer was not created."),
-                  onSome: () => Effect.void,
-                }),
-              ),
-            );
-          const statusCall = yield* server
-            .callTool({ name: "task_status", arguments: { taskId: started.taskId } })
-            .pipe(
-              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-              Effect.provideService(McpSchema.McpServerClient, client),
-            );
-          const status = yield* decodeDelegateTaskResult(statusCall.structuredContent).pipe(
-            Effect.orDie,
-          );
-          expect(status).toMatchObject({
-            status: "completed",
-            summary: "Reviewed const answer = 42;\n",
+              side: "head",
+              path: "src/app.ts",
+              byteLength: "const answer = 42;\n".length,
+            }),
+          ],
+        });
+        expect(recorded).toEqual(status.reviewEvidence?.receipts);
+        expect(JSON.stringify(status.reviewEvidence)).not.toContain("reviewer@example.com");
+
+        // A retry of the accepted request returns the same review and its evidence.
+        const retried = yield* decodeDelegateTaskResult(
+          (yield* review.delegate(handle, "delegate-restricted-review-1")).structuredContent,
+        ).pipe(Effect.orDie);
+        expect(retried.taskId).toBe(status.taskId);
+        expect(retried.reviewEvidence).toEqual(status.reviewEvidence);
+
+        // An evaluator outside the server registers files through the tool, under a handle it is given.
+        const registered = yield* review.registerFile("src/app.ts", "const answer = 43;\n");
+        expect(registered.handle).not.toBe(handle);
+        // The accepted key keeps its assignment: a retry cannot turn this review into another one.
+        const switched = yield* review.delegate(registered.handle, "delegate-restricted-review-1");
+        expect(switched.isError).toBe(true);
+        expect(switched.content).toEqual([
+          expect.objectContaining({
+            text: expect.stringMatching(/invalid_request[\s\S]*accepted with different isolation/),
+          }),
+        ]);
+        const secondStatus = yield* review.runReview(
+          registered.handle,
+          "delegate-restricted-review-2",
+        );
+        expect(secondStatus.summary).toBe("Reviewed const answer = 43;\n");
+        expect(secondStatus.reviewEvidence?.receipts).toEqual([
+          expect.objectContaining({ handle: registered.handle, ...registered.material?.[0] }),
+        ]);
+        expect((yield* review.revoke(registered.handle)).revoked).toBe(true);
+        expect((yield* review.revoke(registered.handle)).revoked).toBe(false);
+        const afterRevoke = yield* review.delegate(
+          registered.handle,
+          "delegate-restricted-review-3",
+        );
+        expect(afterRevoke.isError).toBe(true);
+        expect(afterRevoke.content).toEqual([
+          expect.objectContaining({
+            text: expect.stringMatching(/invalid_request[\s\S]*registered no review assignment/),
+          }),
+        ]);
+      }),
+    ).pipe(Effect.provide(layerReviewRegistries)),
+  );
+
+  // Opt-in, because it spends a real turn on the default Claude login: set
+  // T3_TEST_LIVE_CLAUDE_REVIEW=1, and T3_TEST_LIVE_CLAUDE_REVIEW_MODEL to change the model.
+  // The test setup clears T3CODE_, CLAUDE_ and ANTHROPIC_ variables, so these names avoid them.
+  const liveReviewModel = process.env.T3_TEST_LIVE_CLAUDE_REVIEW_MODEL ?? "claude-haiku-5-5";
+  const liveReviewEnvironment = process.env;
+  it.live.runIf(liveReviewEnvironment.T3_TEST_LIVE_CLAUDE_REVIEW === "1")(
+    "attests and runs an assignment-isolated review on the real Claude CLI",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const runner = yield* Layer.build(layerClaudeQueryRunner);
+          const review = yield* openRestrictedClaudeReview({
+            name: "live-restricted-claude-review",
+            model: liveReviewModel,
+            environment: liveReviewEnvironment,
+            reviewRunner: Context.get(runner, ClaudeAdapterV2.ClaudeAgentSdkQueryRunner),
           });
-          // The reviewer ran in the assignment's own empty workspace, never the parent's checkout.
-          expect(reviewLaunches).toHaveLength(1);
-          const reviewCwd = reviewLaunches[0];
-          expect(reviewCwd).not.toBe(cwd);
+          const registered = yield* review.registerFile("src/app.ts", "const answer = 43;\n");
+          const status = yield* review.runReview(
+            registered.handle,
+            "live-restricted-review",
+            `Call ${reviewTool} once with handle "${registered.handle}", side "head" and path "src/app.ts". Then reply with only the text it returned.`,
+          );
+          yield* Effect.logInfo("live restricted Claude review", {
+            status: status.status,
+            summary: status.summary,
+            reviewEvidence: status.reviewEvidence,
+          });
+          expect(status.status).toBe("completed");
+          expect(status.summary).toContain("const answer = 43;");
           expect(status.reviewEvidence).toEqual({
             sessions: [
               expect.objectContaining({
-                assignmentHandle: handle,
-                runId: status.childRunId,
-                providerInstanceId: claudeInstanceId,
+                assignmentHandle: registered.handle,
                 driver: "claudeAgent",
-                model: claudeModel,
                 effectiveTools: [`${reviewServer}/${reviewTool}`],
                 mcpServers: [reviewServer],
-                cwd: reviewCwd,
                 verifiedBeforeInference: true,
               }),
             ],
             receipts: [
-              expect.objectContaining({
-                runId: status.childRunId,
-                handle,
-                side: "head",
-                path: "src/app.ts",
-                byteLength: "const answer = 42;\n".length,
-              }),
+              expect.objectContaining({ handle: registered.handle, ...registered.material?.[0] }),
             ],
           });
-          expect(recorded).toEqual(status.reviewEvidence?.receipts);
-          expect(JSON.stringify(status.reviewEvidence)).not.toContain("reviewer@example.com");
-
-          // A retry of the accepted request returns the same review and its evidence.
-          const retried = yield* decodeDelegateTaskResult(
-            (yield* delegate()).structuredContent,
-          ).pipe(Effect.orDie);
-          expect(retried.taskId).toBe(started.taskId);
-          expect(retried.reviewEvidence).toEqual(status.reviewEvidence);
-        }).pipe(Effect.provide(layerTest));
-      }),
-    ).pipe(
-      Effect.provide(
-        Layer.mergeAll(McpSessionRegistry.layer, ReviewAssignmentRegistry.layer).pipe(
-          Layer.provide(
-            Layer.mock(ServerEnvironment.ServerEnvironment)({
-              getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:mcp-replay")),
-            }),
-          ),
-          Layer.provide(NodeHttpServer.layerTest),
-          Layer.provideMerge(IdAllocator.layer),
-          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-        ),
-      ),
-    ),
+          expect((yield* review.revoke(registered.handle)).revoked).toBe(true);
+        }),
+      ).pipe(Effect.provide(layerReviewRegistries)),
   );
 });

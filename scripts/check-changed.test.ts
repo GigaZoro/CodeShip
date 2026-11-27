@@ -119,7 +119,8 @@ describe("check:changed", () => {
       "apps/server/src/cloud/ConnectReachability.test.ts",
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
-    assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
+    // Every landing prepends to the notes: affecting the web app would typecheck it each time.
+    assert.deepStrictEqual(decide(["docs/release-notes.md"], packages, false).affected, []);
   });
 
   it("keeps every test that starts bash with bash's own flags out of the file tracker", () => {
@@ -2301,6 +2302,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
     ".github/scripts/landing-turn.cjs",
+    ".github/scripts/landing-record.cjs",
     ".github/scripts/bounded-git.cjs",
     ".github/scripts/process-tree.cjs",
     "packages/shared/src/windowsProcessTreeScript.ts",
@@ -2779,6 +2781,17 @@ it("runs the tests the checkout holds when the index names others", () => {
   expect(project.calls().filter(({ args }) => args.includes("--test"))).toEqual([]);
 });
 
+it("runs node:test files at most as many at once as the budget slots the step holds", () => {
+  using project = launcherFixture();
+  for (const name of ["a", "b", "c"]) {
+    project.write(`.github/scripts/${name}.test.cjs`, "module.exports = 1;\n");
+  }
+  const result = project.run("", "", project.source, ["--concurrency", "1"]);
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const nodeTest = project.calls().find(({ args }) => args.includes("--test"));
+  expect(nodeTest?.args).toContain("--test-concurrency=1");
+});
+
 it("fails a run whose files changed while its checks ran", () => {
   using project = launcherFixture();
   project.write(project.source, "export const value = 2;\n");
@@ -3247,7 +3260,12 @@ it("runs tests without the user's global Git config, as CI does", () => {
       expect(name.stdout).toBe("");
     });`,
   );
-  const run = project.run("", "", project.source, [], { HOME: home });
+  // Vite+ keeps its Node runtimes in the XDG data folder below HOME, so an empty home downloads one.
+  const run = project.run("", "", project.source, [], {
+    HOME: home,
+    XDG_DATA_HOME: env.XDG_DATA_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "share"),
+    XDG_CACHE_HOME: env.XDG_CACHE_HOME ?? NodePath.join(NodeOS.homedir(), ".cache"),
+  });
   expect(run.status, run.stdout + run.stderr).toBe(0);
 });
 

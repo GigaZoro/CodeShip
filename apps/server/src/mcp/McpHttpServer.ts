@@ -1738,15 +1738,19 @@ export const layerMilestoneEvents = Layer.effectDiscard(
  * The restricted reviewer's server serves `read_material` and nothing else.
  * `Layer.fresh` gives it its own `McpServer`: the memoized one holds every `/mcp` tool.
  */
-export const layerReviewAssignment = Layer.fresh(
-  McpServer.layerHttp({
-    name: "T3.CodeShip review assignment",
-    version: packageJson.version,
-    path: McpSessionRegistry.REVIEW_ASSIGNMENT_MCP_PATH,
-    protocols: [McpProtocol.v2025_06_18],
-    allowSessionTermination: true,
-    registrations: toolkitRegistration(ReviewAssignmentToolkit, ReviewAssignmentHandlers.layer),
-  }).pipe(Layer.provide(layerReviewAssignmentAuthMiddleware)),
+export const layerReviewAssignment = Layer.empty.pipe(
+  Layer.provide(
+    Layer.fresh(
+      McpServer.layerHttp({
+        name: "T3.CodeShip review assignment",
+        version: packageJson.version,
+        path: McpSessionRegistry.REVIEW_ASSIGNMENT_MCP_PATH,
+        protocols: [McpProtocol.v2025_06_18],
+        allowSessionTermination: true,
+        registrations: toolkitRegistration(ReviewAssignmentToolkit, ReviewAssignmentHandlers.layer),
+      }).pipe(Layer.provide(layerReviewAssignmentAuthMiddleware)),
+    ),
+  ),
 );
 
 export const layer = Layer.merge(

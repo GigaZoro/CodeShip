@@ -15,6 +15,7 @@ import type {
   ElicitationRequest,
   ElicitationResult,
   Query as ClaudeQuery,
+  SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKResultMessage,
   SDKUserMessage,
@@ -4542,6 +4543,42 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     agents: [],
     skills: 0,
     systemPromptSections: [],
+    contextRows: ["system_prompt", "mcp_tools", "autocompact_buffer", "free_space"],
+  };
+  // Claude 2.1.332 before a restricted review's prompt: rows carry an id the SDK types omit, and no
+  // tool or skill list is sent.
+  const recordedReviewRows = [
+    { id: "system_prompt", name: "System prompt", tokens: 2, color: "promptBorder", kind: "used" },
+    {
+      id: "mcp_tools",
+      name: "MCP tools",
+      tokens: 96,
+      color: "cyan_FOR_SUBAGENTS_ONLY",
+      kind: "used",
+    },
+    {
+      id: "autocompact_buffer",
+      name: "Autocompact buffer",
+      tokens: 33_000,
+      color: "inactive",
+      kind: "buffer",
+    },
+    { id: "free_space", name: "Free space", tokens: 966_902, color: "promptBorder", kind: "free" },
+  ] as const;
+  const recordedReviewUsage: SDKControlGetContextUsageResponse = {
+    categories: [...recordedReviewRows],
+    totalTokens: 98,
+    maxTokens: 1_000_000,
+    rawMaxTokens: 1_000_000,
+    percentage: 0,
+    gridRows: [],
+    model: "claude-haiku-5-5",
+    memoryFiles: [],
+    mcpTools: [{ name: REVIEW_TOOL, serverName: REVIEW_SERVER, tokens: 96 }],
+    agents: [],
+    autoCompactThreshold: 967_000,
+    isAutoCompactEnabled: true,
+    apiUsage: null,
   };
   // A restricted review thread: its policy and its MCP session name the same assignment.
   const makeReviewHarness = (
@@ -4613,7 +4650,21 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect("attests a restricted review's session before its prompt reaches Claude", () =>
     Effect.gen(function* () {
-      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+      const review = yield* makeReviewHarness(
+        Effect.succeed(
+          ClaudeAdapterV2.claudeQueryInspection({
+            servers: [
+              {
+                name: REVIEW_SERVER,
+                status: "connected",
+                tools: [{ name: McpProviderSession.REVIEW_ASSIGNMENT_TOOL }],
+              },
+            ],
+            usage: recordedReviewUsage,
+            account: { email: "reviewer@example.com", organization: "Example" },
+          }),
+        ),
+      );
 
       yield* review.harness.runtime.startTurn(review.turnInput);
 
@@ -4625,7 +4676,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.deepInclude(review.attested[0]?.evidence, {
         runId: review.turnInput.runId,
         driver: "claudeAgent",
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-5-5",
         cwd: review.cwd,
         effectiveTools: [`${REVIEW_SERVER}/${McpProviderSession.REVIEW_ASSIGNMENT_TOOL}`],
         mcpServers: [REVIEW_SERVER],
@@ -4664,7 +4715,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ["an instruction file", { memoryFiles: ["/home/user/.claude/CLAUDE.md"] }],
     ["a skill", { skills: 1 }],
     ["a subagent definition", { agents: ["general-purpose"] }],
-    ["no list of built-in tools", { builtinTools: null }],
+    ["built-in tools it does not name", { contextRows: ["system_prompt", "system_tools"] }],
+    [
+      "MCP server instructions",
+      { contextRows: ["system_prompt", "mcp_tools", "mcp_instructions"] },
+    ],
+    ["deferred MCP tools", { contextRows: ["system_prompt", "mcp_tools_deferred"] }],
+    ["a context row without an id", { contextRows: ["system_prompt", null] }],
+    ["no context rows", { contextRows: [] }],
     [
       "another MCP server",
       {
@@ -20330,6 +20388,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ["Monitor", "before the original result", "local_bash"],
     ["Monitor", "during another notification wake", "monitor_ws"],
     ["Bash", "while steered before and during its report", "local_bash"],
+    ["Bash", "with its report answered in the task's own notification turn", "local_bash"],
   ] as const)(
     "keeps the original turn open after explicitly awaiting native %s notified %s",
     ([tool, notificationTiming, taskType]) =>
@@ -21039,34 +21098,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             assert.include(replacement?.message.content, WAKE_TASK_ID);
             const replacementUuid = harness.promptUuid(3);
             assert.notEqual(replacementUuid, reportUuid);
-            for (const [uuid, result, echoed, terminalReason, origin] of [
-              [
-                "00000000-0000-4000-8000-000000000622",
-                "Old report.",
-                [reportUuid],
-                "completed",
-                undefined,
-              ],
+            for (const [uuid, result, echoed, terminalReason] of [
+              ["00000000-0000-4000-8000-000000000622", "Old report.", [reportUuid], "completed"],
               [
                 "00000000-0000-4000-8000-000000000623",
                 "Aborted old report.",
                 [reportUuid],
                 "aborted_streaming",
-                undefined,
               ],
               [
                 "00000000-0000-4000-8000-000000000624",
                 "Foreign reply.",
                 ["foreign-prompt", replacementUuid],
                 "completed",
-                undefined,
-              ],
-              [
-                "00000000-0000-4000-8000-000000000625",
-                "Watcher reply.",
-                [replacementUuid],
-                "completed",
-                { kind: "task-notification" },
               ],
             ] as const) {
               yield* harness.offerAndWait(
@@ -21075,7 +21119,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     uuid,
                     result,
                     terminalReason,
-                    ...(origin === undefined ? {} : { origin }),
                   }),
                   user_message_uuids: echoed,
                 }),
@@ -21088,6 +21131,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             };
           }
           const finalReport = "Verification exited successfully with the expected result.";
+          // The CLI folds the report prompt into the turn the task's notification opened.
+          const reportInWake =
+            notificationTiming === "with its report answered in the task's own notification turn";
           if (!hasEcho) {
             yield* harness.offerAndWait(
               claudeSdkFrame({
@@ -21137,6 +21183,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 ...(providerFailed
                   ? { isError: true, apiErrorStatus: 500, terminalReason: "api_error" as const }
                   : {}),
+                ...(reportInWake ? { origin: { kind: "task-notification" as const } } : {}),
               }),
               ...(hasEcho ? finalEcho : {}),
             }),

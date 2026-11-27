@@ -1,3 +1,46 @@
+## 2026-11-27 — The global Git config check test no longer downloads a Node runtime
+
+- Maintainers: the `check:changed` test that runs a check with an empty home folder keeps your Vite+ data and cache folders, so it no longer downloads a Node runtime on every run and takes seconds instead of minutes.
+
+## 2026-11-27 — Background commands capture their output again on macOS and Linux
+
+- Agent commands run in the background (tests, builds, landings) failed at once with "CodeShip could not capture command output" in the packaged CLI and app, because the output writer could not read its input there. They run and report their output again.
+
+## 2026-11-27 — The weekly dependency upgrade runs while Codex is out of usage
+
+- Maintainers: the "CodeShip: weekly dependency upgrade" scheduled task now lists only its own provider (Claude) in `delegate_providers`. Listing Codex made CodeShip skip every run while all Codex accounts were out of usage, although the task only needs a second reviewer from any provider that has usage. Machines pick up the change with `schedule_task` and `delegateProviders`, as `machine-config.mjs check` reports.
+
+## 2026-11-27 — Each landing leaves a timing record
+
+- Maintainers: every `landing-turn.cjs land` run, failed ones included, appends one JSON line to `t3-landing/landings.jsonl` in the clone's common Git folder with its outcome, the stage it ended in and its per-phase timings, so slow or failing landings can be measured.
+
+## 2026-11-27 — Claude chats no longer fail after a background task's report
+
+- A Claude chat that waited on its own background command no longer fails with "Claude did not return a verifiable report for the awaited native tasks." when Claude writes the report in the same turn as the command's completion notice.
+
+## 2026-11-27 — Thread details start closed, with the essentials in the header
+
+- The Details column now starts closed on web and desktop, and opening or closing it with **Details** holds for every thread. A new thread keeps its column open to choose its machine and branch. Needs you keeps its place at the foot of the column either way.
+- While the column is closed, the chat header shows the thread in one line, such as "Mac · feat/auth · +142 −18 · PR #88". Failing checks and context use above 60% join it, with an icon above 80%. Select it to open the details over the chat; focus stays inside and Esc closes them.
+- The details card shows seven essential rows by default. Right-click it, or use **Settings → Chat & diffs → Thread details**, to pick the **Essentials**, **Review** or **Debug** preset. Rows you turned on or off yourself keep your choice.
+
+## 2026-11-27 — Faster landing-turn tests and release-notes-only changes
+
+- Maintainers: the landing-turn tests now run as six files in parallel, so their `node --test` step takes about a minute instead of five, within the check budget's free slots. A new lint rule keeps each `.github/scripts` test file under 1,500 lines.
+- A change to `docs/release-notes.md` no longer marks the web app affected, so `vp run check:changed` and CI skip the web and scripts typechecks it never needed.
+
+## 2026-11-27 — Provider status and quota warnings read the same everywhere
+
+- Quota bars turn amber at 25% left and red at 10% left in the thread details, the sidebar and the mobile usage screen alike, and the home-screen widgets turn red at the same 10%.
+- Settings, the model picker and the thread now agree on a provider's status. A provider that is signed out, missing or unavailable no longer shows as ready in Settings, and the picker names the same problem Settings does.
+- A provider problem in a thread now appears in the thread's one notice slot, beside the thread's other notices, instead of a separate banner. Antigravity API-key and Agent Platform warnings that Settings flags now show there too.
+
+## 2026-11-27 — Register material for assignment-isolated reviews
+
+- The new `t3_review_assignment` MCP tool registers files for an assignment-isolated review and returns a handle the server picks; pass it to `delegate_task` with `isolation: { type: "assignment", handle }`. The files are copied when you register them (up to 256 files and 8 MiB per assignment), so later edits do not change what the reviewer reads, and `task_status` read receipts carry each file's size and SHA-256. `revoke` ends the handle.
+- Only the thread that registered a handle can review with it or revoke it. Registering needs Full access and default mode; revoking works in any mode. A review whose assignment is revoked or replaced while Claude starts is refused before inference.
+- Assignment-isolated reviews now start on Claude Code 2.1.332. That version no longer lists its built-in tools, so every review was refused before inference; the check now reads which kinds of context Claude reports loading, and still refuses a session with built-in tools, skills, instruction files, subagents, MCP server instructions, deferred tools or anything it does not recognize.
+
 ## 2026-11-27 — Landing checks stop at the first failure and keep the machine
 
 - Maintainers: under main's landing turn, `vp run check:changed` now stops at the first failing step or test group instead of finishing every other step, so a failed landing releases the turn sooner. Runs outside the landing turn still report every failure.

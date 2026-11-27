@@ -79,6 +79,24 @@ describe("chat canvas model", () => {
     expect(resolve(200)).toEqual({ chatRight: 1076, detailsHeight: 664 });
   });
 
+  it("keeps the Needs you slot while the details column is closed", () => {
+    const resolve = (needsYouHeight: number) => {
+      const model = resolveChatCanvasModel({
+        measurements: measurements(1400, 900, needsYouHeight),
+        detailsCardMeasurement: { threadRef, width: 280, fullContentHeight: 400 },
+        threadRef,
+        preview: null,
+        detailsCardInlineOpen: false,
+      });
+      return {
+        slot: model.preferredDetailsCard !== null,
+        chatRight: model.layout.chat.left + model.layout.chat.width,
+      };
+    };
+    expect(resolve(0)).toEqual({ slot: true, chatRight: 1084 });
+    expect(resolve(200)).toEqual({ slot: true, chatRight: 1076 });
+  });
+
   it("ignores a details card measured for another thread", () => {
     const model = resolveChatCanvasModel({
       measurements: measurements(1100, 300),

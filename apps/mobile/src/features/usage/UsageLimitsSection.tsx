@@ -18,6 +18,7 @@ import {
   paceOf,
   paceRemainingPercent,
   remainingPercent,
+  usageLimitTone,
 } from "@t3tools/shared/usageLimits";
 import { type ReactNode, useContext, useRef, useState } from "react";
 import { Atom } from "effect/reactivity";
@@ -60,6 +61,7 @@ function WindowRow(props: {
 }) {
   const { window, now } = props;
   const remaining = remainingPercent(window);
+  const tone = usageLimitTone(remaining);
   const timeLeft = paceRemainingPercent(window, now);
   const pace = paceOf(window, now);
   const resetsIn = formatResetsIn(window, now);
@@ -75,15 +77,15 @@ function WindowRow(props: {
     >
       <View
         className={
-          remaining <= 10
+          tone === "error"
             ? "h-full rounded-full bg-red-500"
-            : remaining <= 30
+            : tone === "warning"
               ? "h-full rounded-full bg-amber-500"
               : "h-full rounded-full bg-foreground"
         }
         style={[
           { flex: remaining },
-          remaining > 30 && props.color ? { backgroundColor: props.color } : null,
+          tone === null && props.color ? { backgroundColor: props.color } : null,
         ]}
       />
       <View style={{ flex: 100 - remaining }} />

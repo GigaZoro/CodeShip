@@ -51,6 +51,7 @@ function Harness({ threadRef = defaultThreadRef }: { readonly threadRef?: Scoped
     <ChatCanvas
       store={store}
       rightPanelOpen={false}
+      detailsCardInlineOpen={false}
       threadRef={threadRef}
       preview={preview}
       composerOverlayElement={null}

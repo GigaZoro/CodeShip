@@ -12,7 +12,7 @@ const ROTATED_LOG_FLAGS =
   NodeFS.constants.O_TRUNC |
   NodeFS.constants.O_APPEND;
 
-export function runPosixLogWriter(args: readonly string[]): void {
+export async function runPosixLogWriter(args: readonly string[]): Promise<void> {
   const [logPath, statusPath] = args;
   if (!logPath || !statusPath) throw new Error("Missing command log writer arguments.");
   const token = NodeCrypto.randomUUID();
@@ -57,13 +57,10 @@ export function runPosixLogWriter(args: readonly string[]): void {
     size = header.length + LOG_KEEP_BYTES;
   };
 
-  const chunk = Buffer.allocUnsafe(64 * 1024);
   let pending = empty;
   let completed = false;
-  for (;;) {
-    const count = NodeFS.readSync(0, chunk, 0, chunk.length, null);
-    if (count === 0) break;
-    const input = chunk.subarray(0, count);
+  // Not readSync(0): the bundled CLI's node:process import makes stdin non-blocking before this runs.
+  for await (const input of process.stdin as AsyncIterable<Buffer>) {
     if (completed) {
       append(input);
       continue;

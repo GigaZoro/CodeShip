@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import {
-  dismissProviderStatusBannerForSession,
-  getProviderStatusBannerKey,
-  getProviderStatusDismissalKey,
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import {
+  getProviderStatusNoticeKey,
   getProviderStatusMessage,
-  isProviderStatusBannerDismissedForSession,
-  shouldShowProviderStatusBanner,
+  providerStatusNotice,
+  shouldShowProviderStatusNotice,
 } from "./ProviderStatusBanner";
 
-const provider: ServerProvider = {
+const healthy: ServerProvider = {
   instanceId: ProviderInstanceId.make("codex-work"),
   driver: ProviderDriverKind.make("codex"),
   enabled: true,
@@ -21,6 +24,10 @@ const provider: ServerProvider = {
   models: [],
   skills: [],
   slashCommands: [],
+};
+
+const provider: ServerProvider = {
+  ...healthy,
   compatibilityAdvisory: {
     status: "unsupported",
     message: "Unsupported version. Use 2.0.0.",
@@ -29,18 +36,18 @@ const provider: ServerProvider = {
   },
 };
 
-function shownAfterDismissing(dismissed: ServerProvider, shown: ServerProvider): boolean {
-  return shouldShowProviderStatusBanner(
-    shown,
-    getProviderStatusBannerKey(shown) === getProviderStatusBannerKey(dismissed),
-  );
-}
-
-describe("compatibility banners", () => {
+describe("compatibility notices", () => {
   it("shows and dismisses a warning on a healthy provider, then clears it after policy relaxation", () => {
-    expect(shouldShowProviderStatusBanner(provider, false)).toBe(true);
-    expect(shownAfterDismissing(provider, provider)).toBe(false);
-    expect(shownAfterDismissing(provider, { ...provider, version: "1.0.1" })).toBe(true);
+    expect(shouldShowProviderStatusNotice(provider, null)).toBe(true);
+    expect(shouldShowProviderStatusNotice(provider, getProviderStatusNoticeKey(provider))).toBe(
+      false,
+    );
+    expect(
+      shouldShowProviderStatusNotice(
+        { ...provider, version: "1.0.1" },
+        getProviderStatusNoticeKey(provider),
+      ),
+    ).toBe(true);
     const relaxed: ServerProvider = {
       ...provider,
       compatibilityAdvisory: {
@@ -49,10 +56,10 @@ describe("compatibility banners", () => {
         message: null,
       },
     };
-    expect(getProviderStatusBannerKey(relaxed)).toBeNull();
-    expect(getProviderStatusBannerKey({ ...provider, status: "disabled" })).toBeNull();
+    expect(getProviderStatusNoticeKey(relaxed)).toBeNull();
+    expect(getProviderStatusNoticeKey({ ...provider, status: "disabled" })).toBeNull();
     expect(
-      getProviderStatusBannerKey({
+      getProviderStatusNoticeKey({
         ...provider,
         compatibilityAdvisory: { ...provider.compatibilityAdvisory!, status: "graceful" },
       }),
@@ -75,7 +82,7 @@ describe("compatibility banners", () => {
         recommendedRange: ">=1.14.19 <2.0.0",
       },
     };
-    expect(shouldShowProviderStatusBanner(broken, false)).toBe(true);
+    expect(shouldShowProviderStatusNotice(broken, null)).toBe(true);
     const timeoutOnly: ServerProvider = {
       ...broken,
       compatibilityAdvisory: {
@@ -84,13 +91,18 @@ describe("compatibility banners", () => {
         message: null,
       },
     };
-    expect(shownAfterDismissing(timeoutOnly, broken)).toBe(true);
-    expect(shownAfterDismissing(broken, broken)).toBe(false);
+    expect(shouldShowProviderStatusNotice(broken, getProviderStatusNoticeKey(timeoutOnly))).toBe(
+      true,
+    );
+    expect(shouldShowProviderStatusNotice(broken, getProviderStatusNoticeKey(broken))).toBe(false);
     expect(
-      shownAfterDismissing(broken, {
-        ...broken,
-        compatibilityAdvisory: { ...broken.compatibilityAdvisory!, message: "Use 1.14.20." },
-      }),
+      shouldShowProviderStatusNotice(
+        {
+          ...broken,
+          compatibilityAdvisory: { ...broken.compatibilityAdvisory!, message: "Use 1.14.20." },
+        },
+        getProviderStatusNoticeKey(broken),
+      ),
     ).toBe(true);
     expect(getProviderStatusMessage(broken)).toBe(message);
     expect(
@@ -109,40 +121,59 @@ describe("compatibility banners", () => {
   });
 });
 
-describe("banner dismissal", () => {
-  const { compatibilityAdvisory: _advisory, ...healthy } = provider;
-  const failing: ServerProvider = {
+describe("provider status notices", () => {
+  const antigravity: ServerProvider = {
     ...healthy,
-    instanceId: ProviderInstanceId.make("codex-dismissal"),
-    status: "error",
-    message: "Could not start Codex CLI.",
+    instanceId: ProviderInstanceId.make("antigravity"),
+    driver: ProviderDriverKind.make("antigravity"),
+    status: "warning",
+    auth: { status: "unknown" },
   };
 
-  it("keeps a dismissed status hidden in other views until the status changes", () => {
-    const key = getProviderStatusDismissalKey("environment-a", failing);
-    expect(isProviderStatusBannerDismissedForSession(key)).toBe(false);
-
-    dismissProviderStatusBannerForSession(key);
-
+  it("reports in the thread exactly what settings reports as needing attention", () => {
+    expect(getProviderStatusNoticeKey(antigravity)).toBeNull();
     expect(
-      isProviderStatusBannerDismissedForSession(
-        getProviderStatusDismissalKey("environment-a", failing),
-      ),
-    ).toBe(true);
-    expect(
-      isProviderStatusBannerDismissedForSession(
-        getProviderStatusDismissalKey("environment-a", { ...failing, message: "Codex exited." }),
-      ),
-    ).toBe(false);
+      getProviderStatusNoticeKey({
+        ...antigravity,
+        auth: { status: "unknown", type: "gemini-api-key" },
+      }),
+    ).not.toBeNull();
+    expect(getProviderStatusNoticeKey({ ...healthy, availability: "unavailable" })).not.toBeNull();
+    expect(getProviderStatusNoticeKey({ ...healthy, enabled: false })).toBeNull();
   });
 
-  it("keeps a dismissal to the environment it was taken in", () => {
-    dismissProviderStatusBannerForSession(getProviderStatusDismissalKey("environment-c", failing));
-
+  it("names an unavailable provider's reason and shows it again when the reason changes", () => {
+    const blocked: ServerProvider = {
+      ...healthy,
+      installed: false,
+      setup: { canInstall: true, canAuthenticate: false },
+      availability: "unavailable",
+      unavailableReason: "Blocked by organization policy.",
+    };
+    expect(getProviderStatusMessage(blocked)).toBe(blocked.unavailableReason);
     expect(
-      isProviderStatusBannerDismissedForSession(
-        getProviderStatusDismissalKey("environment-d", failing),
+      shouldShowProviderStatusNotice(
+        { ...blocked, unavailableReason: "Removed from this build." },
+        getProviderStatusNoticeKey(blocked),
       ),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("says a provider is signed out whatever status the probe reported", () => {
+    const notice = (status: ServerProvider) =>
+      providerStatusNotice({
+        environmentId: EnvironmentId.make("local"),
+        onDismiss: () => {},
+        status,
+      });
+    for (const probe of ["ready", "warning", "error"] as const) {
+      expect
+        .soft(
+          notice({ ...healthy, status: probe, auth: { status: "unauthenticated" } }).title,
+          probe,
+        )
+        .toBe("Codex is signed out");
+    }
+    expect(notice({ ...healthy, installed: false }).title).toBe("Codex: Not found");
   });
 });

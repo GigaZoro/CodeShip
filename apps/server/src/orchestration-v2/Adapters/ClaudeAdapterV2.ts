@@ -957,11 +957,14 @@ export interface ClaudeQueryInspection {
     readonly tools: ReadonlyArray<string>;
   }>;
   readonly mcpTools: ReadonlyArray<{ readonly name: string; readonly serverName: string }>;
-  readonly builtinTools: ReadonlyArray<string> | null;
+  /** Only some Claude versions name their built-in tools; `contextRows` shows them in every version. */
+  readonly builtinTools: ReadonlyArray<string>;
   readonly memoryFiles: ReadonlyArray<string>;
   readonly agents: ReadonlyArray<string>;
-  readonly skills: number | null;
+  readonly skills: number;
   readonly systemPromptSections: ReadonlyArray<string>;
+  /** The id of each context usage row, null for a row without one. Claude omits an empty row. */
+  readonly contextRows: ReadonlyArray<string | null>;
 }
 
 export interface ClaudeAgentSdkQuerySession {
@@ -3275,7 +3278,7 @@ function makeRestrictedClaudeQueryOptions(input: {
   };
 }
 
-function claudeQueryInspection(input: {
+export function claudeQueryInspection(input: {
   readonly servers: ReadonlyArray<ClaudeMcpServerStatus>;
   readonly usage: SDKControlGetContextUsageResponse;
   readonly account: ClaudeAccountInfo;
@@ -3294,25 +3297,38 @@ function claudeQueryInspection(input: {
       tools: (server.tools ?? []).map((serverTool) => serverTool.name),
     })),
     mcpTools: usage.mcpTools.map(({ name, serverName }) => ({ name, serverName })),
-    // A CLI that omits a list cannot show it is empty, so the review refuses it.
-    builtinTools:
-      usage.systemTools === undefined || usage.deferredBuiltinTools === undefined
-        ? null
-        : [...usage.systemTools, ...usage.deferredBuiltinTools].map((builtin) => builtin.name),
+    builtinTools: [...(usage.systemTools ?? []), ...(usage.deferredBuiltinTools ?? [])].map(
+      (builtin) => builtin.name,
+    ),
     memoryFiles: usage.memoryFiles.map((file) => file.path),
     agents: usage.agents.map((agent) => agent.agentType),
     // Any skill the CLI knows of can be invoked, whether or not its estimate includes it.
     skills:
       usage.skills === undefined
-        ? null
+        ? 0
         : Math.max(
             usage.skills.totalSkills,
             usage.skills.includedSkills,
             usage.skills.skillFrontmatter.length,
           ),
     systemPromptSections: (usage.systemPromptSections ?? []).map((section) => section.name),
+    // The SDK types leave out the id that Claude sends with each row on its own stdio.
+    contextRows: usage.categories.map((row) =>
+      "id" in row && typeof row.id === "string" ? row.id : null,
+    ),
   };
 }
+
+// Context a restricted review may hold. Claude 2.1.332 names no built-in tool and lists skills only
+// when it has some, so any other row refuses: built-in tools, skills, memory files, agents, MCP
+// instructions (the review server sends none) and deferred MCP tools (loading one takes a built-in).
+const RESTRICTED_CLAUDE_REVIEW_CONTEXT_ROWS: ReadonlySet<string> = new Set([
+  "system_prompt",
+  "mcp_tools",
+  "messages",
+  "autocompact_buffer",
+  "free_space",
+]);
 
 /**
  * A turn runs as a restricted review only when its policy and its MCP session name the same
@@ -3366,8 +3382,19 @@ function restrictedClaudeReviewEvidence(input: {
   const { inspection } = input;
   const refuse = (reason: string) =>
     Effect.fail(new McpProviderSession.ReviewAssignmentRefusedError({ reason }));
-  if (inspection.builtinTools === null || inspection.skills === null) {
-    return refuse("this Claude version does not report its tools and skills");
+  // The restricted system prompt always fills this row, so its absence means the rows are unreadable.
+  if (!inspection.contextRows.includes("system_prompt")) {
+    return refuse("Claude did not report what its context holds");
+  }
+  const unexpectedRows = inspection.contextRows.filter(
+    (row) => row === null || !RESTRICTED_CLAUDE_REVIEW_CONTEXT_ROWS.has(row),
+  );
+  if (unexpectedRows.length > 0) {
+    return refuse(
+      `Claude reports context the review does not allow: ${unexpectedRows
+        .map((row) => row ?? "a row without an id")
+        .join(", ")}`,
+    );
   }
   if (inspection.memoryFiles.length > 0) return refuse("instruction files are loaded");
   if (inspection.skills > 0) return refuse("skills are loaded");
@@ -14401,10 +14428,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? "failed"
                 : terminalStatusFromResult(message, failureHint);
             const echoed = claudeEchoedPromptUuids(message);
+            // The CLI echoes a prompt once, in the turn that consumed it. A notification can open
+            // that turn and give it its origin, so the echo alone proves the reply is ours.
             const ownedReply =
-              echoed.length > 0 &&
-              echoed.every((uuid) => claudeOwnsNativePrompt(context, uuid)) &&
-              (message.origin === undefined || message.origin.kind === "human");
+              echoed.length > 0 && echoed.every((uuid) => claudeOwnsNativePrompt(context, uuid));
             const ownsReport =
               ownedReply && wait.report !== null && echoed.includes(wait.report.uuid);
             const latestInputUuid = wait.latestSteerUuid ?? context.promptUuid;

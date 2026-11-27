@@ -88,8 +88,7 @@ import { getProviderRestartNotice } from "../ProviderUpdateLaunchNotification.lo
 import {
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
-  getProviderStatusKey,
-  getProviderSummary,
+  deriveProviderStatus,
   getProviderVersionLabel,
 } from "./providerStatus";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
@@ -791,11 +790,11 @@ export function ProviderInstanceCard({
   const enabled = projectOverride?.effectiveEnabled ?? resolveProviderInstanceEnabled(instance);
   const effectiveProvider = liveProvider && { ...liveProvider, enabled };
   const compatibility = enabled ? liveProvider?.compatibilityAdvisory : undefined;
-  const statusKey = enabled ? getProviderStatusKey(effectiveProvider) : "disabled";
-  const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const summary = enabled
-    ? getProviderSummary(effectiveProvider)
-    : { headline: t("Disabled"), detail: null };
+    ? deriveProviderStatus(effectiveProvider)
+    : { key: "disabled" as const, headline: t("Disabled"), detail: null };
+  const statusKey = summary.key;
+  const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const authEmail = liveProvider?.auth.email?.trim();
   const isAuthenticated = enabled && liveProvider?.auth.status === "authenticated";
   const authLabel =

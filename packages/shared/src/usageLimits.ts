@@ -1537,6 +1537,18 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
+const USAGE_LIMIT_ERROR_PERCENT = 10;
+const USAGE_LIMIT_WARNING_PERCENT = 25;
+
+export type UsageLimitTone = "error" | "warning" | null;
+
+/** How urgently a window's remaining quota reads, the same on every surface that shows it. */
+export function usageLimitTone(remainingPercent: number): UsageLimitTone {
+  if (remainingPercent <= USAGE_LIMIT_ERROR_PERCENT) return "error";
+  if (remainingPercent <= USAGE_LIMIT_WARNING_PERCENT) return "warning";
+  return null;
+}
+
 export function limitResetTimes(presentations: LimitPresentations): number[] {
   const resets: number[] = [];
   for (const { serverConfig } of presentations.values()) {

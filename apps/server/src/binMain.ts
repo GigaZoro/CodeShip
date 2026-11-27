@@ -7,7 +7,7 @@ export async function runCliCommand() {
   const command = process.argv[2];
   if (command === "__command-log") {
     const { runPosixLogWriter } = await import("./commandRunner/posixLogWriter.ts");
-    runPosixLogWriter(process.argv.slice(3));
+    await runPosixLogWriter(process.argv.slice(3));
     return;
   }
   // Install the socket guard before importing code that can open outbound connections.
