@@ -416,13 +416,25 @@ const make = Effect.gen(function* () {
       const project = yield* loadProject(scope, projection.thread.projectId);
 
       const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
+      const worktreePath = projection.thread.worktreePath;
+      const unmergedWork =
+        worktreePath === null
+          ? null
+          : yield* gitWorkflow.unmergedWork({ cwd: worktreePath }).pipe(
+              Effect.map(({ unmergedCommitCount, changedFileCount }) => ({
+                unmergedCommitCount,
+                changedFileCount,
+              })),
+              Effect.catch((error) => Effect.succeed({ checkFailed: errorMessage(error) })),
+            );
 
       const result: WorktreeMcpStatusResult = {
-        attached: projection.thread.worktreePath !== null,
-        worktreePath: projection.thread.worktreePath,
+        attached: worktreePath !== null,
+        worktreePath,
         branch: projection.thread.branch,
         projectWorkspaceRoot: project.workspaceRoot,
         defaultStartFromOrigin,
+        unmergedWork,
       };
       return result;
     },
