@@ -1,5 +1,3 @@
-import { Link } from "@tanstack/react-router";
-import { Button } from "../ui/button";
 import { t } from "~/i18n";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 
@@ -67,23 +65,6 @@ export function WorktreesSettingsSections() {
       </SettingsSection>
       <SettingsSection id="worktree-branches" title={t("Branches")}>
         <BranchNamingSettings />
-      </SettingsSection>
-      <SettingsSection title={t("Storage & cleanup")}>
-        <SettingsRow
-          title={t("Worktree cleanup")}
-          description={t(
-            "Configure automatic deletion in Maintenance & about → Storage & cleanup.",
-          )}
-          control={
-            <Button
-              variant="outline"
-              size="sm"
-              render={<Link to="/settings/maintenance" search={{}} hash="storage-worktrees" />}
-            >
-              {t("Open")}
-            </Button>
-          }
-        />
       </SettingsSection>
     </>
   );

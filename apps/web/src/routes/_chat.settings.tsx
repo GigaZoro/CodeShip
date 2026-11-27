@@ -1,5 +1,5 @@
 import { workspaceAreaProps } from "../lib/workspaceFocus";
-import { Outlet, createFileRoute, redirect, useLocation } from "@tanstack/react-router";
+import { Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -22,6 +22,7 @@ import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice"
 import { SETTINGS_DEVICE_ONLY_PATHS } from "../components/settings/SettingsScopeSentence";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import {
+  redirectMovedSettingsLocation,
   retainSettingsScope,
   validateSettingsRouteSearch,
 } from "../components/settings/settingsScopeNavigation";
@@ -29,8 +30,6 @@ import {
   getSettingsSearchTargetScope,
   getThreadAutoSettlementSearchAvailability,
   isSettingsSearchScopeAvailable,
-  movedSettingsPath,
-  consolidatedSettingsAnchor,
 } from "../components/settings/settingsSearch";
 
 import { t } from "~/i18n";
@@ -222,14 +221,6 @@ function SettingsRouteLayout() {
 export const Route = createFileRoute("/_chat/settings")({
   validateSearch: validateSettingsRouteSearch,
   search: { middlewares: [retainSettingsScope] },
-  beforeLoad: async ({ location }) => {
-    if (location.pathname === "/settings") {
-      throw redirect({ to: "/settings/general", replace: true });
-    }
-    const moved = movedSettingsPath(location.pathname, location.hash);
-    const hash = consolidatedSettingsAnchor(location.hash);
-    if (moved || hash !== location.hash)
-      throw redirect({ to: moved ?? location.pathname, search: true, hash, replace: true });
-  },
+  beforeLoad: ({ location }) => redirectMovedSettingsLocation(location),
   component: SettingsRouteLayout,
 });

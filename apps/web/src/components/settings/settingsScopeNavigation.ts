@@ -1,6 +1,7 @@
-import type { SearchMiddleware } from "@tanstack/react-router";
+import { redirect, type SearchMiddleware } from "@tanstack/react-router";
 
 import { validateSettingsScopeSearch, type SettingsScopeSearch } from "./settingsScope";
+import { consolidatedSettingsAnchor, movedSettingsPath } from "./settingsSearch";
 
 export function validateSettingsRouteSearch(raw: Record<string, unknown>) {
   return validateSettingsScopeSearch(
@@ -25,3 +26,17 @@ export const retainSettingsScope: SearchMiddleware<SettingsScopeSearch> = ({ sea
   );
   return { ...previousScope, ...result };
 };
+
+/** Moved settings pages have no route file; the settings layout redirects them before a child matches. */
+export function redirectMovedSettingsLocation(location: {
+  readonly pathname: string;
+  readonly hash: string;
+}) {
+  if (location.pathname === "/settings") {
+    throw redirect({ to: "/settings/general", replace: true });
+  }
+  const moved = movedSettingsPath(location.pathname, location.hash);
+  const hash = consolidatedSettingsAnchor(location.hash);
+  if (moved || hash !== location.hash)
+    throw redirect({ to: moved ?? location.pathname, search: true, hash, replace: true });
+}

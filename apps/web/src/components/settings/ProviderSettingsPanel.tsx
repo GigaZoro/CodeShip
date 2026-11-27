@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { SettingsGroup } from "./SettingsGroup";
 import { t, tx } from "~/i18n";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -987,32 +986,6 @@ export function EnvironmentProviderSettings({
           cursorKeychainUsageEnabled={settings.cursorKeychainUsageEnabled}
           readOnly={readOnly}
         />
-      ) : null}
-
-      {showsProviders ? (
-        <SettingsSection title={t("Background activity")}>
-          <SettingsRow
-            title={t("Health check interval")}
-            description={t(
-              "Configure provider polling in Maintenance & about → Background activity.",
-            )}
-            control={
-              <Button
-                variant="outline"
-                size="sm"
-                render={
-                  <Link
-                    to="/settings/maintenance"
-                    search={{}}
-                    hash="provider-health-check-interval"
-                  />
-                }
-              >
-                {t("Open")}
-              </Button>
-            }
-          />
-        </SettingsSection>
       ) : null}
 
       {isAddInstanceDialogOpen && !readOnly ? (

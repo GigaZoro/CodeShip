@@ -24,7 +24,6 @@ import { idleCompactionModeLabel } from "@t3tools/shared/claudeCompaction";
 import { managedUpdatesDenial, managedUpdatesMessage } from "@t3tools/shared/managedPolicyMessages";
 import {
   DEFAULT_UNIFIED_SETTINGS,
-  type DiffLayout,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
@@ -163,11 +162,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "12-hour": msg("12-hour"),
   "24-hour": msg("24-hour"),
 } as const;
-
-const DIFF_LAYOUT_LABELS: Record<DiffLayout, Message> = {
-  stacked: msg("Stacked"),
-  split: msg("Split"),
-};
 
 const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, Message> = {
   direct: msg("Direct"),
@@ -1441,38 +1435,8 @@ function DiffsSettingsSections() {
         <SettingsRow
           {...searchableSetting("diff-layout")}
           description={t(
-            "Show diffs stacked or side by side. The toggle in the diff toolbar changes this too.",
+            "Switch between stacked and split views with the layout toggle in the diff panel toolbar.",
           )}
-          resetAction={
-            settings.diffLayout !== DEFAULT_UNIFIED_SETTINGS.diffLayout ? (
-              <SettingResetButton
-                label={t("diff layout")}
-                onClick={() => updateSettings({ diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout })}
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.diffLayout}
-              onValueChange={(value) => {
-                if (value === "stacked" || value === "split") {
-                  updateSettings({ diffLayout: value });
-                }
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label={t("Diff layout")}>
-                <SelectValue>{t(DIFF_LAYOUT_LABELS[settings.diffLayout])}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="stacked">
-                  {t(DIFF_LAYOUT_LABELS.stacked)}
-                </SelectItem>
-                <SelectItem hideIndicator value="split">
-                  {t(DIFF_LAYOUT_LABELS.split)}
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
         />
         <SettingsRow
           {...searchableSetting("hide-whitespace-changes")}

@@ -140,7 +140,7 @@ export const layer = Layer.effect(
         yield* electronDialog.showErrorBox(
           t("WSL backend couldn't start"),
           t(
-            "{reason}\n\nFalling back to the Windows backend so T3.CodeShip can open. Re-enable the WSL backend from Settings > Sharing & access once the WSL distro is fixed.",
+            "{reason}\n\nFalling back to the Windows backend so T3.CodeShip can open. Re-enable the WSL backend from Settings > Machines & access once the WSL distro is fixed.",
             { reason },
           ),
         );

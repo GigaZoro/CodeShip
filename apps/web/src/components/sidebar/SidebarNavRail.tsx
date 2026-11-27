@@ -324,7 +324,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           label={settings.label}
           badge={settings.badge}
           isActive={active === "settings"}
-          onClick={go(() => navigate({ to: "/settings" }))}
+          onClick={go(() => navigate({ to: "/settings/general" }))}
         />
       </SidebarMenu>
     </nav>

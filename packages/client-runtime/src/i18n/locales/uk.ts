@@ -1696,8 +1696,8 @@ const catalog: MessageCatalog = {
   "{rate} failed": "невдач: {rate}",
   "{rate} fps": "{rate} кадр/с",
   "{ratio}x the raw cost": "{ratio}x від сирої вартості",
-  "{reason}\n\nFalling back to the Windows backend so T3.CodeShip can open. Re-enable the WSL backend from Settings > Sharing & access once the WSL distro is fixed.":
-    "{reason}\n\nПерехід на бекенд Windows, щоб T3.CodeShip міг відкритися. Увімкніть бекенд WSL знову в розділі «Налаштування > Спільний доступ», коли дистрибутив WSL буде виправлено.",
+  "{reason}\n\nFalling back to the Windows backend so T3.CodeShip can open. Re-enable the WSL backend from Settings > Machines & access once the WSL distro is fixed.":
+    "{reason}\n\nПерехід на бекенд Windows, щоб T3.CodeShip міг відкритися. Увімкніть бекенд WSL знову в розділі «Налаштування > Комп’ютери й доступ», коли дистрибутив WSL буде виправлено.",
   "{reason}\n\nT3.CodeShip will use the Windows backend for this launch and retry WSL the next time the app starts.":
     "{reason}\n\nT3.CodeShip використає бекенд Windows для цього запуску й повторить спробу WSL під час наступного запуску застосунку.",
   "{reason} Remove the chip or attach the file again.":
@@ -3923,16 +3923,12 @@ const catalog: MessageCatalog = {
   "Configure a provider with in-app sign-in in web or desktop Settings.":
     "Налаштуйте провайдера з входом у застосунку в налаштуваннях вебверсії чи десктопу.",
   "Configure advanced background activity": "Налаштувати розширену фонову активність",
-  "Configure automatic deletion in Maintenance & about → Storage & cleanup.":
-    "Налаштуйте автоматичне видалення в розділі «Обслуговування та відомості → Сховище та очищення».",
   "Configure background activity": "Налаштувати фонову активність",
   "Configure background fetching in Maintenance & about → Background activity.":
     "Налаштуйте фонове отримання змін у розділі «Обслуговування та відомості → Фонова активність».",
   "Configure manually": "Налаштувати вручну",
   "Configure non-secret routing. Headers are write-only.":
     "Налаштуйте несекретну маршрутизацію. Заголовки лише для запису.",
-  "Configure provider polling in Maintenance & about → Background activity.":
-    "Налаштуйте перевірки провайдерів у розділі «Обслуговування та відомості → Фонова активність».",
   "Configure the capture shortcut in your Niri config, not in T3.CodeShip.":
     "Налаштуйте скорочення захоплення в конфігурації Niri, а не в T3.CodeShip.",
   "Configure, install, sign in to, and update providers and usage sources.":
@@ -4929,8 +4925,8 @@ const catalog: MessageCatalog = {
   "Create link": "Створити посилання",
   "Create new link": "Створити нове посилання",
   'Create new ref "{name}"': "Створити нове посилання «{name}»",
-  "Create one in Settings → Sharing & access, or run {command} on this machine.":
-    "Створіть його в Налаштування → Спільний доступ, або виконайте {command} на цьому комп’ютері.",
+  "Create one in Settings → Machines & access, or run {command} on this machine.":
+    "Створіть його в Налаштування → Комп’ютери й доступ, або виконайте {command} на цьому комп’ютері.",
   "Create pairing link": "Створити посилання сполучення",
   "Create private repository": "Створити приватний репозиторій",
   "Create private repository on {host}": "Створити приватний репозиторій на {host}",
@@ -5275,7 +5271,6 @@ const catalog: MessageCatalog = {
     "Вміст файлів зі змінами недоступний для цього вибору.",
   "Diff is only available for server threads in Git repositories.":
     "Зміни доступні лише для серверних чатів у репозиторіях Git.",
-  "diff layout": "розкладка змін",
   "Diff layout": "Вигляд змін",
   "Diff no longer available. Refresh the comparison.":
     "Зміни більше недоступні. Оновіть порівняння.",
@@ -8470,10 +8465,10 @@ const catalog: MessageCatalog = {
   "Oldest updated": "Найдавніше оновлені",
   on: "у",
   On: "Увімкнено",
-  "On {host}, check Settings > Sharing & access or run `t3 connect status`.":
-    "На {host} перевірте Налаштування > Спільний доступ або виконайте `t3 connect status`.",
-  "On {host}, open Settings > Sharing & access and turn T3 Connect on.":
-    "На {host} відкрийте Налаштування > Спільний доступ і ввімкніть T3 Connect.",
+  "On {host}, check Settings > Machines & access or run `t3 connect status`.":
+    "На {host} перевірте Налаштування > Комп’ютери й доступ або виконайте `t3 connect status`.",
+  "On {host}, open Settings > Machines & access and turn T3 Connect on.":
+    "На {host} відкрийте Налаштування > Комп’ютери й доступ і ввімкніть T3 Connect.",
   "on {label}": "на {label}",
   "on {machine}": "на {machine}",
   "On {machines}": "На: {machines}",
@@ -11234,8 +11229,6 @@ const catalog: MessageCatalog = {
   "Show device controls": "Показати елементи керування пристроєм",
   "Show device toolbar": "Показати панель пристрою",
   "Show diagram": "Показати діаграму",
-  "Show diffs stacked or side by side. The toggle in the diff toolbar changes this too.":
-    "Показувати зміни стовпчиком або поряд. Перемикач на панелі інструментів змін теж це змінює.",
   "Show each paragraph or code block as it completes.":
     "Показувати кожен абзац чи блок коду щойно він завершується.",
   "Show error": "Показати помилку",
@@ -11898,6 +11891,8 @@ const catalog: MessageCatalog = {
   Suspended: "Призупинено",
   swap: "підкачка",
   Swap: "Підкачка",
+  "Switch between stacked and split views with the layout toggle in the diff panel toolbar.":
+    "Перемикайте між послідовним і розділеним виглядом перемикачем «Вигляд змін» на панелі інструментів змін.",
   "Switch branch": "Перейти на гілку",
   "Switch branch, create branch, or move to a worktree":
     "Перемкніть гілку, створіть гілку або перейдіть до worktree",
@@ -13152,8 +13147,8 @@ const catalog: MessageCatalog = {
     "Це середовище кероване з комп’ютера. Відкрийте його із застосунку для комп’ютера або вставте початкові облікові дані, якщо їх було видано явно.",
   "This environment is disconnected. Reconnect before saving.":
     "Це середовище відключено. Підключіться знову перед збереженням.",
-  "This environment is linked only to publish agent activity, so it cannot accept connections. On that computer, open Settings > Sharing & access and turn T3 Connect on.":
-    "Це середовище пов’язано лише для публікації активності агентів, тому не може приймати підключення. На тому комп’ютері відкрийте Налаштування > Спільний доступ і ввімкніть T3 Connect.",
+  "This environment is linked only to publish agent activity, so it cannot accept connections. On that computer, open Settings > Machines & access and turn T3 Connect on.":
+    "Це середовище пов’язано лише для публікації активності агентів, тому не може приймати підключення. На тому комп’ютері відкрийте Налаштування > Комп’ютери й доступ і ввімкніть T3 Connect.",
   "This environment is managed by {organization}.":
     "Це середовище керується організацією {organization}.",
   "This environment is managed by {organization}. Some settings and features follow its policy.":

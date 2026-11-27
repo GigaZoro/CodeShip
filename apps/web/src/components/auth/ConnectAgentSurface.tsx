@@ -244,7 +244,7 @@ export function ConnectAgentSurface() {
               value={pairingCode}
             />
             <p className="text-xs text-muted-foreground">
-              {tx("Create one in Settings → Sharing & access, or run {command} on this machine.", {
+              {tx("Create one in Settings → Machines & access, or run {command} on this machine.", {
                 command: <code>{"t3 auth pairing create"}</code>,
               })}
             </p>

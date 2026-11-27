@@ -81,8 +81,8 @@ to show only actions.
 In a new thread, `Cmd+Shift+H` moves the draft to the next machine.
 
 In the composer, Return sends and `Shift+Return` inserts a new line. `Cmd+Return`
-also sends. To make Return insert a new line instead, change the Return key
-behavior in Settings → Keyboard.
+also sends. To make Return insert a new line instead, change **Send shortcut** in
+Settings → Keybindings.
 
 ## Edit the configuration file
 

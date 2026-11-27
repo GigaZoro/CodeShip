@@ -1,3 +1,10 @@
+## 2026-11-27 — Settings drops pages and rows that only pointed elsewhere
+
+- Old settings links such as `/settings/about`, `/settings/access`, `/settings/worktrees` and `/settings/storage` still open the page their settings moved to, now without an empty page of their own behind them. A settings link to a page that does not exist shows Page not found instead of an empty thread.
+- Providers & models no longer has a Background activity row that only linked to Maintenance & about, and Source control & worktrees no longer has a Worktree cleanup row that only linked there. Both settings stay in Maintenance & about.
+- Chat & diffs no longer has a second Diff layout picker. The stacked/split toggle in the diff panel toolbar sets it, and searching for Diff layout in Settings explains where to find it.
+- Help text names today's settings pages: Machines & access for pairing codes, T3 Connect and the WSL backend; Maintenance & about for Update track; Keybindings for the send shortcut; and Source control & worktrees for opening pull requests in T3.CodeShip.
+
 ## 2026-11-27 — Reliable macOS fork release recovery and SEA import guard
 
 - Fixed macOS release recovery so runner-timeout cancellations retry immediately instead of being skipped, while manually cancelled builds do not respawn themselves.
