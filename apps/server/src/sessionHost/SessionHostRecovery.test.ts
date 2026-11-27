@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Verifies live detached session host survival and dead-broker fallback with real __session-host subprocesses.
 import * as NodeFS from "node:fs";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -40,6 +41,34 @@ rl.on("line", (line) => {
   process.stdout.write(JSON.stringify({ kind: "echo", pid: process.pid, line }) + "\\n");
 });
 `;
+
+// Writes a burst of output on each "burst" line from a TCP control socket, so a test can make
+// output appear while no server is attached.
+const BURST_CHILD_SCRIPT = `
+const net = require("node:net");
+const control = net.createServer((socket) => {
+  socket.on("data", () => {
+    process.stdout.write(JSON.stringify({ kind: "burst", pad: "x".repeat(200) }) + "\\n", () => {
+      socket.end("done\\n");
+    });
+  });
+});
+control.listen(0, "127.0.0.1", () => {
+  process.stdout.write(
+    JSON.stringify({ kind: "ready", pid: process.pid, port: control.address().port }) + "\\n",
+  );
+});
+process.stdin.resume();
+`;
+
+const sendBurst = (port: number): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const socket = NodeNet.createConnection({ host: "127.0.0.1", port });
+    socket.once("error", reject);
+    socket.once("connect", () => socket.write("burst\n"));
+    socket.once("end", () => resolve());
+    socket.resume();
+  });
 
 const readNextLine = (stream: NodeJS.ReadableStream): Promise<string> =>
   new Promise((resolve) => {
@@ -413,6 +442,99 @@ it.live(
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
+          NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+        }),
+      ),
+      Effect.provide(baseLayer),
+    );
+  },
+);
+
+it.live(
+  "falls back to RestartContinuation when the broker dropped output the old server never read",
+  () => {
+    const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-recovery-gap-"));
+    const threadId = ThreadId.make("thread_detached_gap");
+    const runId = RunId.make("run_detached_gap");
+    const attemptId = RunAttemptId.make("attempt_detached_gap");
+    const rootNodeId = NodeId.make("node_detached_gap");
+    const providerSessionId = ProviderSessionId.make("ps_detached_gap");
+    const providerThreadId = ProviderThreadId.make("pt_detached_gap");
+    const projection = makeRunningProjection({
+      threadId,
+      runId,
+      attemptId,
+      rootNodeId,
+      providerSessionId,
+      providerThreadId,
+    });
+
+    const baseLayer = Layer.mergeAll(
+      Sqlite.layerMemory,
+      ServerConfig.layerTest(tempBaseDir, tempBaseDir),
+    ).pipe(Layer.provideMerge(NodeServices.layer));
+
+    let childPid: number | null = null;
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* Effect.gen(function* () {
+        const sessionHost = yield* SessionHostService.SessionHostService;
+        // The buffer holds less than two bursts, so the second evicts the first unread one.
+        const handle = yield* sessionHost.spawn({
+          providerSessionId,
+          providerThreadId,
+          threadId,
+          driver: "codex",
+          command: process.execPath,
+          args: ["-e", BURST_CHILD_SCRIPT],
+          cwd: tempBaseDir,
+          env: process.env,
+          maxBufferBytes: 300,
+        });
+        const ready = JSON.parse(yield* Effect.promise(() => readNextLine(handle.stdout))) as {
+          pid: number;
+          port: number;
+        };
+        childPid = ready.pid;
+        yield* sessionHost.detachAllForUpdate();
+        yield* Effect.promise(() => sendBurst(ready.port));
+        yield* Effect.promise(() => sendBurst(ready.port));
+      }).pipe(Effect.provide(SessionHostService.layer));
+
+      const commits: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
+      yield* Effect.gen(function* () {
+        const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+        const startupSummary = yield* recovery.reconcile("startup");
+
+        assert.isUndefined(startupSummary.reattachedSessionHosts);
+        assert.equal(startupSummary.terminalizedRuns, 1);
+        const effects = commits.flatMap((commit) => commit.effects ?? []);
+        assert.isTrue(
+          effects.some((effect) => effect.id === EffectOutbox.restartContinuationEffectId(runId)),
+          "Expected lost output to schedule a RestartContinuation effect",
+        );
+        const rows = yield* sql<{ readonly status: string }>`
+          SELECT status FROM session_hosts WHERE provider_session_id = ${providerSessionId}
+        `;
+        assert.equal(rows[0]?.status, "dead");
+      }).pipe(
+        Effect.provide(
+          buildRecoveryLayer(threadId, projection, (input) => commits.push(input)).pipe(
+            Layer.provideMerge(SessionHostService.layer),
+          ),
+        ),
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (childPid !== null) {
+            try {
+              process.kill(childPid, "SIGKILL");
+            } catch {
+              // Already stopped by the terminate the gap triggered.
+            }
+          }
           NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
         }),
       ),

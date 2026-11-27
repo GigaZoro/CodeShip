@@ -20,6 +20,7 @@ import {
   DEFAULT_ORPHAN_TTL_MS,
   DEFAULT_TERMINATE_GRACE_MS,
   encodeBrokerMessage,
+  ensurePrivateSocketDirectory,
   parseBrokerClientMessage,
   type BrokerFrame,
   type BrokerServerMessage,
@@ -28,6 +29,8 @@ import {
 } from "./protocol.ts";
 
 const AUTH_TIMEOUT_MS = 5_000;
+// A provider waits on a handful of requests at a time; a larger set means responses are not seen.
+const MAX_UNANSWERED_REQUESTS = 1_000;
 const MAX_CLIENT_LINE_BYTES = 64 * 1024 * 1024;
 const POST_EXIT_IDLE_CAP_MS = 60_000;
 
@@ -71,6 +74,39 @@ function tokensEqual(expected: string, actual: string): boolean {
   const actualBuf = Buffer.from(actual, "utf8");
   if (expectedBuf.length !== actualBuf.length) return false;
   return NodeCrypto.timingSafeEqual(expectedBuf, actualBuf);
+}
+
+interface JsonRpcLine {
+  readonly method: string | undefined;
+  readonly id: string | undefined;
+  readonly resolvedId: string | undefined;
+}
+
+const encodeJsonRpcId = (id: unknown): string | undefined =>
+  typeof id === "string" || (typeof id === "number" && Number.isFinite(id))
+    ? JSON.stringify(id)
+    : undefined;
+
+function parseJsonRpcLine(line: string): JsonRpcLine | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const record = raw as Record<string, unknown>;
+  const params = record.params;
+  return {
+    method: typeof record.method === "string" ? record.method : undefined,
+    id: encodeJsonRpcId(record.id),
+    resolvedId:
+      typeof params === "object" && params !== null
+        ? encodeJsonRpcId((params as Record<string, unknown>).requestId)
+        : undefined,
+  };
 }
 
 function signalChildTree(
@@ -160,6 +196,7 @@ function readAndUnlinkConfig(configPath: string): SessionHostConfig {
           ? parsed.maxBufferFrames
           : DEFAULT_MAX_BUFFER_FRAMES,
       readyFilePath: parsed.readyFilePath,
+      jsonRpc: parsed.jsonRpc === true,
     };
   } finally {
     safeUnlink(configPath);
@@ -189,7 +226,12 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
   const isPosix = config.platform !== "win32";
 
   if (isPosix) {
-    NodeFS.mkdirSync(NodePath.dirname(config.socketPath), { recursive: true, mode: 0o700 });
+    try {
+      ensurePrivateSocketDirectory(NodePath.dirname(config.socketPath));
+    } catch {
+      process.exitCode = 2;
+      return;
+    }
     safeUnlink(config.socketPath);
   }
 
@@ -197,14 +239,14 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
   let bufferedBytes = 0;
   let latestSeq = 0;
   let droppedFrames = 0;
+  // JSON-RPC requests from the child that no client answered yet, keyed by their encoded id.
+  const unansweredRequests = new Map<string, { readonly seq: number; readonly line: string }>();
 
   let childExited = false;
   let childExitCode: number | null = null;
   let childExitSignal: NodeJS.Signals | null = null;
-  let exitFrameSeq: number | null = null;
 
   let activeClient: NodeNet.Socket | null = null;
-  let activeClientSawExit = false;
   let orphanTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
   let resolveDone: (() => void) | null = null;
@@ -227,6 +269,34 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
       : never
     : never;
 
+  const trackChildLines = (text: string, seq: number) => {
+    for (const line of text.split("\n")) {
+      const message = parseJsonRpcLine(line);
+      if (message === undefined) continue;
+      if (message.method !== undefined && message.id !== undefined) {
+        unansweredRequests.set(message.id, { seq, line: `${line}\n` });
+        if (unansweredRequests.size > MAX_UNANSWERED_REQUESTS) {
+          const oldest = unansweredRequests.keys().next().value;
+          if (oldest !== undefined) unansweredRequests.delete(oldest);
+        }
+      } else if (message.method === "serverRequest/resolved" && message.resolvedId !== undefined) {
+        unansweredRequests.delete(message.resolvedId);
+      }
+    }
+  };
+
+  let stdinPartialLine = "";
+  const trackClientInput = (text: string) => {
+    const lines = (stdinPartialLine + text).split("\n");
+    stdinPartialLine = lines.pop() ?? "";
+    for (const line of lines) {
+      const message = parseJsonRpcLine(line);
+      if (message !== undefined && message.method === undefined && message.id !== undefined) {
+        unansweredRequests.delete(message.id);
+      }
+    }
+  };
+
   const pushFrame = (frameWithoutSeq: BrokerFrameInput): BrokerFrame => {
     latestSeq += 1;
     const frame = { ...frameWithoutSeq, seq: latestSeq } as BrokerFrame;
@@ -247,9 +317,6 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
 
     if (activeClient !== null) {
       sendToSocket(activeClient, frame);
-      if (frame.stream === "exit") {
-        activeClientSawExit = true;
-      }
     }
     return frame;
   };
@@ -270,11 +337,21 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
   const stdoutDecoder = new NodeStringDecoder.StringDecoder("utf8");
   const stderrDecoder = new NodeStringDecoder.StringDecoder("utf8");
 
+  // A frame ends at a line end, so a replay after any seq starts at the beginning of a message.
+  let stdoutPartialLine = "";
+  const pushStdout = (text: string) => {
+    const frame = pushFrame({ type: "frame", stream: "stdout", chunk: text });
+    if (config.jsonRpc) trackChildLines(text, frame.seq);
+  };
   child.stdout.on("data", (chunk: Buffer) => {
-    const text = stdoutDecoder.write(chunk);
-    if (text.length > 0) {
-      pushFrame({ type: "frame", stream: "stdout", chunk: text });
+    const text = stdoutPartialLine + stdoutDecoder.write(chunk);
+    const lastNewline = text.lastIndexOf("\n");
+    if (lastNewline === -1) {
+      stdoutPartialLine = text;
+      return;
     }
+    stdoutPartialLine = text.slice(lastNewline + 1);
+    pushStdout(text.slice(0, lastNewline + 1));
   });
 
   child.stderr.on("data", (chunk: Buffer) => {
@@ -297,23 +374,23 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
       windowsChildRoot = endedWindowsTreeRoot(windowsChildRoot);
     }
 
-    const stdoutTail = stdoutDecoder.end();
+    const stdoutTail = stdoutPartialLine + stdoutDecoder.end();
+    stdoutPartialLine = "";
     if (stdoutTail.length > 0) {
-      pushFrame({ type: "frame", stream: "stdout", chunk: stdoutTail });
+      pushStdout(stdoutTail);
     }
     const stderrTail = stderrDecoder.end();
     if (stderrTail.length > 0) {
       pushFrame({ type: "frame", stream: "stderr", chunk: stderrTail });
     }
 
-    const exitFrame = pushFrame({
+    pushFrame({
       type: "frame",
       stream: "exit",
       chunk: "",
       exitCode: code,
       signal,
     });
-    exitFrameSeq = exitFrame.seq;
 
     if (activeClient === null && !shuttingDown) {
       armOrphanTimer();
@@ -474,7 +551,6 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
         }
 
         activeClient = socket;
-        activeClientSawExit = false;
         clearOrphanTimer();
 
         const oldestSeq = ringBuffer.length > 0 ? ringBuffer[0]!.frame.seq : latestSeq + 1;
@@ -492,16 +568,17 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
           signal: childExitSignal,
         });
 
+        // The previous server may have seen these and died before answering; replayed frames
+        // already carry the later ones.
+        for (const pending of unansweredRequests.values()) {
+          if (pending.seq <= message.afterSeq) {
+            sendToSocket(socket, { type: "pending_request", chunk: pending.line });
+          }
+        }
         for (const entry of ringBuffer) {
           if (entry.frame.seq > message.afterSeq) {
             sendToSocket(socket, entry.frame);
-            if (entry.frame.stream === "exit") {
-              activeClientSawExit = true;
-            }
           }
-        }
-        if (exitFrameSeq !== null && message.afterSeq >= exitFrameSeq) {
-          activeClientSawExit = true;
         }
         sendToSocket(socket, { type: "replay_complete", latestSeq });
         return;
@@ -512,6 +589,9 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
           if (!childExited && child.stdin.writable) {
             const payload =
               message.encoding === "base64" ? Buffer.from(message.data, "base64") : message.data;
+            if (config.jsonRpc) {
+              trackClientInput(typeof payload === "string" ? payload : payload.toString("utf8"));
+            }
             child.stdin.write(payload);
           }
           break;
@@ -574,12 +654,10 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     socket.on("close", () => {
       clearTimeout(authTimeout);
       if (activeClient === socket) {
+        // Only a detach keeps the child: a server that crashed or stopped without one is not
+        // coming back for it, and its provider tree must not outlive it.
         activeClient = null;
-        if (childExited && activeClientSawExit) {
-          void shutdown();
-        } else {
-          armOrphanTimer();
-        }
+        void shutdown();
       }
     });
 

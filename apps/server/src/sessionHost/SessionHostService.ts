@@ -39,6 +39,7 @@ import {
   DEFAULT_MAX_BUFFER_BYTES,
   DEFAULT_MAX_BUFFER_FRAMES,
   DEFAULT_ORPHAN_TTL_MS,
+  ensurePrivateSocketDirectory,
   resolveSessionHostSocketPath,
   type SessionHostConfig,
   type SessionHostDriver,
@@ -646,6 +647,7 @@ const make = Effect.gen(function* () {
     const readyFilePath = NodePath.join(sessionHostsDir, `ready-${id}.json`);
 
     NodeFS.mkdirSync(sessionHostsDir, { recursive: true, mode: 0o700 });
+    if (!isWindows) ensurePrivateSocketDirectory(NodePath.dirname(socketPath));
     const config: SessionHostConfig = {
       id,
       platform,
@@ -659,6 +661,7 @@ const make = Effect.gen(function* () {
       maxBufferBytes: input.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES,
       maxBufferFrames: input.maxBufferFrames ?? DEFAULT_MAX_BUFFER_FRAMES,
       readyFilePath,
+      jsonRpc: input.driver === "codex",
     };
     NodeFS.writeFileSync(configPath, `${JSON.stringify(config)}\n`, {
       encoding: "utf8",
@@ -843,6 +846,19 @@ const make = Effect.gen(function* () {
         });
       }
 
+      // The attach message carries the auth token, so never send it to a socket another user
+      // could have planted.
+      if (!isWindows) {
+        yield* Effect.try({
+          try: () => ensurePrivateSocketDirectory(NodePath.dirname(record.socketPath)),
+          catch: (cause) =>
+            new SessionHostError({
+              detail: `Refusing to reattach session host ${record.id}: ${String(cause)}`,
+              cause,
+            }),
+        }).pipe(Effect.tapError(() => updateRowStatus(record.id, "dead")));
+      }
+
       let trackedRef: ActiveTrackedHost | undefined;
       const handle = DetachedStdioHandle.createPending({
         sessionHostId: record.id,
@@ -880,6 +896,18 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+
+      // A frame the old server never consumed that the ring buffer already dropped is lost
+      // output; adopting the process anyway would leave the run waiting on it forever.
+      const missedFrames = attachedInfo.oldestSeq - (record.lastAckedSeq + 1);
+      if (missedFrames > 0) {
+        yield* Effect.promise(() => handle.terminate());
+        clearTrackedHost(trackedRef);
+        yield* updateRowStatus(record.id, "dead");
+        return yield* new SessionHostError({
+          detail: `Session host ${record.id} dropped ${missedFrames} unread output frames while detached.`,
+        });
+      }
 
       yield* updateRowStatus(record.id, attachedInfo.exited ? "exited" : "running");
 

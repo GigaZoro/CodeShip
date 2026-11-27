@@ -15,7 +15,11 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
-import { resolveSessionHostSocketPath, type SessionHostConfig } from "./protocol.ts";
+import {
+  ensurePrivateSocketDirectory,
+  resolveSessionHostSocketPath,
+  type SessionHostConfig,
+} from "./protocol.ts";
 
 const BIN_PATH = NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url));
 const HOST_PLATFORM: NodeJS.Platform = isWindowsHost ? "win32" : isLinuxHost ? "linux" : "darwin";
@@ -42,6 +46,20 @@ const controlServer = net.createServer((socket) => {
       });
     } else if (line === "ping") {
       socket.write("pong\\n");
+    } else if (line === "half1") {
+      process.stdout.write('{"kind":"split",', () => socket.write("done\\n"));
+    } else if (line === "half2") {
+      process.stdout.write('"n":1}\\n', () => socket.write("done\\n"));
+    } else if (line === "requests") {
+      const lines = [
+        { jsonrpc: "2.0", id: 7, method: "item/commandExecution/requestApproval", params: {} },
+        { jsonrpc: "2.0", id: 8, method: "item/fileChange/requestApproval", params: {} },
+        { jsonrpc: "2.0", id: 9, method: "item/tool/requestUserInput", params: {} },
+        { jsonrpc: "2.0", method: "serverRequest/resolved", params: { requestId: 8 } },
+      ];
+      process.stdout.write(lines.map((l) => JSON.stringify(l) + "\\n").join(""), () => {
+        socket.write("done\\n");
+      });
     }
   });
 });
@@ -56,7 +74,9 @@ controlServer.listen(0, "127.0.0.1", () => {
 const stdinRl = readline.createInterface({ input: process.stdin });
 stdinRl.on("line", (line) => {
   const msg = JSON.parse(line);
-  if (msg.cmd === "echo") {
+  if (msg.cmd === undefined && msg.id !== undefined) {
+    process.stdout.write(JSON.stringify({ kind: "answered", id: msg.id }) + "\\n");
+  } else if (msg.cmd === "echo") {
     process.stderr.write("stderr:" + msg.tag + "\\n");
     process.stdout.write(JSON.stringify({ kind: "echo", pid: process.pid, tag: msg.tag }) + "\\n");
   } else if (msg.cmd === "exit") {
@@ -158,6 +178,7 @@ const spawnTestBroker = async (
     maxBufferBytes: overrides.maxBufferBytes ?? 1_024 * 1_024,
     maxBufferFrames: overrides.maxBufferFrames ?? 1_000,
     readyFilePath,
+    jsonRpc: true,
   };
   NodeFS.writeFileSync(configPath, `${JSON.stringify(config)}\n`, { mode: 0o600 });
 
@@ -427,4 +448,131 @@ describe("Detached session host broker (__session-host)", () => {
         );
       }),
   );
+
+  it("cuts frames on whole lines, so a reattach never replays half a line", async () => {
+    const host = await spawnTestBroker();
+    let childPid: number | null = null;
+    try {
+      const handle1 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: 0,
+      });
+      const ready = JSON.parse(await createLineReader(handle1.stdout).nextLine()) as {
+        pid: number;
+        controlPort: number;
+      };
+      childPid = ready.pid;
+
+      assert.equal(await sendControlCommand(ready.controlPort, "half1"), "done");
+      const detachedAtSeq = await handle1.detach();
+      assert.equal(await sendControlCommand(ready.controlPort, "half2"), "done");
+
+      const handle2 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: detachedAtSeq,
+      });
+      const replayed = await createLineReader(handle2.stdout).nextLine();
+      assert.deepEqual(JSON.parse(replayed), { kind: "split", n: 1 });
+
+      await handle2.terminate();
+      await host.exited;
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+
+  it("re-sends requests the child is still waiting on to the next attached client", async () => {
+    const host = await spawnTestBroker();
+    let childPid: number | null = null;
+    try {
+      const handle1 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: 0,
+      });
+      const stdout1 = createLineReader(handle1.stdout);
+      const ready = JSON.parse(await stdout1.nextLine()) as { pid: number; controlPort: number };
+      childPid = ready.pid;
+
+      assert.equal(await sendControlCommand(ready.controlPort, "requests"), "done");
+      for (let index = 0; index < 4; index += 1) await stdout1.nextLine();
+      handle1.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, result: {} })}\n`);
+      assert.deepEqual(JSON.parse(await stdout1.nextLine()), { kind: "answered", id: 7 });
+      const detachedAtSeq = await handle1.detach();
+
+      const handle2 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: detachedAtSeq,
+      });
+      const stdout2 = createLineReader(handle2.stdout);
+      // Request 7 was answered and request 8 resolved by the child, so only 9 is still open.
+      const resent = JSON.parse(await stdout2.nextLine()) as { id: number; method: string };
+      assert.equal(resent.id, 9);
+      assert.equal(resent.method, "item/tool/requestUserInput");
+      handle2.stdin.write(`${JSON.stringify({ cmd: "echo", tag: "live" })}\n`);
+      assert.equal((JSON.parse(await stdout2.nextLine()) as { tag: string }).tag, "live");
+
+      await handle2.terminate();
+      await host.exited;
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+
+  it("kills the child when its client disconnects without a detach", async () => {
+    // Far beyond the test timeout, so only the disconnect itself can stop the child in time.
+    const host = await spawnTestBroker({ orphanTtlMs: 10 * 60_000 });
+    let childPid: number | null = null;
+    try {
+      const socket = NodeNet.createConnection(host.socketPath);
+      await NodeEvents.EventEmitter.once(socket, "connect");
+      const lines = createLineReader(socket);
+      socket.write(
+        `${JSON.stringify({ type: "attach", afterSeq: 0, authToken: host.authToken })}\n`,
+      );
+      assert.equal((JSON.parse(await lines.nextLine()) as { type: string }).type, "attached");
+      let readyFrame: { type: string; stream?: string; chunk?: string };
+      do {
+        readyFrame = JSON.parse(await lines.nextLine()) as typeof readyFrame;
+      } while (readyFrame.type !== "frame" || readyFrame.stream !== "stdout");
+      childPid = (JSON.parse(readyFrame.chunk ?? "") as { pid: number }).pid;
+
+      socket.destroy();
+      await host.exited;
+      assert.isFalse(isProcessAlive(childPid));
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+});
+
+describe.skipIf(isWindowsHost)("ensurePrivateSocketDirectory", () => {
+  it("refuses a symlinked socket directory and makes a shared one private", () => {
+    const base = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-dir-"));
+    try {
+      const target = NodePath.join(base, "target");
+      NodeFS.mkdirSync(target, { mode: 0o700 });
+      const link = NodePath.join(base, "link");
+      NodeFS.symlinkSync(target, link);
+      assert.throws(() => ensurePrivateSocketDirectory(link), /not a real directory/);
+
+      const shared = NodePath.join(base, "shared");
+      NodeFS.mkdirSync(shared);
+      NodeFS.chmodSync(shared, 0o755);
+      ensurePrivateSocketDirectory(shared);
+      assert.equal(NodeFS.lstatSync(shared).mode & 0o777, 0o700);
+    } finally {
+      NodeFS.rmSync(base, { recursive: true, force: true });
+    }
+  });
 });

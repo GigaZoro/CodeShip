@@ -599,6 +599,12 @@ export class DetachedStdioHandle {
         }
         break;
       }
+      case "pending_request": {
+        if (!this.stdout.writableEnded) {
+          this.stdout.write(message.chunk, "utf8");
+        }
+        break;
+      }
       case "replay_complete": {
         if (!this.replaySettled) {
           this.replaySettled = true;

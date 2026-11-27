@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Shared lightweight protocol module loaded by the standalone broker fast path.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -32,6 +33,11 @@ export interface SessionHostConfig {
   readonly maxBufferBytes: number;
   readonly maxBufferFrames: number;
   readonly readyFilePath: string;
+  /**
+   * The child speaks newline-delimited JSON-RPC. The broker then remembers each request the child
+   * sent that no client answered, so a server that attaches later can still answer it.
+   */
+  readonly jsonRpc: boolean;
 }
 
 export interface SessionHostReadyInfo {
@@ -73,6 +79,12 @@ export type BrokerServerMessage =
       readonly signal: NodeJS.Signals | null;
     }
   | BrokerFrame
+  | {
+      // A request the child sent at or before afterSeq that no client answered. It is sent before
+      // the replay and carries no seq, because the client already holds that frame's seq.
+      readonly type: "pending_request";
+      readonly chunk: string;
+    }
   | {
       readonly type: "replay_complete";
       readonly latestSeq: number;
@@ -141,6 +153,31 @@ export function resolveSessionHostSocketPath(
     return fallback;
   }
   return NodePath.join("/tmp", `t3sh-${stateHash}`, `${shortId}.sock`);
+}
+
+/**
+ * Creates the directory that holds a session host socket, or proves an existing one is private.
+ * The `/tmp` fallback is shared with every local user, so a directory another user planted, or a
+ * symlink to one, would let them replace the socket and read the provider's stdio.
+ */
+export function ensurePrivateSocketDirectory(directory: string): void {
+  NodeFS.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const uid = process.getuid?.();
+  // lstat, not stat: a symlink to a directory must fail here instead of being followed.
+  const stat = NodeFS.lstatSync(directory);
+  if (!stat.isDirectory()) {
+    throw new Error(`Session host socket directory ${directory} is not a real directory.`);
+  }
+  if (uid !== undefined && stat.uid !== uid) {
+    throw new Error(`Session host socket directory ${directory} belongs to another user.`);
+  }
+  if ((stat.mode & 0o077) !== 0) {
+    NodeFS.chmodSync(directory, 0o700);
+    const tightened = NodeFS.lstatSync(directory);
+    if ((tightened.mode & 0o077) !== 0) {
+      throw new Error(`Session host socket directory ${directory} is not private.`);
+    }
+  }
 }
 
 export function encodeBrokerMessage(message: BrokerClientMessage | BrokerServerMessage): string {
@@ -264,6 +301,9 @@ export function parseBrokerServerMessage(line: string): BrokerServerMessage | un
         };
       }
       return undefined;
+    case "pending_request":
+      if (typeof raw.chunk !== "string") return undefined;
+      return { type: "pending_request", chunk: raw.chunk };
     case "replay_complete":
       if (typeof raw.latestSeq !== "number") return undefined;
       return { type: "replay_complete", latestSeq: raw.latestSeq };
