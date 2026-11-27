@@ -19,8 +19,6 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Stream from "effect/Stream";
-import * as UpdateDrain from "../cloud/updateDrain.ts";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 
 import * as ServerSettings from "../serverSettings.ts";
@@ -408,48 +406,39 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         runId: source.id,
       };
       // A retry that puts the run back to preparing its workspace also queues that preparation.
-      // Wait for any active update drain to clear before retrying so automatic retries do not
-      // start fresh turns during drain (and release cleanly if the drain is cancelled).
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          let admitted = false;
-          while (!admitted) {
-            yield* UpdateDrain.watchDraining.pipe(
-              Stream.filter((draining) => !draining),
-              Stream.runHead,
-            );
-            admitted = yield* UpdateDrain.tryAdmitStart;
-          }
-          return yield* threads.dispatch({
-            type: "prepared-run.retry",
-            automatic: true,
-            ...target,
-          });
-        }),
-      ).pipe(
-        Effect.catchTags({
-          ThreadManagementProviderInstanceDisabledError: (error) =>
-            Effect.logInfo("orchestration-v2.restart-retry.instance-disabled", {
-              threadId: input.threadId,
-              sourceRunId: input.sourceRunId,
-              projectId: error.projectId,
-              instanceId: error.instanceId,
-            }),
-          // The thread moved on before this ran: the run is no longer the one the restart cut.
-          OrchestratorDispatchError: (error) =>
-            Effect.logInfo("orchestration-v2.restart-retry.refused", {
-              threadId: input.threadId,
-              sourceRunId: input.sourceRunId,
-              cause: error.cause,
-            }),
-          OrchestratorRuntimeModeAboveCeilingError: () =>
-            Effect.logInfo("orchestration-v2.restart-retry.above-ceiling", {
-              threadId: input.threadId,
-              sourceRunId: input.sourceRunId,
-            }),
-          OrchestratorCommandPreviouslyRejectedError: () => Effect.void,
-        }),
-      );
+      // With automatic: true, Orchestrator marks the run awaiting memory admission without
+      // starting a turn or workspace preparation; MemoryAdmissionQueue and dispatchRunMemoryAdmit
+      // then hold admission while UpdateDrain is active without blocking an EffectWorker fiber.
+      yield* threads
+        .dispatch({
+          type: "prepared-run.retry",
+          automatic: true,
+          ...target,
+        })
+        .pipe(
+          Effect.catchTags({
+            ThreadManagementProviderInstanceDisabledError: (error) =>
+              Effect.logInfo("orchestration-v2.restart-retry.instance-disabled", {
+                threadId: input.threadId,
+                sourceRunId: input.sourceRunId,
+                projectId: error.projectId,
+                instanceId: error.instanceId,
+              }),
+            // The thread moved on before this ran: the run is no longer the one the restart cut.
+            OrchestratorDispatchError: (error) =>
+              Effect.logInfo("orchestration-v2.restart-retry.refused", {
+                threadId: input.threadId,
+                sourceRunId: input.sourceRunId,
+                cause: error.cause,
+              }),
+            OrchestratorRuntimeModeAboveCeilingError: () =>
+              Effect.logInfo("orchestration-v2.restart-retry.above-ceiling", {
+                threadId: input.threadId,
+                sourceRunId: input.sourceRunId,
+              }),
+            OrchestratorCommandPreviouslyRejectedError: () => Effect.void,
+          }),
+        );
       return;
     }
     const sourceMessage = sourceRecords.messages.find(

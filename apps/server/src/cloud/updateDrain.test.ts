@@ -131,7 +131,7 @@ describe("update drain barrier", () => {
           Effect.sync(() => {
             expired += 1;
           }),
-        );
+        ).pipe(Effect.asVoid);
         expect((yield* SubscriptionRef.get(ref)).holders).toBe(2);
 
         // Closing the outer client drain must not drop holders to 0.
@@ -145,8 +145,23 @@ describe("update drain barrier", () => {
         expect((yield* SubscriptionRef.get(ref)).holders).toBe(0);
         expect(yield* isDraining().pipe(Effect.provide(drainLayer))).toBe(false);
 
+        // Calling the returned release handle drops the holder immediately and suppresses expiry.
+        const releaseExplicit = yield* holdInBackgroundRef(
+          ref,
+          serviceScope,
+          "5 minutes",
+          Effect.sync(() => {
+            expired += 1;
+          }),
+        );
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(1);
+        yield* releaseExplicit;
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(0);
+        yield* TestClock.adjust("5 minutes");
+        expect(expired).toBe(1);
+
         // Closing the owning service scope releases an active background holder early.
-        yield* holdInBackgroundRef(ref, serviceScope, "5 minutes");
+        yield* holdInBackgroundRef(ref, serviceScope, "5 minutes").pipe(Effect.asVoid);
         expect((yield* SubscriptionRef.get(ref)).holders).toBe(1);
         yield* Scope.close(serviceScope, Exit.void);
         expect((yield* SubscriptionRef.get(ref)).holders).toBe(0);

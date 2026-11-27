@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -66,7 +67,7 @@ export const holdInBackgroundRef = (
   scope: Scope.Scope,
   duration: Duration.Input,
   onExpired: Effect.Effect<void> = Effect.void,
-) =>
+): Effect.Effect<Effect.Effect<void>> =>
   Effect.uninterruptible(
     Effect.gen(function* () {
       let released = false;
@@ -77,13 +78,13 @@ export const holdInBackgroundRef = (
       });
       yield* take(drain);
       yield* Scope.addFinalizer(scope, releaseOnce).pipe(Effect.onError(() => releaseOnce));
-      yield* Effect.sleep(duration).pipe(
+      const fiber = yield* Effect.sleep(duration).pipe(
         Effect.andThen(onExpired),
         Effect.ensuring(releaseOnce),
         Effect.forkIn(scope),
-        Effect.asVoid,
         Effect.onError(() => releaseOnce),
       );
+      return Fiber.interrupt(fiber).pipe(Effect.andThen(releaseOnce));
     }),
   );
 

@@ -231,6 +231,38 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       ),
     );
 
+  const commitDesktopWithDrainHold = (
+    requestId: string,
+    targetVersion?: string,
+    onHandoffAccepted?: () => Effect.Effect<void>,
+  ) =>
+    Effect.suspend(() => {
+      let held = false;
+      let releaseHold: Effect.Effect<void> | undefined;
+      const holdOnce = () =>
+        held
+          ? Effect.void
+          : Effect.uninterruptible(
+              Effect.gen(function* () {
+                held = true;
+                releaseHold = yield* holdDrainAfterHandoff(targetVersion);
+              }),
+            );
+      const releaseIfHeld = () => (releaseHold === undefined ? Effect.void : releaseHold);
+      return desktopAppUpdate
+        .commit(requestId, () =>
+          holdOnce().pipe(
+            Effect.andThen(onHandoffAccepted === undefined ? Effect.void : onHandoffAccepted()),
+          ),
+        )
+        .pipe(
+          Effect.tap(holdOnce),
+          // Release immediately on explicit desktop install failure/timeout; keep the bounded
+          // hold across fiber interruption (e.g. WS disconnect while Electron is restarting).
+          Effect.tapError(() => releaseIfHeld()),
+        );
+    });
+
   const crossesTrackUnsafely = (input: ServerSelfUpdateInput) =>
     trackSwitchBlockReason({
       serverVersion: packageJson.version,
@@ -521,18 +553,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           return prepared;
         }
         const token = prepared.desktopUpdateToken;
-        let held = false;
-        const holdOnce = () =>
-          held
-            ? Effect.void
-            : Effect.sync(() => {
-                held = true;
-              }).pipe(Effect.andThen(holdDrainAfterHandoff(prepared.targetVersion)));
         return yield* beforeHandoff().pipe(
           Effect.andThen(
-            desktopAppUpdate
-              .commit(token, () => holdOnce().pipe(Effect.andThen(onHandoffAccepted())))
-              .pipe(Effect.tap(holdOnce)),
+            commitDesktopWithDrainHold(token, prepared.targetVersion, onHandoffAccepted),
           ),
           Effect.onError(() => desktopAppUpdate.cancel(token)),
         );
@@ -577,21 +600,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       : Effect.undefined,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
-        let held = false;
-        const holdOnce = () =>
-          held
-            ? Effect.void
-            : Effect.sync(() => {
-                held = true;
-              }).pipe(Effect.andThen(holdDrainAfterHandoff()));
-        return desktopAppUpdate
-          .commit(
-            requestId,
-            onHandoffAccepted === undefined
-              ? undefined
-              : () => holdOnce().pipe(Effect.andThen(onHandoffAccepted())),
-          )
-          .pipe(Effect.tap(holdOnce));
+        return commitDesktopWithDrainHold(requestId, undefined, onHandoffAccepted);
       },
     ),
   });

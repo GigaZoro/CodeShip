@@ -1408,6 +1408,13 @@ function lastDeliveredRunForProviderThread(
   );
 }
 
+// Carries the atomic tryAdmitStartRef decision from dispatchWithReceiptEffect through
+// dispatchOnce and eventSink.commitCommand so draining checks and run commits never race.
+class UpdateDrainAdmission extends Context.Reference<boolean | undefined>(
+  "t3/orchestration-v2/UpdateDrainAdmission",
+  { defaultValue: () => undefined },
+) {}
+
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
@@ -1445,12 +1452,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const updateDrain = yield* UpdateDrain;
-  // Carries the atomic tryAdmitStartRef decision from dispatchWithReceiptEffect through
-  // dispatchOnce and eventSink.commitCommand so draining checks and run commits never race.
-  class UpdateDrainAdmission extends Context.Reference<boolean | undefined>(
-    "t3/orchestration-v2/UpdateDrainAdmission",
-    { defaultValue: () => undefined },
-  ) {}
   const isUpdateDraining = Effect.gen(function* () {
     const admitted = yield* UpdateDrainAdmission;
     return admitted === undefined ? yield* isDrainingRef(updateDrain) : !admitted;
