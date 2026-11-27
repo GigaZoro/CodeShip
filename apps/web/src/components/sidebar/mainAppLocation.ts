@@ -3,6 +3,24 @@ import { useLocation, useNavigate, type AnyRouter } from "@tanstack/react-router
 import { GUEST_PAGE_PATH } from "../../guestPage";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 
+/** Every place the nav rail can link to; uiSlotLimits.test.ts caps how many there are. */
+export const SIDEBAR_NAV_DESTINATIONS = [
+  "threads",
+  "projects",
+  "pull-requests",
+  "artifacts",
+  "extensions",
+  "scheduled-tasks",
+  "thread-page",
+  "manual-steps",
+  "machines",
+  "usage",
+  "monitoring",
+  "settings",
+] as const;
+
+export type SidebarNavDestination = (typeof SIDEBAR_NAV_DESTINATIONS)[number];
+
 export function isSettingsPage(pathname: string) {
   return pathname === "/settings" || pathname.startsWith("/settings/");
 }

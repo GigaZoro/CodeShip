@@ -4,6 +4,7 @@ import type { PromptUltrathink } from "./TraitsPicker";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { type AppModelOption } from "../../modelSelection";
 import { CircleAlertIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerControl } from "./ComposerControl";
 import {
@@ -29,7 +30,10 @@ import {
   describeComposerEffort,
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
-import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import {
+  type ComposerRestingControlId,
+  resolveComposerControlsOwnership,
+} from "./composerControlsOwnership";
 
 /**
  * The composer footer controls: the model picker (which also holds effort and speed), the
@@ -167,7 +171,7 @@ export function ComposerControlsBar(props: {
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
-  const restingBlockDefs = [
+  const restingBlockDefs: ReadonlyArray<{ id: ComposerRestingControlId; content: ReactNode }> = [
     {
       id: "mode",
       content: (

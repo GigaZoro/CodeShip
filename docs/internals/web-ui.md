@@ -38,6 +38,27 @@ Build new UI the same way. Compose or extend a component instead of copying its 
 When a call site repeats a treatment another one already uses, make it a variant or a slot on the
 shared component. A new composer banner or notice uses the `ComposerBanner` slots.
 
+## Claim a slot or remove one
+
+The user reads these surfaces all day, so each holds a fixed number of things. A new feature takes
+an existing slot, or removes something to make room; it does not add one more always-visible item.
+
+- A thread notice goes through the one notice slot,
+  [`resolveThreadNoticeSlot`](../../apps/web/src/components/chat/threadNoticeSlot.logic.ts), which
+  ranks it against the thread's other notices.
+- A sidebar row's state goes through its one status,
+  [`resolveThreadRowStatus`](../../apps/web/src/components/sidebar/threadRowStatus.tsx), not a
+  second badge or dot.
+- A thread detail goes in
+  [`THREAD_DETAILS_ITEMS`](../../apps/web/src/components/chat/threadDetailsItems.ts), hidden by
+  default unless it replaces a default row.
+- A rail destination goes in `SIDEBAR_NAV_DESTINATIONS`, and a composer control in
+  `COMPOSER_RESTING_CONTROLS`.
+
+[`uiSlotLimits.test.ts`](../../apps/web/src/uiSlotLimits.test.ts) caps the default-visible thread
+details, the rail and the composer controls at rest. A change that raises a limit quotes the
+user's agreement in its description.
+
 ## Handlers in large components
 
 V8 gives every closure created in one render a single shared scope. A memoized handler keeps

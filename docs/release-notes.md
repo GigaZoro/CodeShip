@@ -1,3 +1,7 @@
+## 2026-11-27 — The calmer UI stays calm
+
+- Maintainers: a new UI feature now claims an existing slot or removes something. `docs/internals/web-ui.md` names the slots (thread notices, sidebar row status, thread details, the rail and the composer controls), and a test caps how many thread details show by default, how many rail items there are and how many composer controls show at rest, so raising a cap is a visible, reviewed change.
+
 ## 2026-11-27 — The global Git config check test no longer downloads a Node runtime
 
 - Maintainers: the `check:changed` test that runs a check with an empty home folder keeps your Vite+ data and cache folders, so it no longer downloads a Node runtime on every run and takes seconds instead of minutes.
