@@ -2,7 +2,8 @@
 
 Open **Usage** from the sidebar or the command palette, or press `mod+u` on web and
 desktop when the terminal is not focused. Customize `usage.open` in
-**Settings → Keybindings**.
+**Settings → Keybindings**. The sidebar's **Usage** button turns into a meter of your tightest
+limit only once that limit has 25% or less left.
 
 On mobile, choose **Usage** in the workspace navigation.
 

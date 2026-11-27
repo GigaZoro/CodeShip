@@ -59,10 +59,10 @@ function readings(checkedAt: string, resetsAt?: string): LimitPresentations {
                     id: "primary",
                     kind: "session",
                     label: "5-hour",
-                    usedPercent: 20,
+                    usedPercent: 90,
                     ...(resetsAt === undefined ? {} : { resetsAt }),
                   },
-                  { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 10 },
+                  { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 80 },
                 ],
               },
             },
@@ -91,7 +91,7 @@ it.each(["timer", "focus", "visibilitychange"] as const)(
       </SidebarProvider>,
       { router: "/projects" },
     );
-    await expect.element(screen.getByRole("button", { name: /Usage:.*80% left/ })).toBeVisible();
+    await expect.element(screen.getByRole("button", { name: /Usage:.*10% left/ })).toBeVisible();
     await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
     rendered.mockClear();
 
@@ -107,7 +107,7 @@ it.each(["timer", "focus", "visibilitychange"] as const)(
       });
     }
     expect(rendered).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: /Usage:.*90% left/ }).query()).not.toBeNull();
+    expect(screen.getByRole("button", { name: /Usage:.*20% left/ }).query()).not.toBeNull();
     await act(() => vi.advanceTimersByTimeAsync(60_000));
     expect(rendered).toHaveBeenCalledTimes(1);
   },
@@ -124,7 +124,7 @@ it("an open Usage glance with no future reset does not subscribe to minute ticks
       <UsageLimitsGlance accounts={collectLimitAccounts(state.presentations)} />
     </Profiler>,
   );
-  await expect.element(screen.getByText("80% left")).toBeVisible();
+  await expect.element(screen.getByText("20% left")).toBeVisible();
   rendered.mockClear();
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(rendered).not.toHaveBeenCalled();

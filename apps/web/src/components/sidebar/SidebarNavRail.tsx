@@ -12,7 +12,11 @@ import {
   SettingsIcon,
   ShapesIcon,
 } from "lucide-react";
-import { collectLimitPools, tightestLimitWindow } from "@t3tools/shared/usageLimits";
+import {
+  collectLimitPools,
+  nearLimitWindow,
+  tightestLimitWindow,
+} from "@t3tools/shared/usageLimits";
 import { memo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
@@ -131,7 +135,10 @@ function SidebarNavRailMonitoringItem({
   );
 }
 
-/** Rings the limit closest to running out; hover summarizes every provider, click opens Usage. */
+/**
+ * Rings the limit closest to running out once it nears its limit; hover summarizes every
+ * provider, click opens Usage.
+ */
 export function SidebarNavRailUsageItem({
   isActive,
   onClick,
@@ -143,14 +150,23 @@ export function SidebarNavRailUsageItem({
   const shortcut = shortcutLabelForCommand(keybindings, "usage.open");
   const accounts = useLimitAccounts();
   const now = useUsageLimitNow(undefined, false);
-  const tightest = tightestLimitWindow(collectLimitPools(accounts, now), now);
+  const pools = collectLimitPools(accounts, now);
+  const tightest = nearLimitWindow(pools, now);
   if (!tightest) {
     return (
       <SidebarNavRailItem
         destination="usage"
         icon={<ChartNoAxesColumnIcon />}
         label={t("Usage")}
-        tooltip={shortcut ? t("Usage ({shortcut})", { shortcut }) : t("Usage")}
+        tooltip={
+          tightestLimitWindow(pools, now) ? (
+            <UsageLimitsGlance accounts={accounts} shortcut={shortcut} />
+          ) : shortcut ? (
+            t("Usage ({shortcut})", { shortcut })
+          ) : (
+            t("Usage")
+          )
+        }
         isActive={isActive}
         onClick={onClick}
       />

@@ -26,7 +26,11 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { ComposerControl, type ComposerControlSize } from "./ComposerControl";
-import { takeOpenToEffort, useComposerMenuProps } from "./composerEventScope";
+import {
+  focusRequestedPermission,
+  takeOpenToEffort,
+  useComposerMenuProps,
+} from "./composerEventScope";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { serverEnvironment } from "../../state/server";
 
@@ -363,6 +367,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         setIsMenuOpen(open);
       }}
       onOpenChangeComplete={(open) => {
+        if (focusRequestedPermission(open, triggerRef.current)) return;
         const toEffort = takeOpenToEffort(triggerRef.current);
         if (open && docked && toEffort) focusEffort("any");
       }}
@@ -383,12 +388,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             data-composer-shortcut={props.triggerShortcuts}
             onClick={(event) => {
               if (!isMenuOpen || !docked) return;
-              if (!takeOpenToEffort(triggerRef.current)) return;
+              const toPermissions = focusRequestedPermission(true, triggerRef.current);
+              const toEffort = !toPermissions && takeOpenToEffort(triggerRef.current);
+              if (!toPermissions && !toEffort) return;
               // A shortcut aimed at the open picker moves within it instead of closing it.
               (
                 event as typeof event & { preventBaseUIHandler?: () => void }
               ).preventBaseUIHandler?.();
-              focusEffort("any");
+              if (toEffort) focusEffort("any");
             }}
             className={cn(
               "min-w-0 shrink justify-between whitespace-nowrap",

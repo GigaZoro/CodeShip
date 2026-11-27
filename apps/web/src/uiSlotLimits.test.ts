@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { COMPOSER_RESTING_CONTROLS } from "./components/chat/composerControlsOwnership";
+import { COMPOSER_RESTING_CONTROLS } from "./components/chat/composerRunChip";
 import { THREAD_DETAILS_ITEMS } from "./components/chat/threadDetailsItems";
 import { SIDEBAR_NAV_DESTINATIONS } from "./components/sidebar/mainAppLocation";
 

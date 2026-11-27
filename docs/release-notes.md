@@ -1,3 +1,8 @@
+## 2026-11-27 — Quieter composer controls and meters
+
+- The model picker is now the composer's one run chip, at every width. It names the permission mode only when it differs from your default, and its popover holds model, effort and permissions together. **Full access** and a thread that runs on another machine always show on the chip, with an icon. `mod+shift+a` opens the popover on **Permissions**.
+- The context window joins the chat header only above 75%, and the sidebar's **Usage** button shows a meter only once your tightest limit has 25% or less left.
+
 ## 2026-11-27 — Landings reuse warm checkouts without piling up on one machine
 
 - Maintainers: `landing-turn.cjs` now reuses a bounded pool of warm detached checkouts in the user's cache folder (capped by the machine's check budget, at most two) and installs with `vp i --frozen-lockfile --prefer-offline`, so packages missing from the offline store are fetched and `node_modules` and Vite+ caches stay warm across landings.
