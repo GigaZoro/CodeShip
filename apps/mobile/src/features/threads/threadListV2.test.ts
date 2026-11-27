@@ -1045,6 +1045,28 @@ describe("thread list folders", () => {
       [`machine:${environmentId}:${projectA}`, 1, 0],
       [`machine:${remote}`, 2, 1],
     ]);
+    const listItems = buildThreadListV2ListItems({
+      items: layout.items,
+      pendingTasks: [],
+      folderHeaders: layout.folderHeaders,
+    });
+    expect(
+      listItems.flatMap((item) =>
+        item.type === "v2-thread"
+          ? [
+              {
+                id: item.item.thread.id,
+                inMachineFolder: item.inMachineFolder,
+                inProjectFolder: item.inProjectFolder,
+              },
+            ]
+          : [],
+      ),
+    ).toEqual([
+      { id: "b", inMachineFolder: true, inProjectFolder: true },
+      { id: "a", inMachineFolder: true, inProjectFolder: true },
+      { id: "remote-open", inMachineFolder: true, inProjectFolder: false },
+    ]);
   });
 
   it("lists a working thread in its folder and again in the Working shelf, after a closed folder", () => {
@@ -1086,10 +1108,22 @@ describe("thread list folders", () => {
       "v2-working-shelf",
       `v2-thread:copy:${environmentId}:working`,
     ]);
-    expect(items.flatMap((item) => (item.type === "v2-thread" ? [item.folderKind] : []))).toEqual([
-      "project",
-      "project",
-      null,
+    expect(
+      items.flatMap((item) =>
+        item.type === "v2-thread"
+          ? [
+              {
+                folderKind: item.folderKind,
+                inMachineFolder: item.inMachineFolder,
+                inProjectFolder: item.inProjectFolder,
+              },
+            ]
+          : [],
+      ),
+    ).toEqual([
+      { folderKind: "project", inMachineFolder: false, inProjectFolder: true },
+      { folderKind: "project", inMachineFolder: false, inProjectFolder: true },
+      { folderKind: null, inMachineFolder: false, inProjectFolder: false },
     ]);
   });
 });

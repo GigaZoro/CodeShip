@@ -414,6 +414,8 @@ export interface ThreadListV2ThreadListItem {
   readonly canMoveDown: boolean;
   /** The kind of folder the row sits in; its row leaves out what the folder already says. */
   readonly folderKind: ThreadListV2Folder["kind"] | null;
+  readonly inMachineFolder: boolean;
+  readonly inProjectFolder: boolean;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -534,7 +536,9 @@ export function threadListV2ListItemsAreEqual(
         previous.hasQueuedMessages === item.hasQueuedMessages &&
         previous.canMoveUp === item.canMoveUp &&
         previous.canMoveDown === item.canMoveDown &&
-        previous.folderKind === item.folderKind
+        previous.folderKind === item.folderKind &&
+        previous.inMachineFolder === item.inMachineFolder &&
+        previous.inProjectFolder === item.inProjectFolder
       );
     case "v2-pending":
       return (
@@ -703,6 +707,8 @@ export function buildThreadListV2ListItems(input: {
       canMoveUp: move?.canMoveUp === true,
       canMoveDown: move?.canMoveDown === true,
       folderKind: null,
+      inMachineFolder: false,
+      inProjectFolder: false,
     };
   });
   const pendingItems = input.pendingTasks.map((pendingTask, index): ThreadListV2ListItem => ({
@@ -762,6 +768,8 @@ export function buildThreadListV2ListItems(input: {
   let folderHeaderIndex = 0;
   let folderFooterIndex = 0;
   let folderKind: ThreadListV2Folder["kind"] | null = null;
+  let inMachineFolder = false;
+  let inProjectFolder = false;
   // A closed folder can end the active rows, so its header sits at `activeEnd`.
   for (let index = finishedEnd; index <= activeEnd; index += 1) {
     // An empty folder's header, its footer and the next folder's header can share one index.
@@ -786,6 +794,10 @@ export function buildThreadListV2ListItems(input: {
         // A nested project folder sits in a machine folder, whose machine its rows leave out too.
         folderKind =
           header.folder.kind === "project" && header.folder.nested ? "machine" : header.folder.kind;
+        inMachineFolder =
+          header.folder.kind === "machine" ||
+          (header.folder.kind === "project" && header.folder.nested);
+        inProjectFolder = header.folder.kind === "project";
         result.push({
           type: "v2-folder",
           key: `v2-folder:${header.folder.key}`,
@@ -799,7 +811,7 @@ export function buildThreadListV2ListItems(input: {
     }
     const threadItem = index < activeEnd ? threadItems[index] : undefined;
     if (threadItem?.type === "v2-thread" && folderKind !== null) {
-      result.push({ ...threadItem, folderKind });
+      result.push({ ...threadItem, folderKind, inMachineFolder, inProjectFolder });
     } else if (threadItem !== undefined) {
       result.push(threadItem);
     }

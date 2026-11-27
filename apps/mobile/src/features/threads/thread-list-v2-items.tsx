@@ -2,8 +2,10 @@ import { threadPreferenceLabels } from "@t3tools/client-runtime/thread-preferenc
 import type { ThreadColor } from "@t3tools/contracts";
 import { useThreadPreferenceMenu } from "./useThreadPreferenceMenu";
 import {
+  pickRowMarker,
   resolveThreadStatus,
   THREAD_STATUS_DISPLAY,
+  type RowMarkerKind,
   type ThreadStatus,
   type ThreadStatusDisplayKey,
   THREAD_STATUS_TONE_SALIENCE,
@@ -126,6 +128,7 @@ import { QueuedMessageIcon } from "./queued-message-icon";
 import { shouldRecedeThreadRow, threadRowLastKnownMachine } from "./thread-row-emphasis";
 import {
   machineAvailabilityLabel,
+  machineShowsLastKnownState,
   type MachineAvailability,
 } from "@t3tools/client-runtime/connection";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
@@ -1030,6 +1033,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly providers: ReadonlyArray<ThreadListProvider> | undefined;
   readonly providerInstance: ThreadRowProviderInstance | null;
   readonly environmentLabel: string | null;
+  readonly inMachineFolder?: boolean;
+  readonly inProjectFolder?: boolean;
   /** The thread's machine; while it is unreachable, a live status shows as last known. */
   readonly machineAvailability?: MachineAvailability;
   readonly pane?: "screen" | "sidebar";
@@ -1195,7 +1200,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             regeneratingTitle: isRegeneratingTitle,
             searchExcerpt,
             project: props.project?.title ?? null,
-            environment: errorText === null ? props.environmentLabel : null,
+            environment:
+              errorText === null && props.inMachineFolder !== true ? props.environmentLabel : null,
             pullRequest: pr?.accessibilityLabel ?? null,
           }
         : {
@@ -1749,12 +1755,112 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     else handleMenuAction({ nativeEvent: { event: name } });
   };
 
-  const titleTextInset = props.project ? projectIconSize + 8 : 0;
+  const machineUnreachable =
+    props.machineAvailability !== undefined &&
+    machineShowsLastKnownState(props.machineAvailability);
+  const pickedMarkers = pickRowMarker(
+    {
+      needsYou: status === "approval" || status === "input" || status === "request",
+      failed: status === "failed" || status === "limited",
+      pr: variant === "card" && pr !== null,
+      machineOffline: machineUnreachable,
+      draft: false,
+      queued: props.hasQueuedMessages === true,
+      terminal: false,
+      scheduled: variant === "card" && hasScheduledTask,
+      pinned: variant === "card" && pinnedRow,
+      machine: variant === "card" && props.environmentLabel !== null && errorText === null,
+      project: props.project !== null,
+      tags: Boolean(tags?.length),
+      color: thread.color != null,
+      notifications: false,
+      provider: variant === "card" && providerInstance !== null,
+    },
+    {
+      machine: props.inMachineFolder === true,
+      project: props.inProjectFolder === true,
+    },
+  );
+  const statusCoversPrimary =
+    variant === "card" &&
+    pickedMarkers.primary !== null &&
+    (pickedMarkers.primary === "needsYou" ||
+      pickedMarkers.primary === "failed" ||
+      (pickedMarkers.primary === "machineOffline" && lastKnownMachineLabel !== null));
+  const renderedMarkerKind: RowMarkerKind | null = statusCoversPrimary
+    ? null
+    : pickedMarkers.primary;
+
+  const offlineMarker =
+    renderedMarkerKind === "machineOffline" && props.machineAvailability !== undefined ? (
+      <View className="flex-row items-center gap-1">
+        <SymbolView
+          name="wifi.slash"
+          size={12}
+          tintColorClassName={
+            selected
+              ? selectedThreadRowColors.iconTintClassName
+              : rowAppearance.tertiaryIconTintClassName
+          }
+          type="monochrome"
+        />
+        <Text
+          className={cn(
+            "text-xs font-t3-medium",
+            selected
+              ? selectedThreadRowColors.foregroundClassName
+              : rowAppearance.tertiaryForegroundClassName,
+          )}
+          numberOfLines={1}
+        >
+          {machineAvailabilityLabel(props.machineAvailability)}
+        </Text>
+      </View>
+    ) : null;
+
+  const slimStatusMarker =
+    variant === "slim" &&
+    (renderedMarkerKind === "needsYou" || renderedMarkerKind === "failed") &&
+    statusLabel !== undefined ? (
+      <View className="flex-row items-center gap-1">
+        <SymbolView
+          name={statusLabel.icon}
+          size={12}
+          tintColorClassName={
+            selected
+              ? selectedThreadRowColors.iconTintClassName
+              : threadStatusToneClasses(statusLabel.tone, statusColors).iconTintClassName
+          }
+          type="monochrome"
+          weight="semibold"
+        />
+        <Text
+          className={cn(
+            "text-xs font-t3-bold",
+            selected
+              ? selectedThreadRowColors.foregroundClassName
+              : threadStatusToneClasses(statusLabel.tone, statusColors).className,
+          )}
+          numberOfLines={1}
+        >
+          {t(statusLabel.label)}
+        </Text>
+      </View>
+    ) : null;
+
+  const showCardMetaRow =
+    errorText !== null ||
+    renderedMarkerKind === "pr" ||
+    renderedMarkerKind === "machine" ||
+    renderedMarkerKind === "provider";
+
+  const titleTextInset =
+    renderedMarkerKind === "project" && props.project ? projectIconSize + 8 : 0;
   const cardContent = (
     <>
       <View className="flex-row items-start gap-2">
-        {colorMarker}
-        {props.project ? (
+        {renderedMarkerKind === "color" ? colorMarker : null}
+        {renderedMarkerKind === "project" && props.project ? (
           <View className="justify-center" style={{ height: titleLineHeight }}>
             <ProjectFavicon
               environmentId={thread.environmentId}
@@ -1789,26 +1895,35 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         >
           {thread.title}
         </Text>
-        {tagChips}
+        {renderedMarkerKind === "tags" ? tagChips : null}
         {/* Capped so large text cannot squeeze the title out. */}
         <View
           className="max-w-[50%] shrink flex-row items-center gap-1.5"
           style={{ minHeight: titleLineHeight }}
         >
-          {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
-          {hasScheduledTask ? (
+          {offlineMarker}
+          {renderedMarkerKind === "queued" ? <QueuedMessageIcon selected={selected} /> : null}
+          {renderedMarkerKind === "scheduled" ? (
             <SymbolView
               name="calendar.badge.clock"
               size={11}
-              tintColorClassName={rowAppearance.mutedIconTintClassName}
+              tintColorClassName={
+                selected
+                  ? selectedThreadRowColors.iconTintClassName
+                  : rowAppearance.mutedIconTintClassName
+              }
               type="monochrome"
             />
           ) : null}
-          {pinnedRow ? (
+          {renderedMarkerKind === "pinned" ? (
             <SymbolView
               name="pin"
               size={11}
-              tintColorClassName={rowAppearance.mutedIconTintClassName}
+              tintColorClassName={
+                selected
+                  ? selectedThreadRowColors.iconTintClassName
+                  : rowAppearance.mutedIconTintClassName
+              }
               type="monochrome"
             />
           ) : null}
@@ -1924,107 +2039,109 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           />
         </View>
       ) : null}
-      <View className="mt-1 flex-row items-center gap-2">
-        {(status === "failed" || status === "limited") && thread.runtime?.lastError ? (
-          <Text
-            className={cn(
-              "flex-1 text-xs",
-              selected
-                ? selectedThreadRowColors.mutedForegroundClassName
-                : status === "limited"
-                  ? "text-warning-foreground"
-                  : "text-danger-foreground",
-            )}
-            numberOfLines={1}
-          >
-            {thread.runtime.lastError}
-          </Text>
-        ) : props.environmentLabel ? (
-          <View className="min-w-0 flex-1 flex-row items-center gap-1">
-            <MachineBadge
-              environmentId={thread.environmentId}
-              label={props.environmentLabel}
-              size={Math.round(machineIconSize)}
-            />
+      {showCardMetaRow ? (
+        <View className="mt-1 flex-row items-center gap-2">
+          {errorText !== null ? (
             <Text
               className={cn(
-                "shrink text-xs",
+                "flex-1 text-xs",
                 selected
                   ? selectedThreadRowColors.mutedForegroundClassName
-                  : rowAppearance.tertiaryForegroundClassName,
+                  : status === "limited"
+                    ? "text-warning-foreground"
+                    : "text-danger-foreground",
               )}
               numberOfLines={1}
             >
-              {props.environmentLabel}
+              {errorText}
             </Text>
-          </View>
-        ) : (
-          <View className="flex-1" />
-        )}
-        {pr ? (
-          <Pressable
-            // Padding cancelled by negative margin grows the touch target into
-            // the row padding without moving the badge.
-            className="-m-2.5 flex-row items-center gap-1 p-2.5"
-            accessibilityRole="button"
-            accessibilityLabel={prBadgeLabel ?? undefined}
-            onPress={handleOpenPullRequests}
-            // Handle long-press so opening the iOS row menu cannot also open the PR on release.
-            onLongPress={() => undefined}
-            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-          >
-            <SymbolView
-              name={
-                pr.kind === "stack"
-                  ? PullRequestGlyph.stack
-                  : pr.state === null
-                    ? PullRequestGlyph.pullRequest
-                    : pullRequestStatus({ state: pr.state, isDraft: pr.isDraft }).icon
-              }
-              size={12}
-              tintColorClassName={
-                pr.state === null || pr.isDraft
-                  ? rowAppearance.mutedIconTintClassName
-                  : pr.state === "open"
-                    ? "accent-adaptive-emerald-600-400"
-                    : pr.state === "closed"
-                      ? "accent-adaptive-rose-600-400"
-                      : "accent-adaptive-violet-600-400"
-              }
-            />
-            <Text
-              accessibilityLabel={pr.accessibilityLabel}
-              className={cn("text-xs", pr.textClassName)}
-              style={{ fontFamily: MONO_FONT }}
+          ) : renderedMarkerKind === "machine" && props.environmentLabel ? (
+            <View className="min-w-0 flex-1 flex-row items-center gap-1">
+              <MachineBadge
+                environmentId={thread.environmentId}
+                label={props.environmentLabel}
+                size={Math.round(machineIconSize)}
+              />
+              <Text
+                className={cn(
+                  "shrink text-xs",
+                  selected
+                    ? selectedThreadRowColors.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+                )}
+                numberOfLines={1}
+              >
+                {props.environmentLabel}
+              </Text>
+            </View>
+          ) : (
+            <View className="flex-1" />
+          )}
+          {renderedMarkerKind === "pr" && pr ? (
+            <Pressable
+              // Padding cancelled by negative margin grows the touch target into
+              // the row padding without moving the badge.
+              className="-m-2.5 flex-row items-center gap-1 p-2.5"
+              accessibilityRole="button"
+              accessibilityLabel={prBadgeLabel ?? undefined}
+              onPress={handleOpenPullRequests}
+              // Handle long-press so opening the iOS row menu cannot also open the PR on release.
+              onLongPress={() => undefined}
+              style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
             >
-              {pr.label}
-            </Text>
-          </Pressable>
-        ) : null}
-        {providerInstance ? (
-          <View className="flex-row items-center">
-            {providerDrivers.slice(0, -1).map(
-              (driver, index) => (
-                /* oxlint-disable react/no-array-index-key -- Provider history can repeat a driver; these decorative icons have no local state. */ <View
-                  key={`${driver}:${index}`}
-                  className="-mr-1 opacity-30"
-                >
-                  <ProviderIcon provider={driver} size={12} />
-                </View>
-              ) /* oxlint-enable react/no-array-index-key */,
-            )}
-            <ProviderInstanceIcon
-              iconUrl={providerIconUrl}
-              provider={providerInstance.driverKind}
-              size={14}
-              displayName={providerInstance.displayName}
-              accentColor={providerInstance.accentColor}
-              showBadge={providerInstance.showBadge}
-              surfaceColor={rowAppearance.providerIconSurfaceColor}
-            />
-          </View>
-        ) : null}
-      </View>
+              <SymbolView
+                name={
+                  pr.kind === "stack"
+                    ? PullRequestGlyph.stack
+                    : pr.state === null
+                      ? PullRequestGlyph.pullRequest
+                      : pullRequestStatus({ state: pr.state, isDraft: pr.isDraft }).icon
+                }
+                size={12}
+                tintColorClassName={
+                  pr.state === null || pr.isDraft
+                    ? rowAppearance.mutedIconTintClassName
+                    : pr.state === "open"
+                      ? "accent-adaptive-emerald-600-400"
+                      : pr.state === "closed"
+                        ? "accent-adaptive-rose-600-400"
+                        : "accent-adaptive-violet-600-400"
+                }
+              />
+              <Text
+                accessibilityLabel={pr.accessibilityLabel}
+                className={cn("text-xs", pr.textClassName)}
+                style={{ fontFamily: MONO_FONT }}
+              >
+                {pr.label}
+              </Text>
+            </Pressable>
+          ) : null}
+          {renderedMarkerKind === "provider" && providerInstance ? (
+            <View className="flex-row items-center">
+              {providerDrivers.slice(0, -1).map(
+                (driver, index) => (
+                  /* oxlint-disable react/no-array-index-key -- Provider history can repeat a driver; these decorative icons have no local state. */ <View
+                    key={`${driver}:${index}`}
+                    className="-mr-1 opacity-30"
+                  >
+                    <ProviderIcon provider={driver} size={12} />
+                  </View>
+                ) /* oxlint-enable react/no-array-index-key */,
+              )}
+              <ProviderInstanceIcon
+                iconUrl={providerIconUrl}
+                provider={providerInstance.driverKind}
+                size={14}
+                displayName={providerInstance.displayName}
+                accentColor={providerInstance.accentColor}
+                showBadge={providerInstance.showBadge}
+                surfaceColor={rowAppearance.providerIconSurfaceColor}
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </>
   );
 
@@ -2090,7 +2207,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             sidebarPane && "px-3",
           )}
         >
-          {props.project ? (
+          {renderedMarkerKind === "project" && props.project ? (
             <View className="opacity-40">
               <ProjectFavicon
                 environmentId={thread.environmentId}
@@ -2102,7 +2219,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             </View>
           ) : null}
-          {colorMarker}
+          {renderedMarkerKind === "color" ? colorMarker : null}
           <View className="min-w-0 flex-1">
             <Text
               className={cn(
@@ -2125,8 +2242,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             ) : null}
           </View>
-          {tagChips}
-          {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
+          {slimStatusMarker}
+          {offlineMarker}
+          {renderedMarkerKind === "tags" ? tagChips : null}
+          {renderedMarkerKind === "queued" ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
             className={cn(
               "text-sm tabular-nums",

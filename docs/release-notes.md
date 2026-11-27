@@ -1,3 +1,8 @@
+## 2026-11-27 — At most one marker per sidebar row
+
+- Sidebar thread rows on web, desktop, and mobile now show at most one marker at a time, chosen by priority (**Needs you** > **Failed** > **PR state** > **Machine offline**, then draft, queued, terminal, scheduled, pinned, machine, project, tags, color, notifications, and provider). Any additional markers move to the row's hover card in the same priority order.
+- Rows grouped inside a machine folder no longer repeat the machine badge, and rows inside a project folder no longer repeat the project badge.
+
 ## 2026-11-27 — Agent browser tabs no longer run without their profile's sign-ins unnoticed
 
 - When the desktop app was slow to show an agent's browser tab, the tab ran in the host's headless browser for good, without the sign-ins of the desktop app's browser profile, and nothing told the agent. Now the server waits up to a minute while the desktop app keeps its window rendering, and if the tab still does not show, opening it fails so the agent can try again. A tab closed while it waits, or after the desktop app let it go, closes at once, and a server that lost its link to the desktop app opens tabs headless without waiting. An agent acting on a tab the desktop app stopped showing is told so before its request times out, and the tab closes if the desktop app does not show it again within a minute; opening its live view starts the same wait.

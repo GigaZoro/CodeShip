@@ -634,9 +634,10 @@ export function HomeScreen(props: HomeScreenProps) {
         project={projectByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? null}
         providerInstance={resolveProviderInstance(thread)}
         providers={providersByEnvironmentId.get(thread.environmentId)}
+        inMachineFolder={item.inMachineFolder}
+        inProjectFolder={item.inProjectFolder}
         environmentLabel={
-          // A machine folder already names the machine.
-          Object.keys(props.savedConnectionsById).length > 1 && item.folderKind !== "machine"
+          Object.keys(props.savedConnectionsById).length > 1
             ? (props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
             : null
         }
