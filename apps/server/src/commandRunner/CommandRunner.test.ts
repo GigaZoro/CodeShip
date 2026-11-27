@@ -3194,7 +3194,9 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         NodeFS.rmdirSync(NodePath.join(directory, "launch-started"));
         fixture.state.now += 60_000;
         const delivered = yield* Deferred.make<void>();
-        const runnerLayer = Layer.fresh(CommandRunner.layer).pipe(Layer.provide(fixture.layer));
+        const runnerLayer = Layer.fresh(CommandRunner.layer).pipe(
+          Layer.provideMerge(fixture.layer),
+        );
         yield* Effect.gen(function* () {
           const runner = yield* CommandRunner.CommandRunner;
           yield* runner.start().pipe(Effect.provideService(HostProcess.Platform, "linux"));
