@@ -452,6 +452,20 @@ export interface ProviderAdapterV2OpenSessionInput {
   readonly initialNativeThreadId?: string;
   readonly initialProviderItemIdentityVersion?: 2;
   readonly initialPinnedSystemInstructions?: OrchestrationV2PinnedSystemInstructions;
+  /**
+   * Take over the provider process a session host kept running through a planned update
+   * instead of starting one. Only adapters whose runtime has `adoptTurn` support it.
+   */
+  readonly adoptRunningProcess?: true;
+}
+
+/** The running turn a taken-over provider process is still working on, as the projection last saw it. */
+export interface ProviderAdapterV2AdoptTurnInput {
+  readonly turnInput: ProviderAdapterV2TurnInput;
+  readonly providerTurn: OrchestrationV2ProviderTurn;
+  readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  /** The turn's stored requests: one the process asks again keeps its id. */
+  readonly runtimeRequests: ReadonlyArray<OrchestrationV2RuntimeRequest>;
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
@@ -550,6 +564,12 @@ export interface ProviderAdapterV2ForkThreadInput {
 export interface ProviderAdapterV2EventSubscription {
   readonly events: Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
   readonly close: Effect.Effect<void>;
+  /**
+   * Sets what runs when a detach barrier reaches this reader, after every earlier event and
+   * before the barrier passes, so text the reader held back is stored before the replay point.
+   */
+  /** The flush yields false when held output could not be stored; the process is then not kept. */
+  readonly setBarrierFlush?: (flush: Effect.Effect<boolean>) => Effect.Effect<void>;
 }
 
 export interface ProviderAdapterV2HistoricalContext {
@@ -640,6 +660,25 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Continue a turn the taken-over process was running before the update, without sending a
+   * new turn. The process's output stays held until `releaseAdoptedOutput`.
+   */
+  readonly adoptTurn?: (
+    input: ProviderAdapterV2AdoptTurnInput,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Lets a taken-over process's buffered and live output reach `events`. Called once every
+   * running turn on the process is adopted: output for a turn not yet adopted would be dropped.
+   * True once everything the process's host kept was replayed and handled; false gives it up.
+   */
+  readonly releaseAdoptedOutput?: Effect.Effect<boolean>;
+  /**
+   * Called with the process's output held for a planned update. Succeeds once every event from
+   * output the process already sent is emitted, with how many events this runtime has emitted in
+   * all: the caller waits until it has handled that many. Without it the process is not kept.
+   */
+  readonly drainForDetach?: Effect.Effect<number>;
   readonly steerTurn: (
     input: ProviderAdapterV2SteerInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

@@ -45,6 +45,15 @@
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
 - Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
 
+## 2026-11-27 — Codex turns keep running through planned server updates
+
+- A running Codex turn keeps going in its app-server process during a planned update. The new server takes that process over and finishes the same run, with no continuation prompt and no lost context. An approval Codex asked while no server was attached can be answered.
+- Every thread whose turn shares that app server is taken over too. Output is neither repeated nor lost: the old server stores everything it read, including an unfinished paragraph, before it lets the process go, and the new server replays exactly the rest.
+- An answer given just before the update reaches Codex before the old server lets the process go, and is never asked again. An approval still waiting keeps its id, so it can be answered after the update.
+- If the process cannot be taken over (an answer could not be delivered or its output stored in time, a thread on it was not running a turn, it exited, its output was cut, or adoption failed), the old process is stopped and every thread on it continues as after any restart. Claude and ACP agents still restart and continue; they do not survive an update.
+- Each Codex session costs one extra background process, its session host.
+- MCP credentials survive only for threads whose process was taken over and stop working if the MCP endpoint moved.
+
 ## 2026-11-27 — Antigravity quota holds wait for their reset
 
 - When Antigravity refuses a turn because a quota ran out, T3.CodeShip holds only the models on that quota (Claude and GPT, Gemini, or Gemini Argon) until the reset Google reports. Work on another quota of the same account no longer ends the hold early, so a waiting chat is no longer resumed every few minutes only to be refused again.
