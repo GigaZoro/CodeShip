@@ -1,6 +1,7 @@
 ## 2026-11-27 — Agents check unmerged work before saying a chat can settle
 
 - Asked whether a chat can settle, agents now check the same thing the Settle button warns about: commits in the chat's worktree that are not on the default branch, and uncommitted files. Work that is only filed or scheduled no longer counts as done.
+- Antigravity chats no longer leave a stray `skills/system/run-workflow/SKILL.md` in the project folder, which made finished chats look like they still had uncommitted work.
 
 ## 2026-11-27 — Reliable macOS fork release recovery and SEA import guard
 

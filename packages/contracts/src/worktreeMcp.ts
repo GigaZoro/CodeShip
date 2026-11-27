@@ -96,7 +96,7 @@ export const WorktreeMcpStatusResult = Schema.Struct({
     ]),
   ).annotate({
     description:
-      "The worktree's work that is not on the default branch, the check Settle runs. Null without a worktree. Squash-landed work still counts until its worktree is released.",
+      "The worktree's work that is not on the default branch, the check Settle runs. Null without a worktree; `checkFailed` is not a pass. A squash still counts once the default branch has changed the same lines.",
   }),
 });
 export type WorktreeMcpStatusResult = typeof WorktreeMcpStatusResult.Type;

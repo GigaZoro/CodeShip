@@ -57,7 +57,8 @@ const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+  // Counting unmerged work fetches the default branch and looks up the branch's pull request.
+  .annotate(Tool.OpenWorld, true);
 
 const WorktreeListTool = Tool.make("t3_worktree_list", {
   description:
