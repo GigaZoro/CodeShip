@@ -761,26 +761,34 @@ test(
     try {
       await withPrivateCheckout(
         { cwd: dir, commit: second, warmLimit: 1 },
-        (_directory, context) => {
-          const procA = spawn(process.execPath, ["-e", "setInterval(() => {}, 60 * 60 * 1000)"], {
-            detached: true,
-            stdio: "ignore",
-          });
-          const procB = spawn(process.execPath, ["-e", "setInterval(() => {}, 60 * 60 * 1000)"], {
-            detached: true,
-            stdio: "ignore",
-          });
-          const untrackA = context.trackChild({
-            group: procA.pid,
-            stop: () => procA.kill("SIGKILL"),
-            done: childA.promise,
-          });
-          const untrackB = context.trackChild({
-            group: procB.pid,
-            stop: () => procB.kill("SIGKILL"),
-            done: childB.promise,
-          });
+        async (_directory, context) => {
+          let procA;
+          let procB;
+          let untrackA;
+          let untrackB;
+          const waitExit = (proc) =>
+            !proc || proc.exitCode !== null || proc.signalCode !== null
+              ? Promise.resolve()
+              : new Promise((resolve) => proc.once("exit", resolve));
           try {
+            procA = spawn(process.execPath, ["-e", "setInterval(() => {}, 60 * 60 * 1000)"], {
+              detached: true,
+              stdio: "ignore",
+            });
+            procB = spawn(process.execPath, ["-e", "setInterval(() => {}, 60 * 60 * 1000)"], {
+              detached: true,
+              stdio: "ignore",
+            });
+            untrackA = context.trackChild({
+              group: procA.pid,
+              stop: () => procA.kill("SIGKILL"),
+              done: childA.promise,
+            });
+            untrackB = context.trackChild({
+              group: procB.pid,
+              stop: () => procB.kill("SIGKILL"),
+              done: childB.promise,
+            });
             const dirtyPath = path.join(poolFolder(), "0.dirty");
             assert.equal(fs.existsSync(`${dirtyPath}.tmp`), false);
             const marker = JSON.parse(fs.readFileSync(dirtyPath, "utf8"));
@@ -796,10 +804,14 @@ test(
               assert.equal(entry.started, readProcessStarted(entry.group));
             }
           } finally {
-            untrackA();
-            untrackB();
-            procA.kill("SIGKILL");
-            procB.kill("SIGKILL");
+            untrackA?.();
+            untrackB?.();
+            const exited = Promise.all([waitExit(procA), waitExit(procB)]);
+            if (procA && procA.exitCode === null && procA.signalCode === null)
+              procA.kill("SIGKILL");
+            if (procB && procB.exitCode === null && procB.signalCode === null)
+              procB.kill("SIGKILL");
+            await exited;
             childA.resolve();
             childB.resolve();
           }
@@ -1236,6 +1248,19 @@ test("SQLITE_BUSY/win32 SQLITE_CANTOPEN, boot host & process start parsing, mach
       }),
       null,
     );
+    // Unique lock creation disables SQLITE_CANTOPEN suppression so persistent Windows failures throw instead of spinning.
+    assert.throws(
+      () =>
+        lockFile("/dir/extra-uuid.lock", {
+          platform: "win32",
+          existsSync: () => true,
+          tolerateCantOpen: false,
+          openDatabase: () => {
+            throw cantOpen;
+          },
+        }),
+      (error) => error === cantOpen,
+    );
     let closed = false;
     assert.equal(
       lockFile("/dir/0.lock", {
@@ -1335,4 +1360,27 @@ test("SQLITE_BUSY/win32 SQLITE_CANTOPEN, boot host & process start parsing, mach
   assert.equal(landingCheckout("/cache/t3-landing-checkouts/0123456789abcdef/feature"), false);
   assert.equal(landingCheckout(`/tmp/t3-landing-${randomUUID()}`), true);
   assert.equal(landingCheckout("/home/user/worktrees/my-branch"), false);
+});
+
+test("runCheck skips spawning checkCommand when checkout teardown starts right after install", async () => {
+  const { root, dir } = fixture();
+  try {
+    let stopping = false;
+    let spawns = 0;
+    const ok = await runCheck(dir, "turn-1", "HEAD", undefined, undefined, {
+      installCommand: `"${process.execPath}" -e "process.exit(0)"`,
+      checkCommand: `"${process.execPath}" -e "process.exit(0)"`,
+      stdio: "ignore",
+      isStopping: () => stopping,
+      onSpawn: () => {
+        spawns += 1;
+        // Simulate SIGTERM arriving right as installCommand finishes and before checkCommand starts.
+        stopping = true;
+      },
+    });
+    assert.equal(ok, false);
+    assert.equal(spawns, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

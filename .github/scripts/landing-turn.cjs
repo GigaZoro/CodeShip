@@ -1158,7 +1158,9 @@ function resolveWarmLimit(warmLimit) {
  * null when busy. The OS releases the lock when its process exits, killed or not. Open the file only through SQLite:
  * closing any other handle to it drops this process's lock.
  */
-function lockFile(file, { openDatabase, platform, existsSync } = {}) {
+const MAX_UNIQUE_LOCK_ATTEMPTS = 16;
+
+function lockFile(file, { openDatabase, platform, existsSync, tolerateCantOpen = true } = {}) {
   const open = openDatabase ?? ((target) => new (require("node:sqlite").DatabaseSync)(target));
   let db = null;
   try {
@@ -1173,7 +1175,10 @@ function lockFile(file, { openDatabase, platform, existsSync } = {}) {
         // Already closed.
       }
     }
-    if (isSqliteBusy(error) || isTransientWin32CantOpen(error, file, { platform, existsSync })) {
+    if (
+      isSqliteBusy(error) ||
+      (tolerateCantOpen && isTransientWin32CantOpen(error, file, { platform, existsSync }))
+    ) {
       return null;
     }
     throw error;
@@ -1212,9 +1217,9 @@ function removeLockFile(file, db) {
 }
 
 /** Takes checkout `slotName` when no other process holds it, returning the connection that holds it, else null. */
-function lockCheckout(folder, slotName) {
+function lockCheckout(folder, slotName, options) {
   const file = path.join(folder, `${slotName}.lock`);
-  const db = lockFile(file);
+  const db = lockFile(file, options);
   if (!db) return null;
   // A legacy numeric overflow lock may have been unlinked by a concurrent sweeper right before BEGIN EXCLUSIVE.
   if (!fs.existsSync(file)) {
@@ -1284,7 +1289,7 @@ function hasLiveWaiter(queueDir) {
 
 function joinLocalQueue(queueDir) {
   fs.mkdirSync(queueDir, { recursive: true });
-  for (;;) {
+  for (let attempt = 0; attempt < MAX_UNIQUE_LOCK_ATTEMPTS; attempt += 1) {
     let maxSeq = 0;
     for (const name of listQueueTickets(queueDir)) {
       const seq = Number(QUEUE_TICKET.exec(name)[1]);
@@ -1292,7 +1297,7 @@ function joinLocalQueue(queueDir) {
     }
     const name = `wait-${String(maxSeq + 1).padStart(12, "0")}-${randomUUID()}.lock`;
     const file = path.join(queueDir, name);
-    const db = lockFile(file);
+    const db = lockFile(file, { tolerateCantOpen: false });
     if (!db) continue;
     if (!fs.existsSync(file)) {
       db.close();
@@ -1318,6 +1323,7 @@ function joinLocalQueue(queueDir) {
       },
     };
   }
+  throw new Error(`landing: could not create local queue lock in ${queueDir}`);
 }
 
 function isFirstWaiter(queueDir, myName) {
@@ -1761,11 +1767,12 @@ async function acquireCheckoutSlot({
   if (role === "underTurn") {
     const warm = tryLockWarm();
     if (warm) return makeSlot(warm.index, warm.db, false, { extra: false });
-    for (;;) {
+    for (let attempt = 0; attempt < MAX_UNIQUE_LOCK_ATTEMPTS; attempt += 1) {
       const slotName = `extra-${randomUUID()}`;
-      const db = lockCheckout(folder, slotName);
+      const db = lockCheckout(folder, slotName, { tolerateCantOpen: false });
       if (db) return makeSlot(slotName, db, false, { extra: true });
     }
+    throw new Error(`landing: could not create overflow checkout lock in ${folder}`);
   }
 
   await sweepCheckouts(cwd, folder, now, limit);
@@ -1891,7 +1898,11 @@ async function runInCheckoutSlot(slot, commit, run) {
       } finally {
         slot.release({ force: true });
       }
-      process.kill(process.pid, signal);
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(signal === "SIGHUP" ? 129 : signal === "SIGINT" ? 130 : 143);
+      }
     })();
   }
   const waitIfStopping = () => (stopping ? new Promise(() => {}) : Promise.resolve());
@@ -1915,7 +1926,12 @@ async function runInCheckoutSlot(slot, commit, run) {
       });
       if (signal?.aborted) dirtyOnExit = true;
     };
-    const result = await run(directory, { reused, rebuild, trackChild });
+    const result = await run(directory, {
+      reused,
+      rebuild,
+      trackChild,
+      isStopping: () => stopping,
+    });
     await waitIfStopping();
     if (!extra && !dirtyOnExit) removeDirtyMarker(dirtyPath);
     return result;
@@ -2167,6 +2183,7 @@ async function runLanding(
                 directory,
                 signal,
                 trackChild: checkoutContext.trackChild,
+                isStopping: checkoutContext.isStopping,
               }),
           ),
         );
@@ -2200,7 +2217,11 @@ const FINAL_BASE_ENV = "T3_LANDING_FINAL_BASE";
 const FINAL_REBASED_ENV = "T3_LANDING_REBASED";
 const INSTALL_COMMAND = "vp i --frozen-lockfile --prefer-offline";
 
-async function runTreeCommand(command, { cwd, stdio, env, signal, onSpawn, trackChild }) {
+async function runTreeCommand(
+  command,
+  { cwd, stdio, env, signal, onSpawn, trackChild, isStopping },
+) {
+  if (signal?.aborted || isStopping?.()) return { ok: false, stopped: true };
   const { child, stop, done, group } = spawnTree(command, [], {
     cwd,
     shell: true,
@@ -2243,6 +2264,7 @@ async function runCheck(
     reused = false,
     rebuild,
     trackChild,
+    isStopping,
   } = {},
 ) {
   const env = {
@@ -2252,18 +2274,25 @@ async function runCheck(
     [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
   };
   const runStep = (step) =>
-    runTreeCommand(step, { cwd: directory, stdio, env, signal, onSpawn, trackChild });
+    runTreeCommand(step, { cwd: directory, stdio, env, signal, onSpawn, trackChild, isStopping });
   if (command !== undefined) return (await runStep(command)).ok;
   let installed = await runStep(installCommand);
-  if (!installed.ok && !installed.stopped && !signal?.aborted && reused && rebuild) {
+  if (
+    !installed.ok &&
+    !installed.stopped &&
+    !signal?.aborted &&
+    !isStopping?.() &&
+    reused &&
+    rebuild
+  ) {
     process.stderr.write(
       `landing: install failed in reused checkout ${directory}; rebuilding cleanly and retrying.\n`,
     );
     await rebuild(signal);
-    if (signal?.aborted) return false;
+    if (signal?.aborted || isStopping?.()) return false;
     installed = await runStep(installCommand);
   }
-  if (!installed.ok || signal?.aborted) return false;
+  if (!installed.ok || signal?.aborted || isStopping?.()) return false;
   return (await runStep(checkCommand)).ok;
 }
 
@@ -2274,7 +2303,7 @@ async function runCheck(
 async function runFinalize(
   directory,
   { turn, commit, base, rebased, budgetSeconds, signal },
-  { command, stdio = "inherit", onSpawn = () => {}, trackChild },
+  { command, stdio = "inherit", onSpawn = () => {}, trackChild, isStopping },
 ) {
   const env = {
     ...process.env,
@@ -2285,7 +2314,15 @@ async function runFinalize(
     [FINAL_REBASED_ENV]: rebased ? "1" : "0",
   };
   return (
-    await runTreeCommand(command, { cwd: directory, stdio, env, signal, onSpawn, trackChild })
+    await runTreeCommand(command, {
+      cwd: directory,
+      stdio,
+      env,
+      signal,
+      onSpawn,
+      trackChild,
+      isStopping,
+    })
   ).ok;
 }
 
@@ -2351,6 +2388,7 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
               runFinalize(details.directory, details, {
                 command: finalizeCommand,
                 trackChild: details.trackChild,
+                isStopping: details.isStopping,
               })
           : undefined),
       check:
