@@ -29,10 +29,13 @@ import {
 } from "@t3tools/shared/serverSettings";
 import {
   codexCreditStanding,
+  compareAccountsByHeadroom,
   exhaustedUsageWindow,
+  hasLiveUsageWindows,
   isCodexCloudAccount,
   isSubscriptionAccount,
   nextWeeklyResetMs,
+  softDrainingUsageWindow,
   usageHoldMs,
   usageScopeCoversModel,
   usageWindowLimitEnd,
@@ -421,7 +424,7 @@ interface AccountSearch extends AccountRoutingContext {
   readonly driver: ProviderDriverKind;
   readonly projectId: ProjectId;
   readonly model: string;
-  /** Order accounts with room by their next weekly reset on `model` first, then the saved order. */
+  /** Order each health tier by soonest weekly reset on `model` first, then headroom and saved order. */
   readonly preferEarliestReset?: boolean;
   /** Automatic picks require a payer declaration. Explicit account routing retains its policy. */
   readonly funding?: "verified";
@@ -439,9 +442,9 @@ export type AccountEligibility =
   | "usage_limited";
 
 /**
- * Accounts of `driver` that can run `model` now, in saved order or, with `preferEarliestReset`,
- * soonest weekly reset first (unused room is lost at it). Plan usage comes before prepaid credits,
- * which cost money; within each, accounts that must sign in to an MCP server again come last.
+ * Accounts of `driver` that can run `model` now: plan usage before prepaid credits, signed-in MCP
+ * before pending sign-in, then healthy with live usage, unread, and soft-draining. Within each
+ * tier: headroom (or earliest weekly reset with `preferEarliestReset`), weekly reset, saved order.
  */
 export function accountsWithRoom(
   input: AccountSearch & McpSignIns,
@@ -465,11 +468,19 @@ export function accountsWithRoom(
     const admission = accountSearchEligibility(provider, input);
     observe?.(provider.instanceId, admission.kind);
     if (admission.kind !== "eligible") return [];
+    const softDraining =
+      softDrainingUsageWindow(provider, input.nowMs, admission.model) !== undefined;
     return [
       {
+        provider,
         instanceId: provider.instanceId,
         model: admission.model,
         onCredits: admission.onCredits,
+        healthTier: softDraining
+          ? 2
+          : hasLiveUsageWindows(provider, input.nowMs, admission.model)
+            ? 0
+            : 1,
         resetAt: input.preferEarliestReset
           ? (nextWeeklyResetMs(provider, input.nowMs, admission.model) ?? Infinity)
           : Infinity,
@@ -479,7 +490,12 @@ export function accountsWithRoom(
   const ordered = orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     eligible,
-  ).toSorted((a, b) => (a.resetAt === b.resetAt ? 0 : a.resetAt - b.resetAt));
+  ).toSorted((a, b) => {
+    // Keep known-healthy > unread > soft-draining ahead of preferEarliestReset so scheduled runs avoid soft-draining accounts.
+    if (a.healthTier !== b.healthTier) return a.healthTier - b.healthTier;
+    if (input.preferEarliestReset && a.resetAt !== b.resetAt) return a.resetAt - b.resetAt;
+    return compareAccountsByHeadroom(a, b, input.nowMs);
+  });
   const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
     pendingSignIns(input, account.instanceId).length === 0;
   return [false, true].flatMap((onCredits) => {
@@ -1022,10 +1038,9 @@ export class AccountRouting extends Context.Service<
       } & CreditRequest,
     ) => Effect.Effect<ModelSelection>;
     /**
-     * Subscription accounts that can run this model, in failover order, with accounts that would
-     * spend prepaid credits after those with plan usage left, and within each the accounts that
-     * must sign in to an MCP server again last, with the servers each must sign in to. Lists the
-     * MCP servers of the provider's accounts first (bounded wait).
+     * Subscription accounts that can run this model: plan usage before prepaid credits, signed-in
+     * MCP before pending sign-in, then healthy with live usage, unread, and soft-draining; within
+     * each tier, remaining headroom, soonest weekly reset, and saved failover order. Lists MCP first.
      */
     readonly accountsWithRoom: (
       input: {

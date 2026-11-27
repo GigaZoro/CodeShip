@@ -2000,8 +2000,8 @@ const catalog: MessageCatalog = {
     "Оренда закінчується після вказаної кількості хвилин, навіть якщо пристрій використовується. Збереження перезапускає цей хост, що звільняє його пристрої.",
   "A limit whose plan reset is this close is waited out and keeps its banked reset.":
     "Ліміт, скидання тарифу якого так близько, перечікується, а накопичене скидання зберігається.",
-  "A limited thread continues on the highest account in this list that still has usage left.":
-    "Чат, що досяг ліміту, продовжується на найвищому обліковому записі цього списку, у якого ще є ліміт.",
+  "A limited thread avoids accounts near their limit and continues on the healthy account with the most remaining headroom, breaking ties by soonest weekly reset and then this order.":
+    "Чат, що досяг ліміту, уникає облікових записів на межі ліміту та продовжується на справному обліковому записі з найбільшим залишком квоти; у разі рівності перевага надається найближчому тижневому скиданню, а далі цьому порядку.",
   "a linked environment": "пов’язане середовище",
   "a linked folder": "підключена папка",
   "A machine that can't check the ones ahead of it runs the task anyway.":
@@ -2107,8 +2107,6 @@ const catalog: MessageCatalog = {
   "Account still limited": "Обліковий запис усе ще обмежено",
   "Account-specific home sharing the Codex state above.":
     "Домашня папка облікового запису, що ділить стан Codex зверху.",
-  "Accounts are tried from the top, and a limited thread continues on the highest one with usage left.":
-    "Облікові записи пробуються згори, а чат, що досяг ліміту, продовжується на найвищому з тих, де ще є використання.",
   "ACP provider configured": "Провайдера ACP налаштовано",
   "ACP provider disabled": "Провайдера ACP вимкнено",
   "ACP session already imported": "Сеанс ACP уже імпортовано",
@@ -3610,6 +3608,7 @@ const catalog: MessageCatalog = {
     "Натисніть, щоб збільшити або повернути за розміром. Прокручуйте для масштабування, перетягуйте для зсуву. Enter перемикає масштаб, плюс і мінус змінюють його, 0 повертає за розміром.",
   "Clicking a pull request link opens it in T3.CodeShip. Turn off to open pull request links like any other link, on your git host.":
     "Клік на посилання пул-реквесту відкриває його в T3.CodeShip. Вимкніть, щоб відкривати такі посилання як звичайні, на вашому git-хостингу.",
+  Clicks: "Кліки",
   "Clicks since {date}": "Кліки з {date}",
   "Client label (optional)": "Мітка клієнта (необов’язково)",
   "Client not supported": "Клієнт не підтримується",
@@ -4145,6 +4144,7 @@ const catalog: MessageCatalog = {
   "Continued for {duration}": "Продовжувалося {duration}",
   contrast: "контрастність",
   Contrast: "Контрастність",
+  Control: "Елемент",
   "Control previews": "Керування попереднім переглядом",
   "Controls whether background work may run after a subscribed interval fires.":
     "Визначає, чи може виконуватися фонова робота після спрацювання підписаного інтервалу.",
@@ -5110,9 +5110,6 @@ const catalog: MessageCatalog = {
   "Delete branch": "Видалити гілку",
   "Delete branch {branch}?": "Видалити гілку {branch}?",
   "Delete capture from {time}": "Видалити запис від {time}",
-  "Screenshot preview": "Перегляд знімка екрана",
-  Control: "Елемент",
-  Clicks: "Кліки",
   "Delete comment": "Видалити коментар",
   "delete confirmation": "підтвердження видалення",
   "Delete confirmation": "Підтвердження видалення",
@@ -7878,8 +7875,10 @@ const catalog: MessageCatalog = {
   "New {provider} sessions use the change.": "Нові сеанси {provider} використовуватимуть зміну.",
   "New agent sessions can open and drive these devices. agent-device: {versions}":
     "Нові сесії агентів можуть відкривати ці пристрої та керувати ними. agent-device: {versions}",
-  "New Auto chats start on the top account.":
-    "Нові чати в Auto починаються на верхньому обліковому записі.",
+  "New Auto chats and usage-limit failovers avoid accounts near their limit and pick the healthy account with the most remaining headroom, breaking ties by soonest weekly reset and then this order. Scheduled runs spend expiring weekly quota first, and started threads stay on their current account unless limited, on credits, or needing MCP sign-in.":
+    "Нові чати Auto та перемикання через ліміт використання уникають облікових записів на межі ліміту й вибирають справний обліковий запис із найбільшим залишком квоти; у разі рівності перевага надається найближчому тижневому скиданню, а далі цьому порядку. Заплановані запуски спершу витрачають тижневу квоту, що минає, а вже розпочаті чати залишаються на своєму поточному обліковому записі, якщо він не обмежений, не працює на кредитах і не потребує входу в MCP.",
+  "New Auto chats start on the top account while account switching is off.":
+    "Нові чати Auto запускаються на першому обліковому записі, доки перемикання облікових записів вимкнено.",
   "New branch": "Нова гілка",
   "New branch name": "Назва нової гілки",
   "New changes since this guide": "Нові зміни після цього посібника",
@@ -9098,10 +9097,10 @@ const catalog: MessageCatalog = {
   "Physical activity": "Фізична активність",
   "Pick a color from the app": "Виберіть колір із застосунку",
   "Pick a date and time.": "Виберіть дату й час.",
-  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below, and has usage left. Pick Auto in the model picker to use it.":
-    "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на першому обліковому записі цього провайдера, який може запустити його модель-координатор, указану нижче, і має вільний ліміт. Щоб ним скористатися, виберіть Auto у списку моделей.",
   "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below. Pick Auto in the model picker to use it.":
     "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на першому обліковому записі цього провайдера, який може запустити його модель-координатор, указану нижче. Щоб ним скористатися, виберіть Auto у списку моделей.",
+  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's healthy account with the most remaining headroom that can run its coordinator model, set below, avoiding accounts near their limit. Pick Auto in the model picker to use it.":
+    "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на справному обліковому записі цього провайдера з найбільшим залишком квоти, який може запустити його модель-координатор, указану нижче, уникаючи облікових записів на межі ліміту. Щоб ним скористатися, виберіть Auto у списку моделей.",
   "Pick a thread to continue": "Виберіть чат, щоб продовжити",
   "Pick where to host it, then point us at a repo to push to.":
     "Виберіть, де його розмістити, а потім вкажіть репозиторій для надсилання.",
@@ -10739,6 +10738,7 @@ const catalog: MessageCatalog = {
     "Не вдалося зробити знімок екрана ({status}). Спробуйте ще раз.",
   "Screenshot capture failed. Try again.": "Не вдалося зробити знімок екрана. Спробуйте ще раз.",
   "Screenshot of the window at this capture": "Знімок вікна в момент запису",
+  "Screenshot preview": "Перегляд знімка екрана",
   "Screenshot saved": "Знімок екрана збережено",
   "Screenshot unavailable": "Знімок екрана недоступний",
   scripts: "скрипти",

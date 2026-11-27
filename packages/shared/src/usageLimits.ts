@@ -273,6 +273,20 @@ function liveRateWindows(provider: ServerProvider, now: number) {
   return { limits, live, end };
 }
 
+/** Whether `provider` has at least one live rate window that applies to `model`. */
+export function hasLiveUsageWindows(
+  provider: ServerProvider | undefined,
+  now: number,
+  model?: string | null,
+): boolean {
+  if (provider === undefined) return false;
+  const rated = liveRateWindows(provider, now);
+  if (rated === null) return false;
+  return model === undefined
+    ? rated.live.length > 0
+    : rated.live.some((window) => usageWindowAppliesToModel(provider, window, model));
+}
+
 /**
  * First live, applicable usage window at or above the soft-drain threshold (88% session / 92% weekly).
  * Returns `undefined` while `usageAllowed === true` with no newer reading.

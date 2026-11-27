@@ -1,3 +1,7 @@
+## 2026-11-27 — Headroom-aware account routing and soft-drain avoidance
+
+- New Auto threads and usage-limit failovers now avoid soft-draining accounts and spread across healthy accounts by remaining quota headroom (preferring accounts with a live usage reading over unread ones, and breaking ties by soonest weekly reset and then saved account order), while scheduled runs still spend expiring weekly quota first and plan usage / MCP sign-in precedence remain unchanged. Active threads, explicit named launches, and delegated tasks on a healthy parent account stay sticky to preserve prompt caches unless hard-limited or outranked on plan/MCP precedence.
+
 ## 2026-11-27 — Auto mode uses every Antigravity account's per-model quota
 
 - Auto mode's delegation roster honors per-model quota windows: an Antigravity account out of Claude or GPT-OSS quota still offers its Gemini models, and each model is listed once, on the first account in failover order with room for it, so Claude stays routable through a second Antigravity account. The paired Claude/Codex provider comes first, and providers share the roster evenly, with unused shares going to the rest.

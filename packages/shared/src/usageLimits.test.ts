@@ -27,6 +27,7 @@ import {
   accountHeadroomPercent,
   compareAccountsByHeadroom,
   exhaustedUsageWindow,
+  hasLiveUsageWindows,
   softDrainingUsageWindow,
   paceOf,
   paceRemainingPercent,
@@ -2827,5 +2828,91 @@ describe("compareAccountsByHeadroom", () => {
       .toSorted((a, b) => compareAccountsByHeadroom(a, b, now))
       .map((entry) => entry.provider.instanceId);
     expect(sorted).toEqual(["tie-sooner", "tie-later", "busy-high", "draining"]);
+  });
+});
+
+describe("hasLiveUsageWindows", () => {
+  const checkedAt = "2026-09-03T11:55:00.000Z";
+
+  it("returns false for undefined, missing limits, empty, expired, or non-rate windows", () => {
+    expect(hasLiveUsageWindows(undefined, now, "claude-opus-5-5")).toBe(false);
+    expect(hasLiveUsageWindows(provider({}), now, "claude-opus-5-5")).toBe(false);
+    expect(
+      hasLiveUsageWindows(
+        provider({ usageLimits: { checkedAt, windows: [] } }),
+        now,
+        "claude-opus-5-5",
+      ),
+    ).toBe(false);
+    expect(
+      hasLiveUsageWindows(
+        provider({
+          driver: ProviderDriverKind.make("claudeAgent"),
+          usageLimits: {
+            checkedAt,
+            windows: [
+              {
+                id: "five_hour",
+                kind: "session",
+                label: "Session",
+                usedPercent: 20,
+                resetsAt: "2026-09-03T11:59:00.000Z",
+              },
+              {
+                id: "monthly_spend",
+                kind: "monthly",
+                label: "Spend",
+                usedPercent: 10,
+                resetsAt: "2026-10-01T00:00:00.000Z",
+              },
+            ],
+          },
+        }),
+        now,
+        "claude-opus-5-5",
+      ),
+    ).toBe(false);
+    expect(
+      hasLiveUsageWindows(
+        provider({
+          driver: ProviderDriverKind.make("antigravity"),
+          usageLimits: {
+            checkedAt,
+            windows: [
+              {
+                id: "unclassified_meter",
+                kind: "other",
+                label: "Unknown",
+                usedPercent: 10,
+                resetsAt: "2026-09-03T14:00:00.000Z",
+              },
+            ],
+          },
+        }),
+        now,
+        "gemini-4-neon",
+      ),
+    ).toBe(false);
+  });
+
+  it("respects model scope when model is provided and matches any live window when omitted", () => {
+    const fableOnly = provider({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          {
+            id: "seven_day_fable",
+            kind: "weekly",
+            label: "Fable",
+            usedPercent: 30,
+            resetsAt: "2026-09-08T12:00:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(hasLiveUsageWindows(fableOnly, now)).toBe(true);
+    expect(hasLiveUsageWindows(fableOnly, now, "claude-fable-5-1")).toBe(true);
+    expect(hasLiveUsageWindows(fableOnly, now, "claude-opus-5-5")).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ export function AccountFailoverSettings({
   readonly settings: UnifiedSettings;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly readOnly: boolean;
-  /** Whether Auto mode starts new chats on the first account in this order that can run its model. */
+  /** Whether Auto mode routes new chats across this provider's accounts. */
   readonly supportsAutoMode: boolean;
 }) {
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
@@ -65,13 +65,13 @@ export function AccountFailoverSettings({
               description={
                 !supportsAutoMode
                   ? t(
-                      "A limited thread continues on the highest account in this list that still has usage left.",
+                      "A limited thread avoids accounts near their limit and continues on the healthy account with the most remaining headroom, breaking ties by soonest weekly reset and then this order.",
                     )
                   : switching
                     ? t(
-                        "Accounts are tried from the top, and a limited thread continues on the highest one with usage left.",
+                        "New Auto chats and usage-limit failovers avoid accounts near their limit and pick the healthy account with the most remaining headroom, breaking ties by soonest weekly reset and then this order. Scheduled runs spend expiring weekly quota first, and started threads stay on their current account unless limited, on credits, or needing MCP sign-in.",
                       )
-                    : t("New Auto chats start on the top account.")
+                    : t("New Auto chats start on the top account while account switching is off.")
               }
             >
               <ol className="flex flex-col gap-1 pt-2 pb-2">

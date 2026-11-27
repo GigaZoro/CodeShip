@@ -212,7 +212,7 @@ export function AutoModeModelRow() {
       description={
         settings.failoverLimitedThreads
           ? t(
-              "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below, and has usage left. Pick Auto in the model picker to use it.",
+              "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's healthy account with the most remaining headroom that can run its coordinator model, set below, avoiding accounts near their limit. Pick Auto in the model picker to use it.",
             )
           : t(
               "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below. Pick Auto in the model picker to use it.",

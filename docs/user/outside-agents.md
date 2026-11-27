@@ -68,7 +68,10 @@ Then choose what the agent may do:
   Named targets, including targets supplied in Auto's brief, obey the same hold as
   Auto and inherited targets.
   Provider-only targets keep the parent's account and effort while it can run the
-  model, then use the saved account order. A provider-attributed limit on
+  model on plan usage with MCP signed in; otherwise they avoid soft-draining accounts
+  and pick the healthy account with the most remaining headroom (preferring accounts
+  with a live usage reading over unread ones, and breaking ties by soonest weekly
+  reset and then the saved account order). A provider-attributed limit on
   one model family is marked with `usageLimited: true` on that family's models alone.
   It lifts at its reset, or early once a run of one of them gets an answer. Project-disabled
   accounts cannot run child tasks; API-key accounts remain available for explicit tasks.
