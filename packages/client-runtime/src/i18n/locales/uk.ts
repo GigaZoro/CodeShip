@@ -775,6 +775,18 @@ const catalog: MessageCatalog = {
     many: "{count} провайдерів оновлено",
     other: "{count} провайдера оновлено",
   },
+  "{count} PRs linked": {
+    one: "пов’язано {count} PR",
+    few: "пов’язано {count} PR",
+    many: "пов’язано {count} PR",
+    other: "пов’язано {count} PR",
+  },
+  "{count} PRs opened": {
+    one: "відкрито {count} PR",
+    few: "відкрито {count} PR",
+    many: "відкрито {count} PR",
+    other: "відкрито {count} PR",
+  },
   "{count} pull requests": {
     one: "{count} пул-реквест",
     few: "{count} пул-реквести",
@@ -1156,6 +1168,12 @@ const catalog: MessageCatalog = {
     few: "{count} інструменти",
     many: "{count} інструментів",
     other: "{count} інструмента",
+  },
+  "{count} turns": {
+    one: "{count} хід",
+    few: "{count} ходи",
+    many: "{count} ходів",
+    other: "{count} ходу",
   },
   "{count} turns unpriced": {
     one: "{count} хід без ціни",
@@ -6160,6 +6178,7 @@ const catalog: MessageCatalog = {
   "Finish SnapShot setup in Settings → SnapShots.":
     "Завершіть налаштування SnapShot у розділі «Налаштування → SnapShots».",
   "Finish tour": "Завершити тур",
+  finished: "завершено",
   Finished: "Завершено",
   "Finished paragraphs": "Завершені абзаци",
   "Finished tasks": "Завершені завдання",
@@ -6201,6 +6220,8 @@ const catalog: MessageCatalog = {
   "Fold command failed ({status}).": "Команда складання не вдалася ({status}).",
   "Fold command timed out.": "Час очікування команди складання вичерпано.",
   "Fold device": "Скласти пристрій",
+  "fold finished work": "згортання завершеної роботи",
+  "Fold finished work": "Згортати завершену роботу",
   "Fold shape": "Форма складання",
   "Fold working and monitoring threads into a Working section. They return to the top of the inbox when they need you.":
     "Згортати чати в роботі та чати під наглядом у розділ «У роботі». Вони повертаються нагору вхідних, коли потрібні вам.",
@@ -6443,6 +6464,8 @@ const catalog: MessageCatalog = {
   "Hide {host} accounts": "Сховати облікові записи {host}",
   "Hide {name}": "Сховати {name}",
   "Hide {tab}": "Сховати {tab}",
+  "Hide a finished turn's tool rows under one summary row. The turn still running never folds.":
+    "Ховати рядки інструментів завершеного ходу під одним підсумковим рядком. Хід, що ще триває, не згортається.",
   "Hide account": "Сховати обліковий запис",
   "Hide account email": "Сховати email облікового запису",
   "Hide account label": "Сховати назву облікового запису",
@@ -8439,6 +8462,7 @@ const catalog: MessageCatalog = {
   "Old history is cleaned up automatically, but these databases still hold the freed space. Run the command on each machine to return it to disk; it pauses and restarts the background service. Quit the desktop app first if it hosts the environment.":
     "Стара історія очищується автоматично, але ці бази даних досі утримують звільнений простір. Виконайте команду на кожному комп’ютері, щоб повернути його диску; вона призупиняє й перезапускає фонову службу. Спершу закрийте застосунок для комп’ютера, якщо він розміщує середовище.",
   "Old line {line}": "Старий рядок {line}",
+  "Older turns": "Старіші ходи",
   Oldest: "Найстаріші",
   "Oldest first": "Спочатку старі",
   "Oldest shown": "Спочатку старіші",
@@ -9142,6 +9166,8 @@ const catalog: MessageCatalog = {
   "Power, idle, lock, and thermal state are supplied by the desktop host. Process telemetry remains fully active in this browser session.":
     "Стан живлення, простою, блокування та температури надає хост застосунку. Телеметрія процесів повністю працює в цій сесії браузера.",
   "PR #{number}": "PR #{number}",
+  "PR #{number} linked": "пов’язано PR #{number}",
+  "PR #{number} opened": "відкрито PR #{number}",
   "PR link copied": "Посилання на PR скопійовано",
   Prefer: "Надавати перевагу",
   "Preferred order": "Бажаний порядок",

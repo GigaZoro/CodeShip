@@ -7,6 +7,7 @@ import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thre
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRuntime";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
+import { tallyTurnFoldWork, turnFoldLabel } from "@t3tools/client-runtime/work-log/turn-fold-label";
 import {
   turnItemDetailRevision,
   turnItemHasDetail,
@@ -230,6 +231,8 @@ type ThreadFeedEntryContent =
       readonly createdAt: string;
       readonly runId: RunId;
       readonly label: string;
+      /** Failed tool calls, shown apart from the label in the alarm tone. */
+      readonly failedLabel: string | null;
       readonly expanded: boolean;
     }
   | {
@@ -1016,6 +1019,7 @@ interface ThreadFeedRunFold {
   readonly createdAt: string;
   readonly hiddenEntryIds: ReadonlySet<string>;
   readonly label: string;
+  readonly failedLabel: string | null;
 }
 
 export function failedFeedRunIds(
@@ -1212,18 +1216,24 @@ function deriveThreadFeedRunFolds(
           )
         : [],
     );
+    const label = turnFoldLabel(
+      interrupted ? "stopped" : "worked",
+      duration,
+      tallyTurnFoldWork(
+        group.entries.flatMap((entry) =>
+          entry.type === "activity-group"
+            ? entry.activities.map((activity) => activity.workEntry)
+            : [],
+        ),
+      ),
+    );
     foldsByAnchorId.set(firstHiddenEntry.id, {
       ...(deferredWorkItemIds.length > 0 ? { deferredWorkItemIds } : {}),
       runId,
       createdAt: firstHiddenEntry.createdAt,
       hiddenEntryIds,
-      label: interrupted
-        ? duration
-          ? t("You stopped after {duration}", { duration })
-          : t("You stopped this response")
-        : duration
-          ? t("Worked for {duration}", { duration })
-          : t("Worked"),
+      label: label.text,
+      failedLabel: label.failed,
     });
   }
   const covered = new Set(
@@ -1240,6 +1250,7 @@ function deriveThreadFeedRunFolds(
       createdAt: entry.createdAt,
       hiddenEntryIds: new Set([entry.id]),
       label: t("Earlier work"),
+      failedLabel: null,
       deferredWorkItemIds,
     });
   }
@@ -1458,6 +1469,7 @@ export function deriveThreadFeedPresentation(
         row.runId !== fold.runId ||
         row.createdAt !== fold.createdAt ||
         row.label !== fold.label ||
+        row.failedLabel !== fold.failedLabel ||
         row.expanded !== expanded ||
         row.deferredWorkItemIds?.join("|") !== fold.deferredWorkItemIds?.join("|")
       ) {
@@ -1468,6 +1480,7 @@ export function deriveThreadFeedPresentation(
           createdAt: fold.createdAt,
           runId: fold.runId,
           label: fold.label,
+          failedLabel: fold.failedLabel,
           expanded,
         };
         runFoldRowsCache.set(entry, row);

@@ -3706,6 +3706,7 @@ export default function ChatView(props: ChatViewProps) {
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
+                foldFinishedWork={settings.foldFinishedWork}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={timelineSkills}
                 anchorMessageId={timelineAnchorMessageId}
@@ -3723,6 +3724,7 @@ export default function ChatView(props: ChatViewProps) {
                   ? {}
                   : { historyControls: threadHistoryControls })}
                 unseenWindow={unseenWindow}
+                pullRequests={(activeThreadShell ?? activeThread)?.pullRequests}
               />
 
               {showScrollToBottom && !isThreadFindActive && (

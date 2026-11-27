@@ -375,6 +375,11 @@ export type ChatWidth = typeof ChatWidth.Type;
 export const InterfaceDensity = Schema.Literals(["comfortable", "compact"]);
 export type InterfaceDensity = typeof InterfaceDensity.Type;
 
+/** Which settled turns fold their tool rows under one summary row; the live turn never folds. */
+export const FoldFinishedWork = Schema.Literals(["always", "older", "never"]);
+export type FoldFinishedWork = typeof FoldFinishedWork.Type;
+const DEFAULT_FOLD_FINISHED_WORK: FoldFinishedWork = "older";
+
 /** The hues an accent can take; their colors live in `@t3tools/shared/accentPalette`. */
 export const ACCENT_COLOR_HUES = [
   "blue",
@@ -622,6 +627,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // Opt-in TeX typesetting in rendered Markdown. Off keeps math parsing and
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  foldFinishedWork: FoldFinishedWork.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_FOLD_FINISHED_WORK)),
+  ),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -2283,5 +2291,6 @@ export const ClientSettingsPatch = Schema.Struct({
   followDeviceSettingsProfile: Schema.optionalKey(Schema.Boolean),
   deviceSettingsProfileBase: Schema.optionalKey(Schema.NullOr(DeviceSettingsProfile)),
   mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
+  foldFinishedWork: Schema.optionalKey(FoldFinishedWork),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

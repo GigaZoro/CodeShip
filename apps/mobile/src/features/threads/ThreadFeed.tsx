@@ -59,6 +59,7 @@ import {
   type RunId,
   type ScheduledTaskId,
   type ScopedThreadRef,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
@@ -290,6 +291,7 @@ import {
   firstUnseenThreadRowIndex,
   type UnseenThreadWindow,
 } from "@t3tools/client-runtime/state/thread-visits";
+import { unseenThreadSummary } from "@t3tools/client-runtime/state/unseen-thread-summary";
 import type { ThreadRewindRequest } from "./useThreadRewind";
 import { resolveUserMessageIntentBadge } from "./userMessageIntentBadge";
 import { fileChipClipboardPath, fileChipMenu, resolveFileChipTarget } from "./fileChipMenu";
@@ -404,6 +406,8 @@ export interface ThreadFeedProps {
   readonly rewindActions?: ThreadFeedRewindActions | null;
   /** What the reader had not seen when the thread opened; a divider marks where it starts. */
   readonly unseenWindow?: UnseenThreadWindow | null;
+  /** The thread's pull requests, so the unseen divider can say which were opened meanwhile. */
+  readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink>;
 }
 
 // Live indicators and messages still on their way are not work the reader missed.
@@ -1813,6 +1817,12 @@ function RunFoldButton({
           className="shrink font-t3-medium text-sm tabular-nums text-foreground-muted"
         >
           {entry.label}
+          {entry.failedLabel ? (
+            <>
+              {" · "}
+              <Text className="text-danger-foreground">{entry.failedLabel}</Text>
+            </>
+          ) : null}
           {error ? ` · ${error}` : ""}
         </Text>
         <ThreadDisclosureChevron
@@ -3568,7 +3578,24 @@ export const ThreadFeed = memo(function ThreadFeed({
     groupedFeed[
       firstUnseenThreadRowIndex(groupedFeed, props.unseenWindow ?? null, feedRowContentTime)
     ]?.id ?? null;
-  const listExtraData = { ...listAppearanceData, firstUnseenRowId };
+  const unseenSummary =
+    firstUnseenRowId === null
+      ? null
+      : unseenThreadSummary({
+          window: props.unseenWindow ?? null,
+          activity: props.feed.map((entry) => ({
+            time: Date.parse(entry.createdAt),
+            runId:
+              entry.type === "message"
+                ? entry.message.role === "assistant"
+                  ? entry.message.runId
+                  : null
+                : entry.runId,
+          })),
+          latestRun: props.latestRun,
+          pullRequests: props.pullRequests ?? [],
+        });
+  const listExtraData = { ...listAppearanceData, firstUnseenRowId, unseenSummary };
   const { contentInsetEndAdjustment } = props;
   const attachList = (list: LegendListRef | null) => {
     listRef.current = list;
@@ -3911,7 +3938,11 @@ export const ThreadFeed = memo(function ThreadFeed({
               label={t("New since your last visit")}
               iconColor={iconSubtleColor}
               accent
-            />
+            >
+              {unseenSummary ? (
+                <Text className="text-xs text-primary">{`· ${unseenSummary}`}</Text>
+              ) : null}
+            </ThreadContextDivider>
           ) : null}
           {info.item.type === "message" &&
           !isCompactionCommandFeedEntry(info.item) &&

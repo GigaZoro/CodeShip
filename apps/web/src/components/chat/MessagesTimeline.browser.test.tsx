@@ -95,6 +95,7 @@ type Entry = TimelineProps["timelineEntries"][number];
 function baseProps(): Omit<TimelineProps, "timelineEntries"> {
   return {
     isWorking: false,
+    foldFinishedWork: "always",
     listRef: createRef<LegendListRef | null>(),
     latestRun: null,
     turnDiffSummaries: [],

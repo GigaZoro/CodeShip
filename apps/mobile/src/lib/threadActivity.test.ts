@@ -878,7 +878,7 @@ describe("buildThreadFeed", () => {
     expect(collapsed[1]).toMatchObject({
       type: "run-fold",
       createdAt: "2026-06-20T00:00:01.500Z",
-      label: "Worked for 2s",
+      label: "Worked for 2s · 1 tool",
     });
 
     const expanded = deriveThreadFeedPresentation(feed, latestRun, new Set([runId]));
@@ -1132,10 +1132,10 @@ describe("buildThreadFeed", () => {
     const settled = deriveThreadFeedPresentation(feed(false), null, new Set());
     expect(shape(settled)).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:launch-answer",
       "user:resume",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:resume-answer",
     ]);
     const launchFold = settled.find((entry) => entry.type === "run-fold");
@@ -1144,11 +1144,11 @@ describe("buildThreadFeed", () => {
       shape(deriveThreadFeedPresentation(feed(false), null, new Set([launchFold.runId]))),
     ).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "activity-group",
       "assistant:launch-answer",
       "user:resume",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:resume-answer",
     ]);
 
@@ -1165,7 +1165,7 @@ describe("buildThreadFeed", () => {
       ),
     ).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:launch-answer",
       "user:resume",
       "activity-group",

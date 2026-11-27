@@ -1,3 +1,9 @@
+## 2026-11-27 — Turn folds say what the turn did
+
+- A folded turn's summary row counts its tool calls and changed files beside its duration, such as "Worked for 8m · 14 tools · 6 files". Failed tool calls show as "2 failed" in the error color. Web, desktop, and mobile show the same text.
+- **Fold finished work** in **Settings → Chat & diffs** chooses which finished turns fold: **Always**, **Older turns** (the default, every turn before your latest prompt), or **Never**. The turn still running never folds.
+- The **New since your last visit** line says what changed while you were away, such as "2 turns · finished · PR #88 opened", on web, desktop, and mobile. On web and desktop, a dot on the conversation minimap marks where it sits.
+
 ## 2026-11-27 — Triage the Needs you box by keyboard
 
 - With a row in the Needs you box focused, `J`/`K` or the arrows move, `A` approves, `D` declines, `L` defers, `E` settles, `Enter` opens and `Esc` returns to the chat. Settling offers Undo for 8 seconds, and Settings → Keybindings lists the keys.

@@ -45,6 +45,7 @@ export function TimelineMinimap({
   items,
   promptItems,
   stripMap,
+  unseenTopPercent,
   onWheel,
   onSelect,
 }: {
@@ -55,6 +56,8 @@ export function TimelineMinimap({
   items: ReadonlyArray<TimelineMinimapItem>;
   promptItems: ReadonlyArray<TimelineMinimapItem>;
   stripMap: Map<string, HTMLSpanElement>;
+  /** Where the "new since your last visit" divider sits on the rail; null when there is none. */
+  unseenTopPercent: number | null;
   onWheel: (event: WheelEvent) => void;
   onSelect: (item: TimelineMinimapItem) => void;
 }) {
@@ -280,6 +283,15 @@ export function TimelineMinimap({
                 </span>
               );
             })}
+            {unseenTopPercent === null ? null : (
+              // A dot, not a strip, so the mark reads by shape as well as by its accent colour.
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute left-[-3px] size-1.5 -translate-y-1/2 rounded-full bg-primary"
+                data-minimap-unseen
+                style={{ top: `${unseenTopPercent}%` }}
+              />
+            )}
             {activeItem ? (
               <span
                 className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"

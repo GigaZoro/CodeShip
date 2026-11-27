@@ -403,6 +403,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["latex tex katex equations formulas markdown"],
   },
   {
+    id: "fold-finished-work",
+    title: msg("Fold finished work"),
+    to: "/settings/chat",
+    searchTerms: ["collapse fold tool calls rows worked for turn summary hide noise"],
+  },
+  {
     id: "panel-animations",
     title: msg("Panel animations"),
     to: "/settings/appearance",

@@ -21,12 +21,14 @@ import {
   type ServerProviderSkill,
   type RunId,
   ThreadId,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   firstUnseenThreadRowIndex,
   type UnseenThreadWindow,
 } from "@t3tools/client-runtime/state/thread-visits";
+import { unseenThreadSummary } from "@t3tools/client-runtime/state/unseen-thread-summary";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
 import type { WorkflowOpening } from "@t3tools/client-runtime/state/subagentRuntime";
 import { observeResize } from "~/lib/observeResize";
@@ -92,6 +94,8 @@ import {
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
   timelineRowContentTime,
+  timelineEntryRunId,
+  resolveTimelineMinimapMarkerPercent,
   type MessagesTimelineRow,
   type TimelineLatestRun,
   nextStarredMessage,
@@ -107,7 +111,7 @@ import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { type FoldFinishedWork, type TimestampFormat } from "@t3tools/contracts/settings";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
 
@@ -215,6 +219,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
   },
 } as const satisfies MaintainScrollAtEndOptions;
 const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
+const EMPTY_PULL_REQUESTS: ReadonlyArray<ThreadPullRequestLink> = [];
 const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
   ...TIMELINE_MAINTAIN_SCROLL_AT_END,
   animated: true,
@@ -316,6 +321,7 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  foldFinishedWork: FoldFinishedWork;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<ServerProviderSkill>;
   runs: ReadonlyArray<HandoffTimelineRun>;
@@ -338,6 +344,8 @@ interface MessagesTimelineProps {
   historyControls?: MessagesTimelineHistoryControls | undefined;
   /** What the reader had not seen when the thread opened; a divider marks where it starts. */
   unseenWindow?: UnseenThreadWindow | null;
+  /** The thread's pull requests, so the unseen divider can say which were opened meanwhile. */
+  pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
   findExpanded?: boolean;
   findQuery?: string;
   activeFindMatch?: ThreadFindMatch | null;
@@ -421,6 +429,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  foldFinishedWork,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   runs: runsProp,
@@ -437,6 +446,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   topFadeEnabled = false,
   historyControls,
   unseenWindow = null,
+  pullRequests = EMPTY_PULL_REQUESTS,
 }: MessagesTimelineProps) {
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   // Snapshot restore positions on identity changes; ongoing scroll writes must not move them.
@@ -620,16 +630,16 @@ const ConversationTimeline = memo(function ConversationTimeline({
     }
   }
 
+  const foldInput = {
+    timelineEntries,
+    latestRun,
+    runningRunId,
+    isWorking,
+    runlessWorkActive,
+    foldFinishedWork,
+  };
   // Imported turns and post-steer work fold under synthetic keys, not the entries' run ids.
-  const findFoldRunIds = findActive
-    ? timelineTurnFoldRunIdsByEntryId({
-        timelineEntries,
-        latestRun,
-        runningRunId,
-        isWorking,
-        runlessWorkActive,
-      })
-    : null;
+  const findFoldRunIds = findActive ? timelineTurnFoldRunIdsByEntryId(foldInput) : null;
   const activeFindRunId =
     findActive && activeFindMatch ? findFoldRunIds?.get(activeFindMatch.entryId) : undefined;
   const [expandedFindRunId, setExpandedFindRunId] = useState<RunId | undefined>();
@@ -661,16 +671,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
         )
       : undefined;
   if (citationRequest && citedEntry) {
-    const citedRunId = (
-      findFoldRunIds ??
-      timelineTurnFoldRunIdsByEntryId({
-        timelineEntries,
-        latestRun,
-        runningRunId,
-        isWorking,
-        runlessWorkActive,
-      })
-    ).get(citedEntry.id);
+    const citedRunId = (findFoldRunIds ?? timelineTurnFoldRunIdsByEntryId(foldInput)).get(
+      citedEntry.id,
+    );
     setCitationExpandedFor(citationRequest.key);
     if (citedRunId) {
       setExpandedRunIds((previous) =>
@@ -719,6 +722,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     expandedRunIds: visibleExpandedRunIds,
     expandedAttemptIds: visibleExpandedAttemptIds,
     expandedWorkGroupIds,
+    foldFinishedWork,
     isWorking,
     runlessWorkActive,
     activeTurnStartedAt,
@@ -729,8 +733,21 @@ const ConversationTimeline = memo(function ConversationTimeline({
     worktreeSetup,
   });
   const rows = useStableRows(rawRows, listIdentityKey);
-  const firstUnseenRowId =
-    rows[firstUnseenThreadRowIndex(rows, unseenWindow, timelineRowContentTime)]?.id ?? null;
+  const firstUnseenRowIndex = firstUnseenThreadRowIndex(rows, unseenWindow, timelineRowContentTime);
+  const firstUnseenRowId = rows[firstUnseenRowIndex]?.id ?? null;
+  const unseenSummary =
+    firstUnseenRowId === null
+      ? null
+      : unseenThreadSummary({
+          window: unseenWindow,
+          activity: timelineEntries.map((entry) => ({
+            time: Date.parse(entry.createdAt),
+            runId: timelineEntryRunId(entry),
+          })),
+          latestRun,
+          pullRequests,
+        });
+  const unseenLabel = t("New since your last visit");
   const [retryTarget, setRetryTarget] = useState<RetryTarget | null>(null);
   const nextRetryTarget = deriveRetryTarget(rows, retryTarget);
   if (nextRetryTarget !== retryTarget) setRetryTarget(nextRetryTarget);
@@ -752,6 +769,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const minimapItems = deriveTimelineMinimapItems(rows, starredIds);
   const minimapPrompts = minimapItems.filter((item) => item.role === "user");
   const minimapPromptRowIndices = minimapPrompts.map((item) => item.rowIndex);
+  const minimapUnseenPercent =
+    firstUnseenRowId === null
+      ? null
+      : resolveTimelineMinimapMarkerPercent(
+          minimapItems.map((item) => item.rowIndex),
+          firstUnseenRowIndex,
+        );
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
       ? rows.findIndex((row) => row.id === rememberedPosition.rowId)
@@ -1425,6 +1449,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     runningRunId,
     isWorking,
     runlessWorkActive,
+    foldFinishedWork,
     rows,
     contentInsetEndAdjustment,
   });
@@ -1479,8 +1504,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
           data-timeline-root="true"
         >
           {item.id === firstUnseenRowId ? (
-            <div role="separator" aria-label={t("New since your last visit")}>
-              <TimelineSystemDivider label={t("New since your last visit")} tone="accent" />
+            <div
+              role="separator"
+              aria-label={unseenSummary ? `${unseenLabel} · ${unseenSummary}` : unseenLabel}
+            >
+              <TimelineSystemDivider label={unseenLabel} detail={unseenSummary} tone="accent" />
             </div>
           ) : null}
           <AudioPreviewUnmountContext value={onAudioUnmount}>
@@ -1495,6 +1523,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     rowCount: rows.length,
     sharedState,
     firstUnseenRowId,
+    unseenSummary,
   };
   const timelineListFooter = (
     <TimelineListFooter
@@ -1621,6 +1650,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               hitStripWidth={minimapHitStripWidth}
               currentPromptIndex={minimapCurrentIndex}
               stripMap={minimapStripMap}
+              unseenTopPercent={minimapUnseenPercent}
               onWheel={forwardMinimapWheel}
               onSelect={(item) => {
                 if (item.starredMessageId === null) scrollToTimelineRow(item.rowIndex);
@@ -1918,6 +1948,12 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         >
           <span>
             {row.label}
+            {row.failedLabel ? (
+              <>
+                {" · "}
+                <span className="text-destructive-foreground">{row.failedLabel}</span>
+              </>
+            ) : null}
             {error ? ` · ${error}` : ""}
           </span>
           <MorphIcon className="size-3.5" icon={row.expanded ? ChevronDown : ChevronRight} />

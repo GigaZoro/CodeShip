@@ -537,6 +537,7 @@ function GuestThread({
             markdownCwd={undefined}
             resolvedTheme={resolvedTheme}
             timestampFormat="locale"
+            foldFinishedWork="older"
             workspaceRoot={undefined}
             anchorMessageId={null}
             onAnchorReady={ignore}

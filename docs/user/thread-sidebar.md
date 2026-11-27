@@ -748,8 +748,16 @@ Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
 finishes; the call's own result shows its status.
 
+A finished turn's tool calls fold into one summary row, such as "Worked for 8m · 14 tools ·
+6 files · 2 failed", so its final answer is in view; select the row to expand it. **Fold
+finished work** in **Settings → Chat & diffs** folds every finished turn (**Always**), every
+turn before your latest prompt (**Older turns**, the default), or none (**Never**). The turn
+still running and a turn that failed stay open. Mobile folds every finished turn.
+
 When you come back to a thread, a **New since your last visit** line marks where the work you
-have not seen begins. It follows the visit mark the server keeps, so reading a thread on one device
+have not seen begins, and says what changed meanwhile, such as "2 turns · finished · PR #88
+opened". On web and desktop, a dot on the conversation minimap marks the same place. The line
+follows the visit mark the server keeps, so reading a thread on one device
 moves it on the others. Older turns load as you scroll toward the top of a long thread; **Load
 earlier turns** loads them right away. Press `mod+alt+arrowup` and `mod+alt+arrowdown` to jump
 between your own prompts.

@@ -1098,6 +1098,14 @@ export function SendShortcutRow() {
   );
 }
 
+const FOLD_FINISHED_WORK_OPTIONS = ["always", "older", "never"] as const;
+
+const FOLD_FINISHED_WORK_LABEL = {
+  always: msg("Always"),
+  older: msg("Older turns"),
+  never: msg("Never"),
+} as const;
+
 const FOLLOW_UP_BEHAVIOR_LABEL = {
   steer: msg("Steer"),
   queue: msg("Queue"),
@@ -1249,6 +1257,47 @@ export function ChatSettingsPanel() {
               }
               aria-label={t("Render math")}
             />
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("fold-finished-work")}
+          description={t(
+            "Hide a finished turn's tool rows under one summary row. The turn still running never folds.",
+          )}
+          resetAction={
+            settings.foldFinishedWork !== DEFAULT_UNIFIED_SETTINGS.foldFinishedWork ? (
+              <SettingResetButton
+                label={t("fold finished work")}
+                onClick={() =>
+                  updateSettings({ foldFinishedWork: DEFAULT_UNIFIED_SETTINGS.foldFinishedWork })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.foldFinishedWork}
+              onValueChange={(value) => {
+                if (value === "always" || value === "older" || value === "never") {
+                  updateSettings({ foldFinishedWork: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-auto min-w-0"
+                aria-label={t("Fold finished work")}
+              >
+                <SelectValue>{t(FOLD_FINISHED_WORK_LABEL[settings.foldFinishedWork])}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FOLD_FINISHED_WORK_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {t(FOLD_FINISHED_WORK_LABEL[option])}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
       </SettingsSection>

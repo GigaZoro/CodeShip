@@ -31,6 +31,11 @@ import {
   type ToolGroupSummaryKind,
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
+  tallyTurnFoldWork,
+  turnFoldLabel,
+  type TurnFoldLabel,
+} from "@t3tools/client-runtime/work-log/turn-fold-label";
+import {
   deriveRevertTurnCountByUserMessageId,
   formatDuration,
   isStreamingMessageTextUpdate,
@@ -50,6 +55,7 @@ import {
   type TurnDiffSummary,
 } from "../../types";
 import {
+  type FoldFinishedWork,
   idleCompactionOf,
   isCompactionCommandMessage,
   type MessageId,
@@ -76,7 +82,7 @@ import {
 } from "@t3tools/shared/toolActivity";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 
-function timelineEntryRunId(entry: TimelineEntry): RunId | null {
+export function timelineEntryRunId(entry: TimelineEntry): RunId | null {
   if (entry.kind === "message") {
     return entry.message.role === "assistant" ? (entry.message.runId ?? null) : null;
   }
@@ -345,6 +351,28 @@ export function resolveTimelineMinimapTopPercent(index: number, itemCount: numbe
   return (Math.max(0, Math.min(index, itemCount - 1)) / (itemCount - 1)) * 100;
 }
 
+/**
+ * Where a marker above `rowIndex` sits on the rail: on a turn's strip when it opens that turn,
+ * halfway to the next strip when it falls inside one; null when the rail is not drawn.
+ */
+export function resolveTimelineMinimapMarkerPercent(
+  itemRowIndices: ReadonlyArray<number>,
+  rowIndex: number,
+): number | null {
+  const count = itemRowIndices.length;
+  if (count < TIMELINE_MINIMAP_MIN_ITEMS) return null;
+  const next = itemRowIndices.findIndex((itemRowIndex) => itemRowIndex >= rowIndex);
+  if (next === -1) return 100;
+  if (next === 0 || itemRowIndices[next] === rowIndex) {
+    return resolveTimelineMinimapTopPercent(next, count);
+  }
+  return (
+    (resolveTimelineMinimapTopPercent(next - 1, count) +
+      resolveTimelineMinimapTopPercent(next, count)) /
+    2
+  );
+}
+
 export function resolveTimelineMinimapIndexFromPointer(input: {
   readonly itemCount: number;
   readonly railTop: number;
@@ -564,6 +592,8 @@ type MessagesTimelineRowContent =
       createdAt: string;
       runId: RunId;
       label: string;
+      /** Failed tool calls, apart from the label so they alone take the alarm tone. */
+      failedLabel: string | null;
       expanded: boolean;
     }
   | {
@@ -723,7 +753,32 @@ interface TurnFold {
   hiddenEntryIds: ReadonlySet<string>;
   /** Every entry in the segment, including the cards a fold never hides. */
   entryIds: ReadonlySet<string>;
-  label: string;
+  label: TurnFoldLabel;
+}
+
+/**
+ * The work a fold counts from each entry kind. The switch is exhaustive, so a
+ * new kind has to decide here what its fold label says about it.
+ */
+export function timelineEntryFoldWork(entry: TimelineEntry): WorkLogEntry | null {
+  switch (entry.kind) {
+    case "work":
+      return entry.entry;
+    case "message":
+    case "event":
+    case "proposed-plan":
+    case "html-render":
+    case "mcp-app":
+      return null;
+    default: {
+      const unhandled: never = entry;
+      return unhandled;
+    }
+  }
+}
+
+function tallyTimelineFoldWork(entries: ReadonlyArray<TimelineEntry>) {
+  return tallyTurnFoldWork(entries.flatMap((entry) => timelineEntryFoldWork(entry) ?? []));
 }
 
 interface SupersededAttemptFold {
@@ -1009,6 +1064,7 @@ function itemizedFailedRunIds(
 
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
+  foldFinishedWork: FoldFinishedWork;
   terminalAssistantMessageIds: ReadonlySet<string>;
   latestRun: TimelineLatestRun | null;
   unfoldedRunIds: ReadonlySet<RunId>;
@@ -1016,6 +1072,12 @@ function deriveTurnFolds(input: {
   liveSubagentEntryIds: ReadonlySet<string>;
   completeSupersededReplyEntryIds: ReadonlySet<string>;
 }): ReadonlyMap<string, TurnFold> {
+  if (input.foldFinishedWork === "never") return new Map();
+  // "older" leaves the turn after the latest prompt open; sending the next prompt folds it.
+  const latestTurnStartIndex =
+    input.foldFinishedWork === "older"
+      ? lastResponseBoundaryIndex(input.timelineEntries)
+      : input.timelineEntries.length;
   const interruptedRunIds = new Set<RunId>();
   const promptIndexByRunId = new Map<RunId, number>();
   for (const [index, entry] of input.timelineEntries.entries()) {
@@ -1037,6 +1099,7 @@ function deriveTurnFolds(input: {
     entries: Array<TimelineEntry>;
     terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
     hasStreamingMessage: boolean;
+    firstEntryIndex: number;
     // Entry timestamps omit startup and can collapse steered turns to an instant.
     startBoundary: string | null;
     anchorEntryId: string;
@@ -1094,6 +1157,7 @@ function deriveTurnFolds(input: {
         entries: [],
         terminalEntry: null,
         hasStreamingMessage: false,
+        firstEntryIndex: index,
         startBoundary: pendingBoundary?.createdAt ?? null,
         anchorEntryId: pendingBoundary?.anchorEntryId ?? entry.id,
         steerSegments: [],
@@ -1122,7 +1186,7 @@ function deriveTurnFolds(input: {
     ) {
       continue;
     }
-    if (group.hasStreamingMessage) {
+    if (group.hasStreamingMessage || group.firstEntryIndex > latestTurnStartIndex) {
       continue;
     }
     const hiddenEntryIds = new Set<string>();
@@ -1182,13 +1246,6 @@ function deriveTurnFolds(input: {
               lastEntryEnd,
           );
     const duration = elapsedMs !== null ? formatDuration(elapsedMs) : null;
-    const label = isLatestInterruptedTurn
-      ? duration
-        ? t("You stopped after {duration}", { duration })
-        : t("You stopped this response")
-      : duration
-        ? t("Worked for {duration}", { duration })
-        : t("Worked");
 
     // The top row keeps the whole turn's time, steers included. Work after a
     // steer folds under its own row below that steer, keyed apart from the run
@@ -1202,7 +1259,11 @@ function deriveTurnFolds(input: {
       createdAt: group.startBoundary ?? firstEntry.createdAt,
       hiddenEntryIds: segmentHiddenIds(firstSegment),
       entryIds: new Set(firstSegment.map((entry) => entry.id)),
-      label,
+      label: turnFoldLabel(
+        isLatestInterruptedTurn ? "stopped" : "worked",
+        duration,
+        tallyTimelineFoldWork(firstSegment),
+      ),
     });
     for (const [index, { startIndex, steer }] of group.steerSegments.entries()) {
       const entries = group.entries.slice(startIndex, group.steerSegments[index + 1]?.startIndex);
@@ -1219,10 +1280,11 @@ function deriveTurnFolds(input: {
         createdAt: steer.createdAt,
         hiddenEntryIds: segmentHiddenIds(entries),
         entryIds: new Set(entries.map((entry) => entry.id)),
-        label:
-          segmentMs !== null
-            ? t("Continued for {duration}", { duration: formatDuration(segmentMs) })
-            : t("Continued"),
+        label: turnFoldLabel(
+          "continued",
+          segmentMs !== null ? formatDuration(segmentMs) : null,
+          tallyTimelineFoldWork(entries),
+        ),
       });
     }
   }
@@ -1380,7 +1442,12 @@ function timelineRowEntries(entries: ReadonlyArray<TimelineEntry>) {
 function deriveTimelineTurnFolds(
   input: Pick<
     MessagesTimelineRowsInput,
-    "timelineEntries" | "latestRun" | "isWorking" | "runlessWorkActive" | "runningRunId"
+    | "timelineEntries"
+    | "latestRun"
+    | "isWorking"
+    | "runlessWorkActive"
+    | "runningRunId"
+    | "foldFinishedWork"
   >,
 ) {
   const timelineEntries = timelineRowEntries(input.timelineEntries);
@@ -1393,6 +1460,7 @@ function deriveTimelineTurnFolds(
   });
   return deriveTurnFolds({
     timelineEntries,
+    foldFinishedWork: input.foldFinishedWork ?? "always",
     terminalAssistantMessageIds: deriveTerminalAssistantMessageIds(timelineEntries),
     latestRun: input.latestRun ?? null,
     unfoldedRunIds: new Set([...activeVisualResponseRunIds, ...failedRunIds]),
@@ -1410,6 +1478,8 @@ export function deriveMessagesTimelineRows(input: {
   expandedRunIds?: ReadonlySet<RunId>;
   expandedAttemptIds?: ReadonlySet<RunAttemptId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
+  /** Which settled turns fold their work; every one when omitted. */
+  foldFinishedWork?: FoldFinishedWork;
   isWorking: boolean;
   /** Native subagent work has no app run; runless entries form the live response. */
   runlessWorkActive?: boolean;
@@ -1474,6 +1544,7 @@ export function deriveMessagesTimelineRows(input: {
   const runlessWorkActive = input.isWorking && input.runlessWorkActive === true;
   const foldsByAnchorEntryId = deriveTurnFolds({
     timelineEntries: timelineEntries,
+    foldFinishedWork: input.foldFinishedWork ?? "always",
     terminalAssistantMessageIds,
     latestRun: input.latestRun ?? null,
     unfoldedRunIds: new Set([...activeVisualResponseRunIds, ...failedRunIds]),
@@ -1757,7 +1828,8 @@ export function deriveMessagesTimelineRows(input: {
         ...(!expanded ? { hiddenMessages: hiddenMessagesByFold.get(turnFold) ?? [] } : {}),
         createdAt: turnFold.createdAt,
         runId: turnFold.runId,
-        label: turnFold.label,
+        label: turnFold.label.text,
+        failedLabel: turnFold.label.failed,
         expanded,
       });
     }
@@ -2288,7 +2360,12 @@ interface MessagesTimelineRowsProjection {
 export function timelineTurnFoldRunIdsByEntryId(
   input: Pick<
     MessagesTimelineRowsInput,
-    "timelineEntries" | "latestRun" | "isWorking" | "runlessWorkActive" | "runningRunId"
+    | "timelineEntries"
+    | "latestRun"
+    | "isWorking"
+    | "runlessWorkActive"
+    | "runningRunId"
+    | "foldFinishedWork"
   >,
 ): ReadonlyMap<string, RunId> {
   const byEntryId = new Map<string, RunId>();
@@ -2466,6 +2543,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return (
         a.createdAt === bf.createdAt &&
         a.label === bf.label &&
+        (a.kind !== "turn-fold" || a.failedLabel === (bf as typeof a).failedLabel) &&
         a.expanded === bf.expanded &&
         shallow(a.hiddenMessages, bf.hiddenMessages) &&
         anchors.length === nextAnchors.length &&

@@ -511,6 +511,10 @@
       "types": "./src/state/threadVisits.ts",
       "default": "./src/state/threadVisits.ts"
     },
+    "./state/unseen-thread-summary": {
+      "types": "./src/state/unseenThreadSummary.ts",
+      "default": "./src/state/unseenThreadSummary.ts"
+    },
     "./state/turn-item-presentation": {
       "types": "./src/state/turnItemPresentation.ts",
       "default": "./src/state/turnItemPresentation.ts"
@@ -530,6 +534,10 @@
     "./work-log/presentation": {
       "types": "./src/work-log/presentation.ts",
       "default": "./src/work-log/presentation.ts"
+    },
+    "./work-log/turn-fold-label": {
+      "types": "./src/work-log/turnFoldLabel.ts",
+      "default": "./src/work-log/turnFoldLabel.ts"
     },
     "./work-log/tool-presentation": {
       "types": "./src/work-log/toolPresentation.ts",

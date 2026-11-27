@@ -91,6 +91,7 @@ function timelineFor() {
     <MessagesTimeline
       timelineEntries={entries}
       isWorking={false}
+      foldFinishedWork="always"
       listRef={listRef}
       latestRun={null}
       turnDiffSummaries={[]}
