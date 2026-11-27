@@ -2099,6 +2099,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     ".github/scripts/check-node-runtime.cjs",
     ".github/scripts/check-changed-receipt.cjs",
     ".github/scripts/landing-turn.cjs",
+    ".github/scripts/landing-record.cjs",
     ".github/scripts/bounded-git.cjs",
     ".github/scripts/process-tree.cjs",
     "packages/shared/src/windowsProcessTreeScript.ts",
