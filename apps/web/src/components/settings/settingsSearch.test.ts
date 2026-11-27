@@ -11,14 +11,13 @@ import * as Schema from "effect/Schema";
 
 import {
   filterAvailableSettingsSearchItems,
-  getSettingsSearchTargetScope,
   getThreadAutoSettlementSearchAvailability,
-  isSettingsSearchScopeAvailable,
   movedSettingsPath,
   consolidatedSettingsAnchor,
   searchSettings,
   settingsNavGroups,
   SETTINGS_SEARCH_ITEMS,
+  settingScopeAxesById,
   settingsSearchItemTitle,
   sourceControlHostSearchItems,
   sourceControlHostSettingsSearchId,
@@ -65,7 +64,6 @@ describe("consolidated setting links", () => {
     ["auto-update-providers", "provider-updates"],
   ])("redirects %s to %s", (legacy, current) => {
     expect(consolidatedSettingsAnchor(legacy)).toBe(current);
-    expect(getSettingsSearchTargetScope(legacy)).toEqual(getSettingsSearchTargetScope(current));
   });
   it("moves the old maintenance Diagnostics links to Diagnostics", () => {
     expect(movedSettingsPath("/settings/maintenance", "diagnostics")).toBe("/settings/diagnostics");
@@ -354,44 +352,23 @@ describe("searchSettings", () => {
   });
 });
 
-describe("settings search targets", () => {
-  it("requires an environment for the resolved telemetry export destination", () => {
-    const result = searchSettings("OpenTelemetry export").find(
-      (item) => item.id === "telemetry-export",
-    )!;
-    const target = getSettingsSearchTargetScope(result.targetId ?? result.id)!;
-    expect(isSettingsSearchScopeAvailable(target.scope, "all")).toBe(false);
-    expect(isSettingsSearchScopeAvailable(target.scope, "project")).toBe(false);
-    expect(isSettingsSearchScopeAvailable(target.scope, "environment")).toBe(true);
-  });
-
-  it("keeps environment-wide settings out of project scopes", () => {
-    const updates = getSettingsSearchTargetScope("provider-update-checks")!;
-    expect(updates.scope).toBe("environment-defaults");
-    expect(isSettingsSearchScopeAvailable(updates.scope, "environment")).toBe(true);
-    expect(isSettingsSearchScopeAvailable(updates.scope, "all")).toBe(true);
-    expect(isSettingsSearchScopeAvailable(updates.scope, "project")).toBe(false);
-    const fallback = getSettingsSearchTargetScope("fallback-model")!;
-    expect(fallback.scope).toBe("environment-defaults");
-    expect(isSettingsSearchScopeAvailable(fallback.scope, "environment")).toBe(true);
-    expect(isSettingsSearchScopeAvailable(fallback.scope, "all")).toBe(true);
-    expect(isSettingsSearchScopeAvailable(fallback.scope, "project")).toBe(false);
-    for (const id of ["response-streaming", "skill-availability", "speech-project-dictionary"]) {
-      const setting = getSettingsSearchTargetScope(id)!;
-      expect(setting.scope).toBe("project-defaults");
-      expect(isSettingsSearchScopeAvailable(setting.scope, "project")).toBe(true);
-    }
-    for (const scope of ["all", "environment", "project"] as const) {
-      expect(isSettingsSearchScopeAvailable("project-defaults", scope)).toBe(true);
-    }
-    for (const id of [
-      "pull-request-links-open-in-app",
-      "tool-call-visibility",
-      "sidebar-grouping",
-      "sidebar-group-by-machine",
-    ]) {
-      expect(getSettingsSearchTargetScope(id)!.scope).toBeNull();
-    }
+describe("setting scope axes", () => {
+  it.each([
+    ["telemetry-export", "one-machine"],
+    ["automated-start-memory-guard", "one-machine"],
+    ["provider-updates", "machine"],
+    ["fallback-model", "machine"],
+    // Placement is per machine with an all-machines default, not one machine's value.
+    ["scheduled-task-default-placement", "machine"],
+    ["response-streaming", "project"],
+    ["skill-availability", "project"],
+    // A section whose rows each carry their own pill shows none on its heading.
+    ["project-defaults", null],
+    ["pull-request-links-open-in-app", null],
+    ["sidebar-grouping", null],
+    ["sidebar-group-by-machine", null],
+  ] as const)("%s varies by %s", (id, axes) => {
+    expect(settingScopeAxesById(id)).toBe(axes);
   });
 });
 
@@ -428,28 +405,6 @@ describe("auto-settlement search availability", () => {
       "auto-settle-opens-pull-requests",
       "keep-threads-with-pull-requests",
     ]);
-  });
-
-  it.each([offline, loading])(
-    "does not render the target on $environmentId or silently fall back",
-    (selected) => {
-      expect(
-        getThreadAutoSettlementSearchAvailability(environments, {
-          kind: "environment",
-          environmentIds: [selected.environmentId],
-        }),
-      ).toEqual({ eligibleEnvironmentIds: [capable.environmentId], isTargetAvailable: false });
-    },
-  );
-
-  it("ignores offline and unloaded targets when all connected targets support the setting", () => {
-    const selected = [capable, offline, loading];
-    expect(
-      getThreadAutoSettlementSearchAvailability(selected, {
-        kind: "all",
-        environmentIds: selected.map((entry) => entry.environmentId),
-      }).isTargetAvailable,
-    ).toBe(true);
   });
 });
 

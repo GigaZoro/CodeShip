@@ -17,7 +17,7 @@ import {
 } from "../../../lib/androidNavigationStyle";
 
 import { useAtomValue } from "@effect/atom-react";
-import type { AccentColor, InterfaceDensity } from "@t3tools/contracts/settings";
+import type { AccentColor, InterfaceDensity, StatusColors } from "@t3tools/contracts/settings";
 import { normalizeLanguagePreference, type LanguagePreference } from "@t3tools/shared/i18n";
 import { Atom, AsyncResult } from "effect/reactivity";
 
@@ -92,6 +92,8 @@ interface AppearancePreferencesContextValue {
   readonly setMathRenderingEnabled: (value: boolean) => void;
   readonly interfaceDensity: InterfaceDensity;
   readonly setInterfaceDensity: (value: InterfaceDensity) => void;
+  readonly statusColors: StatusColors;
+  readonly setStatusColors: (value: StatusColors) => void;
   readonly accentColor: AccentColor;
   readonly setAccentColor: (value: AccentColor) => void;
 }
@@ -244,6 +246,7 @@ export function AppearancePreferencesProvider(props: {
   const systemColorPalettes = useAtomValue(systemColorPalettesAtom);
   const accentColor = storedPreferences?.accentColor ?? "theme";
   const interfaceDensity = storedPreferences?.interfaceDensity ?? "comfortable";
+  const statusColors = storedPreferences?.statusColors ?? "calm";
   const themeVariablesByAppearance = resolveThemeVariablesByAppearance(
     themeIds,
     systemColorPalettes,
@@ -360,6 +363,7 @@ export function AppearancePreferencesProvider(props: {
 
   const setInterfaceDensity = (value: InterfaceDensity) =>
     updatePreferences({ interfaceDensity: value });
+  const setStatusColors = (value: StatusColors) => updatePreferences({ statusColors: value });
   const setAccentColor = (value: AccentColor) => updateThemePreferences({ accentColor: value });
 
   const value = useMemo(
@@ -391,6 +395,8 @@ export function AppearancePreferencesProvider(props: {
       setMathRenderingEnabled,
       interfaceDensity,
       setInterfaceDensity,
+      statusColors,
+      setStatusColors,
       accentColor,
       setAccentColor,
     }),
@@ -421,6 +427,8 @@ export function AppearancePreferencesProvider(props: {
       setMathRenderingEnabled,
       interfaceDensity,
       setInterfaceDensity,
+      statusColors,
+      setStatusColors,
       accentColor,
       setAccentColor,
     ],

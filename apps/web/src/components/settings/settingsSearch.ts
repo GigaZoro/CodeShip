@@ -16,7 +16,6 @@ import * as Schema from "effect/Schema";
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
 import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import { commandLabel } from "./KeybindingsSettings.logic";
-import type { ResolvedSettingsScope } from "./settingsScope";
 import type { ExtensionsTab } from "../extensions/extensionsSearch";
 
 export type SettingsPath =
@@ -43,13 +42,7 @@ type SettingsSearchAppPage =
   | "/monitoring"
   | "/machines";
 
-export type SettingsSearchScope =
-  | "environment"
-  | "environment-defaults"
-  | "project-defaults"
-  | "project"
-  | "checkout"
-  | "connections";
+export type SettingsSearchScope = "environment" | "environment-defaults" | "project-defaults";
 
 export interface SettingsSearchItem {
   readonly id: string;
@@ -238,7 +231,7 @@ export function sourceControlHostSearchItems(
             : `${names} ${Object.keys(definition.settings.fields).join(" ")} token credentials sign in`,
         ],
         environmentOnly: true,
-        scope: "environment-defaults" as const,
+        scope: "environment" as const,
       },
     ];
   });
@@ -299,7 +292,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "project-defaults",
     title: msg("Project defaults and overrides"),
     to: "/settings/threads",
-    scope: "project-defaults",
     searchTerms: ["model workspace environments projects inheritance checkout"],
   },
   {
@@ -403,6 +395,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Interface density"),
     to: "/settings/appearance",
     searchTerms: ["compact comfortable spacing tight dense rows sidebar padding"],
+  },
+  {
+    id: "status-colors",
+    title: msg("Status colors"),
+    to: "/settings/appearance",
+    searchTerms: ["colour calm vivid quiet gray grey pulse animation working idle needs you"],
   },
   {
     id: "accent-color",
@@ -525,6 +523,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "usage-limit-recovery",
     title: msg("When a thread hits a usage limit"),
     to: "/settings/threads",
+    scope: "environment-defaults",
     searchTerms: [
       "snooze resume failover switch accounts usage quota rate limit reset wake recover continue",
     ],
@@ -533,6 +532,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "redeem-usage-resets",
     title: msg("Redeem usage resets automatically"),
     to: "/settings/threads",
+    scope: "environment-defaults",
     searchTerms: [
       "banked reset claim limit-reset credit claude codex usage plan reset wait hours expire",
     ],
@@ -560,7 +560,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "scheduled-task-default-placement",
     title: msg("Show new scheduled tasks in"),
     to: "/settings/general",
-    scope: "environment",
+    scope: "environment-defaults",
     searchTerms: ["auto pin scheduled tasks automations recurring sidebar placement window"],
   },
   {
@@ -604,21 +604,21 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "guest-links",
     title: msg("Guest links"),
     to: "/settings/connections",
-    scope: "connections",
+    scope: "environment-defaults",
     searchTerms: ["beta share guest invite link teammate watch t3 connect tunnel"],
   },
   {
     id: "linked-environments-beta",
     title: msg("Allow linked environments"),
     to: "/settings/connections",
-    scope: "connections",
+    scope: "environment-defaults",
     searchTerms: ["beta link another machine vps peer agents work there delegate"],
   },
   {
     id: "follow-shared-settings",
     title: msg("Follow shared settings"),
     to: "/settings/connections",
-    scope: "connections",
+    scope: "environment-defaults",
     searchTerms: ["sync all machines catch up offline same settings every machine global default"],
   },
   {
@@ -950,6 +950,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "retry-threads-after-network-errors",
     title: msg("Retry threads after network errors"),
     to: "/settings/threads",
+    scope: "environment-defaults",
     searchTerms: [
       "resume continue failed work internet connection offline outage power cut wifi dns lost network automatically",
     ],
@@ -1228,6 +1229,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "auto-mode",
     title: msg("Auto mode"),
     to: "/settings/providers",
+    scope: "environment",
     searchTerms: [
       "auto model coordinator cheaper model subagent primary provider default model effort models role",
     ],
@@ -1237,6 +1239,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "account-failover",
     title: msg("Account order"),
     to: "/settings/providers",
+    scope: "environment",
     searchTerms: [
       "account order failover switch accounts usage limit quota multiple accounts priority second account auto mode",
     ],
@@ -1246,6 +1249,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "final-review",
     title: msg("Final review"),
     to: "/settings/providers",
+    scope: "environment",
     searchTerms: [
       "final review reviewer reviewers review instructions cross model second opinion gates checks quality pre-merge code review after request",
     ],
@@ -1255,6 +1259,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "delegated-task-models",
     title: msg("Delegated tasks"),
     to: "/settings/providers",
+    scope: "environment",
     searchTerms: [
       "delegate subagent child task coordinator implementer implementation research review design test role primary secondary model provider",
     ],
@@ -1325,6 +1330,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/browser",
+    scope: "environment-defaults",
     searchTerms: [
       "device hosts ssh remote mac mini identity key connection eas expo cloud simlock pool gateway local simulators",
     ],
@@ -1333,6 +1339,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "agent-device-access",
     title: msg("Agents can use devices"),
     to: "/settings/browser",
+    scope: "project-defaults",
     targetId: "devices",
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
@@ -1340,6 +1347,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "device-hub",
     title: msg("Use devices"),
     to: "/settings/browser",
+    scope: "environment-defaults",
     targetId: "devices",
     searchTerms: ["device hub simulator emulator ios android install start version"],
   },
@@ -1475,7 +1483,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "source-control",
     title: msg("Source control"),
     to: "/settings/source-control",
-    scope: "environment-defaults",
+    scope: "environment",
     searchTerms: [
       `version control git ${SOURCE_CONTROL_HOST_TERMS} hosting integrations credentials scan server environment`,
     ],
@@ -1507,6 +1515,7 @@ export const SETTINGS_SEARCH_ITEMS = [
       "repository conventions conventional commits custom instructions commit messages change pr pull request merge request titles descriptions body style prompt write my own",
     ],
     environmentOnly: true,
+    scope: "project-defaults",
   },
   {
     id: "follow-change-request-templates",
@@ -1514,6 +1523,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/source-control",
     searchTerms: ["repository pr pull request merge request change request description structure"],
     environmentOnly: true,
+    scope: "project-defaults",
   },
   {
     id: "source-control-writer-model",
@@ -1777,8 +1787,8 @@ export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];
 const SEARCH_ITEMS_BY_ID = new Map(SETTINGS_SEARCH_ITEMS.map((item) => [item.id, item] as const));
 
 const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScope | null>> = {
-  "/settings/diagnostics": "environment",
-  "/settings/projects": "project",
+  "/settings/diagnostics": null,
+  "/settings/projects": null,
   "/settings/general": null,
   "/settings/voice": null,
   "/settings/appearance": null,
@@ -1788,7 +1798,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/source-control": "environment-defaults",
-  "/settings/connections": "connections",
+  "/settings/connections": null,
   "/settings/secrets": null,
   "/settings/maintenance": null,
 };
@@ -1867,20 +1877,33 @@ export function movedSettingsPath(pathname: string, hash: string): SettingsPath 
   return to === pathname ? null : to;
 }
 
-export function getSettingsSearchTargetScope(targetId: string) {
-  targetId = consolidatedSettingsAnchor(targetId);
-  const items: readonly SettingsPageSearchItem[] = SETTINGS_SEARCH_ITEMS;
-  const item =
-    items.find((candidate) => candidate.id === targetId) ??
-    items.find((candidate) => candidate.targetId === targetId);
-  return item
-    ? {
-        title: settingsSearchItemTitle(item),
-        scope: item.scope !== undefined ? item.scope : SETTINGS_CATEGORY_SCOPES[item.to],
-        ...(item.requiresThreadAutoSettlement ? { requiresThreadAutoSettlement: true } : {}),
-        ...(item.agentFeedbackOnly ? { agentFeedbackOnly: true } : {}),
-      }
+/** The scope a setting's value varies by: its own declaration, else its page's. */
+function settingsSearchItemScope(item: SettingsSearchItem): SettingsSearchScope | null {
+  if (item.scope !== undefined) return item.scope;
+  return Object.hasOwn(SETTINGS_CATEGORY_SCOPES, item.to)
+    ? SETTINGS_CATEGORY_SCOPES[item.to as SettingsPath]
     : null;
+}
+
+/**
+ * What a setting's inline scope pill chooses: one machine, every machine or one, or a project
+ * and its machines. Null means the value does not vary and the row shows no pill.
+ */
+export type SettingScopeAxes = "one-machine" | "machine" | "project";
+
+const SETTING_SCOPE_AXES: Readonly<Record<SettingsSearchScope, SettingScopeAxes>> = {
+  environment: "one-machine",
+  "environment-defaults": "machine",
+  "project-defaults": "project",
+};
+
+export function settingScopeAxes(item: SettingsSearchItem): SettingScopeAxes | null {
+  const scope = settingsSearchItemScope(item);
+  return scope === null ? null : SETTING_SCOPE_AXES[scope];
+}
+
+export function settingScopeAxesById(id: SettingsSearchItemId): SettingScopeAxes | null {
+  return settingScopeAxes(SEARCH_ITEMS_BY_ID.get(id)!);
 }
 
 interface AutoSettlementSearchEnvironment {
@@ -1891,49 +1914,15 @@ interface AutoSettlementSearchEnvironment {
 
 export function getThreadAutoSettlementSearchAvailability(
   environments: readonly AutoSettlementSearchEnvironment[],
-  scope?: Pick<ResolvedSettingsScope, "kind" | "environmentIds">,
 ) {
-  const connected = environments.filter(
-    (environment) =>
-      environment.connection.phase === "connected" && environment.serverConfig !== null,
-  );
-  const eligibleEnvironmentIds = connected.map((environment) => environment.environmentId);
-  const selected = connected.filter((environment) =>
-    scope?.environmentIds.includes(environment.environmentId),
-  );
   return {
-    eligibleEnvironmentIds,
-    isTargetAvailable:
-      scope !== undefined &&
-      scope.kind !== "unavailable" &&
-      selected.length > 0 &&
-      selected.every((environment) => eligibleEnvironmentIds.includes(environment.environmentId)),
+    eligibleEnvironmentIds: environments
+      .filter(
+        (environment) =>
+          environment.connection.phase === "connected" && environment.serverConfig !== null,
+      )
+      .map((environment) => environment.environmentId),
   };
-}
-
-export function isSettingsSearchScopeAvailable(
-  requiredScope: SettingsSearchScope | null,
-  scopeKind: ResolvedSettingsScope["kind"],
-): boolean {
-  switch (requiredScope) {
-    case null:
-    case "connections":
-      return true;
-    case "environment":
-    case "checkout":
-      return requiredScope === scopeKind;
-    case "project":
-      return scopeKind === "project" || scopeKind === "checkout";
-    case "environment-defaults":
-      return scopeKind === "environment" || scopeKind === "all";
-    case "project-defaults":
-      return (
-        scopeKind === "environment" ||
-        scopeKind === "all" ||
-        scopeKind === "project" ||
-        scopeKind === "checkout"
-      );
-  }
 }
 
 export function searchableSetting(id: SettingsSearchItemId): {

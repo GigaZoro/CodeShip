@@ -17,8 +17,10 @@ import {
 import { cn } from "~/lib/utils";
 import {
   THREAD_STATUS_DISPLAY,
+  THREAD_STATUS_TONE_SALIENCE,
   type ThreadStatus,
   type ThreadStatusDisplayKey,
+  type ThreadStatusSalience,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
 
@@ -54,8 +56,7 @@ export type ThreadRowStatus =
       readonly lastKnown?: undefined;
     };
 
-/** Row text colour for each status tone; the pill and mobile keep their own palettes. */
-export const THREAD_ROW_TONE_CLASS: Record<ThreadStatusTone, string> = {
+const VIVID_ROW_TONE_CLASS: Record<ThreadStatusTone, string> = {
   attention: "text-warning-foreground",
   question: "text-indigo-600 dark:text-indigo-300",
   guest: "text-guest-foreground",
@@ -66,9 +67,20 @@ export const THREAD_ROW_TONE_CLASS: Record<ThreadStatusTone, string> = {
   plan: "text-violet-600 dark:text-violet-300",
 };
 
+const CALM_ROW_SALIENCE_CLASS: Record<ThreadStatusSalience, string> = {
+  calm: "calm:text-calm-quiet",
+  attention: "calm:text-calm-attention",
+  alarm: "calm:text-calm-alarm",
+};
+
+/** Row text colour of a status tone, Vivid and Calm; the pill and mobile keep their own palettes. */
+export function threadRowToneClass(tone: ThreadStatusTone): string {
+  return cn(VIVID_ROW_TONE_CLASS[tone], CALM_ROW_SALIENCE_CLASS[THREAD_STATUS_TONE_SALIENCE[tone]]);
+}
+
 function rowStatus(key: ThreadStatusDisplayKey, icon: ThreadRowStatusIconName): ThreadRowStatus {
   const display = THREAD_STATUS_DISPLAY[key];
-  return { label: t(display.label), icon, className: THREAD_ROW_TONE_CLASS[display.tone] };
+  return { label: t(display.label), icon, className: threadRowToneClass(display.tone) };
 }
 
 /** The short status a thread row shows in place of its age, or null when it has none. */
@@ -144,7 +156,7 @@ function resolveLiveThreadRowStatus(input: {
   if (input.isUnread) {
     return {
       label: t("Finished, not yet opened"),
-      className: THREAD_ROW_TONE_CLASS[THREAD_STATUS_DISPLAY.done.tone],
+      className: threadRowToneClass(THREAD_STATUS_DISPLAY.done.tone),
       unseen: true,
     };
   }

@@ -1,24 +1,25 @@
 # Settings and project overrides
 
-On web and desktop, the "Applying settings for …" sentence at the top of Settings pages picks
-the project and environment a change applies to. Pages that only hold device preferences, such as
-Appearance, don't show it. They start at **All projects** and **All environments**
-and stay selected as you move between categories or search for a setting.
+On web and desktop, a setting whose value can differ between machines or projects has a scope
+button on its own row. The button names where the value applies, such as **All environments**, one
+machine or a project, and opens a menu that picks another for that row only. Rows start at **All
+environments**, or at the primary machine for settings that hold one machine's value, and keep
+the choice until you leave the page. Settings search marks these results **Per machine**, **One
+machine** or **Per project**.
 
-Preferences saved on this device, such as appearance, confirmations and browser profiles, ignore
-the environment selection. On the Browser and Labs pages they are read-only while a project is selected,
-though browser profiles can still be added, renamed and removed. Everything else is stored on a server.
-Choose one environment to edit its settings, or leave **All environments** to edit every connected
-environment at once. Offline environments keep their current values. When a connected machine follows
+Preferences saved on this device, such as appearance, confirmations and browser profiles, have
+no scope button. Everything else is stored on a server. Choose one environment to
+edit its settings, or leave **All environments** to edit every connected environment at once.
+Offline environments keep their current values. When a connected machine follows
 [shared settings](remote-access.md#shared-settings), a shared setting saved for all environments
 goes only to the machines that follow, including offline ones when they are back.
 
-Choose a project to override settings for it on the selected environments. A layers icon beside
+On a **Per project** row, choose a project to override the setting for it on the selected
+environments. A layers icon beside
 a server row's title appears when the value comes from somewhere other than the built-in default:
 the environment, a project override, the repository's `t3.json`, or an administrator's policy.
 Click it to see that chain on every selected environment. An override can
-be reset to inherit again. Settings that cannot be overridden by a project are shown read-only
-while a project is selected.
+be reset to inherit again.
 
 When the selected environments disagree, the control shows **Mixed** in place of a value and the
 layers icon turns amber. Picking a value applies it to every selected environment.
@@ -28,8 +29,10 @@ setting you are editing, the layers icon counts them and the chain lists each on
 click a project to jump to it, or **Reset all** to make those projects follow the environment
 again.
 
-Providers and diagnostics are per machine: they show one environment at a time, the primary
-one until you pick another. Every other setting fans out to the selection.
+Pages that list one machine's things, such as provider instances, keybindings, diagnostics and
+secrets, pick their machine in the line at the top of the page instead, starting at the primary
+one. A setting that needs a newer server shows where the selected machine lacks it, so you can
+pick one that has it from the row's scope button.
 
 With a project selected, a provider's switch in **Settings → Providers & models** turns it on or off for
 that project only, in either direction: a provider off on the machine can be used in one project,

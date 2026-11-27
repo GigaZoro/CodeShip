@@ -16,6 +16,7 @@ import { Button } from "../ui/button";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { ModelsLinkRow } from "./ProjectDefaultsSettings";
+import { SettingScope } from "./SettingScope";
 import { searchableSetting } from "./settingsSearch";
 
 const MODE_OPTIONS: Record<
@@ -43,9 +44,31 @@ const MODE_OPTIONS: Record<
 };
 
 export function SourceControlWritingSettingsSection() {
+  return (
+    <SettingsSection id="source-control-text-generation" title={t("Commits & pull requests")}>
+      <SettingScope setting="source-control-writing-style">
+        <WritingStyleRow />
+      </SettingScope>
+      <SettingScope setting="review-guides">
+        <ReviewGuidesRows />
+      </SettingScope>
+      <ModelsLinkRow
+        description={t(
+          "The model that writes commit and pull request text, and review guides, is set in Providers & models.",
+        )}
+      />
+      <AdvancedSettings targetIds={[searchableSetting("follow-change-request-templates").id]}>
+        <SettingScope setting="follow-change-request-templates">
+          <FollowTemplatesRow />
+        </SettingScope>
+      </AdvancedSettings>
+    </SettingsSection>
+  );
+}
+
+function WritingStyleRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const mixedReviewGuidesEnabled = useScopedSettingsMixed(["reviewGuidesEnabled"]);
   const { targets } = useSettingsScope();
   const styleFieldMixed = (field: keyof ServerSettings["sourceControlWritingStyle"]) => {
     const first = targets[0];
@@ -60,11 +83,7 @@ export function SourceControlWritingSettingsSection() {
   };
   const modeMixed = styleFieldMixed("mode");
   const instructionsMixed = styleFieldMixed("customInstructions");
-  const templatesMixed = styleFieldMixed("followChangeRequestTemplates");
   const writingStyleMixed = modeMixed || instructionsMixed;
-  const mixedReviewGuideInstructions = useScopedSettingsMixed(["reviewGuideInstructions"]);
-  const reviewGuideInstructionsEdited = useRef(false);
-  const scopeKey = targets.map((target) => `${target.environmentId}:${target.projectId}`).join(",");
   const customInstructionsRef = useRef<HTMLTextAreaElement>(null);
   const [editingAllInstructions, setEditingAllInstructions] = useState(false);
   const [allInstructions, setAllInstructions] = useState<string | null>(null);
@@ -75,131 +94,138 @@ export function SourceControlWritingSettingsSection() {
     style.mode !== defaults.mode ||
     style.customInstructions !== defaults.customInstructions;
 
-  const reviewGuidesShown = settings.reviewGuidesEnabled || mixedReviewGuidesEnabled;
-
   return (
-    <SettingsSection id="source-control-text-generation" title={t("Commits & pull requests")}>
-      <SettingsRow
-        serverScoped
-        settingKeys={["sourceControlWritingStyle"]}
-        mixed={writingStyleMixed}
-        {...searchableSetting("source-control-writing-style")}
-        description={t(MODE_OPTIONS[style.mode].description)}
-        resetAction={
-          isSourceControlWritingStyleDirty ? (
-            <SettingResetButton
-              label={t("commit and pull request writing")}
-              onClick={() =>
-                updateSettings({
-                  sourceControlWritingStyle: {
-                    mode: defaults.mode,
-                    customInstructions: defaults.customInstructions,
-                  },
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          <Select
-            value={modeMixed ? null : style.mode}
-            onValueChange={(value) => {
-              const customInstructions = customInstructionsRef.current?.value.trim();
+    <SettingsRow
+      serverScoped
+      settingKeys={["sourceControlWritingStyle"]}
+      mixed={writingStyleMixed}
+      {...searchableSetting("source-control-writing-style")}
+      description={t(MODE_OPTIONS[style.mode].description)}
+      resetAction={
+        isSourceControlWritingStyleDirty ? (
+          <SettingResetButton
+            label={t("commit and pull request writing")}
+            onClick={() =>
               updateSettings({
                 sourceControlWritingStyle: {
-                  mode: value as SourceControlWritingStyleMode,
-                  ...(customInstructions !== undefined ? { customInstructions } : {}),
+                  mode: defaults.mode,
+                  customInstructions: defaults.customInstructions,
                 },
-              });
-            }}
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={modeMixed ? null : style.mode}
+          onValueChange={(value) => {
+            const customInstructions = customInstructionsRef.current?.value.trim();
+            updateSettings({
+              sourceControlWritingStyle: {
+                mode: value as SourceControlWritingStyleMode,
+                ...(customInstructions !== undefined ? { customInstructions } : {}),
+              },
+            });
+          }}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-full sm:w-56"
+            aria-label={t("Commit and pull request writing")}
           >
-            <SelectTrigger
-              size="sm"
-              className="w-full sm:w-56"
-              aria-label={t("Commit and pull request writing")}
-            >
-              <SelectValue>
-                {(value: SourceControlWritingStyleMode | null) =>
-                  value === null ? t("Mixed") : t(MODE_OPTIONS[value].label)
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {(Object.keys(MODE_OPTIONS) as SourceControlWritingStyleMode[]).map((mode) => (
-                <SelectItem key={mode} hideIndicator value={mode}>
-                  {t(MODE_OPTIONS[mode].label)}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        }
-      >
-        {writingStyleMixed ? (
-          <div className="mt-3 max-w-2xl space-y-2 pb-3.5">
-            {editingAllInstructions ? (
-              <>
-                <Textarea
-                  value={allInstructions ?? ""}
-                  onChange={(event) => setAllInstructions(event.target.value)}
-                  rows={4}
-                  aria-label={t(
-                    "Custom commit and pull request instructions for all selected environments",
-                  )}
-                  placeholder={t("Write the instructions each selected environment should use.")}
-                />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={allInstructions === null}
-                  onClick={() => {
-                    if (allInstructions === null) return;
-                    updateSettings({
-                      sourceControlWritingStyle: {
-                        mode: "custom",
-                        customInstructions: allInstructions.trim(),
-                      },
-                    });
-                    setEditingAllInstructions(false);
-                  }}
-                >
-                  {t("Apply instructions to all")}
-                </Button>
-              </>
-            ) : (
+            <SelectValue>
+              {(value: SourceControlWritingStyleMode | null) =>
+                value === null ? t("Mixed") : t(MODE_OPTIONS[value].label)
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {(Object.keys(MODE_OPTIONS) as SourceControlWritingStyleMode[]).map((mode) => (
+              <SelectItem key={mode} hideIndicator value={mode}>
+                {t(MODE_OPTIONS[mode].label)}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    >
+      {writingStyleMixed ? (
+        <div className="mt-3 max-w-2xl space-y-2 pb-3.5">
+          {editingAllInstructions ? (
+            <>
+              <Textarea
+                value={allInstructions ?? ""}
+                onChange={(event) => setAllInstructions(event.target.value)}
+                rows={4}
+                aria-label={t(
+                  "Custom commit and pull request instructions for all selected environments",
+                )}
+                placeholder={t("Write the instructions each selected environment should use.")}
+              />
               <Button
                 size="sm"
                 variant="outline"
+                disabled={allInstructions === null}
                 onClick={() => {
-                  setAllInstructions(null);
-                  setEditingAllInstructions(true);
+                  if (allInstructions === null) return;
+                  updateSettings({
+                    sourceControlWritingStyle: {
+                      mode: "custom",
+                      customInstructions: allInstructions.trim(),
+                    },
+                  });
+                  setEditingAllInstructions(false);
                 }}
               >
-                {t("Write custom instructions for all")}
+                {t("Apply instructions to all")}
               </Button>
-            )}
-          </div>
-        ) : style.mode === "custom" ? (
-          <div className="mt-3 max-w-2xl pb-3.5">
-            <Textarea
-              key={style.customInstructions}
-              ref={customInstructionsRef}
-              defaultValue={style.customInstructions}
-              onBlur={(event) => {
-                const customInstructions = event.target.value.trim();
-                if (customInstructions !== style.customInstructions) {
-                  updateSettings({ sourceControlWritingStyle: { customInstructions } });
-                }
+            </>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setAllInstructions(null);
+                setEditingAllInstructions(true);
               }}
-              rows={4}
-              placeholder={t(
-                "Keep commit subjects under 60 characters. Keep pull request descriptions short and plain.",
-              )}
-              aria-label={t("Custom commit and pull request instructions")}
-            />
-          </div>
-        ) : null}
-      </SettingsRow>
+            >
+              {t("Write custom instructions for all")}
+            </Button>
+          )}
+        </div>
+      ) : style.mode === "custom" ? (
+        <div className="mt-3 max-w-2xl pb-3.5">
+          <Textarea
+            key={style.customInstructions}
+            ref={customInstructionsRef}
+            defaultValue={style.customInstructions}
+            onBlur={(event) => {
+              const customInstructions = event.target.value.trim();
+              if (customInstructions !== style.customInstructions) {
+                updateSettings({ sourceControlWritingStyle: { customInstructions } });
+              }
+            }}
+            rows={4}
+            placeholder={t(
+              "Keep commit subjects under 60 characters. Keep pull request descriptions short and plain.",
+            )}
+            aria-label={t("Custom commit and pull request instructions")}
+          />
+        </div>
+      ) : null}
+    </SettingsRow>
+  );
+}
 
+function ReviewGuidesRows() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixedReviewGuidesEnabled = useScopedSettingsMixed(["reviewGuidesEnabled"]);
+  const reviewGuidesShown = settings.reviewGuidesEnabled || mixedReviewGuidesEnabled;
+
+  return (
+    <>
       <SettingsRow
         serverScoped
         settingKeys={["reviewGuidesEnabled"]}
@@ -219,94 +245,120 @@ export function SourceControlWritingSettingsSection() {
       />
 
       {reviewGuidesShown ? (
-        <SettingsRow
-          serverScoped
-          settingKeys={["reviewGuideInstructions"]}
-          {...searchableSetting("review-guide-instructions")}
-          description={t(
-            "Your preferences for review guides: what to show first, dwell on, or skip. The guide's format and coverage stay the same.",
-          )}
-          resetAction={
-            mixedReviewGuideInstructions || settings.reviewGuideInstructions !== "" ? (
-              <SettingResetButton
-                label={t("review guide instructions")}
-                onClick={() => updateSettings({ reviewGuideInstructions: "" })}
-              />
-            ) : null
-          }
-        >
-          <div className="mt-3 max-w-2xl pb-3.5">
-            <Textarea
-              key={`${scopeKey}:${mixedReviewGuideInstructions}:${settings.reviewGuideInstructions}`}
-              aria-label={t("Review guide instructions")}
-              onChange={() => {
-                reviewGuideInstructionsEdited.current = true;
-              }}
-              rows={4}
-              defaultValue={mixedReviewGuideInstructions ? "" : settings.reviewGuideInstructions}
-              placeholder={
-                mixedReviewGuideInstructions
-                  ? t("Mixed. Enter instructions to apply to all selected targets.")
-                  : t(
-                      "Show service interfaces before implementations. Skip test files unless they change behavior. Keep summaries to two sentences.",
-                    )
-              }
-              onBlur={(event) => {
-                const value = event.target.value.trim();
-                if (
-                  reviewGuideInstructionsEdited.current &&
-                  (mixedReviewGuideInstructions || value !== settings.reviewGuideInstructions)
-                )
-                  updateSettings({ reviewGuideInstructions: value });
-                reviewGuideInstructionsEdited.current = false;
-              }}
-            />
-          </div>
-        </SettingsRow>
+        <SettingScope setting="review-guide-instructions">
+          <ReviewGuideInstructionsRow />
+        </SettingScope>
       ) : null}
-      <ModelsLinkRow
-        description={t(
-          "The model that writes commit and pull request text, and review guides, is set in Providers & models.",
-        )}
-      />
-      <AdvancedSettings targetIds={[searchableSetting("follow-change-request-templates").id]}>
-        <SettingsRow
-          serverScoped
-          settingKeys={["sourceControlWritingStyle"]}
-          mixed={templatesMixed}
-          {...searchableSetting("follow-change-request-templates")}
-          description={t("Use the repository's pull request template when it has one.")}
-          resetAction={
-            templatesMixed ||
-            style.followChangeRequestTemplates !== defaults.followChangeRequestTemplates ? (
-              <SettingResetButton
-                label={t("pull request templates")}
-                onClick={() =>
-                  updateSettings({
-                    sourceControlWritingStyle: {
-                      followChangeRequestTemplates: defaults.followChangeRequestTemplates,
-                    },
-                  })
-                }
-              />
-            ) : null
+    </>
+  );
+}
+
+function ReviewGuideInstructionsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixedReviewGuideInstructions = useScopedSettingsMixed(["reviewGuideInstructions"]);
+  const reviewGuideInstructionsEdited = useRef(false);
+  const { targets } = useSettingsScope();
+  const scopeKey = targets.map((target) => `${target.environmentId}:${target.projectId}`).join(",");
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["reviewGuideInstructions"]}
+      {...searchableSetting("review-guide-instructions")}
+      description={t(
+        "Your preferences for review guides: what to show first, dwell on, or skip. The guide's format and coverage stay the same.",
+      )}
+      resetAction={
+        mixedReviewGuideInstructions || settings.reviewGuideInstructions !== "" ? (
+          <SettingResetButton
+            label={t("review guide instructions")}
+            onClick={() => updateSettings({ reviewGuideInstructions: "" })}
+          />
+        ) : null
+      }
+    >
+      <div className="mt-3 max-w-2xl pb-3.5">
+        <Textarea
+          key={`${scopeKey}:${mixedReviewGuideInstructions}:${settings.reviewGuideInstructions}`}
+          aria-label={t("Review guide instructions")}
+          onChange={() => {
+            reviewGuideInstructionsEdited.current = true;
+          }}
+          rows={4}
+          defaultValue={mixedReviewGuideInstructions ? "" : settings.reviewGuideInstructions}
+          placeholder={
+            mixedReviewGuideInstructions
+              ? t("Mixed. Enter instructions to apply to all selected targets.")
+              : t(
+                  "Show service interfaces before implementations. Skip test files unless they change behavior. Keep summaries to two sentences.",
+                )
           }
-          control={
-            <Switch
-              mixed={templatesMixed}
-              checked={templatesMixed ? false : style.followChangeRequestTemplates}
-              onCheckedChange={(checked) =>
-                updateSettings({
-                  sourceControlWritingStyle: {
-                    followChangeRequestTemplates: Boolean(checked),
-                  },
-                })
-              }
-              aria-label={t("Follow pull request templates")}
-            />
-          }
+          onBlur={(event) => {
+            const value = event.target.value.trim();
+            if (
+              reviewGuideInstructionsEdited.current &&
+              (mixedReviewGuideInstructions || value !== settings.reviewGuideInstructions)
+            )
+              updateSettings({ reviewGuideInstructions: value });
+            reviewGuideInstructionsEdited.current = false;
+          }}
         />
-      </AdvancedSettings>
-    </SettingsSection>
+      </div>
+    </SettingsRow>
+  );
+}
+
+function FollowTemplatesRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const { targets } = useSettingsScope();
+  const first = targets[0];
+  const templatesMixed =
+    first !== undefined &&
+    targets.some(
+      (candidate) =>
+        candidate.settings.sourceControlWritingStyle.followChangeRequestTemplates !==
+        first.settings.sourceControlWritingStyle.followChangeRequestTemplates,
+    );
+  const style = settings.sourceControlWritingStyle;
+  const defaults = DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle;
+
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["sourceControlWritingStyle"]}
+      mixed={templatesMixed}
+      {...searchableSetting("follow-change-request-templates")}
+      description={t("Use the repository's pull request template when it has one.")}
+      resetAction={
+        templatesMixed ||
+        style.followChangeRequestTemplates !== defaults.followChangeRequestTemplates ? (
+          <SettingResetButton
+            label={t("pull request templates")}
+            onClick={() =>
+              updateSettings({
+                sourceControlWritingStyle: {
+                  followChangeRequestTemplates: defaults.followChangeRequestTemplates,
+                },
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          mixed={templatesMixed}
+          checked={templatesMixed ? false : style.followChangeRequestTemplates}
+          onCheckedChange={(checked) =>
+            updateSettings({
+              sourceControlWritingStyle: {
+                followChangeRequestTemplates: Boolean(checked),
+              },
+            })
+          }
+          aria-label={t("Follow pull request templates")}
+        />
+      }
+    />
   );
 }

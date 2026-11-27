@@ -12,6 +12,7 @@ import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { DefaultModelRow } from "./ModelsSettings";
 import type { ProjectSettingsCategory } from "./ProjectSettingsPanel";
+import { SettingScope } from "./SettingScope";
 import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -46,23 +47,17 @@ export function ModelsLinkRow({ description }: { readonly description: string })
   );
 }
 
-export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
+function WorkspaceRow() {
   const { scope, target, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
-  const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
-  const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
-  const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
-  const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
-  const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
   const unavailable = connectedEnvironments.length === 0;
   const effective = target
     ? resolveProjectSettings(target.settings, null, null, null).settings
     : null;
-
-  const workspaceRow = (
+  return (
     <SettingsRow
       serverScoped
       settingKeys={["defaultThreadEnvMode"]}
@@ -109,7 +104,227 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       }
     />
   );
+}
 
+function DefaultPermissionsRow() {
+  const { scope, connectedEnvironments } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
+  const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["defaultRuntimeMode"]}
+      mixed={mixedPermissions}
+      {...searchableSetting("default-permissions")}
+      description={
+        isProjectScope
+          ? t("Permissions for new threads in this project.")
+          : t("Default permissions for new threads. Projects can override them.")
+      }
+      resetAction={
+        settings.defaultRuntimeMode !== DEFAULT_SERVER_SETTINGS.defaultRuntimeMode ? (
+          <SettingResetButton
+            label={t("default permissions")}
+            onClick={() =>
+              updateSettings({
+                defaultRuntimeMode: DEFAULT_SERVER_SETTINGS.defaultRuntimeMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mixedPermissions ? null : settings.defaultRuntimeMode}
+          onValueChange={(value) => {
+            if (value) updateSettings({ defaultRuntimeMode: value });
+          }}
+        >
+          <SelectTrigger size="sm" aria-label={t("Default permissions")}>
+            {!mixedPermissions && (
+              <PermissionIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <SelectValue>
+              {mixedPermissions
+                ? t("Mixed")
+                : t(runtimeModeConfig[settings.defaultRuntimeMode].label)}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {runtimeModeOptions.map((mode) => {
+              const option = runtimeModeConfig[mode];
+              const Icon = option.icon;
+              const managedReason = firstManagedDenial(
+                connectedEnvironments.map((environment) => environment.serverConfig?.managedPolicy),
+                (policy) => managedRuntimeModeDenial(policy, mode),
+              );
+              return (
+                <SelectItem
+                  key={mode}
+                  value={mode}
+                  disabled={managedReason !== undefined}
+                  className="min-w-64"
+                >
+                  <div className="grid gap-0.5">
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                      {t(option.label)}
+                    </span>
+                    <span className="text-xs leading-4 text-muted-foreground">
+                      {managedReason ?? t(option.description)}
+                    </span>
+                  </div>
+                </SelectItem>
+              );
+            })}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+function AutomaticPullRow() {
+  const { scope } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["defaultAutoPull"]}
+      mixed={mixedAutoPull}
+      id="automatic-pull"
+      title={t("Automatically pull")}
+      description={
+        isProjectScope
+          ? t(
+              "Keeps this project's default branch current when the checkout has no local changes or commits.",
+            )
+          : t(
+              "Keeps the default branch current when the checkout has no local changes or commits. Projects can override it.",
+            )
+      }
+      resetAction={
+        settings.defaultAutoPull ? (
+          <SettingResetButton
+            label={t("default automatic pull")}
+            tooltip={t("Reset automatic pull to off")}
+            onClick={() => updateSettings({ defaultAutoPull: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          aria-label={t("Default automatic pull")}
+          mixed={mixedAutoPull}
+          checked={mixedAutoPull ? false : settings.defaultAutoPull}
+          onCheckedChange={(enabled) => updateSettings({ defaultAutoPull: enabled })}
+        />
+      }
+    />
+  );
+}
+
+function RemoveAgentCreditsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["removeAgentCreditsOnMerge"]}
+      mixed={mixedAgentCredits}
+      {...searchableSetting("remove-agent-credits-on-merge")}
+      description={t(
+        "Remove recognized agent credit lines from merge and squash messages on hosts that support it, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits.",
+      )}
+      resetAction={
+        settings.removeAgentCreditsOnMerge ? (
+          <SettingResetButton
+            label={t("agent credit removal")}
+            tooltip={t("Keep agent credits")}
+            onClick={() => updateSettings({ removeAgentCreditsOnMerge: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          aria-label={t("Remove agent credits when merging")}
+          mixed={mixedAgentCredits}
+          checked={mixedAgentCredits ? false : settings.removeAgentCreditsOnMerge}
+          onCheckedChange={(enabled) => updateSettings({ removeAgentCreditsOnMerge: enabled })}
+        />
+      }
+    />
+  );
+}
+
+function PullRequestMergeMethodRow() {
+  const { scope } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["pullRequestMergeMethod"]}
+      mixed={mixedMergeMethod}
+      {...searchableSetting("pull-request-merge-method")}
+      description={
+        isProjectScope
+          ? t("Pull requests in this project start with this method.")
+          : t(
+              "Pull requests start with this method. Last selected reuses whatever you chose most recently on this device.",
+            )
+      }
+      resetAction={
+        settings.pullRequestMergeMethod !== null ? (
+          <SettingResetButton
+            label={t("default merge method")}
+            tooltip={t("Reset to last selected")}
+            onClick={() => updateSettings({ pullRequestMergeMethod: null })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mixedMergeMethod ? null : (settings.pullRequestMergeMethod ?? "last")}
+          onValueChange={(value) => {
+            if (value === "last") updateSettings({ pullRequestMergeMethod: null });
+            else if (value === "merge" || value === "squash" || value === "rebase")
+              updateSettings({ pullRequestMergeMethod: value });
+          }}
+        >
+          <SelectTrigger size="sm" aria-label={t("Default pull request merge method")}>
+            <SelectValue>
+              {(value: string | null) =>
+                value === "merge" || value === "squash" || value === "rebase"
+                  ? t(PULL_REQUEST_MERGE_METHOD_LABELS[value])
+                  : value === "last"
+                    ? t("Last selected")
+                    : t("Mixed")
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="last">{t("Last selected")}</SelectItem>
+            <SelectItem value="merge">{t(PULL_REQUEST_MERGE_METHOD_LABELS.merge)}</SelectItem>
+            <SelectItem value="squash">{t(PULL_REQUEST_MERGE_METHOD_LABELS.squash)}</SelectItem>
+            <SelectItem value="rebase">{t(PULL_REQUEST_MERGE_METHOD_LABELS.rebase)}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
   return (
     <SettingsSection
       id={category === "source-control" ? "source-control-defaults" : "project-defaults"}
@@ -118,83 +333,18 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       {category === "project" ? (
         <>
           <DefaultModelRow />
-          {workspaceRow}
+          <SettingScope setting="new-threads">
+            <WorkspaceRow />
+          </SettingScope>
         </>
       ) : category === "general" ? (
         <>
-          <SettingsRow
-            serverScoped
-            settingKeys={["defaultRuntimeMode"]}
-            mixed={mixedPermissions}
-            {...searchableSetting("default-permissions")}
-            description={
-              isProjectScope
-                ? t("Permissions for new threads in this project.")
-                : t("Default permissions for new threads. Projects can override them.")
-            }
-            resetAction={
-              settings.defaultRuntimeMode !== DEFAULT_SERVER_SETTINGS.defaultRuntimeMode ? (
-                <SettingResetButton
-                  label={t("default permissions")}
-                  onClick={() =>
-                    updateSettings({
-                      defaultRuntimeMode: DEFAULT_SERVER_SETTINGS.defaultRuntimeMode,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Select
-                value={mixedPermissions ? null : settings.defaultRuntimeMode}
-                onValueChange={(value) => {
-                  if (value) updateSettings({ defaultRuntimeMode: value });
-                }}
-              >
-                <SelectTrigger size="sm" aria-label={t("Default permissions")}>
-                  {!mixedPermissions && (
-                    <PermissionIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                  )}
-                  <SelectValue>
-                    {mixedPermissions
-                      ? t("Mixed")
-                      : t(runtimeModeConfig[settings.defaultRuntimeMode].label)}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {runtimeModeOptions.map((mode) => {
-                    const option = runtimeModeConfig[mode];
-                    const Icon = option.icon;
-                    const managedReason = firstManagedDenial(
-                      connectedEnvironments.map(
-                        (environment) => environment.serverConfig?.managedPolicy,
-                      ),
-                      (policy) => managedRuntimeModeDenial(policy, mode),
-                    );
-                    return (
-                      <SelectItem
-                        key={mode}
-                        value={mode}
-                        disabled={managedReason !== undefined}
-                        className="min-w-64"
-                      >
-                        <div className="grid gap-0.5">
-                          <span className="inline-flex items-center gap-1.5 font-medium">
-                            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                            {t(option.label)}
-                          </span>
-                          <span className="text-xs leading-4 text-muted-foreground">
-                            {managedReason ?? t(option.description)}
-                          </span>
-                        </div>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectPopup>
-              </Select>
-            }
-          />
-          {workspaceRow}
+          <SettingScope setting="default-permissions">
+            <DefaultPermissionsRow />
+          </SettingScope>
+          <SettingScope setting="new-threads">
+            <WorkspaceRow />
+          </SettingScope>
           <ModelsLinkRow
             description={t(
               "The model for new threads and scheduled tasks is set in Providers & models.",
@@ -203,121 +353,15 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         </>
       ) : (
         <>
-          <SettingsRow
-            serverScoped
-            settingKeys={["defaultAutoPull"]}
-            mixed={mixedAutoPull}
-            id="automatic-pull"
-            title={t("Automatically pull")}
-            description={
-              isProjectScope
-                ? t(
-                    "Keeps this project's default branch current when the checkout has no local changes or commits.",
-                  )
-                : t(
-                    "Keeps the default branch current when the checkout has no local changes or commits. Projects can override it.",
-                  )
-            }
-            resetAction={
-              settings.defaultAutoPull ? (
-                <SettingResetButton
-                  label={t("default automatic pull")}
-                  tooltip={t("Reset automatic pull to off")}
-                  onClick={() => updateSettings({ defaultAutoPull: false })}
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                aria-label={t("Default automatic pull")}
-                mixed={mixedAutoPull}
-                checked={mixedAutoPull ? false : settings.defaultAutoPull}
-                onCheckedChange={(enabled) => updateSettings({ defaultAutoPull: enabled })}
-              />
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["removeAgentCreditsOnMerge"]}
-            mixed={mixedAgentCredits}
-            {...searchableSetting("remove-agent-credits-on-merge")}
-            description={t(
-              "Remove recognized agent credit lines from merge and squash messages on hosts that support it, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits.",
-            )}
-            resetAction={
-              settings.removeAgentCreditsOnMerge ? (
-                <SettingResetButton
-                  label={t("agent credit removal")}
-                  tooltip={t("Keep agent credits")}
-                  onClick={() => updateSettings({ removeAgentCreditsOnMerge: false })}
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                aria-label={t("Remove agent credits when merging")}
-                mixed={mixedAgentCredits}
-                checked={mixedAgentCredits ? false : settings.removeAgentCreditsOnMerge}
-                onCheckedChange={(enabled) =>
-                  updateSettings({ removeAgentCreditsOnMerge: enabled })
-                }
-              />
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["pullRequestMergeMethod"]}
-            mixed={mixedMergeMethod}
-            {...searchableSetting("pull-request-merge-method")}
-            description={
-              isProjectScope
-                ? t("Pull requests in this project start with this method.")
-                : t(
-                    "Pull requests start with this method. Last selected reuses whatever you chose most recently on this device.",
-                  )
-            }
-            resetAction={
-              settings.pullRequestMergeMethod !== null ? (
-                <SettingResetButton
-                  label={t("default merge method")}
-                  tooltip={t("Reset to last selected")}
-                  onClick={() => updateSettings({ pullRequestMergeMethod: null })}
-                />
-              ) : null
-            }
-            control={
-              <Select
-                value={mixedMergeMethod ? null : (settings.pullRequestMergeMethod ?? "last")}
-                onValueChange={(value) => {
-                  if (value === "last") updateSettings({ pullRequestMergeMethod: null });
-                  else if (value === "merge" || value === "squash" || value === "rebase")
-                    updateSettings({ pullRequestMergeMethod: value });
-                }}
-              >
-                <SelectTrigger size="sm" aria-label={t("Default pull request merge method")}>
-                  <SelectValue>
-                    {(value: string | null) =>
-                      value === "merge" || value === "squash" || value === "rebase"
-                        ? t(PULL_REQUEST_MERGE_METHOD_LABELS[value])
-                        : value === "last"
-                          ? t("Last selected")
-                          : t("Mixed")
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  <SelectItem value="last">{t("Last selected")}</SelectItem>
-                  <SelectItem value="merge">{t(PULL_REQUEST_MERGE_METHOD_LABELS.merge)}</SelectItem>
-                  <SelectItem value="squash">
-                    {t(PULL_REQUEST_MERGE_METHOD_LABELS.squash)}
-                  </SelectItem>
-                  <SelectItem value="rebase">
-                    {t(PULL_REQUEST_MERGE_METHOD_LABELS.rebase)}
-                  </SelectItem>
-                </SelectPopup>
-              </Select>
-            }
-          />
+          <SettingScope setting="automatic-pull">
+            <AutomaticPullRow />
+          </SettingScope>
+          <SettingScope setting="remove-agent-credits-on-merge">
+            <RemoveAgentCreditsRow />
+          </SettingScope>
+          <SettingScope setting="pull-request-merge-method">
+            <PullRequestMergeMethodRow />
+          </SettingScope>
         </>
       )}
     </SettingsSection>
@@ -325,6 +369,14 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
 }
 
 export function WorktreeSubmodulesRow() {
+  return (
+    <SettingScope setting="worktree-submodules">
+      <WorktreeSubmodulesRowBody />
+    </SettingScope>
+  );
+}
+
+function WorktreeSubmodulesRowBody() {
   const { scope, target, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();

@@ -2,6 +2,7 @@ import { t } from "~/i18n";
 import { useRef } from "react";
 
 import { Textarea } from "../ui/textarea";
+import { SettingScope } from "./SettingScope";
 import { SettingsRow, SettingResetButton } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
@@ -12,6 +13,14 @@ import {
 } from "./useScopedSettings";
 
 export function ThreadTitleInstructionsSettings() {
+  return (
+    <SettingScope setting="thread-title-instructions">
+      <ThreadTitleInstructionsUnit />
+    </SettingScope>
+  );
+}
+
+function ThreadTitleInstructionsUnit() {
   const settings = useScopedSettings();
   const { targets } = useSettingsScope();
   const scopeKey = targets.map((target) => `${target.environmentId}:${target.projectId}`).join(",");

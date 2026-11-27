@@ -12,7 +12,6 @@ import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { useScopedSettings } from "./useScopedSettings";
 import { SettingsSection } from "./settingsLayout";
-import { SettingsScopeNotice } from "./SettingsScopeNotice";
 
 const SIGNALS = [
   {
@@ -83,15 +82,7 @@ function endpointStatus(url: string, check: EndpointCheck | undefined) {
 
 export function TelemetryExportSettings() {
   const { environment, scope } = useSettingsScope();
-  if (scope.kind !== "environment" || !environment) {
-    return (
-      <SettingsSection title={t("OpenTelemetry export")} id="telemetry-export">
-        <SettingsScopeNotice target="environment">
-          {t("Choose one environment to configure its telemetry exports.")}
-        </SettingsScopeNotice>
-      </SettingsSection>
-    );
-  }
+  if (scope.kind !== "environment" || !environment) return null;
   return <TelemetryExportForm key={environment.environmentId} />;
 }
 

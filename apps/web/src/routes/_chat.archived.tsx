@@ -21,6 +21,7 @@ function ArchivedRoute() {
     >
       <SettingsScopeProvider
         search={scopeSearch}
+        viewFilter="project-and-machine"
         onChange={(next) => {
           void navigate({
             to: "/archived",

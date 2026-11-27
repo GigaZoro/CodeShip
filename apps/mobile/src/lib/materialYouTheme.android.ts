@@ -1,6 +1,10 @@
 import { Hct, argbFromHex, hexFromArgb } from "@material/material-color-utilities";
 
-import type { MobileThemeAppearance, MobileThemeVariables } from "./mobileTheme";
+import {
+  themeColorWithContrast,
+  type MobileThemeAppearance,
+  type MobileThemeVariables,
+} from "./mobileTheme";
 import type { MaterialYouPalette } from "./materialYouPalette";
 
 function withAlpha(color: string, alpha: number): string {
@@ -30,8 +34,20 @@ export function materialYouPaletteToMobileThemeVariables(
   const userBubble = dark ? materialTone(palette.inversePrimary, 30) : palette.primary;
   const userBubbleForeground = dark ? materialTone(palette.inversePrimary, 90) : palette.onPrimary;
 
+  const statusSurfaces = [
+    palette.surface,
+    palette.surfaceContainerLow,
+    palette.surfaceContainer,
+    palette.surfaceContainerHigh,
+  ];
   return {
     ...base,
+    "--color-calm-status-quiet": themeColorWithContrast(palette.onSurfaceVariant, statusSurfaces),
+    "--color-calm-status-attention": themeColorWithContrast(
+      base["--color-warning-foreground"],
+      statusSurfaces,
+    ),
+    "--color-calm-status-alarm": themeColorWithContrast(palette.onErrorContainer, statusSurfaces),
     "--color-screen": palette.surface,
     "--color-sheet": withAlpha(palette.surfaceContainerLow, 0.98),
     "--color-sheet-solid": palette.surfaceContainerLow,

@@ -10,6 +10,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button, InlineButton } from "../ui/button";
 import { Label } from "../ui/label";
 import { SecretInput } from "./SecretInput";
+import { SettingScope, supportsCapabilities } from "./SettingScope";
 import { SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -106,11 +107,20 @@ function ThreadPageTokenForm(props: {
   );
 }
 
+const THREADPAGE_CAPABILITIES = ["manualSteps"] as const;
+
 /** The token one machine reads ThreadPage with; any one machine with it fills Manual steps. */
 export function ThreadPageTokenSettings() {
+  return (
+    <SettingScope setting="threadpage-token" requires={THREADPAGE_CAPABILITIES}>
+      <ThreadPageTokenSection />
+    </SettingScope>
+  );
+}
+
+function ThreadPageTokenSection() {
   const { environment, connectedEnvironments } = useSettingsScope();
-  if (environment?.connection.phase !== "connected") return null;
-  if (environment.serverConfig?.environment.capabilities.manualSteps !== true) return null;
+  if (!environment || !supportsCapabilities(environment, THREADPAGE_CAPABILITIES)) return null;
   return (
     <SettingsSection id={searchableSetting("threadpage-token").id} title={t("ThreadPage")}>
       <ThreadPageTokenForm

@@ -128,6 +128,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { SettingScope } from "./SettingScope";
 import { SimlockHostsRow } from "./OptInFeatureRows";
 import { searchableSetting } from "./settingsSearch";
 import { AGENT_TERMINAL_ACCESS_LABELS } from "./settingValueFormat";
@@ -843,27 +844,19 @@ export function PullRequestLinksOpenInAppSetting() {
 }
 
 function DeviceIntegrationSettings() {
-  const { search, environment: selected } = useSettingsScope();
-  const settings = useScopedSettings();
-  const connected = selected?.connection.phase === "connected" && selected.serverConfig !== null;
-  const environmentId = connected ? selected.environmentId : null;
-
-  const { state } = useDeviceState(environmentId);
-
   return (
     <>
       <SettingsSection id="devices" title={t("Devices")}>
-        <DeviceIntegrationControls
-          key={`${environmentId}:${JSON.stringify(search)}`}
-          environmentId={environmentId}
-          enabled={settings.enableDeviceSupport}
-          agentAccessEnabled={settings.enableAgentDeviceAccess}
-        />
+        <SettingScope setting="device-hub">
+          <DeviceHubRow />
+        </SettingScope>
+        <SettingScope setting="agent-device-access">
+          <AgentDeviceAccessRow />
+        </SettingScope>
       </SettingsSection>
-      <DeviceSourcesSettings
-        supportsEas={state.supportsEasHosts === true}
-        supportsSimlock={state.supportsSimlockHosts === true}
-      />
+      <SettingScope setting="device-sources">
+        <DeviceSourcesUnit />
+      </SettingScope>
       <SettingsSection id="device-experiments" title={t("Experimental")}>
         <SimlockHostsRow />
       </SettingsSection>
@@ -871,32 +864,50 @@ function DeviceIntegrationSettings() {
   );
 }
 
-function DeviceIntegrationControls({
-  environmentId,
-  enabled,
-  agentAccessEnabled,
-}: {
-  environmentId: EnvironmentId | null;
-  enabled: boolean;
-  agentAccessEnabled: boolean;
-}) {
+function DeviceSourcesUnit() {
+  const { environment: selected } = useSettingsScope();
+  const connected = selected?.connection.phase === "connected" && selected.serverConfig !== null;
+  const { state } = useDeviceState(connected ? selected.environmentId : null);
+  return (
+    <DeviceSourcesSettings
+      supportsEas={state.supportsEasHosts === true}
+      supportsSimlock={state.supportsSimlockHosts === true}
+    />
+  );
+}
+
+type DeviceControlPending = "hub" | "check" | "agent" | "update-hub" | "update-agent";
+
+function useDeviceControls() {
+  const {
+    scope,
+    search,
+    environment: selected,
+    environments,
+    connectedEnvironments,
+  } = useSettingsScope();
+  // Progress and errors belong to the scope they started in, without remounting the row's pill.
+  const scopeKey = JSON.stringify(search);
+  const connected = selected?.connection.phase === "connected" && selected.serverConfig !== null;
+  const environmentId = connected ? selected.environmentId : null;
   const canConfigure = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const { state, loaded } = useDeviceState(environmentId);
-  const { scope, environments, connectedEnvironments } = useSettingsScope();
-  const updateSettings = useUpdateScopedSettings();
-  const projectScope = scope.kind === "project" || scope.kind === "checkout";
-  const anyHubEnabled = connectedEnvironments.some(
-    (environment) => environment.serverConfig?.settings.enableDeviceSupport,
-  );
   const configure = useAtomCommand(deviceEnvironment.configure, { reportFailure: false });
   const list = useAtomCommand(deviceEnvironment.list, { reportFailure: false });
-  const [pending, setPending] = useState<
-    "hub" | "check" | "agent" | "update-hub" | "update-agent" | null
-  >(null);
+  const [pendingIn, setPendingIn] = useState<{
+    scopeKey: string;
+    kind: DeviceControlPending;
+  } | null>(null);
+  const pending = pendingIn?.scopeKey === scopeKey ? pendingIn.kind : null;
+  // A request that ends after the scope changed must not clear the new scope's request.
+  const setPending = (kind: DeviceControlPending | null) =>
+    setPendingIn((current) =>
+      kind !== null ? { scopeKey, kind } : current?.scopeKey === scopeKey ? null : current,
+    );
   const { busy } = deviceHubReadiness(state);
 
   const update = async (
-    kind: NonNullable<typeof pending>,
+    kind: DeviceControlPending,
     input: { enabled?: boolean; agentAccessEnabled?: boolean },
   ) => {
     if (!environmentId || !readEnvironmentScope(environmentId, AuthSettingsWriteScope)) return;
@@ -931,9 +942,12 @@ function DeviceIntegrationControls({
     }
   };
 
-  const [updateError, setUpdateError] = useState<{ tool: "hub" | "agent"; message: string } | null>(
-    null,
-  );
+  const [updateErrorIn, setUpdateErrorIn] = useState<{
+    scopeKey: string;
+    tool: "hub" | "agent";
+    message: string;
+  } | null>(null);
+  const updateError = updateErrorIn?.scopeKey === scopeKey ? updateErrorIn : null;
   const localTools = state.hosts.find((host) => host.kind === "local")?.tools;
   const versionActions = (tool: "hub" | "agent") => {
     const version = localTools?.[tool];
@@ -947,12 +961,16 @@ function DeviceIntegrationControls({
               disabled={!environmentId || pending !== null || busy}
               onClick={() => {
                 if (!environmentId) return;
-                setUpdateError(null);
+                setUpdateErrorIn(null);
                 setPending(`update-${tool}`);
                 void list({ environmentId, input: { updateTool: tool } })
                   .then((result) => {
                     if (result._tag === "Failure")
-                      setUpdateError({ tool, message: formatEnvironmentQueryError(result.cause) });
+                      setUpdateErrorIn({
+                        scopeKey,
+                        tool,
+                        message: formatEnvironmentQueryError(result.cause),
+                      });
                   })
                   .finally(() => setPending(null));
               }}
@@ -985,6 +1003,37 @@ function DeviceIntegrationControls({
       </div>
     );
   };
+
+  return {
+    environmentId,
+    environments,
+    connectedEnvironments,
+    scope,
+    canConfigure,
+    state,
+    loaded,
+    busy,
+    pending,
+    update,
+    versionActions,
+  };
+}
+
+function DeviceHubRow() {
+  const settings = useScopedSettings();
+  const {
+    scope,
+    environmentId,
+    canConfigure,
+    state,
+    loaded,
+    busy,
+    pending,
+    update,
+    versionActions,
+  } = useDeviceControls();
+  const projectScope = scope.kind === "project" || scope.kind === "checkout";
+  const enabled = settings.enableDeviceSupport;
 
   return (
     <>
@@ -1026,44 +1075,6 @@ function DeviceIntegrationControls({
           </>
         }
       />
-      <SettingsRow
-        {...searchableSetting("agent-device-access")}
-        serverScoped
-        settingKeys={["enableAgentDeviceAccess"]}
-        description={tx(
-          "New agent sessions can open and drive these devices. agent-device: {versions}",
-          {
-            versions: (
-              <DeviceToolVersions
-                action={versionActions("agent")}
-                kind="agent"
-                tools={state.hosts.find((host) => host.kind === "local")?.tools}
-              />
-            ),
-          },
-        )}
-        control={
-          <>
-            {pending === "agent" ? <AgentDeviceSetupStatus state={state} pending compact /> : null}
-            <ScopedSwitch
-              settingKeys={["enableAgentDeviceAccess"]}
-              checked={agentAccessEnabled}
-              disabled={
-                !canConfigure ||
-                connectedEnvironments.length === 0 ||
-                (!projectScope && (!loaded || !anyHubEnabled || busy)) ||
-                pending !== null
-              }
-              aria-label={t("Agent device access")}
-              onCheckedChange={(checked) =>
-                projectScope
-                  ? updateSettings({ enableAgentDeviceAccess: Boolean(checked) })
-                  : void update("agent", { agentAccessEnabled: Boolean(checked) })
-              }
-            />
-          </>
-        }
-      />
       {environmentId ? (
         <DeviceHostUpdates
           state={{ ...state, hosts: state.hosts.filter((host) => host.kind === "local") }}
@@ -1074,7 +1085,77 @@ function DeviceIntegrationControls({
   );
 }
 
+function AgentDeviceAccessRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const {
+    scope,
+    connectedEnvironments,
+    canConfigure,
+    state,
+    loaded,
+    busy,
+    pending,
+    update,
+    versionActions,
+  } = useDeviceControls();
+  const projectScope = scope.kind === "project" || scope.kind === "checkout";
+  const anyHubEnabled = connectedEnvironments.some(
+    (environment) => environment.serverConfig?.settings.enableDeviceSupport,
+  );
+  const agentAccessEnabled = settings.enableAgentDeviceAccess;
+
+  return (
+    <SettingsRow
+      {...searchableSetting("agent-device-access")}
+      serverScoped
+      settingKeys={["enableAgentDeviceAccess"]}
+      description={tx(
+        "New agent sessions can open and drive these devices. agent-device: {versions}",
+        {
+          versions: (
+            <DeviceToolVersions
+              action={versionActions("agent")}
+              kind="agent"
+              tools={state.hosts.find((host) => host.kind === "local")?.tools}
+            />
+          ),
+        },
+      )}
+      control={
+        <>
+          {pending === "agent" ? <AgentDeviceSetupStatus state={state} pending compact /> : null}
+          <ScopedSwitch
+            settingKeys={["enableAgentDeviceAccess"]}
+            checked={agentAccessEnabled}
+            disabled={
+              !canConfigure ||
+              connectedEnvironments.length === 0 ||
+              (!projectScope && (!loaded || !anyHubEnabled || busy)) ||
+              pending !== null
+            }
+            aria-label={t("Agent device access")}
+            onCheckedChange={(checked) =>
+              projectScope
+                ? updateSettings({ enableAgentDeviceAccess: Boolean(checked) })
+                : void update("agent", { agentAccessEnabled: Boolean(checked) })
+            }
+          />
+        </>
+      }
+    />
+  );
+}
+
 function AgentBrowserAccessSetting() {
+  return (
+    <SettingScope setting="agent-browser-access">
+      <AgentBrowserAccessRow />
+    </SettingScope>
+  );
+}
+
+function AgentBrowserAccessRow() {
   const { scope } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -1125,6 +1206,14 @@ const AGENT_TERMINAL_ACCESS_DESCRIPTIONS: Record<AgentTerminalAccess, Message> =
 };
 
 function AgentTerminalAccessSetting() {
+  return (
+    <SettingScope setting="agent-terminal-access">
+      <AgentTerminalAccessRow />
+    </SettingScope>
+  );
+}
+
+function AgentTerminalAccessRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const mixed = useScopedSettingsMixed(["agentTerminalAccess"]);

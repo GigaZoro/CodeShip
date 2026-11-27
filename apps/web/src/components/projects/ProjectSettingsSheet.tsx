@@ -26,7 +26,7 @@ export function ProjectSettingsSheet(props: {
         <SheetDescription className="sr-only">
           {t("Name, icon, checkouts and actions for this project.")}
         </SheetDescription>
-        <SettingsScopeProvider search={scope} onChange={setScope}>
+        <SettingsScopeProvider search={scope} onChange={setScope} viewFilter="project-and-machine">
           <ProjectsSettings />
         </SettingsScopeProvider>
       </SheetPopup>

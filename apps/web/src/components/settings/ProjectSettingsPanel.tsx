@@ -14,7 +14,7 @@ import {
   type ProjectGroupUpdate,
 } from "../../hooks/useProjectGroupUpdate";
 import { Navigate, useLocation, useNavigate } from "@tanstack/react-router";
-import { InfoIcon, Trash2Icon } from "lucide-react";
+import { Trash2Icon } from "lucide-react";
 import { lazy, Suspense, useRef, useState, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -33,7 +33,6 @@ import { useThreadShells, waitForProjectRemoval } from "../../state/entities";
 import { refreshProjectFaviconUrl } from "../../state/assets";
 import { projectEnvironment } from "../../state/projects";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -525,14 +524,6 @@ function ProjectDetail({
   return (
     <>
       <SettingsPageContainer className="gap-6">
-        <Alert variant="info">
-          <InfoIcon aria-hidden />
-          <AlertDescription>
-            {t(
-              "Can't find a setting? Keep this project picked above and hop to any other settings page.",
-            )}
-          </AlertDescription>
-        </Alert>
         <SettingsSection id="project-overview" title={t("Project")} hideTitle>
           {!canEditGroup ? (
             <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">

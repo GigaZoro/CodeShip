@@ -72,6 +72,39 @@ describe("antigravityServesT3Code", () => {
   });
 });
 
+describe("Antigravity run_workflow filter", () => {
+  it.each([
+    { version: "1.4.1", filter: false },
+    { version: "1.4.2", filter: true },
+    { version: "1.4.4", filter: true },
+    { version: "1.4.5", filter: true },
+    { version: "1.4.6", filter: true },
+    { version: "1.5.2", filter: true },
+    { version: "2.0.0", filter: true },
+    { version: "1.3.0", filter: false },
+    { version: undefined, filter: false },
+    { version: "unknown", filter: false },
+  ])("$version: workflow filter $filter", ({ version, filter }) => {
+    const initialize = {
+      protocolVersion: 1,
+      ...(version === undefined ? {} : { agentInfo: { name: "antigravity-acp", version } }),
+    };
+    expect(antigravitySessionMeta(initialize)).toEqual(
+      filter ? { antigravity: { disabledTools: ["run_workflow"] } } : undefined,
+    );
+    const withAppend = {
+      ...initialize,
+      agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: true } } } },
+    };
+    expect(antigravitySessionMeta(withAppend, "<pull_request_linking/>")).toEqual({
+      antigravity: {
+        ...(filter ? { disabledTools: ["run_workflow"] } : {}),
+        systemPrompt: { append: "<pull_request_linking/>" },
+      },
+    });
+  });
+});
+
 describe("Antigravity system prompt append", () => {
   it.each([false, true])("advertised append %s", (advertisedAppend) => {
     const initialize = {

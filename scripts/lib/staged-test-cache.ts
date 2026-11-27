@@ -31,7 +31,7 @@ function seedVersion(source: string, destination: string, seed: string) {
     using database = new NodeSqlite.DatabaseSync(NodePath.join(source, databaseName), {
       readOnly: true,
     });
-    database.exec("PRAGMA busy_timeout = 100");
+    database.exec("PRAGMA busy_timeout = 10000");
     database.prepare("VACUUM INTO ?").run(snapshot);
     NodeFS.copyFileSync(snapshot, file, NodeFS.constants.COPYFILE_FICLONE);
   } catch (error) {
@@ -144,22 +144,40 @@ const holdPartitionLock = Effect.fnUntraced(function* (partitions: string) {
   }
 });
 
+// Every seed copies the whole partition with VACUUM INTO, so one this large starts a fresh
+// generation; the full one ages out with the other unused partitions.
+const partitionBytesLimit = 256 * 1024 * 1024;
+
+const cacheBytes = (partition: string) =>
+  cacheVersions(partition).reduce(
+    (total, version) =>
+      total + NodeFS.statSync(NodePath.join(partition, version, databaseName)).size,
+    0,
+  );
+
 /**
- * Results replay only at the HEAD that recorded them, so each HEAD keeps its own partition. Under
- * one lock a run marks its partition used and removes those unused for days; a Windows removal that
- * another run's open database blocks waits for a later run. A run that cannot lock or mark its
- * partition gets none, since another run may remove it as unused while this one copies.
+ * Every task key holds the install, so each install's partitions serve every commit. A run that
+ * cannot lock or mark its partition gets none, since another run may remove it as unused while
+ * this one copies; a Windows removal that another run's open database blocks waits for a later run.
  */
 export const testCachePartition = Effect.fn("checkChanged.testCachePartition")(
-  function* (partitions: string, head: string) {
+  function* (partitions: string, install: string, limit = partitionBytesLimit) {
     yield* holdPartitionLock(partitions);
     const now = yield* Clock.currentTimeMillis;
-    const others = yield* Effect.try({
+    const { name, others } = yield* Effect.try({
       try: () => {
-        const partition = NodePath.join(partitions, head);
+        const entries = NodeFS.readdirSync(partitions);
+        const generations = entries.flatMap((entry) => {
+          const generation = entry.startsWith(`${install}.`) ? entry.slice(install.length + 1) : "";
+          return /^(?:0|[1-9][0-9]*)$/.test(generation) ? [Number(generation)] : [];
+        });
+        const newest = Math.max(0, ...generations);
+        const full = cacheBytes(NodePath.join(partitions, `${install}.${newest}`)) >= limit;
+        const name = `${install}.${full ? newest + 1 : newest}`;
+        const partition = NodePath.join(partitions, name);
         NodeFS.mkdirSync(partition, { recursive: true });
         NodeFS.utimesSync(partition, now / 1000, now / 1000);
-        return NodeFS.readdirSync(partitions).filter((entry) => entry !== head);
+        return { name, others: entries.filter((entry) => entry !== name) };
       },
       catch: String,
     });
@@ -177,14 +195,14 @@ export const testCachePartition = Effect.fn("checkChanged.testCachePartition")(
         Effect.catch((error) => Console.warn(`Could not remove test cache ${entry}: ${error}`)),
       );
     }
+    return NodePath.join(partitions, name);
   },
-  (effect, partitions, head) =>
+  (effect, _partitions, install, _limit?: number) =>
     effect.pipe(
       Effect.scoped,
-      Effect.as<string | undefined>(NodePath.join(partitions, head)),
       Effect.catch((error) =>
         Console.warn(
-          `Could not prepare test cache ${head}, so this run keeps its own: ${error}`,
+          `Could not prepare test cache ${install}, so this run keeps its own: ${error}`,
         ).pipe(Effect.as(undefined)),
       ),
     ),

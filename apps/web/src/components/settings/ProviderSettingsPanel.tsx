@@ -83,6 +83,8 @@ import { useManagedPolicy } from "~/state/managedPolicy";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { AccountFailoverSettings } from "./AccountFailoverSettings";
+import { SettingScope } from "./SettingScope";
+import { useSettingsScope } from "./SettingsScopeContext";
 import { useSecretSources } from "./SecretSourceInput";
 import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
@@ -310,6 +312,28 @@ export function ProviderSettingsPanel({
         </ProviderSettingsViewContext>
       ) : null}
     </SettingsPageContainer>
+  );
+}
+
+/** Account failover for the one machine its own scope pill picks. */
+export function ScopedAccountFailoverSettings() {
+  return (
+    <SettingScope setting="account-failover" requires={["usageLimitAccountFailover"]}>
+      <ScopedMachineModelsView />
+    </SettingScope>
+  );
+}
+
+function ScopedMachineModelsView() {
+  const { environment } = useSettingsScope();
+  if (!environment) return null;
+  return (
+    <ProviderSettingsViewContext value="models">
+      <ProviderSettingsPanelContent
+        key={environment.environmentId}
+        environmentId={environment.environmentId}
+      />
+    </ProviderSettingsViewContext>
   );
 }
 

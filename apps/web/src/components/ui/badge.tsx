@@ -50,6 +50,7 @@ function Badge({ className, variant, size, render, ...props }: BadgeProps) {
   const defaultProps = {
     className: cn(badgeVariants({ className, size, variant })),
     "data-slot": "badge",
+    "data-badge-size": size ?? "default",
   };
 
   return useRender({

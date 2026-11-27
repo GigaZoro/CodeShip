@@ -5,6 +5,7 @@ import { AdvancedSettings } from "./AdvancedSettings";
 import { BranchNamingSettings } from "./BranchNamingSettings";
 import { WorktreeSubmodulesRow } from "./ProjectDefaultsSettings";
 import { FastWorktreeCheckoutRow } from "./OptInFeatureRows";
+import { SettingScope } from "./SettingScope";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -59,8 +60,12 @@ export function WorktreesSettingsSections() {
     <>
       <SettingsSection id="worktree-creation" title={t("Creation")}>
         {!isProjectScope && <WorktreesDirectoryRow />}
-        <StartFromRemoteRow />
-        <FastWorktreeCheckoutRow />
+        <SettingScope setting="start-from-origin">
+          <StartFromRemoteRow />
+        </SettingScope>
+        <SettingScope setting="worktree-fast-checkout">
+          <FastWorktreeCheckoutRow />
+        </SettingScope>
         <AdvancedSettings targetIds={[searchableSetting("worktree-submodules").id]}>
           <WorktreeSubmodulesRow />
         </AdvancedSettings>

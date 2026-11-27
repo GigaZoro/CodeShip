@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - verifies native task caching in isolated subprocesses.
 import { describe, expect, it, vi } from "vite-plus/test";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -11,6 +12,7 @@ import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import {
   ARGUMENT_CHARACTERS,
   cachedTestTasks,
+  CHANGED_TEST_GROUP_SIZE,
   changedTestRequestEnv,
   changedTestRuntime,
   checkoutSearchPath,
@@ -21,6 +23,7 @@ import {
   readRunSummary,
   relativeTestPath,
 } from "./cached-tests.ts";
+import { readsCheckoutGit } from "./run-cached-test-group.ts";
 
 describe("cachedTestTasks", () => {
   it.each(["darwin", "linux", "win32"] as const)(
@@ -106,8 +109,14 @@ describe("cachedTestTasks", () => {
       { length: 80 },
       (_, index) => `src/${String(index * 2).padStart(3, "0")}.test.ts`,
     );
-    for (const groupSize of [1, 8]) {
+    for (const groupSize of [1, CHANGED_TEST_GROUP_SIZE, 8]) {
       const first = cachedTestTasks(JSON.stringify({ files, groupSize }));
+      const largest = Math.max(
+        ...Object.entries(first)
+          .filter(([key]) => key !== "test-cache")
+          .map(([, task]) => task.command.match(/'\.\/src\/[0-9]+\.test\.ts'/g)!.length),
+      );
+      expect(largest).toBeLessThanOrEqual(2 * groupSize);
       const second = cachedTestTasks(
         JSON.stringify({ files: [...files, "src/001.test.ts"], groupSize }),
       );
@@ -118,6 +127,8 @@ describe("cachedTestTasks", () => {
       for (const key of Object.keys(first).filter((key) => key !== "test-cache" && key in second))
         expect(second[key]).toEqual(first[key]);
     }
+    // So check:changed's groups, bounded above, hold at most 8 files.
+    expect(2 * CHANGED_TEST_GROUP_SIZE).toBeLessThanOrEqual(8);
   });
 
   it("keeps shell metacharacters in filenames out of the command", () => {
@@ -381,6 +392,7 @@ describe("cachedTestTasks", () => {
         "runtime",
         3,
         NodePath.join(directory, "cache"),
+        "state",
         "head",
       );
       vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", env.T3_CHECK_CHANGED_TEST_REQUEST);
@@ -1128,4 +1140,335 @@ describe("cachedTestTasks", () => {
       expect(await run(undefined, ["b.test.ts"])).toBe(0);
       expect(await NodeFSP.readFile(NodePath.join(directory, "report.json"), "utf8")).toBe("{}");
     }));
+});
+
+// Each row is one Git process's trace2 perf events, with `checkout` this checkout and `other` a
+// folder outside it.
+describe("readsCheckoutGit", () => {
+  const quotePerf = (word: string) =>
+    /^[A-Za-z0-9+,\-./:=@^_]+$/.test(word)
+      ? word
+      : `'${word.replaceAll("'", "'\\''").replaceAll("!", "'\\!'")}'`;
+  const perf = (event: string, payload: string, full = false) =>
+    `${full ? "21:03:24.371788 common-init.c:78             | " : ""}d0 | main                     | ${event.padEnd(12)} |     |           |           |              | ${payload}`;
+  const start = (...argv: Array<string>) => perf("start", argv.map(quotePerf).join(" "));
+  const repo = (worktree: string) => perf("def_repo", `worktree:${quotePerf(worktree)}`);
+  const param = (name: string, value: string) => perf("def_param", `${name}:${value}`);
+
+  it.each<
+    [
+      string,
+      boolean,
+      (checkout: string, other: string) => Array<string>,
+      ((
+        checkout: string,
+        other: string,
+      ) => {
+        checkoutPaths?: Array<string>;
+        cwd?: string;
+        platform?: NodeJS.Platform;
+        eol?: string;
+      })?,
+    ]
+  >([
+    ["upload-pack serving the checkout", true, (checkout) => [start("git-upload-pack", checkout)]],
+    [
+      "upload-pack in a linked worktree's git dir",
+      true,
+      (checkout) => [repo(NodePath.join(checkout, ".git", "worktrees", "linked"))],
+    ],
+    [
+      "upload-pack with an unnormalized path through a deleted temp cwd",
+      true,
+      (checkout, other) => [
+        start("git-upload-pack", `${other}/deleted/../../${NodePath.basename(checkout)}/.git`),
+      ],
+    ],
+    [
+      "full (non-brief) trace2 perf lines with CRLF",
+      true,
+      (checkout) => [perf("start", `git-upload-pack ${quotePerf(checkout)}`, true)],
+      () => ({ eol: "\r\n" }),
+    ],
+    [
+      "--git-dir naming the checkout's git dir",
+      true,
+      (checkout, other) => [
+        start("git", `--git-dir=${NodePath.join(checkout, ".git")}`, "log"),
+        repo(other),
+      ],
+    ],
+    [
+      "a relative GIT_DIR from another repository",
+      true,
+      (checkout, other) => [
+        start("git", "log"),
+        param("GIT_DIR", NodePath.relative(other, NodePath.join(checkout, ".git"))),
+        repo(other),
+      ],
+    ],
+    [
+      "--bare --git-dir=.git in a linked worktree",
+      true,
+      () => [start("git", "--bare", "--git-dir=.git", "rev-parse", "HEAD")],
+      (checkout, other) => ({
+        checkoutPaths: [
+          checkout,
+          NodePath.join(other, "common.git", "worktrees", "linked"),
+          NodePath.join(other, "common.git"),
+        ],
+        cwd: checkout,
+      }),
+    ],
+    [
+      "relative path from a package subdirectory inside the checkout",
+      true,
+      () => [start("git", "ls-remote", "../..")],
+      (checkout) => ({ cwd: NodePath.join(checkout, "apps", "server") }),
+    ],
+    [
+      "relative --git-dir from a package subdirectory inside the checkout",
+      true,
+      () => [start("git", "--bare", "--git-dir=../../.git", "rev-parse", "HEAD")],
+      (checkout) => ({ cwd: NodePath.join(checkout, "apps", "server") }),
+    ],
+    [
+      "relative path from an ancestor directory between cwd and checkout",
+      true,
+      () => [start("git", "ls-remote", "..")],
+      (checkout) => ({ cwd: NodePath.join(checkout, "apps", "server") }),
+    ],
+    [
+      "non-checkout relative args from a package subdirectory",
+      false,
+      () => [start("git", "hash-object", "src/a.ts")],
+      (checkout) => ({ cwd: NodePath.join(checkout, "apps", "server") }),
+    ],
+    [
+      "C-quoted GIT_ALTERNATE_OBJECT_DIRECTORIES with embedded delimiter pointing at the checkout",
+      true,
+      (checkout, other) => [
+        start("git", "rev-parse", "--git-dir"),
+        param(
+          "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+          `"${other.replaceAll("\\", "\\\\")}/a${NodePath.delimiter}b"${NodePath.delimiter}"${NodePath.join(checkout, ".git", "objects").replaceAll("\\", "\\\\")}"`,
+        ),
+        repo(other),
+      ],
+    ],
+    [
+      "C-quoted GIT_ALTERNATE_OBJECT_DIRECTORIES pointing only outside the checkout",
+      false,
+      (_, other) => [
+        start("git", "rev-parse", "--git-dir"),
+        param(
+          "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+          `"${other.replaceAll("\\", "\\\\")}/a${NodePath.delimiter}b"${NodePath.delimiter}"${other.replaceAll("\\", "\\\\")}/c\\040d"`,
+        ),
+        repo(other),
+      ],
+    ],
+    [
+      "malformed unclosed quote in GIT_ALTERNATE_OBJECT_DIRECTORIES",
+      true,
+      (_, other) => [
+        start("git", "rev-parse", "--git-dir"),
+        param("GIT_ALTERNATE_OBJECT_DIRECTORIES", `"${other}/unclosed`),
+        repo(other),
+      ],
+    ],
+    [
+      "Windows file:///C:/... URL pointing at the checkout",
+      true,
+      () => [start("git", "clone", "file:///C:/Work/Repo")],
+      () => ({
+        checkoutPaths: ["C:\\Work\\Repo", "C:\\Work\\Repo\\.git"],
+        cwd: "C:\\Other",
+        platform: "win32",
+      }),
+    ],
+    [
+      "Windows unnormalized forward-slash path with case differences",
+      true,
+      () => [start("git-upload-pack", "c:/work/deleted/../repo/.git")],
+      () => ({
+        checkoutPaths: ["C:\\Work\\Repo", "C:\\Work\\Repo\\.git"],
+        cwd: "C:\\Other",
+        platform: "win32",
+      }),
+    ],
+    [
+      "macOS case-insensitive path matching",
+      true,
+      () => [start("git-upload-pack", "/USERS/DEV/WORK/REPO")],
+      () => ({
+        checkoutPaths: ["/Users/dev/Work/Repo", "/Users/dev/Work/Repo/.git"],
+        cwd: "/Users/dev/Work/Repo",
+        platform: "darwin",
+      }),
+    ],
+    [
+      "bare repository GIT_DIR:. without def_repo (such as git push to a temp bare remote)",
+      false,
+      () => [start("git", "unpack-objects"), param("GIT_DIR", ".")],
+    ],
+    [
+      "relative GIT_DIR:.git without def_repo from a package subdirectory",
+      true,
+      () => [start("git", "rev-parse", "--git-dir"), param("GIT_DIR", "../../.git")],
+      (checkout) => ({
+        checkoutPaths: [checkout, NodePath.join(checkout, ".git")],
+        cwd: NodePath.join(checkout, "apps", "server"),
+      }),
+    ],
+    [
+      "multiline alias and exec events in another repository",
+      false,
+      (_, other) => [
+        perf("version", "2.56.1"),
+        perf("alias", "alias:myalias argv:[\x27echo hi\necho bye\x27]"),
+        perf("exec", "argv:[\x27echo a\nb\x27]"),
+        repo(other),
+      ],
+    ],
+    [
+      "relative arguments, multiline commit message, and multiline error in another repository",
+      false,
+      (_, other) => [
+        perf("version", "2.56.1"),
+        start("git", "commit", "-m", "title\n\nbody with 'quote' and !bang"),
+        repo(other),
+        perf("error", "....first line\n\nsecond line"),
+      ],
+    ],
+    [
+      "quoted def_repo path with spaces, quotes, and bang inside the checkout",
+      true,
+      (checkout) => [repo(NodePath.join(checkout, "sub 'with' !bang"))],
+    ],
+    ["an empty start argv", true, () => [perf("start", "")]],
+    ["a start line with an unclosed quote", true, () => [perf("start", "git 'unclosed")]],
+    ["a repository without worktree prefix", true, () => [perf("def_repo", "")]],
+    [
+      "a truncated line after version",
+      true,
+      () => [perf("version", "2.56.1"), "d0 | main | def_re"],
+    ],
+  ])("tells whether %s reads the checkout: %s", (_, expected, events, configure) => {
+    const root = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-")));
+    try {
+      const checkout = NodePath.join(root, "checkout");
+      const other = NodePath.join(root, "other");
+      const traces = NodePath.join(root, "traces");
+      NodeFS.mkdirSync(traces);
+      const options = configure?.(checkout, other);
+      NodeFS.writeFileSync(
+        NodePath.join(traces, "process"),
+        events(checkout, other).join(options?.eol ?? "\n"),
+      );
+      expect(
+        readsCheckoutGit(
+          traces,
+          options?.checkoutPaths ?? [checkout, NodePath.join(checkout, ".git")],
+          {
+            cwd: options?.cwd,
+            platform: options?.platform,
+          },
+        ),
+      ).toBe(expected);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts an unparseable, empty, or discarded trace file as a read", () => {
+    const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-"));
+    try {
+      NodeFS.writeFileSync(NodePath.join(traces, "process"), '{"event":"start","argv":[');
+      expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
+      NodeFS.writeFileSync(NodePath.join(traces, "process"), "");
+      expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
+      NodeFS.rmSync(NodePath.join(traces, "process"));
+      NodeFS.writeFileSync(
+        NodePath.join(traces, "git-trace2-discard"),
+        [perf("version", "2.56.1"), repo(NodePath.join(traces, "other"))].join("\n"),
+      );
+      expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
+    } finally {
+      NodeFS.rmSync(traces, { recursive: true, force: true });
+    }
+  });
+
+  it("detects a real git child via GIT_TRACE2_PERF even when GIT_TRACE2_EVENT is overwritten", () => {
+    const root = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-")));
+    try {
+      const checkout = NodePath.join(root, "checkout");
+      const traces = NodePath.join(root, "traces");
+      const eventFile = NodePath.join(root, "event.jsonl");
+      NodeFS.mkdirSync(checkout);
+      NodeFS.mkdirSync(traces);
+      const baseEnv = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+      );
+      NodeChildProcess.execFileSync("git", ["init", "-q"], { cwd: checkout, env: baseEnv });
+      NodeChildProcess.execFileSync("git", ["rev-parse", "--git-dir"], {
+        cwd: checkout,
+        env: {
+          ...baseEnv,
+          GIT_TRACE2_PERF: traces,
+          GIT_TRACE2_PERF_BRIEF: "1",
+          GIT_TRACE2_EVENT: eventFile,
+        },
+      });
+      expect(readsCheckoutGit(traces, [checkout, NodePath.join(checkout, ".git")])).toBe(true);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag a real git push to a temp bare remote as reading the checkout", () => {
+    const root = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-")));
+    try {
+      const checkout = NodePath.join(root, "checkout");
+      const remote = NodePath.join(root, "origin.git");
+      const work = NodePath.join(root, "work");
+      const traces = NodePath.join(root, "traces");
+      NodeFS.mkdirSync(checkout);
+      NodeFS.mkdirSync(work);
+      NodeFS.mkdirSync(traces);
+      const baseEnv = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+      );
+      const runGit = (args: ReadonlyArray<string>, cwd: string, extraEnv?: NodeJS.ProcessEnv) =>
+        NodeChildProcess.execFileSync("git", [...args], {
+          cwd,
+          env: {
+            ...baseEnv,
+            GIT_AUTHOR_NAME: "Test",
+            GIT_AUTHOR_EMAIL: "test@example.com",
+            GIT_COMMITTER_NAME: "Test",
+            GIT_COMMITTER_EMAIL: "test@example.com",
+            ...extraEnv,
+          },
+        });
+      runGit(["init", "-q"], checkout);
+      runGit(["init", "-q", "--bare", remote], root);
+      runGit(["init", "-q", "-b", "main"], work);
+      NodeFS.writeFileSync(NodePath.join(work, "a.txt"), "hello\n");
+      runGit(["add", "a.txt"], work);
+      runGit(["commit", "-q", "-m", "init"], work);
+      runGit(["push", "-q", remote, "HEAD:refs/heads/main"], work, {
+        GIT_TRACE2_PERF: traces,
+        GIT_TRACE2_PERF_BRIEF: "1",
+        GIT_TRACE2_ENV_VARS:
+          "GIT_DIR,GIT_COMMON_DIR,GIT_WORK_TREE,GIT_OBJECT_DIRECTORY,GIT_ALTERNATE_OBJECT_DIRECTORIES,GIT_INDEX_FILE",
+        GIT_TRACE2_MAX_FILES: "0",
+      });
+      expect(
+        readsCheckoutGit(traces, [checkout, NodePath.join(checkout, ".git")], { cwd: checkout }),
+      ).toBe(false);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

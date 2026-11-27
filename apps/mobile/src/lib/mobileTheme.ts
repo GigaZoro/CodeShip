@@ -345,6 +345,14 @@ export function createMobileThemeVariables(
     c.secondary,
     groupedCard,
   ];
+  // Calm paints thread statuses with only these, on lists, the drawer and their pressed and selected rows.
+  const statusSurfaces = [
+    c.canvas,
+    c.sidebar,
+    c.sidebarRowHover,
+    c.sidebarRowActive,
+    c.toolbarControlHover,
+  ];
   return {
     "--color-screen": c.canvas,
     "--color-sheet": withAlpha(c.chrome, 0.98),
@@ -403,6 +411,9 @@ export function createMobileThemeVariables(
     "--color-danger": c.errorSurface,
     "--color-danger-border": withAlpha(c.error, 0.32),
     "--color-danger-foreground": c.errorForeground,
+    "--color-calm-status-quiet": themeColorWithContrast(c.mutedForeground, statusSurfaces),
+    "--color-calm-status-attention": themeColorWithContrast(c.warningForeground, statusSurfaces),
+    "--color-calm-status-alarm": themeColorWithContrast(c.errorForeground, statusSurfaces),
     "--color-update": c.updateSurface,
     "--color-update-foreground": c.updateForeground,
     "--color-input": c.surface,

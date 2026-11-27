@@ -19,9 +19,6 @@ import {
   SettingsScopeProvider,
   useSettingsScope,
 } from "../components/settings/SettingsScopeContext";
-import { useEnvironments } from "../state/environments";
-import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
-import { SETTINGS_DEVICE_ONLY_PATHS } from "../components/settings/SettingsScopeSentence";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import { useRenderedSettingsPathname } from "../components/settings/useRenderedSettingsPathname";
 import {
@@ -29,11 +26,7 @@ import {
   retainSettingsScope,
   validateSettingsRouteSearch,
 } from "../components/settings/settingsScopeNavigation";
-import {
-  getSettingsSearchTargetScope,
-  getThreadAutoSettlementSearchAvailability,
-  isSettingsSearchScopeAvailable,
-} from "../components/settings/settingsSearch";
+import type { SettingsScopeSearch } from "../components/settings/settingsScope";
 
 function ResetPageButton({ page, onRestored }: { page: string; onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(page, onRestored);
@@ -50,12 +43,16 @@ function ResetPageButton({ page, onRestored }: { page: string; onRestored: () =>
   );
 }
 
-/** Providers lists one machine's instances (its Models tab can span machines); Secrets and Diagnostics also act on one. */
-function useSingleEnvironmentSettingsPage(pathname: string) {
-  const providersTab = useLocation({
+function useProvidersTab() {
+  return useLocation({
     select: (location) =>
       resolveProvidersSettingsTab((location.search as { tab?: unknown }).tab, location.hash),
   });
+}
+
+/** Providers lists one machine's instances (its Models tab can span machines); Secrets and Diagnostics also act on one. */
+function useSingleEnvironmentSettingsPage(pathname: string) {
+  const providersTab = useProvidersTab();
   return (
     (pathname === "/settings/providers" && providersTab === "providers") ||
     pathname === "/settings/secrets" ||
@@ -63,88 +60,27 @@ function useSingleEnvironmentSettingsPage(pathname: string) {
   );
 }
 
-function SettingsScopeBoundary({ pathname, children }: { pathname: string; children: ReactNode }) {
-  const { scope, connectedEnvironments } = useSettingsScope();
-  const { environments } = useEnvironments();
+/** Pages that show things for a machine or project; every other page's rows pick their own scope. */
+function useSettingsViewFilter(pathname: string, project: string | undefined) {
+  const providersTab = useProvidersTab();
+  if (pathname === "/settings/keybindings" || pathname === "/settings/diagnostics") {
+    return "machine";
+  }
+  if (
+    pathname === "/settings/secrets" ||
+    (pathname === "/settings/providers" && providersTab === "providers") ||
+    (pathname === "/settings/projects" && project !== undefined)
+  ) {
+    return "project-and-machine";
+  }
+  return null;
+}
 
-  // A pending navigation's hash targets the page still loading, not the one on screen.
-  const hash = useLocation({
-    select: (location) => (location.pathname === pathname ? location.hash : ""),
-  });
-  const searchTarget = getSettingsSearchTargetScope(hash);
-  const agentFeedbackAvailability = searchTarget?.agentFeedbackOnly
-    ? {
-        eligibleEnvironmentIds: environments
-          .filter(
-            (environment) =>
-              environment.connection.phase === "connected" &&
-              environment.serverConfig?.environment.capabilities.agentFeedback === true,
-          )
-          .map((environment) => environment.environmentId),
-        isTargetAvailable:
-          connectedEnvironments.length > 0 &&
-          connectedEnvironments.every(
-            (environment) =>
-              environment.serverConfig?.environment.capabilities.agentFeedback === true,
-          ),
-      }
-    : null;
-  const targetAvailability =
-    agentFeedbackAvailability ??
-    (searchTarget?.requiresThreadAutoSettlement
-      ? getThreadAutoSettlementSearchAvailability(environments, scope)
-      : null);
-  if (
-    scope.kind !== "unavailable" &&
-    searchTarget &&
-    targetAvailability &&
-    !targetAvailability.isTargetAvailable
-  ) {
-    return (
-      <SettingsScopeNotice
-        target="environment"
-        targetId={hash}
-        eligibleEnvironmentIds={targetAvailability.eligibleEnvironmentIds}
-      >
-        {targetAvailability.eligibleEnvironmentIds.length > 0
-          ? t("{title} requires a supporting environment. Choose one to continue.", {
-              title: searchTarget.title,
-            })
-          : t(
-              "{title} requires a supporting environment. Connect or update an environment to continue.",
-              { title: searchTarget.title },
-            )}
-      </SettingsScopeNotice>
-    );
-  }
-  if (
-    scope.kind !== "unavailable" &&
-    searchTarget &&
-    !isSettingsSearchScopeAvailable(searchTarget.scope, scope.kind)
-  ) {
-    const target =
-      searchTarget.scope === "environment" ||
-      searchTarget.scope === "project" ||
-      searchTarget.scope === "checkout"
-        ? searchTarget.scope
-        : "all";
-    return (
-      <SettingsScopeNotice target={target} targetId={hash}>
-        {t(
-          "{title} is not available for the selected target. Choose its owning scope to continue.",
-          { title: searchTarget.title },
-        )}
-      </SettingsScopeNotice>
-    );
-  }
-  // Maintenance mixes server sections with device ones, so it shows its own unavailable message.
-  if (
-    SETTINGS_DEVICE_ONLY_PATHS.has(pathname) ||
-    pathname === "/settings/projects" ||
-    pathname === "/settings/maintenance"
-  ) {
-    return children;
-  }
+function SettingsScopeBoundary({ children }: { children: ReactNode }) {
+  const { scope, connectedEnvironments, viewFilter } = useSettingsScope();
+  const pathname = useLocation({ select: (location) => location.pathname });
+  // The projects page explains its own unavailable project.
+  if (viewFilter === null || pathname === "/settings/projects") return children;
   if (scope.kind === "unavailable")
     return (
       <SettingsPageContainer>
@@ -201,7 +137,7 @@ function SettingsContentLayout() {
           key={`${contentScopeKey}:${restoreSignal}`}
           className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
-          <SettingsScopeBoundary pathname={pathname}>
+          <SettingsScopeBoundary>
             <Outlet />
           </SettingsScopeBoundary>
         </div>
@@ -210,6 +146,8 @@ function SettingsContentLayout() {
   );
 }
 
+const EVERY_MACHINE_SEARCH: SettingsScopeSearch = {};
+
 function SettingsRouteLayout() {
   const rawSearch = Route.useSearch();
   const navigate = Route.useNavigate();
@@ -217,11 +155,14 @@ function SettingsRouteLayout() {
   const hash = useLocation({ select: (location) => location.hash });
   const singleEnvironment = useSingleEnvironmentSettingsPage(pathname);
   const router = useRouter();
+  const viewFilter = useSettingsViewFilter(pathname, rawSearch.project);
   return (
     <SettingsScopeProvider
-      search={rawSearch}
+      search={
+        viewFilter !== null || pathname === "/settings/projects" ? rawSearch : EVERY_MACHINE_SEARCH
+      }
       singleEnvironment={singleEnvironment}
-      deviceOnly={SETTINGS_DEVICE_ONLY_PATHS.has(pathname)}
+      viewFilter={viewFilter}
       onChange={(next) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({

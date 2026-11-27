@@ -60,7 +60,8 @@ import {
   testsReaching,
   uncachedTests,
 } from "./check-changed.ts";
-import { cachedTestTasks } from "./lib/cached-tests.ts";
+import { localVitePlusCommand } from "./check-changed-command.ts";
+import { cachedTestTasks, changedTestRequestEnv } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
@@ -516,8 +517,10 @@ describe("check:changed", () => {
       using _observe = vi
         .spyOn(NodeSqlite.DatabaseSync.prototype, "prepare")
         .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql) {
-          if (sql.startsWith("VACUUM INTO"))
+          if (sql.startsWith("VACUUM INTO")) {
             seedTimeout = Number(prepare.call(this, "PRAGMA busy_timeout").get()?.timeout);
+            this.exec("PRAGMA busy_timeout = 0");
+          }
           return prepare.call(this, sql);
         });
       yield* Effect.scoped(
@@ -525,7 +528,7 @@ describe("check:changed", () => {
           yield* stageTestCache(shared, cache, Effect.succeed([]));
           assert.isFalse(NodeFS.existsSync(cacheDb(cache)));
           writer.exec("ROLLBACK");
-          expect(seedTimeout).toBeLessThan(1000);
+          expect(seedTimeout).toBe(10_000);
           storePass(cache, "new");
         }),
       );
@@ -568,14 +571,14 @@ describe("check:changed", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("marks the HEAD's test cache used and removes those unused for three days", () =>
+  it.effect("marks the install's test cache used and removes those unused for three days", () =>
     Effect.gen(function* () {
       const partitions = NodePath.join(yield* slotDirectory, "tests");
       const day = 24 * 60 * 60 * 1000;
       const now = Date.UTC(2026, 0, 10);
       yield* TestClock.setTime(now);
       for (const [entry, age] of [
-        ["head", 5 * day],
+        ["install.0", 5 * day],
         ["recent", 2 * day],
         ["unused", 4 * day],
       ] as const) {
@@ -583,17 +586,40 @@ describe("check:changed", () => {
         const used = (now - age) / 1000;
         NodeFS.utimesSync(NodePath.join(partitions, entry), used, used);
       }
-      const current = yield* testCachePartition(partitions, "head");
-      assert.strictEqual(current, NodePath.join(partitions, "head"));
-      assert.deepStrictEqual(NodeFS.readdirSync(partitions).toSorted(), ["head", "recent"]);
-      assert.strictEqual(NodeFS.statSync(NodePath.join(partitions, "head")).mtimeMs, now);
+      const current = yield* testCachePartition(partitions, "install");
+      assert.strictEqual(current, NodePath.join(partitions, "install.0"));
+      assert.deepStrictEqual(NodeFS.readdirSync(partitions).toSorted(), ["install.0", "recent"]);
+      assert.strictEqual(NodeFS.statSync(current!).mtimeMs, now);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("marks its HEAD's test cache used only after another run's removal of it ends", () =>
+  it.effect("starts the install's next test cache once its newest reaches the size limit", () =>
     Effect.gen(function* () {
       const partitions = NodePath.join(yield* slotDirectory, "tests");
-      const partition = NodePath.join(partitions, "head");
+      for (const [entry, bytes] of [
+        ["install.0", 64],
+        ["install.1", 24],
+        ["other.7", 0],
+      ] as const) {
+        NodeFS.mkdirSync(NodePath.join(partitions, entry, "v18"), { recursive: true });
+        NodeFS.writeFileSync(
+          NodePath.join(partitions, entry, "v18", "cache.db"),
+          "x".repeat(bytes),
+        );
+      }
+      const below = yield* testCachePartition(partitions, "install", 32);
+      const full = yield* testCachePartition(partitions, "install", 24);
+      assert.deepStrictEqual(
+        [below, full],
+        [NodePath.join(partitions, "install.1"), NodePath.join(partitions, "install.2")],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("marks its install's test cache used only after another run's removal of it ends", () =>
+    Effect.gen(function* () {
+      const partitions = NodePath.join(yield* slotDirectory, "tests");
+      const partition = NodePath.join(partitions, "install.0");
       const now = Date.UTC(2026, 0, 10);
       yield* TestClock.setTime(now);
       NodeFS.mkdirSync(NodePath.join(partition, "v18"), { recursive: true });
@@ -602,7 +628,7 @@ describe("check:changed", () => {
       // Another run's cleanup holds the lock and has found the partition unused.
       using cleanup = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
       cleanup.exec("BEGIN EXCLUSIVE");
-      const run = yield* testCachePartition(partitions, "head").pipe(Effect.forkChild);
+      const run = yield* testCachePartition(partitions, "install").pipe(Effect.forkChild);
       yield* TestClock.adjust("1 second");
       NodeFS.rmSync(partition, { recursive: true });
       cleanup.exec("ROLLBACK");
@@ -618,7 +644,7 @@ describe("check:changed", () => {
       NodeFS.mkdirSync(partitions, { recursive: true });
       using stalled = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
       stalled.exec("BEGIN EXCLUSIVE");
-      const run = yield* testCachePartition(partitions, "head").pipe(Effect.forkChild);
+      const run = yield* testCachePartition(partitions, "install").pipe(Effect.forkChild);
       yield* TestClock.adjust("1 minute");
       assert.isUndefined(yield* Fiber.join(run));
       stalled.exec("ROLLBACK");
@@ -629,8 +655,8 @@ describe("check:changed", () => {
     Effect.gen(function* () {
       const partitions = NodePath.join(yield* slotDirectory, "tests");
       NodeFS.mkdirSync(partitions, { recursive: true });
-      NodeFS.writeFileSync(NodePath.join(partitions, "head"), "");
-      assert.isUndefined(yield* testCachePartition(partitions, "head"));
+      NodeFS.writeFileSync(NodePath.join(partitions, "install.0"), "");
+      assert.isUndefined(yield* testCachePartition(partitions, "install"));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -755,6 +781,50 @@ describe("check:changed", () => {
         ["pass"],
       );
     }),
+  );
+
+  it.effect(
+    "finishes unmarking a landing run when another run still holds the marker file open",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* slotDirectory;
+        const step = (name: string, seconds: number): Step<never> => ({
+          name,
+          run: () =>
+            Effect.gen(function* () {
+              yield* Effect.sleep(`${seconds} seconds`);
+              return { ok: true, output: "" };
+            }),
+        });
+        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir };
+        const holder = yield* runSteps([step("holder", 2)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        const landing = yield* runSteps([step("landing", 1)], { ...options, landing: true }).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("100 millis");
+        const markerPath = NodePath.join(dir, `landing-wait-${process.pid}.sqlite`);
+        assert.isTrue(NodeFS.existsSync(markerPath));
+        // Hold the marker file open while the landing run takes the freed slot and unmarks itself.
+        const probe = new NodeSqlite.DatabaseSync(markerPath);
+        try {
+          for (let second = 0; second < 4; second++) yield* TestClock.adjust("1 second");
+          const [holderResults, landingResults] = yield* Effect.all([
+            Fiber.join(holder),
+            Fiber.join(landing),
+          ]);
+          assert.strictEqual(holderResults[0]?.outcome, "pass");
+          assert.strictEqual(landingResults[0]?.outcome, "pass");
+        } finally {
+          probe.close();
+        }
+        // Once the probe closes, a later non-landing run takes a slot and removes any leftover marker.
+        const after = yield* runSteps([step("after", 0)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        const afterResults = yield* Fiber.join(after);
+        assert.strictEqual(afterResults[0]?.outcome, "pass");
+        assert.isFalse(NodeFS.existsSync(markerPath));
+      }),
   );
 
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
@@ -1854,6 +1924,22 @@ const writeUnder = (root: string, file: string, content = "input") => {
   NodeFS.writeFileSync(path, content);
 };
 
+// On Windows cpSync copies a junction inside a folder as the folder it points to, verbatimSymlinks or not.
+const copyKeepingLinks = (from: string, to: string): void => {
+  NodeFS.mkdirSync(NodePath.dirname(to), { recursive: true });
+  const stat = NodeFS.lstatSync(from);
+  if (stat.isSymbolicLink()) {
+    NodeFS.symlinkSync(NodeFS.readlinkSync(from), to, "junction");
+  } else if (stat.isDirectory()) {
+    NodeFS.mkdirSync(to, { recursive: true });
+    for (const entry of NodeFS.readdirSync(from)) {
+      copyKeepingLinks(NodePath.join(from, entry), NodePath.join(to, entry));
+    }
+  } else {
+    NodeFS.copyFileSync(from, to);
+  }
+};
+
 // History A -> B -> C, with HEAD at C. Each remote's main points at A or B.
 function fixture(remotes: Record<string, "A" | "B">) {
   const root = NodeFS.realpathSync(
@@ -2474,6 +2560,20 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     capabilities,
     git,
     write,
+    runCachedGroup(file: string, variables: Record<string, string>) {
+      const request = NodePath.join(host, "request.json");
+      const cache = NodePath.join(host, "cache");
+      NodeFS.writeFileSync(request, JSON.stringify({ files: [file], groupSize: 1 }));
+      const [command, args] = localVitePlusCommand(["run", "--remote-cache", "off", "test-cache"]);
+      return NodeChildProcess.spawnSync(command, args, {
+        cwd: root,
+        encoding: "utf8",
+        env: checkEnv(root, {
+          ...changedTestRequestEnv(request, "fixture", 1, cache, "fixture", "fixture"),
+          ...variables,
+        }),
+      });
+    },
     commit(message: string) {
       git("add", ".");
       git("commit", "-m", message);
@@ -2486,10 +2586,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
       worktrees.push(checkout);
       git("worktree", "add", "--detach", checkout, "HEAD");
       for (const file of ["node_modules", ...files]) {
-        NodeFS.cpSync(NodePath.join(root, file), NodePath.join(checkout, file), {
-          recursive: true,
-          verbatimSymlinks: true,
-        });
+        copyKeepingLinks(NodePath.join(root, file), NodePath.join(checkout, file));
       }
       const modules = NodePath.join(checkout, "node_modules");
       // Windows copies a junction as a real folder, which loses the sibling packages that resolve
@@ -2508,10 +2605,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
         ["vitest", NodeFS.realpathSync(NodePath.join(NodePath.dirname(vitePlus), "vitest"))],
       ]);
       for (const [name, shared] of copies) {
-        NodeFS.cpSync(shared, NodePath.join(store(name), name), {
-          recursive: true,
-          verbatimSymlinks: true,
-        });
+        copyKeepingLinks(shared, NodePath.join(store(name), name));
         const dependencies = NodePath.dirname(shared);
         for (const entry of NodeFS.readdirSync(dependencies)) {
           for (const dependency of entry.startsWith("@")
@@ -2844,16 +2938,17 @@ it("reruns a stable group after an empty commit", () => {
   using project = launcherFixture();
   project.write(
     "fixture.test.ts",
-    `import { it, expect } from "vite-plus/test";
+    `import { it } from "vite-plus/test";
     import {execFileSync} from "node:child_process";
-    it("reads the commit subject", () => expect(execFileSync("git", ["log", "-1", "--format=%s"], {encoding:"utf8"}).trim()).toBe("fixture"));`,
+    it("reads the commit subject", () => console.log("subject=" + execFileSync("git", ["log", "-1", "--format=%s"], {encoding:"utf8"}).trim()));`,
   );
   const first = project.run();
   expect(first.status, first.stdout + first.stderr).toBe(0);
+  expect(first.stdout).toContain("subject=fixture");
   project.git("commit", "--allow-empty", "-m", "different");
   const next = project.run();
-  expect(next.status, next.stdout + next.stderr).toBe(1);
-  expect(next.stdout).toContain("FAIL  test");
+  expect(next.status, next.stdout + next.stderr).toBe(0);
+  expect(next.stdout).toContain("subject=different");
 });
 
 it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ"])(
@@ -2863,15 +2958,14 @@ it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ"])(
     const [first, changed] = [NodePath.dirname(project.capabilities), NodeOS.tmpdir()];
     project.write(
       "fixture.test.ts",
-      `import { it, expect } from "vite-plus/test";
-    it("reads the test environment", () => expect(process.env[${JSON.stringify(name)}]).toBe(${JSON.stringify(first)}));`,
+      `import { it } from "vite-plus/test";
+    it("reads the test environment", () => console.log("observed=" + JSON.stringify(process.env[${JSON.stringify(name)}])));`,
     );
-    const run = (value: string) => project.run("", "", project.source, [], { [name]: value });
-    const firstRun = run(first);
-    expect(firstRun.status, firstRun.stdout + firstRun.stderr).toBe(0);
-    const next = run(changed);
-    expect(next.status, next.stdout + next.stderr).toBe(1);
-    expect(next.stdout).toContain("FAIL  test");
+    for (const value of [first, changed]) {
+      const result = project.runCachedGroup("fixture.test.ts", { [name]: value });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain(`observed=${JSON.stringify(value)}`);
+    }
   },
 );
 
@@ -2993,13 +3087,13 @@ it("reuses passes in another worktree with the same inputs and tracked environme
     JSON.stringify({ layoutVersion: 5, prunedAt: "first" }),
   );
   const firstCheckout = project.checkout(files);
-  // Two workers here and one in the retry.
+  // Two workers here and one in the retry; pass each checkout as PWD, which PowerShell leaves unset.
   const first = project.run(
     "lint",
     "",
     project.source,
     ["--concurrency", "16"],
-    passthrough,
+    { ...passthrough, PWD: firstCheckout },
     firstCheckout,
   );
   expect(first.status, first.stdout + first.stderr).toBe(1);
@@ -3015,14 +3109,14 @@ it("reuses passes in another worktree with the same inputs and tracked environme
     "",
     project.source,
     ["--concurrency", "1"],
-    { ...passthrough, INVOCATION_ID: "retry" },
+    { ...passthrough, INVOCATION_ID: "retry", PWD: retryCheckout },
     retryCheckout,
   );
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
   expect(repeat.stdout).toContain("pass  test (2 files)");
   expect(repeat.stdout).toContain("cache hit, replaying");
   expect(NodeFS.readdirSync(NodePath.join(project.root, ".git/t3-check-changed/tests"))).toEqual([
-    project.git("rev-parse", "HEAD").toString().trim(),
+    expect.stringMatching(/^[0-9a-f]{64}\.0$/),
   ]);
 });
 
@@ -3110,15 +3204,39 @@ const stateChangesWithMode = (
     git("config", "core.fileMode", String(fileMode));
     const objects = NodePath.join(root, ".git", "checked-objects");
     NodeFS.mkdirSync(objects);
-    const head = git("rev-parse", "HEAD");
     const state = Effect.suspend(() =>
-      checkoutState({ root, objects, head, tree: workingTree(root, objects) }),
+      checkoutState({ root, objects, tree: workingTree(root, objects) }),
     ).pipe(Effect.provide(NodeServices.layer));
     const before = yield* state;
     expect(yield* state).toBe(before);
     NodeFS.chmodSync(tool, mode);
     expect(yield* state).not.toBe(before);
   });
+
+// A rebase that leaves a group's inputs alone moves HEAD, so the state keys on the tree instead.
+it.effect("keys the checkout state on the checked tree's link targets, not on its commit", () =>
+  Effect.gen(function* () {
+    isolateGit();
+    const project = yield* Effect.acquireDisposable(Effect.sync(() => fixture({})));
+    const { git, root, write } = project;
+    // Git checks a symlink out as a file holding its target where core.symlinks is false.
+    git("config", "core.symlinks", "false");
+    write("link", "first-target");
+    const blob = git("hash-object", "-w", "link");
+    git("update-index", "--add", "--cacheinfo", `120000,${blob},link`);
+    git("commit", "-m", "link");
+    const objects = NodePath.join(root, ".git", "checked-objects");
+    NodeFS.mkdirSync(objects);
+    const state = Effect.suspend(() =>
+      checkoutState({ root, objects, tree: workingTree(root, objects) }),
+    ).pipe(Effect.provide(NodeServices.layer));
+    const before = yield* state;
+    git("commit", "--allow-empty", "-m", "same tree");
+    expect(yield* state).toBe(before);
+    write("link", "second-target");
+    expect(yield* state).not.toBe(before);
+  }),
+);
 
 // Git for Windows records no executable bit.
 describe.skipIf(isWindowsHost)("checkoutState", () => {
@@ -3416,18 +3534,74 @@ it("passes kept provider variables to every test", () => {
   expect(result.status, result.stdout + result.stderr).toBe(0);
 });
 
-it("discards test results when HEAD moves to a different commit with the same tree", () => {
+it("discards test results recorded while HEAD moved, and replays them at a commit that leaves their inputs alone", () => {
   using project = launcherFixture();
   project.write("fixture.test.ts", `import { it } from "vite-plus/test"; it("passes", () => {});`);
 
   const first = project.run("", "", project.source, [], { MOVE_HEAD: "1" });
   expect(first.status, first.stdout + first.stderr).toBe(1);
   expect(first.stdout).toContain("FAIL  test (1 files)");
+  expect(summaryOf(first.stdout)).toContain("HEAD, which moved from");
   const repeat = project.run();
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
   expect(repeat.stdout).toContain("pass  test (1 files)");
   expect(repeat.stdout).not.toContain("cache hit, replaying");
-  expect(summaryOf(first.stdout)).toContain("HEAD, which moved from");
+  // As a rebase onto a commit that changed a file the test does not read.
+  project.write(project.source, "export const value = 2;\n");
+  project.git("add", project.source);
+  project.git("commit", "-m", "unread change");
+  const rebased = project.run();
+  expect(rebased.status, rebased.stdout + rebased.stderr).toBe(0);
+  expect(rebased.stdout).toContain("cache hit, replaying");
+});
+
+// Each case reads the checkout's Git from a test, with `root` the checkout and `other` a folder
+// outside it.
+it.each([
+  ["opens the checkout", `git(root, "rev-parse", "HEAD")`],
+  ["clones the checkout", `git(other, "clone", "-q", root, "copy")`],
+  [
+    "clones the checkout relatively from a deleted temp folder",
+    `git(other, "clone", "-q", relative(other, root), "copy")`,
+  ],
+  ["aims --git-dir at the checkout", `git(other, "--git-dir=" + join(root, ".git"), "log", "-1")`],
+  [
+    "overwrites GIT_TRACE2_EVENT while reading the checkout",
+    `execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe", env: { ...process.env, GIT_TRACE2_EVENT: join(other, "progress.jsonl") } })`,
+  ],
+  [
+    "sets a C-quoted GIT_ALTERNATE_OBJECT_DIRECTORIES pointing at the checkout",
+    `git(other, "init", "-q"); execFileSync("git", ["rev-parse", "--git-dir"], { cwd: other, stdio: "pipe", env: { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: JSON.stringify(join(root, ".git", "objects")) } })`,
+  ],
+])("reruns a test group that %s after a commit that leaves its files alone", (_, read) => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { execFileSync } from "node:child_process";
+    import { mkdtempSync, rmSync } from "node:fs";
+    import { tmpdir } from "node:os";
+    import { join, relative } from "node:path";
+    import { it } from "vite-plus/test";
+    const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" });
+    it("reads the checkout's Git", () => {
+      const root = import.meta.dirname;
+      const other = mkdtempSync(join(tmpdir(), "reader-"));
+      try {
+        ${read};
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+    });`,
+  );
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.write(project.source, "export const value = 2;\n");
+  project.git("add", project.source);
+  project.git("commit", "-m", "unread change");
+  const next = project.run();
+  expect(next.status, next.stdout + next.stderr).toBe(0);
+  expect(next.stdout).toContain("pass  test (1 files)");
+  expect(next.stdout).not.toContain("cache hit, replaying");
 });
 
 it("reports failures from every selected test group", () => {

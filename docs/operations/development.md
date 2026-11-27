@@ -67,15 +67,22 @@ write under the system temp folder or a gitignored folder instead. Test groups r
 budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
 group after another group fails, the test step runs it again and reports failures across the full
 selection. A run under the landing turn stops at its first failure instead, since it can no longer pass: the first step to end
-`FAIL` or `TIMEOUT` stops the others, which report `STOPPED`, and the first failing test group ends the test step. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,
-even after a timeout or interruption, it publishes passed groups if HEAD and runtime inputs still
-match. A change to either fails the test step. A force-killed run leaves its unpublished results in
-the private copy. A HEAD's cache is removed after three days without a run. Retries across worktrees
-and chats, each with its own install, reuse groups at the same commit with the same file modes
-and execute access, matching inputs, install state, tracked environment, user, umask, and host
-capabilities. A group's inputs are the checkout files its tests read, hashed when the group ends.
-The machine's programs, network interfaces and cgroups, Git state beyond the commit, the read and
-write permissions of checkout files, and files another process rewrites during the run are not
+`FAIL` or `TIMEOUT` stops the others, which report `STOPPED`, and the first failing test group ends the test step. Each run uses a private copy of a cache that every commit with the same install shares;
+once that cache reaches 256 MiB, runs start a new one, and a cache is removed after three days
+without a run. When the test step ends, even after a timeout or interruption, it publishes passed
+groups if HEAD and runtime inputs still match. A change to either fails the test step. A
+force-killed run leaves its unpublished results in the private copy. Retries and rebases across
+worktrees and chats, each with its own install, reuse a group when the tree's file modes, link
+targets and gitlinks, execute access, the group's inputs, install state, tracked environment, user,
+umask, and host capabilities match, at any commit. A group's inputs are the checkout files its tests
+read, hashed when the group ends. A group in which a Git process opens, clones or fetches from this
+checkout, or names it or its Git directories in an argument or a `GIT_DIR`-style variable, as Git's
+trace2 events report, also keys on HEAD, so it reruns at every commit. Git run with `GIT_*`
+variables removed or replaced, Git given a relative path to the checkout from a folder outside it,
+or a test that reads `.git` itself escapes that and needs an uncached task. The machine's programs,
+network interfaces and cgroups, Git state beyond the commit (the index, refs, config and other
+branches, which a group that reads Git does not key on either), the read and write permissions of
+checkout files, and files another process rewrites during the run are not
 inputs, so a pass still replays after a program its tests run
 changes or goes away. A test whose coverage they decide, such as one that skips cases without a
 program or a cgroup it may join, or runs a program a variable names, or that writes a report another
@@ -126,6 +133,10 @@ CI runs the `apps/server` suite on Windows too, as eight duration-balanced `Test
 shards. To reproduce one locally on Windows, run `vp test run --shard N/8` from `apps/server`. In a
 fork, [windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed`
 on Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
+After landing, the ship skill and the upstream sync run
+`node .github/scripts/windows-check.cjs <commit>`, which waits for that commit's run and exits 3
+with its failures when it does not pass. Without a token GitHub shows no runs of a private fork, so
+there it exits 3 as `unreadable`.
 
 ## Landing on main
 

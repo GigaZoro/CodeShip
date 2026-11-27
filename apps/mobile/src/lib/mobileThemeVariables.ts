@@ -23,11 +23,20 @@ const CARD_TEXT_ROLES = [
 
 // A selected row in a sidebar sits on the drawer, so it must stay visible there with its labels.
 function withVisibleSelection(variables: MobileThemeVariables): MobileThemeVariables {
+  const screen = variables["--color-screen"];
+  const drawer = flattenThemeColor(variables["--color-drawer"], screen);
   const selected = themeColorWithContrast(
     flattenThemeColor(variables["--color-thread-selected"], variables["--color-drawer"]),
-    flattenThemeColor(variables["--color-drawer"], variables["--color-screen"]),
+    drawer,
     1.2,
   );
+  const statusSurfaces = [
+    screen,
+    drawer,
+    flattenThemeColor(variables["--color-row-hover"], screen),
+    flattenThemeColor(variables["--color-thread-hover"], drawer),
+    selected,
+  ];
   return {
     ...variables,
     "--color-thread-selected": selected,
@@ -38,6 +47,18 @@ function withVisibleSelection(variables: MobileThemeVariables): MobileThemeVaria
     "--color-thread-selected-foreground-muted": themeColorWithContrast(
       variables["--color-thread-selected-foreground-muted"],
       selected,
+    ),
+    "--color-calm-status-quiet": themeColorWithContrast(
+      variables["--color-calm-status-quiet"],
+      statusSurfaces,
+    ),
+    "--color-calm-status-attention": themeColorWithContrast(
+      variables["--color-calm-status-attention"],
+      statusSurfaces,
+    ),
+    "--color-calm-status-alarm": themeColorWithContrast(
+      variables["--color-calm-status-alarm"],
+      statusSurfaces,
     ),
   };
 }

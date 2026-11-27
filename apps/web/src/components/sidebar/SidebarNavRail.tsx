@@ -35,7 +35,12 @@ import {
   UsageLimitsGlance,
   useLimitAccounts,
 } from "../usage/UsageLimitsGlance";
-import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
+import {
+  isSettingsPage,
+  isSidebarSectionPage,
+  type SidebarNavDestination,
+  useNavigateToMainApp,
+} from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import { useScheduledTasksRailBadge } from "./useScheduledTasksRailBadge";
 import { useSidebarMachines } from "./useSidebarMachines";
@@ -48,20 +53,6 @@ import {
 } from "./useSidebarNavRailBadges";
 
 import { t } from "~/i18n";
-type SidebarNavDestination =
-  | "threads"
-  | "projects"
-  | "pull-requests"
-  | "artifacts"
-  | "extensions"
-  | "scheduled-tasks"
-  | "thread-page"
-  | "manual-steps"
-  | "machines"
-  | "usage"
-  | "monitoring"
-  | "settings";
-
 function resolveActiveDestination(pathname: string): SidebarNavDestination | null {
   if (pathname === "/projects") return "projects";
   if (pathname === "/pull-requests") return "pull-requests";
@@ -231,6 +222,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
     <nav
       data-ui-usage-area="nav-rail"
       aria-label={t("Sections")}
+      data-slot="sidebar-nav-rail"
       className="flex shrink-0 flex-col items-center justify-between border-r border-sidebar-border pt-2 pb-1"
       style={{ width: THREAD_SIDEBAR_NAV_RAIL_WIDTH }}
     >

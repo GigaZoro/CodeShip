@@ -12,6 +12,7 @@ import type {
   VcsDriverKind,
   VcsDiscoveryItem,
 } from "@t3tools/contracts";
+import { SettingScope } from "./SettingScope";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { useLiveRefresh } from "../../hooks/useLiveRefresh";
@@ -332,14 +333,20 @@ function DiscoveryItemRow({
 }
 
 function SourceControlSectionSkeleton({
+  id,
   title,
   headerAction,
 }: {
+  readonly id?: string;
   readonly title: string;
   readonly headerAction?: ReactNode;
 }) {
   return (
-    <SettingsSection title={title} headerAction={headerAction}>
+    <SettingsSection
+      {...(id !== undefined ? { id } : {})}
+      title={title}
+      headerAction={headerAction}
+    >
       {SOURCE_CONTROL_SKELETON_ROWS.map((row) => (
         <div key={row} className="first:rounded-t-xl last:rounded-b-xl px-3 py-3 sm:px-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -409,13 +416,11 @@ function EmptySourceControlDiscovery({
   );
 }
 
-export function SourceControlSettingsPanel() {
-  const { scope, environment, connectedEnvironments } = useSettingsScope();
+function SourceControlDiscoverySections() {
+  const { environment } = useSettingsScope();
 
   const environmentId =
     environment?.connection.phase === "connected" ? environment.environmentId : null;
-  const aggregate = scope.environmentIds.length !== 1 && connectedEnvironments.length > 1;
-  const environmentSuffix = aggregate && environment ? ` · ${environment.label}` : "";
   const discovery = useEnvironmentQuery(
     environmentId === null
       ? null
@@ -525,8 +530,7 @@ export function SourceControlSettingsPanel() {
   );
 
   return (
-    <SettingsPageContainer>
-      <ProjectDefaultsSettings category="source-control" />
+    <>
       {environmentId === null ? (
         <SettingsSection
           id={searchableSetting("source-control").id}
@@ -541,7 +545,8 @@ export function SourceControlSettingsPanel() {
       ) : isInitialScanPending ? (
         <>
           <SourceControlSectionSkeleton
-            title={`${t("Version Control")}${environmentSuffix}`}
+            id={searchableSetting("source-control").id}
+            title={t("Version Control")}
             headerAction={scanButton}
           />
           <SourceControlSectionSkeleton title={t("Source control providers")} />
@@ -551,7 +556,7 @@ export function SourceControlSettingsPanel() {
           {hasVersionControlSystems ? (
             <SettingsSection
               id={searchableSetting("source-control").id}
-              title={`${t("Version Control")}${environmentSuffix}`}
+              title={t("Version Control")}
               headerAction={scanButton}
             >
               {result.versionControlSystems.map((item) => (
@@ -563,11 +568,7 @@ export function SourceControlSettingsPanel() {
           {result.sourceControlProviders.length > 0 ? (
             <SettingsSection
               id={hasVersionControlSystems ? undefined : searchableSetting("source-control").id}
-              title={
-                hasVersionControlSystems
-                  ? t("Source control providers")
-                  : `${t("Source control providers")}${environmentSuffix}`
-              }
+              title={t("Source control providers")}
               headerAction={hasVersionControlSystems ? null : scanButton}
             >
               {result.sourceControlProviders.map((item) => (
@@ -602,7 +603,17 @@ export function SourceControlSettingsPanel() {
       {environmentId === null ? null : (
         <IssueTrackerSettings key={environmentId} environmentId={environmentId} />
       )}
+    </>
+  );
+}
 
+export function SourceControlSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <ProjectDefaultsSettings category="source-control" />
+      <SettingScope setting="source-control">
+        <SourceControlDiscoverySections />
+      </SettingScope>
       <SourceControlWritingSettingsSection />
       <SettingsSection id="source-control-sync" title={t("Fetching & links")}>
         <SettingsRow

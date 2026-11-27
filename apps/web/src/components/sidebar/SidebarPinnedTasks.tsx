@@ -99,7 +99,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkingDuration } from "./SidebarThreadRow";
-import { THREAD_ROW_TONE_CLASS } from "./threadRowStatus";
+import { threadRowToneClass } from "./threadRowStatus";
 
 import { t } from "~/i18n";
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
@@ -130,7 +130,7 @@ function pinnedTaskStatusDisplay(status: Exclude<PinnedTaskStatus, "idle">) {
   const display = THREAD_STATUS_DISPLAY[status];
   return {
     icon: STATUS_ICON[status],
-    className: THREAD_ROW_TONE_CLASS[display.tone],
+    className: threadRowToneClass(display.tone),
   };
 }
 
@@ -188,7 +188,7 @@ function IntervalWaitBar(props: { task: ScheduledTask }) {
       className="pointer-events-none absolute inset-x-(--sidebar-row-content-inset) bottom-1 h-0.5 overflow-hidden rounded-full bg-sidebar-foreground/10"
     >
       <span
-        className="block h-full origin-left bg-info-foreground/60"
+        className="block h-full origin-left bg-info-foreground/60 calm:bg-calm-quiet/60"
         style={{ transform: `scaleX(${progress})` }}
       />
     </span>

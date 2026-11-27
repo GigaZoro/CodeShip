@@ -425,6 +425,10 @@ export type AccentColor = typeof AccentColor.Type;
 export const HtmlPreviewWidth = Schema.Literals(["chat", "wide", "full"]);
 export type HtmlPreviewWidth = typeof HtmlPreviewWidth.Type;
 
+/** Calm paints healthy statuses gray and colors only what needs the user; Vivid colors every status. */
+export const StatusColors = Schema.Literals(["calm", "vivid"]);
+export type StatusColors = typeof StatusColors.Type;
+
 /** How the composer shows reasoning effort: the level's name, or rising bars. */
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
 export type EffortDisplay = typeof EffortDisplay.Type;
@@ -515,6 +519,7 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("chat" as const)),
   ),
   effortDisplay: EffortDisplay.pipe(Schema.withDecodingDefault(Effect.succeed("label" as const))),
+  statusColors: StatusColors.pipe(Schema.withDecodingDefault(Effect.succeed("calm" as const))),
   loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   loadBalancingWeights: LoadBalancingWeights.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   appearanceContrast: AppearanceContrast.pipe(
@@ -2583,6 +2588,7 @@ export const ClientSettingsPatch = Schema.Struct({
   accentColor: Schema.optionalKey(AccentColor),
   htmlPreviewWidth: Schema.optionalKey(HtmlPreviewWidth),
   effortDisplay: Schema.optionalKey(EffortDisplay),
+  statusColors: Schema.optionalKey(StatusColors),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
   appearanceContrast: Schema.optionalKey(AppearanceContrast),

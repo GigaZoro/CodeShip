@@ -861,19 +861,44 @@ it("falls back to Antigravity for cross-provider review using gemini-4-neon and 
     providerInstanceId: agWithGemini,
   });
 
-  // Without the frontier model, Antigravity offers no reviewer: Auto's profile is the one choice.
-  const withoutNeon = autoCoordinatorBriefInput({
-    ...baseInput,
-    providers: baseInput.providers.map((entry) =>
-      entry.instanceId === agNoGemini || entry.instanceId === agWithGemini
-        ? {
-            ...entry,
-            models: entry.models.filter((model) => model.slug !== "gemini-4-neon"),
-          }
-        : entry,
-    ),
+  // With Gemini used up on every account, Claude Opus reviews on the third-party quota, at the
+  // thinking level the account offers since it lists no xhigh.
+  const geminiExhausted = (thirdPartyUsedPercent: number) =>
+    autoCoordinatorBriefInput({
+      ...baseInput,
+      providers: baseInput.providers.map((entry) =>
+        entry.driver !== antigravity
+          ? entry
+          : {
+              ...entry,
+              usageLimits: {
+                checkedAt: "2026-11-27T11:55:00Z",
+                windows: [
+                  {
+                    id: "gemini-default",
+                    kind: "session" as const,
+                    label: "Gemini",
+                    scope: "gemini-default" as const,
+                    usedPercent: 100,
+                  },
+                  {
+                    id: "third-party",
+                    kind: "session" as const,
+                    label: "Claude",
+                    scope: "third-party" as const,
+                    usedPercent: thirdPartyUsedPercent,
+                  },
+                ],
+              },
+            },
+      ),
+    });
+  expect(geminiExhausted(15).otherReviewer).toEqual({
+    model: "claude-opus-5-5",
+    options: [],
+    providerInstanceId: agNoGemini,
   });
-  expect(withoutNeon.otherReviewer).toBeUndefined();
+  expect(geminiExhausted(100).otherReviewer).toBeUndefined();
 
   // When Settings explicitly configures Antigravity's primary, honors that model and options.
   const configured = autoCoordinatorBriefInput({
@@ -948,7 +973,7 @@ it("reviews on Claude's and Codex's default models when no Auto model is saved",
       },
     ],
   };
-  const brief = autoCoordinatorBriefInput({
+  const input = {
     driver: claude,
     selection: { instanceId: ownId, model: "claude-opus-5-5" },
     projectId: ProjectId.make("project:auto"),
@@ -973,7 +998,8 @@ it("reviews on Claude's and Codex's default models when no Auto model is saved",
         ],
       }),
     ],
-  });
+  };
+  const brief = autoCoordinatorBriefInput(input);
   // An unsaved default is still the Settings primary: no switch to the xhigh Auto profile.
   expect(brief.otherReviewer).toEqual({
     model: "gpt-6-astra",
@@ -984,6 +1010,30 @@ it("reviews on Claude's and Codex's default models when no Auto model is saved",
     model: "claude-opus-5-5",
     options: [],
     providerInstanceId: ownId,
+  });
+
+  // An earlier account without the default reviews on its Auto profile: failover order decides.
+  const earlier = autoCoordinatorBriefInput({
+    ...input,
+    settings: {
+      ...input.settings,
+      providerInstances: enabledInstances([ownId, first, second]),
+      providerInstanceFailoverOrder: [second, first],
+    },
+    orchestrationCapableInstanceIds: new Set([ownId, first, second]),
+    providers: [
+      ...input.providers,
+      provider(second, {
+        models: [
+          { slug: "gpt-6.2-astra", name: "Astra 6.2", isCustom: false, capabilities: xhigh },
+        ],
+      }),
+    ],
+  });
+  expect(earlier.otherReviewer).toEqual({
+    model: "gpt-6.2-astra",
+    options: [{ id: "reasoningEffort", value: "xhigh" }],
+    providerInstanceId: second,
   });
 });
 

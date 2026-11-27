@@ -470,8 +470,9 @@ describe("resolveThreadStatusPill", () => {
       }),
     ).toMatchObject({
       label: "Waiting",
-      colorClass: "text-sidebar-muted-foreground",
-      dotClass: "bg-sidebar-muted-foreground",
+      colorClass: "text-sidebar-muted-foreground calm:text-calm-quiet",
+      dotClass:
+        "bg-sidebar-muted-foreground calm:bg-transparent calm:ring-1 calm:ring-inset calm:ring-calm-quiet",
       pulse: false,
     });
   });
@@ -545,6 +546,47 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({ label: "Done", pulse: false });
+  });
+
+  it("gives each grey Calm pill its own dot shape, since Calm drops their colors and pulse", () => {
+    const settled = { ...baseThread.runtime, status: "completed" as const, activeRunId: null };
+    const pills = [
+      resolveThreadStatusPill({ thread: baseThread }),
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          runtime: settled,
+          pendingBackgroundTasks: [
+            { taskId: "bg-1", description: "Watch build", kind: "monitor", awaited: true },
+          ],
+        },
+      }),
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          latestRun: makeLatestRun(),
+          runtime: settled,
+        },
+      }),
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestRun: makeLatestRun(),
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          runtime: settled,
+        },
+      }),
+    ];
+    const calmShapes = pills.map((pill) =>
+      (pill?.dotClass ?? "")
+        .split(" ")
+        .filter((name) => name.startsWith("calm:"))
+        .join(" "),
+    );
+    expect(pills.map((pill) => pill?.label)).toEqual(["Working", "Waiting", "Plan ready", "Done"]);
+    expect(new Set(calmShapes).size).toBe(pills.length);
   });
 
   it("shows failed, not completed, when the unseen run failed", () => {

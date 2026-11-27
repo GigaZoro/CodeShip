@@ -9,6 +9,7 @@ import {
   getThemeColorsForAppearance,
 } from "@t3tools/shared/themePalettes";
 import {
+  materialYouSystemThemeVariables,
   readDefaultMobileThemeVariables,
   readGeneratedMobileThemeVariables,
 } from "./mobileTheme.test-support";
@@ -23,6 +24,7 @@ import {
   resolveMobileThemeIds,
   themeColorWithAlpha,
   themeColorToNativeColor,
+  type MobileThemeVariables,
 } from "./mobileTheme";
 
 function relativeLuminance(hex: string): number {
@@ -143,6 +145,54 @@ describe("mobile themes", () => {
       ).toBeGreaterThanOrEqual(4.5);
     }
   });
+
+  // Calm paints thread statuses with only these three (threadStatusToneClasses), in every pane.
+  function calmStatusFailures(variables: MobileThemeVariables, label: string): string[] {
+    const screen = variables["--color-screen"];
+    const drawer = flattenThemeColor(variables["--color-drawer"], screen);
+    const surfaces = {
+      screen,
+      drawer,
+      rowHover: flattenThemeColor(variables["--color-row-hover"], screen),
+      threadHover: flattenThemeColor(variables["--color-thread-hover"], drawer),
+      // Pinned-task rows keep their status classes when selected.
+      threadSelected: flattenThemeColor(variables["--color-thread-selected"], drawer),
+    };
+    const failures: string[] = [];
+    for (const foreground of [
+      "--color-calm-status-quiet",
+      "--color-calm-status-attention",
+      "--color-calm-status-alarm",
+    ] as const) {
+      for (const [name, surface] of Object.entries(surfaces)) {
+        const ratio = contrastRatio(variables[foreground], surface);
+        if (ratio < 4.5) failures.push(`${label}: ${foreground} on ${name} ${ratio.toFixed(2)}`);
+      }
+    }
+    return failures;
+  }
+
+  it.each(MOBILE_THEME_IDS)("keeps %s calm status colors at AA on thread rows", (themeId) => {
+    const failures = (["light", "dark"] as const).flatMap((appearance) =>
+      ["ios", "android"].flatMap((platform) =>
+        calmStatusFailures(
+          getMobileThemeRuntimeVariables(themeId, appearance, platform),
+          `${platform} ${appearance}`,
+        ),
+      ),
+    );
+    expect(failures).toEqual([]);
+  });
+
+  it.each(["#6750a4", "#9c4146", "#386a20"])(
+    "keeps Material You calm status colors at AA for system seed %s",
+    (seed) => {
+      const failures = (["light", "dark"] as const).flatMap((appearance) =>
+        calmStatusFailures(materialYouSystemThemeVariables(seed, appearance), appearance),
+      );
+      expect(failures).toEqual([]);
+    },
+  );
 
   it.each(MOBILE_THEME_IDS)("keeps %s sidebar text readable on Android", (themeId) => {
     for (const appearance of ["light", "dark"] as const) {

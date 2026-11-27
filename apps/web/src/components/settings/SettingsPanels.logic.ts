@@ -371,6 +371,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/chat", msg("Open subagents and side chats in"), ["sideThreadOpenTarget"]),
   restorable("/settings/appearance", msg("Chat width"), ["chatWidth"]),
   restorable("/settings/appearance", msg("Interface density"), ["interfaceDensity"]),
+  restorable("/settings/appearance", msg("Status colors"), ["statusColors"]),
   restorable("/settings/appearance", msg("Accent color"), ["accentColor"]),
   restorable("/settings/appearance", msg("Effort display"), ["effortDisplay"]),
   restorable("/settings/chat", msg("Render math"), ["mathRenderingEnabled"]),

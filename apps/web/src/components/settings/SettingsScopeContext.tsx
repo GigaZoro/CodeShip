@@ -16,6 +16,7 @@ import {
 } from "./scopedSettings";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
 import { selectSingleEnvironmentScope } from "./settingsScopeAxis";
+import type { SettingScopeAxes } from "./settingsSearch";
 
 type ProjectFileMember = readonly [
   environmentId: EnvironmentId,
@@ -61,8 +62,13 @@ function useMemberProjectFiles(scope: ReturnType<typeof resolveSettingsScope>) {
   );
 }
 
-function useResolvedSettingsScope(rawSearch: SettingsScopeSearch, singleEnvironment: boolean) {
-  const groups = useSettingsProjectGroups();
+type SettingsProjectGroups = ReturnType<typeof useSettingsProjectGroups>;
+
+function useResolvedSettingsScope(
+  rawSearch: SettingsScopeSearch,
+  singleEnvironment: boolean,
+  groups: SettingsProjectGroups,
+) {
   const { environments: availableEnvironments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
 
@@ -94,32 +100,73 @@ function useResolvedSettingsScope(rawSearch: SettingsScopeSearch, singleEnvironm
   return { scope, groups, search, ...selected, targets, target };
 }
 
+/** One setting's own scope, chosen with the pill on its row. */
+export interface SettingScopeUnit {
+  /** The search item id of the row or section that shows the pill. */
+  readonly anchorId: string;
+  readonly title: string;
+  readonly axes: SettingScopeAxes;
+}
+
+/** Which scope a page lists or shows things for, picked in the line at the top of the page. */
+export type SettingsViewFilter = "machine" | "project-and-machine";
+
 const SettingsScopeContext = createContext<
   | (ReturnType<typeof useResolvedSettingsScope> & {
       singleEnvironment: boolean;
       deviceOnly: boolean;
       search: SettingsScopeSearch;
       selectScope: (next: SettingsScopeSearch) => void;
+      unit: SettingScopeUnit | null;
+      viewFilter: SettingsViewFilter | null;
     })
   | null
 >(null);
 
-export function SettingsScopeProvider({
-  search,
-  onChange,
-  children,
-  singleEnvironment = false,
-  deviceOnly = false,
-}: {
+interface SettingsScopeProviderProps {
   singleEnvironment?: boolean;
   /** The page hides the scope picker, so its client settings save for this device. */
   deviceOnly?: boolean;
   search: SettingsScopeSearch;
   onChange: (next: SettingsScopeSearch) => void;
+  unit?: SettingScopeUnit | null;
+  viewFilter?: SettingsViewFilter | null;
   children: ReactNode;
-}) {
-  const resolved = useResolvedSettingsScope(search, singleEnvironment);
-  const value = { ...resolved, singleEnvironment, deviceOnly, selectScope: onChange };
+}
+
+export function SettingsScopeProvider(props: SettingsScopeProviderProps) {
+  const parent = useContext(SettingsScopeContext);
+  // Each row's scope nests in its page's; the project list is the same, so build it once per page.
+  return parent ? (
+    <ResolvedSettingsScopeProvider {...props} groups={parent.groups} />
+  ) : (
+    <RootSettingsScopeProvider {...props} />
+  );
+}
+
+function RootSettingsScopeProvider(props: SettingsScopeProviderProps) {
+  return <ResolvedSettingsScopeProvider {...props} groups={useSettingsProjectGroups()} />;
+}
+
+function ResolvedSettingsScopeProvider({
+  search,
+  onChange,
+  children,
+  singleEnvironment = false,
+  deviceOnly = false,
+  unit = null,
+  viewFilter = null,
+  groups,
+}: SettingsScopeProviderProps & { groups: SettingsProjectGroups }) {
+  const resolved = useResolvedSettingsScope(search, singleEnvironment, groups);
+  const value = {
+    ...resolved,
+    singleEnvironment,
+    deviceOnly,
+    selectScope: onChange,
+    unit,
+    viewFilter,
+  };
   return <SettingsScopeContext value={value}>{children}</SettingsScopeContext>;
 }
 

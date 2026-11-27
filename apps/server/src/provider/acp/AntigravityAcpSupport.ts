@@ -75,6 +75,15 @@ export const OPEN_MODEL_ACCESS_RELEASE = [1, 5, 1] as const;
 // `agy acp` 1.4.5+ supports the built-in `/usage` quota command.
 const QUOTA_COMMAND_RELEASE = [1, 4, 5] as const;
 
+/**
+ * From 1.4.2 (still on 1.5.2) the runtime creates or overwrites skills/system/run-workflow/SKILL.md
+ * in the workspace unless `run_workflow` is disabled. Older builds leave the file alone.
+ */
+function antigravityWritesRunWorkflowSkill(version: string | null | undefined): boolean {
+  const parsed = parseAntigravityVersion(version);
+  return parsed !== undefined && compareVersions(parsed, [1, 4, 2]) >= 0;
+}
+
 export function isQualifiedAntigravityRelease(version: string | null | undefined): boolean {
   const parsed = parseAntigravityVersion(version ?? undefined);
   return parsed !== undefined && compareVersions(parsed, QUOTA_COMMAND_RELEASE) >= 0;
@@ -111,9 +120,22 @@ export function antigravitySessionMeta(
   initializeResult: EffectAcpSchema.InitializeResponse,
   systemPromptAppend?: string,
 ): EffectAcpSchema.NewSessionRequest["_meta"] | undefined {
-  return systemPromptAppend !== undefined && antigravityAppendsSystemPrompt(initializeResult)
-    ? { antigravity: { systemPrompt: { append: systemPromptAppend } } }
+  const disabledTools = antigravityWritesRunWorkflowSkill(initializeResult.agentInfo?.version)
+    ? (["run_workflow"] as const)
     : undefined;
+  const systemPrompt =
+    systemPromptAppend !== undefined && antigravityAppendsSystemPrompt(initializeResult)
+      ? { append: systemPromptAppend }
+      : undefined;
+  if (disabledTools === undefined && systemPrompt === undefined) {
+    return undefined;
+  }
+  return {
+    antigravity: {
+      ...(disabledTools !== undefined ? { disabledTools: [...disabledTools] } : {}),
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+    },
+  };
 }
 
 export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(function* (

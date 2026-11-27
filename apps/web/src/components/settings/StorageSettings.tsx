@@ -37,7 +37,12 @@ import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayo
 import { DatabaseStorageNotice } from "./DatabaseStorageNotice";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
-import { SettingsScopeNotice } from "./SettingsScopeNotice";
+import {
+  SettingScope,
+  supportsCapabilities,
+  UnavailableSettingRow,
+  useAnotherMachineMaySupport,
+} from "./SettingScope";
 import { SettingsGroup } from "./SettingsGroup";
 import type { ScopedSettingsTarget } from "./scopedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -51,6 +56,14 @@ import {
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
 
 export function WorktreesDirectoryRow() {
+  return (
+    <SettingScope setting="storage-worktrees-location" requires={["worktreesDirectory"]}>
+      <WorktreesDirectoryUnit />
+    </SettingScope>
+  );
+}
+
+function WorktreesDirectoryUnit() {
   const { connectedEnvironments, targets } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -384,14 +397,17 @@ const storageCleanupPermissionsAtom = environmentAtomList(
   serverEnvironment.runStorageCleanup.permissionAtom,
 );
 
+const CLEANUP_RUN = ["storageCleanupRun"] as const;
+
 function CleanupSection() {
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00.000Z`);
   const { connectedEnvironments } = useSettingsScope();
+  const anotherMachine = useAnotherMachineMaySupport(CLEANUP_RUN);
   const [pending, setPending] = useState(false);
   const run = useAtomCommand(serverEnvironment.runStorageCleanup);
-  const supported = connectedEnvironments.filter(
-    (environment) => environment.serverConfig?.environment.capabilities.storageCleanupRun === true,
+  const supported = connectedEnvironments.filter((environment) =>
+    supportsCapabilities(environment, CLEANUP_RUN),
   );
   const supportedIds = supported.map(({ environmentId }) => environmentId);
   const reports = useAtomValue(storageCleanupReportsAtom(environmentIdsKey(supportedIds)));
@@ -425,7 +441,8 @@ function CleanupSection() {
       )
     );
   });
-  if (supported.length === 0) return null;
+  if (supported.length === 0)
+    return anotherMachine ? <UnavailableSettingRow setting="storage-delete-now" /> : null;
   const summaries = supported.map((environment) => {
     const query = state.find((entry) => entry.environmentId === environment.environmentId);
     const report = query?.report ?? null;
@@ -565,24 +582,11 @@ function supportsStorageCleanup(
   );
 }
 
-/** Narrows a mixed selection to the machines that support cleanup. */
-function StorageCleanupScopeNotice() {
-  const { connectedEnvironments } = useSettingsScope();
+function StorageCleanupUnsupported() {
   return (
-    <SettingsScopeNotice
-      inline
-      target="environment"
-      eligibleEnvironmentIds={connectedEnvironments
-        .filter(
-          (environment) =>
-            environment.serverConfig?.environment.capabilities.storageCleanup === true,
-        )
-        .map((environment) => environment.environmentId)}
-    >
-      {t(
-        "Update the selected environments to use storage cleanup, or choose a machine that supports it.",
-      )}
-    </SettingsScopeNotice>
+    <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
+      {t("Update the selected machines to use storage cleanup, or choose one that supports it.")}
+    </p>
   );
 }
 
@@ -629,33 +633,23 @@ function WorktreeCleanupSection() {
     )
   ) {
     return (
-      <SettingsSection
-        hideTitle
-        id="storage-worktrees"
-        title={t("Worktree cleanup")}
-        variant="plain"
-      >
-        <SettingsScopeNotice inline target="all">
+      <SettingsSection id="storage-worktrees" title={t("Worktree cleanup")} variant="plain">
+        <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
           {t("Update the selected machines to configure project worktree cleanup.")}
-        </SettingsScopeNotice>
+        </p>
       </SettingsSection>
     );
   }
   if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
-      <SettingsSection
-        hideTitle
-        id="storage-worktrees"
-        title={t("Worktree cleanup")}
-        variant="plain"
-      >
-        <StorageCleanupScopeNotice />
+      <SettingsSection id="storage-worktrees" title={t("Worktree cleanup")} variant="plain">
+        <StorageCleanupUnsupported />
       </SettingsSection>
     );
   }
 
   return (
-    <SettingsSection hideTitle id="storage-worktrees" title={t("Worktree cleanup")}>
+    <SettingsSection id="storage-worktrees" title={t("Worktree cleanup")}>
       <>
         {isProjectScope && (
           <SettingsRow
@@ -861,7 +855,31 @@ function WorktreeCleanupSection() {
 
 /** Retention for logs and captures, and the manual cleanup run, which covers worktrees too. */
 export function StorageCleanupSections() {
-  const { scope, connectedEnvironments, targets } = useSettingsScope();
+  const { connectedEnvironments } = useSettingsScope();
+  return (
+    <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
+      <SettingScope setting="storage-worktrees">
+        <WorktreeCleanupSection />
+      </SettingScope>
+      <SettingScope setting="storage-artifacts">
+        <ArtifactsCleanupSection />
+      </SettingScope>
+      <SettingScope setting="storage-delete-now">
+        <CleanupSection />
+      </SettingScope>
+      {/* Machines report their databases after the page renders, so the notice goes last to push nothing down. */}
+      <DatabaseStorageNotice
+        environments={connectedEnvironments.filter(
+          (environment) =>
+            environment.serverConfig?.environment.capabilities.databaseStorage === true,
+        )}
+      />
+    </SettingsSection>
+  );
+}
+
+function ArtifactsCleanupSection() {
+  const { connectedEnvironments, targets } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const settings = scopedSettings.storageCleanup;
@@ -899,105 +917,77 @@ export function StorageCleanupSections() {
     targets.length > 1 && settledToolOutputStatus === `${targetIdsKey}:true`
       ? t("Mixed across selected machines")
       : undefined;
-  if (scope.kind === "project" || scope.kind === "checkout") {
-    return (
-      <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
-        <WorktreeCleanupSection />
-      </SettingsSection>
-    );
-  }
   const update = (patch: Partial<StorageCleanupSettings>, options: SaveOptions) =>
     updateSettings({ storageCleanup: patch }, options);
-  const databaseStorageNotice = (
-    <DatabaseStorageNotice
-      environments={connectedEnvironments.filter(
-        (environment) =>
-          environment.serverConfig?.environment.capabilities.databaseStorage === true,
-      )}
-    />
-  );
   if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
-      <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
-        <SettingsSection
-          hideTitle
-          id="storage-artifacts"
-          title={t("Artifacts and logs")}
-          variant="plain"
-        >
-          <StorageCleanupScopeNotice />
-        </SettingsSection>
-        {databaseStorageNotice}
+      <SettingsSection id="storage-artifacts" title={t("Artifacts and logs")} variant="plain">
+        <StorageCleanupUnsupported />
       </SettingsSection>
     );
   }
 
   // Machines report their databases after the page renders, so the notice goes last to push nothing down.
   return (
-    <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
-      <WorktreeCleanupSection />
-      <SettingsSection hideTitle id="storage-artifacts" title={t("Artifacts and logs")}>
-        <AnimatedHeight>
-          <SettingsRow
-            title={t("Delete old browser artifacts")}
-            status={artifactsStatus}
-            managedPaths={["storageCleanup.browserArtifactsAfterDays"]}
-            description={t(
-              "Delete saved browser captures after this many days. Older capture links will no longer open.",
-            )}
-            serverScoped
-            control={
-              <RetentionControl
-                label={t("Delete old browser artifacts")}
-                value={settings.browserArtifactsAfterDays}
-                onChange={(browserArtifactsAfterDays, onFailed) =>
-                  update({ browserArtifactsAfterDays }, { onFailed })
-                }
-              />
-            }
-          />
-        </AnimatedHeight>
-        <AnimatedHeight>
-          <SettingsRow
-            title={t("Delete old rotated logs")}
-            status={logsStatus}
-            managedPaths={["storageCleanup.logsAfterDays"]}
-            description={t(
-              "Delete inactive rotated log files after this many days. Current logs are kept.",
-            )}
-            serverScoped
-            control={
-              <RetentionControl
-                label={t("Delete old rotated logs")}
-                value={settings.logsAfterDays}
-                onChange={(logsAfterDays, onFailed) => update({ logsAfterDays }, { onFailed })}
-              />
-            }
-          />
-        </AnimatedHeight>
-        <AnimatedHeight>
-          <SettingsRow
-            title={t("Remove old tool output")}
-            status={toolOutputStatus}
-            managedPaths={["storageCleanup.toolOutputAfterDays"]}
-            description={t(
-              "Remove command and tool output from settled and archived chats after this many days without activity. The steps stay in the chat.",
-            )}
-            serverScoped
-            control={
-              <RetentionControl
-                label={t("Remove old tool output")}
-                value={settings.toolOutputAfterDays}
-                onChange={(toolOutputAfterDays, onFailed) =>
-                  update({ toolOutputAfterDays }, { onFailed })
-                }
-              />
-            }
-          />
-        </AnimatedHeight>
-      </SettingsSection>
-      <CleanupSection />
-      {databaseStorageNotice}
+    <SettingsSection id="storage-artifacts" title={t("Artifacts and logs")}>
+      <AnimatedHeight>
+        <SettingsRow
+          title={t("Delete old browser artifacts")}
+          status={artifactsStatus}
+          managedPaths={["storageCleanup.browserArtifactsAfterDays"]}
+          description={t(
+            "Delete saved browser captures after this many days. Older capture links will no longer open.",
+          )}
+          serverScoped
+          control={
+            <RetentionControl
+              label={t("Delete old browser artifacts")}
+              value={settings.browserArtifactsAfterDays}
+              onChange={(browserArtifactsAfterDays, onFailed) =>
+                update({ browserArtifactsAfterDays }, { onFailed })
+              }
+            />
+          }
+        />
+      </AnimatedHeight>
+      <AnimatedHeight>
+        <SettingsRow
+          title={t("Delete old rotated logs")}
+          status={logsStatus}
+          managedPaths={["storageCleanup.logsAfterDays"]}
+          description={t(
+            "Delete inactive rotated log files after this many days. Current logs are kept.",
+          )}
+          serverScoped
+          control={
+            <RetentionControl
+              label={t("Delete old rotated logs")}
+              value={settings.logsAfterDays}
+              onChange={(logsAfterDays, onFailed) => update({ logsAfterDays }, { onFailed })}
+            />
+          }
+        />
+      </AnimatedHeight>
+      <AnimatedHeight>
+        <SettingsRow
+          title={t("Remove old tool output")}
+          status={toolOutputStatus}
+          managedPaths={["storageCleanup.toolOutputAfterDays"]}
+          description={t(
+            "Remove command and tool output from settled and archived chats after this many days without activity. The steps stay in the chat.",
+          )}
+          serverScoped
+          control={
+            <RetentionControl
+              label={t("Remove old tool output")}
+              value={settings.toolOutputAfterDays}
+              onChange={(toolOutputAfterDays, onFailed) =>
+                update({ toolOutputAfterDays }, { onFailed })
+              }
+            />
+          }
+        />
+      </AnimatedHeight>
     </SettingsSection>
   );
 }

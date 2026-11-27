@@ -643,10 +643,13 @@ export function terminalStatusFromRunningIds(
   }
   return {
     label: resolve(msg("Terminal process running")),
-    colorClass: "text-teal-600 dark:text-teal-300/90",
+    colorClass: "text-teal-600 dark:text-teal-300/90 calm:text-calm-quiet",
     pulse: true,
   };
 }
+
+/** The Calm look keeps live statuses still; the solid dot and the timer already say "working". */
+const STATUS_PULSE_CLASS = "motion-safe:animate-status-pulse calm:animate-none";
 
 function synchronizeTerminalPulse(event: AnimationEvent<SVGSVGElement>) {
   if (event.animationName !== "status-pulse") return;
@@ -699,7 +702,7 @@ export function ThreadTerminalStatusButton({
       label={label}
     >
       <TerminalIcon
-        className="size-3.5 motion-safe:animate-status-pulse"
+        className={`size-3.5 ${STATUS_PULSE_CLASS}`}
         onAnimationStart={synchronizeTerminalPulse}
       />
     </SharedTooltipTrigger>
@@ -728,7 +731,7 @@ function ThreadStatusLabel({
       >
         <span
           className={`size-[9px] rounded-full ${status.dotClass} ${
-            status.pulse ? "motion-safe:animate-status-pulse" : ""
+            status.pulse ? STATUS_PULSE_CLASS : ""
           }`}
         />
       </SharedTooltipTrigger>
@@ -748,7 +751,7 @@ function ThreadStatusLabel({
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${status.dotClass} ${
-          status.pulse ? "motion-safe:animate-status-pulse" : ""
+          status.pulse ? STATUS_PULSE_CLASS : ""
         }`}
       />
       <span className="hidden md:inline">{label}</span>
@@ -886,7 +889,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
           label={terminalStatus.label}
         >
           <TerminalIcon
-            className={`size-3 ${terminalStatus.pulse ? "motion-safe:animate-status-pulse" : ""}`}
+            className={`size-3 ${terminalStatus.pulse ? STATUS_PULSE_CLASS : ""}`}
             onAnimationStart={synchronizeTerminalPulse}
           />
         </SharedTooltipTrigger>

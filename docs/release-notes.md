@@ -1,3 +1,37 @@
+## 2026-11-27 — `check:changed` reuses test passes across commits in smaller groups
+
+- Maintainers: `vp run check:changed` now shares its staged test cache across commits with the same install instead of starting cold on every commit or rebase. Groups whose Git commands read this checkout's repository, tracked through `GIT_TRACE2_PERF`, still key on `HEAD` and rerun on every commit; all other groups replay whenever their read files and tree state still match.
+- Test groups in `check:changed` are now hash-chunked to at most 8 files each instead of 32, keeping individual cache entries smaller and avoiding unnecessary reruns when an unrelated test file changes.
+
+## 2026-11-27 — Landing checks tolerate concurrent marker probes on Windows
+
+- On Windows, `check:changed` runs under a landing turn no longer fail with `EPERM` when removing their `landing-wait-*.sqlite` marker file while another `check:changed` run probes it, and marker probes ignore SQLite sidecar files.
+
+## 2026-11-27 — Calm status colors
+
+- Status colors are calm by default on web, desktop and mobile. Working, Waiting, Done and other healthy statuses show in gray, each with its own icon. Only what needs you keeps color: amber when you need to answer and red when something failed. On web and desktop, status dots differ by shape: solid for running, hollow for waiting, square for done and a diamond for a ready plan.
+- On web and desktop, the calm look stops the pulsing status dots, the shimmer on running tools and the sweep across live rows, and shows a still "live" mark instead. It also removes nested borders from code blocks and the sidebar rail, keeps chat paragraphs to a readable line length, gives badges one height and shape, and rests secondary icon buttons quieter until you point at or focus them. Each calm status color meets WCAG AA contrast in every built-in theme, light and dark, on lists, the sidebar, the command palette and their hovered and selected rows, including Android system colors, and resting icons stay at 3:1.
+- Choose **Settings → Appearance → Status colors → Vivid** to bring back a color for every status and the previous look. The choice syncs with the shared appearance profile.
+
+## 2026-11-27 — Each setting picks its own machine or project
+
+- Settings no longer has a project and machine bar at the top of every page. A setting whose value can differ between machines or projects has a scope button on its own row that picks where that one setting applies, and settings search marks such results **Per machine**, **One machine** or **Per project**.
+- A setting that needs a newer server, such as Auto mode or Final review, says when the chosen machine can't use it, and its scope button offers a machine that can, instead of the setting disappearing.
+- **Guest links**, **Allow linked environments** and **Follow shared settings** in Machines & access can now be set for one machine as well as for all of them.
+- **Device sources** in Integrations and the **Version Control** providers in Source control & worktrees show one machine at a time, picked with their scope button, instead of a merged view of every machine.
+
+## 2026-11-27 — Antigravity no longer drops a workflow skill into your project
+
+- On Antigravity 1.5.2, a session or delegate no longer writes `skills/system/run-workflow/SKILL.md` into the project folder, where it could be committed with your work. T3.CodeShip keeps Antigravity's `run_workflow` tool off on every runtime from 1.4.2 on; delete a copy an earlier session left behind.
+
+## 2026-11-27 — Antigravity reviews on Claude Opus when Gemini runs out
+
+- When every Antigravity account has used up its Gemini quota, Auto mode's cross-provider review runs on Antigravity's Claude Opus on an account whose separate Claude/GPT-OSS quota has room, instead of offering no Antigravity reviewer. Gemini 4 Neon on any account with room still comes first.
+
+## 2026-11-27 — The calmer UI stays calm
+
+- Maintainers: a new UI feature now claims an existing slot or removes something. `docs/internals/web-ui.md` names the slots (thread notices, sidebar row status, thread details, the rail and the composer controls), and a test caps how many thread details show by default, how many rail items there are and how many composer controls show at rest, so raising a cap is a visible, reviewed change.
+
 ## 2026-11-27 — The global Git config check test no longer downloads a Node runtime
 
 - Maintainers: the `check:changed` test that runs a check with an empty home folder keeps your Vite+ data and cache folders, so it no longer downloads a Node runtime on every run and takes seconds instead of minutes.
@@ -164,6 +198,11 @@
 
 - When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
 
+## 2026-11-26 — Faster checks for test-cache regressions
+
+- The environment-variable tests now run the cached test group directly. They still verify the value each test receives after an environment change, without running unrelated checks for each variable.
+- The cross-worktree cache reuse test now passes each checkout path as `PWD`, so it passes under Windows PowerShell where `PWD` is unset and verifies that a different `PWD` does not invalidate cached passes.
+
 ## 2026-11-26 — Windows commands recover from launcher timeouts
 
 - Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. A launch whose command host ends early fails at once. POSIX and Windows cancellation close the start gate before an unstarted command can execute, including during restart recovery, and then stop any wrapper or job host the launch left running.
@@ -307,6 +346,15 @@
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
+
+## 2026-11-25 — Landers wait for their Windows check
+
+- Maintainers: after landing, the ship skill and the upstream sync run `node .github/scripts/windows-check.cjs <commit>`. It waits for that commit's `check:changed` run on Windows and exits 3 with its failing steps and test lines when it does not pass. It also exits 3, with an `unreadable` result and its reason, when GitHub does not show the run or the check cannot run: an unknown commit, a tree git cannot read, or an `origin` that pushes to several GitHub repositories. A Windows-only failure therefore reaches the chat that landed it.
+- The check waits out both of GitHub's rate limits, including a secondary limit that names no wait. It sends no request once its time limit has passed, for example after the machine sleeps.
+- The Windows check may run for 6 hours, so a large push that selects every test file finishes instead of failing at 1 hour with no failing test.
+- An attachment preview browser test no longer fails on Windows when it restores the source row in a million-line file. Its tolerance now allows for Chromium rounding the scroll position to whole pixels.
+- Web browser tests run with the en-US locale on every machine. They no longer fail where the system formats numbers differently, such as `1 000` for `1,000`.
+- A `check:changed` test that gives a second worktree its own install no longer fails on Windows. Its copy keeps linked packages as links, where Node's copy had turned each into a full folder.
 
 ## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
 

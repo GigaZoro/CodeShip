@@ -1,6 +1,7 @@
 import { t } from "~/i18n";
-import { pipe } from "effect/Function";
+import type { ThreadStatusSalience } from "@t3tools/client-runtime/state/thread-status";
 import { THEME_CSS_MAX_LENGTH, type EnvironmentTheme } from "@t3tools/contracts";
+import { pipe } from "effect/Function";
 import * as Equal from "effect/Equal";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -774,6 +775,72 @@ function applyContextChipVariables(root: HTMLElement, colors: ThemeColors): void
   root.style.removeProperty(CONTEXT_CHIP_MESSAGE_VARIABLE);
   root.style.removeProperty(CONTEXT_CHIP_INVALID_VARIABLE);
   for (const [variable, value] of Object.entries(variables)) {
+    root.style.setProperty(variable, value);
+  }
+}
+
+// AA asks 4.5:1; the margin survives surfaces painted from rounded 8-bit colors.
+const CALM_STATUS_CONTRAST = 4.6;
+
+/** The colors the Calm look paints a status salience with; index.css maps them to `calm-*` tokens. */
+export const CALM_STATUS_VARIABLES = {
+  calm: "--calm-status-quiet",
+  attention: "--calm-status-attention",
+  alarm: "--calm-status-alarm",
+} as const satisfies Record<ThreadStatusSalience, string>;
+
+/**
+ * Status text and dots sit on the sidebar and its hovered, active and selected rows, on canvas
+ * lists and their hovered rows, and on command palette rows (ui/command.tsx tints them with the
+ * text color). Themes solve their muted and status colors for the canvas alone, so each calm color
+ * is solved here for all of those surfaces, keeping its hue.
+ */
+export function calmStatusVariables(
+  colors: ThemeColors,
+): Readonly<Record<(typeof CALM_STATUS_VARIABLES)[ThreadStatusSalience], string>> {
+  const opaque = (value: string, under: ThemeRgbColor, coverage = 1) => {
+    const parsed = parseThemeColor(value);
+    return parsed
+      ? mixThemeRgbColors(under, themeOklchToRgb(parsed.color, false), parsed.alpha * coverage)
+      : under;
+  };
+  const canvas = opaque(colors.canvas, THEME_WHITE_FOREGROUND);
+  const sidebar = opaque(colors.sidebar, canvas);
+  const popover = opaque(colors.surfaceOverlay, canvas);
+  const surfaces = [
+    canvas,
+    sidebar,
+    opaque(colors.sidebarRowHover, sidebar),
+    opaque(colors.sidebarRowActive, sidebar),
+    opaque(colors.sidebarRowSelected, sidebar),
+    opaque(colors.accentSurface, canvas),
+    popover,
+    opaque(colors.text, popover, 0.06),
+    opaque(colors.text, popover, 0.09),
+    opaque(colors.accentSurface, popover),
+  ];
+  const contrastOnSurfaces = (color: ThemeRgbColor) =>
+    Math.min(...surfaces.map((surface) => themeContrastRatio(color, surface)));
+  const blackContrast = contrastOnSurfaces(THEME_BLACK_FOREGROUND);
+  const whiteContrast = contrastOnSurfaces(THEME_WHITE_FOREGROUND);
+  const direction = blackContrast >= whiteContrast ? "darker" : "lighter";
+  const minContrast = Math.min(CALM_STATUS_CONTRAST, Math.max(blackContrast, whiteContrast));
+  const solve = (value: string) => {
+    const parsed = parseThemeColor(value);
+    const base = parsed?.color ?? themeRgbToOklch(canvas);
+    const solved = solveOklchLightness(base, surfaces, minContrast, direction);
+    return themeRgbToHexColor(themeOklchToRgb(solved));
+  };
+  return {
+    [CALM_STATUS_VARIABLES.calm]: solve(colors.mutedForeground),
+    [CALM_STATUS_VARIABLES.attention]: solve(colors.warningForeground),
+    [CALM_STATUS_VARIABLES.alarm]: solve(colors.errorForeground),
+  };
+}
+
+function applyStatusVariables(root: HTMLElement, colors: ThemeColors): void {
+  applyContextChipVariables(root, colors);
+  for (const [variable, value] of Object.entries(calmStatusVariables(colors))) {
     root.style.setProperty(variable, value);
   }
 }
@@ -1715,6 +1782,7 @@ export function applyThemeColorPreview(
     if (isThemeColor(value)) root.style.setProperty(APP_THEME_VARIABLES[role], value);
   }
   applyContextChipVariables(root, colors);
+  applyStatusVariables(root, colors);
   applyThemeCss(css);
   setThemePreviewAppearance(appearance);
 }
@@ -1737,7 +1805,7 @@ export function applyThemePalette(theme: ThemePreference, appearance?: ThemeAppe
     for (const [role, value] of Object.entries(colors) as Array<[ThemeColorRole, string]>) {
       root.style.setProperty(APP_THEME_VARIABLES[role], value);
     }
-    applyContextChipVariables(root, colors);
+    applyStatusVariables(root, colors);
     return;
   }
 
@@ -1745,7 +1813,7 @@ export function applyThemePalette(theme: ThemePreference, appearance?: ThemeAppe
   for (const variable of Object.values(APP_THEME_VARIABLES)) {
     root.style.removeProperty(variable);
   }
-  applyContextChipVariables(root, getStandardPaintedThemeColors(appearance ?? "light"));
+  applyStatusVariables(root, getStandardPaintedThemeColors(appearance ?? "light"));
 }
 
 export function resolveThemeAppearance(

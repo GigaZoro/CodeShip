@@ -5,7 +5,39 @@ import {
   isThreadWaitingOnWork,
   matchesThreadListStatus,
   resolveThreadStatus,
+  THREAD_STATUS_DISPLAY,
+  THREAD_STATUS_TONE_SALIENCE,
+  type ThreadStatusDisplayKey,
+  type ThreadStatusSalience,
 } from "./threadStatus.ts";
+
+describe("THREAD_STATUS_TONE_SALIENCE", () => {
+  it("colours only what needs the user: amber for its asks, red for failures, grey for the rest", () => {
+    const expected: Record<ThreadStatusDisplayKey, ThreadStatusSalience> = {
+      approval: "attention",
+      input: "attention",
+      request: "attention",
+      limited: "attention",
+      woke: "attention",
+      failed: "alarm",
+      settingUp: "calm",
+      starting: "calm",
+      working: "calm",
+      goal: "calm",
+      waiting: "calm",
+      paused: "calm",
+      plan: "calm",
+      done: "calm",
+    };
+    const actual = Object.fromEntries(
+      Object.entries(THREAD_STATUS_DISPLAY).map(([key, display]) => [
+        key,
+        THREAD_STATUS_TONE_SALIENCE[display.tone],
+      ]),
+    );
+    expect(actual).toEqual(expected);
+  });
+});
 
 describe("resolveThreadStatus", () => {
   const runtime = {

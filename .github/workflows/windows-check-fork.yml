@@ -5,6 +5,8 @@ name: Windows check (fork)
 # Windows. This runs check:changed on Windows for every push to a fork's main,
 # against the commit main was at before the push. GitHub-hosted runners cost
 # nothing for a public repository; ci.yml runs the server shards on Windows.
+# The lander waits for this run and gets its failures
+# (.github/scripts/windows-check.cjs), so its limits must fit the largest push.
 
 on:
   push:
@@ -18,8 +20,9 @@ jobs:
     name: check:changed on Windows
     if: github.repository != 'pingdotgg/t3code'
     runs-on: windows-2025
-    # An upstream sync pushes hundreds of files at once.
-    timeout-minutes: 120
+    # An upstream sync selects every test file, and server tests run one at a
+    # time: about 3 hours here. 360 minutes is a hosted job's ceiling.
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -56,5 +59,7 @@ jobs:
       - name: Check the pushed commits
         env:
           BEFORE: ${{ github.event.before }}
-          CHECK_CHANGED_TIMEOUT: "3600"
+          # Each step may use the job's time; a lower limit fails a large push
+          # that has no failing test.
+          CHECK_CHANGED_TIMEOUT: "20400"
         run: vp run check:changed $env:BEFORE
