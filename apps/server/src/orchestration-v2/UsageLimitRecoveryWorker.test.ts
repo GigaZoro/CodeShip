@@ -1364,6 +1364,78 @@ describe("reset credits", () => {
     assert.isNull(resetCreditResumeCommand(autoWithUsedUp("opus")));
     assert.equal(resetCreditResumeCommand(autoWithUsedUp("fable"))?.type, "message.dispatch");
   });
+
+  it("stops retrying a limit-reset-resume run that failed again without work on the same model", () => {
+    const resetResumeId = MessageId.make("limit-reset-resume:thread:failover:run:previous");
+    const withRoom = (overrides: Partial<ProjectionStore.ProjectionLimitRecoveryCandidate>) =>
+      resetCreditResumeCommand(
+        input({
+          thread: { ...thread, ...overrides },
+          providers: [freed],
+          recordedLimits: new Map(),
+        }),
+      );
+    // First limit-reset-resume after a normal user message dispatches even if that run did no work.
+    assert.equal(
+      withRoom({
+        latestRunUserMessageId: MessageId.make("message:initial"),
+        latestRunModel: "opus",
+        latestRunWorkDone: false,
+      })?.commandId,
+      CommandId.make("limit-reset-resume:thread:failover:run:failover"),
+    );
+    // A limit-reset-resume that fails again with zero progress on the same model stops looping,
+    // whether latestRunModel holds the alias, the canonical slug, or is omitted.
+    for (const latestRunModel of ["opus", "claude-opus-4-1", null, undefined]) {
+      assert.isNull(
+        withRoom({
+          latestRunUserMessageId: resetResumeId,
+          latestRunWorkDone: false,
+          ...(latestRunModel === undefined ? {} : { latestRunModel }),
+        }),
+      );
+    }
+    // A limit-reset-resume that did work before hitting a new usage limit is still eligible.
+    assert.equal(
+      withRoom({
+        latestRunUserMessageId: resetResumeId,
+        latestRunModel: "claude-opus-4-1",
+        latestRunWorkDone: true,
+      })?.commandId,
+      CommandId.make("limit-reset-resume:thread:failover:run:failover"),
+    );
+    // If Auto moved to another model with room since the zero-progress resume, it can try that model.
+    assert.equal(
+      resetCreditResumeCommand(
+        input({
+          thread: {
+            ...thread,
+            modelSelection: { instanceId: own, model: "claude-fable-5-2", autoAccount: true },
+            latestRunUserMessageId: resetResumeId,
+            latestRunModel: "claude-fable-5-2",
+            latestRunWorkDone: false,
+          },
+          settings: {
+            ...settings,
+            redeemUsageResets: true,
+            autoModeProvider: claude,
+            autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+          },
+          providers: [
+            provider("claudeAgent", {
+              ...limits(0, 1),
+              models: [
+                model("claude-fable-5-2", "Claude Fable 5.2"),
+                model("claude-opus-5-5", "Claude Opus 5.5"),
+              ],
+            }),
+          ],
+          recordedLimits: new Map(),
+        }),
+      )?.commandId,
+      CommandId.make("limit-reset-resume:thread:failover:run:failover"),
+    );
+  });
 });
 
 const HOUR_MS = 60 * 60 * 1000;

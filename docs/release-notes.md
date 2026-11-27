@@ -1,3 +1,7 @@
+## 2026-11-27 — Stop repeated usage-limit resumes after zero progress
+
+- When a thread resumes from a usage limit via a banked reset and immediately hits a usage limit again on the same account and model without making progress, CodeShip stops retrying that account automatically instead of looping.
+
 ## 2026-11-27 — Landing turns establish the final queued SHA before finalization
 
 - Maintainers: `landing-turn.cjs land` now accepts a post-rebase finalization hook (`--finalize <command>` or programmatic `finalize`) that runs under the landing turn once the final candidate SHA and base are fixed, before changed-file checks and push. If the candidate commit or remote `main` drifts after finalization, the lander aborts without attempting a push and releases its lease.

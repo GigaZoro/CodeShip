@@ -233,6 +233,10 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
   /** The model the limited run used; an Auto thread may run another one next. */
   readonly latestRunModel?: string | null;
+  /** The message that started the limited run, which tells a server resume apart. */
+  readonly latestRunUserMessageId?: MessageId | null;
+  /** The limited run did work, so resuming it is not repeating a zero-progress failure. */
+  readonly latestRunWorkDone?: boolean;
   /** The person stopped the limited run; its limit can land after the Stop, before anything records it. */
   readonly latestRunStopRequested?: boolean | undefined;
   /**
@@ -4304,6 +4308,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE stop.thread_id = t.thread_id AND stop.run_id = r.run_id
             AND stop.type = 'run_interrupt_request'
         ) AS stop_requested`;
+        const workDoneColumn = sql`EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_turn_items work
+          WHERE work.thread_id = t.thread_id AND work.run_id = r.run_id
+            AND work.type NOT IN ${sql.in(NON_WORK_TURN_ITEM_TYPES)}
+        ) AS work_done`;
         const rows = yield* sql<{
           readonly payload_json: string;
           readonly recovery_candidate: number | null;
@@ -4313,7 +4322,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly last_error: string | null;
           readonly provider_instance_id: string | null;
           readonly run_model: string | null;
+          readonly user_message_id: string | null;
           readonly stop_requested: number;
+          readonly work_done: number;
         }>`
           SELECT (json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
             AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
@@ -4354,8 +4365,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               )
             )) AS recovery_candidate, t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
             json_extract(r.payload_json, '$.modelSelection.model') AS run_model,
+            json_extract(r.payload_json, '$.userMessageId') AS user_message_id,
             ${sql.literal(turnItemPayloadSql("item"))} AS failure_payload_json,
             ${stopRequestedColumn},
+            ${workDoneColumn},
             (
               SELECT json_extract(session.payload_json, '$.lastError')
               -- Keep bindings outermost: one provider instance can hold every session.
@@ -4418,7 +4431,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           row: {
             readonly run_id: string;
             readonly provider_instance_id: string | null;
+            readonly run_model: string | null;
+            readonly user_message_id: string | null;
             readonly stop_requested: number;
+            readonly work_done: number;
           },
         ) => ({
           id: thread.id,
@@ -4429,7 +4445,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.provider_instance_id === null
               ? null
               : ProviderInstanceId.make(row.provider_instance_id),
+          latestRunModel: row.run_model,
           latestRunId: RunId.make(row.run_id),
+          latestRunUserMessageId:
+            row.user_message_id === null ? null : MessageId.make(row.user_message_id),
+          latestRunWorkDone: row.work_done === 1,
           latestRunStopRequested: row.stop_requested === 1,
           updatedAt: thread.updatedAt,
           archivedAt: thread.archivedAt,
@@ -4449,7 +4469,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           candidates.push({
             ...threadFields(thread, row),
             ...(row.recovery_candidate ? {} : { observationOnly: true as const }),
-            latestRunModel: row.run_model,
             status: "failed",
             lastErrorClass: summary.lastErrorClass,
             usageLimitResetAt: summary.usageLimitResetAt,
@@ -4465,13 +4484,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly run_id: string;
           readonly attempt_id: string;
           readonly provider_instance_id: string | null;
+          readonly run_model: string | null;
+          readonly user_message_id: string | null;
           readonly held_payload_json: string;
           readonly stop_requested: number;
+          readonly work_done: number;
         }>`
           SELECT t.payload_json, r.run_id, r.provider_instance_id,
+            json_extract(r.payload_json, '$.modelSelection.model') AS run_model,
+            json_extract(r.payload_json, '$.userMessageId') AS user_message_id,
             json_extract(r.payload_json, '$.activeAttemptId') AS attempt_id,
             ${sql.literal(turnItemPayloadSql("held"))} AS held_payload_json,
-            ${stopRequestedColumn}
+            ${stopRequestedColumn},
+            ${workDoneColumn}
           FROM orchestration_v2_projection_turn_items held
           INNER JOIN orchestration_v2_projection_runs r ON r.run_id = held.run_id
           INNER JOIN orchestration_v2_projection_threads t ON t.thread_id = held.thread_id

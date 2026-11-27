@@ -5519,6 +5519,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             lastErrorClass: sqlShell.lastErrorClass,
             usageLimitResetAt: sqlShell.usageLimitResetAt,
             latestRunId: sqlShell.latestRunId,
+            latestRunUserMessageId: original.userMessageId,
+            latestRunWorkDone: true,
             latestRunStopRequested: false,
             latestRunCompletedAt: sqlShell.latestRunCompletedAt,
             updatedAt: sqlShell.updatedAt,
@@ -5890,11 +5892,25 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       yield* sql`UPDATE effect_sql_migrations SET created_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))} WHERE name = 'UsageStopDecisions'`;
       assert.isTrue((yield* observe()).find((row) => row.id === threadId)?.observationOnly);
       const reset = DateTime.makeUnsafe(limitItem.failure.resetAt);
-      assert.isDefined(
+      const waitingCandidate = (yield* store.getLimitRecoveryCandidates({
+        ...recoveryOptions,
+        waiting: true,
+      })).find((row) => row.id === threadId);
+      assert.isDefined(waitingCandidate);
+      assert.strictEqual(waitingCandidate?.latestRunUserMessageId, original.userMessageId);
+      assert.isTrue(waitingCandidate?.latestRunWorkDone);
+      // Only non-work turn items (error, user_message) leave latestRunWorkDone false.
+      yield* sql`UPDATE orchestration_v2_projection_turn_items
+        SET type = 'user_message'
+        WHERE turn_item_id = 'item:limit-shell:rolled-back'`;
+      assert.isFalse(
         (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
           (row) => row.id === threadId,
-        ),
+        )?.latestRunWorkDone,
       );
+      yield* sql`UPDATE orchestration_v2_projection_turn_items
+        SET type = 'command_execution'
+        WHERE turn_item_id = 'item:limit-shell:rolled-back'`;
       // A Stop can reach the run before anything records it on the thread.
       yield* store.apply({
         id: EventId.make("event:limit-shell:stop"),
