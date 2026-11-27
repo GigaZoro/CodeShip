@@ -12383,6 +12383,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ["Monitor", "before the original result", "local_bash"],
     ["Monitor", "during another notification wake", "monitor_ws"],
     ["Bash", "while steered before and during its report", "local_bash"],
+    ["Bash", "with its report answered in the task's own notification turn", "local_bash"],
   ] as const)(
     "keeps the original turn open after explicitly awaiting native %s notified %s",
     ([tool, notificationTiming, taskType]) =>
@@ -13092,34 +13093,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             assert.include(replacement?.message.content, WAKE_TASK_ID);
             const replacementUuid = harness.promptUuid(3);
             assert.notEqual(replacementUuid, reportUuid);
-            for (const [uuid, result, echoed, terminalReason, origin] of [
-              [
-                "00000000-0000-4000-8000-000000000622",
-                "Old report.",
-                [reportUuid],
-                "completed",
-                undefined,
-              ],
+            for (const [uuid, result, echoed, terminalReason] of [
+              ["00000000-0000-4000-8000-000000000622", "Old report.", [reportUuid], "completed"],
               [
                 "00000000-0000-4000-8000-000000000623",
                 "Aborted old report.",
                 [reportUuid],
                 "aborted_streaming",
-                undefined,
               ],
               [
                 "00000000-0000-4000-8000-000000000624",
                 "Foreign reply.",
                 ["foreign-prompt", replacementUuid],
                 "completed",
-                undefined,
-              ],
-              [
-                "00000000-0000-4000-8000-000000000625",
-                "Watcher reply.",
-                [replacementUuid],
-                "completed",
-                { kind: "task-notification" },
               ],
             ] as const) {
               yield* harness.offerAndWait(
@@ -13128,7 +13114,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     uuid,
                     result,
                     terminalReason,
-                    ...(origin === undefined ? {} : { origin }),
                   }),
                   user_message_uuids: echoed,
                 }),
@@ -13141,6 +13126,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             };
           }
           const finalReport = "Verification exited successfully with the expected result.";
+          // The CLI folds the report prompt into the turn the task's notification opened.
+          const reportInWake =
+            notificationTiming === "with its report answered in the task's own notification turn";
           if (!hasEcho) {
             yield* harness.offerAndWait(
               claudeSdkFrame({
@@ -13190,6 +13178,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 ...(providerFailed
                   ? { isError: true, apiErrorStatus: 500, terminalReason: "api_error" as const }
                   : {}),
+                ...(reportInWake ? { origin: { kind: "task-notification" as const } } : {}),
               }),
               ...(hasEcho ? finalEcho : {}),
             }),
