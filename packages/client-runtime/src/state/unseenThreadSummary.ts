@@ -50,7 +50,8 @@ function pullRequestNews(
   const linked = pullRequests.filter(
     (pr) => pr.source !== "stack-dismissed" && inWindow(window, Date.parse(pr.linkedAt)),
   );
-  const opened = linked.every((pr) => pr.source === "created" || pr.source === "agent");
+  // "agent" covers any PR an agent linked or watched, so only the app's own create counts as opened.
+  const opened = linked.every((pr) => pr.source === "created");
   const [only] = linked;
   if (only === undefined) return null;
   if (linked.length === 1) {

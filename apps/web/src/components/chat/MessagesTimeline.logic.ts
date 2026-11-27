@@ -1078,6 +1078,9 @@ function deriveTurnFolds(input: {
     input.foldFinishedWork === "older"
       ? lastResponseBoundaryIndex(input.timelineEntries)
       : input.timelineEntries.length;
+  // A notification inside a run is a boundary that belongs to that run, which started earlier.
+  const latestTurnBoundary = input.timelineEntries[latestTurnStartIndex];
+  const latestTurnRunId = latestTurnBoundary ? responseBoundaryRunId(latestTurnBoundary) : null;
   const interruptedRunIds = new Set<RunId>();
   const promptIndexByRunId = new Map<RunId, number>();
   for (const [index, entry] of input.timelineEntries.entries()) {
@@ -1186,7 +1189,11 @@ function deriveTurnFolds(input: {
     ) {
       continue;
     }
-    if (group.hasStreamingMessage || group.firstEntryIndex > latestTurnStartIndex) {
+    if (
+      group.hasStreamingMessage ||
+      group.firstEntryIndex > latestTurnStartIndex ||
+      runId === latestTurnRunId
+    ) {
       continue;
     }
     const hiddenEntryIds = new Set<string>();

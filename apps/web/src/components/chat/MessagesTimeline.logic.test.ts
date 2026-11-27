@@ -4533,7 +4533,7 @@ describe("shouldCollapseUserMessage", () => {
 
 describe("turn fold labels", () => {
   const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
-  const user = (id: string, second: number): TimelineEntry => ({
+  const user = (id: string, second: number, runId: string | null = null): TimelineEntry => ({
     id,
     kind: "message",
     createdAt: at(second),
@@ -4541,7 +4541,7 @@ describe("turn fold labels", () => {
       id: MessageId.make(id),
       role: "user",
       text: id,
-      runId: null,
+      runId: runId === null ? null : RunId.make(runId),
       createdAt: at(second),
       updatedAt: at(second),
       streaming: false,
@@ -4621,6 +4621,29 @@ describe("turn fold labels", () => {
     ["never", []],
   ] as const)("folds finished work %s", (foldFinishedWork, runIds) => {
     expect(folds(foldFinishedWork).map((fold) => fold.runId)).toEqual(runIds);
+  });
+
+  it("keeps the latest turn open when a notification lands inside it", () => {
+    const notification: TimelineEntry = {
+      ...tool("n1", "run-2", 24),
+      entry: { ...tool("n1", "run-2", 24).entry, tone: "info", itemType: "notification" },
+    };
+    expect(
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          ...twoTurns.slice(0, 5),
+          user("u2", 20, "run-2"),
+          tool("w4", "run-2", 22),
+          notification,
+          assistant("a2", "run-2", 30),
+        ],
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        foldFinishedWork: "older",
+      }).flatMap((row) => (row.kind === "turn-fold" ? [row.runId] : [])),
+    ).toEqual(["run-1"]);
   });
 
   it("keeps the turn still running open in every mode", () => {

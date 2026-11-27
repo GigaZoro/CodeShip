@@ -34,8 +34,13 @@ const contributions = new WeakMap<WorkLogPresentationEntry, EntryContribution>()
 function entryContribution(entry: WorkLogPresentationEntry): EntryContribution {
   const cached = contributions.get(entry);
   if (cached) return cached;
+  // A prompt for approval or input belongs to the tool that asked; counting it would count twice.
   const tool =
-    workLogEntryIsToolLike(entry) && entry.tone !== "thinking" && entry.itemType !== "reasoning";
+    workLogEntryIsToolLike(entry) &&
+    entry.tone !== "thinking" &&
+    entry.itemType !== "reasoning" &&
+    entry.itemType !== "approval_request" &&
+    entry.itemType !== "user_input_request";
   const contribution = {
     tool,
     // A declined approval is the user's choice, not a failure.

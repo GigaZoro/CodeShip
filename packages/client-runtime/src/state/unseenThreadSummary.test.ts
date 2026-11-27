@@ -56,16 +56,23 @@ describe("unseenThreadSummary", () => {
 
   it.each([
     [[{ number: 88, source: "created", linkedAt: inside }], "PR #88 opened"],
-    [[{ number: 88, source: "agent", linkedAt: inside }], "PR #88 opened"],
+    [[{ number: 88, source: "agent", linkedAt: inside }], "PR #88 linked"],
     [[{ number: 88, source: "manual", linkedAt: inside }], "PR #88 linked"],
     [[{ number: 88, source: "stack-dismissed", linkedAt: inside }], null],
     [[{ number: 88, source: "created", linkedAt: before }], null],
     [
       [
         { number: 88, source: "created", linkedAt: inside },
-        { number: 89, source: "agent", linkedAt: inside },
+        { number: 89, source: "created", linkedAt: inside },
       ],
       "2 PRs opened",
+    ],
+    [
+      [
+        { number: 88, source: "created", linkedAt: inside },
+        { number: 89, source: "agent", linkedAt: inside },
+      ],
+      "2 PRs linked",
     ],
     [
       [

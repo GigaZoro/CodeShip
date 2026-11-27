@@ -21,6 +21,8 @@ describe("tallyTurnFoldWork", () => {
     ["thinking", entry({ tone: "thinking" }), { tools: 0, failed: 0 }],
     ["reasoning", entry({ tone: "info", itemType: "reasoning" }), { tools: 0, failed: 0 }],
     ["an info note", entry({ tone: "info" }), { tools: 0, failed: 0 }],
+    ["an approval prompt", entry({ itemType: "approval_request" }), { tools: 0, failed: 0 }],
+    ["an input prompt", entry({ itemType: "user_input_request" }), { tools: 0, failed: 0 }],
   ])("counts %s", (_name, work, expected) => {
     expect(tallyTurnFoldWork([work])).toEqual({ ...expected, files: 0 });
   });
