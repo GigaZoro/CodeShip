@@ -7,6 +7,7 @@ const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 const { TIMED_OUT_STATUS } = require("./bounded-git.cjs");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { QUEUE_STALE_MS, createQueueWaiter, machineTag } = require("./lease-queue.cjs");
@@ -1056,21 +1057,66 @@ function formatOverlaps(overlaps) {
   return lines.join("\n");
 }
 
+// Each check runs in a checkout of its own with a full install (about 4 GB) and a check:changed run. Main takes one
+// push at a time and its holder checks again whenever main moved, so more checks before the wait at once only fill
+// the disk and load the CPU.
+const CHECKOUT_SLOTS = 2;
+const CHECKOUT_POLL_MS = 1000;
+const SQLITE_BUSY = 5;
+
 /**
- * Runs `run(directory)` in a private detached checkout of `commit`. The lander's own worktree stays writable by
- * editors and other agents while the checks run, and an edit made and undone in it would leave no trace; nothing
- * outside the landing knows this directory, so the checks read exactly the commit. Its git calls leave the event loop
- * free, so the lease's renewals go on meanwhile.
+ * Waits for one of the clone's CHECKOUT_SLOTS and returns the connection that holds it: an open exclusive transaction
+ * on the slot's file, which the OS releases when this process exits, killed or not. Open the files only through
+ * SQLite: closing any other handle to one drops this process's lock.
  */
-async function withPrivateCheckout({ cwd, commit }, run) {
-  const directory = path.join(os.tmpdir(), `t3-landing-${randomUUID()}`);
-  await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+async function takeCheckoutSlot(cwd, report) {
+  const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout;
+  const folder = path.join(common, "t3-landing-checkouts");
+  fs.mkdirSync(folder, { recursive: true });
+  let announced = false;
+  for (;;) {
+    for (let index = 0; index < CHECKOUT_SLOTS; index++) {
+      const db = new DatabaseSync(path.join(folder, `slot-${index}.sqlite`));
+      try {
+        db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+        return db;
+      } catch (error) {
+        db.close();
+        if (error.errcode !== SQLITE_BUSY) throw error;
+      }
+    }
+    if (!announced) {
+      announced = true;
+      report(
+        `landing: ${CHECKOUT_SLOTS} other landings of this clone are checking before their wait; waiting for one to end.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, CHECKOUT_POLL_MS));
+  }
+}
+
+/**
+ * Runs `run(directory)` in a private detached checkout of `commit`, so edits to the lander's worktree cannot reach
+ * the checks. Its git calls leave the event loop free for the lease's renewals. Outside the turn it takes a checkout
+ * slot before the checkout exists; the holder of `turn` never waits for one, so main never waits on other checks.
+ */
+async function withPrivateCheckout(
+  { cwd, commit, turn, report = (text) => console.error(text) },
+  run,
+) {
+  const slot = turn ? null : await takeCheckoutSlot(cwd, report);
   try {
-    return await run(directory);
+    const directory = path.join(os.tmpdir(), `t3-landing-${randomUUID()}`);
+    await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+    try {
+      return await run(directory);
+    } finally {
+      await gitAsync(cwd, ["worktree", "remove", "--force", directory], { allowFailure: true });
+      await fs.promises.rm(directory, { recursive: true, force: true });
+      await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true });
+    }
   } finally {
-    await gitAsync(cwd, ["worktree", "remove", "--force", directory], { allowFailure: true });
-    await fs.promises.rm(directory, { recursive: true, force: true });
-    await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true });
+    slot?.close();
   }
 }
 
@@ -1126,7 +1172,7 @@ async function land({
   }
   // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
   const checkTip = (turn, base, budgetSeconds, signal) =>
-    withPrivateCheckout({ cwd, commit: tip }, (directory) =>
+    withPrivateCheckout({ cwd, commit: tip, turn, report }, (directory) =>
       check(turn, base, budgetSeconds, directory, signal),
     );
   if (!(await checkTip(null, checked))) return { status: "check-failed" };
@@ -1164,16 +1210,18 @@ async function land({
         const finalizedTip = tip;
         const finalizedBase = base;
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-        const approved = await withPrivateCheckout({ cwd, commit: finalizedTip }, (directory) =>
-          finalize({
-            turn,
-            commit: finalizedTip,
-            base: finalizedBase,
-            rebased: rebasedUnderTurn,
-            budgetSeconds: budget,
-            directory,
-            signal,
-          }),
+        const approved = await withPrivateCheckout(
+          { cwd, commit: finalizedTip, turn },
+          (directory) =>
+            finalize({
+              turn,
+              commit: finalizedTip,
+              base: finalizedBase,
+              rebased: rebasedUnderTurn,
+              budgetSeconds: budget,
+              directory,
+              signal,
+            }),
         );
         if (signal.aborted) return lostTurn();
         if (!approved) {
@@ -1443,5 +1491,5 @@ module.exports = {
   main,
   processHost,
   // For tests alone: a turn taken outside withTurn is never renewed, and outlives a process that leaves it held.
-  testing: { tryAcquire, acquire, release, runCheck, runFinalize },
+  testing: { tryAcquire, acquire, release, runCheck, runFinalize, withPrivateCheckout },
 };

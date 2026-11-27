@@ -1,3 +1,7 @@
+## 2026-11-27 — Landings no longer fill the disk with checkouts
+
+- Maintainers: at most two landings from the worktrees of one clone run their checks before the wait at once. The next one waits for a free place before it creates its private checkout and installs packages (about 4 GB each), so many landings at once no longer fill the disk. The landing that holds main's turn never waits.
+
 ## 2026-11-27 — Register material for assignment-isolated reviews
 
 - The new `t3_review_assignment` MCP tool registers files for an assignment-isolated review and returns a handle the server picks; pass it to `delegate_task` with `isolation: { type: "assignment", handle }`. The files are copied when you register them (up to 256 files and 8 MiB per assignment), so later edits do not change what the reviewer reads, and `task_status` read receipts carry each file's size and SHA-256. `revoke` ends the handle.

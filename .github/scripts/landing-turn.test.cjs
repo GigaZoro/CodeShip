@@ -24,7 +24,7 @@ const {
   main,
   pushChecked,
   processHost,
-  testing: { acquire, release, runCheck, tryAcquire },
+  testing: { acquire, release, runCheck, tryAcquire, withPrivateCheckout },
   verifyPush,
   withTurn,
 } = require("./landing-turn.cjs");
@@ -3512,6 +3512,78 @@ test("the checks read a private checkout of the landed commit, not the lander's 
     assert.equal(fs.existsSync(checkout), false);
     assert.equal(git(dir, "worktree", "list", "--porcelain").includes(checkout), false);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("at most two landings of a clone check before their wait at once, the next waits before making its checkout, and the turn's holder never waits", async () => {
+  const { root, origin, git, clone, commit } = setup();
+  const gates = [];
+  let open = false;
+  const events = [];
+  let wake = () => {};
+  const note = (event) => {
+    events.push(event);
+    wake();
+  };
+  const count = (event) => events.filter((seen) => seen === event).length;
+  const until = (done) =>
+    new Promise((resolve) => {
+      const look = () => (done() ? resolve() : (wake = look));
+      look();
+    });
+  const landingCheckouts = (dir) =>
+    git(dir, "worktree", "list", "--porcelain")
+      .split("\n")
+      .filter((line) => /^worktree .*t3-landing-/.test(line)).length;
+  let landings = [];
+  try {
+    const mine = clone("mine");
+    const base = git(mine, "rev-parse", "origin/main");
+    landings = ["first", "second", "third"].map((name) => {
+      const dir = path.join(root, name);
+      git(mine, "worktree", "add", "-q", "-b", name, dir, base);
+      commit(dir, `${name}.txt`);
+      return land({
+        cwd: dir,
+        remote: origin,
+        report: (text) => {
+          if (/waiting/.test(text)) note("waiting");
+        },
+        check: () =>
+          open ||
+          new Promise((resolve) => {
+            gates.push(resolve);
+            note("check");
+          }),
+      });
+    });
+
+    await until(() => count("check") + count("waiting") === 3);
+    assert.equal(count("check"), 2);
+    assert.equal(landingCheckouts(mine), 2);
+    // Main never waits on the checks before other landers' waits.
+    let holderChecked = false;
+    await withPrivateCheckout({ cwd: mine, commit: base, turn: "holder" }, (directory) => {
+      holderChecked = fs.existsSync(path.join(directory, "base.txt"));
+    });
+    assert.equal(holderChecked, true);
+
+    gates.shift()(false);
+    await until(() => count("check") === 3);
+    assert.equal(landingCheckouts(mine), 2);
+    open = true;
+    for (const resolve of gates.splice(0)) resolve(false);
+    const results = await Promise.all(landings);
+    assert.deepEqual(
+      results.map(({ status }) => status),
+      ["check-failed", "check-failed", "check-failed"],
+    );
+    assert.equal(landingCheckouts(mine), 0);
+  } finally {
+    open = true;
+    for (const resolve of gates.splice(0)) resolve(false);
+    await Promise.allSettled(landings);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
