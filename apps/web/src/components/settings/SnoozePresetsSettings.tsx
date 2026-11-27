@@ -1,3 +1,4 @@
+import { SettingScope } from "./SettingScope";
 import { t, tn } from "~/i18n";
 import { useState } from "react";
 import {
@@ -130,6 +131,14 @@ function withWhen(
  * leaves the list, so a row never moves under the pointer mid-edit.
  */
 export function SnoozePresetsRow() {
+  return (
+    <SettingScope setting="snooze-options">
+      <ScopedSnoozePresetsRow />
+    </SettingScope>
+  );
+}
+
+function ScopedSnoozePresetsRow() {
   const settings = useScopedSettings();
   const [open, setOpen] = useState(false);
   const updateSettings = useUpdateScopedSettings();

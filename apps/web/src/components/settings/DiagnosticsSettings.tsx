@@ -39,6 +39,7 @@ import { ResourceTelemetryDiagnostics } from "./ResourceTelemetryDiagnostics";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { SettingScope } from "./SettingScope";
 import { TelemetryExportSettings } from "./TelemetryExportSettings";
 import { UiFeedbackSettingsSection } from "../../uiFeedback/UiFeedbackSettingsSection";
 import { getFormattingLocale, msg, t, tx } from "~/i18n";
@@ -919,7 +920,7 @@ function DiagnosticsSettingsBody() {
 
   if (!canReadDiagnostics) {
     return (
-      <SettingsPageContainer>
+      <SettingsPageContainer scopeLead={t("Showing diagnostics for")}>
         <p className="text-sm text-muted-foreground">
           {environmentId === null
             ? t("Connect an environment to see diagnostics.")
@@ -933,7 +934,11 @@ function DiagnosticsSettingsBody() {
   }
 
   return (
-    <SettingsPageContainer width="expanded" className="gap-10">
+    <SettingsPageContainer
+      width="expanded"
+      className="gap-10"
+      scopeLead={t("Showing diagnostics for")}
+    >
       <ResourceTelemetryDiagnostics environmentId={environmentId} />
 
       <SettingsSection
@@ -1362,7 +1367,11 @@ function DiagnosticsSettingsBody() {
           <EmptyRows label={isInitialLoading ? t("Loading span names...") : t("No spans found.")} />
         )}
       </SettingsSection>
-      {exportFormEnvironmentId === environmentId && <TelemetryExportSettings />}
+      {exportFormEnvironmentId === environmentId && (
+        <SettingScope setting="telemetry-export">
+          <TelemetryExportSettings />
+        </SettingScope>
+      )}
       <UiFeedbackSettingsSection />
     </SettingsPageContainer>
   );

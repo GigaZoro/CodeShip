@@ -6,6 +6,7 @@ import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
+import { SettingScope, supportsCapabilities } from "./SettingScope";
 import { SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
@@ -15,8 +16,12 @@ import { t, tx } from "~/i18n";
 
 /** Opt-in features that used to live in Labs, now shown on the page they belong to. */
 export function GuestLinksSetting() {
-  // Clerk is only mounted when this build has T3 Connect.
-  return hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />;
+  return (
+    <SettingScope setting="guest-links">
+      {/* Clerk is only mounted when this build has T3 Connect. */}
+      {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
+    </SettingScope>
+  );
 }
 
 export function BoringSidebarMultilineRow() {
@@ -97,6 +102,14 @@ function GuestLinksRow() {
 }
 
 export function LinkedEnvironmentsRow() {
+  return (
+    <SettingScope setting="linked-environments-beta">
+      <LinkedEnvironmentsRowBody />
+    </SettingScope>
+  );
+}
+
+function LinkedEnvironmentsRowBody() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -119,15 +132,25 @@ export function LinkedEnvironmentsRow() {
   );
 }
 
-/** Shown only where every machine in scope can follow shared settings. */
 export function FollowSharedSettingsRow() {
+  return (
+    <SettingScope setting="follow-shared-settings" requires={SHARED_SETTINGS}>
+      <FollowSharedSettingsRowBody />
+    </SettingScope>
+  );
+}
+
+const SHARED_SETTINGS = ["sharedSettings"] as const;
+
+/** Shown only where every machine in scope can follow shared settings. */
+function FollowSharedSettingsRowBody() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { connectedEnvironments } = useSettingsScope();
   if (
     connectedEnvironments.length === 0 ||
-    !connectedEnvironments.every(
-      (environment) => environment.serverConfig?.environment.capabilities.sharedSettings === true,
+    !connectedEnvironments.every((environment) =>
+      supportsCapabilities(environment, SHARED_SETTINGS),
     )
   ) {
     return null;
@@ -153,6 +176,14 @@ export function FollowSharedSettingsRow() {
 }
 
 export function SimlockHostsRow() {
+  return (
+    <SettingScope setting="simlock-hosts">
+      <SimlockHostsRowBody />
+    </SettingScope>
+  );
+}
+
+function SimlockHostsRowBody() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (

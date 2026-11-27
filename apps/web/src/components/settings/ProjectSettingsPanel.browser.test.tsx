@@ -142,7 +142,6 @@ import { buildSidebarProjectSnapshots } from "../../sidebarProjectGrouping";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { SettingsScopeProvider } from "./SettingsScopeContext";
-import { SettingsScopeNotice } from "./SettingsScopeNotice";
 import { validateSettingsScopeSearch, type SettingsScopeSearch } from "./settingsScope";
 import { retainSettingsScope, validateSettingsRouteSearch } from "./settingsScopeNavigation";
 
@@ -279,14 +278,21 @@ async function mountSettings(search: SettingsScopeSearch) {
   );
   const route = createRootRoute({
     validateSearch: validateSettingsScopeSearch,
-    component: () => (
-      <SettingsScopeProvider
-        search={route.useSearch()}
-        onChange={(next) => void router.navigate({ to: "/settings/projects", search: () => next })}
-      >
-        <ProjectsSettings />
-      </SettingsScopeProvider>
-    ),
+    component: function Settings() {
+      const current: SettingsScopeSearch = route.useSearch();
+      return (
+        <SettingsScopeProvider
+          search={current}
+          // The settings route filters the page by project and machine once a project is picked.
+          viewFilter={current.project === undefined ? null : "project-and-machine"}
+          onChange={(next) =>
+            void router.navigate({ to: "/settings/projects", search: () => next })
+          }
+        >
+          <ProjectsSettings />
+        </SettingsScopeProvider>
+      );
+    },
   });
   const router = createRouter({
     routeTree: route,
@@ -538,61 +544,22 @@ describe("project identity reset", () => {
   });
 });
 
-it("opens the fallback search target across all environments from a checkout", async () => {
-  setup();
-  const root = createRootRoute();
-  const settings = createRoute({
-    getParentRoute: () => root,
-    path: "settings",
-    validateSearch: validateSettingsRouteSearch,
-    search: { middlewares: [retainSettingsScope] },
-  });
-  const threads = createRoute({
-    getParentRoute: () => settings,
-    path: "threads",
-    component: () => (
-      <SettingsScopeProvider search={settings.useSearch()} onChange={() => {}}>
-        <SettingsScopeNotice target="all" targetId="fallback-model">
-          Choose all environments to edit the fallback model.
-        </SettingsScopeNotice>
-      </SettingsScopeProvider>
-    ),
-  });
-  const query = new URLSearchParams({
-    project: projectKey(),
-    machine: primaryId,
-    checkout: "primary:/work/primary",
-  });
-  const router = createRouter({
-    routeTree: root.addChildren([settings.addChildren([threads])]),
-    history: createMemoryHistory({ initialEntries: [`/settings/threads?${query}#fallback-model`] }),
-  });
-  await router.load();
-  // This route needs the real scope-retention middleware used by settings search.
-  await using _screen = await render(
-    <RegistryContext.Provider value={appAtomRegistry}>
-      <RouterProvider router={router} />
-    </RegistryContext.Provider>,
-    { router: false },
-  );
-  await userEvent.click(page.getByRole("button", { name: "Open all environments" }));
-  await vi.waitFor(() => expect(router.state.location.search).toEqual({}));
-  expect(router.state.location.hash).toBe("fallback-model");
-});
-
 describe("project settings scope", () => {
   const environmentMenu = () => page.getByRole("button", { name: /^Environment scope:/ });
   const primaryOption = () => page.getByRole("menuitemradio", { name: /^primary/ });
   const remoteOption = () => page.getByRole("menuitemradio", { name: /^remote/ });
 
-  it("offers every environment while no project is selected", async () => {
+  it("picks a project from the list while none is selected", async () => {
     setup();
     state.projects = state.projects.filter((project) => project.environmentId === primaryId);
-    await using _screen = await mountSettings({});
+    await using screen = await mountSettings({});
 
-    await userEvent.click(environmentMenu());
-    await expect.element(primaryOption()).toBeVisible();
-    await expect.element(remoteOption()).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: /^Shared repo/ }));
+
+    await vi.waitFor(() =>
+      expect(screen.router.state.location.search).toEqual({ project: projectKey() }),
+    );
+    await expect.element(environmentMenu()).toBeVisible();
   });
 
   it("offers only the selected project's checkout environments", async () => {

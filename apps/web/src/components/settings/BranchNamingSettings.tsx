@@ -7,6 +7,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { SettingsRow, SettingResetButton } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { SettingScope } from "./SettingScope";
 import { searchableSetting } from "./settingsSearch";
 import {
   useScopedSettings,
@@ -21,6 +22,14 @@ const MODES = {
 } satisfies Record<BranchNamingMode, string>;
 
 export function BranchNamingSettings() {
+  return (
+    <SettingScope setting="worktree-branch-naming">
+      <BranchNamingUnit />
+    </SettingScope>
+  );
+}
+
+function BranchNamingUnit() {
   const settings = useScopedSettings();
   const { targets } = useSettingsScope();
   const scopeKey = targets.map((target) => `${target.environmentId}:${target.projectId}`).join(",");

@@ -53,8 +53,8 @@ can watch it in that thread's terminal panel. Both have to allow it:
 
 Reading a linked machine's terminals needs only **Read output** there.
 
-Pick a project in the "Applying settings for …" sentence to change it for that
-project only. Changes apply right away, including to agents that are already
+Pick a project with the setting's scope button to change it for that project
+only. Changes apply right away, including to agents that are already
 running.
 
 ## fish

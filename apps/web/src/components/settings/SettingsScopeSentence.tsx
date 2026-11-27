@@ -1,6 +1,5 @@
 import { t } from "~/i18n";
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
-import { useLocation } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, LayersIcon } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
 
@@ -28,7 +27,6 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
-import { useSharedScopeNotice } from "./useScopedSettings";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
 import {
   ALL_ENVIRONMENTS_VALUE,
@@ -44,21 +42,7 @@ import {
   settingsScopeProjectMachines,
 } from "./settingsScopeAxis";
 
-export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
-  "/settings/general",
-  "/settings/appearance",
-  "/settings/chat",
-  // Network access and authorized clients belong to the environment serving this app.
-  "/settings/connections",
-]);
-
-/** Pages that follow the environment choice but not the project one. */
-const SETTINGS_ENVIRONMENT_ONLY_PATHS: ReadonlySet<string> = new Set([
-  "/settings/keybindings",
-  "/settings/diagnostics",
-]);
-
-interface SettingsScopeMenuProps {
+export interface SettingsScopeMenuProps {
   readonly value: SettingsScopeSearch;
   readonly groups: readonly SidebarProjectSnapshot[];
   readonly environments: readonly EnvironmentPresentation[];
@@ -66,36 +50,15 @@ interface SettingsScopeMenuProps {
   readonly onChange: (next: SettingsScopeSearch) => void;
 }
 
+/** The view filter of a page that lists things for a machine or project; settings rows pick their own scope. */
 export function SettingsScopeSentence({
   lead = t("Applying settings for"),
 }: {
   lead?: string | undefined;
 }) {
   const scope = useOptionalSettingsScope();
-  const pathname = useLocation({ select: (location) => location.pathname });
   const { environments } = useEnvironments();
-  const sharedNotice = useSharedScopeNotice();
-  if (scope === null || SETTINGS_DEVICE_ONLY_PATHS.has(pathname)) return null;
-  if (SETTINGS_ENVIRONMENT_ONLY_PATHS.has(pathname)) {
-    // One environment has nothing to choose, and a project never changes these pages.
-    if (environments.length <= 1) return null;
-    return (
-      <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
-        <span className="shrink-0">
-          {pathname === "/settings/diagnostics"
-            ? t("Showing diagnostics for")
-            : t("Applying settings for")}
-        </span>
-        <EnvironmentScopeMenu
-          value={{ machine: scope.search.machine }}
-          singleEnvironment={scope.singleEnvironment}
-          groups={scope.groups}
-          environments={environments}
-          onChange={scope.selectScope}
-        />
-      </p>
-    );
-  }
+  if (scope?.viewFilter == null) return null;
   const props: SettingsScopeMenuProps = {
     value: scope.search,
     singleEnvironment: scope.singleEnvironment,
@@ -103,6 +66,16 @@ export function SettingsScopeSentence({
     environments,
     onChange: scope.selectScope,
   };
+  if (scope.viewFilter === "machine") {
+    // One environment has nothing to choose, and a project never changes these pages.
+    if (environments.length <= 1) return null;
+    return (
+      <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
+        <span className="shrink-0">{lead}</span>
+        <EnvironmentScopeMenu {...props} value={{ machine: scope.search.machine }} />
+      </p>
+    );
+  }
   return (
     <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
       <span className="flex min-w-0 items-center gap-1.5">
@@ -115,7 +88,6 @@ export function SettingsScopeSentence({
         </span>
         <EnvironmentScopeMenu {...props} />
       </span>
-      {sharedNotice ? <span className="basis-full text-xs">{sharedNotice}</span> : null}
     </p>
   );
 }
@@ -255,7 +227,7 @@ function ScopeMenu({
   );
 }
 
-function EnvironmentScopeMenu({
+export function EnvironmentScopeMenu({
   value,
   groups,
   environments,
@@ -333,7 +305,12 @@ function EnvironmentScopeMenu({
   );
 }
 
-function ProjectScopeMenu({ value, groups, environments, onChange }: SettingsScopeMenuProps) {
+export function ProjectScopeMenu({
+  value,
+  groups,
+  environments,
+  onChange,
+}: SettingsScopeMenuProps) {
   const selected = groups.find((group) => group.projectKey === value.project);
   const projects = projectScopeMenuGroups(groups, value).map((group) => ({
     group,

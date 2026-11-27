@@ -2,7 +2,10 @@ import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 
 import { ModelsSettingsSection } from "../components/settings/ModelsSettings";
-import { ProviderSettingsPanel } from "../components/settings/ProviderSettingsPanel";
+import {
+  ProviderSettingsPanel,
+  ScopedAccountFailoverSettings,
+} from "../components/settings/ProviderSettingsPanel";
 import {
   PROVIDERS_SETTINGS_TABS,
   resolveProvidersSettingsTab,
@@ -10,17 +13,9 @@ import {
 } from "../components/settings/providersSettingsTab";
 import { useSettingsScope } from "../components/settings/SettingsScopeContext";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
-import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 
 import { msg, t, type Message } from "~/i18n";
-const MACHINE_SECTION_TARGETS: ReadonlySet<string> = new Set([
-  "auto-mode",
-  "account-failover",
-  "delegated-task-models",
-  "final-review",
-]);
-
 const TAB_LABELS: Record<ProvidersSettingsTab, Message> = {
   providers: msg("Providers"),
   models: msg("Models"),
@@ -31,7 +26,7 @@ function SettingsProvidersRoute() {
   const navigate = Route.useNavigate();
   const hash = useLocation({ select: (location) => location.hash });
   const tab = resolveProvidersSettingsTab(target.tab, hash);
-  const { environment, connectedEnvironments, scope } = useSettingsScope();
+  const { environment, scope } = useSettingsScope();
   const projectIds = (machineId: EnvironmentId) =>
     scope.kind === "project" || scope.kind === "checkout"
       ? scope.members
@@ -65,34 +60,11 @@ function SettingsProvidersRoute() {
   );
 
   if (tab === "models") {
-    // Auto mode, delegated tasks, and final review depend on one machine's providers and accounts.
-    const machine = connectedEnvironments.length === 1 ? (connectedEnvironments[0] ?? null) : null;
-    const targetId = hash.replace(/^#/, "");
-    const machineNoticeFirst = machine === null && MACHINE_SECTION_TARGETS.has(targetId);
-    const machineNotice = (
-      <SettingsScopeNotice
-        inline
-        target="environment"
-        {...(MACHINE_SECTION_TARGETS.has(targetId) ? { targetId } : {})}
-      >
-        {connectedEnvironments.length === 0
-          ? t("Connect an environment to set Auto mode, delegated tasks, and final review models.")
-          : t(
-              "Auto mode, delegated tasks, and final review use one machine's providers and accounts. Choose a machine to set them.",
-            )}
-      </SettingsScopeNotice>
-    );
     return (
-      <ProviderSettingsPanel
-        view="models"
-        machineSections={machine !== null}
-        {...(machine ? { environmentId: machine.environmentId } : {})}
-        projectIds={machine ? projectIds(machine.environmentId) : []}
-      >
+      <ProviderSettingsPanel view="models" machineSections={false}>
         {tabs}
-        {machineNoticeFirst ? machineNotice : null}
-        <ModelsSettingsSection machineEnvironmentId={machine?.environmentId ?? null} />
-        {machine === null && !machineNoticeFirst ? machineNotice : null}
+        <ModelsSettingsSection />
+        <ScopedAccountFailoverSettings />
       </ProviderSettingsPanel>
     );
   }

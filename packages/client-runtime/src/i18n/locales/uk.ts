@@ -1842,16 +1842,10 @@ const catalog: MessageCatalog = {
   "{title} · Replaced by a newer version": "{title} · Замінено новішою версією",
   "{title} {before} → {after} tokens": "{title} {before} → {after} токенів",
   "{title} family": "Гарнітура: {title}",
-  "{title} is not available for the selected target. Choose its owning scope to continue.":
-    "{title} недоступне для вибраної цілі. Виберіть його власну область, щоб продовжити.",
   "{title} on {environment}": "{title} на {environment}",
   "{title} phase": "Етап: {title}",
   "{title} phase, {tone}": "Фаза {title}, {tone}",
   "{title} phase, {tone}, {count} completed": "Фаза {title}, {tone}, завершено: {count}",
-  "{title} requires a supporting environment. Choose one to continue.":
-    "{title} потребує середовища з підтримкою. Виберіть його, щоб продовжити.",
-  "{title} requires a supporting environment. Connect or update an environment to continue.":
-    "{title} потребує середовища з підтримкою. Підключіть або оновіть середовище, щоб продовжити.",
   "{title}, {kind}, {position} of {count}": "{title}, {kind}, {position} з {count}",
   "{title}, view details": "{title}, переглянути подробиці",
   "{title}: {objective}": "{title}: {objective}",
@@ -2787,8 +2781,6 @@ const catalog: MessageCatalog = {
   "Auto mode": "Режим Auto",
   "Auto mode is off": "Режим «Авто» вимкнено",
   "Auto mode primary provider": "Основний провайдер режиму Auto",
-  "Auto mode, delegated tasks, and final review use one machine's providers and accounts. Choose a machine to set them.":
-    "Режим Auto, делеговані завдання та фінальне рев’ю використовують провайдерів і облікові записи одного комп’ютера. Виберіть комп’ютер, щоб їх налаштувати.",
   "auto pin automations": "автозакріплення автоматизацій",
   "Auto runs a coordinator model you choose. It hands routine work to cheaper models and checks the result.":
     "Авто запускає модель-координатор на ваш вибір. Вона передає рутинну роботу дешевшим моделям і перевіряє результат.",
@@ -3084,8 +3076,6 @@ const catalog: MessageCatalog = {
   "Can't connect": "Не вдається підключитися",
   "Can't connect to {name}": "Не вдається підключитися до {name}",
   "Can't connect to this machine.": "Не вдається підключитися до цього комп’ютера.",
-  "Can't find a setting? Keep this project picked above and hop to any other settings page.":
-    "Не знаходите налаштування? Залиште вибраним цей проєкт угорі й перейдіть на будь-яку іншу сторінку налаштувань.",
   "Can't send": "Не надсилається",
   cancel: "скасувати",
   Cancel: "Скасувати",
@@ -3491,8 +3481,6 @@ const catalog: MessageCatalog = {
   "Choose model": "Виберіть модель",
   "Choose models": "Виберіть моделі",
   "Choose models and a base branch": "Виберіть моделі та базову гілку",
-  "Choose one environment to configure its telemetry exports.":
-    "Виберіть одне середовище, щоб налаштувати його експорт телеметрії.",
   "Choose one environment to edit its list. Adding an action here adds it on every selected environment.":
     "Виберіть одне середовище, щоб редагувати його список. Додавання дії тут додає її в кожному вибраному середовищі.",
   "Choose one or more computers. We’ll set up agents and projects on each.":
@@ -3990,8 +3978,6 @@ const catalog: MessageCatalog = {
   "Connect an environment to see limits.": "Підключіть середовище, щоб побачити ліміти.",
   "Connect an environment to see machines.": "Підключіть середовище, щоб бачити комп’ютери.",
   "Connect an environment to see usage.": "Підключіть середовище, щоб побачити використання.",
-  "Connect an environment to set Auto mode, delegated tasks, and final review models.":
-    "Підключіть середовище, щоб налаштувати режим Auto, делеговані завдання та моделі фінального рев’ю.",
   "Connect an environment to set model prices.": "Підключіть середовище, щоб задати ціни моделей.",
   "Connect an environment to set up its providers.":
     "Підключіть середовище, щоб налаштувати його провайдерів.",
@@ -8340,6 +8326,8 @@ const catalog: MessageCatalog = {
   "Not available": "Недоступно",
   "Not available on {environments}: they run an older T3.CodeShip.":
     "Недоступно на {environments}: там працює старіша версія T3.CodeShip.",
+  "Not available on {scope}. Choose a machine that supports it.":
+    "Недоступно на {scope}. Виберіть машину, що це підтримує.",
   "Not available on this device": "Недоступно на цьому пристрої",
   "Not available on this server: {hint}": "Недоступно на цьому сервері: {hint}",
   "Not back after {minutes} minutes": "Не повернувся після {minutes} хв",
@@ -8594,7 +8582,6 @@ const catalog: MessageCatalog = {
   "Open a surface": "Відкрити панель",
   "Open activity on host": "Відкрити активність на хості",
   "Open agents, {summary}": "Відкрити агентів, {summary}",
-  "Open all environments": "Відкрити всі середовища",
   "Open an app first.": "Спершу відкрийте застосунок.",
   "Open Android Settings, select T3.CodeShip, then enable Live Updates in Notifications.":
     "Відкрийте налаштування Android, виберіть T3.CodeShip, потім увімкніть живі оновлення в розділі «Сповіщення».",
@@ -9070,6 +9057,8 @@ const catalog: MessageCatalog = {
   "Pending review · Tap to edit": "Рев’ю в очікуванні · Торкніться, щоб змінити",
   "Pending. Sent when you submit the review": "Очікує. Буде надіслано, коли ви подасте рев’ю",
   "Per 1M tokens": "За 1 млн токенів",
+  "Per machine": "Для кожного комп’ютера",
+  "Per project": "Для кожного проєкту",
   Performance: "Продуктивність",
   "Performed {count} other actions": {
     one: "Виконано {count} іншу дію",
@@ -10735,6 +10724,7 @@ const catalog: MessageCatalog = {
     other: "Заплановані завдання: останні запуски {count} завдання не вдалися",
   },
   Scheme: "Схема",
+  "Scope of {setting}: {scope}": "Де діє «{setting}»: {scope}",
   "Screen Recording": "Запис екрана",
   "Screenshot · Shift-click to record": "Знімок екрана · Shift-клік для запису",
   "Screenshot capture failed ({status}). Try again.":
@@ -14111,10 +14101,10 @@ const catalog: MessageCatalog = {
     "Оновіть розширення GNOME, потім вийдіть і знову увійдіть, щоб увімкнути ефекти.",
   "Update the README and the user docs for the changes in this thread.":
     "Оновіть README і документацію користувача відповідно до змін у цьому чаті.",
-  "Update the selected environments to use storage cleanup, or choose a machine that supports it.":
-    "Оновіть вибрані середовища, щоб користуватися очищенням сховища, або виберіть комп’ютер, що його підтримує.",
   "Update the selected machines to configure project worktree cleanup.":
     "Оновіть вибрані комп’ютери, щоб налаштувати очищення worktree проєкту.",
+  "Update the selected machines to use storage cleanup, or choose one that supports it.":
+    "Оновіть вибрані комп’ютери, щоб очищати сховище, або виберіть той, що це підтримує.",
   "Update the server and control environment processes.":
     "Оновлення сервера й керування процесами середовища.",
   "Update the server to enable it.": "Оновіть сервер, щоб увімкнути його.",
@@ -14730,10 +14720,13 @@ const catalog: MessageCatalog = {
   "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this.":
     "Коли стискати неактивний чат Claude понад 200 000 токенів: після вашого повернення, безпосередньо перед закінченням строку дії кешу запиту або ніколи. Кожен провайдер Claude може це перевизначити.",
   "When you return": "Коли ви повернетеся",
+  "Where {setting} applies": "Де діє «{setting}»",
   "Where links in the chat and terminal open. Hold ⌘ or Ctrl while clicking a link to open it in your default browser either way.":
     "Де відкриваються посилання з чату й терміналу. Утримуйте ⌘ або Ctrl під час кліку, щоб відкрити посилання у вашому браузері за замовчуванням за будь-яких налаштувань.",
   "Where new scheduled tasks appear on every machine. Change a task's place from its menu.":
     "Де нові заплановані завдання з’являються на всіх комп’ютерах. Змінити місце завдання можна в його меню.",
+  "Where new scheduled tasks appear. Change a task's place from its menu.":
+    "Де з’являються нові заплановані завдання. Місце завдання можна змінити в його меню.",
   "Where new threads in this project start.": "Де починаються нові чати в цьому проєкті.",
   "Where new threads start. Projects and their t3.json can override it.":
     "Де починаються нові чати. Проєкти та їхній t3.json можуть це змінити.",

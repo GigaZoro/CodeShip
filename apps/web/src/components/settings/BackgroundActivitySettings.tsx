@@ -1,3 +1,4 @@
+import { SettingScope } from "./SettingScope";
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
 import { cn } from "../../lib/utils";
 import { msg, t, tn, type Message } from "~/i18n";
@@ -341,6 +342,14 @@ function BackgroundActivityAdvancedDialog({
 }
 
 export function BackgroundActivitySettingsRow() {
+  return (
+    <SettingScope setting="background-activity">
+      <ScopedBackgroundActivitySettingsRow />
+    </SettingScope>
+  );
+}
+
+function ScopedBackgroundActivitySettingsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { scope, environment } = useSettingsScope();
@@ -456,6 +465,14 @@ export function BackgroundActivitySettingsRow() {
 }
 
 export function ProviderHealthIntervalRow() {
+  return (
+    <SettingScope setting="provider-health-check-interval">
+      <ScopedProviderHealthIntervalRow />
+    </SettingScope>
+  );
+}
+
+function ScopedProviderHealthIntervalRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const canWriteSettings = useScopedSettingsWriteAllowed();
@@ -504,6 +521,14 @@ export function ProviderHealthIntervalRow() {
 }
 
 export function GitFetchIntervalRow() {
+  return (
+    <SettingScope setting="git-fetch-interval">
+      <ScopedGitFetchIntervalRow />
+    </SettingScope>
+  );
+}
+
+function ScopedGitFetchIntervalRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const canWriteSettings = useScopedSettingsWriteAllowed();
@@ -565,6 +590,14 @@ const clampRounded = (value: number, min: number, max: number, step: number) =>
   Math.min(max, Math.max(min, Math.round(value / step) * step));
 
 export function AutomatedStartMemoryGuardRow() {
+  return (
+    <SettingScope setting="automated-start-memory-guard">
+      <ScopedAutomatedStartMemoryGuardRow />
+    </SettingScope>
+  );
+}
+
+function ScopedAutomatedStartMemoryGuardRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -590,6 +623,14 @@ export function AutomatedStartMemoryGuardRow() {
 }
 
 export function AutomatedStartMemoryLimitsRow() {
+  return (
+    <SettingScope setting="automated-start-memory-limits">
+      <ScopedAutomatedStartMemoryLimitsRow />
+    </SettingScope>
+  );
+}
+
+function ScopedAutomatedStartMemoryLimitsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const canWriteSettings = useScopedSettingsWriteAllowed();

@@ -1,4 +1,4 @@
-import { t } from "~/i18n";
+import { msg, t, type Message } from "~/i18n";
 import {
   lazy,
   Suspense,
@@ -34,6 +34,8 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
+import { useEnvironments } from "../../state/environments";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import {
@@ -53,7 +55,9 @@ import {
   SETTINGS_NAV_GROUPS,
   SETTINGS_SEARCH_APP_PAGES,
   SETTINGS_SECTION_LABELS,
+  settingScopeAxes,
   settingsSearchSectionLabel,
+  type SettingScopeAxes,
   type SettingsPath,
   type SettingsSearchItem,
 } from "./settingsSearch";
@@ -126,6 +130,28 @@ function SettingsSearchResultIcon({ item }: { item: SettingsSearchItem }) {
   return <Icon className="size-4 shrink-0 text-(--sidebar-icon-color)" />;
 }
 
+const SCOPE_BADGE_LABELS: Readonly<Record<SettingScopeAxes, Message>> = {
+  "one-machine": msg("One machine"),
+  machine: msg("Per machine"),
+  project: msg("Per project"),
+};
+
+/** Says a result's value is chosen per project or machine, as the pill on its row does. */
+function SettingScopeBadge({
+  axes,
+  multiMachine,
+}: {
+  axes: SettingScopeAxes | null;
+  multiMachine: boolean;
+}) {
+  if (axes === null || (axes !== "project" && !multiMachine)) return null;
+  return (
+    <Badge variant="outline" size="sm" className="mt-0.5 shrink-0">
+      {t(SCOPE_BADGE_LABELS[axes])}
+    </Badge>
+  );
+}
+
 export function SettingsSidebarNav({
   pathname,
   inSidebar = false,
@@ -155,6 +181,7 @@ export function SettingsSidebarNav({
   const compactLayout = useMediaQuery("max-md");
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const searchableItems = useAvailableSettingsSearchItems(scopeSearch);
+  const multiMachine = useEnvironments().environments.length > 1;
   const results = searchSettings(query, [...SETTINGS_SEARCH_APP_PAGES, ...searchableItems]);
   const isSearching = query.trim().length > 0;
   const hasResults = results.length > 0;
@@ -390,6 +417,10 @@ export function SettingsSidebarNav({
                           {t(settingsSearchSectionLabel(item.to))}
                         </span>
                       </span>
+                      <SettingScopeBadge
+                        axes={settingScopeAxes(item)}
+                        multiMachine={multiMachine}
+                      />
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}

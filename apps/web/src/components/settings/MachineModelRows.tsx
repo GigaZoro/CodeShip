@@ -17,7 +17,7 @@ import {
 } from "@t3tools/shared/serverSettings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { PlusIcon, Trash2Icon } from "lucide-react";
-import { createContext, use, useRef, type ReactNode } from "react";
+import { createContext, use, useRef, type ComponentProps, type ReactNode } from "react";
 
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -39,7 +39,9 @@ import {
   autoModeModelChoices,
   type AutoModeModelChoices,
 } from "./modelsSettings.logic";
-import { searchableSetting } from "./settingsSearch";
+import { SettingScope } from "./SettingScope";
+import { useSettingsScope } from "./SettingsScopeContext";
+import { searchableSetting, type SettingsSearchItemId } from "./settingsSearch";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 import { msg, t, type Message } from "~/i18n";
 
@@ -107,7 +109,7 @@ function ConnectedMachineModels({
   return <MachineModelsContext value={value}>{children}</MachineModelsContext>;
 }
 
-export function MachineModelsProvider({
+function MachineModelsProvider({
   environmentId,
   children,
 }: {
@@ -121,6 +123,32 @@ export function MachineModelsProvider({
     <ConnectedMachineModels key={environmentId} environmentId={environmentId}>
       {children}
     </ConnectedMachineModels>
+  );
+}
+
+function ScopedMachineModels({ children }: { readonly children: ReactNode }) {
+  const { environment } = useSettingsScope();
+  return (
+    <MachineModelsProvider environmentId={environment?.environmentId ?? null}>
+      {children}
+    </MachineModelsProvider>
+  );
+}
+
+/** A machine-wide row with its own machine pill; it reads that machine's providers and accounts. */
+export function MachineModelUnit({
+  setting,
+  requires,
+  children,
+}: {
+  readonly setting: SettingsSearchItemId;
+  readonly requires: NonNullable<ComponentProps<typeof SettingScope>["requires"]>;
+  readonly children: ReactNode;
+}) {
+  return (
+    <SettingScope setting={setting} requires={requires}>
+      <ScopedMachineModels>{children}</ScopedMachineModels>
+    </SettingScope>
   );
 }
 

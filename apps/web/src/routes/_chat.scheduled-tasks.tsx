@@ -18,6 +18,7 @@ function ScheduledTasksRoute() {
     >
       <SettingsScopeProvider
         search={scopeSearch}
+        viewFilter="project-and-machine"
         onChange={(next) => {
           // Replacing the whole search also drops a task link's environmentId and taskId.
           void navigate({

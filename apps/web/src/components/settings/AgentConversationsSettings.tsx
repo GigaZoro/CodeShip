@@ -15,6 +15,7 @@ import type { SavedScopedServerWrite } from "./scopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingScope } from "./SettingScope";
 import { searchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 
@@ -64,6 +65,16 @@ function useReportConversationImport() {
 }
 
 export function AgentConversationsSettings() {
+  return (
+    <SettingsSection id="agent-conversations" title={t("Claude Code and Codex")}>
+      <SettingScope setting="import-agent-conversations">
+        <ImportAgentConversationsRow />
+      </SettingScope>
+    </SettingsSection>
+  );
+}
+
+function ImportAgentConversationsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const reportImport = useReportConversationImport();
@@ -71,50 +82,48 @@ export function AgentConversationsSettings() {
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
 
   return (
-    <SettingsSection id="agent-conversations" title={t("Claude Code and Codex")}>
-      <SettingsRow
-        serverScoped
-        settingKeys={["importAgentConversations"]}
-        {...searchableSetting("import-agent-conversations")}
-        description={
-          isProjectScope
-            ? t(
-                "Brings this project's past and new Claude Code and Codex conversations into T3.CodeShip, including ones from while T3.CodeShip was closed.",
-              )
-            : t(
-                "Brings past and new Claude Code and Codex conversations from the selected environments into T3.CodeShip, including ones from while T3.CodeShip was closed. Projects can override it.",
-              )
-        }
-        status={
-          isProjectScope
-            ? undefined
-            : t(
-                "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project.",
-              )
-        }
-        resetAction={
-          settings.importAgentConversations ? (
-            <SettingResetButton
-              label={t("import conversations")}
-              tooltip={t("Reset importing conversations to off")}
-              onClick={() => updateSettings({ importAgentConversations: false })}
-            />
-          ) : null
-        }
-        control={
-          <ScopedSwitch
-            settingKeys={["importAgentConversations"]}
-            checked={settings.importAgentConversations}
-            onCheckedChange={(checked) =>
-              updateSettings(
-                { importAgentConversations: Boolean(checked) },
-                checked ? { onSaved: reportImport } : undefined,
-              )
-            }
-            aria-label={t("Import Claude Code and Codex conversations")}
+    <SettingsRow
+      serverScoped
+      settingKeys={["importAgentConversations"]}
+      {...searchableSetting("import-agent-conversations")}
+      description={
+        isProjectScope
+          ? t(
+              "Brings this project's past and new Claude Code and Codex conversations into T3.CodeShip, including ones from while T3.CodeShip was closed.",
+            )
+          : t(
+              "Brings past and new Claude Code and Codex conversations from the selected environments into T3.CodeShip, including ones from while T3.CodeShip was closed. Projects can override it.",
+            )
+      }
+      status={
+        isProjectScope
+          ? undefined
+          : t(
+              "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project.",
+            )
+      }
+      resetAction={
+        settings.importAgentConversations ? (
+          <SettingResetButton
+            label={t("import conversations")}
+            tooltip={t("Reset importing conversations to off")}
+            onClick={() => updateSettings({ importAgentConversations: false })}
           />
-        }
-      />
-    </SettingsSection>
+        ) : null
+      }
+      control={
+        <ScopedSwitch
+          settingKeys={["importAgentConversations"]}
+          checked={settings.importAgentConversations}
+          onCheckedChange={(checked) =>
+            updateSettings(
+              { importAgentConversations: Boolean(checked) },
+              checked ? { onSaved: reportImport } : undefined,
+            )
+          }
+          aria-label={t("Import Claude Code and Codex conversations")}
+        />
+      }
+    />
   );
 }

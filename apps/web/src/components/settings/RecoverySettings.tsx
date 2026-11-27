@@ -1,3 +1,4 @@
+import { SettingScope } from "./SettingScope";
 import { useState } from "react";
 import * as Schema from "effect/Schema";
 import {
@@ -40,6 +41,14 @@ const updateLabels = {
 };
 
 export function UsageLimitRecoverySettings() {
+  return (
+    <SettingScope setting="usage-limit-recovery">
+      <ScopedUsageLimitRecoverySettings />
+    </SettingScope>
+  );
+}
+
+function ScopedUsageLimitRecoverySettings() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
   const keys = ["autoResumeLimitedThreads", "failoverLimitedThreads"] as const;
@@ -99,6 +108,14 @@ export function UsageLimitRecoverySettings() {
 }
 
 export function ProviderUpdatesSettings() {
+  return (
+    <SettingScope setting="provider-updates">
+      <ScopedProviderUpdatesSettings />
+    </SettingScope>
+  );
+}
+
+function ScopedProviderUpdatesSettings() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
   const keys = ["enableProviderUpdateChecks", "autoUpdateProviders"] as const;
@@ -143,6 +160,14 @@ export function ProviderUpdatesSettings() {
 }
 
 export function InstallUpdatesAutomaticallySetting() {
+  return (
+    <SettingScope setting="install-updates-automatically">
+      <ScopedInstallUpdatesAutomaticallySetting />
+    </SettingScope>
+  );
+}
+
+function ScopedInstallUpdatesAutomaticallySetting() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
   return (
@@ -164,6 +189,14 @@ export function InstallUpdatesAutomaticallySetting() {
 }
 
 export function AutomaticUpdateTimeSetting() {
+  return (
+    <SettingScope setting="automatic-update-time">
+      <ScopedAutomaticUpdateTimeSetting />
+    </SettingScope>
+  );
+}
+
+function ScopedAutomaticUpdateTimeSetting() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
   const keys = ["automaticUpdateTime"] as const;
@@ -226,6 +259,14 @@ function WaitHoursInput({ value, onCommit }: { value: number; onCommit: (hours: 
 }
 
 export function UsageResetRedeemerSettings() {
+  return (
+    <SettingScope setting="redeem-usage-resets" requires={["usageResetRedeemer"]}>
+      <ScopedUsageResetRedeemerSettings />
+    </SettingScope>
+  );
+}
+
+function ScopedUsageResetRedeemerSettings() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
   const { connectedEnvironments } = useSettingsScope();

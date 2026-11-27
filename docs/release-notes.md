@@ -1,3 +1,10 @@
+## 2026-11-27 — Each setting picks its own machine or project
+
+- Settings no longer has a project and machine bar at the top of every page. A setting whose value can differ between machines or projects has a scope button on its own row that picks where that one setting applies, and settings search marks such results **Per machine**, **One machine** or **Per project**.
+- A setting that needs a newer server, such as Auto mode or Final review, says when the chosen machine can't use it, and its scope button offers a machine that can, instead of the setting disappearing.
+- **Guest links**, **Allow linked environments** and **Follow shared settings** in Machines & access can now be set for one machine as well as for all of them.
+- **Device sources** in Integrations and the **Version Control** providers in Source control & worktrees show one machine at a time, picked with their scope button, instead of a merged view of every machine.
+
 ## 2026-11-27 — Antigravity no longer drops a workflow skill into your project
 
 - On Antigravity 1.5.2, a session or delegate no longer writes `skills/system/run-workflow/SKILL.md` into the project folder, where it could be committed with your work. T3.CodeShip keeps Antigravity's `run_workflow` tool off on every runtime from 1.4.2 on; delete a copy an earlier session left behind.

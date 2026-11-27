@@ -30,16 +30,16 @@ import {
   AutoModeModelRow,
   DelegatedTaskModelRow,
   FinalReviewModelRow,
-  MachineModelsProvider,
+  MachineModelUnit,
 } from "./MachineModelRows";
 import { ModelSelectionControl } from "./ModelSelectionControl";
-import { ModelSubRow } from "./ModelSubRow";
 import {
   reviewGuideModelInheritance,
   scheduledTaskModelInheritance,
   sourceControlWriterModelInheritance,
 } from "./modelsSettings.logic";
 import { ScheduledTasksOwnModelRow } from "./ScheduledTasksOwnModelRow";
+import { SettingScope } from "./SettingScope";
 import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -135,6 +135,22 @@ function useDefaultModelState() {
 
 /** The model new threads start on, with the last-picked and fallback choices folded in. */
 export function DefaultModelRow() {
+  return (
+    <>
+      <SettingScope setting="default-model">
+        <DefaultModelUnit />
+      </SettingScope>
+      <SettingScope setting="last-picked-model" requires={["lastPickedModel"]}>
+        <LastPickedModelRow />
+      </SettingScope>
+      <SettingScope setting="fallback-model">
+        <FallbackModelRow />
+      </SettingScope>
+    </>
+  );
+}
+
+function DefaultModelUnit() {
   const state = useDefaultModelState();
   const {
     settings,
@@ -142,7 +158,6 @@ export function DefaultModelRow() {
     entries,
     providers,
     autoPick,
-    resolveAuto,
     isProjectScope,
     modelDisabledReason,
     representative,
@@ -161,25 +176,19 @@ export function DefaultModelRow() {
   const automaticModel =
     state.targets.length > 0 &&
     state.targets.every((candidate) => candidate.settings.defaultModelSelection === null);
-  const mixedFallback = useScopedSettingsMixed(["fallbackModelSelection"]);
-  const mixedLastModel = useScopedSettingsMixed(["newThreadsUseLastModel"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
-  const supportsLastPicked = useEveryEnvironmentSupports("lastPickedModel");
   const unavailable = state.connectedEnvironments.length === 0;
   const storedAuto = state.storedSelection?.autoAccount === true && autoPick !== null;
   const effortDisabledReason = selection
     ? modelDisabledReason(selection.instanceId, selection.model)
     : null;
-  const storedFallback = settings.fallbackModelSelection;
-  const fallbackAuto = storedFallback?.autoAccount === true && autoPick !== null;
-  const fallbackSelection = storedFallback ? resolveAuto(storedFallback) : selection;
   const setModel = (value: ModelSelection | null) =>
     updateSettings({ defaultModelSelection: value });
 
   return (
     <SettingsRow
       serverScoped
-      settingKeys={["defaultModelSelection", "fallbackModelSelection", "newThreadsUseLastModel"]}
+      settingKeys={["defaultModelSelection"]}
       mixed={mixedModel}
       {...searchableSetting("default-model")}
       description={
@@ -236,68 +245,100 @@ export function DefaultModelRow() {
           </span>
         )
       }
-    >
-      {!isProjectScope && supportsLastPicked ? (
-        <ModelSubRow
-          id={searchableSetting("last-picked-model").id}
-          title={t("Use the last picked model")}
-          description={t(
-            "New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected.",
-          )}
-          control={
-            <Switch
-              aria-label={t("Use last picked model")}
-              mixed={mixedLastModel}
-              checked={mixedLastModel ? false : settings.newThreadsUseLastModel}
-              onCheckedChange={(enabled) => updateSettings({ newThreadsUseLastModel: enabled })}
-            />
-          }
+    />
+  );
+}
+
+function LastPickedModelRow() {
+  const { scope } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixedLastModel = useScopedSettingsMixed(["newThreadsUseLastModel"]);
+  const supported = useEveryEnvironmentSupports("lastPickedModel");
+  if (scope.kind === "project" || scope.kind === "checkout" || !supported) return null;
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["newThreadsUseLastModel"]}
+      mixed={mixedLastModel}
+      {...searchableSetting("last-picked-model")}
+      description={t(
+        "New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected.",
+      )}
+      control={
+        <Switch
+          aria-label={t("Use last picked model")}
+          mixed={mixedLastModel}
+          checked={mixedLastModel ? false : settings.newThreadsUseLastModel}
+          onCheckedChange={(enabled) => updateSettings({ newThreadsUseLastModel: enabled })}
         />
-      ) : null}
-      {!isProjectScope ? (
-        <ModelSubRow
-          id={searchableSetting("fallback-model").id}
-          title={t("Fallback model")}
-          description={t("Used for new threads when the default model's provider is out of usage.")}
-          reset={
-            mixedFallback || storedFallback !== null ? (
-              <SettingResetButton
-                label={t("fallback model")}
-                onClick={() => updateSettings({ fallbackModelSelection: null })}
-              />
-            ) : null
-          }
-          control={
-            fallbackSelection && entries.length > 0 ? (
-              <ModelSelectionControl
-                environmentId={representative?.environmentId ?? null}
-                label={t("Fallback model")}
-                shown={fallbackSelection}
-                entries={entries}
-                modelOptionsByInstance={getCustomModelOptionsByInstance(
-                  settings,
-                  providers,
-                  fallbackSelection.instanceId,
-                  fallbackSelection.model,
-                )}
-                {...(mixedFallback
-                  ? { triggerLabel: t("Mixed") }
-                  : storedFallback === null
-                    ? { triggerLabel: t("None") }
-                    : {})}
-                showEffort={storedFallback !== null && !mixedFallback}
-                auto={{ pick: autoPick, checked: !mixedFallback && fallbackAuto }}
-                disabledReason={modelDisabledReason}
-                failureTitle={t("Fallback model not saved")}
-                onChange={(next) => updateSettings({ fallbackModelSelection: next })}
-              />
-            ) : (
-              <span className="text-sm text-muted-foreground">{t("No providers available")}</span>
-            )
-          }
-        />
-      ) : null}
-    </SettingsRow>
+      }
+    />
+  );
+}
+
+function FallbackModelRow() {
+  const {
+    settings,
+    selection,
+    entries,
+    providers,
+    autoPick,
+    resolveAuto,
+    isProjectScope,
+    modelDisabledReason,
+    representative,
+  } = useDefaultModelState();
+  const updateSettings = useUpdateScopedSettings();
+  const mixedFallback = useScopedSettingsMixed(["fallbackModelSelection"]);
+  if (isProjectScope) return null;
+  const storedFallback = settings.fallbackModelSelection;
+  const fallbackAuto = storedFallback?.autoAccount === true && autoPick !== null;
+  const fallbackSelection = storedFallback ? resolveAuto(storedFallback) : selection;
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["fallbackModelSelection"]}
+      mixed={mixedFallback}
+      {...searchableSetting("fallback-model")}
+      description={t("Used for new threads when the default model's provider is out of usage.")}
+      resetAction={
+        mixedFallback || storedFallback !== null ? (
+          <SettingResetButton
+            label={t("fallback model")}
+            onClick={() => updateSettings({ fallbackModelSelection: null })}
+          />
+        ) : null
+      }
+      control={
+        fallbackSelection && entries.length > 0 ? (
+          <ModelSelectionControl
+            environmentId={representative?.environmentId ?? null}
+            label={t("Fallback model")}
+            shown={fallbackSelection}
+            entries={entries}
+            modelOptionsByInstance={getCustomModelOptionsByInstance(
+              settings,
+              providers,
+              fallbackSelection.instanceId,
+              fallbackSelection.model,
+            )}
+            {...(mixedFallback
+              ? { triggerLabel: t("Mixed") }
+              : storedFallback === null
+                ? { triggerLabel: t("None") }
+                : {})}
+            showEffort={storedFallback !== null && !mixedFallback}
+            auto={{ pick: autoPick, checked: !mixedFallback && fallbackAuto }}
+            disabledReason={modelDisabledReason}
+            failureTitle={t("Fallback model not saved")}
+            onChange={(next) => updateSettings({ fallbackModelSelection: next })}
+          />
+        ) : (
+          <span className="text-sm text-muted-foreground">{t("No providers available")}</span>
+        )
+      }
+    />
   );
 }
 
@@ -655,30 +696,35 @@ function ReviewGuideModelRow() {
   );
 }
 
-/**
- * Every model role in one list, in the order a thread meets them. `machineEnvironmentId` is the one
- * machine whose providers and accounts the machine-wide rows use; null leaves those rows out.
- */
-export function ModelsSettingsSection({
-  machineEnvironmentId,
-}: {
-  readonly machineEnvironmentId: EnvironmentId | null;
-}) {
+/** Every model role in one list, in the order a thread meets them. */
+export function ModelsSettingsSection() {
   return (
-    <MachineModelsProvider environmentId={machineEnvironmentId}>
-      <SettingsSection id="models" title={t("Models")}>
-        <DefaultModelRow />
+    <SettingsSection id="models" title={t("Models")}>
+      <DefaultModelRow />
+      <SettingScope setting="scheduled-task-model" requires={["scheduledTaskDefaultModel"]}>
         <ScheduledTaskModelRow />
+      </SettingScope>
+      <MachineModelUnit setting="auto-mode" requires={["usageLimitAccountFailover", "autoMode"]}>
         <AutoModeModelRow />
+      </MachineModelUnit>
+      <SettingScope setting="text-generation-model">
         <TitlesModelRow />
+      </SettingScope>
+      <SettingScope setting="source-control-writer-model">
         <SourceControlWriterModelRow />
+      </SettingScope>
+      <SettingScope setting="review-guide-model">
         <ReviewGuideModelRow />
+      </SettingScope>
+      <MachineModelUnit setting="final-review" requires={["finalReview"]}>
         <FinalReviewModelRow />
+      </MachineModelUnit>
+      <MachineModelUnit setting="delegated-task-models" requires={["delegatedTaskModels"]}>
         <DelegatedTaskModelRow />
-        <AdvancedSettings targetIds={[searchableSetting("thread-title-instructions").id]}>
-          <ThreadTitleInstructionsSettings />
-        </AdvancedSettings>
-      </SettingsSection>
-    </MachineModelsProvider>
+      </MachineModelUnit>
+      <AdvancedSettings targetIds={[searchableSetting("thread-title-instructions").id]}>
+        <ThreadTitleInstructionsSettings />
+      </AdvancedSettings>
+    </SettingsSection>
   );
 }

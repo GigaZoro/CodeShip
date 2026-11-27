@@ -1,3 +1,4 @@
+import { SettingScope, supportsCapabilities } from "../settings/SettingScope";
 import { ThreadPageTokenSettings } from "./ThreadPageTokenSettings";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -61,7 +62,6 @@ import {
   useScopedSettings,
   useRunScopedSettingsPlan,
   useScopedSettingsMixed,
-  useSharedScopeNotice,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 import {
@@ -69,11 +69,7 @@ import {
   mergeEnvironmentSettings,
   useClientSettings,
 } from "../../hooks/useSettings";
-import {
-  EveryMachineSettingsScope,
-  useOptionalSettingsScope,
-  useSettingsScope,
-} from "./SettingsScopeContext";
+import { useSettingsScope } from "./SettingsScopeContext";
 import {
   planPerEnvironmentSettingsPatch,
   planScopedSettingsClear,
@@ -144,6 +140,8 @@ import { installLocalUpdate, installLocalUpdateWhenIdle } from "../sidebar/Sideb
 import { usePendingLocalInstall, usePendingLocalInstallWork } from "../sidebar/localInstallWait";
 import { PendingLocalInstallDialog } from "../sidebar/PendingLocalInstallDialog";
 import { restartHoldTooltip, waitingOnWorkLabel } from "../restartHold.logic";
+
+const UNMERGED_WORK = ["vcsUnmergedWork"] as const;
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, Message> = {
   turn: msg("Wait for the full response"),
@@ -699,9 +697,9 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="sidebar" title={t("Sidebar")}>
-        <EveryMachineSettingsScope>
+        <SettingScope setting="scheduled-task-default-placement">
           <ScheduledTaskPlacementRow />
-        </EveryMachineSettingsScope>
+        </SettingScope>
         <SettingsRow
           {...searchableSetting("sidebar-grouping")}
           description={t(
@@ -1150,50 +1148,56 @@ export function ChatSettingsPanel() {
             />
           }
         />
-        <SettingsRow
-          {...searchableSetting("skill-availability")}
-          serverScoped
-          settingKeys={["skillAvailability"]}
-          description={t(
-            "Share skills from enabled providers on this environment. Skills requiring tools the selected model cannot use may not work.",
+        <SettingScope setting="skill-availability">
+          {({ settings, updateSettings }) => (
+            <SettingsRow
+              {...searchableSetting("skill-availability")}
+              serverScoped
+              settingKeys={["skillAvailability"]}
+              description={t(
+                "Share skills from enabled providers on this environment. Skills requiring tools the selected model cannot use may not work.",
+              )}
+              resetAction={
+                settings.skillAvailability !== DEFAULT_UNIFIED_SETTINGS.skillAvailability ? (
+                  <SettingResetButton
+                    label={t("skill availability")}
+                    onClick={() =>
+                      updateSettings({
+                        skillAvailability: DEFAULT_UNIFIED_SETTINGS.skillAvailability,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <Select
+                  value={settings.skillAvailability}
+                  onValueChange={(value) => {
+                    if (value === "provider" || value === "shared") {
+                      updateSettings({ skillAvailability: value });
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-full sm:w-48"
+                    aria-label={t("Skill availability")}
+                  >
+                    <SelectValue>
+                      {settings.skillAvailability === "shared"
+                        ? t("Shared across models")
+                        : t("By provider")}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem value="provider">{t("By provider")}</SelectItem>
+                    <SelectItem value="shared">{t("Shared across models")}</SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
           )}
-          resetAction={
-            settings.skillAvailability !== DEFAULT_UNIFIED_SETTINGS.skillAvailability ? (
-              <SettingResetButton
-                label={t("skill availability")}
-                onClick={() =>
-                  updateSettings({ skillAvailability: DEFAULT_UNIFIED_SETTINGS.skillAvailability })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.skillAvailability}
-              onValueChange={(value) => {
-                if (value === "provider" || value === "shared") {
-                  updateSettings({ skillAvailability: value });
-                }
-              }}
-            >
-              <SelectTrigger
-                size="sm"
-                className="w-full sm:w-48"
-                aria-label={t("Skill availability")}
-              >
-                <SelectValue>
-                  {settings.skillAvailability === "shared"
-                    ? t("Shared across models")
-                    : t("By provider")}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value="provider">{t("By provider")}</SelectItem>
-                <SelectItem value="shared">{t("Shared across models")}</SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
+        </SettingScope>
         <AdvancedSettings targetIds={[searchableSetting("skills-in-slash-menu").id]}>
           <SettingsRow
             {...searchableSetting("skills-in-slash-menu")}
@@ -1544,9 +1548,12 @@ function DiffsSettingsSections() {
   );
 }
 
-/** The Providers panel can render without a settings scope, as its tests do; this row needs one. */
 function CompactIdleThreadsRow() {
-  return useOptionalSettingsScope() === null ? null : <ScopedCompactIdleThreadsRow />;
+  return (
+    <SettingScope setting="compact-idle-threads">
+      <ScopedCompactIdleThreadsRow />
+    </SettingScope>
+  );
 }
 
 function ScopedCompactIdleThreadsRow() {
@@ -1614,22 +1621,15 @@ function ScopedCompactIdleThreadsRow() {
   );
 }
 
-/** General has no scope picker, so this server setting always writes to every machine. */
 function ScheduledTaskPlacementRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const sharedNotice = useSharedScopeNotice();
   return (
     <SettingsRow
       {...searchableSetting("scheduled-task-default-placement")}
       serverScoped
       settingKeys={["scheduledTaskDefaultPlacement"]}
-      description={[
-        t(
-          "Where new scheduled tasks appear on every machine. Change a task's place from its menu.",
-        ),
-        ...(sharedNotice ? [sharedNotice] : []),
-      ].join(" ")}
+      description={t("Where new scheduled tasks appear. Change a task's place from its menu.")}
       resetAction={
         settings.scheduledTaskDefaultPlacement !==
         DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement ? (
@@ -1688,19 +1688,9 @@ function ScheduledTaskPlacementSelect() {
 }
 
 export function ThreadsSettingsPanel() {
-  const settings = useScopedSettings();
-  const updateSettings = useUpdateScopedSettings();
   const { connectedEnvironments, scope } = useSettingsScope();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const hasServerTargets = connectedEnvironments.length > 0;
-  const mixedResponseStreamingMode = useScopedSettingsMixed(["responseStreamingMode"]);
-  const supportsAutoSettlementScope = connectedEnvironments.every(
-    (target) => target.serverConfig?.environment.capabilities.threadAutoSettlementScope === true,
-  );
-  // Servers that check worktrees for unmerged work are the ones that read this setting.
-  const supportsUnmergedWorkPullRequests = connectedEnvironments.every(
-    (target) => target.serverConfig?.environment.capabilities.vcsUnmergedWork === true,
-  );
 
   return (
     <SettingsPageContainer>
@@ -1714,277 +1704,323 @@ export function ThreadsSettingsPanel() {
       <SettingsSection id="recovery" title={t("Recovery")}>
         <UsageLimitRecoverySettings />
         <UsageResetRedeemerSettings />
-        <SettingsRow
-          {...searchableSetting("retry-threads-after-network-errors")}
-          serverScoped
-          settingKeys={["retryThreadsAfterNetworkErrors"]}
-          description={t(
-            "Automatically resume threads stopped by a lost internet connection once the connection is back.",
-          )}
-          control={
-            <ScopedSwitch
+        <SettingScope setting="retry-threads-after-network-errors">
+          {({ settings, updateSettings }) => (
+            <SettingsRow
+              {...searchableSetting("retry-threads-after-network-errors")}
+              serverScoped
               settingKeys={["retryThreadsAfterNetworkErrors"]}
-              checked={settings.retryThreadsAfterNetworkErrors}
-              onCheckedChange={(checked) =>
-                updateSettings({ retryThreadsAfterNetworkErrors: Boolean(checked) })
+              description={t(
+                "Automatically resume threads stopped by a lost internet connection once the connection is back.",
+              )}
+              control={
+                <ScopedSwitch
+                  settingKeys={["retryThreadsAfterNetworkErrors"]}
+                  checked={settings.retryThreadsAfterNetworkErrors}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ retryThreadsAfterNetworkErrors: Boolean(checked) })
+                  }
+                  aria-label={t("Retry threads after network errors")}
+                />
               }
-              aria-label={t("Retry threads after network errors")}
             />
-          }
-        />
-        <SettingsRow
-          {...searchableSetting("continue-threads-after-server-update")}
-          serverScoped
-          settingKeys={["continueThreadsAfterServerUpdate"]}
-          description={t(
-            "Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments.",
           )}
-          status={
-            !hasServerTargets
-              ? t("All selected connected environments must support restart continuation.")
-              : undefined
-          }
-          resetAction={
-            hasServerTargets &&
-            settings.continueThreadsAfterServerUpdate !==
-              DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate ? (
-              <SettingResetButton
-                label={t("continue threads after restarts")}
-                onClick={() =>
-                  updateSettings({
-                    continueThreadsAfterServerUpdate:
-                      DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <ScopedSwitch
+        </SettingScope>
+        <SettingScope setting="continue-threads-after-server-update">
+          {({ settings, updateSettings, connectedEnvironments }) => (
+            <SettingsRow
+              {...searchableSetting("continue-threads-after-server-update")}
+              serverScoped
               settingKeys={["continueThreadsAfterServerUpdate"]}
-              checked={settings.continueThreadsAfterServerUpdate}
-              disabled={!hasServerTargets}
-              onCheckedChange={(checked) =>
-                updateSettings({ continueThreadsAfterServerUpdate: Boolean(checked) })
+              description={t(
+                "Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments.",
+              )}
+              status={
+                connectedEnvironments.length === 0
+                  ? t("All selected connected environments must support restart continuation.")
+                  : undefined
               }
-              aria-label={t("Continue threads after restarts")}
+              resetAction={
+                connectedEnvironments.length > 0 &&
+                settings.continueThreadsAfterServerUpdate !==
+                  DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate ? (
+                  <SettingResetButton
+                    label={t("continue threads after restarts")}
+                    onClick={() =>
+                      updateSettings({
+                        continueThreadsAfterServerUpdate:
+                          DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <ScopedSwitch
+                  settingKeys={["continueThreadsAfterServerUpdate"]}
+                  checked={settings.continueThreadsAfterServerUpdate}
+                  disabled={connectedEnvironments.length === 0}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ continueThreadsAfterServerUpdate: Boolean(checked) })
+                  }
+                  aria-label={t("Continue threads after restarts")}
+                />
+              }
             />
-          }
-        />
+          )}
+        </SettingScope>
       </SettingsSection>
 
       {hasServerTargets ? (
         <SettingsSection id="auto-settle" title={t("Auto-settle")}>
-          <SettingsRow
-            serverScoped
-            settingKeys={["sidebarAutoSettleScheduledThreads"]}
-            {...searchableSetting("auto-settle-scheduled-threads")}
-            description={t(
-              "Settle threads started by a scheduled task when they finish and have no pending work.",
-            )}
-            resetAction={
-              settings.sidebarAutoSettleScheduledThreads !==
-              DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleScheduledThreads ? (
-                <SettingResetButton
-                  label={t("Auto-settle completed scheduled threads")}
-                  onClick={() =>
-                    updateSettings({
-                      sidebarAutoSettleScheduledThreads:
-                        DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleScheduledThreads,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <ScopedSwitch
+          <SettingScope setting="auto-settle-scheduled-threads">
+            {({ settings, updateSettings }) => (
+              <SettingsRow
+                serverScoped
                 settingKeys={["sidebarAutoSettleScheduledThreads"]}
-                checked={settings.sidebarAutoSettleScheduledThreads}
-                onCheckedChange={(checked) =>
-                  updateSettings({ sidebarAutoSettleScheduledThreads: Boolean(checked) })
+                {...searchableSetting("auto-settle-scheduled-threads")}
+                description={t(
+                  "Settle threads started by a scheduled task when they finish and have no pending work.",
+                )}
+                resetAction={
+                  settings.sidebarAutoSettleScheduledThreads !==
+                  DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleScheduledThreads ? (
+                    <SettingResetButton
+                      label={t("Auto-settle completed scheduled threads")}
+                      onClick={() =>
+                        updateSettings({
+                          sidebarAutoSettleScheduledThreads:
+                            DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleScheduledThreads,
+                        })
+                      }
+                    />
+                  ) : null
                 }
-                aria-label={t("Auto-settle completed scheduled threads")}
+                control={
+                  <ScopedSwitch
+                    settingKeys={["sidebarAutoSettleScheduledThreads"]}
+                    checked={settings.sidebarAutoSettleScheduledThreads}
+                    onCheckedChange={(checked) =>
+                      updateSettings({ sidebarAutoSettleScheduledThreads: Boolean(checked) })
+                    }
+                    aria-label={t("Auto-settle completed scheduled threads")}
+                  />
+                }
               />
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["sidebarAutoSettleOnMerge"]}
-            {...searchableSetting("auto-settle-merged-threads")}
-            description={t(
-              "Settle a thread when its pull request merges. Closed pull requests still settle automatically.",
             )}
-            resetAction={
-              settings.sidebarAutoSettleOnMerge !==
-              DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge ? (
-                <SettingResetButton
-                  label={t("auto-settle on merge")}
-                  onClick={() =>
-                    updateSettings({
-                      sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <ScopedSwitch
+          </SettingScope>
+          <SettingScope setting="auto-settle-merged-threads">
+            {({ settings, updateSettings }) => (
+              <SettingsRow
+                serverScoped
                 settingKeys={["sidebarAutoSettleOnMerge"]}
-                checked={settings.sidebarAutoSettleOnMerge}
-                onCheckedChange={(checked) =>
-                  updateSettings({ sidebarAutoSettleOnMerge: Boolean(checked) })
+                {...searchableSetting("auto-settle-merged-threads")}
+                description={t(
+                  "Settle a thread when its pull request merges. Closed pull requests still settle automatically.",
+                )}
+                resetAction={
+                  settings.sidebarAutoSettleOnMerge !==
+                  DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge ? (
+                    <SettingResetButton
+                      label={t("auto-settle on merge")}
+                      onClick={() =>
+                        updateSettings({
+                          sidebarAutoSettleOnMerge:
+                            DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
+                        })
+                      }
+                    />
+                  ) : null
                 }
-                aria-label={t("Auto-settle merged threads")}
+                control={
+                  <ScopedSwitch
+                    settingKeys={["sidebarAutoSettleOnMerge"]}
+                    checked={settings.sidebarAutoSettleOnMerge}
+                    onCheckedChange={(checked) =>
+                      updateSettings({ sidebarAutoSettleOnMerge: Boolean(checked) })
+                    }
+                    aria-label={t("Auto-settle merged threads")}
+                  />
+                }
               />
-            }
-          />
+            )}
+          </SettingScope>
 
-          <SettingsRow
-            serverScoped
-            settingKeys={["sidebarAutoSettleAfterDays"]}
-            {...searchableSetting("auto-settle-inactive-threads")}
-            description={t("Sidebar threads with no activity for this long settle automatically.")}
-            resetAction={
-              settings.sidebarAutoSettleAfterDays !==
-              DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ? (
-                <SettingResetButton
-                  label={t("auto-settle")}
-                  onClick={() =>
-                    updateSettings({
-                      sidebarAutoSettleAfterDays:
-                        DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
-                    })
+          <SettingScope setting="auto-settle-inactive-threads">
+            {({ settings, updateSettings, connectedEnvironments }) => (
+              <>
+                <SettingsRow
+                  serverScoped
+                  settingKeys={["sidebarAutoSettleAfterDays"]}
+                  {...searchableSetting("auto-settle-inactive-threads")}
+                  description={t(
+                    "Sidebar threads with no activity for this long settle automatically.",
+                  )}
+                  resetAction={
+                    settings.sidebarAutoSettleAfterDays !==
+                    DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ? (
+                      <SettingResetButton
+                        label={t("auto-settle")}
+                        onClick={() =>
+                          updateSettings({
+                            sidebarAutoSettleAfterDays:
+                              DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
+                          })
+                        }
+                      />
+                    ) : null
+                  }
+                  control={
+                    <ScopedSwitch
+                      settingKeys={["sidebarAutoSettleAfterDays"]}
+                      checked={settings.sidebarAutoSettleAfterDays !== null}
+                      onCheckedChange={(checked) =>
+                        updateSettings({
+                          sidebarAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
+                        })
+                      }
+                      aria-label={t("Auto-settle inactive threads")}
+                    />
+                  }
+                />
+                {settings.sidebarAutoSettleAfterDays !== null ? (
+                  <SettingsRow
+                    serverScoped
+                    settingKeys={["sidebarAutoSettleAfterDays"]}
+                    title={searchableSetting("days-before-auto-settle").title}
+                    description={t("Any new activity un-settles a thread automatically.")}
+                    control={
+                      <AutoSettleDaysInput
+                        value={settings.sidebarAutoSettleAfterDays}
+                        onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
+                      />
+                    }
+                  />
+                ) : null}
+                {settings.sidebarAutoSettleAfterDays !== null &&
+                connectedEnvironments.every(
+                  (target) =>
+                    target.serverConfig?.environment.capabilities.threadAutoSettlementScope ===
+                    true,
+                ) ? (
+                  <SettingsRow
+                    serverScoped
+                    settingKeys={["sidebarAutoSettleKeepPullRequests"]}
+                    title={t("Keep threads with a PR")}
+                    description={t(
+                      "Inactivity does not settle threads with a pull request. Merge and close still do.",
+                    )}
+                    control={
+                      <ScopedSwitch
+                        settingKeys={["sidebarAutoSettleKeepPullRequests"]}
+                        checked={settings.sidebarAutoSettleKeepPullRequests}
+                        onCheckedChange={(checked) =>
+                          updateSettings({ sidebarAutoSettleKeepPullRequests: checked })
+                        }
+                        aria-label={t("Keep threads with a PR")}
+                      />
+                    }
+                  />
+                ) : null}
+              </>
+            )}
+          </SettingScope>
+          {/* Servers that check worktrees for unmerged work are the ones that read this setting. */}
+          <SettingScope setting="auto-settle-opens-pull-requests" requires={UNMERGED_WORK}>
+            {({ settings, updateSettings, connectedEnvironments }) =>
+              connectedEnvironments.length > 0 &&
+              connectedEnvironments.every((target) =>
+                supportsCapabilities(target, UNMERGED_WORK),
+              ) ? (
+                <SettingsRow
+                  serverScoped
+                  settingKeys={["sidebarAutoSettleOpensPullRequests"]}
+                  {...searchableSetting("auto-settle-opens-pull-requests")}
+                  description={t(
+                    "Before a thread you wrote in settles on its own, commit its worktree's unmerged changes and open a pull request. A thread you never wrote in, such as a scheduled run or a subagent, stays active instead. Off keeps every such thread active.",
+                  )}
+                  control={
+                    <ScopedSwitch
+                      settingKeys={["sidebarAutoSettleOpensPullRequests"]}
+                      // Nothing settles on its own here, so there is nothing to open a PR before.
+                      disabled={
+                        settings.sidebarAutoSettleAfterDays === null &&
+                        !settings.sidebarAutoSettleOnMerge &&
+                        !settings.sidebarAutoSettleScheduledThreads
+                      }
+                      checked={settings.sidebarAutoSettleOpensPullRequests}
+                      onCheckedChange={(checked) =>
+                        updateSettings({ sidebarAutoSettleOpensPullRequests: checked })
+                      }
+                      aria-label={t("Open a PR for unmerged work")}
+                    />
                   }
                 />
               ) : null
             }
-            control={
-              <ScopedSwitch
-                settingKeys={["sidebarAutoSettleAfterDays"]}
-                checked={settings.sidebarAutoSettleAfterDays !== null}
-                onCheckedChange={(checked) =>
-                  updateSettings({
-                    sidebarAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
-                  })
-                }
-                aria-label={t("Auto-settle inactive threads")}
-              />
-            }
-          />
-          {settings.sidebarAutoSettleAfterDays !== null ? (
-            <SettingsRow
-              serverScoped
-              settingKeys={["sidebarAutoSettleAfterDays"]}
-              title={searchableSetting("days-before-auto-settle").title}
-              description={t("Any new activity un-settles a thread automatically.")}
-              control={
-                <AutoSettleDaysInput
-                  value={settings.sidebarAutoSettleAfterDays}
-                  onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
-                />
-              }
-            />
-          ) : null}
-          {settings.sidebarAutoSettleAfterDays !== null && supportsAutoSettlementScope ? (
-            <SettingsRow
-              serverScoped
-              settingKeys={["sidebarAutoSettleKeepPullRequests"]}
-              title={t("Keep threads with a PR")}
-              description={t(
-                "Inactivity does not settle threads with a pull request. Merge and close still do.",
-              )}
-              control={
-                <ScopedSwitch
-                  settingKeys={["sidebarAutoSettleKeepPullRequests"]}
-                  checked={settings.sidebarAutoSettleKeepPullRequests}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ sidebarAutoSettleKeepPullRequests: checked })
-                  }
-                  aria-label={t("Keep threads with a PR")}
-                />
-              }
-            />
-          ) : null}
-          {(settings.sidebarAutoSettleAfterDays !== null ||
-            settings.sidebarAutoSettleOnMerge ||
-            settings.sidebarAutoSettleScheduledThreads) &&
-          supportsUnmergedWorkPullRequests ? (
-            <SettingsRow
-              serverScoped
-              settingKeys={["sidebarAutoSettleOpensPullRequests"]}
-              {...searchableSetting("auto-settle-opens-pull-requests")}
-              description={t(
-                "Before a thread you wrote in settles on its own, commit its worktree's unmerged changes and open a pull request. A thread you never wrote in, such as a scheduled run or a subagent, stays active instead. Off keeps every such thread active.",
-              )}
-              control={
-                <ScopedSwitch
-                  settingKeys={["sidebarAutoSettleOpensPullRequests"]}
-                  checked={settings.sidebarAutoSettleOpensPullRequests}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ sidebarAutoSettleOpensPullRequests: checked })
-                  }
-                  aria-label={t("Open a PR for unmerged work")}
-                />
-              }
-            />
-          ) : null}
+          </SettingScope>
         </SettingsSection>
       ) : null}
 
       <SettingsSection id="thread-behavior" title={t("Behavior")}>
         <CompactIdleThreadsRow />
-        <SettingsRow
-          serverScoped
-          settingKeys={["responseStreamingMode"]}
-          {...searchableSetting("response-streaming")}
-          description={
-            mixedResponseStreamingMode
-              ? t("The selected targets use different streaming modes.")
-              : t(RESPONSE_STREAMING_MODE_DESCRIPTIONS[settings.responseStreamingMode])
-          }
-          resetAction={
-            settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode ? (
-              <SettingResetButton
-                label={t("response streaming")}
-                onClick={() =>
-                  updateSettings({
-                    responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={mixedResponseStreamingMode ? null : settings.responseStreamingMode}
-              onValueChange={(value) => {
-                if (value === "turn" || value === "paragraph") {
-                  updateSettings({ responseStreamingMode: value });
-                }
-              }}
-            >
-              <SelectTrigger
-                size="sm"
-                className="w-full sm:w-56"
-                aria-label={t("Response streaming")}
-              >
-                <SelectValue>
-                  {(value: ResponseStreamingMode | null) =>
-                    value === null ? t("Mixed") : t(RESPONSE_STREAMING_MODE_LABELS[value])
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="turn">
-                  {t(RESPONSE_STREAMING_MODE_LABELS.turn)}
-                </SelectItem>
-                <SelectItem hideIndicator value="paragraph">
-                  {t(RESPONSE_STREAMING_MODE_LABELS.paragraph)}
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
+        <SettingScope setting="response-streaming">
+          {({ settings, updateSettings, mixed }) => (
+            <SettingsRow
+              serverScoped
+              settingKeys={["responseStreamingMode"]}
+              {...searchableSetting("response-streaming")}
+              description={
+                mixed(["responseStreamingMode"])
+                  ? t("The selected targets use different streaming modes.")
+                  : t(RESPONSE_STREAMING_MODE_DESCRIPTIONS[settings.responseStreamingMode])
+              }
+              resetAction={
+                settings.responseStreamingMode !==
+                DEFAULT_UNIFIED_SETTINGS.responseStreamingMode ? (
+                  <SettingResetButton
+                    label={t("response streaming")}
+                    onClick={() =>
+                      updateSettings({
+                        responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <Select
+                  value={mixed(["responseStreamingMode"]) ? null : settings.responseStreamingMode}
+                  onValueChange={(value) => {
+                    if (value === "turn" || value === "paragraph") {
+                      updateSettings({ responseStreamingMode: value });
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-full sm:w-56"
+                    aria-label={t("Response streaming")}
+                  >
+                    <SelectValue>
+                      {(value: ResponseStreamingMode | null) =>
+                        value === null ? t("Mixed") : t(RESPONSE_STREAMING_MODE_LABELS[value])
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="turn">
+                      {t(RESPONSE_STREAMING_MODE_LABELS.turn)}
+                    </SelectItem>
+                    <SelectItem hideIndicator value="paragraph">
+                      {t(RESPONSE_STREAMING_MODE_LABELS.paragraph)}
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          )}
+        </SettingScope>
         <SettingsRow
           {...searchableSetting("archive")}
           description={t("Threads you archived, with restore and delete.")}
@@ -2002,6 +2038,14 @@ export function ThreadsSettingsPanel() {
 
 /** Where Add Project starts and how clones are laid out, at the top of the Projects page. */
 export function NewProjectsSettingsSection() {
+  return (
+    <SettingScope setting="add-project-starts-in">
+      <NewProjectsSettings />
+    </SettingScope>
+  );
+}
+
+function NewProjectsSettings() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const mixedAddProjectBaseDirectory = useScopedSettingsMixed(["addProjectBaseDirectory"]);
