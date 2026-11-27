@@ -1,3 +1,7 @@
+## 2026-11-27 — The global Git config check test no longer downloads a Node runtime
+
+- Maintainers: the `check:changed` test that runs a check with an empty home folder keeps your Vite+ data and cache folders, so it no longer downloads a Node runtime on every run and takes seconds instead of minutes.
+
 ## 2026-11-27 — Background commands capture their output again on macOS and Linux
 
 - Agent commands run in the background (tests, builds, landings) failed at once with "CodeShip could not capture command output" in the packaged CLI and app, because the output writer could not read its input there. They run and report their output again.

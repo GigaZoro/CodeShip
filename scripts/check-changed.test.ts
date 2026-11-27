@@ -3168,7 +3168,12 @@ it("runs tests without the user's global Git config, as CI does", () => {
       expect(name.stdout).toBe("");
     });`,
   );
-  const run = project.run("", "", project.source, [], { HOME: home });
+  // Vite+ keeps its Node runtimes in the XDG data folder below HOME, so an empty home downloads one.
+  const run = project.run("", "", project.source, [], {
+    HOME: home,
+    XDG_DATA_HOME: env.XDG_DATA_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "share"),
+    XDG_CACHE_HOME: env.XDG_CACHE_HOME ?? NodePath.join(NodeOS.homedir(), ".cache"),
+  });
   expect(run.status, run.stdout + run.stderr).toBe(0);
 });
 
