@@ -379,6 +379,7 @@ describe("cachedTestTasks", () => {
         "runtime",
         3,
         NodePath.join(directory, "cache"),
+        "state",
         "head",
       );
       vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", env.T3_CHECK_CHANGED_TEST_REQUEST);
