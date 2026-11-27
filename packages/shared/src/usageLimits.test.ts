@@ -36,6 +36,7 @@ import {
   paceOf,
   paceRemainingPercent,
   poolResetSummary,
+  refusalScopeCoversModel,
   formatDuration,
   formatResetsIn,
   nearLimitWindow,
@@ -511,6 +512,38 @@ it.each([
   expect(exhaustedUsageWindow(live, now, model) !== undefined).toBe(applies);
   expect(exhaustedUsageWindow(live, now, null)).toBeUndefined();
 });
+
+// A refusal holds, and work lifts it, only on the quota its scope names.
+it.each([
+  { driver: "antigravity", scope: "third-party", model: "claude-opus-5-5", covers: true },
+  { driver: "antigravity", scope: "third-party", model: "gpt-oss-120b", covers: true },
+  { driver: "antigravity", scope: "third-party", model: "gemini-4-neon", covers: false },
+  { driver: "antigravity", scope: "gemini-default", model: "gemini-4-neon", covers: true },
+  { driver: "antigravity", scope: "gemini-default", model: "antigravity-default", covers: true },
+  { driver: "antigravity", scope: "gemini-default", model: "opaque-model", covers: true },
+  { driver: "antigravity", scope: "gemini-default", model: "gemini-4-argon", covers: false },
+  { driver: "antigravity", scope: "gemini-argon", model: "gemini-4-argon", covers: true },
+  { driver: "antigravity", scope: "gemini-argon", model: "gemini-4-neon", covers: false },
+  { driver: "claudeAgent", scope: "opus", model: "claude-opus-5-5", covers: true },
+  { driver: "claudeAgent", scope: "opus", model: "claude-sonnet-5-5", covers: false },
+] as const)(
+  "a $driver refusal on $scope covers $model: $covers",
+  ({ driver, scope, model, covers }) => {
+    const live = provider({
+      driver: ProviderDriverKind.make(driver),
+      models: [
+        {
+          slug: "opaque-model",
+          name: "My Neon alias",
+          nativeModelFamily: "gemini-4-neon",
+          isCustom: false,
+          capabilities: null,
+        },
+      ],
+    });
+    expect(refusalScopeCoversModel(live, scope, model)).toBe(covers);
+  },
+);
 
 describe("pace", () => {
   it("places the clock three fifths through a five-hour window with two hours left", () => {

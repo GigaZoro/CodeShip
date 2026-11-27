@@ -5,7 +5,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
-import { antigravityModelFamily } from "@t3tools/shared/model";
+import { antigravityQuotaMeter } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -87,18 +87,6 @@ function resetAtFrom(text: string, now: DateTime.Utc): string | undefined {
   return delayMs > 0 ? DateTime.formatIso(DateTime.add(now, { milliseconds: delayMs })) : undefined;
 }
 
-/**
- * The quota meter a model draws on, as a scope only that meter's models fall under, so work on
- * another meter of the account (Claude's third-party quota, Gemini's, Argon's) does not lift a
- * refusal. Undefined for a model of no known family, which holds the whole account.
- */
-function quotaMeterScope(model: string): string | undefined {
-  const words = antigravityModelFamily(model)?.split("-");
-  if (words === undefined) return undefined;
-  if (words[0] !== "gemini") return words[0];
-  return words.find((word) => word === "argon" || word === "neon") ?? "gemini";
-}
-
 function turnFailure(
   stopReason: EffectAcpSchema.StopReason,
   step: LastStep | undefined,
@@ -113,8 +101,12 @@ function turnFailure(
   if (errorText === undefined && stopReason !== "refusal") return undefined;
   const text = errorText ?? "";
   const apiError = API_ERROR.exec(text);
-  // The error names the refused model; a typed refusal without one is the turn's.
-  const modelScope = quotaMeterScope(QUOTA_MODEL.exec(text)?.[1] ?? model);
+  // A refusal holds only the quota meter it names, so work on another meter of the account does
+  // not lift it. The error names the refused model; else it is the turn's. Neither known: the account.
+  const refused = QUOTA_MODEL.exec(text)?.[1];
+  const modelScope =
+    (refused === undefined ? undefined : antigravityQuotaMeter([], refused)) ??
+    antigravityQuotaMeter([], model);
   if (stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
     return makeProviderFailure({
       class: "usage_limit",

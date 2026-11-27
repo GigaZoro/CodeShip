@@ -31,6 +31,10 @@ const QUOTA_ERROR = errorPayload(
 const THIRD_PARTY_QUOTA_ERROR = errorPayload(
   "Error 429, Message: Third-party quota reached., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[model:claude-opus-5-5-high quotaResetDelay:4h7m28.886792931s quotaResetTimeStamp:2026-11-27T05:07:05Z uiMessage:true] reason:QUOTA_EXHAUSTED]]",
 );
+// A model of no known family leaves the quota to the turn's model.
+const UNKNOWN_MODEL_QUOTA_ERROR = errorPayload(
+  "Error 429, Message: Quota reached., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[model:tab-flash-lite quotaResetTimeStamp:2026-11-27T05:07:05Z] reason:QUOTA_EXHAUSTED]]",
+);
 const INVALID_ARGUMENT_ERROR = errorPayload(
   "Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []",
 );
@@ -95,6 +99,7 @@ describe("watchAntigravityPromptOutcome", () => {
           code: "RESOURCE_EXHAUSTED",
           retryable: true,
           resetAt: "1970-01-01T01:00:00.000Z",
+          modelScope: "gemini-default",
         },
       );
       assert.deepEqual(
@@ -108,8 +113,15 @@ describe("watchAntigravityPromptOutcome", () => {
           code: "RESOURCE_EXHAUSTED",
           retryable: true,
           resetAt: "2026-11-27T05:07:05.000Z",
-          modelScope: "claude",
+          modelScope: "third-party",
         },
+      );
+      assert.equal(
+        (yield* turn([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, UNKNOWN_MODEL_QUOTA_ERROR],
+        ]))?.modelScope,
+        "gemini-default",
       );
       // The earlier error step is outside this turn.
       assert.isUndefined(
@@ -164,6 +176,7 @@ describe("watchAntigravityPromptOutcome", () => {
         message: "You have reached your Antigravity quota for this period.",
         code: "QUOTA_EXHAUSTED",
         retryable: true,
+        modelScope: "gemini-default",
       });
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
@@ -217,7 +230,7 @@ describe("watchAntigravityPromptOutcome", () => {
         message: "You have reached your Antigravity quota for this period.",
         code: "QUOTA_EXHAUSTED",
         retryable: true,
-        modelScope: "claude",
+        modelScope: "third-party",
       });
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );

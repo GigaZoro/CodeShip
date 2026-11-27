@@ -28,7 +28,7 @@
 
 ## 2026-11-27 — Antigravity quota holds wait for their reset
 
-- When Antigravity refuses a turn because a quota ran out, T3.CodeShip holds only the models on that quota (Claude, GPT, Gemini or Gemini Argon) until the reset Google reports. Work on another quota of the same account no longer ends the hold early, so a waiting chat is no longer resumed every few minutes only to be refused again.
+- When Antigravity refuses a turn because a quota ran out, T3.CodeShip holds only the models on that quota (Claude and GPT, Gemini, or Gemini Argon) until the reset Google reports. Work on another quota of the same account no longer ends the hold early, so a waiting chat is no longer resumed every few minutes only to be refused again.
 
 ## 2026-11-27 — Pin thread system instructions across server updates
 

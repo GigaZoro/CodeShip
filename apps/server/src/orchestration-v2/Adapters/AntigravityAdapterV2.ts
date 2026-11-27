@@ -293,8 +293,19 @@ export function makeAntigravityAcpAdapterFlavor(
     ...(profileDirectory === undefined
       ? {}
       : {
-          watchPromptOutcome: (sessionId: string, model: string) =>
-            watchAntigravityPromptOutcome(profileDirectory, sessionId, model),
+          watchPromptOutcome: Effect.fn("AntigravityAdapterV2.watchPromptOutcome")(function* (
+            sessionId: string,
+            model: string,
+          ) {
+            // The refused quota follows the model the default resolves to.
+            const resolved =
+              model === ANTIGRAVITY_DEFAULT_MODEL ? yield* options.defaultModel : undefined;
+            return yield* watchAntigravityPromptOutcome(
+              profileDirectory,
+              sessionId,
+              resolved ?? model,
+            );
+          }),
         }),
   };
 }

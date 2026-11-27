@@ -41,8 +41,8 @@ import {
   isSubscriptionAccount,
   nextWeeklyResetMs,
   softDrainingUsageWindow,
+  refusalScopeCoversModel,
   usageHoldMs,
-  usageScopeCoversModel,
   usageWindowLimitEnd,
   usageWindowAppliesToModel,
 } from "@t3tools/shared/usageLimits";
@@ -130,7 +130,8 @@ export function runLiftsScope(
 ): ProjectionStore.UsageScopeMatcher {
   return (instanceId, scope, model) => {
     const provider = providers.find((entry) => entry.instanceId === instanceId);
-    return usageScopeCoversModel(
+    return refusalScopeCoversModel(
+      provider,
       scope,
       provider === undefined ? model : canonicalModel(provider, model),
     );
@@ -172,7 +173,10 @@ function refusalEnds(
   model: string | null,
 ): Array<LimitEnd> {
   return refusals.flatMap((refusal) => {
-    if (refusal.modelScope !== undefined && !usageScopeCoversModel(refusal.modelScope, model))
+    if (
+      refusal.modelScope !== undefined &&
+      !refusalScopeCoversModel(provider, refusal.modelScope, model)
+    )
       return [];
     const end = recordedUsageLimitEnd(provider, refusal);
     return end.end > nowMs ? [end] : [];
@@ -431,7 +435,8 @@ export function recoveryRoomAt(
     model === canonicalModel(provider, input.stopped.model) &&
     (input.recordedLimits.get(provider.instanceId) ?? []).some(
       (refusal) =>
-        refusal.modelScope === undefined || usageScopeCoversModel(refusal.modelScope, model),
+        refusal.modelScope === undefined ||
+        refusalScopeCoversModel(provider, refusal.modelScope, model),
     )
   )
     return Infinity;
