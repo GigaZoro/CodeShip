@@ -21,7 +21,11 @@ export interface McpCredentialRequest {
   readonly browserToolsAvailable?: boolean;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
   readonly subagent?: boolean;
+  /** Issues a credential that grants nothing but this assignment's `read_material`. */
+  readonly reviewAssignment?: McpProviderSession.ReviewAssignmentSession;
 }
+
+export const REVIEW_ASSIGNMENT_MCP_PATH = "/mcp/review-assignment";
 
 export interface McpIssuedCredential {
   readonly config: McpProviderSession.McpProviderSessionConfig;
@@ -110,9 +114,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         ),
       });
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
-  const endpoint = NetAddress.isInetAddress(httpServer.address)
-    ? `http://${getHttpMcpEndpointHost(httpServer.address.address)}:${httpServer.address.port}/mcp`
-    : "http://127.0.0.1/mcp";
+  const origin = NetAddress.isInetAddress(httpServer.address)
+    ? `http://${getHttpMcpEndpointHost(httpServer.address.address)}:${httpServer.address.port}`
+    : "http://127.0.0.1";
+  const endpoint = `${origin}/mcp`;
 
   const hashToken = (token: string) =>
     digest
@@ -126,6 +131,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const rawToken = yield* random.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
       const browserToolsAvailable = request.browserToolsAvailable ?? true;
+      const reviewAssignment = request.reviewAssignment;
       const scope: McpInvocationContext.McpThreadInvocationScope = {
         environmentId,
         requestNamespace: providerSessionId,
@@ -136,14 +142,21 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           subagent: request.subagent === true,
         },
         client: undefined,
-        capabilities: new Set<McpInvocationContext.McpCapability>([
-          "orchestration",
-          "worktree",
-          "pull-requests",
-          "issues",
-          ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
-        ]),
+        capabilities: new Set<McpInvocationContext.McpCapability>(
+          reviewAssignment === undefined
+            ? [
+                "orchestration",
+                "worktree",
+                "pull-requests",
+                "issues",
+                ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
+              ]
+            : ["review-assignment"],
+        ),
         issuedAt: issuedAlive.wallMs,
+        ...(reviewAssignment === undefined
+          ? {}
+          : { assignment: { handle: reviewAssignment.handle } }),
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
         const next = new Map(records);
@@ -156,10 +169,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           threadId: scope.thread.threadId,
           providerSessionId,
           providerInstanceId: scope.thread.providerInstanceId,
-          endpoint,
+          endpoint:
+            reviewAssignment === undefined ? endpoint : `${origin}${REVIEW_ASSIGNMENT_MCP_PATH}`,
           authorizationHeader: `Bearer ${rawToken}`,
           browserToolsAvailable: scope.capabilities.has("preview"),
           capabilities: scope.capabilities,
+          ...(reviewAssignment === undefined ? {} : { reviewAssignment }),
         },
       };
     },

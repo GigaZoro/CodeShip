@@ -269,9 +269,9 @@ export function autoCoordinatorInstructions(input: {
       listedDrivers.size <= 1
         ? ["Claude", "Codex"]
         : [...listedDrivers].map((driver) => autoProviderName(driver));
-    return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from ${formatProviderChoice(choiceNames)}. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
+    return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from ${formatProviderChoice(choiceNames)}. Use the cheapest capable model and match effort to complexity (\`low\` for searches, mechanical edits, checks; \`medium\` for ordinary features, fixes, tests; \`high\` only for subtle bugs, architecture, reviews). Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
 ${[...sections, ...kept.map(({ text }) => text)].join("\n")}
-- After implementation, review the diff yourself on your Settings primary, ${primary}.${review}
+- For non-trivial code changes, review the diff yourself on your Settings primary, ${primary}.${review} Skip independent review only for trivial, low-risk edits (typos, docs, comments; never auth, data, money, or concurrency changes).
 - Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${cut ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
   };
   // The review instructions close the brief, so trailing roster sections go first when it would

@@ -127,6 +127,11 @@ describe("autoCoordinatorInstructions", () => {
       "native subagents (Claude `Agent` with `model`)",
     );
     expect(autoCoordinatorInstructions(input)).toContain("cheapest capable model");
+    expect(autoCoordinatorInstructions(input)).toContain("Do tiny requests yourself");
+    expect(autoCoordinatorInstructions(input)).toContain("match effort to complexity");
+    expect(autoCoordinatorInstructions(input)).toContain(
+      "Skip independent review only for trivial, low-risk edits",
+    );
     expect(autoCoordinatorInstructions(input)).not.toContain("delegate_task");
   });
   it("uses each model's effort descriptors and points to omitted models", () => {

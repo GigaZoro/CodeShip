@@ -3,16 +3,20 @@ import { it } from "@effect/vitest";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import { ClaudeSettingsLaunchArgError } from "../provider/Drivers/ClaudeSettingsCascade.ts";
-import { processProbeSource } from "../testUtils/processProbe.ts";
+import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.ts";
 import {
   SYNTHETIC_CLAUDE_CAPABLE_MODEL,
   SYNTHETIC_CLAUDE_COLLIDING_ALIAS,
@@ -22,6 +26,7 @@ import {
 import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "@t3tools/provider-core/server/textGenerationUtils";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import { type TextGenerationCallUsage, TextGenerationUsageSink } from "./TextGenerationUsage.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -578,6 +583,122 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  const title = { title: "Reconnect failures" };
+  const unknown = {
+    inputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    outputTokens: null,
+  };
+  it.effect.each([
+    [
+      "one row per model in its ledger",
+      {
+        type: "result",
+        structured_output: title,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        modelUsage: {
+          "claude-main": {
+            inputTokens: 10,
+            cacheReadInputTokens: 100,
+            cacheCreationInputTokens: 5,
+            outputTokens: 7,
+          },
+          "claude-helper": {
+            inputTokens: 2,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 3,
+          },
+        },
+      },
+      [
+        {
+          model: "claude-main",
+          inputTokens: 115,
+          cacheReadTokens: 100,
+          cacheWriteTokens: 5,
+          outputTokens: 7,
+        },
+        {
+          model: "claude-helper",
+          inputTokens: 2,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          outputTokens: 3,
+        },
+      ],
+    ],
+    [
+      "the call's usage under its model without a ledger",
+      {
+        type: "result",
+        structured_output: title,
+        usage: {
+          input_tokens: 3,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 1,
+          output_tokens: 4,
+        },
+      },
+      [
+        {
+          model: `${SYNTHETIC_CLAUDE_STANDARD_MODEL}[expanded]`,
+          inputTokens: 24,
+          cacheReadTokens: 20,
+          cacheWriteTokens: 1,
+          outputTokens: 4,
+        },
+      ],
+    ],
+    [
+      "an unknown input total when a cache count is missing",
+      {
+        type: "result",
+        structured_output: title,
+        usage: { input_tokens: 3, cache_read_input_tokens: 20, output_tokens: 4 },
+      },
+      [
+        {
+          model: `${SYNTHETIC_CLAUDE_STANDARD_MODEL}[expanded]`,
+          inputTokens: null,
+          cacheReadTokens: 20,
+          cacheWriteTokens: null,
+          outputTokens: 4,
+        },
+      ],
+    ],
+    [
+      "an unknown call when the result carries no usage",
+      { structured_output: title },
+      [{ model: `${SYNTHETIC_CLAUDE_STANDARD_MODEL}[expanded]`, ...unknown }],
+    ],
+  ] as const)("reports %s, once across a flag retry", ([, output, expected]) => {
+    const reports: Array<ReadonlyArray<TextGenerationCallUsage>> = [];
+    return withFakeClaudeEnv(
+      { output: JSON.stringify(output), unsupportedOptions: ["--safe-mode"] },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          yield* textGeneration
+            .generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Investigate reconnect failures",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("claudeAgent"),
+                model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              },
+            })
+            .pipe(
+              Effect.provideService(TextGenerationUsageSink, (calls) => {
+                reports.push(calls);
+              }),
+            );
+
+          expect(reports).toEqual([expected]);
+        }),
+    );
+  });
+
   it.effect(
     "passes safe mode to the other generation operations and keeps investigation tools",
     () => {
@@ -926,5 +1047,57 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           expect(error.retryable).toBe(expectedRetryable);
         }),
       ),
+  );
+
+  it.effect.each(["interrupted", "timed out"] as const)(
+    "reports one unknown-count row when a spawned Claude CLI is %s",
+    (outcome) =>
+      Effect.gen(function* () {
+        const probe = yield* makeProcessProbe;
+        const reported: TextGenerationCallUsage[] = [];
+        yield* withFakeClaudeEnv({ output: "", lifecyclePort: probe.port }, (textGeneration) =>
+          Effect.gen(function* () {
+            const fiber = yield* textGeneration
+              .generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("claudeAgent"),
+                  model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                },
+              })
+              .pipe(
+                Effect.provideService(TextGenerationUsageSink, (entries) => {
+                  reported.push(...entries);
+                }),
+                Effect.forkScoped,
+              );
+            yield* probe.started;
+
+            if (outcome === "interrupted") {
+              const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+              yield* probe.exited;
+              yield* Fiber.join(interrupted);
+              const exit = yield* Fiber.await(fiber);
+              expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+            } else {
+              yield* TestClock.adjust("181 seconds");
+              yield* probe.exited;
+              const error = yield* Effect.flip(Fiber.join(fiber));
+              expect(error.detail).toContain("timed out");
+            }
+
+            expect(reported).toEqual([
+              {
+                model: `${SYNTHETIC_CLAUDE_STANDARD_MODEL}[expanded]`,
+                inputTokens: null,
+                cacheReadTokens: null,
+                cacheWriteTokens: null,
+                outputTokens: null,
+              },
+            ]);
+          }),
+        );
+      }),
   );
 });

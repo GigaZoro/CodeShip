@@ -32,6 +32,12 @@ import { readClaudeUserSettings } from "../provider/Drivers/ClaudeSkills.ts";
 import { readClaudeLaunchArgSettings } from "../provider/Drivers/ClaudeSettingsCascade.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import {
+  nonNegativeCount,
+  type TextGenerationCallUsage,
+  TextGenerationUsageSink,
+  unknownCallUsage,
+} from "./TextGenerationUsage.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -144,6 +150,69 @@ function claudeErrorResult(
   return nonRetryable ? { detail, retryable: false } : { detail };
 }
 
+const sumKnown = (counts: ReadonlyArray<number | null>): number | null =>
+  counts.some((count) => count === null)
+    ? null
+    : counts.reduce<number>((sum, count) => sum + (count ?? 0), 0);
+
+function callUsage(
+  model: string,
+  input: unknown,
+  cacheRead: unknown,
+  cacheWrite: unknown,
+  output: unknown,
+): TextGenerationCallUsage {
+  const cacheReadTokens = nonNegativeCount(cacheRead);
+  const cacheWriteTokens = nonNegativeCount(cacheWrite);
+  return {
+    model,
+    inputTokens: sumKnown([nonNegativeCount(input), cacheReadTokens, cacheWriteTokens]),
+    cacheReadTokens,
+    cacheWriteTokens,
+    outputTokens: nonNegativeCount(output),
+  };
+}
+
+/** Per-model usage of one CLI call, read from its result message; unknown when it printed none. */
+function claudeCallUsage(
+  stdout: string,
+  apiModelId: string,
+): ReadonlyArray<TextGenerationCallUsage> {
+  const output = Option.getOrUndefined(decodeJsonOption(stdout.trim()));
+  const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
+  const result = messages.findLast(
+    (message): message is Record<string, unknown> =>
+      typeof message === "object" &&
+      message !== null &&
+      (message as Record<string, unknown>).type === "result",
+  );
+  const modelUsage = result?.modelUsage;
+  if (typeof modelUsage === "object" && modelUsage !== null && Object.keys(modelUsage).length > 0) {
+    return Object.entries(modelUsage as Record<string, unknown>).map(([model, entry]) => {
+      const fields = (entry ?? {}) as Record<string, unknown>;
+      return callUsage(
+        model,
+        fields.inputTokens,
+        fields.cacheReadInputTokens,
+        fields.cacheCreationInputTokens,
+        fields.outputTokens,
+      );
+    });
+  }
+  const usage = result?.usage;
+  if (typeof usage !== "object" || usage === null) return [unknownCallUsage(apiModelId)];
+  const fields = usage as Record<string, unknown>;
+  return [
+    callUsage(
+      apiModelId,
+      fields.input_tokens,
+      fields.cache_read_input_tokens,
+      fields.cache_creation_input_tokens,
+      fields.output_tokens,
+    ),
+  ];
+}
+
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
@@ -238,6 +307,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     TextGenerationError,
     S["DecodingServices"] | Scope.Scope
   > {
+    const reportUsage = yield* TextGenerationUsageSink;
     const workingDirectory =
       operation === "generateThreadTitle"
         ? yield* fileSystem
@@ -322,6 +392,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           )}\n`
         : undefined;
 
+    let started = false;
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
       optionalFlags: ReadonlyArray<string>,
       withImages: boolean,
@@ -381,6 +452,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ),
         );
 
+      started = true;
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           readStreamAsString(operation, child.stdout),
@@ -406,12 +478,14 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       let optionalFlags = OPTIONAL_CLAUDE_FLAGS;
       let result = yield* runClaudeCommand(optionalFlags, withImages);
       // A structured Claude result means Claude started, so no flag was rejected; wrapper text must not drop safe mode.
+      // A rejected flag ends the CLI before any model call, so only the run that stays is charged.
       while (result.exitCode !== 0 && claudeErrorResult(result.stdout.trim()) === undefined) {
         const stderrLines = new Set(result.stderr.split(/\r?\n/).map((line) => line.trim()));
         const supportedFlags = optionalFlags.filter(
           (flag) => !stderrLines.has(`error: unknown option '${flag}'`),
         );
         if (supportedFlags.length === optionalFlags.length) break;
+        started = false;
         optionalFlags = supportedFlags;
         result = yield* runClaudeCommand(optionalFlags, withImages);
       }
@@ -434,6 +508,27 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
             ),
           ),
       ),
+      Effect.scoped,
+      Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(
+              new TextGenerationError({ operation, detail: "Claude CLI request timed out." }),
+            ),
+          onSome: (value) => Effect.succeed(value),
+        }),
+      ),
+      Effect.onError(() =>
+        Effect.sync(() => {
+          if (started) reportUsage([unknownCallUsage(selection.apiModelId)]);
+        }),
+      ),
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          reportUsage(claudeCallUsage(result.stdout, selection.apiModelId));
+        }),
+      ),
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
         if (exitCode === 0) return Effect.succeed(stdout);
         const stderrDetail = stderr.trim();
@@ -452,17 +547,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           }),
         );
       }),
-      Effect.scoped,
-      Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.fail(
-              new TextGenerationError({ operation, detail: "Claude CLI request timed out." }),
-            ),
-          onSome: (value) => Effect.succeed(value),
-        }),
-      ),
     );
 
     const output = yield* decodeClaudeOutput(rawStdout).pipe(

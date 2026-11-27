@@ -68,6 +68,8 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKUserMessage,
+  type AccountInfo as ClaudeAccountInfo,
+  type SDKControlGetContextUsageResponse,
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -945,8 +947,27 @@ export interface ClaudeAgentSdkQueryOpenInput {
   readonly onStartupPhase?: (phase: string | undefined) => Effect.Effect<void>;
 }
 
+/** What a Claude process reports it will give the model, read by control requests that run no inference. */
+export interface ClaudeQueryInspection {
+  readonly model: string;
+  readonly account: Readonly<Record<string, string>>;
+  readonly mcpServers: ReadonlyArray<{
+    readonly name: string;
+    readonly status: string;
+    readonly tools: ReadonlyArray<string>;
+  }>;
+  readonly mcpTools: ReadonlyArray<{ readonly name: string; readonly serverName: string }>;
+  readonly builtinTools: ReadonlyArray<string> | null;
+  readonly memoryFiles: ReadonlyArray<string>;
+  readonly agents: ReadonlyArray<string>;
+  readonly skills: number | null;
+  readonly systemPromptSections: ReadonlyArray<string>;
+}
+
 export interface ClaudeAgentSdkQuerySession {
   readonly messages: Stream.Stream<SDKMessage, ClaudeAgentSdkQueryRunnerError>;
+  /** A restricted review refuses a session whose runner cannot report this. */
+  readonly inspect?: Effect.Effect<ClaudeQueryInspection, ClaudeAgentSdkQueryRunnerError>;
   readonly offer: (
     message: SDKUserMessage,
     onQueued?: () => void,
@@ -2314,6 +2335,18 @@ export const layerQueryRunner: Layer.Layer<
             }),
           ),
         ),
+        inspect: Effect.tryPromise({
+          try: async () => {
+            const [servers, usage, account] = await Promise.all([
+              queryRuntime.mcpServerStatus(),
+              // Summary detail answers from local estimates without token-count API calls.
+              queryRuntime.getContextUsage({ detail: "summary" }),
+              queryRuntime.accountInfo(),
+            ]);
+            return claudeQueryInspection({ servers, usage, account });
+          },
+          catch: (cause) => queryRunnerError(cause, "inspect"),
+        }),
         offer: (message, onQueued) =>
           Effect.uninterruptibleMask((restore) =>
             restore(Queue.offer(promptQueue, message)).pipe(
@@ -3157,6 +3190,18 @@ export function claudeMcpQueryOverrides(input: {
   if (session === undefined) {
     return input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools };
   }
+  if (session.reviewAssignment !== undefined) {
+    return {
+      allowedTools: [CLAUDE_REVIEW_READ_TOOL],
+      mcpServers: {
+        [McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER]: {
+          type: "http",
+          url: session.endpoint,
+          headers: { Authorization: session.authorizationHeader },
+        },
+      },
+    };
+  }
   const mcpAllowedTools = input.readOnlySandbox
     ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
     : [CLAUDE_T3_MCP_TOOL_WILDCARD];
@@ -3173,6 +3218,196 @@ export function claudeMcpQueryOverrides(input: {
       },
     },
   };
+}
+
+const CLAUDE_REVIEW_READ_TOOL = `mcp__${McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER}__${McpProviderSession.REVIEW_ASSIGNMENT_TOOL}`;
+
+const CLAUDE_RESTRICTED_REVIEW_SYSTEM_PROMPT =
+  "You review one assignment. Your only tool is read_material, which returns the material you are assigned. Base every finding on what it returns.";
+
+/**
+ * Options for a restricted review: no built-in tools, settings files, plugins, skills, hooks or
+ * launch arguments, and no MCP server but the assignment's, in the assignment's empty directory.
+ */
+function makeRestrictedClaudeQueryOptions(input: {
+  readonly modelSelection: ModelSelection;
+  readonly nativeThreadId: string;
+  readonly resume: boolean;
+  readonly resumeSessionAt?: string;
+  readonly cwd: string;
+  readonly settings?: ClaudeSettings;
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly mcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]>;
+}): ClaudeAgentSdkQueryOptions {
+  const selection = compileClaudeModelSelection(input.modelSelection);
+  const threadIdentity: ClaudeAgentSdkThreadIdentity = input.resume
+    ? { resume: input.nativeThreadId }
+    : { sessionId: input.nativeThreadId };
+  return {
+    model: selection.apiModelId,
+    tools: [],
+    allowedTools: [CLAUDE_REVIEW_READ_TOOL],
+    permissionMode: "dontAsk",
+    canUseTool: async (toolName, toolInput) =>
+      toolName === CLAUDE_REVIEW_READ_TOOL
+        ? { behavior: "allow", updatedInput: toolInput }
+        : { behavior: "deny", message: "This review can only read its assigned material." },
+    settingSources: [],
+    strictMcpConfig: true,
+    plugins: [],
+    skills: [],
+    includePartialMessages: true,
+    ...threadIdentity,
+    ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
+    ...(selection.effort === undefined
+      ? {}
+      : { effort: selection.effort as NonNullable<ClaudeQueryOptions["effort"]> }),
+    ...(Object.keys(selection.settings).length === 0
+      ? {}
+      : { settings: selection.settings as ClaudeSdkSettings }),
+    ...(input.settings?.binaryPath
+      ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
+      : {}),
+    ...(input.environment === undefined ? {} : { env: input.environment }),
+    mcpServers: input.mcpServers,
+    systemPrompt: CLAUDE_RESTRICTED_REVIEW_SYSTEM_PROMPT,
+    cwd: input.cwd,
+  };
+}
+
+function claudeQueryInspection(input: {
+  readonly servers: ReadonlyArray<ClaudeMcpServerStatus>;
+  readonly usage: SDKControlGetContextUsageResponse;
+  readonly account: ClaudeAccountInfo;
+}): ClaudeQueryInspection {
+  const { usage } = input;
+  return {
+    model: usage.model,
+    account: Object.fromEntries(
+      Object.entries(input.account).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
+    mcpServers: input.servers.map((server) => ({
+      name: server.name,
+      status: server.status,
+      tools: (server.tools ?? []).map((serverTool) => serverTool.name),
+    })),
+    mcpTools: usage.mcpTools.map(({ name, serverName }) => ({ name, serverName })),
+    // A CLI that omits a list cannot show it is empty, so the review refuses it.
+    builtinTools:
+      usage.systemTools === undefined || usage.deferredBuiltinTools === undefined
+        ? null
+        : [...usage.systemTools, ...usage.deferredBuiltinTools].map((builtin) => builtin.name),
+    memoryFiles: usage.memoryFiles.map((file) => file.path),
+    agents: usage.agents.map((agent) => agent.agentType),
+    // Any skill the CLI knows of can be invoked, whether or not its estimate includes it.
+    skills:
+      usage.skills === undefined
+        ? null
+        : Math.max(
+            usage.skills.totalSkills,
+            usage.skills.includedSkills,
+            usage.skills.skillFrontmatter.length,
+          ),
+    systemPromptSections: (usage.systemPromptSections ?? []).map((section) => section.name),
+  };
+}
+
+/**
+ * A turn runs as a restricted review only when its policy and its MCP session name the same
+ * assignment. Any other mix, and any turn shape the review cannot bind, refuses before Claude starts.
+ */
+export function restrictedClaudeReview(input: {
+  readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
+  readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+}): Effect.Effect<
+  McpProviderSession.ReviewAssignmentSession | undefined,
+  McpProviderSession.ReviewAssignmentRefusedError
+> {
+  const declared = input.turnInput.runtimePolicy.reviewAssignment;
+  const session = input.mcpSession?.reviewAssignment;
+  if (declared === undefined && session === undefined) return Effect.undefined;
+  const refuse = (reason: string) =>
+    Effect.fail(new McpProviderSession.ReviewAssignmentRefusedError({ reason }));
+  if (declared === undefined) {
+    return refuse("the provider session serves a review the thread does not declare");
+  }
+  if (session === undefined) return refuse("the thread has no review-only MCP session");
+  if (session.handle !== declared.handle) {
+    return refuse("the MCP session serves another assignment");
+  }
+  if (isClaudeProviderContinuationTurn(input.turnInput)) {
+    return refuse("a restricted review does not continue an interrupted turn");
+  }
+  if (input.turnInput.message.attachments.length > 0) {
+    return refuse("a restricted review takes no attachments");
+  }
+  if (input.turnInput.autoModeInstructions !== undefined) {
+    return refuse("auto mode is not supported");
+  }
+  if (compileClaudeModelSelection(input.turnInput.modelSelection).settings.ultracode === true) {
+    return refuse("ultracode is not supported");
+  }
+  return Effect.succeed(session);
+}
+
+/** Checks what Claude reported against the review's limits and states it as session evidence. */
+function restrictedClaudeReviewEvidence(input: {
+  readonly inspection: ClaudeQueryInspection;
+  readonly runId: RunId;
+  readonly cwd: string;
+  readonly effort: string | undefined;
+  readonly prompt: SDKUserMessage;
+}): Effect.Effect<
+  McpProviderSession.ReviewAssignmentSessionEvidence,
+  McpProviderSession.ReviewAssignmentRefusedError
+> {
+  const { inspection } = input;
+  const refuse = (reason: string) =>
+    Effect.fail(new McpProviderSession.ReviewAssignmentRefusedError({ reason }));
+  if (inspection.builtinTools === null || inspection.skills === null) {
+    return refuse("this Claude version does not report its tools and skills");
+  }
+  if (inspection.memoryFiles.length > 0) return refuse("instruction files are loaded");
+  if (inspection.skills > 0) return refuse("skills are loaded");
+  if (inspection.agents.length > 0) return refuse("subagent definitions are loaded");
+  if (Object.keys(inspection.account).length === 0 || inspection.model.length === 0) {
+    return refuse("Claude did not report its account and model");
+  }
+  const assignmentServer = inspection.mcpServers.find(
+    (server) => server.name === McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER,
+  );
+  if (assignmentServer?.status !== "connected") {
+    return refuse("the assignment server is not connected");
+  }
+  const qualified = (serverName: string, toolName: string) => {
+    const prefix = `mcp__${serverName}__`;
+    return `${serverName}/${toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName}`;
+  };
+  // Every connected server's tools reach the model, whether or not the context estimate lists them.
+  const effectiveTools = new Set([
+    ...inspection.builtinTools,
+    ...inspection.mcpTools.map((mcpTool) => qualified(mcpTool.serverName, mcpTool.name)),
+    ...inspection.mcpServers.flatMap((server) =>
+      server.tools.map((toolName) => qualified(server.name, toolName)),
+    ),
+  ]);
+  return Effect.succeed({
+    runId: input.runId,
+    driver: "claudeAgent",
+    nativeAccount: McpProviderSession.reviewEvidenceDigest(inspection.account),
+    model: inspection.model,
+    effort: input.effort ?? null,
+    effectiveTools: [...effectiveTools].toSorted(),
+    mcpServers: inspection.mcpServers.map((server) => server.name).toSorted(),
+    cwd: input.cwd,
+    instructionDigest: McpProviderSession.reviewEvidenceDigest({
+      systemPrompt: CLAUDE_RESTRICTED_REVIEW_SYSTEM_PROMPT,
+      sections: inspection.systemPromptSections,
+    }),
+    promptDigest: McpProviderSession.reviewEvidenceDigest(input.prompt.message.content),
+  });
 }
 
 function providerSession(input: {
@@ -6155,6 +6390,10 @@ function queuedClaudeDiscardedWake(queued = 0) {
 
 interface ClaudeLiveQueryContext {
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
+  /** The assignment this process reviews; every turn on it is verified before its prompt. */
+  readonly restrictedReview?: McpProviderSession.ReviewAssignmentSession;
+  // The directory this process started in; a review attests it, so a new workspace needs a new process.
+  readonly cwd: string | undefined;
   // The --settings this process launched with; it keeps them even if the file changes later.
   readonly launchArgSettings: ClaudeSdkSettings | undefined;
   readonly nativeThreadId: string;
@@ -15474,13 +15713,85 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           live.selection = selection;
         });
 
+        const refusedRestrictedReview = (
+          refusal: McpProviderSession.ReviewAssignmentRefusedError,
+        ) =>
+          new ProviderAdapter.ProviderAdapterOpenSessionError({
+            driver: CLAUDE_PROVIDER,
+            providerSessionId: input.providerSessionId,
+            cause: refusal,
+          });
+        // Runs on the opened process before its prompt is offered, so a refusal ends the turn uninferred.
+        const verifyRestrictedReview = Effect.fn("ClaudeAdapterV2.verifyRestrictedReview")(
+          function* (review: {
+            readonly live: ClaudeLiveQueryContext;
+            readonly session: McpProviderSession.ReviewAssignmentSession;
+            readonly runId: RunId;
+            readonly prompt: SDKUserMessage | null;
+          }) {
+            const { live, session, prompt } = review;
+            const refuse = (reason: string) =>
+              new McpProviderSession.ReviewAssignmentRefusedError({ reason });
+            yield* Effect.gen(function* () {
+              if (prompt === null) return yield* refuse("the turn has no prompt to bind");
+              const cwd = live.cwd;
+              if (cwd === undefined) {
+                return yield* refuse("the restricted process has no working directory");
+              }
+              const inspect = live.query.inspect;
+              if (inspect === undefined) {
+                return yield* refuse("this Claude runner cannot report its session");
+              }
+              const inspection = yield* inspect.pipe(
+                Effect.tapError((cause) =>
+                  Effect.logWarning("Claude review inspection failed", { cause }),
+                ),
+                Effect.mapError(() => refuse("Claude did not report its session")),
+              );
+              yield* session.attest(
+                yield* restrictedClaudeReviewEvidence({
+                  inspection,
+                  runId: review.runId,
+                  cwd,
+                  effort: live.selection.effort,
+                  prompt,
+                }),
+              );
+            }).pipe(
+              // A refused or interrupted check leaves no process a later turn could prompt unchecked.
+              Effect.onError(() =>
+                Effect.gen(function* () {
+                  live.closeRequested = true;
+                  live.stopping = true;
+                  yield* Ref.update(queryContext, (current) => (current === live ? null : current));
+                  // A process that never took a prompt created no session a later open could resume.
+                  if (live.lastTurn === null) {
+                    yield* Ref.update(openedNativeThreads, (current) => {
+                      if (!current.has(live.nativeThreadId)) return current;
+                      const updated = new Set(current);
+                      updated.delete(live.nativeThreadId);
+                      return updated;
+                    });
+                  }
+                  yield* live.query.close.pipe(Effect.ignore);
+                }),
+              ),
+              Effect.mapError(refusedRestrictedReview),
+            );
+          },
+        );
         const openQuery = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
+          restrictedReview: McpProviderSession.ReviewAssignmentSession | undefined,
         ) {
           const opened = yield* Ref.get(queryContext);
           const reusable =
-            opened !== null && opened.nativeThreadId === nativeThreadId && !opened.stopping
+            opened !== null &&
+            opened.nativeThreadId === nativeThreadId &&
+            !opened.stopping &&
+            opened.restrictedReview?.handle === restrictedReview?.handle &&
+            (restrictedReview === undefined || opened.cwd === restrictedReview.cwd)
               ? opened
               : null;
           // Continuations drain existing output without prompting; retain the live process regardless of selection.
@@ -15514,9 +15825,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ),
                   );
             });
+            // A restricted review never bypasses permissions, so it reads no settings to decide that.
             const queryPolicy =
-              decidedPolicies.get(flagKey) ??
-              (yield* queryPolicyForTurn(turnInput, flagKey, turnCascade));
+              restrictedReview !== undefined
+                ? claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy, {
+                    bypassDisabled: true,
+                    autoDisabled: false,
+                  })
+                : (decidedPolicies.get(flagKey) ??
+                  (yield* queryPolicyForTurn(turnInput, flagKey, turnCascade)));
             decidedPolicies.set(flagKey, queryPolicy);
             const mcpOverrides = claudeMcpQueryOverrides({
               mcpSession,
@@ -15538,12 +15855,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ),
             };
           });
-          const readLaunchArgSettings = readClaudeLaunchArgSettings({
-            settings: adapterOptions.settings,
-            cwd: turnInput.runtimePolicy.cwd,
-            fileSystem,
-            path,
-          });
+          // A restricted review launches with none of the configured launch arguments.
+          const readLaunchArgSettings =
+            restrictedReview === undefined
+              ? readClaudeLaunchArgSettings({
+                  settings: adapterOptions.settings,
+                  cwd: turnInput.runtimePolicy.cwd,
+                  fileSystem,
+                  path,
+                })
+              : Effect.undefined;
           // A live process keeps the --settings it opened with, so only a replacement rereads them.
           const livePolicy = yield* policyFor(
             reusable === null ? yield* readLaunchArgSettings : reusable.launchArgSettings,
@@ -15682,11 +16003,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // Read before closing the live process so a bad path leaves it running.
           const { launchArgSettings, turnCascade, queryPolicy, mcpOverrides, queryPolicyKey } =
             reusable === null ? livePolicy : yield* policyFor(yield* readLaunchArgSettings);
-          catalog = yield* routeModelCatalog(
-            modelCatalog,
-            turnInput.runtimePolicy.cwd,
-            launchArgSettings,
-          );
+          catalog =
+            restrictedReview !== undefined
+              ? modelCatalog
+              : yield* routeModelCatalog(
+                  modelCatalog,
+                  turnInput.runtimePolicy.cwd,
+                  launchArgSettings,
+                );
           compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, catalog);
           const onStop: HookCallback = () =>
             runPromise(
@@ -15696,30 +16020,43 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return pendingWake !== undefined && (yield* pendingWake) ? { continue: false } : {};
               }),
             );
-          const cascade = yield* turnCascade;
-          // Managed policy outranks --settings when Claude Code starts, though not a live switch.
-          const policyUltracode =
-            cascade.unreadablePolicy === undefined
-              ? cascade.tiers.at(-1)?.settings.ultracode
-              : undefined;
-          const requestedUltracode = compiledSelection.settings.ultracode;
-          if (
-            typeof policyUltracode === "boolean" &&
-            requestedUltracode !== undefined &&
-            policyUltracode !== requestedUltracode
-          ) {
-            return yield* new ClaudeUltracodeOverriddenError({ requested: requestedUltracode });
-          }
-          const { toolSearchOverride, subagentPromptCacheTtl } = querySettings(
-            cascade,
-            turnInput.appThread.lineage.relationshipToParent === "subagent",
-          );
-          const appendSystemPromptFileText = yield* readClaudeAppendSystemPromptFile({
-            settings: adapterOptions.settings,
-            cwd: turnInput.runtimePolicy.cwd,
-            fileSystem,
-            path,
-          });
+          // A restricted review reads no settings file: its process loads none and launches with
+          // fixed options, so nothing in the host checkout reaches it.
+          const launch =
+            restrictedReview !== undefined
+              ? { restricted: restrictedReview }
+              : yield* Effect.gen(function* () {
+                  const cascade = yield* turnCascade;
+                  // Managed policy outranks --settings when Claude Code starts, though not a live switch.
+                  const policyUltracode =
+                    cascade.unreadablePolicy === undefined
+                      ? cascade.tiers.at(-1)?.settings.ultracode
+                      : undefined;
+                  const requestedUltracode = compiledSelection.settings.ultracode;
+                  if (
+                    typeof policyUltracode === "boolean" &&
+                    requestedUltracode !== undefined &&
+                    policyUltracode !== requestedUltracode
+                  ) {
+                    return yield* new ClaudeUltracodeOverriddenError({
+                      requested: requestedUltracode,
+                    });
+                  }
+                  return {
+                    restricted: undefined,
+                    flagRejected: cascade.flagRejected,
+                    ...querySettings(
+                      cascade,
+                      turnInput.appThread.lineage.relationshipToParent === "subagent",
+                    ),
+                    appendSystemPromptFileText: yield* readClaudeAppendSystemPromptFile({
+                      settings: adapterOptions.settings,
+                      cwd: turnInput.runtimePolicy.cwd,
+                      fileSystem,
+                      path,
+                    }),
+                  };
+                });
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
@@ -15740,58 +16077,70 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
-          const baseQueryOptions = makeClaudeQueryOptions({
-            agentFeedback: turnInput.agentFeedback ?? "off",
-            modelSelection: turnInput.modelSelection,
-            modelCatalog: catalog,
-            nativeThreadId,
-            title: turnInput.appThread.title,
-            resume: shouldResume,
-            ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
-            cwd: turnInput.runtimePolicy.cwd,
-            ...(turnInput.runtimePolicy.workspace === undefined
-              ? {}
-              : { workspace: turnInput.runtimePolicy.workspace }),
-            attachmentsDir,
-            sharedSkillsDirectory: yield* linkSharedSkills(turnInput.runtimePolicy.cwd),
-            settings: adapterOptions.settings,
-            // Delegated threads have no one typing, so they never ask for suggestions.
-            promptSuggestions:
-              !isDelegatedAppThread(turnInput.appThread) && (yield* promptSuggestionsEnabled),
-            // Claude Code would drop the turn's own fields with --settings it rejects, and keep
-            // a restriction the tool search switch had made valid.
-            ...(launchArgSettings === undefined || cascade.flagRejected
-              ? {}
-              : { launchArgSettings }),
-            environment: claudeQueryEnvironment(
-              adapterOptions.environment,
-              turnInput.appThread,
-              subagentPromptCacheTtl,
-              shouldResume,
-            ),
-            tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
-            ...(mcpOverrides.allowedTools === undefined
-              ? {}
-              : { allowedTools: mcpOverrides.allowedTools }),
-            ...(mcpOverrides.mcpServers === undefined
-              ? {}
-              : { mcpServers: mcpOverrides.mcpServers }),
-            deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
-            permissionMode: queryPolicy.permissionMode,
-            ...(queryPolicy.allowDangerouslySkipPermissions === undefined
-              ? {}
+          const launchOptions =
+            launch.restricted !== undefined
+              ? { restricted: launch.restricted, ordinary: undefined }
               : {
-                  allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions,
-                }),
-            canUseTool,
-            afterCompaction: restoreAutoBriefAfterCompaction,
-            onUserDialog,
-            onElicitation,
-            onStop,
-            supportedDialogKinds: ["resume_return"],
-            ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
-            ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
-          });
+                  restricted: undefined,
+                  ordinary: makeClaudeQueryOptions({
+                    agentFeedback: turnInput.agentFeedback ?? "off",
+                    modelSelection: turnInput.modelSelection,
+                    modelCatalog: catalog,
+                    nativeThreadId,
+                    title: turnInput.appThread.title,
+                    resume: shouldResume,
+                    ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
+                    cwd: turnInput.runtimePolicy.cwd,
+                    ...(turnInput.runtimePolicy.workspace === undefined
+                      ? {}
+                      : { workspace: turnInput.runtimePolicy.workspace }),
+                    attachmentsDir,
+                    sharedSkillsDirectory: yield* linkSharedSkills(turnInput.runtimePolicy.cwd),
+                    settings: adapterOptions.settings,
+                    // Delegated threads have no one typing, so they never ask for suggestions.
+                    promptSuggestions:
+                      !isDelegatedAppThread(turnInput.appThread) &&
+                      (yield* promptSuggestionsEnabled),
+                    // Claude Code would drop the turn's own fields with --settings it rejects, and keep
+                    // a restriction the tool search switch had made valid.
+                    ...(launchArgSettings === undefined || launch.flagRejected
+                      ? {}
+                      : { launchArgSettings }),
+                    environment: claudeQueryEnvironment(
+                      adapterOptions.environment,
+                      turnInput.appThread,
+                      launch.subagentPromptCacheTtl,
+                      shouldResume,
+                    ),
+                    tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
+                    ...(mcpOverrides.allowedTools === undefined
+                      ? {}
+                      : { allowedTools: mcpOverrides.allowedTools }),
+                    ...(mcpOverrides.mcpServers === undefined
+                      ? {}
+                      : { mcpServers: mcpOverrides.mcpServers }),
+                    deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+                    permissionMode: queryPolicy.permissionMode,
+                    ...(queryPolicy.allowDangerouslySkipPermissions === undefined
+                      ? {}
+                      : {
+                          allowDangerouslySkipPermissions:
+                            queryPolicy.allowDangerouslySkipPermissions,
+                        }),
+                    canUseTool,
+                    afterCompaction: restoreAutoBriefAfterCompaction,
+                    onUserDialog,
+                    onElicitation,
+                    onStop,
+                    supportedDialogKinds: ["resume_return"],
+                    ...(launch.appendSystemPromptFileText === undefined
+                      ? {}
+                      : { appendSystemPromptFileText: launch.appendSystemPromptFileText }),
+                    ...(launch.toolSearchOverride === undefined
+                      ? {}
+                      : { toolSearchOverride: launch.toolSearchOverride }),
+                  }),
+                };
           const nativeTasksTurn = (): ActiveClaudeTurnContext | null => {
             const live = Ref.getUnsafe(queryContext);
             const context = Ref.getUnsafe(activeTurn);
@@ -16023,37 +16372,51 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             for (const taskId of taskIds) wait.prompted.add(taskId);
             return CLAUDE_NATIVE_TASK_WAIT_TOOL.stopFeedback(taskIds);
           };
-          const queryOptions = {
-            ...baseQueryOptions,
-            mcpServers: {
-              ...baseQueryOptions.mcpServers,
-              [CLAUDE_NATIVE_TASK_SERVER]: nativeTaskServer,
-            },
-            hooks: {
-              ...baseQueryOptions.hooks,
-              PreToolUse: [
-                {
-                  matcher: CLAUDE_NATIVE_TASK_WAIT_TOOL.name,
-                  hooks: [authorizeNativeTaskWait],
-                },
-              ],
-              PostToolUse: [
-                ...(baseQueryOptions.hooks?.PostToolUse ?? []),
-                { matcher: "Bash|Monitor", hooks: [recordRootNativeTaskLaunch] },
-              ],
-              Stop: [
-                {
-                  hooks: [
-                    (async (hookInput, toolUseId, hookOptions) => {
-                      const goalStop = await onStop(hookInput, toolUseId, hookOptions);
-                      if (Object.keys(goalStop).length > 0) return goalStop;
-                      return offerNativeTaskWait(hookInput, toolUseId, hookOptions);
-                    }) satisfies HookCallback,
-                  ],
-                },
-              ],
-            },
-          };
+          const queryOptions: ClaudeAgentSdkQueryOptions =
+            launchOptions.restricted === undefined
+              ? {
+                  ...launchOptions.ordinary,
+                  mcpServers: {
+                    ...launchOptions.ordinary.mcpServers,
+                    [CLAUDE_NATIVE_TASK_SERVER]: nativeTaskServer,
+                  },
+                  hooks: {
+                    ...launchOptions.ordinary.hooks,
+                    PreToolUse: [
+                      {
+                        matcher: CLAUDE_NATIVE_TASK_WAIT_TOOL.name,
+                        hooks: [authorizeNativeTaskWait],
+                      },
+                    ],
+                    PostToolUse: [
+                      ...(launchOptions.ordinary.hooks?.PostToolUse ?? []),
+                      { matcher: "Bash|Monitor", hooks: [recordRootNativeTaskLaunch] },
+                    ],
+                    Stop: [
+                      {
+                        hooks: [
+                          (async (hookInput, toolUseId, hookOptions) => {
+                            const goalStop = await onStop(hookInput, toolUseId, hookOptions);
+                            if (Object.keys(goalStop).length > 0) return goalStop;
+                            return offerNativeTaskWait(hookInput, toolUseId, hookOptions);
+                          }) satisfies HookCallback,
+                        ],
+                      },
+                    ],
+                  },
+                }
+              : makeRestrictedClaudeQueryOptions({
+                  modelSelection: turnInput.modelSelection,
+                  nativeThreadId,
+                  resume: shouldResume,
+                  ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
+                  cwd: launchOptions.restricted.cwd,
+                  ...(adapterOptions.settings === undefined
+                    ? {}
+                    : { settings: adapterOptions.settings }),
+                  environment: adapterOptions.environment,
+                  mcpServers: mcpOverrides.mcpServers ?? {},
+                });
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
@@ -16158,6 +16521,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const closed = yield* Deferred.make<void, never>();
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
+            ...(restrictedReview === undefined ? {} : { restrictedReview }),
+            cwd: queryOptions.cwd,
             launchArgSettings,
             nativeThreadId,
             settingsCwd: turnInput.runtimePolicy.cwd,
@@ -16387,6 +16752,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 reason: "previous_turn_active",
               });
             }
+            const restrictedReview = yield* restrictedClaudeReview({
+              turnInput,
+              mcpSession: yield* mcpSessions.read(turnInput.threadId),
+            }).pipe(Effect.mapError(refusedRestrictedReview));
             yield* Ref.update(lastTurnRouteByNativeThread, (current) => {
               const updated = new Map(current);
               updated.set(nativeThreadId, {
@@ -16445,7 +16814,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const skills =
               promptUuid === null
                 ? undefined
-                : yield* userInvocableSkills(turnInput.runtimePolicy.cwd, promptText);
+                : restrictedReview !== undefined
+                  ? new Map<string, ClaudeSkillTarget>()
+                  : yield* userInvocableSkills(turnInput.runtimePolicy.cwd, promptText);
             const appContext = turnInput.appContext ?? [];
             const delivered = deliveredAppContext.get(nativeThreadId);
             let appContextSent = false;
@@ -16482,6 +16853,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       uuid: promptUuid,
                     }).pipe(
                       Effect.map((message) => {
+                        if (restrictedReview !== undefined) return message;
                         const withContext = withClaudeAppContext(
                           message,
                           unseenClaudeAppContext(appContext, delivered),
@@ -16493,8 +16865,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                       Effect.provideService(Path.Path, path),
                     );
-            const querySession = yield* openQuery(turnInput, nativeThreadId);
-            yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);
+            const querySession = yield* openQuery(turnInput, nativeThreadId, restrictedReview);
+            if (restrictedReview !== undefined) {
+              yield* verifyRestrictedReview({
+                live: querySession,
+                session: restrictedReview,
+                runId: turnInput.runId,
+                prompt: userMessage,
+              });
+            } else {
+              yield* applySessionTitle(
+                querySession.query,
+                nativeThreadId,
+                turnInput.appThread.title,
+              );
+            }
             const autoCompactWindow = yield* resolveAutoCompactWindow(
               querySession.settingsCwd,
               turnInput.modelSelection,
@@ -17078,6 +17463,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: `Claude provider thread ${turnInput.providerThread.id} has no live query.`,
+              });
+            }
+            // Evidence binds one prompt per turn; a steer would reach the model unverified.
+            if (existing.restrictedReview !== undefined) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "A restricted review takes no steering; send the message as its own turn.",
               });
             }
             const currentTurn = yield* Ref.get(activeTurn);

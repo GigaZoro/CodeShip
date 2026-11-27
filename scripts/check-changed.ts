@@ -138,7 +138,12 @@ const SLOT_POLL_INTERVAL = "1 second";
 // Every run sharing `directory` draws from this budget. A slot is an open exclusive
 // transaction on its file, which the OS releases when the process exits, killed or not.
 // Open the files only through SQLite: closing any other handle drops this process's lock.
-const sharedBudget = (directory: string, size: number, landing: boolean) => {
+const sharedBudget = (
+  directory: string,
+  size: number,
+  landing: boolean,
+  platform: NodeJS.Platform,
+) => {
   const files = Array.from({ length: size }, (_, index) =>
     NodePath.join(directory, `slot-${index}.sqlite`),
   );
@@ -159,19 +164,32 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   });
 
   // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
-  // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
-  // its process, so a crashed landing blocks nobody.
+  // transaction from its first take until `close`; other runs start no step meanwhile, so its load-sensitive
+  // tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
   let marker: NodeSqlite.DatabaseSync | undefined;
   const markLanding = () => {
     if (!landing || marker) return;
-    marker = new NodeSqlite.DatabaseSync(
-      NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`),
-    );
-    marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    const file = NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`);
+    const db = new NodeSqlite.DatabaseSync(file);
+    try {
+      db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    } catch (cause) {
+      db.close();
+      // Another run's stale-marker check holds it for a moment; the next take marks again.
+      if (isSqliteBusy(cause)) return;
+      throw cause;
+    }
+    // That check may have removed the file before this lock; a lock on a removed file holds nobody back.
+    if (!NodeFS.existsSync(file)) {
+      db.close();
+      return;
+    }
+    marker = db;
   };
   const unmarkLanding = () => {
-    marker?.close();
+    if (!marker) return;
+    marker.close();
     marker = undefined;
     NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
       force: true,
@@ -179,20 +197,32 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   };
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
-      .filter((name) => name.startsWith(markerPrefix))
+      // A held marker's -journal file is not a database.
+      .filter((name) => name.startsWith(markerPrefix) && name.endsWith(".sqlite"))
       .some((name) => {
         const file = NodePath.join(directory, name);
         const db = new NodeSqlite.DatabaseSync(file);
         try {
           db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
         } catch (cause) {
+          db.close();
           if (isSqliteBusy(cause)) return true;
           throw cause;
-        } finally {
-          db.close();
         }
-        // Nobody held it: a marker its landing left behind.
-        NodeFS.rmSync(file, { force: true });
+        // Nobody held it: a marker its landing left behind. Remove it while still locked, so a landing
+        // reopening the name meanwhile fails its lock and retries; Windows cannot remove an open file.
+        if (platform !== "win32") NodeFS.rmSync(file, { force: true });
+        db.close();
+        if (platform === "win32") {
+          try {
+            NodeFS.rmSync(file, { force: true });
+          } catch (cause) {
+            const code = (cause as NodeJS.ErrnoException).code;
+            // A landing opened it again since the close.
+            if (code === "EBUSY" || code === "EPERM") return true;
+            throw cause;
+          }
+        }
         return false;
       });
 
@@ -227,6 +257,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
   const take = Effect.fnUntraced(function* (max: number) {
     for (;;) {
+      yield* Effect.try({ try: markLanding, catch: String });
       const signal = freed;
       const held = yield* Effect.uninterruptible(
         lockFree(max).pipe(
@@ -235,11 +266,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
           ),
         ),
       );
-      if (held.length > 0) {
-        unmarkLanding();
-        return held.length;
-      }
-      yield* Effect.try({ try: markLanding, catch: String });
+      if (held.length > 0) return held.length;
       if (holding === 0 && !announced) {
         announced = true;
         yield* Console.log(
@@ -252,10 +279,10 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
       });
     }
   });
-  return { take };
+  return { take, close: unmarkLanding };
 };
 
-export type Outcome = "pass" | "FAIL" | "TIMEOUT";
+export type Outcome = "pass" | "FAIL" | "TIMEOUT" | "STOPPED";
 
 // Not traced: it only waits. On macOS a timer counts the time asleep, so one long timer would end on
 // the first wake past it. Each tick counts as a second however late it fires: a sleep costs one.
@@ -309,7 +336,8 @@ export interface Step<R> {
 
 // Interrupting a step at its timeout closes the scopes of the processes it
 // spawned, which kills each one's process group, or its tree on Windows
-// (endingWindowsTrees).
+// (endingWindowsTrees). Under the landing turn the first FAIL or TIMEOUT
+// interrupts the others too: the run can no longer pass, and the turn holds main.
 export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
   steps: ReadonlyArray<Step<R>>,
   options: {
@@ -317,28 +345,53 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
     readonly timeoutSeconds: number;
     // An existing directory holding the machine's budget slots; every run given the same one shares them.
     readonly slotDirectory: string;
-    // Set for the run that holds main's landing turn: it gets the next free slots ahead of other runs.
+    // Set for the run that holds main's landing turn: other runs start no step until it ends,
+    // and its first failing step stops the rest.
     readonly landing?: boolean;
   },
 ) {
-  const budget = sharedBudget(options.slotDirectory, options.concurrency, options.landing ?? false);
+  const stopped = yield* Deferred.make<void>();
+  const budget = sharedBudget(
+    options.slotDirectory,
+    options.concurrency,
+    options.landing ?? false,
+    yield* HostProcess.Platform,
+  );
   // Steps claim budget one at a time, in order, so a step later in the list
   // never starts ahead of one still waiting for a slot.
   const admission = yield* Semaphore.make(1);
   const serial = yield* Semaphore.make(1);
+  // `None` once a landing run stops at a failure; outside the landing nothing stops a step early.
+  const untilStopped = <A, E, R2>(effect: Effect.Effect<A, E, R2>) =>
+    options.landing
+      ? Effect.raceFirst(
+          Effect.asSome(effect),
+          Effect.as(Deferred.await(stopped), Option.none<A>()),
+        )
+      : Effect.asSome(effect);
   return yield* Effect.forEach(
     steps,
     (step) => {
+      const stoppedResult = () => ({
+        name: step.name,
+        outcome: "STOPPED" as const,
+        time: "",
+        note: [],
+      });
       const timed = Effect.fnUntraced(function* (slots: number) {
         const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
         let collected = "";
-        const result = yield* awakeTimeoutOption(
-          step.run(slots, (chunk) => {
-            collected += chunk;
-          }),
-          timeoutSeconds,
+        const ran = yield* untilStopped(
+          awakeTimeoutOption(
+            step.run(slots, (chunk) => {
+              collected += chunk;
+            }),
+            timeoutSeconds,
+          ),
         );
+        if (Option.isNone(ran)) return stoppedResult();
+        const result = ran.value;
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
           onNone: () => "TIMEOUT",
@@ -353,14 +406,30 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         return { name: step.name, outcome, time, note };
       });
       const limited = Effect.scoped(
-        admission
-          .withPermit(budget.take(Math.min(step.workers ?? 1, options.concurrency)))
-          .pipe(Effect.flatMap(timed)),
+        Effect.gen(function* () {
+          const slots = yield* untilStopped(
+            admission.withPermit(budget.take(Math.min(step.workers ?? 1, options.concurrency))),
+          );
+          // A step whose slots came as the landing stopped does not start.
+          if (Option.isNone(slots) || (yield* Deferred.isDone(stopped))) return stoppedResult();
+          const result = yield* timed(slots.value);
+          // Stops the others before this step frees its slots, so none of them starts on one.
+          if (
+            options.landing &&
+            (result.outcome === "FAIL" || result.outcome === "TIMEOUT") &&
+            (yield* Deferred.succeed(stopped, undefined))
+          ) {
+            yield* Console.log(
+              `\ncheck:changed: ${step.name} ended ${result.outcome} under the landing turn; stopping the other steps.`,
+            );
+          }
+          return result;
+        }),
       );
       return step.serial ? serial.withPermit(limited) : limited;
     },
     { concurrency: "unbounded" },
-  );
+  ).pipe(Effect.ensuring(Effect.sync(budget.close)));
 });
 
 const CacheEntry = Schema.fromJsonString(
@@ -1154,6 +1223,9 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
     readonly output: string;
     readonly slept?: boolean;
   }>,
+  // Under the landing turn the first real failure ends the step: Vite+ has already stopped the
+  // groups in flight, and resuming them would hold the turn only to report more failures.
+  options: { readonly landing?: boolean } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1187,6 +1259,11 @@ export const runTestGroups = Effect.fn("checkChanged.runTestGroups")(function* (
         "\ncheck:changed: the Mac slept during the tests; retrying unfinished or failed groups.\n";
     } else {
       ok = false;
+      if (options.landing) {
+        output +=
+          "\ncheck:changed: a test group failed under the landing turn; the remaining groups were not run.\n";
+        break;
+      }
     }
 
     // Vite+ 1.4 kills in-flight siblings after a failure. Leave those groups pending so they get a
@@ -1484,6 +1561,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.
   const platform = yield* HostProcess.Platform;
+  // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
+  const landing = Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN")));
   const concurrency = Option.getOrElse(
     yield* override("concurrency", input.concurrency, "CHECK_CHANGED_CONCURRENCY"),
     () =>
@@ -1529,7 +1608,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         concurrency,
         timeoutSeconds: explicitTimeout ? timeoutSeconds : TEST_STEP_MAX_SECONDS,
         slotDirectory: yield* budgetDirectory(root),
-        landing: Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN"))),
+        landing,
       },
     );
     yield* Console.log(
@@ -2042,6 +2121,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
               );
               return platform === "darwin" ? noticingSleep(run, macAwakeMs) : run;
             },
+            { landing },
           );
           const changed = yield* finish;
           return changed.length === 0
@@ -2127,8 +2207,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     concurrency,
     timeoutSeconds,
     slotDirectory,
-    // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
-    landing: Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN"))),
+    landing,
   });
 
   const summary = ["check:changed summary"];
@@ -2140,6 +2219,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     summary.push(
       "  TIMEOUT: ran past its time limit and was killed; this is not a check failure. " +
         "Raise --timeout or lower --concurrency.",
+    );
+  }
+  if (results.some((result) => result.outcome === "STOPPED")) {
+    summary.push(
+      "  STOPPED: the landing turn ends its checks at the first failure. " +
+        "Run check:changed outside the landing to see every failure.",
     );
   }
   const ciOnly = Object.entries({

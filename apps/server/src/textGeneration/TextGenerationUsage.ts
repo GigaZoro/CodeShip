@@ -33,3 +33,6 @@ export const TextGenerationAttribution = Context.Reference<{
 }>("t3/textGeneration/TextGenerationUsage/Attribution", {
   defaultValue: () => ({ threadId: null, demandId: null }),
 });
+
+export const nonNegativeCount = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;

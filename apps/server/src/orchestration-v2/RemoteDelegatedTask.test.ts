@@ -76,7 +76,9 @@ const layerTest = Layer.mergeAll(
   Layer.provideMerge(layerOffers),
 );
 
-const seedLiveParent = (name: string) => seedLiveParentThread({ name, driver, modelSelection });
+const parentDemand = `demand:${"d".repeat(64)}`;
+const seedLiveParent = (name: string) =>
+  seedLiveParentThread({ name, driver, modelSelection, demandId: parentDemand });
 
 const remoteChild = {
   environmentId: EnvironmentId.make("environment:box"),
@@ -111,6 +113,8 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       const [task] = projection.subagents;
       assert.equal(task?.childThreadId, null);
       assert.deepEqual(task?.remoteChild, remoteChild);
+      // Its result wakes the parent under the demand of the run that delegated it.
+      assert.equal(task?.demandId, parentDemand);
       // The parent shows the dispatched effort; no child thread here holds the selection.
       assert.deepEqual(task?.modelSelection, request.modelSelection);
       assert.equal(task?.status, "running");
@@ -367,6 +371,7 @@ it.layer(layerTest)("a command task", (it) => {
       assert.deepEqual(task.command, command);
       assert.equal(task.status, "running");
       assert.equal(task.title, "Checks");
+      assert.equal(task.demandId, parentDemand);
 
       const offers = yield* Offers;
       yield* Ref.set(offers, []);

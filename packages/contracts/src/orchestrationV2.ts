@@ -177,6 +177,15 @@ export const OrchestrationV2WorkflowOrigin = Schema.Struct({
 });
 export type OrchestrationV2WorkflowOrigin = typeof OrchestrationV2WorkflowOrigin.Type;
 
+export const ReviewAssignmentHandle = Schema.String.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
+);
+
+/** A delegated reviewer whose only tool reads this assignment through the server's read broker. */
+export const OrchestrationV2ReviewAssignment = Schema.Struct({ handle: ReviewAssignmentHandle });
+export type OrchestrationV2ReviewAssignment = typeof OrchestrationV2ReviewAssignment.Type;
+
 export const OrchestrationV2NativeRefStrength = Schema.Literals(["strong", "weak", "none"]);
 export type OrchestrationV2NativeRefStrength = typeof OrchestrationV2NativeRefStrength.Type;
 
@@ -547,6 +556,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   workflowRun: Schema.optional(OrchestrationV2WorkflowOrigin),
+  reviewAssignment: Schema.optional(OrchestrationV2ReviewAssignment),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -1290,7 +1300,7 @@ export const OrchestrationV2SubagentReview = Schema.Struct({
 export type OrchestrationV2SubagentReview = typeof OrchestrationV2SubagentReview.Type;
 
 export const OrchestrationV2Subagent = Schema.Struct({
-  /** Accounting owner captured when a local delegation was accepted. */
+  /** Accounting owner: the parent run's demand when the task was accepted. */
   demandId: OrchestrationV2Run.fields.demandId,
   id: NodeId,
   threadId: ThreadId,
@@ -4666,6 +4676,8 @@ export type OrchestrationV2ServerCommand =
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
       readonly requestedModelSelection?: ModelSelection;
       readonly launchAlreadyRouted?: true;
+      /** Server-only: the delegate tool validated it, so a client cannot start a restricted child. */
+      readonly reviewAssignment?: OrchestrationV2ReviewAssignment;
     })
   | (Omit<ThreadCreateCommand, "initialMessage"> & {
       /** A launch's first message carries what its own message.dispatch would. */

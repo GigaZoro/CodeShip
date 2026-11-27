@@ -5674,3 +5674,67 @@ it.effect("an agent's auto send steers past its own explicitly queued message", 
     );
   }),
 );
+
+it.effect(
+  "agent auto message steers an active run on the same demand and queues behind a different demand",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { steered, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness("agent-demand-steer");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const activeRun = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+          assert.isString(activeRun.demandId);
+
+          // Same demand steers the live run directly.
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("agent-same-demand-auto"),
+            threadId,
+            messageId: MessageId.make("message:agent-same-demand"),
+            text: "Add this detail to the current task",
+            attachments: [],
+            modelSelection: runSelection,
+            dispatchMode: { type: "start_immediately" },
+            deliveryIntent: "auto",
+            demandId: activeRun.demandId ?? null,
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          yield* worker.drain();
+          assert.deepEqual(steered, [
+            "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\nAdd this detail to the current task",
+          ]);
+          assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 1);
+
+          // A different demand queues behind the active run so demands never mix.
+          const otherDemand = `demand:${"f".repeat(64)}`;
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("agent-other-demand-auto"),
+            threadId,
+            messageId: MessageId.make("message:agent-other-demand"),
+            text: "Unrelated request",
+            attachments: [],
+            modelSelection: runSelection,
+            dispatchMode: { type: "start_immediately" },
+            deliveryIntent: "auto",
+            demandId: otherDemand,
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          yield* worker.drain();
+          assert.deepEqual(steered, [
+            "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\nAdd this detail to the current task",
+          ]);
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(projection.runs.length, 2);
+          assert.equal(projection.runs[1]!.status, "queued");
+          assert.equal(projection.runs[1]!.demandId, otherDemand);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);

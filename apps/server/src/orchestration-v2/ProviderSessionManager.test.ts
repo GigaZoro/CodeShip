@@ -47,6 +47,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ReviewAssignmentRegistry from "../mcp/ReviewAssignmentRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -475,6 +476,7 @@ function unimplemented(detail: string) {
 const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
+    readonly driver?: ProviderDriverKind;
     readonly failEventStream?: boolean;
     readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -528,9 +530,10 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
       ),
     ),
   );
+  const driver = options.driver ?? CODEX_DRIVER;
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
-    driver: CODEX_DRIVER,
+    driver,
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (input) =>
@@ -578,7 +581,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 
         return {
           instanceId: ProviderInstanceId.make("codex"),
-          driver: CODEX_DRIVER,
+          driver,
           providerSessionId: input.providerSessionId,
           ...(options.normalizeThreadLoadModelSelection === undefined
             ? {}
@@ -665,6 +668,12 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs?: number;
+  readonly driver?: ProviderDriverKind;
+  /** Serves restricted reviews; the same registry is exposed to the test. */
+  readonly reviewAssignments?: boolean;
+  readonly wrapIssue?: (
+    issue: McpSessionRegistry.McpSessionRegistry["Service"]["issue"],
+  ) => McpSessionRegistry.McpSessionRegistry["Service"]["issue"];
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
   readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
@@ -723,6 +732,7 @@ function layerTest(input: {
               : layerTestEventSink;
   const layerRegistry = Layer.unwrap(
     makeProviderAdapter(input.state, {
+      ...(input.driver === undefined ? {} : { driver: input.driver }),
       failEventStream: input.failEventStream ?? false,
       ...(input.normalizeThreadLoadModelSelection === undefined
         ? {}
@@ -761,9 +771,13 @@ function layerTest(input: {
     }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
   );
   const layerConfiguredMcpRegistry =
-    input.pauseResolve === undefined
-      ? layerTestMcpRegistry
-      : layerPausingMcpRegistry(input.pauseResolve);
+    input.wrapIssue !== undefined
+      ? layerWrappedIssueMcpRegistry(input.wrapIssue)
+      : input.pauseResolve === undefined
+        ? layerTestMcpRegistry
+        : layerPausingMcpRegistry(input.pauseResolve);
+  const layerReviewAssignments =
+    input.reviewAssignments === true ? [layerTestReviewAssignments] : [];
   const layerProviderEventIngestorTest = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -788,6 +802,7 @@ function layerTest(input: {
     IdAllocator.layer,
     layerConfiguredMcpRegistry,
     McpProviderSessions.layer,
+    ...layerReviewAssignments,
     ProviderSessionManager.layerWithOptions({
       ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
@@ -806,11 +821,16 @@ function layerTest(input: {
           input.installationGateLayer ?? ProviderInstallationGate.layer,
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...layerReviewAssignments,
         ),
       ),
     ),
   ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 }
+
+const layerTestReviewAssignments = ReviewAssignmentRegistry.layer.pipe(
+  Layer.provide(NodeServices.layer),
+);
 
 const fakeHttpServer = HttpServer.HttpServer.of({
   address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
@@ -850,6 +870,19 @@ const layerPausingMcpRegistry = (pause: {
             ),
           ),
       });
+    }),
+  ).pipe(Layer.provide(layerTestMcpRegistry));
+
+const layerWrappedIssueMcpRegistry = (
+  wrap: (
+    issue: McpSessionRegistry.McpSessionRegistry["Service"]["issue"],
+  ) => McpSessionRegistry.McpSessionRegistry["Service"]["issue"],
+) =>
+  Layer.effect(
+    McpSessionRegistry.McpSessionRegistry,
+    Effect.gen(function* () {
+      const delegate = yield* McpSessionRegistry.McpSessionRegistry;
+      return McpSessionRegistry.McpSessionRegistry.of({ ...delegate, issue: wrap(delegate.issue) });
     }),
   ).pipe(Layer.provide(layerTestMcpRegistry));
 
@@ -1983,6 +2016,283 @@ it.effect(
         assert.isTrue(yield* release(sibling));
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
     }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 never starts a restricted review on a driver that cannot verify it",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const started = yield* Ref.make(0);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-restricted-review");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+
+        const refused = yield* Effect.flip(
+          runtime
+            .startTurn({
+              appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+              threadId,
+              runId,
+              runOrdinal: 1,
+              providerTurnOrdinal: 1,
+              attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+              rootNodeId: idAllocator.derive.rootNode({ runId }),
+              providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+              message: {
+                createdBy: "user",
+                creationSource: "web",
+                messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+                text: "review",
+                attachments: [],
+              },
+              modelSelection,
+              runtimePolicy: { ...runtimePolicy, reviewAssignment: { handle: "assignment-1" } },
+            })
+            .pipe(
+              Effect.andThen(Effect.die("the review turn reached a driver that cannot verify it")),
+            ),
+        );
+
+        assert.equal(yield* Ref.get(started), 0);
+        assert.equal(refused._tag, "ProviderAdapterTurnStartError");
+        // Not a resendable start: a retry would meet the same refusal.
+        assert.notProperty(refused, "beforePrompt");
+        assert.instanceOf(
+          "cause" in refused ? refused.cause : undefined,
+          McpProviderSession.ReviewAssignmentRefusedError,
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            startTurn: Ref.update(started, (count) => count + 1),
+          }),
+        ),
+      );
+    }),
+);
+
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const reviewPolicy = { ...runtimePolicy, reviewAssignment: { handle: "assignment-1" } };
+const reviewBroker: ReviewAssignmentRegistry.ReviewAssignmentBroker = {
+  handle: "assignment-1",
+  allowedReads: [{ handle: "assignment-1", side: "head", path: "src/app.ts" }],
+  read: async () => new TextEncoder().encode("const answer = 42;\n"),
+  record: async () => undefined,
+};
+
+it.effect.each(["fails", "is interrupted"] as const)(
+  "ProviderSessionManagerV2 leaves no credential or workspace when a review's prepare %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const state = yield* Ref.make(emptyState);
+      const issued = yield* Ref.make<{ readonly token: string; readonly cwd: string } | undefined>(
+        undefined,
+      );
+      const issuing = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const mcpRegistry = yield* McpSessionRegistry.McpSessionRegistry;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        yield* (yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry).register(reviewBroker);
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-review-prepare");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+
+        const opening = manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: reviewPolicy,
+        });
+        if (outcome === "fails") {
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(opening)));
+        } else {
+          const fiber = yield* Effect.forkScoped(opening);
+          yield* Deferred.await(issuing);
+          yield* Fiber.interrupt(fiber);
+        }
+        const credential = yield* Ref.get(issued);
+
+        assert.isDefined(credential);
+        assert.isUndefined(yield* mcpRegistry.resolve(credential!.token));
+        assert.isUndefined(yield* mcpSessions.read(threadId));
+        assert.isFalse(yield* fileSystem.exists(credential!.cwd));
+        assert.equal((yield* Ref.get(state)).openCount, 0);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            driver: CLAUDE_DRIVER,
+            reviewAssignments: true,
+            wrapIssue: (issue) => (request) =>
+              issue(request).pipe(
+                Effect.tap((credential) =>
+                  Ref.set(issued, {
+                    token: credential.config.authorizationHeader.replace(/^Bearer\s+/, ""),
+                    cwd: request.reviewAssignment?.cwd ?? "",
+                  }),
+                ),
+                Effect.andThen(
+                  outcome === "fails"
+                    ? Effect.die(new Error("the credential could not be stored"))
+                    : Deferred.succeed(issuing, undefined).pipe(Effect.andThen(Effect.never)),
+                ),
+              ),
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderSessionManagerV2 refuses a restricted review on a shared provider session", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* (yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry).register(reviewBroker);
+      const now = yield* DateTime.now;
+      const owner = ThreadId.make("thread-provider-session-manager-shared-owner");
+      const reviewer = ThreadId.make("thread-provider-session-manager-shared-reviewer");
+      for (const threadId of [owner, reviewer]) {
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+      }
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: owner,
+      });
+      yield* manager.open({ threadId: owner, providerSessionId, modelSelection, runtimePolicy });
+
+      const refused = yield* manager
+        .open({
+          threadId: reviewer,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: reviewPolicy,
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(refused._tag, "ProviderSessionOpenError");
+      const cause = "cause" in refused ? refused.cause : undefined;
+      assert.instanceOf(cause, McpProviderSession.ReviewAssignmentRefusedError);
+      assert.equal(
+        (cause as McpProviderSession.ReviewAssignmentRefusedError).reason,
+        "a restricted review cannot join a shared provider session",
+      );
+      assert.isUndefined(yield* mcpSessions.read(reviewer));
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+      yield* manager.close(providerSessionId);
+    }).pipe(
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 60_000, driver: CLAUDE_DRIVER, reviewAssignments: true }),
+      ),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 never hands a review credential to an ordinary session", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const mcpRegistry = yield* McpSessionRegistry.McpSessionRegistry;
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* (yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry).register(reviewBroker);
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-review-then-ordinary");
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({
+            idAllocator,
+            threadId,
+            now,
+            delegatedBy: ThreadId.make("thread-provider-session-manager-review-parent"),
+          }),
+        ],
+      });
+      const allocate = idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const reviewSessionId = yield* allocate;
+      yield* manager.open({
+        threadId,
+        providerSessionId: reviewSessionId,
+        modelSelection,
+        runtimePolicy: reviewPolicy,
+      });
+      const review = yield* mcpSessions.read(threadId);
+      assert.isDefined(review?.reviewAssignment);
+
+      const ordinarySessionId = yield* allocate;
+      yield* manager.open({
+        threadId,
+        providerSessionId: ordinarySessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const ordinary = yield* mcpSessions.read(threadId);
+
+      assert.isUndefined(ordinary?.reviewAssignment);
+      assert.notEqual(ordinary?.providerSessionId, review?.providerSessionId);
+      const resolved = yield* mcpRegistry.resolve(
+        ordinary!.authorizationHeader.replace(/^Bearer\s+/, ""),
+      );
+      assert.isTrue(resolved?.capabilities.has("orchestration"));
+      assert.isUndefined(resolved?.assignment);
+      yield* manager.close(ordinarySessionId);
+      yield* manager.close(reviewSessionId);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          driver: CLAUDE_DRIVER,
+          reviewAssignments: true,
+          serverSettingsLayer: ServerSettings.layerTest({
+            enableAgentBrowserAccess: false,
+          }).pipe(Layer.orDie),
+        }),
+      ),
+    );
+  }),
 );
 
 it.effect(

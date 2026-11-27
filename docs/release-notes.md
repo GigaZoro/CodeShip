@@ -1,3 +1,25 @@
+## 2026-11-27 — Landing checks stop at the first failure and keep the machine
+
+- Maintainers: under main's landing turn, `vp run check:changed` now stops at the first failing step or test group instead of finishing every other step, so a failed landing releases the turn sooner. Runs outside the landing turn still report every failure.
+- The landing run keeps its check-budget priority for its whole run, so other worktrees' checks start no new step until it ends; a crashed landing still blocks nobody.
+
+## 2026-11-27 — One-shot usage and cross-thread work carry the demand they serve
+
+- One-shot text generation on Claude and Codex now reports measured token counts (input, cache read, cache write, and output) into the local `text_generation_usage` ledger, keeping unreported counts as `NULL` and recording an unknown row when a started call times out or is interrupted.
+- Titles, branch names, commit messages, PR descriptions, delegated command and remote tasks, and cross-thread agent messages now carry the demand id of the active run they serve, leaving calls with no known demand in the visible unattributed bucket. Cross-thread agent sends using `auto` or `steer` delivery can now steer an active run on the same demand while queueing behind a different demand.
+
+## 2026-11-27 — Auto mode matches model and reasoning effort to request complexity
+
+- New **Auto** threads start on a faster model (such as Sonnet or GPT-6.2 Sol) at low effort for short lookups, utility slash commands, and tiny mechanical edits, then upgrade monotonically to the configured coordinator model when a deeper request arrives.
+- Started **Auto** threads never downgrade models mid-thread (keeping prompt caches warm), adjust reasoning effort per turn based on request complexity, and keep their running model and options across server continuations and wakes.
+- Auto coordinator instructions match delegated effort to task complexity and skip independent review only for trivial, low-risk edits.
+
+## 2026-11-27 — Assignment-isolated reviews on Claude
+
+- `delegate_task` with `isolation: { type: "assignment", handle }` now starts a Claude review that can only read the material its registered assignment allows. The session has no built-in tools, settings files, plugins, skills, hooks or other MCP servers, and it runs in an empty folder outside every checkout.
+- Before the first prompt reaches the model, CodeShip asks Claude what it loaded and records the run, account digest, model, effort, tools, servers and prompt digest. A session that reports anything extra ends before inference, and the turn fails as not retryable.
+- Codex, `auto: true`, remote environments, other projects, non-default runtime or interaction modes, attachments, auto mode and ultracode are refused before any model runs. A restricted review takes no steering.
+
 ## 2026-11-27 — One-shot text generation keeps one usage row per accepted call
 
 - Titles, branch names, commit messages, PR text, review guides and manual-step reviews now leave one usage record per provider call the provider accepted, kept in the local database with its driver, account, operation, demand, outcome and the provider error. A request that fails before it is sent leaves no record, an accepted Cursor request that returns an invalid reply leaves one with unknown token counts, and measured counts (including zero) are kept as reported.

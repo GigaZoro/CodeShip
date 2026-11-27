@@ -31,7 +31,12 @@ import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 
-import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  TextGenerationError,
+  CodexSettings,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.ts";
@@ -39,6 +44,11 @@ import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsa
 import * as TextGeneration from "./TextGeneration.ts";
 import * as TextGenerators from "./TextGenerators.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
+import {
+  TextGenerationAttribution,
+  type TextGenerationCallUsage,
+  TextGenerationUsageSink,
+} from "./TextGenerationUsage.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -64,6 +74,8 @@ const layerCodexTextGenerationTest = ServerConfig.ServerConfig.layerTest(process
 
 interface FakeCodexInput {
   output: string;
+  /** `codex exec --json` events the stock launcher prints. */
+  events?: string;
   metadata?: "supported" | "stock" | "legacy";
   invokedName?: string;
   expectedHome?: string;
@@ -104,6 +116,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     requireOriginator: input.requireOriginator ?? null,
     stderr: input.stderr ?? null,
     output: input.output,
+    events: input.events ?? null,
     metadata: input.metadata ?? null,
     expectedHome: input.expectedHome ?? null,
     expectedManaged: input.expectedManaged ?? false,
@@ -241,7 +254,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "}",
         'if (check.stderr !== null) process.stderr.write(check.stderr + "\\n");',
         "if (check.metadata) {",
-        '  if (!args.includes("--codeship-metadata-no-mcp") || outputPath !== null) fail("wrong metadata argv", 22);',
+        '  if (!args.includes("--json") || !args.includes("--codeship-metadata-no-mcp") || outputPath !== null) fail("wrong metadata argv", 22);',
         '  if (!originalArgs.includes(" --ephemeral --skip-git-repo-check -s read-only --model gpt-5.4-mini ")) fail("wrong policy or model", 25);',
         '  const schemaArg = args.indexOf("--output-schema");',
         '  if (schemaArg < 0 || args.at(-1) !== "-") fail("missing schema or stdin prompt", 26);',
@@ -249,10 +262,12 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         '  if (schema.additionalProperties !== false) fail("schema must be strict", 27);',
         '  const reply = check.metadataReplies[Object.keys(schema.properties).sort().join(",")];',
         '  if (reply !== undefined && schema.properties.branch && !seenImage) fail("missing metadata image", 31);',
-        '  process.stdout.write((reply === undefined ? check.output : JSON.stringify(reply)) + "\\n");',
+        '  process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:reply === undefined ? check.output : JSON.stringify(reply)}}) + "\\n");',
+        "  if (check.events !== null) process.stdout.write(check.events);",
         "} else {",
         '  if (args.includes("--codeship-metadata-no-mcp")) fail("stock exec received metadata flag", 32);',
         '  if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "  if (check.events !== null) process.stdout.write(check.events);",
         "}",
         "process.exitCode = check.exitCode;",
         "",
@@ -464,6 +479,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const checking = yield* Deferred.make<void>();
+      const reported: Array<ReadonlyArray<TextGenerationCallUsage>> = [];
       const coldSpawner = ChildProcessSpawner.make((command) =>
         Effect.gen(function* () {
           if (command._tag === "StandardCommand" && command.args.includes("--help")) {
@@ -479,6 +495,10 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           metadataPath: "unset",
           metadata: "supported",
           output: '{"title":"Cold launch"}',
+          events: JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 7 },
+          }),
         },
         (generation) =>
           generation.generateThreadTitle({
@@ -487,12 +507,18 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
           }),
       ).pipe(
+        Effect.provideService(TextGenerationUsageSink, (calls) => {
+          reported.push(calls);
+        }),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, coldSpawner),
         Effect.forkScoped,
       );
       yield* Deferred.await(checking);
       yield* TestClock.adjust("40 seconds");
       expect((yield* Fiber.join(request)).title).toBe("Cold launch");
+      expect(reported).toMatchObject([
+        [{ inputTokens: 120, cacheReadTokens: 20, outputTokens: 7 }],
+      ]);
     }),
   );
   for (const customBinary of ["absolute-shim", "path-shim"] as const) {
@@ -712,6 +738,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     (command) =>
       Effect.gen(function* () {
         const probe = yield* makeProcessProbe;
+        const reported: TextGenerationCallUsage[] = [];
         yield* withFakeCodexEnv(
           { output: "", lifecycle: { port: probe.port, command } },
           (textGeneration) =>
@@ -722,7 +749,12 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
                   message: "Name this thread",
                   modelSelection: DEFAULT_TEST_MODEL_SELECTION,
                 })
-                .pipe(Effect.forkScoped);
+                .pipe(
+                  Effect.provideService(TextGenerationUsageSink, (entries) => {
+                    reported.push(...entries);
+                  }),
+                  Effect.forkScoped,
+                );
               yield* probe.started;
 
               const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
@@ -730,6 +762,19 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
               yield* Fiber.join(interrupted);
               const exit = yield* Fiber.await(fiber);
               expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+              expect(reported).toEqual(
+                command === "exec"
+                  ? [
+                      {
+                        model: DEFAULT_TEST_MODEL_SELECTION.model,
+                        inputTokens: null,
+                        cacheReadTokens: null,
+                        cacheWriteTokens: null,
+                        outputTokens: null,
+                      },
+                    ]
+                  : [],
+              );
             }),
         );
       }),
@@ -924,6 +969,90 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     ),
   );
 
+  const unknownGptUsage = {
+    model: "gpt-5.4-mini",
+    inputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    outputTokens: null,
+  };
+  const event = (value: unknown) => JSON.stringify(value) + "\n";
+  it.effect.each([
+    [
+      "its completed turn",
+      event({ type: "thread.started", thread_id: "t" }) +
+        event({
+          type: "turn.completed",
+          usage: {
+            input_tokens: 1200,
+            cached_input_tokens: 1000,
+            cache_write_input_tokens: 0,
+            output_tokens: 30,
+            reasoning_output_tokens: 12,
+          },
+        }),
+      0,
+      {
+        model: "gpt-5.4-mini",
+        inputTokens: 1200,
+        cacheReadTokens: 1000,
+        cacheWriteTokens: 0,
+        outputTokens: 30,
+      },
+    ],
+    [
+      "an unknown call without a completed turn",
+      event({ type: "thread.started" }),
+      0,
+      unknownGptUsage,
+    ],
+    [
+      "a failed process with only tool output",
+      event({
+        type: "item.completed",
+        item: { type: "command_execution", aggregated_output: "PRIVATE_FIXTURE_OUTPUT" },
+      }),
+      12,
+      unknownGptUsage,
+    ],
+    [
+      "an unknown call for a failed turn",
+      event({ type: "turn.failed", error: { message: "model refused" } }),
+      1,
+      unknownGptUsage,
+    ],
+  ] as const)("reports %s from the --json events", ([, events, exitCode, expected]) => {
+    const reports: Array<ReadonlyArray<TextGenerationCallUsage>> = [];
+    return withFakeCodexEnv(
+      { output: JSON.stringify({ title: "Usage" }), events, exitCode, requireArg: "--json" },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.exit(
+            textGeneration
+              .generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              })
+              .pipe(
+                Effect.provideService(TextGenerationUsageSink, (calls) => {
+                  reports.push(calls);
+                }),
+              ),
+          );
+          expect(reports).toEqual([[expected]]);
+          if (exitCode !== 0) {
+            expect(Exit.isFailure(result) && Cause.squash(result.cause)).toMatchObject({
+              detail:
+                exitCode === 12
+                  ? "Codex CLI command failed with code 12."
+                  : "Codex CLI command failed: model refused",
+            });
+          }
+        }),
+    );
+  });
+
   it.effect("still generates when Codex cannot list its MCP servers", () =>
     withFakeCodexEnv(
       {
@@ -1114,42 +1243,129 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   );
 
   it.effect.each([
-    ["Codex usage limit stderr", "ERROR: You've hit your usage limit. Try again at 3pm.", false],
+    [
+      "Codex usage limit stderr",
+      undefined,
+      "ERROR: You've hit your usage limit. Try again at 3pm.",
+      false,
+      "You've hit your usage limit",
+    ],
     [
       "Codex 401 unauthorized stderr",
+      undefined,
       "ERROR: unexpected status 401 Unauthorized: invalid token",
       false,
+      "401 Unauthorized",
     ],
     [
       "Codex warning line followed by usage limit error",
+      undefined,
       "2026-04-10T12:00:00Z WARN config option deprecated\nERROR: You've hit your usage limit.",
       false,
+      "You've hit your usage limit",
+    ],
+    [
+      "Codex --json turn.failed 401 with noisy stderr",
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: "unexpected status 401 Unauthorized: invalid token" },
+      }),
+      "WARNING: proceeding, even though we could not update PATH\n2026-11-27T12:00:00Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket",
+      false,
+      "unexpected status 401 Unauthorized: invalid token",
+    ],
+    [
+      "Codex --json turn.failed usage limit with noisy stderr",
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: "You've hit your usage limit. Try again at 3pm." },
+      }),
+      "WARNING: proceeding\n2026-11-27T12:00:00Z ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket",
+      false,
+      "You've hit your usage limit. Try again at 3pm.",
     ],
     [
       "MCP 403 stderr noise",
+      undefined,
       'MCP server "linear" connection failed: HTTP 403 Forbidden',
       undefined,
+      "HTTP 403 Forbidden",
     ],
     [
       "warning mentioning rate_limit followed by transient error",
+      undefined,
       "warn: config key `rate_limit` ignored\nconnection reset by peer",
       undefined,
+      "connection reset by peer",
     ],
-    ["transient 503 stderr", "HTTP 503 Service Unavailable", undefined],
-  ] as const)("sets retryable on Codex CLI failure (%s)", ([, stderr, expectedRetryable]) =>
-    withFakeCodexEnv({ output: "", stderr, exitCode: 1 }, (textGeneration) =>
-      Effect.gen(function* () {
-        const error = yield* Effect.flip(
-          textGeneration.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "Name this thread",
-            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-          }),
-        );
+    [
+      "transient 503 stderr",
+      undefined,
+      "HTTP 503 Service Unavailable",
+      undefined,
+      "HTTP 503 Service Unavailable",
+    ],
+  ] as const)(
+    "sets retryable on Codex CLI failure (%s)",
+    ([, events, stderr, expectedRetryable, expectedDetail]) =>
+      withFakeCodexEnv(
+        { output: "", ...(events === undefined ? {} : { events }), stderr, exitCode: 1 },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const error = yield* Effect.flip(
+              textGeneration.generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              }),
+            );
 
-        expect(error.retryable).toBe(expectedRetryable);
-      }),
-    ),
+            expect(error.retryable).toBe(expectedRetryable);
+            expect(error.detail).toContain(expectedDetail);
+            if (events !== undefined) {
+              expect(error.detail).not.toContain("responses_websocket");
+            }
+          }),
+      ),
+  );
+
+  it.effect("reports one unknown-count row when a spawned Codex exec times out", () =>
+    Effect.gen(function* () {
+      const probe = yield* makeProcessProbe;
+      const reported: TextGenerationCallUsage[] = [];
+      yield* withFakeCodexEnv(
+        { output: "", lifecycle: { port: probe.port, command: "exec" } },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const fiber = yield* textGeneration
+              .generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              })
+              .pipe(
+                Effect.provideService(TextGenerationUsageSink, (entries) => {
+                  reported.push(...entries);
+                }),
+                Effect.forkScoped,
+              );
+            yield* probe.started;
+            yield* TestClock.adjust("181 seconds");
+            yield* probe.exited;
+            const error = yield* Effect.flip(Fiber.join(fiber));
+            expect(error.detail).toContain("timed out");
+            expect(reported).toEqual([
+              {
+                model: DEFAULT_TEST_MODEL_SELECTION.model,
+                inputTokens: null,
+                cacheReadTokens: null,
+                cacheWriteTokens: null,
+                outputTokens: null,
+              },
+            ]);
+          }),
+      );
+    }),
   );
 });
 
@@ -1452,4 +1668,171 @@ it.effect(
         /^Review guides need a coding agent that can read the checkout/,
       );
     }),
+);
+
+it.effect.each([
+  { exhausted: false, reports: true },
+  { exhausted: true, reports: true },
+  { exhausted: false, reports: false },
+])("text generation preflight: exhausted=$exhausted reports=$reports", ({ exhausted, reports }) =>
+  Effect.gen(function* () {
+    const primary = ProviderInstanceId.make("codex");
+    const fallback = ProviderInstanceId.make("claude_work");
+    const selection = {
+      instanceId: primary,
+      model: "chat-model",
+      options: [{ id: "effort", value: "high" }],
+    };
+    const calls: ModelSelection[] = [];
+    const instances: ProviderInstance[] = [primary, fallback].map((instanceId) => {
+      const driver = ProviderDriverKind.make(instanceId === primary ? "codex" : "claudeAgent");
+      const snapshot: ServerProvider = {
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        status: "ready",
+        auth: { status: "authenticated" },
+        version: null,
+        checkedAt: "1970-01-01T00:00:00Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        ...(exhausted && instanceId === primary
+          ? {
+              usageLimits: {
+                checkedAt: "1970-01-01T00:00:00Z",
+                windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 100 }],
+              },
+            }
+          : {}),
+      };
+      return {
+        instanceId,
+        driverKind: driver,
+        continuationIdentity: { driverKind: driver, continuationKey: instanceId },
+        displayName: undefined,
+        enabled: true,
+        snapshot: { getSnapshot: Effect.succeed(snapshot) } as ProviderInstance["snapshot"],
+        orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+        textGeneration: TextGeneration.TextGeneration.of({
+          generateCommitMessage: () => Effect.die("unused"),
+          generatePrContent: () => Effect.die("unused"),
+          generateBranchName: () => Effect.die("unused"),
+          generateReviewGuide: () => Effect.die("unused"),
+          generateManualStepReview: () => Effect.die("unused"),
+          generateTranscriptionPostProcessing: () => Effect.die("unused"),
+          generateThreadTitle: (input) =>
+            Effect.gen(function* () {
+              if (input.message === "reject preflight")
+                return yield* new TextGenerationError({
+                  operation: "generateThreadTitle",
+                  detail: "Invalid settings",
+                });
+              calls.push(input.modelSelection);
+              if (!reports) return { title: "Generated title" };
+              const report = yield* TextGenerationUsageSink;
+              report([
+                {
+                  model: input.modelSelection.model,
+                  inputTokens: 9,
+                  cacheReadTokens: null,
+                  cacheWriteTokens: null,
+                  outputTokens: 2,
+                },
+              ]);
+              return { title: "Generated title" };
+            }),
+        }),
+      };
+    });
+    const recorded: Array<TextGenerationUsageRepository.TextGenerationUsageRow> = [];
+    const service = yield* TextGeneration.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            listInstances: Effect.succeed(instances),
+            getInstance: (id) =>
+              Effect.succeed(instances.find((instance) => instance.instanceId === id)),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [fallback]: { driver: ProviderDriverKind.make("claudeAgent"), config: {} },
+            },
+          }),
+          Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+            resolveLink: () => Effect.die("unused"),
+          }),
+          ProviderInstallationGate.layer,
+          Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
+          Layer.mock(TextGenerationUsageRepository.TextGenerationUsageRepository)({
+            record: (rows) =>
+              Effect.sync(() => {
+                recorded.push(...rows);
+              }),
+          }),
+        ),
+      ),
+    );
+    const rejected = yield* Effect.flip(
+      service.generateThreadTitle({
+        cwd: "/tmp",
+        message: "reject preflight",
+        modelSelection: selection,
+      }),
+    );
+    expect(rejected.detail).toBe("Invalid settings");
+    expect(recorded).toEqual([]);
+    const demandId = `demand:${"a".repeat(64)}`;
+    expect(
+      yield* service
+        .generateThreadTitle({
+          cwd: "/tmp",
+          message: "hello",
+          linkedContext: "",
+          modelSelection: selection,
+        })
+        .pipe(
+          Effect.provideService(TextGenerationAttribution, {
+            threadId: ThreadId.make("thread:usage"),
+            demandId,
+          }),
+        ),
+    ).toEqual({ title: "Generated title" });
+    // The call is charged to the instance that ran it and the demand it served; a provider that
+    // reports nothing still leaves one row, with its counts unknown.
+    expect(recorded).toMatchObject([
+      {
+        operation: "generateThreadTitle",
+        providerInstanceId: exhausted ? fallback : primary,
+        driver: exhausted ? "claudeAgent" : "codex",
+        model: reports ? expect.any(String) : selection.model,
+        threadId: "thread:usage",
+        demandId,
+        inputTokens: reports ? 9 : null,
+        cacheReadTokens: null,
+        outputTokens: reports ? 2 : null,
+      },
+    ]);
+    expect(calls).toEqual([
+      exhausted
+        ? {
+            instanceId: fallback,
+            model:
+              DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")],
+          }
+        : selection,
+    ]);
+    const refusal = yield* Effect.flip(
+      service.generateThreadTitle({
+        cwd: "/tmp",
+        message: "Fresh Auto title",
+        linkedContext: "",
+        modelSelection: { ...selection, quotaAwareAuto: true },
+      }),
+    );
+    expect(refusal.operation).toBe("generateThreadTitle");
+    expect(refusal.retryable).toBe(false);
+    expect(calls).toHaveLength(1);
+  }),
 );

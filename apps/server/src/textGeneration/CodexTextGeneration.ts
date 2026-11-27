@@ -48,6 +48,12 @@ import {
 } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  nonNegativeCount,
+  type TextGenerationCallUsage,
+  TextGenerationUsageSink,
+  unknownCallUsage,
+} from "./TextGenerationUsage.ts";
 
 const CODEX_TIMEOUT_MS = 180_000;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
@@ -94,6 +100,48 @@ const CodexMcpServers = Schema.fromJsonString(
 const decodeCodexMcpServers = Schema.decodeEffect(CodexMcpServers);
 
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+function codexEvents(stdout: string): ReadonlyArray<Record<string, unknown>> {
+  return stdout.split(/\r?\n/).flatMap((line) => {
+    const event = Option.getOrUndefined(decodeJsonOption(line.trim()));
+    return typeof event === "object" && event !== null && !Array.isArray(event)
+      ? [event as Record<string, unknown>]
+      : [];
+  });
+}
+
+/** Usage of one `codex exec --json` call; unknown when it ended before a completed turn. */
+function codexCallUsage(
+  events: ReadonlyArray<Record<string, unknown>>,
+  model: string,
+): TextGenerationCallUsage {
+  const usage = events.findLast((event) => event.type === "turn.completed")?.usage;
+  if (typeof usage !== "object" || usage === null) return unknownCallUsage(model);
+  const fields = usage as Record<string, unknown>;
+  return {
+    model,
+    // Codex counts cached input inside input_tokens already.
+    inputTokens: nonNegativeCount(fields.input_tokens),
+    cacheReadTokens: nonNegativeCount(fields.cached_input_tokens),
+    cacheWriteTokens: nonNegativeCount(fields.cache_write_input_tokens),
+    outputTokens: nonNegativeCount(fields.output_tokens),
+  };
+}
+
+function codexEventError(events: ReadonlyArray<Record<string, unknown>>): string | undefined {
+  return events
+    .flatMap((event) => {
+      const error = event.type === "turn.failed" ? event.error : event;
+      const message =
+        event.type === "error" || event.type === "turn.failed"
+          ? (error as Record<string, unknown> | undefined)?.message
+          : undefined;
+      return typeof message === "string" && message.trim().length > 0 ? [message.trim()] : [];
+    })
+    .at(-1);
+}
+
 export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(function* (
   codexConfig: CodexSettings,
   environment?: NodeJS.ProcessEnv,
@@ -385,6 +433,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     TextGenerationError,
     S["DecodingServices"]
   > {
+    const reportUsage = yield* TextGenerationUsageSink;
     const metadataBinaryPath = yield* Effect.fromResult(selectedMetadataPath).pipe(
       Effect.mapError(
         (cause) =>
@@ -409,6 +458,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           )
         : undefined;
 
+    let startedModel: string | undefined;
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
       const metadataBinary =
         metadataBinaryPath === undefined
@@ -527,6 +577,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         "--output-schema",
         schemaPath,
         ...(outputPath ? ["--output-last-message", outputPath] : []),
+        "--json",
         ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
         "-",
       ];
@@ -552,6 +603,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ),
         );
 
+      startedModel = model;
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           readStreamAsString(operation, child.stdout),
@@ -564,23 +616,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         ],
         { concurrency: "unbounded" },
       );
-
-      if (exitCode !== 0) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Codex CLI command failed: ${detail}`
-              : `Codex CLI command failed with code ${exitCode}.`,
-          ...(detail.length > 0 && isNonRetryableCodexCliDetail(detail)
-            ? { retryable: false }
-            : {}),
-        });
-      }
-      return stdout;
+      return { stdout, stderr, exitCode, model };
     });
 
     const cleanup = Effect.all(
@@ -591,7 +627,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     ).pipe(Effect.asVoid);
 
     return yield* Effect.gen(function* () {
-      const stdout = yield* runCodexCommand().pipe(
+      const { stdout, stderr, exitCode, model } = yield* runCodexCommand().pipe(
         Effect.scoped,
         Effect.timeoutOption(investigate?.timeoutMs ?? CODEX_TIMEOUT_MS),
         Effect.flatMap(
@@ -603,7 +639,24 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             onSome: Effect.succeed,
           }),
         ),
+        Effect.onError(() =>
+          Effect.sync(() => {
+            if (startedModel !== undefined) reportUsage([unknownCallUsage(startedModel)]);
+          }),
+        ),
       );
+      const events = codexEvents(stdout);
+      reportUsage([codexCallUsage(events, model)]);
+      if (exitCode !== 0) {
+        const detail = codexEventError(events) ?? (stderr.trim() || undefined);
+        return yield* new TextGenerationError({
+          operation,
+          detail: detail
+            ? `Codex CLI command failed: ${detail}`
+            : `Codex CLI command failed with code ${exitCode}.`,
+          ...(detail && isNonRetryableCodexCliDetail(detail) ? { retryable: false } : {}),
+        });
+      }
 
       const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
 
@@ -618,7 +671,24 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
                 }),
             ),
           )
-        : Effect.succeed(stdout);
+        : Effect.succeed(
+            events
+              .flatMap((event) => {
+                const item = event.item;
+                if (
+                  event.type !== "item.completed" ||
+                  typeof item !== "object" ||
+                  item === null ||
+                  !("type" in item) ||
+                  item.type !== "agent_message" ||
+                  !("text" in item) ||
+                  typeof item.text !== "string"
+                )
+                  return [];
+                return [item.text];
+              })
+              .at(-1) ?? "",
+          );
       return yield* output.pipe(
         Effect.flatMap((value) =>
           decodeOutput(value, outputPath ? undefined : { onExcessProperty: "error" }),

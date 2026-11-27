@@ -86,6 +86,8 @@ import * as ThreadHandlers from "./toolkits/thread/handlers.ts";
 import * as ThreadMetadataMcpService from "./ThreadMetadataMcpService.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import * as ReviewAssignmentHandlers from "./toolkits/reviewAssignment/handlers.ts";
+import { ReviewAssignmentToolkit } from "./toolkits/reviewAssignment/tools.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
@@ -365,7 +367,8 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       (Option.isSome(clients) && token.length > 0
         ? yield* clients.value.authenticate(request)
         : undefined);
-    if (!invocation) {
+    // A restricted reviewer's credential works only on its own endpoint, never here.
+    if (!invocation || invocation.capabilities.has("review-assignment")) {
       yield* Effect.logWarning("rejected MCP request with an unusable credential", {
         reason:
           authorization === undefined
@@ -430,6 +433,38 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
 const layerMcpAuthMiddleware = HttpRouter.middleware<{
   provides: McpInvocationContext.McpInvocationContext;
 }>()(makeMcpAuthMiddleware).layer;
+
+/** Accepts only registry credentials issued for one review assignment; no OAuth clients, links or mode headers. */
+const makeReviewAssignmentAuthMiddleware = Effect.gen(function* () {
+  const registry = yield* McpSessionRegistry.McpSessionRegistry;
+  return Effect.fn("McpHttpServer.authenticateReviewAssignmentRequest")(function* (httpEffect) {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const token = parseBearerToken(request) ?? "";
+    const invocation = yield* registry.resolve(token);
+    if (
+      invocation === undefined ||
+      invocation.assignment === undefined ||
+      invocation.capabilities.size !== 1 ||
+      !invocation.capabilities.has("review-assignment")
+    ) {
+      yield* Effect.logWarning("rejected review assignment MCP request", {
+        reason: invocation === undefined ? "unknown_or_expired_token" : "not_a_review_credential",
+      });
+      return unauthorized({ request, presentedToken: token.length > 0, offerOAuth: false });
+    }
+    return yield* httpEffect.pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        ...invocation,
+        linkedEnvironments: false,
+      }),
+      Effect.map(normalizeMcpHttpResponse),
+    );
+  }) satisfies McpAuthMiddleware;
+}).pipe(Effect.withSpan("McpHttpServer.makeReviewAssignmentAuthMiddleware"));
+
+const layerReviewAssignmentAuthMiddleware = HttpRouter.middleware<{
+  provides: McpInvocationContext.McpInvocationContext;
+}>()(makeReviewAssignmentAuthMiddleware).layer;
 
 /** Claude Code spills oversized results to files, losing locators; bound both text and its preferred structuredContent. */
 export const MAX_SNAPSHOT_TEXT_BYTES = 20_000;
@@ -1699,6 +1734,22 @@ export const layerMilestoneEvents = Layer.effectDiscard(
   Layer.provide(layerWebhookTransport),
 );
 
-export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents),
+/**
+ * The restricted reviewer's server serves `read_material` and nothing else.
+ * `Layer.fresh` gives it its own `McpServer`: the memoized one holds every `/mcp` tool.
+ */
+export const layerReviewAssignment = Layer.fresh(
+  McpServer.layerHttp({
+    name: "T3.CodeShip review assignment",
+    version: packageJson.version,
+    path: McpSessionRegistry.REVIEW_ASSIGNMENT_MCP_PATH,
+    protocols: [McpProtocol.v2025_06_18],
+    allowSessionTermination: true,
+    registrations: toolkitRegistration(ReviewAssignmentToolkit, ReviewAssignmentHandlers.layer),
+  }).pipe(Layer.provide(layerReviewAssignmentAuthMiddleware)),
+);
+
+export const layer = Layer.merge(
+  layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents)),
+  layerReviewAssignment,
 );

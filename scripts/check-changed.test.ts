@@ -242,6 +242,13 @@ describe("check:changed", () => {
       ],
     },
     {
+      platform: "linux",
+      landing: true,
+      attempts: ([first, middle, , independent]: Keys) => [
+        { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
+      ],
+    },
+    {
       platform: "win32",
       attempts: ([first, middle, last, independent]: Keys) => [
         { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
@@ -251,8 +258,8 @@ describe("check:changed", () => {
       ],
     },
   ])(
-    "resumes after a middle server failure and an interrupted independent group on $platform",
-    ({ platform, attempts: plan }) =>
+    "resumes after a middle server failure and an interrupted independent group on $platform (landing: $landing)",
+    ({ platform, landing = false, attempts: plan }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const directory = yield* slotDirectory;
@@ -275,16 +282,27 @@ describe("check:changed", () => {
         const attempts = plan(
           cachedTestTasks(JSON.stringify(request))["test-cache"]!.dependsOn! as Keys,
         );
-        const expected = attempts.map(report).join("");
-        const result = yield* runTestGroups(cache, requestFile, request, 2, platform, (limit) =>
-          Effect.gen(function* () {
-            const attempt = attempts.shift()!;
-            assert.strictEqual(limit, attempt.limit);
-            const requested = JSON.parse(yield* fs.readFileString(requestFile));
-            assert.deepStrictEqual(requested.completed, attempt.completed);
-            yield* fs.writeFileString(summaryFile, JSON.stringify({ tasks: attempt.tasks }));
-            return { ok: false, output: report(attempt) };
-          }).pipe(Effect.orDie),
+        const expected =
+          attempts.map(report).join("") +
+          (landing
+            ? "\ncheck:changed: a test group failed under the landing turn; the remaining groups were not run.\n"
+            : "");
+        const result = yield* runTestGroups(
+          cache,
+          requestFile,
+          request,
+          2,
+          platform,
+          (limit) =>
+            Effect.gen(function* () {
+              const attempt = attempts.shift()!;
+              assert.strictEqual(limit, attempt.limit);
+              const requested = JSON.parse(yield* fs.readFileString(requestFile));
+              assert.deepStrictEqual(requested.completed, attempt.completed);
+              yield* fs.writeFileString(summaryFile, JSON.stringify({ tasks: attempt.tasks }));
+              return { ok: false, output: report(attempt) };
+            }).pipe(Effect.orDie),
+          { landing },
         );
         assert.deepStrictEqual(attempts, []);
         assert.deepStrictEqual(result, { ok: false, output: expected });
@@ -672,6 +690,72 @@ describe("check:changed", () => {
       }),
   );
 
+  it.effect("starts no other run's step until the run holding the landing turn ends", () =>
+    Effect.gen(function* () {
+      const landingStarted = yield* Deferred.make<void>();
+      const finishLanding = yield* Deferred.make<void>();
+      const started: Array<string> = [];
+      const options = { concurrency: 2, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+      const landing = yield* runSteps(
+        [
+          {
+            name: "landing",
+            run: () =>
+              Deferred.succeed(landingStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(finishLanding)),
+                Effect.as({ ok: true, output: "" }),
+              ),
+          },
+        ],
+        { ...options, landing: true },
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(landingStarted);
+      const other = yield* runSteps(
+        [
+          {
+            name: "other",
+            run: () =>
+              Effect.sync(() => started.push("other")).pipe(Effect.as({ ok: true, output: "" })),
+          },
+        ],
+        options,
+      ).pipe(Effect.forkChild);
+      // A slot is free all along; the landing's marker alone keeps the other run waiting.
+      for (let second = 0; second < 5; second++) yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(started, []);
+
+      yield* Deferred.succeed(finishLanding, undefined);
+      yield* Fiber.join(landing);
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(other);
+      assert.deepStrictEqual(started, ["other"]);
+    }),
+  );
+
+  it.effect("runs a landing whose marker another run's stale-marker check holds for a moment", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const checker = new NodeSqlite.DatabaseSync(
+            NodePath.join(directory, `landing-wait-${process.pid}.sqlite`),
+          );
+          checker.exec("BEGIN EXCLUSIVE;");
+          return checker;
+        }),
+        (checker) => Effect.sync(() => checker.close()),
+      );
+      const results = yield* runSteps(
+        [{ name: "landing", run: () => Effect.succeed({ ok: true, output: "" }) }],
+        { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
+      );
+      assert.deepStrictEqual(
+        results.map((result) => result.outcome),
+        ["pass"],
+      );
+    }),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;
@@ -705,6 +789,52 @@ describe("check:changed", () => {
         ],
       );
     }),
+  );
+
+  it.effect.each([true, false])(
+    "stops every other step at the first failure only under the landing turn (%s)",
+    (landing) =>
+      Effect.gen(function* () {
+        const interrupted = yield* Deferred.make<void>();
+        const failing = yield* Deferred.make<void>();
+        const fiber = yield* runSteps(
+          [
+            {
+              name: "long",
+              run: () =>
+                Deferred.succeed(failing, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+                ),
+            },
+            {
+              name: "fails",
+              run: () =>
+                Deferred.await(failing).pipe(Effect.as({ ok: false, output: "lint error" })),
+            },
+            { name: "waits for a slot", run: () => Effect.succeed({ ok: true, output: "" }) },
+          ],
+          { concurrency: 2, timeoutSeconds: 60, slotDirectory: yield* slotDirectory, landing },
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 minute");
+        const results = yield* Fiber.join(fiber);
+
+        assert.deepStrictEqual(
+          results.map(({ name, outcome }) => [name, outcome]),
+          landing
+            ? [
+                ["long", "STOPPED"],
+                ["fails", "FAIL"],
+                ["waits for a slot", "STOPPED"],
+              ]
+            : [
+                ["long", "TIMEOUT"],
+                ["fails", "FAIL"],
+                ["waits for a slot", "pass"],
+              ],
+        );
+        assert.isTrue(yield* Deferred.isDone(interrupted));
+      }),
   );
 
   it.effect("does not count a Mac's sleep against a step's timeout", () =>

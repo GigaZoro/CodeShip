@@ -16,6 +16,7 @@ import {
   OrchestrationV2ProviderFailure,
   OrchestrationV2ProviderRetry,
   OrchestrationV2ProviderThread,
+  OrchestrationV2ReviewAssignment,
   OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
@@ -75,6 +76,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
   workspace: Schema.optional(ProviderAdapterV2RuntimeWorkspace),
+  /** The thread reviews one assignment: only its read tool and verified inputs may reach the model. */
+  reviewAssignment: Schema.optional(OrchestrationV2ReviewAssignment),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

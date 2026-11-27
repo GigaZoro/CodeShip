@@ -741,8 +741,8 @@ or send the message again when it had not.
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and
 choose the coordinator model and effort for each provider. The list offers the models of every
-account of that provider that can run on this machine. Auto keeps these choices for the
-coordinator. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
+account of that provider that can run on this machine. Auto uses these choices as the ceiling for the
+coordinator, starting light requests (short lookups, utility slash commands, and tiny mechanical edits) on a faster model at low effort and tuning effort per turn without downgrading a thread's model once it upgrades. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
 the default model in settings for new threads. A scheduled task's model can be Auto
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
 starts it there. A new thread starts on the first account in the primary provider's account
@@ -771,8 +771,8 @@ accounts at their usage limit, including exhausted usage windows even before a t
 fails. A limit on one model family excludes only that family. Each model uses the first
 account in failover order that can run it; native subagents use the coordinator's
 own account. The short model list points the agent to the full catalog when needed.
-After implementation, the coordinator reviews the diff itself and requests an independent
-review in a fresh chat. Each review uses its provider's Auto model and effort from Settings,
+For non-trivial code changes, the coordinator reviews the diff itself and requests an independent
+review in a fresh chat (skipping independent review only for trivial, low-risk edits such as typos, docs, or comments; never auth, data, money, or concurrency changes). Each review uses its provider's Auto model and effort from Settings,
 with the options that model still offers. The independent review runs on the other provider
 while one of its accounts can run that provider's Auto model, and on the coordinator's own
 provider when none can, or when the other's reviewer fails to start. When no account can run a

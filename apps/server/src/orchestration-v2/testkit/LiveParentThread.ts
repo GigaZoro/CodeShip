@@ -22,6 +22,7 @@ export const seedLiveParent = Effect.fn("LiveParentThread.seedLiveParent")(funct
   readonly driver: ProviderDriverKind;
   readonly modelSelection: ModelSelection;
   readonly worktreePath?: string;
+  readonly demandId?: string;
 }) {
   const { name, driver, modelSelection } = input;
   const instanceId = modelSelection.instanceId;
@@ -111,6 +112,7 @@ export const seedLiveParent = Effect.fn("LiveParentThread.seedLiveParent")(funct
         occurredAt: now,
         payload: {
           id: runId,
+          ...(input.demandId === undefined ? {} : { demandId: input.demandId }),
           threadId,
           ordinal: 1,
           providerInstanceId: instanceId,

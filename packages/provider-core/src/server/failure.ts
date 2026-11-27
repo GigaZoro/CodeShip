@@ -155,6 +155,16 @@ function curatedCauseMessages(cause: unknown): {
             return { known: failure.message, category: categoryMessage(), failure };
           break;
         }
+        // A restricted review that cannot prove its isolation ends before the model sees anything.
+        case "ReviewAssignmentRefusedError": {
+          const failure = makeProviderFailure({
+            message: stringField(cause, "message"),
+            class: "permission_error",
+            code: "restricted_review_refused",
+            retryable: false,
+          });
+          return { known: failure.message, category: categoryMessage(), failure };
+        }
         case "ContextHandoffBudgetError":
           return { known: new ContextHandoffBudgetError().message, category: categoryMessage() };
         case "ContextHandoffBackgroundWorkError":

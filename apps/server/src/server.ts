@@ -128,6 +128,7 @@ import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
+import * as ReviewAssignmentRegistry from "./mcp/ReviewAssignmentRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as VisualStudioDebugger from "./visualStudio/VisualStudioDebugger.ts";
@@ -1641,6 +1642,7 @@ const layerMakeServer = Layer.unwrap(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
         ),
       ),
+      Layer.provideMerge(ReviewAssignmentRegistry.layer),
       Layer.provide(layerActivation),
       Layer.provideMerge(
         RelayTracing.layerServerRelayBroker.pipe(Layer.provide(ManagedPolicy.layer)),

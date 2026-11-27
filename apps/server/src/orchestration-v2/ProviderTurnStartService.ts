@@ -350,6 +350,7 @@ const SETUP_REFUSAL_TAGS = [
   "CursorModelUnavailableError",
   "ContextHandoffBudgetError",
   "ContextHandoffBackgroundWorkError",
+  "ReviewAssignmentRefusedError",
 ] as const;
 
 function causedBy(error: unknown, matches: (cause: object) => boolean): boolean {
@@ -1862,6 +1863,8 @@ export const layer: Layer.Layer<
         }) {
           const usageLimit = usageLimitFailureFromError(failoverInput.error);
           if (usageLimit === undefined) return false;
+          // A restricted reviewer's evidence binds one native account; another account is another run.
+          if (projection.thread.reviewAssignment !== undefined) return false;
 
           const failedInstanceId = activeRun.providerInstanceId;
           failoverState.triedInstanceIds.add(failedInstanceId);
@@ -2120,8 +2123,9 @@ export const layer: Layer.Layer<
         });
         let effectiveHandoffs = handoffs;
         let resumeFellBack = false;
+        // A restricted review's prompt reaches the model as attested, so no host skill expands into it.
         const expandedText = yield* Effect.result(
-          providerMessage.createdBy === "user"
+          providerMessage.createdBy === "user" && projection.thread.reviewAssignment === undefined
             ? providerSkills.expandSkillMentions({
                 text: providerMessage.text,
                 instanceId: activeRun.providerInstanceId,

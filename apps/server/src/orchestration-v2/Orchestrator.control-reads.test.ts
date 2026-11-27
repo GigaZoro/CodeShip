@@ -1436,7 +1436,7 @@ it.effect.each([false, true])(
       });
       const task = (yield* projections.getThreadProjection(threadId)).subagents[0]!;
       const reviewer = (yield* projections.getThreadProjection(task.childThreadId!)).runs[0]!;
-      assert.equal(task.demandId, mixed ? null : owner.demandId);
+      assert.equal(task.demandId, owner.demandId);
       assert.equal(reviewer.demandId, task.demandId);
     }).pipe(Effect.provide(layerTest)),
 );

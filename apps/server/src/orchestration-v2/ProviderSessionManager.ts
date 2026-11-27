@@ -12,11 +12,13 @@ import {
   OrchestrationV2ProviderSession,
   type OrchestrationV2PromptSuggestion,
   type OrchestrationV2RestartCancelledBackgroundWork as Work,
+  type OrchestrationV2ReviewAssignment,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   OrchestrationV2RuntimeRequest,
   type OrchestrationV2Subagent,
   ProviderInstanceId,
+  type ProviderDriverKind,
   ProviderSessionId,
   type RunId,
   ThreadId,
@@ -59,6 +61,9 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ReviewAssignmentRegistry from "../mcp/ReviewAssignmentRegistry.ts";
+import { RESTRICTED_REVIEW_DRIVERS } from "../mcp/ReviewAssignmentRegistry.ts";
+import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import { awaitingProviderThreadId, cancelledTurnItemWork } from "./RestartBackgroundNote.ts";
@@ -511,6 +516,10 @@ export const layerWithOptions = (
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      // Optional so servers without the read broker refuse every restricted review.
+      const reviewAssignments = yield* Effect.serviceOption(
+        ReviewAssignmentRegistry.ReviewAssignmentRegistry,
+      );
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
@@ -705,8 +714,122 @@ export const layerWithOptions = (
       const isMcpCredentialReserved = (threadId: ThreadId, mcpCredentialId: string) =>
         (mcpCredentialReservations.get(mcpReservationKey(threadId, mcpCredentialId)) ?? 0) > 0;
       const mcpPrepareLock = yield* KeyedLock.make<ThreadId>();
+      /**
+       * A restricted review never reuses or shares a credential: each prepare opens the assignment's
+       * session and issues a credential that reaches only its read tool.
+       */
+      const prepareReviewMcpSession = Effect.fn("ProviderSessionManagerV2.prepareReviewMcpSession")(
+        function* (input: {
+          readonly threadId: ThreadId;
+          readonly providerInstanceId: ProviderInstanceId;
+          readonly assignment: OrchestrationV2ReviewAssignment;
+        }) {
+          const refuse = (reason: string) =>
+            Effect.fail(new McpProviderSession.ReviewAssignmentRefusedError({ reason }));
+          if (options.configureMcp === false || Option.isNone(reviewAssignments)) {
+            return yield* refuse("assignment isolation is unavailable on this server");
+          }
+          const driver = yield* registry.get(input.providerInstanceId).pipe(
+            Effect.map((adapter) => adapter.driver),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (driver === undefined || !RESTRICTED_REVIEW_DRIVERS.has(driver)) {
+            return yield* refuse("this provider cannot verify its session before inference");
+          }
+          const assignments = reviewAssignments.value;
+          return yield* mcpPrepareLock.withLock(
+            input.threadId,
+            // A prepare that fails or is interrupted leaves no workspace, credential or reservation.
+            Effect.uninterruptibleMask((restore) => {
+              let opened = false;
+              let revoked = false;
+              const rollback = Effect.gen(function* () {
+                if (revoked) {
+                  // Everything issued since the revoke is this prepare's, so a thread revoke removes it.
+                  yield* mcpSessionRegistry.revokeThread(input.threadId);
+                  yield* mcpSessions.clear(input.threadId);
+                }
+                if (opened) yield* closeReviewSession(input.threadId);
+              });
+              return Effect.gen(function* () {
+                // Bounded file work, uninterruptible so the rollback always knows the session opened.
+                const session = yield* assignments.openSession({
+                  threadId: input.threadId,
+                  handle: input.assignment.handle,
+                  providerInstanceId: input.providerInstanceId,
+                });
+                opened = true;
+                const credential = yield* restore(
+                  Effect.gen(function* () {
+                    revoked = true;
+                    yield* mcpSessionRegistry.revokeThread(input.threadId);
+                    const issued = yield* mcpSessionRegistry.issue({
+                      threadId: input.threadId,
+                      providerInstanceId: input.providerInstanceId,
+                      browserToolsAvailable: false,
+                      capabilities: new Set(),
+                      subagent: true,
+                      reviewAssignment: session,
+                    });
+                    yield* mcpSessions.set(issued.config);
+                    return issued;
+                  }),
+                );
+                reserveMcpCredential(input.threadId, credential.config.providerSessionId);
+                return {
+                  mcpCredentialId: credential.config.providerSessionId,
+                  issued: true,
+                } satisfies PreparedMcpCredential;
+              }).pipe(Effect.onError(() => rollback));
+            }),
+          );
+        },
+      );
+      /**
+       * Every driver's turn passes here, so a review whose isolated session is not in place never
+       * reaches a model, whatever the attach step swallowed.
+       */
+      const requireReviewSession = Effect.fn("ProviderSessionManagerV2.requireReviewSession")(
+        function* (driver: ProviderDriverKind, input: ProviderAdapter.ProviderAdapterV2TurnInput) {
+          const issued = (yield* mcpSessions.read(input.threadId))?.reviewAssignment?.handle;
+          const handles = new Set([
+            input.runtimePolicy.reviewAssignment?.handle,
+            input.appThread.reviewAssignment?.handle,
+            issued,
+          ]);
+          if (handles.size === 1 && handles.has(undefined)) return;
+          const reason = !RESTRICTED_REVIEW_DRIVERS.has(driver)
+            ? "this provider cannot verify its session before inference"
+            : handles.size !== 1
+              ? "the assignment's isolated session is not in place"
+              : undefined;
+          if (reason === undefined) return;
+          return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+            driver,
+            threadId: input.threadId,
+            providerThreadId: input.providerThread.id,
+            runId: input.runId,
+            cause: new McpProviderSession.ReviewAssignmentRefusedError({ reason }),
+          });
+        },
+      );
+      /** A caller that knows the thread's policy passes its assignment; the projection backs it up. */
+      const prepareMcpSession = Effect.fn("ProviderSessionManagerV2.prepareMcpSession")(function* (
+        threadId: ThreadId,
+        providerInstanceId: ProviderInstanceId,
+        declaredAssignment?: OrchestrationV2ReviewAssignment,
+      ) {
+        const thread = Option.getOrUndefined(
+          yield* projectionStore.getThread(threadId).pipe(Effect.option),
+        );
+        const assignment = declaredAssignment ?? thread?.reviewAssignment;
+        if (assignment !== undefined) {
+          return yield* prepareReviewMcpSession({ threadId, providerInstanceId, assignment });
+        }
+        return yield* prepareOrdinaryMcpSession(threadId, providerInstanceId);
+      });
       /** Serialize prepares per thread so concurrent rotations cannot revoke each other's credentials. */
-      const prepareMcpSession = (
+      const prepareOrdinaryMcpSession = (
         threadId: ThreadId,
         providerInstanceId: ProviderInstanceId,
       ): Effect.Effect<PreparedMcpCredential> =>
@@ -754,6 +877,9 @@ export const layerWithOptions = (
                     );
                   if (
                     resolved !== undefined &&
+                    // A review credential reaches only its assignment, never ordinary tools.
+                    !resolved.capabilities.has("review-assignment") &&
+                    resolved.assignment === undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
@@ -789,16 +915,22 @@ export const layerWithOptions = (
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
               }),
             );
+      const closeReviewSession = (threadId: ThreadId) =>
+        Option.isNone(reviewAssignments)
+          ? Effect.void
+          : reviewAssignments.value.closeSession(threadId);
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
-          ? mcpSessionRegistry
-              .revokeThread(threadId)
-              .pipe(Effect.tap(() => mcpSessions.clear(threadId)))
+          ? mcpSessionRegistry.revokeThread(threadId).pipe(
+              Effect.tap(() => mcpSessions.clear(threadId)),
+              Effect.tap(() => closeReviewSession(threadId)),
+            )
           : mcpSessionRegistry.revokeProviderSession(mcpCredentialId).pipe(
               Effect.tap(() =>
                 Effect.gen(function* () {
                   if ((yield* mcpSessions.read(threadId))?.providerSessionId === mcpCredentialId) {
                     yield* mcpSessions.clear(threadId);
+                    yield* closeReviewSession(threadId);
                   }
                 }),
               ),
@@ -2351,7 +2483,19 @@ export const layerWithOptions = (
               Effect.uninterruptible,
             );
             if (attached !== undefined) {
-              const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
+              // A refused review attach rolls back; the adapter then finds no review session and refuses the turn.
+              const prepared = yield* prepareMcpSession(
+                input.threadId,
+                input.providerInstanceId,
+              ).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionActivityError({
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
                 const mcpCredentialId = prepared.mcpCredentialId;
@@ -2944,12 +3088,13 @@ export const layerWithOptions = (
             },
           });
         // A start, continuation or compaction keeps the session busy until its turn.terminal.
-        const busyTurn = <E>(
+        const busyTurn = <E, EBefore = never>(
           input: Pick<
             ProviderAdapter.ProviderAdapterV2TurnInput,
             "threadId" | "providerThread" | "runOrdinal" | "runId"
           >,
           run: () => Effect.Effect<void, E>,
+          beforeHold?: Effect.Effect<void, EBefore>,
         ) =>
           observeActivity(
             providerSessionId,
@@ -2959,6 +3104,7 @@ export const layerWithOptions = (
               providerInstanceId: runtime.instanceId,
             }),
           ).pipe(
+            Effect.andThen(beforeHold ?? Effect.void),
             // Failed or stopped starts may omit turn.terminal; clear their turns so sessions can idle.
             Effect.andThen(
               holdThreadLoaded({
@@ -3151,11 +3297,14 @@ export const layerWithOptions = (
               Effect.map(({ loaded }) => loaded),
             ),
           startTurn: (input) =>
-            busyTurn(input, () =>
-              agentFeedbackMode.pipe(
-                Effect.flatMap((agentFeedback) => runtime.startTurn({ ...input, agentFeedback })),
-                turnMetrics("send", input.modelSelection.model),
-              ),
+            busyTurn(
+              input,
+              () =>
+                agentFeedbackMode.pipe(
+                  Effect.flatMap((agentFeedback) => runtime.startTurn({ ...input, agentFeedback })),
+                  turnMetrics("send", input.modelSelection.model),
+                ),
+              requireReviewSession(runtime.driver, input),
             ),
           ...(runtime.resumeTurn === undefined
             ? {}
@@ -3700,6 +3849,18 @@ export const layerWithOptions = (
                 const existing = (yield* Ref.get(sessions)).get(key);
                 if (existing !== undefined) {
                   const attached = existing.attachedThreadIds.has(input.threadId);
+                  if (
+                    input.runtimePolicy.reviewAssignment !== undefined &&
+                    [...existing.attachedThreadIds].some((threadId) => threadId !== input.threadId)
+                  ) {
+                    return yield* new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause: new McpProviderSession.ReviewAssignmentRefusedError({
+                        reason: "a restricted review cannot join a shared provider session",
+                      }),
+                    });
+                  }
                   if (!attached && !existing.supportsMultipleProviderThreads) {
                     return yield* new ProviderSessionOpenError({
                       instanceId: input.modelSelection.instanceId,
@@ -3733,7 +3894,20 @@ export const layerWithOptions = (
                   Effect.gen(function* () {
                     const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
                     const prepared = yield* restore(
-                      prepareMcpSession(input.threadId, input.modelSelection.instanceId),
+                      prepareMcpSession(
+                        input.threadId,
+                        input.modelSelection.instanceId,
+                        input.runtimePolicy.reviewAssignment,
+                      ),
+                    ).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderSessionOpenError({
+                            instanceId: input.modelSelection.instanceId,
+                            providerSessionId: input.providerSessionId,
+                            cause,
+                          }),
+                      ),
                     );
                     const mcpCredentialId = prepared.mcpCredentialId;
                     let reservationDropped = mcpCredentialId === undefined;

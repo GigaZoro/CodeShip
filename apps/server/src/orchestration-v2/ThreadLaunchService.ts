@@ -66,6 +66,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { LaunchJournal } from "../scheduledTasks/LaunchJournal.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -756,6 +757,19 @@ const make = Effect.gen(function* () {
                   yield* providerRegistry.getProviders,
                   input.projectId,
                 );
+          // The name serves the run this launch prepares, so its call is charged to that demand.
+          const demandId =
+            runId === null
+              ? null
+              : yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [runId] }).pipe(
+                  Effect.map((records) => records.runs[0]?.demandId ?? null),
+                  Effect.catch((cause) =>
+                    Effect.logWarning(
+                      "Could not read the launch run's demand; its branch name stays unattributed",
+                      { threadId, cause },
+                    ).pipe(Effect.as(null)),
+                  ),
+                );
           return yield* textGeneration
             .generateBranchName({
               naming: {
@@ -771,6 +785,7 @@ const make = Effect.gen(function* () {
               projectId: input.projectId,
             })
             .pipe(
+              Effect.provideService(TextGenerationAttribution, { threadId, demandId }),
               Effect.timeoutOrElse({
                 duration: BRANCH_NAME_TIMEOUT,
                 orElse: () =>

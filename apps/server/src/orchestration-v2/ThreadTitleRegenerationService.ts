@@ -33,6 +33,7 @@ import { isChatGptTokenRevoked, isCodexLoginRejected } from "../provider/CodexLo
 import { isNonRetryableCodexManagedError } from "../provider/CodexManagedErrors.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
 import type { OrchestratorV2Error } from "./Orchestrator.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { forkInheritedRunOrdinals, ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
@@ -369,11 +370,14 @@ const make = Effect.gen(function* () {
         readonly message: string;
         readonly attachments: ReadonlyArray<ChatAttachment>;
       };
+      const settledMessages = projection.messages.filter((message) => !message.streaming);
+      // The title serves the work of the run it describes: the first message's, or the latest.
+      let sourceRunId =
+        settledMessages.findLast((message) => message.runId !== null)?.runId ?? undefined;
       if (input.kind.type === "initial") {
         const messageId = input.kind.messageId;
-        const message = projection.messages.find(
-          (candidate) => candidate.id === messageId && !candidate.streaming,
-        );
+        const message = settledMessages.find((candidate) => candidate.id === messageId);
+        sourceRunId = message?.runId ?? undefined;
         context =
           message === undefined
             ? { message: "", attachments: [] }
@@ -382,9 +386,7 @@ const make = Effect.gen(function* () {
                 attachments: message.attachments,
               };
       } else {
-        context = formatThreadTitleContext(
-          projection.messages.filter((message) => !message.streaming),
-        );
+        context = formatThreadTitleContext(settledMessages);
       }
       // A deleted source should not cost the fork its title.
       const inherited = yield* forkSource(projection.thread).pipe(
@@ -414,17 +416,41 @@ const make = Effect.gen(function* () {
       const worktreeExists =
         worktreePath !== null &&
         (yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => false)));
-      const result = yield* textGeneration.generateThreadTitle({
-        cwd: worktreeExists ? worktreePath : project.value.workspaceRoot,
-        message: context.message,
-        projectTitle: project.value.title,
-        attachments: context.attachments,
-        ...(input.kind.type === "regenerate" ? { previousTitle: projection.thread.title } : {}),
-        ...(inherited === undefined ? {} : { forkSource: inherited }),
-        instructions: settings.threadTitleInstructions,
-        modelSelection: settings.textGenerationModelSelection,
-        projectId: projection.thread.projectId,
-      });
+      const demandId =
+        sourceRunId === undefined
+          ? null
+          : yield* threads
+              .getThreadRecords(input.threadId, ["runs"], { runIds: [sourceRunId] })
+              .pipe(
+                Effect.map((records) => records.runs[0]?.demandId ?? null),
+                Effect.catch((cause) =>
+                  Effect.logWarning(
+                    "Could not read the titled run's demand; its title stays unattributed",
+                    {
+                      threadId: input.threadId,
+                      cause,
+                    },
+                  ).pipe(Effect.as(null)),
+                ),
+              );
+      const result = yield* textGeneration
+        .generateThreadTitle({
+          cwd: worktreeExists ? worktreePath : project.value.workspaceRoot,
+          message: context.message,
+          projectTitle: project.value.title,
+          attachments: context.attachments,
+          ...(input.kind.type === "regenerate" ? { previousTitle: projection.thread.title } : {}),
+          ...(inherited === undefined ? {} : { forkSource: inherited }),
+          instructions: settings.threadTitleInstructions,
+          modelSelection: settings.textGenerationModelSelection,
+          projectId: projection.thread.projectId,
+        })
+        .pipe(
+          Effect.provideService(TextGenerationAttribution, {
+            threadId: input.threadId,
+            demandId,
+          }),
+        );
       const generatedTitle = result.title.trim();
       return generatedTitle === "New thread" ||
         (input.kind.type === "regenerate" && generatedTitle === projection.thread.title.trim())

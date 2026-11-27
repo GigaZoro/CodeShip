@@ -57,6 +57,14 @@ import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PrepaidCreditSpend from "./PrepaidCreditSpend.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import {
+  applyAutoComplexityToSelection,
+  classifyAutoRequestComplexity,
+  preserveAutoSelectionOnAccount,
+  type AutoRequestPrompt,
+} from "./AutoComplexityRouting.ts";
+
+export type { AutoRequestPrompt };
 
 export interface AccountRoutingContext {
   readonly settings: Pick<
@@ -586,6 +594,56 @@ export function resolveAutoRoute(
   return { selection, driver, searchModel: auto?.model ?? selection.model };
 }
 
+function applyRequestComplexity(input: {
+  readonly context: AccountRoutingContext & { readonly projectId: ProjectId };
+  readonly selection: ModelSelection;
+  readonly requestPrompt: AutoRequestPrompt | undefined;
+  readonly started: boolean;
+  readonly previousSelection?: ModelSelection | undefined;
+  readonly preservePreviousSelection?: boolean | undefined;
+}): ModelSelection {
+  if (input.selection.autoAccount !== true || input.selection.quotaAwareAuto === true) {
+    return input.selection;
+  }
+  const chosenAccount = input.context.providers.find(
+    (provider) => provider.instanceId === input.selection.instanceId,
+  );
+  if (chosenAccount === undefined) return input.selection;
+  const modelHasRoom = (slug: string) =>
+    isSubscriptionAccount(chosenAccount)
+      ? modelWithRoom(chosenAccount, { ...input.context, model: slug }) !== null
+      : runnableModel(chosenAccount, { ...input.context, model: slug }) !== null;
+  if (
+    input.preservePreviousSelection === true &&
+    input.started &&
+    input.previousSelection !== undefined
+  ) {
+    return preserveAutoSelectionOnAccount({
+      selection: input.selection,
+      previousSelection: input.previousSelection,
+      account: chosenAccount,
+      modelHasRoom,
+    });
+  }
+  if (input.requestPrompt === undefined) {
+    return input.selection;
+  }
+  const complexity = classifyAutoRequestComplexity({
+    text: input.requestPrompt.text,
+    attachmentCount: input.requestPrompt.attachmentCount,
+    started: input.started,
+  });
+  return applyAutoComplexityToSelection({
+    selection: input.selection,
+    complexity,
+    account: chosenAccount,
+    started: input.started,
+    previousModel: input.started ? input.previousSelection?.model : undefined,
+    configuredAuto: autoModeModelFor(input.context.settings, chosenAccount.driver),
+    modelHasRoom,
+  });
+}
+
 /**
  * Where an Auto selection runs. With account switching on, a thread keeps an account with room
  * unless the top one ranks above it (plan usage over credits, then no MCP sign-in); else the top one
@@ -603,6 +661,12 @@ export function routeAutoAccount(
       /** A scheduled task's run, which spends the room that would be lost first. */
       readonly scheduled?: boolean;
       readonly observe?: ObserveAccount;
+      /** Optional prompt context for deterministic Auto-mode complexity routing. */
+      readonly requestPrompt?: AutoRequestPrompt | undefined;
+      /** Server-recorded model selection the started thread actually ran. */
+      readonly previousSelection?: ModelSelection | undefined;
+      /** Preserve previousSelection (model + options) on server continuations and wakes. */
+      readonly preservePreviousSelection?: boolean | undefined;
     },
 ): ModelSelection {
   if (input.selection.autoAccount !== true) return input.selection;
@@ -660,7 +724,15 @@ export function routeAutoAccount(
     (target.instanceId === selection.instanceId && target.model === selection.model)
       ? selection
       : { ...selection, instanceId: target.instanceId, model: target.model };
-  return modelPicksEqual(routed, input.selection) ? input.selection : routed;
+  const tuned = applyRequestComplexity({
+    context: input,
+    selection: routed,
+    requestPrompt: input.requestPrompt,
+    started: input.started,
+    previousSelection: input.started ? (input.previousSelection ?? input.selection) : undefined,
+    preservePreviousSelection: input.preservePreviousSelection,
+  });
+  return modelPicksEqual(tuned, input.selection) ? input.selection : tuned;
 }
 
 /** Why a launch started on another account than the one it named. */
@@ -674,6 +746,7 @@ interface LaunchInput {
   readonly projectId: ProjectId;
   readonly scheduled?: boolean;
   readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
+  readonly requestPrompt?: AutoRequestPrompt | undefined;
 }
 
 export interface LaunchRoute {
@@ -801,8 +874,18 @@ export function failoverLimitedLaunch(
       : undefined;
     const account = named ?? accounts[0];
     if (account !== undefined) {
+      const routedSelection: ModelSelection = {
+        ...selection,
+        instanceId: account.instanceId,
+        model: account.model,
+      };
       return {
-        selection: { ...selection, instanceId: account.instanceId, model: account.model },
+        selection: applyRequestComplexity({
+          context: input,
+          selection: routedSelection,
+          requestPrompt: input.selection.autoAccount === true ? input.requestPrompt : undefined,
+          started: false,
+        }),
         failover: { reason: "usageLimit", crossProviderFrom: primary.selection.instanceId },
       };
     }
@@ -1035,6 +1118,9 @@ export class AccountRouting extends Context.Service<
         readonly started: boolean;
         readonly scheduled?: boolean;
         readonly observe?: ObserveAccount;
+        readonly requestPrompt?: AutoRequestPrompt | undefined;
+        readonly previousSelection?: ModelSelection | undefined;
+        readonly preservePreviousSelection?: boolean | undefined;
       } & CreditRequest,
     ) => Effect.Effect<ModelSelection>;
     /**

@@ -34,8 +34,15 @@ const ALL_MCP_CAPABILITIES = [
   "pull-requests",
   "issues",
   "background-wait",
+  // A restricted reviewer's credential grants only this, and only on `/mcp/review-assignment`.
+  "review-assignment",
 ] as const;
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
+
+/** The one assignment a restricted reviewer's credential may read. */
+export interface McpReviewAssignmentScope {
+  readonly handle: string;
+}
 
 export interface McpThreadCaller {
   readonly threadId: ThreadId;
@@ -182,6 +189,7 @@ export interface McpInvocationScope {
   readonly origin?: string | undefined;
   /** False when the calling thread's project is on no forge T3 reads; `/mcp` reads it per request. */
   readonly forge?: boolean;
+  readonly assignment?: McpReviewAssignmentScope;
 }
 
 /**
