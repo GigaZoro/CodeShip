@@ -505,6 +505,11 @@ test("a landing reports an unconfirmed lease release without throwing from final
       },
     });
     assert.deepEqual(failedCheck, { status: "check-failed", releaseConfirmed: false });
+    const [record] = fs
+      .readFileSync(path.join(lander, ".git", "t3-landing", "landings.jsonl"), "utf8")
+      .split("\n")
+      .map((line) => line && JSON.parse(line));
+    assert.deepEqual([record.status, record.releaseConfirmed], ["check-failed", false]);
     assert.ok(git(origin, "rev-parse", LEASE_REF));
 
     // Clear the lease directly on the bare remote before exercising the CLI land and push paths.
