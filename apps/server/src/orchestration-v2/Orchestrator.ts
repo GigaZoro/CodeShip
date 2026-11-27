@@ -6938,6 +6938,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // A restart kept the thread's latest message from its agent. When a person or an agent sends
     // another, that message goes first, in the workspace it asked for, and this one queues behind
     // it. Server and provider messages (wakes, notifications, scheduled runs) bring nothing back.
+    const bufferedProviderWake =
+      command.createdBy === "agent" && command.creationSource === "provider";
+    const updateDraining =
+      !options?.bypassUpdateDrain && !bufferedProviderWake && (yield* isUpdateDraining);
     const sentBySomeone =
       automaticSourceRunId === undefined &&
       command.manualContinuationOfRunId === undefined &&
@@ -6947,7 +6951,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       sentBySomeone &&
       (yield* reviveLatestRestartCutRun(
         command,
-        { runs: projection.runs, waitsForMemory: !sentByUserFromClient },
+        { runs: projection.runs, waitsForMemory: !sentByUserFromClient || updateDraining },
         events,
         effects,
       ))
@@ -6955,9 +6959,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     }
     // A person is at the thread now, so its automatic start stops waiting for memory and goes
-    // first. An agent's message, or a steer the server sends again, waits behind it.
+    // first (unless the server is draining for an update). An agent's message, or a steer the
+    // server sends again, waits behind it.
     const memoryHeldRun =
-      automaticSourceRunId === undefined && sentByUserFromClient
+      automaticSourceRunId === undefined && sentByUserFromClient && !updateDraining
         ? projection.runs.find(orchestrationV2RunAwaitsMemory)
         : undefined;
     if (memoryHeldRun !== undefined) {
@@ -6995,10 +7000,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode.type === "defer_start" ||
       dispatchMode.type === "start_immediately" ||
       dispatchMode.type === "queue_after_active";
-    const bufferedProviderWake =
-      command.createdBy === "agent" && command.creationSource === "provider";
-    const updateDraining =
-      !options?.bypassUpdateDrain && !bufferedProviderWake && (yield* isUpdateDraining);
     const queueForUpdateDrain =
       updateDraining &&
       queueBehindRun === undefined &&
@@ -12275,10 +12276,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "The thread was snoozed.",
         });
       }
+      const waitsForMemory = command.automatic === true || (yield* isUpdateDraining);
       const declined = yield* reviveRestartCutRun(
         command,
         projection,
-        { run, waitsForMemory: command.automatic === true },
+        { run, waitsForMemory },
         events,
         effects,
       );
@@ -12301,6 +12303,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
     if (latestExecutedRun(runs)?.id !== command.runId) return;
+    const draining = yield* isUpdateDraining;
     const emitEvent = emit(events, command);
     for (const run of runs) {
       if (run.status !== "queued" || run.queueHeld !== true) continue;
@@ -12310,7 +12313,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-        payload: withQueueHold(run, false),
+        payload: draining
+          ? { ...withQueueHold(run, false), queueHeldByUpdateDrain: true }
+          : withQueueHold(run, false),
       });
     }
   });
@@ -12358,6 +12363,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "turn-item.updated",
         payload: { ...failureItem, status: "cancelled", updatedAt: now },
       });
+      const waitsForMemory = command.automatic === true || (yield* isUpdateDraining);
       yield* rerunFromStart(
         command,
         {
@@ -12366,7 +12372,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNode,
           status: "starting",
           at: now,
-          waitsForMemory: command.automatic === true,
+          waitsForMemory,
         },
         events,
         effects,
@@ -12471,11 +12477,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       type: "node.updated",
       payload: { ...state.rootNode, status: "pending", completedAt: null },
     });
+    const waitsForMemory = command.automatic === true || (yield* isUpdateDraining);
     yield* emitEvent<RunUpdatedEvent>({
       ...scope,
       type: "run.updated",
       payload: {
-        ...(command.automatic === true
+        ...(waitsForMemory
           ? waitingForMemoryAgain(state.run, now)
           : withoutMemoryAdmission(state.run)),
         status: "preparing",

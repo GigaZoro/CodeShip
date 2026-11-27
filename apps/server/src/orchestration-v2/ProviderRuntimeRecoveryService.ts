@@ -254,6 +254,9 @@ function restartCancelledBackgroundWork(
   }
   const skippedRunIds = new Set([
     ...cutRuns.map((run) => run.id),
+    // A run still waiting for memory has not started its workspace setup or turn yet; keep its
+    // records out of cancelled background work and restartHold (matches keptRunIds below).
+    ...projection.runs.filter(orchestrationV2RunAwaitsMemory).map((run) => run.id),
     // A rollback closed the process that ran these turns' work, and the rewound chat no longer
     // knows it, so a note would have the agent start it again.
     ...projection.runs.flatMap((run) => (run.status === "rolled_back" ? [run.id] : [])),
