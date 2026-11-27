@@ -10025,59 +10025,97 @@ describe("layerAppServerClientFactory with a session host", () => {
     }),
   );
 
+  const makeTakenOverProcess = Effect.fn("CodexAdapterV2Test.makeTakenOverProcess")(function* (
+    replayComplete: () => Promise<number>,
+  ) {
+    const stdout = yield* Queue.unbounded<Uint8Array>();
+    const written = yield* Queue.unbounded<string>();
+    const decoder = new TextDecoder();
+    const childProcess = ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(1),
+      stdout: Stream.fromQueue(stdout),
+      stderr: Stream.empty,
+      all: Stream.empty,
+      stdin: Sink.forEach((chunk: Uint8Array) => Queue.offer(written, decoder.decode(chunk))),
+      exitCode: Effect.never,
+      isRunning: Effect.succeed(true),
+      kill: () => Effect.void,
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+      unref: Effect.succeed(Effect.void),
+    });
+    const handle = {
+      sessionHostId: "host-adopted",
+      detachingForUpdate: false,
+      releaseOutput: () => undefined,
+      waitForReplayComplete: replayComplete,
+    } as unknown as DetachedStdioHandle;
+    const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
+      takeAdoptable: () => Effect.succeedSome({ handle, childProcess }),
+      terminate: () => Effect.void,
+    });
+    const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+      Effect.provide(
+        CodexAdapterV2.layerAppServerClientFactory.pipe(
+          Layer.provide(sessionHost),
+          Layer.provide(
+            Layer.succeed(
+              ProviderEventLoggers.ProviderEventLoggers,
+              ProviderEventLoggers.NoOpProviderEventLoggers,
+            ),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    );
+    const replayed = yield* Deferred.make<boolean>();
+    const open = factory.open({
+      instanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-adopted"),
+      providerSessionId: ProviderSessionId.make("provider-session-adopted"),
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+      settings: sessionHostCodexSettings,
+      environment: {},
+      adoptRunningProcess: { outputReady: Effect.void, replayComplete: replayed },
+    });
+    return { stdout, written, open, replayed };
+  });
+
+  it.effect("reports a taken-over process's replay only once its broker finished it", () =>
+    Effect.gen(function* () {
+      let finishReplay: (seq: number) => void = () => undefined;
+      const replay = new Promise<number>((resolve) => {
+        finishReplay = resolve;
+      });
+      const { open, replayed } = yield* makeTakenOverProcess(() => replay);
+      yield* Effect.gen(function* () {
+        yield* open;
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 20 }));
+        assert.isFalse(yield* Deferred.isDone(replayed));
+        finishReplay(7);
+        assert.isTrue(yield* Deferred.await(replayed));
+      }).pipe(Effect.scoped);
+    }),
+  );
+
+  it.effect("reports a failed replay of a taken-over process", () =>
+    Effect.gen(function* () {
+      const { open, replayed } = yield* makeTakenOverProcess(() =>
+        Promise.reject(new Error("the broker connection closed")),
+      );
+      yield* Effect.gen(function* () {
+        yield* open;
+        assert.isFalse(yield* Deferred.await(replayed));
+      }).pipe(Effect.scoped);
+    }),
+  );
+
   it.effect("ignores a reply to the previous server's request in a session it takes over", () =>
     Effect.gen(function* () {
-      const stdout = yield* Queue.unbounded<Uint8Array>();
-      const written = yield* Queue.unbounded<string>();
+      const { stdout, written, open } = yield* makeTakenOverProcess(() => Promise.resolve(0));
       const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
-      const childProcess = ChildProcessSpawner.makeHandle({
-        pid: ChildProcessSpawner.ProcessId(1),
-        stdout: Stream.fromQueue(stdout),
-        stderr: Stream.empty,
-        all: Stream.empty,
-        stdin: Sink.forEach((chunk: Uint8Array) => Queue.offer(written, decoder.decode(chunk))),
-        exitCode: Effect.never,
-        isRunning: Effect.succeed(true),
-        kill: () => Effect.void,
-        getInputFd: () => Sink.drain,
-        getOutputFd: () => Stream.empty,
-        unref: Effect.succeed(Effect.void),
-      });
-      const handle = {
-        sessionHostId: "host-adopted",
-        detachingForUpdate: false,
-        releaseOutput: () => undefined,
-      } as unknown as DetachedStdioHandle;
-      const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
-        takeAdoptable: () => Effect.succeedSome({ handle, childProcess }),
-        terminate: () => Effect.void,
-      });
-      const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
-        Effect.provide(
-          CodexAdapterV2.layerAppServerClientFactory.pipe(
-            Layer.provide(sessionHost),
-            Layer.provide(
-              Layer.succeed(
-                ProviderEventLoggers.ProviderEventLoggers,
-                ProviderEventLoggers.NoOpProviderEventLoggers,
-              ),
-            ),
-            Layer.provide(NodeServices.layer),
-          ),
-        ),
-      );
-
       yield* Effect.gen(function* () {
-        const client = yield* factory.open({
-          instanceId: ProviderInstanceId.make("codex"),
-          threadId: ThreadId.make("thread-adopted"),
-          providerSessionId: ProviderSessionId.make("provider-session-adopted"),
-          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
-          settings: sessionHostCodexSettings,
-          environment: {},
-          adoptRunningProcess: { outputReady: Effect.void },
-        });
+        const client = yield* open;
         const response = yield* client.raw
           .request("thread/read", { threadId: "thread-1" })
           .pipe(Effect.forkScoped);

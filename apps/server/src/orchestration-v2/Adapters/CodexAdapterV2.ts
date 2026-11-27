@@ -93,6 +93,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Function from "effect/Function";
@@ -531,6 +532,8 @@ function codexMcpToolOutput(
 
 // A hung MCP resource read must not hold run ingestion open.
 const MCP_APP_CAPTURE_TIMEOUT = "20 seconds";
+// Startup waits this long for a taken-over process's replay before it gives the process up.
+const ADOPTED_REPLAY_TIMEOUT = "10 seconds";
 
 function codexMcpAppResourceUri(item: CodexDynamicToolItem): string | undefined {
   if (item.type !== "mcpToolCall") return undefined;
@@ -1545,8 +1548,12 @@ export interface CodexAppServerClientFactoryShape {
     /**
      * Take over the app server a session host kept through a planned update instead of starting
      * one. Its output waits for `outputReady`, so the adopted turn is registered first.
+     * `replayComplete` becomes true once the broker replayed what it kept, false if it cannot.
      */
-    readonly adoptRunningProcess?: { readonly outputReady: Effect.Effect<void> };
+    readonly adoptRunningProcess?: {
+      readonly outputReady: Effect.Effect<void>;
+      readonly replayComplete: Deferred.Deferred<boolean>;
+    };
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1784,7 +1791,7 @@ export const layerAppServerClientFactory: Layer.Layer<
         let handle: ChildProcessSpawner.ChildProcessHandle;
         let requestIdPrefix: string | undefined;
         if (input.adoptRunningProcess !== undefined) {
-          const outputReady = input.adoptRunningProcess.outputReady;
+          const { outputReady, replayComplete } = input.adoptRunningProcess;
           const adoptable = Option.isSome(sessionHostOption)
             ? yield* sessionHostOption.value.takeAdoptable(input.providerSessionId)
             : Option.none();
@@ -1809,6 +1816,13 @@ export const layerAppServerClientFactory: Layer.Layer<
           );
           yield* outputReady.pipe(
             Effect.andThen(Effect.sync(() => adopted.handle.releaseOutput())),
+            Effect.andThen(
+              Effect.tryPromise(() => adopted.handle.waitForReplayComplete()).pipe(Effect.exit),
+            ),
+            Effect.flatMap((replayed) =>
+              Deferred.succeed(replayComplete, Exit.isSuccess(replayed)),
+            ),
+            Effect.ensuring(Deferred.succeed(replayComplete, false)),
             Effect.forkIn(scope),
           );
           // Replies to what the previous server asked must not resolve this client's requests.
@@ -2129,12 +2143,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
         // A taken-over app server's buffered output waits until adoptTurn has registered every
         // running turn: notifications for a turn this adapter does not know are dropped.
-        const adoptedOutputReady =
-          input.adoptRunningProcess === true ? yield* Deferred.make<void>() : undefined;
+        const adoptedOutput =
+          input.adoptRunningProcess === true
+            ? {
+                ready: yield* Deferred.make<void>(),
+                replayComplete: yield* Deferred.make<boolean>(),
+              }
+            : undefined;
         const client = yield* clientFactory.open({
-          ...(adoptedOutputReady === undefined
+          ...(adoptedOutput === undefined
             ? {}
-            : { adoptRunningProcess: { outputReady: Deferred.await(adoptedOutputReady) } }),
+            : {
+                adoptRunningProcess: {
+                  outputReady: Deferred.await(adoptedOutput.ready),
+                  replayComplete: adoptedOutput.replayComplete,
+                },
+              }),
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
@@ -2196,7 +2220,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
         );
         // A taken-over app server was initialized by the server that started it.
-        const initialized = yield* Ref.make(adoptedOutputReady !== undefined);
+        const initialized = yield* Ref.make(adoptedOutput !== undefined);
         // Codex rejects a second initialize on the shared app-server.
         const initializePermit = yield* Semaphore.make(1);
         const ensureInitialized = initializePermit.withPermit(
@@ -4801,7 +4825,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
           return Option.isNone(barrier) ? Effect.void : Deferred.succeed(barrier.value, undefined);
         });
-        const drainForDetach = Effect.fn("CodexAdapterV2.drainForDetach")(function* (
+        const passOutputBarrier = Effect.fn("CodexAdapterV2.passOutputBarrier")(function* (
           sessionHost: SessionHostService.SessionHostServiceShape,
         ) {
           const id = `${input.providerSessionId}:${outputBarriers.size}:${yield* Random.nextInt}`;
@@ -4819,8 +4843,38 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             yield* Deferred.await(barrier);
           }).pipe(Effect.ensuring(Effect.sync(() => outputBarriers.delete(id))));
-          // Each request read before the barrier has emitted its events, or its answer is written.
+          // Each request read before the barrier has emitted its events, or its answer is queued.
           yield* client.awaitRequestHandlersParked;
+        });
+        // Requests the broker replays are registered before startup lets answers be delivered.
+        const releaseAdoptedOutput = Effect.fn("CodexAdapterV2.releaseAdoptedOutput")(
+          function* (adopted: {
+            readonly ready: Deferred.Deferred<void>;
+            readonly replayComplete: Deferred.Deferred<boolean>;
+          }) {
+            yield* Deferred.succeed(adopted.ready, undefined);
+            if (Option.isNone(sessionHostOption)) return false;
+            const sessionHost = sessionHostOption.value;
+            const replayed = yield* Effect.gen(function* () {
+              if (!(yield* Deferred.await(adopted.replayComplete))) return false;
+              yield* passOutputBarrier(sessionHost);
+              return true;
+            }).pipe(
+              Effect.timeoutOption(ADOPTED_REPLAY_TIMEOUT),
+              Effect.map(Option.getOrElse(() => false)),
+              Effect.catchCause((cause) =>
+                Effect.logError("A taken-over Codex process's replay did not finish", cause).pipe(
+                  Effect.as(false),
+                ),
+              ),
+            );
+            return replayed;
+          },
+        );
+        const drainForDetach = Effect.fn("CodexAdapterV2.drainForDetach")(function* (
+          sessionHost: SessionHostService.SessionHostServiceShape,
+        ) {
+          yield* passOutputBarrier(sessionHost);
           yield* client.flushOutgoing;
           yield* agentMessageDeltas.flush;
           yield* reasoningDeltas.flush;
@@ -7732,7 +7786,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           },
           adoptTurn: Effect.fn("CodexAdapterV2.adoptTurn")(
             function* (adoptInput) {
-              if (adoptedOutputReady === undefined) {
+              if (adoptedOutput === undefined) {
                 return yield* toProtocolError(
                   "This Codex session started its own app server; there is no running turn to take over.",
                 );
@@ -7807,13 +7861,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ...(Option.isNone(sessionHostOption)
             ? {}
             : { drainForDetach: drainForDetach(sessionHostOption.value) }),
-          ...(adoptedOutputReady === undefined
+          ...(adoptedOutput === undefined
             ? {}
-            : {
-                releaseAdoptedOutput: Deferred.succeed(adoptedOutputReady, undefined).pipe(
-                  Effect.asVoid,
-                ),
-              }),
+            : { releaseAdoptedOutput: releaseAdoptedOutput(adoptedOutput) }),
           steerTurn: Effect.fn("CodexAdapterV2.steerTurn")(
             function* (turnInput) {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);

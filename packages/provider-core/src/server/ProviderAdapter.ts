@@ -661,8 +661,9 @@ export interface ProviderAdapterV2SessionRuntime {
   /**
    * Lets a taken-over process's buffered and live output reach `events`. Called once every
    * running turn on the process is adopted: output for a turn not yet adopted would be dropped.
+   * True once everything the process's host kept was replayed and handled; false gives it up.
    */
-  readonly releaseAdoptedOutput?: Effect.Effect<void>;
+  readonly releaseAdoptedOutput?: Effect.Effect<boolean>;
   /**
    * Called with the process's output held for a planned update. Succeeds once every event from
    * output the process already sent is emitted, with how many events this runtime has emitted in

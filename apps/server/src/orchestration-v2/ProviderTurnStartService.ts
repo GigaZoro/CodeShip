@@ -348,7 +348,7 @@ export interface ProviderTurnStartServiceV2Shape {
   }) => Effect.Effect<void, ProviderTurnStartError>;
   /**
    * Lets a taken-over process send its output, once every run it was working on is adopted.
-   * False when its session is gone or was not taken over.
+   * True once what its host kept was replayed; false when it was not, or the session is gone.
    */
   readonly releaseAdoptedOutput: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
   /**
@@ -3280,8 +3280,7 @@ export const layer: Layer.Layer<
           );
         const release = Option.getOrUndefined(session)?.releaseAdoptedOutput;
         if (release === undefined) return false;
-        yield* release;
-        return true;
+        return yield* release;
       }),
       abandonAdoption: Effect.fn("ProviderTurnStartServiceV2.abandonAdoption")(
         (providerSessionId: ProviderSessionId) =>
