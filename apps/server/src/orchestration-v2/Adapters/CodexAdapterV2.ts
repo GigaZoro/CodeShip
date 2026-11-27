@@ -1556,7 +1556,7 @@ interface CodexAppServerLaunchInput {
 }
 
 /** One launch recipe for every app server, spawned directly or by a session host broker. */
-export const resolveCodexAppServerLaunch = Effect.fn("CodexAdapterV2.resolveCodexAppServerLaunch")(
+const resolveCodexAppServerLaunch = Effect.fn("CodexAdapterV2.resolveCodexAppServerLaunch")(
   function* (input: CodexAppServerLaunchInput) {
     const launch = yield* (yield* AgentScope).wrap({
       command: input.command,

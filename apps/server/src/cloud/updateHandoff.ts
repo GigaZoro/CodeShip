@@ -42,7 +42,7 @@ export const pendingServiceUpdateExists = Effect.gen(function* () {
   return Option.isSome(stateText) && serviceStateHasPendingUpdate(stateText.value);
 });
 
-export const pendingUpdateHandoffExists = Effect.gen(function* () {
+const pendingUpdateHandoffExists = Effect.gen(function* () {
   if (!(yield* pendingServiceUpdateExists)) {
     return false;
   }
