@@ -114,3 +114,14 @@ export function classifyCodexManagedError(value: unknown) {
   }
   return failure;
 }
+
+const transientCodes = new Set<string>([
+  "subscription_sharing_usage_unavailable",
+  "subscription_sharing_v2_user_unavailable",
+  "subscription_sharing_user_unavailable",
+]);
+
+export function isNonRetryableCodexManagedError(value: unknown): boolean {
+  const managed = classifyCodexManagedError(value);
+  return managed !== undefined && (managed.usageLimit || !transientCodes.has(managed.code));
+}

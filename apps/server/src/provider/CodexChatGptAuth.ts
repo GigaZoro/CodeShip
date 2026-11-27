@@ -213,8 +213,13 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
   const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const hostId = `urn:uuid:${yield* environment.getEnvironmentId}`;
   const resource = options.resource ?? RESOURCE;
-  const failure = (operation: string, detail: string) =>
-    new ProviderSetupError({ instanceId: options.instanceId, operation, detail });
+  const failure = (operation: string, detail: string, retryable?: boolean) =>
+    new ProviderSetupError({
+      instanceId: options.instanceId,
+      operation,
+      detail,
+      ...(retryable === undefined ? {} : { retryable }),
+    });
   let metadata: typeof Discovery.Type | undefined;
   let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
   const discover = Effect.gen(function* () {
@@ -840,20 +845,25 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     function* (rejected: CodexChatGptCredentials | undefined) {
       const saved = yield* read;
       if (Option.isNone(saved))
-        return yield* failure("access", "Sign in with ChatGPT to use managed Codex.");
+        return yield* failure("access", "Sign in with ChatGPT to use managed Codex.", false);
       let record = saved.value;
       const admitted = yield* AdmittedProfile;
       const expectedProfileKey =
         options.expectedProfileKey ??
         (admitted?.connection === connection ? admitted.key : undefined);
       if (expectedProfileKey !== undefined && (yield* profileKey(record)) !== expectedProfileKey)
-        return yield* failure("access", "The ChatGPT connection changed. Start a new session.");
+        return yield* failure(
+          "access",
+          "The ChatGPT connection changed. Start a new session.",
+          false,
+        );
       if (rejected && (yield* profileKey(record)) !== (yield* profileKey(rejected)))
         return yield* failure("access", "The ChatGPT connection changed. Retry.");
       if (!record.scopes.includes(CHATGPT_SHARING_SCOPE))
         return yield* failure(
           "sharing",
           "Token sharing is disabled. Sign in with ChatGPT and enable token sharing.",
+          false,
         );
       const now = yield* Clock.currentTimeMillis;
       if (record.accessToken !== rejected?.accessToken) {
@@ -871,6 +881,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
         return yield* failure(
           CHATGPT_SIGNED_OUT,
           "Your ChatGPT connection expired. Sign in again.",
+          false,
         );
       }
       const tokens = yield* exchange(
@@ -906,11 +917,16 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       };
       yield* save(record);
       if (expectedProfileKey !== undefined && (yield* profileKey(record)) !== expectedProfileKey)
-        return yield* failure("access", "The ChatGPT connection changed. Start a new session.");
+        return yield* failure(
+          "access",
+          "The ChatGPT connection changed. Start a new session.",
+          false,
+        );
       if (!record.scopes.includes(CHATGPT_SHARING_SCOPE))
         return yield* failure(
           "sharing",
           "ChatGPT token sharing is no longer enabled. Sign in again.",
+          false,
         );
       return record;
     },

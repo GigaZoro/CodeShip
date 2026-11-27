@@ -9,6 +9,7 @@ import { type ProviderSetupError, TextGenerationError } from "@t3tools/contracts
 import type { CursorSettings } from "../settings.ts";
 
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
+import { isCursorUsageLimitError } from "./CursorAgentSdk.ts";
 import { cursorSdkModelSelection } from "./sdkModel.ts";
 import type { CursorAuth } from "./auth.ts";
 import * as CursorSdk from "./CursorSdk.ts";
@@ -17,6 +18,38 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 const CURSOR_TIMEOUT_MS = 180_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
+const NON_RETRYABLE_CURSOR_STATUSES = new Set([401, 402, 403, 429]);
+const NON_RETRYABLE_CURSOR_ERROR_NAMES = new Set([
+  "RateLimitError",
+  "AuthenticationError",
+  "PermissionDeniedError",
+  "UnauthorizedError",
+]);
+
+function isNonRetryableCursorCause(cause: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = cause;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const retryable = Reflect.get(current, "retryable");
+    if (retryable === false || isCursorUsageLimitError(current)) {
+      return true;
+    }
+    if (retryable === true) {
+      return false;
+    }
+    const status = Reflect.get(current, "status") ?? Reflect.get(current, "statusCode");
+    if (typeof status === "number" && NON_RETRYABLE_CURSOR_STATUSES.has(status)) {
+      return true;
+    }
+    const name = Reflect.get(current, "name");
+    if (typeof name === "string" && NON_RETRYABLE_CURSOR_ERROR_NAMES.has(name)) {
+      return true;
+    }
+    current = Reflect.get(current, "cause");
+  }
+  return false;
+}
 
 function cursorSdkResultDetail(result: RunResult): string {
   switch (result.status) {
@@ -60,6 +93,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       return yield* new TextGenerationError({
         operation,
         detail: "Cursor is disabled in T3.CodeShip settings.",
+        retryable: false,
       });
     }
 
@@ -70,6 +104,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       return yield* new TextGenerationError({
         operation,
         detail: "Sign in with Cursor or add CURSOR_API_KEY in provider settings.",
+        retryable: false,
       });
     }
 
@@ -90,6 +125,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
           operation,
           detail:
             "Cursor text generation cannot enforce workspace isolation with a custom ~/.cursor/sandbox.json. Use another text-generation provider.",
+          retryable: false,
         });
       }
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-text-" });
@@ -199,6 +235,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
             : new TextGenerationError({
                 operation,
                 detail: "Cursor SDK text generation failed.",
+                ...(isNonRetryableCursorCause(cause) ? { retryable: false } : {}),
                 cause,
               }),
         ),

@@ -62,6 +62,7 @@ const resolveInstance = (
             new TextGenerationError({
               operation,
               detail: `No provider instance registered for id '${instanceId}'.`,
+              retryable: false,
             }),
           ),
     ),
@@ -84,6 +85,7 @@ export const make = Effect.gen(function* () {
       return yield* new TextGenerationError({
         operation,
         detail: "Auto needs a provider selection before starting text generation.",
+        retryable: false,
       });
     }
     const instances = yield* registry.listInstances;

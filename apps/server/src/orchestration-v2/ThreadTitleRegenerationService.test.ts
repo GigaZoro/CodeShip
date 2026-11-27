@@ -8,16 +8,27 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSetupError,
   ProviderThreadId,
   RunId,
+  TextGenerationError,
   ThreadId,
 } from "@t3tools/contracts";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 
+import {
+  CHATGPT_TOKEN_REVOKED,
+  CHATGPT_TOKEN_REVOKED_DETAIL,
+} from "../provider/CodexLoginRejected.ts";
+import { CLAUDE_SIGNED_OUT_MESSAGE } from "../provider/claudeSignedOut.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -526,4 +537,416 @@ describe("ThreadTitleRegenerationService", () => {
       }).pipe(Effect.provide(harness.layer));
     }),
   );
+
+  it.effect("retries transient errors up to 2 extra times on initial title generation", () =>
+    Effect.gen(function* () {
+      const transientErrors = [
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "ECONNRESET: socket hang up",
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Claude returned invalid structured output.",
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Claude CLI command failed with code 1.",
+        }),
+      ];
+      for (const [index, failure] of transientErrors.entries()) {
+        const harness = makeHarness({
+          generateTitle: () => Effect.fail(failure),
+        });
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+          const threadId = yield* createThread({
+            command: `command:title:transient:${index}:create`,
+            thread: `thread:title:transient:${index}`,
+          });
+          yield* dispatchUserMessage({
+            command: `command:title:transient:${index}:message`,
+            threadId,
+            text: "Debug intermittent crash",
+          });
+          const requestId = yield* armRegeneration({
+            command: `command:title:transient:${index}:arm`,
+            threadId,
+          });
+          const messageId = MessageId.make(`command:title:transient:${index}:message:message`);
+
+          const fiber = yield* Effect.forkChild(
+            service.execute({ threadId, requestId, kind: { type: "initial", messageId } }),
+          );
+          yield* TestClock.adjust("2 seconds");
+          yield* TestClock.adjust("4 seconds");
+          yield* Fiber.join(fiber);
+
+          assert.equal(harness.generateThreadTitle.mock.calls.length, 3);
+          const projection = yield* threads.getThreadProjection(threadId);
+          assert.equal(projection.thread.title, "Seed title");
+          assert.isNotOk(projection.thread.titleRegeneration);
+        }).pipe(Effect.provide(harness.layer));
+      }
+    }),
+  );
+
+  it.effect("recovers on retry when a transient initial title error clears", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const harness = makeHarness({
+        generateTitle: () => {
+          attempts += 1;
+          return attempts < 3
+            ? Effect.fail(
+                new TextGenerationError({
+                  operation: "generateThreadTitle",
+                  detail: "fetch failed",
+                }),
+              )
+            : Effect.succeed({ title: "Recovered title" });
+        },
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({
+          command: "command:title:recover:create",
+          thread: "thread:title:recover",
+        });
+        yield* dispatchUserMessage({
+          command: "command:title:recover:message",
+          threadId,
+          text: "Investigate transient DNS error",
+        });
+        const requestId = yield* armRegeneration({
+          command: "command:title:recover:arm",
+          threadId,
+        });
+        const messageId = MessageId.make("command:title:recover:message:message");
+
+        const fiber = yield* Effect.forkChild(
+          service.execute({ threadId, requestId, kind: { type: "initial", messageId } }),
+        );
+        yield* TestClock.adjust("2 seconds");
+        yield* TestClock.adjust("4 seconds");
+        yield* Fiber.join(fiber);
+
+        assert.equal(harness.generateThreadTitle.mock.calls.length, 3);
+        const projection = yield* threads.getThreadProjection(threadId);
+        assert.equal(projection.thread.title, "Recovered title");
+        assert.isNotOk(projection.thread.titleRegeneration);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("does not retry usage-limit, rate-limit, 429, quota, or credit-refusal errors", () =>
+    Effect.gen(function* () {
+      const limitErrors = [
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Claude usage limit reached. Try again when usage is available.",
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail:
+            'Claude CLI command failed: API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}}',
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Codex CLI command failed: You have exceeded your current quota.",
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Credit balance is too low to access the Anthropic API.",
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Codex text generation failed.",
+          cause: {
+            code: "subscription_sharing_usage_limit_exceeded",
+            message: "User has reached their Subscription Sharing usage limit.",
+          },
+        }),
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Provider request failed.",
+          cause: makeProviderFailure({
+            class: "usage_limit",
+            message: "Quota exhausted for this period.",
+            code: "QUOTA_EXHAUSTED",
+            retryable: true,
+          }),
+        }),
+      ];
+
+      for (const [index, failure] of limitErrors.entries()) {
+        const harness = makeHarness({
+          generateTitle: () => Effect.fail(failure),
+        });
+        yield* Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+          const threadId = yield* createThread({
+            command: `command:title:limit:${index}:create`,
+            thread: `thread:title:limit:${index}`,
+          });
+          yield* dispatchUserMessage({
+            command: `command:title:limit:${index}:message`,
+            threadId,
+            text: "Summarize the outage",
+          });
+          const requestId = yield* armRegeneration({
+            command: `command:title:limit:${index}:arm`,
+            threadId,
+          });
+          const messageId = MessageId.make(`command:title:limit:${index}:message:message`);
+
+          yield* service.execute({ threadId, requestId, kind: { type: "initial", messageId } });
+
+          assert.equal(harness.generateThreadTitle.mock.calls.length, 1);
+          const projection = yield* threads.getThreadProjection(threadId);
+          assert.equal(projection.thread.title, "Seed title");
+          assert.isNotOk(projection.thread.titleRegeneration);
+        }).pipe(Effect.provide(harness.layer));
+      }
+    }),
+  );
+
+  it.effect(
+    "does not retry auth, sign-out, permission, or disabled-provider errors and completes gracefully",
+    () =>
+      Effect.gen(function* () {
+        const nonRetryableErrors = [
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: CLAUDE_SIGNED_OUT_MESSAGE,
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "Codex CLI command failed: unexpected status 401 Unauthorized",
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "Invalid API key provided.",
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "403 Forbidden: permission denied for this workspace.",
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "Provider sign-in failed.",
+            cause: new ProviderSetupError({
+              instanceId: modelSelection.instanceId,
+              operation: CHATGPT_TOKEN_REVOKED,
+              detail: CHATGPT_TOKEN_REVOKED_DETAIL,
+            }),
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "Provider disabled.",
+            cause: new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
+              projectId,
+              instanceId: modelSelection.instanceId,
+            }),
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "No provider instance registered for id 'codex'.",
+          }),
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: "Cursor is disabled in T3.CodeShip settings.",
+          }),
+        ];
+
+        for (const [index, failure] of nonRetryableErrors.entries()) {
+          const harness = makeHarness({
+            generateTitle: () => Effect.fail(failure),
+          });
+          yield* Effect.gen(function* () {
+            const threads = yield* ThreadManagement.ThreadManagementService;
+            const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+            const threadId = yield* createThread({
+              command: `command:title:nonretry:${index}:create`,
+              thread: `thread:title:nonretry:${index}`,
+            });
+            yield* dispatchUserMessage({
+              command: `command:title:nonretry:${index}:message`,
+              threadId,
+              text: "Audit authentication flow",
+            });
+            const requestId = yield* armRegeneration({
+              command: `command:title:nonretry:${index}:arm`,
+              threadId,
+            });
+            const messageId = MessageId.make(`command:title:nonretry:${index}:message:message`);
+
+            yield* service.execute({ threadId, requestId, kind: { type: "initial", messageId } });
+
+            assert.equal(harness.generateThreadTitle.mock.calls.length, 1);
+            const projection = yield* threads.getThreadProjection(threadId);
+            assert.equal(projection.thread.title, "Seed title");
+            assert.isNotOk(projection.thread.titleRegeneration);
+          }).pipe(Effect.provide(harness.layer));
+        }
+      }),
+  );
+
+  it("classifies direct disabled-provider errors as non-retryable and transient errors as retryable", () => {
+    assert.isFalse(
+      ThreadTitleRegeneration.isRetryableThreadTitleError(
+        new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
+          projectId,
+          instanceId: modelSelection.instanceId,
+        }),
+      ),
+    );
+    assert.isFalse(
+      ThreadTitleRegeneration.isRetryableThreadTitleError({ status: 429, message: "slow down" }),
+    );
+    assert.isFalse(
+      ThreadTitleRegeneration.isRetryableThreadTitleError({
+        codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } },
+      }),
+    );
+
+    const retryableDetails = [
+      "Antigravity text generation exceeded the output limit.",
+      "HTTP 503 Service Temporarily Unavailable",
+      "ChatGPT is temporarily unavailable. Try again shortly.",
+      "Provider request failed: 503 Service Unavailable",
+      "HTTP 503 Service Unavailable",
+      "Claude provider is unavailable right now (overloaded)",
+      "provider snapshot not available yet",
+      'MCP server "linear" connection failed: HTTP 403 Forbidden',
+      "fetch https://example.com/forbidden-path failed: ECONNRESET",
+      "warn: config key `rate_limit` ignored",
+      "127.0.0.1:4290",
+      "error 4290 at line 429",
+      "Connection reset while reading stream\nMCP server returned 403 Forbidden",
+      "Cursor SDK text generation failed.",
+    ];
+    for (const detail of retryableDetails) {
+      assert.isTrue(
+        ThreadTitleRegeneration.isRetryableThreadTitleError(
+          new TextGenerationError({ operation: "generateThreadTitle", detail }),
+        ),
+        `expected retryable: ${detail}`,
+      );
+    }
+
+    const transientSetupErrors = [
+      new ProviderSetupError({
+        instanceId: modelSelection.instanceId,
+        operation: "models",
+        detail: "Could not load your ChatGPT models. Check your connection and retry.",
+      }),
+      new ProviderSetupError({
+        instanceId: modelSelection.instanceId,
+        operation: "session",
+        detail: "Provider sign-in is changing. Try again after it finishes.",
+      }),
+    ];
+    for (const setupError of transientSetupErrors) {
+      assert.isTrue(
+        ThreadTitleRegeneration.isRetryableThreadTitleError(setupError),
+        `expected retryable setup error: ${setupError.detail}`,
+      );
+      assert.isTrue(
+        ThreadTitleRegeneration.isRetryableThreadTitleError(
+          new TextGenerationError({
+            operation: "generateThreadTitle",
+            detail: setupError.detail,
+            cause: setupError,
+          }),
+        ),
+        `expected retryable wrapped setup error: ${setupError.detail}`,
+      );
+    }
+
+    assert.isFalse(
+      ThreadTitleRegeneration.isRetryableThreadTitleError(
+        new ProviderSetupError({
+          instanceId: modelSelection.instanceId,
+          operation: "install",
+          detail: "Set up managed Codex before starting a session.",
+          retryable: false,
+        }),
+      ),
+    );
+
+    const nonRetryableDetails = [
+      "5-hour limit reached ∙ resets 3pm",
+      "Claude Code weekly limit reached",
+      "Your organization has disabled this model",
+      "Invalid bearer token",
+    ];
+    for (const detail of nonRetryableDetails) {
+      assert.isFalse(
+        ThreadTitleRegeneration.isRetryableThreadTitleError(
+          new TextGenerationError({ operation: "generateThreadTitle", detail }),
+        ),
+        `expected non-retryable: ${detail}`,
+      );
+    }
+  });
+
+  it("honors explicit retryable flags and inspects every reason in a combined Cause", () => {
+    assert.isFalse(
+      ThreadTitleRegeneration.isRetryableThreadTitleError(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Unexpected generic failure.",
+          retryable: false,
+        }),
+      ),
+    );
+    assert.isTrue(
+      ThreadTitleRegeneration.isRetryableThreadTitleError(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "API Error: 429 rate_limit_error",
+          retryable: true,
+        }),
+      ),
+    );
+    assert.isTrue(
+      ThreadTitleRegeneration.isRetryableThreadTitleError(
+        makeProviderFailure({
+          class: "provider_error",
+          message: "HTTP 403 Forbidden",
+          retryable: true,
+        }),
+      ),
+    );
+    assert.isFalse(
+      ThreadTitleRegeneration.isRetryableThreadTitleError(
+        makeProviderFailure({
+          class: "usage_limit",
+          message: "Quota exhausted",
+          retryable: true,
+        }),
+      ),
+    );
+
+    const combined = Cause.combine(
+      Cause.fail(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "ECONNRESET: socket hang up",
+        }),
+      ),
+      Cause.fail(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "Unexpected generic failure.",
+          retryable: false,
+        }),
+      ),
+    );
+    assert.isFalse(ThreadTitleRegeneration.isRetryableThreadTitleError(combined));
+  });
 });

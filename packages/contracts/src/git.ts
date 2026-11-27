@@ -417,6 +417,7 @@ export class TextGenerationError extends Schema.TaggedError<TextGenerationError>
   {
     operation: Schema.String,
     detail: Schema.String,
+    retryable: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

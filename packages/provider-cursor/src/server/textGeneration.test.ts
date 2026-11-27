@@ -1,5 +1,5 @@
 import type { RunResult } from "@cursor/sdk";
-import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+import { ProviderInstanceId, ProviderSetupError, TextGenerationError } from "@t3tools/contracts";
 import { CursorSettings } from "../settings.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -262,7 +262,87 @@ describe("CursorTextGeneration", () => {
       );
 
       expect(error.detail).toBe("Sign in with Cursor or add CURSOR_API_KEY in provider settings.");
+      expect(error.retryable).toBe(false);
       expect(cursorSdkMock.prompt).not.toHaveBeenCalled();
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("marks disabled Cursor settings and usage/auth SDK errors non-retryable", () =>
+    Effect.gen(function* () {
+      const disabled = yield* makeCursorTextGeneration(decodeCursorSettings({ enabled: false }), {
+        CURSOR_API_KEY: "key",
+      });
+      const disabledError = yield* Effect.flip(
+        disabled.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Title",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        }),
+      );
+      expect(disabledError.retryable).toBe(false);
+
+      const enabled = yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
+      for (const [rejection, expectedRetryable] of [
+        [Object.assign(new Error("Usage limit"), { code: "PRO_USER_USAGE_LIMIT" }), false],
+        [Object.assign(new Error("Invalid key"), { status: 401 }), false],
+        [new Error("ECONNRESET: socket hang up"), undefined],
+      ] as const) {
+        cursorSdkMock.prompt.mockRejectedValueOnce(rejection);
+        const error = yield* Effect.flip(
+          enabled.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Title",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("cursor"),
+              model: "composer-2",
+            },
+          }),
+        );
+        expect(error.retryable).toBe(expectedRetryable);
+      }
+
+      const transientAccess = yield* makeCursorTextGeneration(
+        cursorSettings,
+        { CURSOR_API_KEY: "key" },
+        undefined,
+        () =>
+          Effect.fail(
+            new ProviderSetupError({
+              instanceId: ProviderInstanceId.make("cursor"),
+              operation: "session",
+              detail: "Cursor sign-in or sign-out is in progress. Try again after it finishes.",
+            }),
+          ),
+      );
+      const transientAccessError = yield* Effect.flip(
+        transientAccess.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Title",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        }),
+      );
+      expect(transientAccessError.retryable).toBeUndefined();
+
+      const permanentKeyError = yield* makeCursorTextGeneration(
+        cursorSettings,
+        {},
+        Effect.fail(
+          new ProviderSetupError({
+            instanceId: ProviderInstanceId.make("cursor"),
+            operation: "credentials",
+            detail: "Sign in with Cursor or add CURSOR_API_KEY in provider settings.",
+            retryable: false,
+          }),
+        ),
+      );
+      const permanentError = yield* Effect.flip(
+        permanentKeyError.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Title",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        }),
+      );
+      expect(permanentError.retryable).toBe(false);
     }).pipe(Effect.provide(layerTest)),
   );
 });

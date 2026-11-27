@@ -35,6 +35,7 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
     return yield* new TextGenerationError({
       operation: input.operation,
       detail: "OpenCode model selection must use the 'provider/model' format.",
+      retryable: false,
     });
   }
   const variant = getModelSelectionStringOptionValue(input.modelSelection, "variant");

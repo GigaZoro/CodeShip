@@ -902,6 +902,45 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         }),
     ),
   );
+
+  it.effect.each([
+    ["Codex usage limit stderr", "ERROR: You've hit your usage limit. Try again at 3pm.", false],
+    [
+      "Codex 401 unauthorized stderr",
+      "ERROR: unexpected status 401 Unauthorized: invalid token",
+      false,
+    ],
+    [
+      "Codex warning line followed by usage limit error",
+      "2026-04-10T12:00:00Z WARN config option deprecated\nERROR: You've hit your usage limit.",
+      false,
+    ],
+    [
+      "MCP 403 stderr noise",
+      'MCP server "linear" connection failed: HTTP 403 Forbidden',
+      undefined,
+    ],
+    [
+      "warning mentioning rate_limit followed by transient error",
+      "warn: config key `rate_limit` ignored\nconnection reset by peer",
+      undefined,
+    ],
+    ["transient 503 stderr", "HTTP 503 Service Unavailable", undefined],
+  ] as const)("sets retryable on Codex CLI failure (%s)", ([, stderr, expectedRetryable]) =>
+    withFakeCodexEnv({ output: "", stderr, exitCode: 1 }, (textGeneration) =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Name this thread",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          }),
+        );
+
+        expect(error.retryable).toBe(expectedRetryable);
+      }),
+    ),
+  );
 });
 
 it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhausted) =>
@@ -1004,6 +1043,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
       }),
     );
     expect(refusal.operation).toBe("generateThreadTitle");
+    expect(refusal.retryable).toBe(false);
     expect(calls).toHaveLength(1);
   }),
 );

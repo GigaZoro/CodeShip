@@ -264,6 +264,7 @@ export const CodexDriver: ProviderDriver<
                   instanceId,
                   operation: "install",
                   detail: CODEX_NOT_FOUND_MESSAGE,
+                  retryable: false,
                   cause,
                 }),
             ),

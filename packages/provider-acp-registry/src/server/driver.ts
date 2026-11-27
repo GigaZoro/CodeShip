@@ -73,6 +73,7 @@ const makeUnsupportedTextGeneration = (): ProviderTextGeneration => {
       new TextGenerationError({
         operation,
         detail: "ACP Registry instances do not provide application text generation.",
+        retryable: false,
       }),
     );
   return {

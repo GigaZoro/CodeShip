@@ -1,3 +1,7 @@
+## 2026-11-27 — Thread title generation skips retries on non-retryable provider errors
+
+- Initial thread title generation no longer retries usage-limit, rate-limit, authentication, or disabled-provider errors, avoiding redundant provider spawns when a retry cannot succeed.
+
 ## 2026-11-27 — Isolated temp directories and stale temp cleanup in check:changed
 
 - `vp run check:changed` now gives each test step its own scoped `TMPDIR`/`TEMP`/`TMP` directory that is removed after the child process exits, keeps temp paths out of the test cache key, and opportunistically sweeps `check:changed` temp folders older than 24 hours.
