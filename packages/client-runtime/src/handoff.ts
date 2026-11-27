@@ -19,7 +19,8 @@ import type { ThreadStructure } from "./state/models.ts";
 export type HandoffTimelineRun = Pick<
   OrchestrationV2Run,
   "id" | "ordinal" | "providerInstanceId" | "modelSelection"
->;
+> &
+  Partial<Pick<OrchestrationV2Run, "status" | "userMessageId">>;
 
 export type HandoffEndpoints = ReturnType<typeof resolveHandoffEndpoints>;
 

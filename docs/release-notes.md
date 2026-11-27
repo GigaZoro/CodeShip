@@ -1,6 +1,6 @@
 ## 2026-11-27 — Cleaner timelines after automatic usage-limit recovery
 
-- Automatic server continuations after account failover or usage-limit recovery now render as compact timeline dividers ("Switched account & continued" or "Resumed automatically") instead of user chat bubbles, and superseded usage-limit errors and recovery banners collapse automatically once a continuation run starts or completes.
+- Automatic server continuations after account failover or usage-limit recovery now render as compact dividers ("Switched account & continued" or "Resumed automatically") instead of user chat bubbles in the web and desktop chat timeline, and superseded usage-limit errors and recovery banners collapse automatically once a continuation run starts or completes.
 
 ## 2026-11-27 — Tighter wake-up measurement bounds in wake-usage
 

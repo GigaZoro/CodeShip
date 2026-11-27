@@ -4435,6 +4435,248 @@ describe("failed turn transcript", () => {
     );
     expect(queuedWorkIds).toContain("limit-err-1");
   });
+
+  it("keeps the latest failed run's usage_limit error visible even if an older run emits a later timeline item", () => {
+    const olderRunId = RunId.make("run-older");
+    const latestFailedRunId = RunId.make("run-latest-limited");
+    const threadId = ThreadId.make("usage-limit-out-of-order-thread");
+    const at = DateTime.makeUnsafe("2026-09-20T12:00:00Z");
+    const base = (runId: RunId, ordinal: number) => ({
+      threadId,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal,
+      title: null,
+      startedAt: at,
+      completedAt: at,
+      updatedAt: at,
+    });
+
+    const items: OrchestrationV2ProjectedTurnItem[] = [
+      {
+        position: 0,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("older-user"),
+        item: {
+          ...base(olderRunId, 0),
+          id: TurnItemId.make("older-user"),
+          type: "user_message",
+          status: "completed",
+          messageId: MessageId.make("older-user"),
+          createdBy: "user",
+          creationSource: "web",
+          inputIntent: "turn_start",
+          text: "Start background subagent",
+          attachments: [],
+        },
+      },
+      {
+        position: 1,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("latest-user"),
+        item: {
+          ...base(latestFailedRunId, 0),
+          id: TurnItemId.make("latest-user"),
+          type: "user_message",
+          status: "completed",
+          messageId: MessageId.make("latest-user"),
+          createdBy: "user",
+          creationSource: "web",
+          inputIntent: "turn_start",
+          text: "Do the follow-up",
+          attachments: [],
+        },
+      },
+      {
+        position: 2,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("latest-limit-err"),
+        item: {
+          ...base(latestFailedRunId, 1),
+          id: TurnItemId.make("latest-limit-err"),
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            message: "You hit your usage limit.",
+            code: null,
+            retryable: true,
+          },
+        },
+      },
+      {
+        position: 3,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("older-late-subagent"),
+        item: {
+          ...base(olderRunId, 2),
+          id: TurnItemId.make("older-late-subagent"),
+          type: "subagent",
+          status: "completed",
+          subagentId: NodeId.make("older-subagent"),
+          origin: "app_owned",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          childThreadId: ThreadId.make("older-subagent-thread"),
+          prompt: "Check logs",
+          result: "Done",
+        },
+      },
+    ];
+
+    const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: items,
+      optimisticMessages: [],
+    });
+    const runs = [
+      { id: olderRunId, ordinal: 1, status: "completed" as const },
+      { id: latestFailedRunId, ordinal: 2, status: "failed" as const },
+    ];
+
+    const rowsWithLatestFailed = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestRun: {
+        runId: latestFailedRunId,
+        status: "failed",
+        startedAt: DateTime.formatIso(at),
+        completedAt: DateTime.formatIso(at),
+      },
+      runs,
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      rowsWithLatestFailed.flatMap((row) =>
+        row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+      ),
+    ).toContain("latest-limit-err");
+
+    // Even when latestRun is omitted, olderRunId is older by ordinal and first-seen position,
+    // so its late-arriving item must not hide latestFailedRunId's usage_limit error.
+    const rowsWithoutLatestRun = deriveMessagesTimelineRows({
+      timelineEntries,
+      runs,
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      rowsWithoutLatestRun.flatMap((row) =>
+        row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+      ),
+    ).toContain("latest-limit-err");
+  });
+
+  it("keeps a runId-less usage_limit error visible while latestRun is failed and collapses it once a newer run starts", () => {
+    const failedRunId = RunId.make("run-failed-runless-error");
+    const continuationRunId = RunId.make("run-continuation-after-runless-error");
+    const threadId = ThreadId.make("usage-limit-runless-thread");
+    const at = DateTime.makeUnsafe("2026-09-20T12:00:00Z");
+    const base = (runId: RunId | null, ordinal: number) => ({
+      threadId,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal,
+      title: null,
+      startedAt: at,
+      completedAt: at,
+      updatedAt: at,
+    });
+
+    const items: OrchestrationV2ProjectedTurnItem[] = [
+      {
+        position: 0,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("user-runless"),
+        item: {
+          ...base(failedRunId, 0),
+          id: TurnItemId.make("user-runless"),
+          type: "user_message",
+          status: "completed",
+          messageId: MessageId.make("user-runless"),
+          createdBy: "user",
+          creationSource: "web",
+          inputIntent: "turn_start",
+          text: "Ship the fix",
+          attachments: [],
+        },
+      },
+      {
+        position: 1,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("runless-limit-err"),
+        item: {
+          ...base(null, 1),
+          id: TurnItemId.make("runless-limit-err"),
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            message: "You hit your usage limit.",
+            code: null,
+            retryable: true,
+          },
+        },
+      },
+    ];
+
+    const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: items,
+      optimisticMessages: [],
+    });
+
+    const failedRows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestRun: {
+        runId: failedRunId,
+        status: "failed",
+        startedAt: DateTime.formatIso(at),
+        completedAt: DateTime.formatIso(at),
+      },
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      failedRows.flatMap((row) =>
+        row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+      ),
+    ).toContain("runless-limit-err");
+
+    const resumedRows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestRun: {
+        runId: continuationRunId,
+        status: "running",
+        startedAt: DateTime.formatIso(at),
+        completedAt: null,
+      },
+      runningRunId: continuationRunId,
+      isWorking: true,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      resumedRows.flatMap((row) =>
+        row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+      ),
+    ).not.toContain("runless-limit-err");
+  });
 });
 
 describe("live subagents after their parent turn settles", () => {

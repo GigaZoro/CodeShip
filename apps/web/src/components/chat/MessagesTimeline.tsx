@@ -631,10 +631,14 @@ const ConversationTimeline = memo(function ConversationTimeline({
     }
   }
 
+  // Run status/timestamps change per stream event; keep them out of shared row context.
+  const runs = useStableHandoffRuns(runsProp);
+
   const foldInput = {
     timelineEntries,
     latestRun,
     runningRunId,
+    runs,
     isWorking,
     runlessWorkActive,
     foldFinishedWork,
@@ -720,6 +724,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     pendingApprovalRequestIds,
     latestRun,
     runningRunId,
+    runs,
     expandedRunIds: visibleExpandedRunIds,
     expandedAttemptIds: visibleExpandedAttemptIds,
     expandedWorkGroupIds,
@@ -765,8 +770,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
     (approval) =>
       isVisiblePendingApproval(approval) && !matchedApprovalRequestIds.has(approval.requestId),
   );
-  // Run status/timestamps change per stream event; keep them out of shared row context.
-  const runs = useStableHandoffRuns(runsProp);
   const minimapItems = deriveTimelineMinimapItems(rows, starredIds);
   const minimapPrompts = minimapItems.filter((item) => item.role === "user");
   const minimapPromptRowIndices = minimapPrompts.map((item) => item.rowIndex);
@@ -1448,6 +1451,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     timelineEntries,
     latestRun,
     runningRunId,
+    runs,
     isWorking,
     runlessWorkActive,
     foldFinishedWork,

@@ -267,6 +267,7 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
       messageId: row.message.id,
       runs: ctx.runs,
       modelSwitch,
+      inputIntent: row.message.inputIntent,
     });
     const label = switchedAccount ? t("Switched account & continued") : t("Resumed automatically");
     return (

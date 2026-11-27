@@ -30,6 +30,10 @@ export function useStableHandoffRuns(
           ordinal: run.ordinal,
           providerInstanceId: run.providerInstanceId,
           modelSelection: run.modelSelection,
+          ...(run.status === "queued" || run.status === "rolled_back"
+            ? { status: run.status }
+            : {}),
+          ...(run.userMessageId !== undefined ? { userMessageId: run.userMessageId } : {}),
         }));
   setState({ source: runs, signature, value });
   return value;

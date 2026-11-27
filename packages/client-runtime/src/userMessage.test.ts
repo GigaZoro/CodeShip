@@ -280,6 +280,27 @@ describe("resolveUserMessagePresentation", () => {
         },
       },
       {
+        id: "async-answer:req-1",
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text: "Continue where you left off.",
+      },
+      {
+        id: "approval-feedback:req-2",
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text: "Continue where you left off.",
+      },
+      {
+        id: "signed-out-failover:inst-1",
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text: "Continue where you left off.",
+      },
+      {
         role: "user",
         createdBy: "agent" as const,
         creationSource: "server" as const,

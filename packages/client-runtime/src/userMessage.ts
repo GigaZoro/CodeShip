@@ -50,7 +50,14 @@ const AUTOMATIC_SERVER_CONTINUATION_PROMPTS: ReadonlySet<string> = new Set([
   "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.",
 ]);
 
+const NON_CONTINUATION_SERVER_USER_MESSAGE_PREFIXES = [
+  "async-answer:",
+  "approval-feedback:",
+  "signed-out-failover:",
+] as const;
+
 export function isAutomaticServerContinuationMessage(message: {
+  readonly id?: string | undefined;
   readonly role: string;
   readonly text: string;
   readonly createdBy?: OrchestrationV2Actor;
@@ -72,6 +79,12 @@ export function isAutomaticServerContinuationMessage(message: {
     message.context?.guest !== undefined ||
     (message.context?.records?.length ?? 0) > 0 ||
     (message.attachments?.length ?? 0) > 0
+  ) {
+    return false;
+  }
+  if (
+    message.id !== undefined &&
+    NON_CONTINUATION_SERVER_USER_MESSAGE_PREFIXES.some((prefix) => message.id!.startsWith(prefix))
   ) {
     return false;
   }
