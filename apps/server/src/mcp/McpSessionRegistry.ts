@@ -40,7 +40,10 @@ export interface McpSessionRegistryShape {
   readonly restoredCredentialForThread: (
     threadId: ThreadId,
   ) => Effect.Effect<RestoredMcpCredential>;
-  /** Deletes every credential restored at startup whose thread is not kept, from memory and SQLite. */
+  /**
+   * Restored credentials authorize nothing until this runs. It keeps the usable ones of kept
+   * threads (same endpoint, not expired) and deletes the rest, from memory and SQLite.
+   */
   readonly pruneRestored: (keepThreadIds: ReadonlySet<ThreadId>) => Effect.Effect<void>;
   readonly resolve: (
     rawToken: string,
@@ -60,6 +63,11 @@ interface CredentialRecord {
   readonly tokenHash: string;
   readonly scope: McpInvocationContext.McpThreadInvocationScope;
   readonly lastAliveAt: number;
+}
+
+interface QuarantinedCredential extends CredentialRecord {
+  /** The endpoint its process was told to call. */
+  readonly endpoint: string;
 }
 
 interface PersistedCredentialRow {
@@ -131,9 +139,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
-  const initialRecords = new Map<string, CredentialRecord>();
-  // The endpoint each restored credential's process was told to call, by token hash.
-  const restoredEndpoints = new Map<string, string>();
+  // Restored credentials authorize nothing until recovery keeps them: if startup fails before
+  // pruning, a stray process from before the restart must not still reach `/mcp`.
+  const quarantined = new Map<string, QuarantinedCredential>();
   let restoreFailed = false;
 
   if (Option.isSome(sqlOption)) {
@@ -167,8 +175,8 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       ),
     );
     for (const row of rows) {
-      restoredEndpoints.set(row.token_hash, row.endpoint);
-      initialRecords.set(row.token_hash, {
+      quarantined.set(row.token_hash, {
+        endpoint: row.endpoint,
         tokenHash: row.token_hash,
         lastAliveAt: row.last_alive_at,
         scope: {
@@ -188,7 +196,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     }
   }
 
-  const state = yield* SynchronizedRef.make<RegistryState>({ records: initialRecords });
+  const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
   const startedAtMs = yield* currentTimeMillis;
@@ -313,9 +321,17 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   );
 
   const revokeWhere = (predicate: (record: CredentialRecord) => boolean) =>
-    SynchronizedRef.update(state, ({ records }) => ({
-      records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
-    }));
+    Effect.sync(() => {
+      for (const [tokenHash, record] of quarantined) {
+        if (predicate(record)) quarantined.delete(tokenHash);
+      }
+    }).pipe(
+      Effect.andThen(
+        SynchronizedRef.update(state, ({ records }) => ({
+          records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
+        })),
+      ),
+    );
 
   const restoredCredentialForThread: McpSessionRegistryShape["restoredCredentialForThread"] =
     Effect.fn("McpSessionRegistry.restoredCredentialForThread")(function* (threadId) {
@@ -326,13 +342,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         } as const;
       }
       const now = yield* currentTimeMillis;
-      const restored = Array.from((yield* SynchronizedRef.get(state)).records.values()).filter(
-        (record) =>
-          restoredEndpoints.has(record.tokenHash) && record.scope.thread.threadId === threadId,
+      const restored = Array.from(quarantined.values()).filter(
+        (record) => record.scope.thread.threadId === threadId,
       );
       if (restored.length === 0) return { _tag: "None" } as const;
       const movedFrom = restored
-        .map((record) => restoredEndpoints.get(record.tokenHash))
+        .map((record) => record.endpoint)
         .find((previous) => previous !== endpoint);
       // The process keeps calling the URL it was given; a server on another port cannot answer it.
       if (movedFrom !== undefined) {
@@ -350,18 +365,27 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const pruneRestored: McpSessionRegistryShape["pruneRestored"] = Effect.fn(
     "McpSessionRegistry.pruneRestored",
   )(function* (keepThreadIds) {
-    const removed = yield* SynchronizedRef.modify(state, ({ records }) => {
-      const next = new Map(records);
-      const hashes: Array<string> = [];
-      for (const [tokenHash, record] of records) {
-        if (restoredEndpoints.has(tokenHash) && !keepThreadIds.has(record.scope.thread.threadId)) {
-          next.delete(tokenHash);
-          hashes.push(tokenHash);
-        }
+    const now = yield* currentTimeMillis;
+    const kept: Array<CredentialRecord> = [];
+    const removed: Array<string> = [];
+    for (const { endpoint: restoredEndpoint, ...record } of quarantined.values()) {
+      // Only a credential the kept process can still use survives: same endpoint, not expired.
+      if (
+        keepThreadIds.has(record.scope.thread.threadId) &&
+        restoredEndpoint === endpoint &&
+        now - record.lastAliveAt <= livenessWindowMs
+      ) {
+        kept.push(record);
+      } else {
+        removed.push(record.tokenHash);
       }
-      return [hashes, { records: next }] as const;
+    }
+    quarantined.clear();
+    yield* SynchronizedRef.update(state, ({ records }) => {
+      const next = new Map(records);
+      for (const record of kept) next.set(record.tokenHash, record);
+      return { records: next };
     });
-    for (const tokenHash of removed) restoredEndpoints.delete(tokenHash);
     if (Option.isNone(sqlOption)) return;
     const sql = sqlOption.value;
     // Rows that could not be read were never restored; only ones issued since startup are kept.
@@ -407,6 +431,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       }
     }),
     revokeAll: Effect.gen(function* () {
+      quarantined.clear();
       yield* SynchronizedRef.set(state, { records: new Map() });
       if (Option.isSome(sqlOption)) {
         const sql = sqlOption.value;

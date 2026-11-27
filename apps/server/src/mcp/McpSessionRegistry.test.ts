@@ -293,6 +293,9 @@ it.effect("persists only token hashes in SQLite and reloads live credentials aft
     // Simulate a server restart by constructing a brand-new registry against the same SQLite DB.
     timestamp += 50;
     const registryAfterRestart = yield* makeRegistry(() => timestamp);
+    // A restored token stays unusable until recovery confirms its process was taken over.
+    expect(yield* registryAfterRestart.resolve(token)).toBeUndefined();
+    yield* registryAfterRestart.pruneRestored(new Set([threadId]));
     const resolved = yield* registryAfterRestart.resolve(token);
     expect(resolved?.thread.threadId).toBe(threadId);
     expect(resolved?.thread.providerSessionId).toBe(issued.config.providerSessionId);
@@ -337,6 +340,8 @@ it.effect(
 
       timestamp += 10;
       const after = yield* makeRegistry(() => timestamp);
+      expect(yield* after.resolve(tokenOf(adopted))).toBeUndefined();
+      expect(yield* after.resolve(tokenOf(stale))).toBeUndefined();
       expect(yield* after.restoredCredentialForThread(adoptedThread)).toEqual({
         _tag: "Usable",
         mcpCredentialId: adopted.config.providerSessionId,
@@ -386,6 +391,32 @@ it.effect("treats unreadable saved credentials as unusable and deletes them when
     expect((yield* after.restoredCredentialForThread(threadId))._tag).toBe("Unusable");
     yield* sql`ALTER TABLE mcp_session_credentials RENAME COLUMN endpoint_old TO endpoint`;
     yield* after.pruneRestored(new Set([threadId]));
+    expect(yield* sql`SELECT token_hash FROM mcp_session_credentials`).toHaveLength(0);
+  }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
+);
+
+it.effect("prunes a kept thread's restored credential once its endpoint moved or it expired", () =>
+  Effect.gen(function* () {
+    let timestamp = 10_000;
+    const sql = yield* SqlClient.SqlClient;
+    const movedThread = ThreadId.make("thread-moved-kept");
+    const expiredThread = ThreadId.make("thread-expired-kept");
+    const tokenOf = (issued: McpSessionRegistry.McpIssuedCredential) =>
+      issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const before = yield* makeRegistry(() => timestamp);
+    const expired = yield* before.issue({
+      threadId: expiredThread,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    timestamp += 200;
+    const moved = yield* before.issue({
+      threadId: movedThread,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const after = yield* makeRegistry(() => timestamp, makeFakeHttpServer("127.0.0.1", 43124));
+    yield* after.pruneRestored(new Set([movedThread, expiredThread]));
+    expect(yield* after.resolve(tokenOf(moved))).toBeUndefined();
+    expect(yield* after.resolve(tokenOf(expired))).toBeUndefined();
     expect(yield* sql`SELECT token_hash FROM mcp_session_credentials`).toHaveLength(0);
   }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
 );
