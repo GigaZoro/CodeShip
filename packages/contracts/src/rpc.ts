@@ -632,6 +632,7 @@ export const WS_METHODS = {
   manualStepsReviewAgain: "manualSteps.reviewAgain",
   manualStepsStartChat: "manualSteps.startChat",
   serverWatchRestartHold: "server.watchRestartHold",
+  serverDrainForUpdate: "server.drainForUpdate",
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
@@ -1044,6 +1045,13 @@ const WsServerCommitDesktopUpdateRpc = Rpc.make(WS_METHODS.serverCommitDesktopUp
 });
 
 const WsServerWatchRestartHoldRpc = Rpc.make(WS_METHODS.serverWatchRestartHold, {
+  payload: Schema.Struct({}),
+  success: OrchestrationV2RestartHold,
+  stream: true,
+  error: Schema.Union([OrchestrationV2RestartHoldError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDrainForUpdateRpc = Rpc.make(WS_METHODS.serverDrainForUpdate, {
   payload: Schema.Struct({}),
   success: OrchestrationV2RestartHold,
   stream: true,
@@ -2501,6 +2509,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetStorageCleanupReportRpc,
   WsServerGetDatabaseStorageRpc,
   WsServerWatchRestartHoldRpc,
+  WsServerDrainForUpdateRpc,
   WsServerUpdateSettingsRpc,
   WsServerShareSettingsRpc,
   WsServerUpdateProjectScriptsRpc,

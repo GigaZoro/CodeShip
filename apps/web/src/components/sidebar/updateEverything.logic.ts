@@ -476,6 +476,8 @@ export function describeUpdateCapsule(
   now: number,
   /** Tasks the final install of this app waits on; null when it is not waiting. */
   localWaitingOn: number | null = null,
+  /** Running chats the final install of this app waits on while draining. */
+  localWaitingOnTurns = 0,
 ): UpdateCapsuleView {
   if (run.phase === "countdown" && run.restartAt !== null) {
     const seconds = Math.max(0, Math.ceil((run.restartAt - now) / 1000));
@@ -484,7 +486,10 @@ export function describeUpdateCapsule(
   if (run.phase === "installing") {
     return {
       tone: "default",
-      label: localWaitingOn === null ? t("Restarting…") : waitingOnWorkLabel(localWaitingOn),
+      label:
+        localWaitingOn === null
+          ? t("Restarting…")
+          : waitingOnWorkLabel(localWaitingOn, localWaitingOnTurns),
       action: null,
     };
   }

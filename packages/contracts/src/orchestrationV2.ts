@@ -755,6 +755,8 @@ export const OrchestrationV2RestartHold = Schema.Struct({
   runningTurns: Schema.optional(Schema.Array(OrchestrationV2RestartHoldTurn)),
   /** Absent from servers that predate `t3_command_run`. */
   commands: Schema.optional(Schema.Array(OrchestrationV2RestartHoldCommand)),
+  /** True while the server is draining for an update and holding new turn/wake/schedule starts. */
+  draining: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2RestartHold = typeof OrchestrationV2RestartHold.Type;
 
@@ -838,6 +840,8 @@ export const OrchestrationV2Run = Schema.Struct({
   queueHeld: Schema.optional(Schema.Boolean),
   /** Held by a restart, not a person: the thread's next completed run releases it. */
   queueHeldByRestart: Schema.optional(Schema.Boolean),
+  /** Held by an update drain, not a person: released when drain clears or right after restart. */
+  queueHeldByUpdateDrain: Schema.optional(Schema.Boolean),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),

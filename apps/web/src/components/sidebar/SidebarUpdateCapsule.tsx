@@ -11,6 +11,7 @@ import { waitingOnWorkLabel } from "../restartHold.logic";
 import {
   decideHostedRestartHold,
   usePendingLocalInstall,
+  usePendingLocalInstallTurns,
   usePendingLocalInstallWork,
 } from "./localInstallWait";
 import { Button } from "../ui/button";
@@ -58,6 +59,7 @@ function localStatusLabel(
   local: UpdateRunLocalState,
   now: number,
   waitingOn: number | null,
+  waitingOnTurns = 0,
 ) {
   if (run.phase === "countdown" && run.restartAt !== null) {
     return t("restarts in {seconds}s", {
@@ -65,7 +67,7 @@ function localStatusLabel(
     });
   }
   if (run.phase === "installing") {
-    return waitingOn === null ? t("restarting") : waitingOnWorkLabel(waitingOn);
+    return waitingOn === null ? t("restarting") : waitingOnWorkLabel(waitingOn, waitingOnTurns);
   }
   if (local?.status === "downloading") {
     return local.percent === null
@@ -89,12 +91,21 @@ export function SidebarUpdateCapsule({
   const machines = useUpdateRunMachineViews(run);
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
+  const pendingTurns = usePendingLocalInstallTurns();
   const localWaitingOn = pendingInstall === null ? null : pendingWork.length;
+  const localWaitingOnTurns = pendingInstall === null ? 0 : pendingTurns.length;
   const hasActiveMachine = machines.some(
     ({ status }) => status !== "done" && status !== "failed" && status !== "waiting",
   );
   const now = useNow(run.phase === "countdown" ? 1_000 : hasActiveMachine ? 30_000 : null);
-  const view = describeUpdateCapsule(run, machines, local, now, localWaitingOn);
+  const view = describeUpdateCapsule(
+    run,
+    machines,
+    local,
+    now,
+    localWaitingOn,
+    localWaitingOnTurns,
+  );
   const updateServer = useServerUpdate();
   const failed = machines.some(({ status }) => status === "failed");
   const settled = !hasActiveMachine && run.localVersion === null;
@@ -163,7 +174,7 @@ export function SidebarUpdateCapsule({
             <div className="flex items-center justify-between gap-3">
               <span>{t("This app")}</span>
               <span className="text-muted-foreground tabular-nums">
-                {localStatusLabel(run, local, now, localWaitingOn)}
+                {localStatusLabel(run, local, now, localWaitingOn, localWaitingOnTurns)}
               </span>
             </div>
           ) : onRestart ? (

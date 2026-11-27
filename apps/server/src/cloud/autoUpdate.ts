@@ -255,6 +255,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
   // A desktop app installs its feed's newest release, so it gets the least it may install.
   const installerVersion = (target: AutomaticUpdateTarget) =>
     config.mode === "desktop" ? target.due : target.newest;
+  const canPrestage = launcher.managed && config.mode !== "desktop";
 
   /** The record of an earlier attempt from the running version, if there is one. */
   const lastAttempt = fs.readFileString(recordPath).pipe(
@@ -415,11 +416,15 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       const outcome = yield* handOff(schedule, false);
       if (outcome !== "chats") return outcome;
     }
+    const preStaged = canPrestage ? yield* prestage(installerVersion(target), schedule) : undefined;
+    if (canPrestage && preStaged === undefined) return;
     yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
       targetVersion: installerVersion(target),
     });
     return yield* machineHold
-      .whileDraining(drainThenInstall(installerVersion(target), schedule, waitFor, idleBefore))
+      .whileDraining(
+        drainThenInstall(installerVersion(target), schedule, waitFor, idleBefore, preStaged),
+      )
       .pipe(Effect.catch((error) => recordFailure(installerVersion(target), error.message)));
   });
 
@@ -429,13 +434,14 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     schedule: UpdateSchedule,
     waitFor: (wait: typeof waitUntilIdle) => Effect.Effect<boolean>,
     idleBefore: (deadline: number) => Effect.Effect<boolean | "busy">,
+    preStaged?: ServerSelfUpdate.PreparedServerSelfUpdate,
   ) {
     const drainEnds = (yield* Clock.currentTimeMillis) + Duration.toMillis(AUTO_UPDATE_DRAIN_LIMIT);
     while (true) {
       const drained = yield* idleBefore(drainEnds);
       if (drained === false) return;
       if (drained === "busy") break;
-      const outcome = yield* handOff(schedule, false);
+      const outcome = yield* handOff(schedule, false, preStaged);
       if (outcome !== "chats") return outcome;
     }
     const hold = yield* machineHold.restartHold;
@@ -454,16 +460,39 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       }),
     );
     if (!listedWorkEnded) return;
-    return yield* handOff(schedule, true);
+    return yield* handOff(schedule, true, preStaged);
   });
 
   /**
    * `"handed-off"` once the installer has the release, and `"chats"` when a chat that started
    * while the release was prepared put the handoff off.
    */
+  /** Downloads, verifies, and preflights a boot-service release outside the drain barrier. */
+  const prestage = Effect.fn("cloud.auto_update.prestage")(function* (
+    version: string,
+    schedule: UpdateSchedule,
+  ) {
+    yield* Ref.set(schedule.attempted, version);
+    return yield* Effect.raceFirst(
+      selfUpdate
+        .prepare({ targetVersion: version })
+        .pipe(
+          Effect.catch((error) =>
+            recordFailure(version, error.reason).pipe(
+              Effect.as(undefined as ServerSelfUpdate.PreparedServerSelfUpdate | undefined),
+            ),
+          ),
+        ),
+      schedule.changed.pipe(
+        Effect.as(undefined as ServerSelfUpdate.PreparedServerSelfUpdate | undefined),
+      ),
+    );
+  });
+
   const handOff = Effect.fn("cloud.auto_update.hand_off")(function* (
     schedule: UpdateSchedule,
     afterPatience: boolean,
+    preStaged?: ServerSelfUpdate.PreparedServerSelfUpdate,
   ) {
     const target = yield* findTarget(schedule);
     if (target === undefined) return;
@@ -490,68 +519,77 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
               ),
         ),
       );
+    // Reuse a runtime pre-staged outside the drain barrier, or pre-stage now when not draining.
+    const prepared = canPrestage
+      ? preStaged !== undefined && preStaged.targetVersion === version
+        ? preStaged
+        : yield* prestage(version, schedule)
+      : undefined;
+    if (canPrestage && prepared === undefined) return;
     // Once the final check allows a handoff, keep the drain until the installer settles.
     const cancelPreparation = Effect.raceFirst(
       schedule.changed.pipe(Effect.as(true)),
       Deferred.await(handingOff).pipe(Effect.as(false)),
     ).pipe(Effect.flatMap((changed) => (changed ? Effect.void : Effect.never)));
-    const prepare = selfUpdate
-      .update({ targetVersion: version }, undefined, undefined, beforeHandoff)
-      .pipe(
-        Effect.flatMap((result) =>
-          Effect.logInfo("Automatic update handed to its installer.", {
-            targetVersion: result.targetVersion,
-            method: result.method,
-            updateId: result.updateId,
-          }).pipe(
-            // The installer stops this server shortly; until then no scheduled start may begin. The
-            // installer has the release either way, so a hold that cannot start is no failed
-            // install, and the server still says so when it outlives the handoff.
-            Effect.andThen(
-              Effect.gen(function* () {
-                const stopWatch = Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
-                  Effect.andThen(
-                    Effect.logWarning("Automatic update handoff did not stop this server.", {
-                      targetVersion: result.targetVersion,
-                    }),
+    const prepare = (
+      prepared !== undefined
+        ? selfUpdate.activatePrepared(prepared, undefined, undefined, beforeHandoff)
+        : selfUpdate.update({ targetVersion: version }, undefined, undefined, beforeHandoff)
+    ).pipe(
+      Effect.flatMap((result) =>
+        Effect.logInfo("Automatic update handed to its installer.", {
+          targetVersion: result.targetVersion,
+          method: result.method,
+          updateId: result.updateId,
+        }).pipe(
+          // The installer stops this server shortly; until then no scheduled start may begin. The
+          // installer has the release either way, so a hold that cannot start is no failed
+          // install, and the server still says so when it outlives the handoff.
+          Effect.andThen(
+            Effect.gen(function* () {
+              const stopWatch = Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
+                Effect.andThen(
+                  Effect.logWarning("Automatic update handoff did not stop this server.", {
+                    targetVersion: result.targetVersion,
+                  }),
+                ),
+              );
+              yield* machineHold
+                .drainInBackground(stopWatch)
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning(
+                      "Automatic update could not hold scheduled starts after its handoff.",
+                      { targetVersion: result.targetVersion, reason: error.message },
+                    ).pipe(Effect.andThen(Effect.forkDetach(stopWatch))),
                   ),
                 );
-                yield* machineHold
-                  .drainInBackground(stopWatch)
-                  .pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning(
-                        "Automatic update could not hold scheduled starts after its handoff.",
-                        { targetVersion: result.targetVersion, reason: error.message },
-                      ).pipe(Effect.andThen(Effect.forkDetach(stopWatch))),
-                    ),
-                  );
-              }),
-            ),
-            Effect.as("handed-off" as const),
+            }),
           ),
+          Effect.as("handed-off" as const),
         ),
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            const holdOff = yield* Ref.get(heldOff);
-            if (holdOff !== undefined) {
-              return yield* Effect.logInfo(
-                holdOff.chats
-                  ? "Automatic update waits for chats again."
-                  : "Automatic update put off until the next check.",
-                { targetVersion: version, reason: holdOff.reason },
-              );
-            }
-            if (yield* Ref.get(counted)) {
-              return yield* Effect.logWarning("Automatic update failed at the handoff.", {
-                targetVersion: version,
-                reason: error.reason,
-              });
-            }
-            return yield* recordFailure(version, error.reason);
-          }),
-        ),
-      );
+      ),
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          const holdOff = yield* Ref.get(heldOff);
+          if (holdOff !== undefined) {
+            return yield* Effect.logInfo(
+              holdOff.chats
+                ? "Automatic update waits for chats again."
+                : "Automatic update put off until the next check.",
+              { targetVersion: version, reason: holdOff.reason },
+            );
+          }
+          if (yield* Ref.get(counted)) {
+            return yield* Effect.logWarning("Automatic update failed at the handoff.", {
+              targetVersion: version,
+              reason: error.reason,
+            });
+          }
+          return yield* recordFailure(version, error.reason);
+        }),
+      ),
+    );
     // Held while the release is prepared, so no scheduled start begins under the handoff.
     const outcome = yield* Effect.raceFirst(
       machineHold.whileDraining(prepare),

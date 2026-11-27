@@ -1,3 +1,9 @@
+## 2026-11-27 — Update drain barrier, pre-staging, and clean turn-boundary updates
+
+- Automatic updates now download and preflight the new CodeShip release while chats continue running, then enter a drain barrier before activating so no new turns, scheduled runs, or idle wakes start during handoff.
+- Manual updates from the sidebar, Settings, and the outdated-host banner now drain active work and answering turns cleanly at a turn boundary before restarting, holding new starts until the restart finishes or the user cancels.
+- New turns, background completions, and asynchronous delegations that arrive during a drain stay queued and start automatically if the drain is canceled or right after the restarted server boots, while approvals and `wait` delegations on active turns continue uninterrupted.
+
 ## 2026-11-27 — Antigravity no longer drops a workflow skill into your project
 
 - On Antigravity 1.5.2, a session or delegate no longer writes `skills/system/run-workflow/SKILL.md` into the project folder, where it could be committed with your work. T3.CodeShip keeps Antigravity's `run_workflow` tool off on every runtime from 1.4.2 on; delete a copy an earlier session left behind.

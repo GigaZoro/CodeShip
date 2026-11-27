@@ -114,6 +114,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
+import { isDrainingRef, UpdateDrain, watchDrainingRef } from "../cloud/updateDrain.ts";
 import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -1106,9 +1107,9 @@ function threadMovedOnFrom(run: OrchestrationV2Run, runs: ReadonlyArray<Orchestr
   );
 }
 
-/** Lifting a hold, or a person placing one, ends a restart's claim on it. */
+/** Lifting a hold, or a person placing one, ends a restart's or drain's claim on it. */
 function withQueueHold(run: OrchestrationV2Run, queueHeld: boolean): OrchestrationV2Run {
-  const { queueHeldByRestart: _byRestart, ...rest } = run;
+  const { queueHeldByRestart: _byRestart, queueHeldByUpdateDrain: _byDrain, ...rest } = run;
   return { ...rest, queueHeld };
 }
 
@@ -1437,6 +1438,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const updateDrain = yield* UpdateDrain;
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
   const { managedPolicy } = serverSettings;
   const runtimeModeCeiling: RuntimeModeCeiling | undefined =
@@ -1776,6 +1778,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (providerThread === undefined) {
         return;
       }
+      // Hold fresh turns on idle threads while draining; the open delivery stays durable in SQLite
+      // and is re-offered automatically when drain clears or on post-restart startup.
+      if ((yield* isDrainingRef(updateDrain)) && !projection.runs.some(isActiveRun)) {
+        return;
+      }
       yield* continuationRequests.offer({
         threadId,
         providerThreadId: providerThread.id,
@@ -2008,6 +2015,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
       if (storedQueuedRun === undefined) {
         return;
+      }
+      if (yield* isDrainingRef(updateDrain)) {
+        const storedMessage = projection.messages.find(
+          (candidate) => candidate.id === storedQueuedRun.userMessageId,
+        );
+        if (storedMessage === undefined || !isBufferedProviderNotification(storedMessage)) {
+          if (
+            storedQueuedRun.queueHeld !== true &&
+            storedQueuedRun.queueHeldByUpdateDrain !== true
+          ) {
+            const now = yield* DateTime.now;
+            yield* writeSystemEvents([
+              {
+                type: "run.updated",
+                threadId,
+                runId: storedQueuedRun.id,
+                providerInstanceId: storedQueuedRun.providerInstanceId,
+                occurredAt: now,
+                payload: { ...storedQueuedRun, queueHeldByUpdateDrain: true },
+              },
+            ]);
+          }
+          return;
+        }
       }
       const withQueuedModel = (run: OrchestrationV2Run) => {
         const modelSelection = queuedRunModelSelection(projection, run);
@@ -2422,30 +2453,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               )
           : null;
       const activeHandoff = handoff ?? legacyImportRecoveryHandoff;
-      const checkpointScope =
-        storedCheckpointScope ??
-        (yield* runtimePolicy
-          .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
-          .pipe(
-            Effect.flatMap((resolvedRuntimePolicy) =>
-              checkpointService.prepareRootRunScope({
-                threadId,
-                runId: queuedRun.id,
-                rootNodeId: rootNode.id,
-                providerThreadId: queuedProviderThread.id,
-                cwd: resolvedRuntimePolicy.cwd ?? projection.thread.worktreePath ?? process.cwd(),
-                createdAt: now,
-              }),
-            ),
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorDispatchError({
-                  commandId,
-                  commandType: "message.dispatch",
-                  cause,
+      const needsWorkspacePreparation = queuedRun.workspacePreparation !== undefined;
+      const checkpointScope = needsWorkspacePreparation
+        ? null
+        : (storedCheckpointScope ??
+          (yield* runtimePolicy
+            .resolve({ thread: projection.thread, modelSelection: queuedRun.modelSelection })
+            .pipe(
+              Effect.flatMap((resolvedRuntimePolicy) =>
+                checkpointService.prepareRootRunScope({
+                  threadId,
+                  runId: queuedRun.id,
+                  rootNodeId: rootNode.id,
+                  providerThreadId: queuedProviderThread.id,
+                  cwd: resolvedRuntimePolicy.cwd ?? projection.thread.worktreePath ?? process.cwd(),
+                  createdAt: now,
                 }),
-            ),
-          ));
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId,
+                    commandType: "message.dispatch",
+                    cause,
+                  }),
+              ),
+            )));
       const providerSessionId =
         (!canResumeAcrossInstances &&
         queuedProviderThread.providerSessionId !== null &&
@@ -2482,11 +2515,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
         updatedAt: now,
       };
+      const { queueHeldByUpdateDrain: _byDrain, ...queuedRunBase } = queuedRun;
       const startingRun: OrchestrationV2Run = {
-        ...queuedRun,
+        ...queuedRunBase,
         providerThreadId: queuedProviderThread.id,
         ordinal,
-        status: "starting",
+        status: needsWorkspacePreparation ? "preparing" : "starting",
         queuePosition: null,
         startedAt: null,
         contextHandoffId: activeHandoff?.id ?? null,
@@ -2575,20 +2609,47 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               strategy: activeHandoff.strategy,
               summary: activeHandoff.summaryText,
             };
+      const preparationTurnItem: OrchestrationV2TurnItem | null = needsWorkspacePreparation
+        ? {
+            id: idAllocator.derive.turnItemFromProviderItem({
+              driver: targetAdapter.driver,
+              nativeItemId: `workspace-preparation:${queuedRun.id}`,
+            }),
+            threadId,
+            runId: queuedRun.id,
+            nodeId: rootNodeId,
+            providerThreadId: queuedProviderThread.id,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: userTurnItem.ordinal + 1,
+            status: "running",
+            title: WORKSPACE_PREPARATION_INPUT,
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+            type: "command_execution",
+            input: WORKSPACE_PREPARATION_INPUT,
+          }
+        : null;
       const executionIdentityEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> =
-        storedCheckpointScope === undefined ||
+        (checkpointScope !== null && storedCheckpointScope === undefined) ||
         storedProviderThread.id !== queuedProviderThread.id ||
         attempt.providerInstanceId !== queuedRun.providerInstanceId
           ? [
-              {
-                type: "checkpoint-scope.created",
-                threadId,
-                runId: queuedRun.id,
-                nodeId: rootNodeId,
-                providerInstanceId: queuedRun.providerInstanceId,
-                occurredAt: now,
-                payload: { ...checkpointScope, providerThreadId: queuedProviderThread.id },
-              },
+              ...(checkpointScope === null
+                ? []
+                : [
+                    {
+                      type: "checkpoint-scope.created" as const,
+                      threadId,
+                      runId: queuedRun.id,
+                      nodeId: rootNodeId,
+                      providerInstanceId: queuedRun.providerInstanceId,
+                      occurredAt: now,
+                      payload: { ...checkpointScope, providerThreadId: queuedProviderThread.id },
+                    },
+                  ]),
               {
                 type: "node.updated",
                 threadId,
@@ -2599,7 +2660,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 payload: {
                   ...rootNode,
                   providerThreadId: queuedProviderThread.id,
-                  checkpointScopeId: checkpointScope.id,
+                  checkpointScopeId: checkpointScope?.id ?? rootNode.checkpointScopeId,
                 },
               },
               {
@@ -2747,6 +2808,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               yield* notificationTasks(threadId, queuedMessage, projection.subagents),
             ),
           },
+          ...(preparationTurnItem === null
+            ? []
+            : [
+                {
+                  type: "turn-item.updated" as const,
+                  threadId,
+                  runId: queuedRun.id,
+                  nodeId: rootNodeId,
+                  providerInstanceId: queuedRun.providerInstanceId,
+                  occurredAt: now,
+                  payload: preparationTurnItem,
+                },
+              ]),
           {
             type: "run.updated",
             threadId,
@@ -2768,12 +2842,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               detail: "Provider or model selection changed.",
             },
           })),
-          {
-            id: `effect:${commandId}:provider-turn.start:${queuedRun.id}`,
-            commandId,
-            threadId,
-            request: { type: "provider-turn.start", runId: queuedRun.id },
-          },
+          needsWorkspacePreparation
+            ? {
+                id: `effect:${commandId}:workspace.prepare:${queuedRun.id}`,
+                commandId,
+                threadId,
+                request: { type: "workspace.prepare" as const, runId: queuedRun.id },
+              }
+            : {
+                id: `effect:${commandId}:provider-turn.start:${queuedRun.id}`,
+                commandId,
+                threadId,
+                request: { type: "provider-turn.start" as const, runId: queuedRun.id },
+              },
         ],
       );
     },
@@ -6256,6 +6337,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    options?: { readonly bypassUpdateDrain?: boolean },
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     const automaticSourceRunId =
@@ -6896,7 +6978,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode.type === "defer_start" ||
       dispatchMode.type === "start_immediately" ||
       dispatchMode.type === "queue_after_active";
-    const shouldQueue = queueBehindRun !== undefined && startsOrQueuesRun;
+    const bufferedProviderWake =
+      command.createdBy === "agent" && command.creationSource === "provider";
+    const updateDraining =
+      !options?.bypassUpdateDrain && !bufferedProviderWake && (yield* isDrainingRef(updateDrain));
+    const queueForUpdateDrain =
+      updateDraining &&
+      queueBehindRun === undefined &&
+      startsOrQueuesRun &&
+      pendingMergeBackTransfers.length === 0;
+    const shouldQueue = (queueBehindRun !== undefined && startsOrQueuesRun) || queueForUpdateDrain;
     // Client messages resume held queues; server continuations and scheduled tasks do not.
     // Provider failure or usage limits re-hold the queue.
     const worktreeSetupUnresolved = worktreeSetupPending(projection);
@@ -6915,7 +7006,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: held.id,
         providerInstanceId: held.providerInstanceId,
         occurredAt: releasedAt,
-        payload: withQueueHold(held, false),
+        payload: updateDraining
+          ? { ...withQueueHold(held, false), queueHeldByUpdateDrain: true }
+          : withQueueHold(held, false),
       });
     }
     if (shouldQueue) {
@@ -6928,10 +7021,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       const queueProviderThread =
         activeProviderThread ??
-        projection.providerThreads.find(
-          (candidate) => candidate.id === queueBehindRun.providerThreadId,
-        );
-      if (queueProviderThread === undefined) {
+        (queueBehindRun === undefined
+          ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+          : projection.providerThreads.find(
+              (candidate) => candidate.id === queueBehindRun.providerThreadId,
+            ));
+      if (queueBehindRun !== undefined && queueProviderThread === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -6942,6 +7037,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const ordinal = nextRunOrdinal(projection);
       const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
       const targetProviderThread =
+        queueProviderThread !== undefined &&
         modelSelection.instanceId === queueProviderThread.providerInstanceId
           ? queueProviderThread
           : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0];
@@ -6988,8 +7084,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
       const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
       const rootNodeId = idAllocator.derive.rootNode({ runId });
+      const deferWorkspace = dispatchMode.type === "defer_start";
       const checkpointScope =
-        queueBehindRun.status === "preparing" || worktreeMissingRun !== undefined
+        queueBehindRun?.status === "preparing" || worktreeMissingRun !== undefined || deferWorkspace
           ? null
           : yield* runtimePolicy.resolve({ thread: projection.thread, modelSelection }).pipe(
               Effect.flatMap((resolvedRuntimePolicy) =>
@@ -7045,7 +7142,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         stoppedSteerRun !== undefined ||
         (heldRunsToRelease.length === 0 && queueIsHeld && !wakeSkipsHold)
           ? { queueHeld: true }
-          : {}),
+          : updateDraining
+            ? { queueHeldByUpdateDrain: true }
+            : {}),
         queuePosition:
           goalStopRunId !== undefined || redispatchedSteer
             ? 1
@@ -7067,6 +7166,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.restartContinuationOfRunId === undefined
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+        ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
+          ? { workspacePreparation: dispatchMode.workspaceStrategy }
+          : {}),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...readOnlyGuestRun,
       };
@@ -8883,7 +8985,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? { type: "start_immediately" }
             : { type: "defer_start", workspaceStrategy: command.workspaceStrategy },
       } satisfies Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>;
-      yield* dispatchMessage(childMessageCommand, events, effects);
+      // `mode: "wait"` children (`completionWake: "settled_only"`) block an already-running parent
+      // turn, so they must run even while draining. `mode: "async"` children queue until drain clears.
+      yield* dispatchMessage(childMessageCommand, events, effects, {
+        bypassUpdateDrain: command.completionWake !== "always",
+      });
 
       const childProjection = yield* getProjectionWithPendingEvents(childThreadId, events);
       const childRun = childProjection.runs[0];
@@ -16057,6 +16163,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
   });
+
+  yield* watchDrainingRef(updateDrain).pipe(
+    Stream.zipWithPrevious,
+    Stream.filter(([previous, current]) => Option.isSome(previous) && previous.value && !current),
+    Stream.runForEach(() =>
+      recoverDelegatedTasks.pipe(
+        Effect.andThen(resumeQueuedRuns),
+        Effect.asVoid,
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to release work held by update drain", { cause }),
+        ),
+      ),
+    ),
+    Effect.forkScoped,
+  );
 
   const delegatedTaskResultPending = Effect.fn("Orchestrator.delegatedTaskResultPending")(
     function* (childThreadId: ThreadId, taskId?: NodeId) {

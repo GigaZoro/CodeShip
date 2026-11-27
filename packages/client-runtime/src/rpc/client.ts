@@ -82,6 +82,7 @@ export type EnvironmentStreamCommandRpcTag =
   | typeof WS_METHODS.providerMcpSignIn
   | typeof WS_METHODS.cloudInstallRelayClient
   | typeof WS_METHODS.serverUpdateServerWithProgress
+  | typeof WS_METHODS.serverDrainForUpdate
   | typeof WS_METHODS.gitRunStackedAction;
 
 export type EnvironmentStreamRpcTag =

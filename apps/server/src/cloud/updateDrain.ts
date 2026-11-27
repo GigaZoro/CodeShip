@@ -1,9 +1,15 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
-interface DrainState {
+/**
+ * Shared drain state for automatic and manual updates. `holders` counts active drains so
+ * overlapping waits stay draining until all finish; `admitting` counts starts mid-dispatch so
+ * drains wait until any admitted start has registered.
+ */
+export interface DrainState {
   readonly holders: number;
   readonly admitting: number;
 }
@@ -13,10 +19,15 @@ export class UpdateDrain extends Context.Reference<SubscriptionRef.SubscriptionR
   { defaultValue: () => Effect.runSync(SubscriptionRef.make({ holders: 0, admitting: 0 })) },
 ) {}
 
+export const layer = Layer.effect(
+  UpdateDrain,
+  SubscriptionRef.make<DrainState>({ holders: 0, admitting: 0 }),
+);
+
 const take = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
   SubscriptionRef.update(drain, (state) => ({ ...state, holders: state.holders + 1 }));
 const give = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
-  SubscriptionRef.update(drain, (state) => ({ ...state, holders: state.holders - 1 }));
+  SubscriptionRef.update(drain, (state) => ({ ...state, holders: Math.max(0, state.holders - 1) }));
 
 const awaitAdmissions = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
   SubscriptionRef.changes(drain).pipe(
@@ -40,7 +51,7 @@ export const tryAdmitStart = Effect.gen(function* () {
   );
 });
 
-/** Holds scheduled starts for the life of `effect`, however it ends. */
+/** Holds new turns, idle wakes, and scheduled starts for the life of `effect`, however it ends. */
 export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(function* <A, E, R>(
   effect: Effect.Effect<A, E, R>,
 ) {
@@ -52,13 +63,28 @@ export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(func
   );
 });
 
-/** Holds scheduled starts until the scope closes. */
+/** Holds new turns, idle wakes, and scheduled starts until the scope closes. */
 export const drainUntilClosed = Effect.gen(function* () {
   const drain = yield* UpdateDrain;
   yield* Effect.acquireRelease(take(drain), () => give(drain));
   yield* awaitAdmissions(drain);
 });
 
+export const isDrainingRef = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
+  SubscriptionRef.get(drain).pipe(Effect.map((state) => state.holders > 0));
+
 export const isDraining = Effect.fn("cloud.update_drain.is_draining")(function* () {
-  return (yield* SubscriptionRef.get(yield* UpdateDrain)).holders > 0;
+  return yield* isDrainingRef(yield* UpdateDrain);
 });
+
+export const watchDrainingRef = (
+  drain: SubscriptionRef.SubscriptionRef<DrainState>,
+): Stream.Stream<boolean> =>
+  SubscriptionRef.changes(drain).pipe(
+    Stream.map((state) => state.holders > 0),
+    Stream.changes,
+  );
+
+export const watchDraining: Stream.Stream<boolean> = Stream.unwrap(
+  Effect.map(UpdateDrain, watchDrainingRef),
+);
