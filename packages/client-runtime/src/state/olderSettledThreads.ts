@@ -9,6 +9,7 @@ import {
   type OrchestrationV2OlderSettledFolderCount,
   type OrchestrationV2OlderSettledThreads,
   type OrchestrationV2OlderSettledThreadsPage,
+  type OrchestrationV2OmittedSidebarDelegate,
   type OrchestrationV2SearchThreadsInput,
   type OrchestrationV2ThreadFamily,
   type OrchestrationV2ThreadShell,
@@ -268,13 +269,15 @@ export function settledShelfListPredicate(frontier: OrchestrationV2OlderSettledC
 }
 
 /** Raw rows held before the cut, including those a shelf hides. */
-function heldOlderSettledCounts(held: ReadonlyArray<OlderSettledRow>, beforeMs: number) {
+/** Older settled threads the client accounts for: rows it holds, and others that nest elsewhere. */
+function heldOlderSettledCounts(
+  held: ReadonlyArray<OlderSettledRow>,
+  beforeMs: number,
+  nested: ReadonlyArray<OrchestrationV2OmittedSidebarDelegate> = [],
+) {
   const counts = new Map<ProjectId, number>();
   const folders = new Map<string | null, Map<ProjectId, number>>();
-  for (const thread of held) {
-    if (!isOlderSettledThreadShell(thread, beforeMs)) continue;
-    const { projectId } = thread;
-    const folder = threadFolderKeyOf(thread.folder);
+  const add = (projectId: ProjectId, folder: string | null) => {
     let filed = folders.get(folder);
     if (filed === undefined) {
       filed = new Map();
@@ -282,6 +285,14 @@ function heldOlderSettledCounts(held: ReadonlyArray<OlderSettledRow>, beforeMs: 
     }
     counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
     filed.set(projectId, (filed.get(projectId) ?? 0) + 1);
+  };
+  for (const thread of held) {
+    if (isOlderSettledThreadShell(thread, beforeMs))
+      add(thread.projectId, threadFolderKeyOf(thread.folder));
+  }
+  for (const delegate of nested) {
+    if (DateTime.toEpochMillis(delegate.settledAt) < beforeMs)
+      add(delegate.projectId, threadFolderKeyOf(delegate.folder));
   }
   return { counts, folders };
 }
@@ -516,6 +527,10 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
   ) => Atom.Atom<AsyncResult.AsyncResult<EnvironmentShellState, E>>,
   /** Every row the client holds for an environment, the ones a tag filter hides included. */
   heldThreadsAtom: (environmentId: EnvironmentId) => Atom.Atom<ReadonlyArray<OlderSettledRow>>,
+  /** Older settled chats the client does not hold that its lists show under a parent. */
+  nestedOmittedAtom: (
+    environmentId: EnvironmentId,
+  ) => Atom.Atom<ReadonlyArray<OrchestrationV2OmittedSidebarDelegate>>,
 ) {
   const shellStateValue = (state: AsyncResult.AsyncResult<EnvironmentShellState, E>) =>
     AsyncResult.getOrElse(state, () => null);
@@ -686,6 +701,7 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     const beforeMsAtom = Atom.map(olderSettledAtom(environmentId), (older) => older?.beforeMs);
     let previous: {
       readonly held: ReadonlyArray<OlderSettledRow>;
+      readonly nested: ReadonlyArray<OrchestrationV2OmittedSidebarDelegate>;
       readonly beforeMs: number;
       readonly counts: ReturnType<typeof heldOlderSettledCounts>;
     } | null = null;
@@ -693,12 +709,14 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
       const beforeMs = get(beforeMsAtom);
       if (beforeMs === undefined) return null;
       const held = get(heldThreadsAtom(environmentId));
+      const nested = get(nestedOmittedAtom(environmentId));
       previous =
         previous !== null &&
         previous.beforeMs === beforeMs &&
+        previous.nested === nested &&
         sameOlderSettledMembership(previous.held, held, beforeMs)
           ? { ...previous, held }
-          : { held, beforeMs, counts: heldOlderSettledCounts(held, beforeMs) };
+          : { held, nested, beforeMs, counts: heldOlderSettledCounts(held, beforeMs, nested) };
       return previous.counts;
     }).pipe(Atom.withLabel(`environment-held-older-settled-counts:${environmentId}`));
   });

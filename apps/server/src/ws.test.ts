@@ -553,7 +553,11 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
     ]);
     assert.deepEqual(withoutOld?.omittedSidebarChildren, {
       idle: "parent",
-      delegated: { environmentId: "origin", threadId: "remote-parent" },
+      delegated: {
+        delegatedFrom: { environmentId: "origin", threadId: "remote-parent" },
+        projectId: "project",
+        settledAt: DateTime.makeUnsafe(-30 * 86_400_000),
+      },
     });
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );

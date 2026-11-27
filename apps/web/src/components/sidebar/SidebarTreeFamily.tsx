@@ -28,7 +28,9 @@ const omittedChildren = Atom.make((get) => {
     const hidesTags = get(serverEnvironment.hiddenThreadTagsAtom(environmentId)) !== null;
     for (const [id, parent] of Object.entries(omitted)) {
       const delegated = typeof parent !== "string";
-      const key = scopedThreadKey(delegated ? parent : scopeThreadRef(environmentId, parent));
+      const key = scopedThreadKey(
+        delegated ? parent.delegatedFrom : scopeThreadRef(environmentId, parent),
+      );
       const hint = {
         child: scopeThreadRef(environmentId, ThreadId.make(id)),
         delegated,

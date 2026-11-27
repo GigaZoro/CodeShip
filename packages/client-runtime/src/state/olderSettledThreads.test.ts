@@ -6,6 +6,7 @@ import {
   ThreadId,
   type OrchestrationV2OlderSettledFolderCount,
   type OrchestrationV2OlderSettledThreadsPage,
+  type OrchestrationV2OmittedSidebarDelegate,
   type OrchestrationV2SearchThreadsResult,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadShell,
@@ -459,6 +460,7 @@ const makeAtoms = Effect.fn(function* () {
     AsyncResult.success(EMPTY_SHELL_STATE),
   );
   const held = Atom.make<ReadonlyArray<OrchestrationV2ThreadShell>>([]);
+  const nested = Atom.make<ReadonlyArray<OrchestrationV2OmittedSidebarDelegate>>([]);
   const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
     Effect.sync(() => registry.dispose()),
   );
@@ -470,11 +472,14 @@ const makeAtoms = Effect.fn(function* () {
       runtime,
       () => shellState,
       () => held,
+      () => nested,
     ),
     registry,
     setShell: (state: Partial<EnvironmentShellState>) =>
       registry.set(shellState, AsyncResult.success({ ...EMPTY_SHELL_STATE, ...state })),
     setHeld: (threads: ReadonlyArray<OrchestrationV2ThreadShell>) => registry.set(held, threads),
+    setNested: (delegates: ReadonlyArray<OrchestrationV2OmittedSidebarDelegate>) =>
+      registry.set(nested, delegates),
     // The first value that passes, from a subscription.
     until: <A>(atom: Atom.Atom<A>, done: (value: A) => boolean) =>
       AtomRegistry.toStream(registry, atom).pipe(
@@ -654,6 +659,51 @@ describe("createOlderSettledThreadAtoms", () => {
         }).pages,
       ).toEqual(new Map([[environmentId, 1]]));
     }),
+  );
+
+  it.effect(
+    "leaves a delegate nested under its parent out of the shelf before and after it loads",
+    () =>
+      Effect.gen(function* () {
+        const { atoms, registry, setShell, setHeld, setNested } = yield* makeAtoms();
+        const unloaded = (folder: string | null) => {
+          const shelf = atoms.shelfAtom([
+            { scope: { environmentId, projectIds: [project], folder }, pages: 0 },
+          ]);
+          registry.mount(shelf);
+          return registry.get(shelf).get(environmentId)?.unloaded;
+        };
+        // Two older settled chats: a standalone one, and a delegate filed in a folder.
+        setShell({
+          snapshot: shellSnapshot({
+            sequence: 3,
+            asOfSequence: 3,
+            count: 2,
+            folderCounts: [{ projectId: project, folder: "Autopilot", count: 1 }],
+          }),
+          generation: 1,
+        });
+        expect([unloaded(null), unloaded("autopilot")]).toEqual([1, 1]);
+
+        const settledAt = DateTime.makeUnsafe(30 * DAY);
+        setNested([
+          {
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("env-b"),
+              threadId: ThreadId.make("parent"),
+            },
+            projectId: project,
+            settledAt,
+            folder: "Autopilot",
+          },
+        ]);
+        expect([unloaded(null), unloaded("autopilot")]).toEqual([1, 0]);
+
+        // Loading its family holds the delegate itself instead.
+        setHeld([row("delegate", { settledDay: 30, folder: "Autopilot" })]);
+        setNested([]);
+        expect([unloaded(null), unloaded("autopilot")]).toEqual([1, 0]);
+      }),
   );
 
   it.effect("reads pages in order until a short one, and retries a failed page", () =>

@@ -9,8 +9,8 @@ import type {
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2ShellStreamItem,
   OrchestrationV2StoredEvent,
+  OrchestrationV2OmittedSidebarDelegate,
   ProjectId,
-  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -339,15 +339,20 @@ export const loadSubscriberShellSnapshot = Effect.fn("ShellStream.loadSubscriber
     const snapshot = trimShellSnapshot(base, facts, { ...input.options, now: yield* DateTime.now });
     if (read.index !== null) {
       const sent = new Set(snapshot.threads.map((thread) => thread.id));
-      const omitted = new Map<ThreadId, ThreadId | ScopedThreadRef>();
+      const omitted = new Map<ThreadId, ThreadId | OrchestrationV2OmittedSidebarDelegate>();
       for (const entry of read.index) {
         if (sent.has(entry.id) || isProviderNativeSubagentThread(entry)) continue;
         if (!isListedThreadLineage(entry.lineage)) {
           if (entry.lineage.parentThreadId !== null)
             omitted.set(entry.id, entry.lineage.parentThreadId);
-        } else if (entry.delegatedFrom !== undefined) {
+        } else if (entry.delegatedFrom !== undefined && entry.settledAt !== null) {
           const { environmentId, threadId } = entry.delegatedFrom;
-          omitted.set(entry.id, { environmentId, threadId });
+          omitted.set(entry.id, {
+            delegatedFrom: { environmentId, threadId },
+            projectId: entry.projectId,
+            settledAt: entry.settledAt,
+            ...(entry.folder == null ? {} : { folder: entry.folder }),
+          });
         }
       }
       if (omitted.size > 0) {

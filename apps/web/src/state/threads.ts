@@ -66,6 +66,7 @@ export const olderSettledThreads = createOlderSettledThreadAtoms(
   connectionAtomRuntime,
   environmentShell.stateAtom,
   environmentThreadShells.environmentThreadsAtom,
+  environmentThreadShells.omittedDelegatesUnderParentAtom,
 );
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,

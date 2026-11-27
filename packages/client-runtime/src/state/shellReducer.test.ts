@@ -1,5 +1,6 @@
 import { EnvironmentId, ProjectId, ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import * as DateTime from "effect/DateTime";
 
 import { v2Project, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import {
@@ -368,7 +369,11 @@ describe("applyShellStreamEvents", () => {
       threads: [a, b, unchanged],
       archivedThreads: [archived, oldArchive],
       omittedSidebarChildren: {
-        new: { environmentId: EnvironmentId.make("remote-parent"), threadId: a.id },
+        new: {
+          delegatedFrom: { environmentId: EnvironmentId.make("remote-parent"), threadId: a.id },
+          projectId: v2Project.id,
+          settledAt: DateTime.makeUnsafe(0),
+        },
         missing: a.id,
         other: b.id,
       },

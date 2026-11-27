@@ -2560,6 +2560,19 @@ export const OrchestrationV2OlderSettledThreads = Schema.Struct({
 });
 export type OrchestrationV2OlderSettledThreads = typeof OrchestrationV2OlderSettledThreads.Type;
 
+/**
+ * A delegated chat the shell left out as older settled. `olderSettled` counts it, and clients that
+ * nest it under its linked parent take it back out of the Settled count before they load it.
+ */
+export const OrchestrationV2OmittedSidebarDelegate = Schema.Struct({
+  delegatedFrom: ScopedThreadRef,
+  projectId: ProjectId,
+  settledAt: Schema.DateTimeUtc,
+  folder: Schema.optionalKey(Schema.String),
+});
+export type OrchestrationV2OmittedSidebarDelegate =
+  typeof OrchestrationV2OmittedSidebarDelegate.Type;
+
 export const OrchestrationV2ThreadShellSnapshot = Schema.Struct({
   schemaVersion: PositiveInt,
   snapshotSequence: NonNegativeInt,
@@ -2572,9 +2585,9 @@ export const OrchestrationV2ShellSnapshot = Schema.Struct({
   ...OrchestrationV2ThreadShellSnapshot.fields,
   projects: Schema.Array(OrchestrationProjectShell),
   olderSettled: Schema.optionalKey(OrchestrationV2OlderSettledThreads),
-  /** Direct parent of each omitted child, scoped to the linked parent for a delegated chat. */
+  /** Direct parent of each omitted child; a delegated chat names its linked parent. */
   omittedSidebarChildren: Schema.optionalKey(
-    Schema.Record(Schema.String, Schema.Union([ThreadId, ScopedThreadRef])),
+    Schema.Record(Schema.String, Schema.Union([ThreadId, OrchestrationV2OmittedSidebarDelegate])),
   ),
 });
 export type OrchestrationV2ShellSnapshot = typeof OrchestrationV2ShellSnapshot.Type;

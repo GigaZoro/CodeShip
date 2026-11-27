@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  OrchestrationV2OmittedSidebarDelegate,
   OrchestrationV2ShellSnapshot,
   ProjectId,
   ScopedProjectRef,
@@ -759,6 +760,15 @@ export function createEnvironmentThreadShellAtoms(input: {
     return next;
   }).pipe(Atom.withLabel("environment-quiet-thread-shell-list"));
 
+  const nestsUnderDelegator = (
+    get: Atom.AtomContext,
+    environmentIds: ReadonlySet<EnvironmentId>,
+    parent: ScopedThreadRef,
+  ) =>
+    environmentIds.has(parent.environmentId) &&
+    // An archived parent leaves navigation; its task there stays listed on its own.
+    get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)?.archivedAt === null;
+
   let previousDelegatedUnderParent: ReadonlySet<string> = new Set();
   const delegatedUnderParentAtom = Atom.make((get) => {
     const environmentIds = new Set(enabledEnvironmentIds(get(input.catalogValueAtom)));
@@ -766,13 +776,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     for (const environmentId of environmentIds) {
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         const parent = thread.delegatedFrom;
-        if (
-          parent !== undefined &&
-          environmentIds.has(parent.environmentId) &&
-          // An archived parent leaves navigation; its task there stays listed on its own.
-          get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)?.archivedAt ===
-            null
-        ) {
+        if (parent !== undefined && nestsUnderDelegator(get, environmentIds, parent)) {
           next.add(threadKey({ environmentId, threadId: thread.id }));
         }
       }
@@ -786,6 +790,32 @@ export function createEnvironmentThreadShellAtoms(input: {
     previousDelegatedUnderParent = next;
     return next;
   }).pipe(Atom.withLabel("environment-delegated-under-parent"));
+
+  // Delegated chats the shell left out that will show under their parent once loaded, so the
+  // Settled count leaves them out before they load as it does after.
+  const omittedDelegatesUnderParentAtom = Atom.family((environmentId: EnvironmentId) => {
+    let previous: ReadonlyArray<OrchestrationV2OmittedSidebarDelegate> = [];
+    return Atom.make((get): ReadonlyArray<OrchestrationV2OmittedSidebarDelegate> => {
+      const omitted = get(input.snapshotAtom(environmentId))?.omittedSidebarChildren;
+      const next: OrchestrationV2OmittedSidebarDelegate[] = [];
+      if (omitted !== undefined) {
+        const environmentIds = new Set(enabledEnvironmentIds(get(input.catalogValueAtom)));
+        const held = get(environmentThreadIndexAtom(environmentId));
+        for (const [id, parent] of Object.entries(omitted)) {
+          if (
+            typeof parent !== "string" &&
+            !held.has(id as ThreadId) &&
+            nestsUnderDelegator(get, environmentIds, parent.delegatedFrom)
+          ) {
+            next.push(parent);
+          }
+        }
+      }
+      if (arrayElementsEqual(previous, next)) return previous;
+      previous = next;
+      return next;
+    }).pipe(Atom.withLabel(`environment-omitted-delegates-under-parent:${environmentId}`));
+  });
 
   const listedThreadShellsAtom = Atom.make((get) => {
     const underParent = get(delegatedUnderParentAtom);
@@ -912,6 +942,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     availableThreadTagsAtom,
     threadFilterTagsAtom,
     delegatedUnderParentAtom,
+    omittedDelegatesUnderParentAtom,
     pendingSubagentRequestsAtom,
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
       threadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),

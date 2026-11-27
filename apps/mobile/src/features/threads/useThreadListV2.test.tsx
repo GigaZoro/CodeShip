@@ -529,10 +529,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     }),
   );
   const held = Atom.make([]);
+  const nested = Atom.make([]);
   const folderAtoms = createOlderSettledThreadAtoms(
     folderRuntime,
     () => folderShell,
     () => held,
+    () => nested,
   );
   const untilPage = (depth: number) => {
     const atom = folderAtoms.pagesAtom(folderScope, depth);
