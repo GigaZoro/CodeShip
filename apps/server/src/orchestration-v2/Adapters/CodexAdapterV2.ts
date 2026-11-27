@@ -227,6 +227,18 @@ export function codexProviderTurnTokenUsage(
   };
 }
 const CODEX_ASSISTANT_DELTA_FLUSH_INTERVAL_MS = 50;
+/** A line only T3 writes into a kept app server's output, after the lines its reader already got. */
+const CODEX_OUTPUT_BARRIER_METHOD = "t3/outputBarrier";
+const CodexOutputBarrierParams = Schema.Struct({ id: Schema.String });
+const decodeCodexOutputBarrierParams = Schema.decodeUnknownOption(CodexOutputBarrierParams);
+const encodeCodexOutputBarrierLine = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      method: Schema.Literal(CODEX_OUTPUT_BARRIER_METHOD),
+      params: CodexOutputBarrierParams,
+    }),
+  ),
+);
 // Plan flushes store three copies; use the client's assistant-text cadence.
 const CODEX_PLAN_DELTA_FLUSH_INTERVAL_MS = 400;
 const CodexBackgroundTerminalTerminateResponse = Schema.Struct({
@@ -1900,6 +1912,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
   const readMcpSession = (threadId: ThreadId | null) =>
     // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
@@ -2316,8 +2329,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             isDescendantCodexTurn(candidate, ancestor),
           );
 
+        let emittedEvents = 0;
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(events, event).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                emittedEvents += 1;
+              }),
+            ),
+          );
 
         const emitImageWorkState =
           /* Provider events include streaming deltas; avoid a span for each update. */
@@ -4693,6 +4713,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ...(input.responseMode === undefined ? {} : { responseMode: input.responseMode }),
           };
           return { node, request, turnItem };
+        });
+
+        // The reader handles lines in order, so a barrier's handler runs after every earlier line's.
+        const outputBarriers = new Map<string, Deferred.Deferred<void>>();
+        yield* client.handleUnknownServerNotification((method, params) => {
+          if (method !== CODEX_OUTPUT_BARRIER_METHOD) return Effect.void;
+          const barrier = Option.flatMapNullishOr(
+            decodeCodexOutputBarrierParams(params),
+            ({ id }) => outputBarriers.get(id),
+          );
+          return Option.isNone(barrier) ? Effect.void : Deferred.succeed(barrier.value, undefined);
+        });
+        const drainForDetach = Effect.fn("CodexAdapterV2.drainForDetach")(function* (
+          sessionHost: SessionHostService.SessionHostServiceShape,
+        ) {
+          const id = `${input.providerSessionId}:${outputBarriers.size}:${yield* Random.nextInt}`;
+          const barrier = yield* Deferred.make<void>();
+          outputBarriers.set(id, barrier);
+          yield* Effect.gen(function* () {
+            const injected = yield* sessionHost.injectOutputLine(
+              input.providerSessionId,
+              encodeCodexOutputBarrierLine({ method: CODEX_OUTPUT_BARRIER_METHOD, params: { id } }),
+            );
+            if (!injected) {
+              return yield* Effect.die(
+                new Error("No session host serves this Codex session, so its output cannot drain."),
+              );
+            }
+            yield* Deferred.await(barrier);
+          }).pipe(Effect.ensuring(Effect.sync(() => outputBarriers.delete(id))));
+          yield* agentMessageDeltas.flush;
+          yield* reasoningDeltas.flush;
+          yield* planDeltas.flush;
+          return emittedEvents;
         });
 
         yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
@@ -7603,10 +7657,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 .filter((item) => item.providerTurnId === adoptInput.providerTurn.id)
                 .toSorted((left, right) => left.ordinal - right.ordinal);
               for (const item of items) {
-                context.itemPositions.set(item.nativeItemRef?.nativeId ?? `t3-adopted:${item.id}`, {
+                const nativeItemId = item.nativeItemRef?.nativeId;
+                context.itemPositions.set(nativeItemId ?? `t3-adopted:${item.id}`, {
                   ordinal: item.ordinal,
                   startedAt: item.startedAt ?? item.updatedAt,
                 });
+                if (nativeItemId == null || !isOrchestrationV2WorkActive(item.status)) continue;
+                // Output after the update continues these items, so it extends what is persisted.
+                if (item.type === "assistant_message") {
+                  yield* agentMessageDeltas.seed({
+                    turnId: nativeTurnId,
+                    itemId: nativeItemId,
+                    text: item.text,
+                  });
+                } else if (item.type === "proposed_plan") {
+                  yield* planDeltas.seed({
+                    turnId: nativeTurnId,
+                    itemId: nativeItemId,
+                    text: item.markdown,
+                  });
+                } else if (item.type === "command_execution") {
+                  yield* trackRunningCommandItem(nativeTurnId, {
+                    id: nativeItemId,
+                    command: item.input,
+                    ...(item.output === undefined ? {} : { aggregatedOutput: item.output }),
+                  });
+                }
               }
             },
             (effect, adoptInput) =>
@@ -7623,6 +7699,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               ),
           ),
+          ...(Option.isNone(sessionHostOption)
+            ? {}
+            : { drainForDetach: drainForDetach(sessionHostOption.value) }),
           ...(adoptedOutputReady === undefined
             ? {}
             : {

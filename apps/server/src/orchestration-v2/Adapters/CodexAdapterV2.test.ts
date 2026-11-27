@@ -63,7 +63,6 @@ import * as Stream from "effect/Stream";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
 import * as PlatformError from "effect/PlatformError";
 import { TestClock } from "effect/testing";
@@ -10051,7 +10050,7 @@ describe("layerAppServerClientFactory with a session host", () => {
         releaseOutput: () => undefined,
       } as unknown as DetachedStdioHandle;
       const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
-        takeAdoptable: () => Effect.succeed(Option.some({ handle, childProcess })),
+        takeAdoptable: () => Effect.succeedSome({ handle, childProcess }),
         terminate: () => Effect.void,
       });
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
