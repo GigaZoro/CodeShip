@@ -51,6 +51,8 @@ import {
   type OrchestratorMcpTaskRole,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
+  type OrchestratorMcpReviewAssignmentInput,
+  type OrchestratorMcpReviewAssignmentResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
@@ -243,6 +245,11 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskCancelInput,
   ) => Effect.Effect<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure>;
+  /** Registers files a restricted reviewer may read, under a new handle, or revokes one. */
+  readonly reviewAssignment: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpReviewAssignmentInput,
+  ) => Effect.Effect<OrchestratorMcpReviewAssignmentResult, OrchestratorMcpFailure>;
   readonly createThreads: (
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
@@ -1371,6 +1378,7 @@ const make = Effect.gen(function* () {
   /** Everything a restricted review needs that the request alone can show, checked before any reuse or forwarding. */
   const requireRestrictableReview = Effect.fn("OrchestratorMcpService.requireRestrictableReview")(
     function* (
+      owner: ThreadId,
       input: OrchestratorMcpDelegateTaskInput,
       assignment: OrchestrationV2ReviewAssignment,
     ) {
@@ -1380,8 +1388,12 @@ const make = Effect.gen(function* () {
           "Assignment isolation is unavailable in this environment.",
         );
       }
-      if (!(yield* reviewAssignments.value.isRegistered(assignment.handle))) {
-        return yield* failure("invalid_request", "The review assignment is not registered here.");
+      // Only the thread that registered the assignment hands it to a reviewer.
+      if (!(yield* reviewAssignments.value.isRegistered({ owner, handle: assignment.handle }))) {
+        return yield* failure(
+          "invalid_request",
+          "This thread registered no review assignment with this handle here.",
+        );
       }
       if (input.auto === true) {
         return yield* failure(
@@ -3578,7 +3590,9 @@ const make = Effect.gen(function* () {
       // Refuse before receipt reuse or peer forwarding can turn a restricted request into ordinary work.
       const reviewAssignment =
         typeof input.isolation === "object" ? { handle: input.isolation.handle } : undefined;
-      if (reviewAssignment !== undefined) yield* requireRestrictableReview(input, reviewAssignment);
+      if (reviewAssignment !== undefined) {
+        yield* requireRestrictableReview(scope.thread.threadId, input, reviewAssignment);
+      }
       if (input.auto === true && input.target !== undefined) {
         return yield* failure("invalid_request", "Pass auto:true or target, not both.");
       }
@@ -3945,6 +3959,35 @@ const make = Effect.gen(function* () {
       const scope = yield* requireThreadScope(callerScope, "task_status");
       return yield* readTask(scope, taskId, false, true);
     }),
+    reviewAssignment: Effect.fn("OrchestratorMcpService.reviewAssignment")(
+      function* (callerScope, input) {
+        yield* requireCapability(callerScope);
+        const scope = yield* requireThreadScope(callerScope, "t3_review_assignment");
+        if (Option.isNone(reviewAssignments)) {
+          return yield* failure(
+            "restricted_review_unsupported",
+            "Assignment isolation is unavailable in this environment.",
+          );
+        }
+        const owner = scope.thread.threadId;
+        if (input.action === "revoke") {
+          if (input.handle === undefined || input.material !== undefined) {
+            return yield* failure("invalid_request", "revoke takes `handle` and no `material`.");
+          }
+          const revoked = yield* reviewAssignments.value.revoke({ owner, handle: input.handle });
+          return { handle: input.handle, revoked };
+        }
+        if (input.material === undefined || input.handle !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "register takes `material` and no `handle`: the server picks the handle.",
+          );
+        }
+        return yield* reviewAssignments.value
+          .registerFiles({ owner, material: input.material })
+          .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
+      },
+    ),
     cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (callerScope, input) {
       const scope = yield* requireThreadScope(callerScope, "task_cancel");
       const current = yield* readTask(scope, input.taskId);

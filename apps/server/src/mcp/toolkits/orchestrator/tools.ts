@@ -26,6 +26,8 @@ import {
   OrchestratorMcpRequestSecretResult,
   OrchestratorMcpRunCommandInput,
   OrchestratorMcpRunCommandResult,
+  OrchestratorMcpReviewAssignmentInput,
+  OrchestratorMcpReviewAssignmentResult,
   OrchestratorMcpFailure,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
@@ -168,6 +170,16 @@ const CommandRunTool = Tool.make("t3_command_run", {
   .annotate(Tool.Title, "Run a command")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
+
+const ReviewAssignmentTool = Tool.make("t3_review_assignment", {
+  description:
+    "`register` snapshots files under a new handle for `delegate_task` with `isolation:{type:'assignment',handle}`: that reviewer reads only them. `revoke` ends the handle. Full access only.",
+  parameters: OrchestratorMcpReviewAssignmentInput,
+  success: OrchestratorMcpReviewAssignmentResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+}).annotate(Tool.Title, "Register review material");
 
 const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
@@ -450,6 +462,7 @@ export const OrchestratorToolkit = Toolkit.make(
   TaskCancelTool,
   WorkflowStopTool,
   CommandRunTool,
+  ReviewAssignmentTool,
   ScheduleTaskTool,
   ListScheduledTasksTool,
   SharedScheduledTasksTool,

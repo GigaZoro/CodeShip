@@ -1677,6 +1677,7 @@ const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const reviewPolicy = { ...runtimePolicy, reviewAssignment: { handle: "assignment-1" } };
 const reviewBroker: ReviewAssignmentRegistry.ReviewAssignmentBroker = {
   handle: "assignment-1",
+  owner: ThreadId.make("thread-review-owner"),
   allowedReads: [{ handle: "assignment-1", side: "head", path: "src/app.ts" }],
   read: async () => new TextEncoder().encode("const answer = 42;\n"),
   record: async () => undefined,

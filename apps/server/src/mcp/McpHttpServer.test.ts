@@ -1472,6 +1472,7 @@ it.effect(
         const assignments = yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry;
         yield* assignments.register({
           handle,
+          owner: ThreadId.make("thread-review-route-owner"),
           allowedReads: [pin],
           read: async () => new TextEncoder().encode("const answer = 42;\n"),
           record: async () => undefined,

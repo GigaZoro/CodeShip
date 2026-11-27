@@ -261,6 +261,46 @@ export const ReviewMaterialReceipt = Schema.Struct({
 });
 export type ReviewMaterialReceipt = typeof ReviewMaterialReceipt.Type;
 
+const REVIEW_ASSIGNMENT_MAX_MATERIAL = 256;
+
+export const OrchestratorMcpReviewAssignmentInput = Schema.Struct({
+  action: Schema.Literals(["register", "revoke"]),
+  handle: Schema.optional(ReviewAssignmentHandle).annotate({
+    description: "Revoke only: the handle `register` returned.",
+  }),
+  material: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        side: ReviewMaterialRead.fields.side,
+        path: ReviewMaterialRead.fields.path,
+        file: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+      }),
+    ).check(Schema.isMinLength(1), Schema.isMaxLength(REVIEW_ASSIGNMENT_MAX_MATERIAL)),
+  ).annotate({
+    description:
+      "Register only. `file`: absolute path of a UTF-8 file, read once now. The reviewer reads it as `{handle, side, path}`.",
+  }),
+});
+export type OrchestratorMcpReviewAssignmentInput = typeof OrchestratorMcpReviewAssignmentInput.Type;
+
+export const OrchestratorMcpReviewAssignmentResult = Schema.Struct({
+  handle: ReviewAssignmentHandle,
+  /** What register snapshotted, to match against the receipts on `task_status`. */
+  material: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        side: ReviewMaterialRead.fields.side,
+        path: ReviewMaterialRead.fields.path,
+        byteLength: NonNegativeInt,
+        sha256: Schema.String,
+      }),
+    ),
+  ),
+  revoked: Schema.optional(Schema.Boolean),
+});
+export type OrchestratorMcpReviewAssignmentResult =
+  typeof OrchestratorMcpReviewAssignmentResult.Type;
+
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
@@ -275,7 +315,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Union([Schema.Literals(["shared", "worktree"]), AssignmentIsolation]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project, or of another repository in a linked environment: a worktree of that repository from its default branch. Assignment isolation requires a provider that can verify all inputs before inference.",
+        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project, or of another repository in a linked environment: a worktree of that repository from its default branch. Assignment isolation requires a provider that can verify all inputs before inference; `t3_review_assignment` registers its handle.",
     }),
   ),
   mode: Schema.optional(

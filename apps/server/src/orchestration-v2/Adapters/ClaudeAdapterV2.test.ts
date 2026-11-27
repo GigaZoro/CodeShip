@@ -10,6 +10,7 @@ import { beforeEach, expect, vi } from "vite-plus/test";
 import type {
   ElicitationRequest,
   Query as ClaudeQuery,
+  SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKResultMessage,
   SDKUserMessage,
@@ -3389,6 +3390,42 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     agents: [],
     skills: 0,
     systemPromptSections: [],
+    contextRows: ["system_prompt", "mcp_tools", "autocompact_buffer", "free_space"],
+  };
+  // Claude 2.1.332 before a restricted review's prompt: rows carry an id the SDK types omit, and no
+  // tool or skill list is sent.
+  const recordedReviewRows = [
+    { id: "system_prompt", name: "System prompt", tokens: 2, color: "promptBorder", kind: "used" },
+    {
+      id: "mcp_tools",
+      name: "MCP tools",
+      tokens: 96,
+      color: "cyan_FOR_SUBAGENTS_ONLY",
+      kind: "used",
+    },
+    {
+      id: "autocompact_buffer",
+      name: "Autocompact buffer",
+      tokens: 33_000,
+      color: "inactive",
+      kind: "buffer",
+    },
+    { id: "free_space", name: "Free space", tokens: 966_902, color: "promptBorder", kind: "free" },
+  ] as const;
+  const recordedReviewUsage: SDKControlGetContextUsageResponse = {
+    categories: [...recordedReviewRows],
+    totalTokens: 98,
+    maxTokens: 1_000_000,
+    rawMaxTokens: 1_000_000,
+    percentage: 0,
+    gridRows: [],
+    model: "claude-haiku-5-5",
+    memoryFiles: [],
+    mcpTools: [{ name: REVIEW_TOOL, serverName: REVIEW_SERVER, tokens: 96 }],
+    agents: [],
+    autoCompactThreshold: 967_000,
+    isAutoCompactEnabled: true,
+    apiUsage: null,
   };
   // A restricted review thread: its policy and its MCP session name the same assignment.
   const makeReviewHarness = (
@@ -3460,7 +3497,21 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect("attests a restricted review's session before its prompt reaches Claude", () =>
     Effect.gen(function* () {
-      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+      const review = yield* makeReviewHarness(
+        Effect.succeed(
+          ClaudeAdapterV2.claudeQueryInspection({
+            servers: [
+              {
+                name: REVIEW_SERVER,
+                status: "connected",
+                tools: [{ name: McpProviderSession.REVIEW_ASSIGNMENT_TOOL }],
+              },
+            ],
+            usage: recordedReviewUsage,
+            account: { email: "reviewer@example.com", organization: "Example" },
+          }),
+        ),
+      );
 
       yield* review.harness.runtime.startTurn(review.turnInput);
 
@@ -3472,7 +3523,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.deepInclude(review.attested[0]?.evidence, {
         runId: review.turnInput.runId,
         driver: "claudeAgent",
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-5-5",
         cwd: review.cwd,
         effectiveTools: [`${REVIEW_SERVER}/${McpProviderSession.REVIEW_ASSIGNMENT_TOOL}`],
         mcpServers: [REVIEW_SERVER],
@@ -3506,7 +3557,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ["an instruction file", { memoryFiles: ["/home/user/.claude/CLAUDE.md"] }],
     ["a skill", { skills: 1 }],
     ["a subagent definition", { agents: ["general-purpose"] }],
-    ["no list of built-in tools", { builtinTools: null }],
+    ["built-in tools it does not name", { contextRows: ["system_prompt", "system_tools"] }],
+    ["a context row without an id", { contextRows: ["system_prompt", null] }],
+    ["no context rows", { contextRows: [] }],
     [
       "another MCP server",
       {

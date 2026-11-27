@@ -79,6 +79,21 @@ const handlers = {
         ),
     },
   ),
+  t3_review_assignment: McpToolAccess.actsAsCaller(
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.reviewAssignment(scope, input);
+      }),
+    {
+      caller: (caller) =>
+        assertFullAccess(
+          caller,
+          "t3_review_assignment reads files as the T3.CodeShip server, so it needs this thread in Full access and default mode.",
+        ),
+    },
+  ),
   schedule_task: McpToolAccess.either(
     (input) => input.scheduledTaskId === undefined,
     McpToolAccess.startsThreads(
