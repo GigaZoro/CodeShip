@@ -505,6 +505,7 @@ const runInGitBash = (scriptPath: string) => [
 ];
 
 // Matches line-bounded OSC and DCS/SOS/PM/APC, 7/8-bit CSI, and ECMA-48 ESC sequences.
+// `\x9b`/`\x9c` match UTF-8-encoded C1 sequences (C2 9B / C2 9C) after TextDecoder.
 const ANSI_ESCAPE_PATTERN =
   /\x1b\][^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)|\x1b[PX^_][^\x1b\x9c\n]*(?:\x1b\\|\x9c)|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-Z\\^-~]/g;
 
@@ -539,6 +540,7 @@ export const decodeTail = (
   cut: boolean,
   maxChars: number = RESULT_FAILURE_TAIL_CHARS,
 ): string => {
+  if (maxChars <= 0) return "";
   let offset = 0;
   if (cut) {
     // Skip continuation bytes from a multi-byte UTF-8 sequence split at the seek offset.
@@ -547,22 +549,20 @@ export const decodeTail = (
     }
   }
   const decoded = new TextDecoder().decode(offset === 0 ? bytes : bytes.subarray(offset));
-  const stripped = stripAnsi(decoded).trimEnd();
-  const whole = cut
-    ? (() => {
-        const newline = stripped.indexOf("\n");
-        return newline < 0 ? stripped : stripped.slice(newline + 1);
-      })()
-    : stripped;
-  if (maxChars <= 0) return "";
-  if (whole.length <= maxChars) return whole;
-  const start = sliceStartFromEnd(whole, maxChars);
-  const sliced = whole.slice(start);
-  if (whole.charCodeAt(start - 1) === 10) return sliced;
-  const newline = sliced.indexOf("\n");
-  if (newline >= 0 && newline + 1 <= maxChars / 2) return sliced.slice(newline + 1);
-  if (maxChars <= 1) return sliced;
-  return `…${whole.slice(sliceStartFromEnd(whole, maxChars - 1))}`;
+  const text = stripAnsi(decoded).trimEnd();
+  if (text === "") return "";
+  const start = text.length <= maxChars ? 0 : sliceStartFromEnd(text, maxChars);
+  const tail = start === 0 ? text : text.slice(start);
+  const startsMidLine = (start === 0 && cut) || (start > 0 && text.charCodeAt(start - 1) !== 10);
+  if (!startsMidLine) return tail;
+  const newline = tail.indexOf("\n");
+  if (newline >= 0 && newline + 1 <= maxChars / 2) {
+    const after = tail.slice(newline + 1);
+    if (after !== "") return after;
+  }
+  if (maxChars <= 1) return tail;
+  if (tail.length < maxChars) return `…${tail}`;
+  return `…${text.slice(sliceStartFromEnd(text, maxChars - 1))}`;
 };
 
 const make = Effect.gen(function* () {

@@ -526,6 +526,43 @@ describe("stripAnsi and decodeTail", () => {
     assert.isTrue(tail.startsWith("…E"));
     assert.isTrue(tail.endsWith("EEE\nlast"));
 
+    const cutLongError = encoder.encode(`${"E".repeat(8187)}\nlast`);
+    for (const limit of [
+      CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+      CommandRunner.RESULT_SUCCESS_TAIL_CHARS,
+    ]) {
+      const cutTail = CommandRunner.decodeTail(cutLongError, true, limit);
+      assert.isAtMost(cutTail.length, limit);
+      assert.isTrue(cutTail.startsWith("…E"));
+      assert.isTrue(cutTail.endsWith("\nlast"));
+    }
+
+    assert.equal(
+      CommandRunner.decodeTail(
+        encoder.encode("partial\nok"),
+        true,
+        CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+      ),
+      "ok",
+    );
+
+    const cutNoNewline = CommandRunner.decodeTail(
+      encoder.encode("E".repeat(5000)),
+      true,
+      CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+    );
+    assert.isAtMost(cutNoNewline.length, CommandRunner.RESULT_FAILURE_TAIL_CHARS);
+    assert.isTrue(cutNoNewline.startsWith("…E"));
+
+    assert.equal(
+      CommandRunner.decodeTail(
+        encoder.encode("partial\n   "),
+        true,
+        CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+      ),
+      "…partial",
+    );
+
     // A short partial first line (<= 50% of budget) still drops cleanly at the next line boundary.
     const lines = Array.from({ length: 10 }, (_, i) => `line-${i}-${"x".repeat(20)}`).join("\n");
     const shortPartial = CommandRunner.decodeTail(encoder.encode(lines), false, 120);
@@ -833,7 +870,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         yield* withServer(() => nextWake(chat.threadId));
         const task = yield* taskOf(chat.threadId, started.taskId);
         assert.equal(task?.status, "completed");
-        assert.match(task?.result ?? "", /^Exited with code 0 after 42s\.\nLast output:\nbuilt\n/);
+        assert.match(
+          task?.result ?? "",
+          /^Exited with code 0 after 42s\.\nLast output:\n…x+\nbuilt\n/,
+        );
         assert.isBelow(NodeFS.statSync(started.logPath).size, 8 * 1024 * 1024);
       }),
   );
