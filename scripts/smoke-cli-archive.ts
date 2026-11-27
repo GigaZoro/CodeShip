@@ -67,6 +67,45 @@ const runExecutable = Effect.fn("runExecutable")(function* (
   return { stdout, stderr, exitCode };
 });
 
+/**
+ * One round trip through the detached command log writer, which only the packaged build runs: the bundle imports
+ * node:process before `main`, and that makes stdin non-blocking. The input goes in after the writer starts reading.
+ */
+const smokeCommandLog = Effect.fn("smokeCommandLog")(function* (
+  executable: string,
+  cwd: string,
+  scratch: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const log = path.join(scratch, "command.log");
+  const status = path.join(scratch, "command.status");
+  const writer = yield* spawner.spawn(
+    ChildProcess.make(executable, ["__command-log", log, status], {
+      cwd,
+      env: { PATH: "", HOME: cwd, TMPDIR: cwd },
+      extendEnv: false,
+    }),
+  );
+  const stderr = yield* Effect.forkScoped(collect(writer.stderr));
+  const lines = yield* Stream.toPull(writer.stdout.pipe(Stream.decodeText(), Stream.splitLines));
+  const [token] = yield* lines;
+  yield* fs.writeFileString(`${status}.tmp`, "0\n");
+  yield* Stream.run(Stream.make(new TextEncoder().encode(`output\n\0${token}\0`)), writer.stdin);
+  const exitCode = yield* writer.exitCode.pipe(
+    Effect.map(Number),
+    Effect.timeout(Duration.seconds(10)),
+  );
+  const logged = yield* fs.readFileString(log);
+  if (exitCode !== 0 || logged !== "output\n" || !(yield* fs.exists(status))) {
+    return yield* new CliArchiveSmokeError({
+      step: "capturing a command's output",
+      detail: `exit ${String(exitCode)}, logged ${logged.length} bytes\n${yield* Fiber.join(stderr)}`,
+    });
+  }
+});
+
 const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   readonly archive: string;
   readonly expectVersion: string;
@@ -179,6 +218,8 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     });
   }
 
+  if (platform !== "win32") yield* smokeCommandLog(executable, contentDir, scratch);
+
   const net = yield* NetService.NetService;
   const port = yield* net.findAvailablePort(47700);
   const home = path.join(scratch, "home");
@@ -235,7 +276,9 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
       detail: `no 200 from / within 30s\n${stdout}${stderr}`,
     });
   }
-  yield* Effect.log(`[cli-smoke] ${root}: --version passed and serve answered on ${String(port)}.`);
+  yield* Effect.log(
+    `[cli-smoke] ${root}: --version passed, command output was captured and serve answered on ${String(port)}.`,
+  );
 });
 
 const command = Command.make(
