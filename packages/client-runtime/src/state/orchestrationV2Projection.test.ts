@@ -173,6 +173,34 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.providerTurns[0]?.tokenUsage).toEqual(running.tokenUsage);
   });
 
+  it("keeps an answered runtime request answered when its question is asked again", () => {
+    const pending = {
+      id: "runtime-request-reducer",
+      nodeId: NodeId.make("runtime-request-node-reducer"),
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "user_input" as const,
+      status: "pending" as const,
+      responseCapability: { type: "message" as const },
+      createdAt: now,
+      resolvedAt: null,
+    };
+    const resolved = { ...pending, status: "resolved" as const, resolvedAt: now };
+    const projection = { ...emptyProjection, runtimeRequests: [resolved] };
+    const event = {
+      id: "event-runtime-request-asked-again",
+      type: "runtime-request.updated",
+      threadId,
+      nodeId: pending.nodeId,
+      occurredAt: now,
+      payload: pending,
+    } as OrchestrationV2DomainEvent;
+
+    const next = applyOrchestrationV2ProjectionEvent(projection, event);
+
+    expect(next?.runtimeRequests).toEqual([resolved]);
+  });
+
   it("applies thread lifecycle payloads instead of leaving stale metadata", () => {
     const archivedAt = DateTime.makeUnsafe("2026-06-20T01:00:00.000Z");
     const event = {

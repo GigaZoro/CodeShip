@@ -3,6 +3,7 @@ import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
   isReadOnlyGuestShare,
+  orchestrationV2RuntimeRequestUpdateApplies,
   pendingGuestMessageCount,
   threadFolderKeyOf,
 } from "@t3tools/contracts";
@@ -1189,10 +1190,12 @@ export function applyToProjection(
         providerTurns: upsertProviderTurn(base.providerTurns, event.payload),
       };
     case "runtime-request.updated":
-      return {
-        ...base,
-        runtimeRequests: upsertById(base.runtimeRequests, event.payload),
-      };
+      return orchestrationV2RuntimeRequestUpdateApplies(
+        base.runtimeRequests.find((request) => request.id === event.payload.id),
+        event.payload,
+      )
+        ? { ...base, runtimeRequests: upsertById(base.runtimeRequests, event.payload) }
+        : base;
     case "message.updated":
       return {
         ...base,
@@ -2855,6 +2858,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 created_at = excluded.created_at,
                 resolved_at = excluded.resolved_at,
                 payload_json = excluded.payload_json
+              -- An answered or ended request stays so when its question is asked again.
+              WHERE excluded.status <> 'pending'
+                OR orchestration_v2_projection_runtime_requests.status = 'pending'
             `;
               break;
             }

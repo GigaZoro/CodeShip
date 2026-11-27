@@ -5,6 +5,7 @@ import type {
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+import { orchestrationV2RuntimeRequestUpdateApplies } from "@t3tools/contracts";
 import {
   restoreSubagentBodies,
   restoreTurnItemBodies,
@@ -394,7 +395,12 @@ export function applyOrchestrationV2ProjectionEvent(
         }),
       };
     case "runtime-request.updated":
-      return { ...base, runtimeRequests: upsertEntity(base.runtimeRequests, event.payload) };
+      return orchestrationV2RuntimeRequestUpdateApplies(
+        base.runtimeRequests.find((request) => request.id === event.payload.id),
+        event.payload,
+      )
+        ? { ...base, runtimeRequests: upsertEntity(base.runtimeRequests, event.payload) }
+        : base;
     case "message.updated":
       return { ...base, messages: upsertEntity(base.messages, event.payload) };
     case "plan.updated":

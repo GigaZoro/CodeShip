@@ -12,7 +12,9 @@ import {
   type ModelSelection,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2RunStatus,
   type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadHistoryPage,
@@ -274,6 +276,54 @@ it.effect(
         assert.equal(candidate?.startedByScheduledTask, opening !== "manual");
       }
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a runtime request that reached a final status never returns to pending", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = yield* addRolledBackRecoveryCandidate("request-final-status");
+    const requestId = RuntimeRequestId.make("runtime-request:final-status");
+    const request = {
+      id: requestId,
+      nodeId: NodeId.make("node:runtime-request:final-status"),
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "user_input",
+      status: "pending",
+      responseCapability: { type: "message" },
+      createdAt: now,
+      resolvedAt: null,
+    } satisfies OrchestrationV2RuntimeRequest;
+    const event = (index: number, payload: OrchestrationV2RuntimeRequest) =>
+      ({
+        id: EventId.make(`event:runtime-request:final-status:${index}`),
+        type: "runtime-request.updated",
+        threadId,
+        nodeId: request.nodeId,
+        occurredAt: now,
+        payload,
+      }) satisfies OrchestrationV2DomainEvent;
+    const update = (index: number, payload: OrchestrationV2RuntimeRequest) =>
+      store.apply(event(index, payload));
+    yield* update(0, request);
+    const resolved = {
+      ...request,
+      status: "resolved",
+      resolvedAt: now,
+      answers: { answer: "yes" },
+    } satisfies OrchestrationV2RuntimeRequest;
+    yield* update(1, resolved);
+    // A process that replays the question it was already answered on.
+    const askedAgain = event(2, request);
+    const answered = yield* store.getThreadProjection(threadId);
+    assert.deepEqual(
+      ProjectionStore.applyToProjection(answered, askedAgain).runtimeRequests,
+      answered.runtimeRequests,
+    );
+    yield* store.apply(askedAgain);
+    assert.deepEqual(yield* store.getRuntimeRequest(threadId, requestId), resolved);
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("record reads filter notification sources without dropping matching message bodies", () =>
