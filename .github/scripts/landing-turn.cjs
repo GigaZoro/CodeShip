@@ -1245,6 +1245,7 @@ async function runLanding(
       return { status: "landed", commit: tip };
     },
   );
+  record.note({ releaseConfirmed });
   return releaseConfirmed ? result : { ...result, releaseConfirmed };
 }
 
@@ -1368,11 +1369,11 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
       console.error(USAGE);
       return 2;
     }
-    keepAwake();
     const { rebased, finalizeCommand } = parsed;
-    // Taken out of the environment, so no check or finalize command inherits it.
+    // Taken out of the environment, so no child process inherits it.
     const carried = rebased ? process.env[RECORD_ENV] : undefined;
     delete process.env[RECORD_ENV];
+    keepAwake();
     let carry;
     const result = await land({
       cwd,

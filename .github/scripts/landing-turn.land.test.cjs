@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const {
@@ -19,6 +20,7 @@ const {
   testing: { acquire, release, tryAcquire },
   verifyPush,
 } = require("./landing-turn.cjs");
+const { startLandingRecord } = require("./landing-record.cjs");
 const {
   ELSEWHERE,
   ZERO,
@@ -1105,6 +1107,7 @@ test("a landing records one line with its status, commits and the time each phas
         head: git(dir, "rev-parse", "HEAD"),
         status: "landed",
         stage: "under-turn",
+        releaseConfirmed: true,
         durationMs: 6000,
         phases: { preWaitCheck: 1000, waitForTurn: 5000, push: 0 },
       },
@@ -1182,7 +1185,7 @@ test("a landing that rebases before its wait and its relaunch record one line be
     t.mock.method(console, "log", () => {});
     const code = await main(["land-rebased", "--base", rebased.base, "--head", rebased.head], {
       cwd: dir,
-      check: () => RECORD_ENV in process.env === false,
+      check: () => !(RECORD_ENV in process.env),
     });
 
     assert.equal(code, 0);
@@ -1264,7 +1267,54 @@ test("the landing records stay bounded: a full file replaces the one before it",
       [rotated.length, rotated[0], rotated.at(-1).status, recordsOf(dir).length],
       [1000, { old: 1 }, "check-failed", 1],
     );
+
+    // A lock left by a lander that died while rotating: the next landing clears it, the one after rotates.
+    const lock = path.join(folder, "landings.jsonl.lock");
+    fs.mkdirSync(lock);
+    const longAgo = new Date(Date.UTC(2026, 0, 1));
+    fs.utimesSync(lock, longAgo, longAgo);
+    fs.writeFileSync(path.join(folder, "landings.jsonl"), '{"old":2}\n'.repeat(999));
+    await fail();
+    await fail();
+    assert.deepEqual(
+      [recordsOf(dir, "landings.1.jsonl").length, fs.existsSync(lock), recordsOf(dir).length],
+      [1001, false, 0],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a relaunch keeps only the carried fields of their own type", (t) => {
+  const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "landing-record-"));
+  t.after(() => fs.rmSync(gitDir, { recursive: true, force: true }));
+  t.mock.method(process.stderr, "write", () => true);
+  const carried = [
+    JSON.stringify({ startedAt: {}, elapsedMs: "x", phases: { rebase: 5, push: "y" } }),
+    JSON.stringify({ phases: "abc" }),
+    "123",
+    "not json",
+  ];
+
+  for (const value of carried) {
+    startLandingRecord({ now: () => Date.UTC(2026, 0, 1), clock: () => 0, carried: value }).write(
+      () => gitDir,
+      "landed",
+    );
+  }
+
+  const records = fs
+    .readFileSync(path.join(gitDir, "t3-landing", "landings.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    records.map(({ startedAt, durationMs, phases }) => [startedAt, durationMs, phases]),
+    [
+      ["2026-01-01T00:00:00.000Z", 0, { rebase: 5 }],
+      ["2026-01-01T00:00:00.000Z", 0, {}],
+      ["2026-01-01T00:00:00.000Z", 0, {}],
+      ["2026-01-01T00:00:00.000Z", 0, {}],
+    ],
+  );
 });
