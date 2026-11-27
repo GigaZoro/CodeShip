@@ -352,6 +352,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly scopeCloseReached?: Deferred.Deferred<void>;
     /** Ends a held scope close; without it the close never ends. */
     readonly scopeCloseMayEnd?: Deferred.Deferred<void>;
+    readonly drainForDetach?: Effect.Effect<number>;
   } = {},
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -434,6 +435,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ...(options.backgroundTasksEndWithProcess === false
             ? {}
             : { backgroundTasksEndWithProcess: true as const }),
+          ...(options.drainForDetach === undefined
+            ? {}
+            : { drainForDetach: options.drainForDetach }),
           ...(options.hasPendingBackgroundWork === undefined
             ? {}
             : { hasPendingBackgroundWork: options.hasPendingBackgroundWork }),
@@ -514,6 +518,7 @@ function layerTest(input: {
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
   readonly sessionHostLayer?: Layer.Layer<SessionHostService.SessionHostService>;
+  readonly drainForDetach?: Effect.Effect<number>;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -551,6 +556,7 @@ function layerTest(input: {
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
       ...(input.scopeCloseMayEnd === undefined ? {} : { scopeCloseMayEnd: input.scopeCloseMayEnd }),
+      ...(input.drainForDetach === undefined ? {} : { drainForDetach: input.drainForDetach }),
     }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
   );
   const layerConfiguredMcpRegistry =
@@ -3243,6 +3249,7 @@ it.effect(
             sessionHostLayer: Layer.mock(SessionHostService.SessionHostService)({
               isProviderSessionDetachedForUpdate: () => Effect.succeed(true),
               isThreadDetachedForUpdate: () => Effect.succeed(true),
+              hostsProviderSession: () => Effect.succeed(true),
             }),
           }),
         ),
@@ -4438,4 +4445,113 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     });
     assert.isTrue(child?.capabilities?.has("device"));
   }),
+);
+
+const openDrainableSession = (fixtureName: string) =>
+  Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make(`thread-${fixtureName}`);
+    const providerSessionId = yield* idAllocator.allocate.providerSession({
+      providerInstanceId: modelSelection.instanceId,
+      threadId,
+    });
+    yield* eventSink.write({
+      events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+    });
+    const runtime = yield* manager.open({
+      threadId,
+      providerSessionId,
+      modelSelection,
+      runtimePolicy,
+    });
+    return { manager, threadId, providerSessionId, runtime };
+  });
+
+it.effect(
+  "ProviderSessionManagerV2 drains a process for an update once its runs handled every event it sent",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const emitted = yield* Ref.make(0);
+      yield* Effect.gen(function* () {
+        const { manager, threadId, providerSessionId, runtime } = yield* openDrainableSession(
+          "provider-session-manager-drain",
+        );
+        const subscription = yield* runtime.subscribeEvents!;
+        const adapterQueue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        assert.isDefined(adapterQueue);
+        for (let index = 0; index < 2; index += 1) {
+          yield* Queue.offer(adapterQueue!, {
+            type: "provider_session.updated",
+            driver: CODEX_DRIVER,
+            providerSession: runtime.providerSession,
+          });
+        }
+        yield* Ref.set(emitted, 2);
+        const mayHandle = yield* Deferred.make<void>();
+        const handled = yield* Ref.make(0);
+        yield* subscription.events.pipe(
+          Stream.runForEach(() =>
+            Deferred.await(mayHandle).pipe(Effect.andThen(Ref.update(handled, (n) => n + 1))),
+          ),
+          Effect.forkScoped,
+        );
+
+        const preparation = yield* manager.prepareDetachForUpdate(providerSessionId);
+        assert.deepEqual(preparation?.threadIds, [threadId]);
+        const drained = yield* preparation!.drain.pipe(Effect.forkScoped);
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 50 }));
+        // The run is still persisting what the process sent before the detach.
+        assert.isUndefined(drained.pollUnsafe());
+        assert.equal(yield* Ref.get(handled), 0);
+
+        yield* Deferred.succeed(mayHandle, undefined);
+        yield* Fiber.join(drained);
+        assert.equal(yield* Ref.get(handled), 2);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          layerTest({ state, idleTimeoutMs: 60_000, drainForDetach: Ref.get(emitted) }),
+        ),
+      );
+    }),
+);
+
+it.effect("ProviderSessionManagerV2 does not wait on a run that stopped reading events", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const { manager, providerSessionId, runtime } = yield* openDrainableSession(
+        "provider-session-manager-drain-closed",
+      );
+      const subscription = yield* runtime.subscribeEvents!;
+      const preparation = yield* manager.prepareDetachForUpdate(providerSessionId);
+      const drained = yield* preparation!.drain.pipe(Effect.forkScoped);
+      yield* subscription.close;
+      yield* Fiber.join(drained);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 60_000, drainForDetach: Effect.succeed(0) }),
+      ),
+    );
+  }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 stops a process for an update when its runtime cannot drain",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const { manager, providerSessionId } = yield* openDrainableSession(
+          "provider-session-manager-drain-unsupported",
+        );
+        assert.isUndefined(yield* manager.prepareDetachForUpdate(providerSessionId));
+        assert.isUndefined(yield* manager.prepareDetachForUpdate("provider-session-unknown"));
+      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
 );

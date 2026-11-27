@@ -27,6 +27,7 @@ import * as CodexAdapterV2 from "../Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as ProviderRuntimeRecovery from "../ProviderRuntimeRecoveryService.ts";
+import * as ProviderSessionManager from "../ProviderSessionManager.ts";
 import {
   CODEX_MODEL_SELECTION,
   materializeFixtureInput,
@@ -185,7 +186,11 @@ describe.skipIf(isWindowsHost)("a Codex turn running across a planned update", (
               );
             const sessionHost = yield* SessionHostService.SessionHostService;
             const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
-            const detached = yield* sessionHost.detachAllForUpdate();
+            const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+            // As the server's shutdown does: the process is kept once its output is persisted.
+            const detached = yield* sessionHost.detachAllForUpdate({
+              prepare: providerSessions.prepareDetachForUpdate,
+            });
             assert.deepEqual(
               detached.flatMap((host) => host.threadIds),
               [threadId],
