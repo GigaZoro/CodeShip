@@ -167,11 +167,19 @@ const sharedBudget = (
   // transaction from its first take until `close`; other runs start no step meanwhile, so its load-sensitive
   // tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
+  const markerFile = NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`);
+  const isSqliteCantOpen = (cause: unknown) =>
+    cause instanceof Error && "errcode" in cause && cause.errcode === 14;
   let marker: NodeSqlite.DatabaseSync | undefined;
   const markLanding = () => {
     if (!landing || marker) return;
-    const file = NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`);
-    const db = new NodeSqlite.DatabaseSync(file);
+    let db: NodeSqlite.DatabaseSync;
+    try {
+      db = new NodeSqlite.DatabaseSync(markerFile);
+    } catch (cause) {
+      if (isSqliteCantOpen(cause)) return;
+      throw cause;
+    }
     try {
       db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
     } catch (cause) {
@@ -181,7 +189,7 @@ const sharedBudget = (
       throw cause;
     }
     // That check may have removed the file before this lock; a lock on a removed file holds nobody back.
-    if (!NodeFS.existsSync(file)) {
+    if (!NodeFS.existsSync(markerFile)) {
       db.close();
       return;
     }
@@ -191,9 +199,14 @@ const sharedBudget = (
     if (!marker) return;
     marker.close();
     marker = undefined;
-    NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
-      force: true,
-    });
+    try {
+      NodeFS.rmSync(markerFile, { force: true });
+    } catch (cause) {
+      // On Windows, unlinking a marker while another run probes it fails with EPERM or EBUSY;
+      // its transaction is already closed, so a later probe removes it once the handle closes.
+      const code = cause instanceof Error && "code" in cause ? String(cause.code) : "";
+      if (code !== "EPERM" && code !== "EBUSY") throw cause;
+    }
   };
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
@@ -201,7 +214,13 @@ const sharedBudget = (
       .filter((name) => name.startsWith(markerPrefix) && name.endsWith(".sqlite"))
       .some((name) => {
         const file = NodePath.join(directory, name);
-        const db = new NodeSqlite.DatabaseSync(file);
+        let db: NodeSqlite.DatabaseSync;
+        try {
+          db = new NodeSqlite.DatabaseSync(file);
+        } catch (cause) {
+          if (isSqliteCantOpen(cause)) return false;
+          throw cause;
+        }
         try {
           db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
         } catch (cause) {

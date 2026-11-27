@@ -758,6 +758,50 @@ describe("check:changed", () => {
     }),
   );
 
+  it.effect(
+    "finishes unmarking a landing run when another run still holds the marker file open",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* slotDirectory;
+        const step = (name: string, seconds: number): Step<never> => ({
+          name,
+          run: () =>
+            Effect.gen(function* () {
+              yield* Effect.sleep(`${seconds} seconds`);
+              return { ok: true, output: "" };
+            }),
+        });
+        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir };
+        const holder = yield* runSteps([step("holder", 2)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        const landing = yield* runSteps([step("landing", 1)], { ...options, landing: true }).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("100 millis");
+        const markerPath = NodePath.join(dir, `landing-wait-${process.pid}.sqlite`);
+        assert.isTrue(NodeFS.existsSync(markerPath));
+        // Hold the marker file open while the landing run takes the freed slot and unmarks itself.
+        const probe = new NodeSqlite.DatabaseSync(markerPath);
+        try {
+          for (let second = 0; second < 4; second++) yield* TestClock.adjust("1 second");
+          const [holderResults, landingResults] = yield* Effect.all([
+            Fiber.join(holder),
+            Fiber.join(landing),
+          ]);
+          assert.strictEqual(holderResults[0]?.outcome, "pass");
+          assert.strictEqual(landingResults[0]?.outcome, "pass");
+        } finally {
+          probe.close();
+        }
+        // Once the probe closes, a later non-landing run takes a slot and removes any leftover marker.
+        const after = yield* runSteps([step("after", 0)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        const afterResults = yield* Fiber.join(after);
+        assert.strictEqual(afterResults[0]?.outcome, "pass");
+        assert.isFalse(NodeFS.existsSync(markerPath));
+      }),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;

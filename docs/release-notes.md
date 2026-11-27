@@ -1,3 +1,7 @@
+## 2026-11-27 — Landing checks tolerate concurrent marker probes on Windows
+
+- On Windows, `check:changed` runs under a landing turn no longer fail with `EPERM` when removing their `landing-wait-*.sqlite` marker file while another `check:changed` run probes it, and marker probes ignore SQLite sidecar files.
+
 ## 2026-11-27 — Calm status colors
 
 - Status colors are calm by default on web, desktop and mobile. Working, Waiting, Done and other healthy statuses show in gray, each with its own icon. Only what needs you keeps color: amber when you need to answer and red when something failed. On web and desktop, status dots differ by shape: solid for running, hollow for waiting, square for done and a diamond for a ready plan.
