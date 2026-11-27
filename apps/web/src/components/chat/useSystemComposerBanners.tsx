@@ -19,7 +19,7 @@ import {
 } from "../../hooks/useEnvironmentDisconnectDelay";
 import { serverEnvironment } from "../../state/server";
 import { type EnvironmentPresentation } from "../../state/environments";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { ENVIRONMENT_RECONNECT_WARNING_GRACE_MS } from "../ChatView.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useReconnectEnvironment } from "../../hooks/useReconnectEnvironment";
@@ -135,8 +135,8 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
   const serverUpdateFailureDismissed =
     serverUpdateState === dismissedServerUpdateState ||
     isServerUpdateFailureDismissed(serverUpdateState);
-  return (() => {
-    const items: ComposerBannerStackItem[] = [];
+  return ((): ThreadNotice[] => {
+    const items: ThreadNotice[] = [];
     const updateRunning = serverUpdateState.status === "running";
     const unavailableConnection = activeEnvironmentUnavailableState?.connection ?? null;
     const disconnectAction =
@@ -168,6 +168,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     if (showUnavailableBanner) {
       items.push({
         id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
+        producer: "environmentUnavailable",
         variant: unavailableConnection.phase === "error" ? "error" : "warning",
         group: "environment",
         icon: <WifiOffIcon />,
@@ -208,6 +209,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
       const updateFailed = serverUpdateState.status === "failed";
       items.push({
         id: `server-version:${serverUpdateEnvironmentId}`,
+        producer: "serverUpdate",
         variant: updateFailed ? "error" : "default",
         group: "environment",
         icon: <ComposerServerUpdateIcon status={serverUpdateState.status} />,
@@ -247,5 +249,5 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     }
     if (autoBalanceUpdateBanner) items.push(autoBalanceUpdateBanner);
     return items;
-  })() as ComposerBannerStackItem[];
+  })();
 }

@@ -116,7 +116,8 @@ import {
 import { ComposerBanner } from "./ComposerBanner";
 import { ComposerPlanModeChip } from "./ComposerPlanModeChip";
 import { ComposerSurface } from "./ComposerSurface";
-import { ComposerBannerStack, type ComposerBannerStackItem } from "./ComposerBannerStack";
+import { ThreadNoticeSlot, ThreadNoticeStatus, useThreadNoticeSlot } from "./ThreadNoticeSlot";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import {
   attachmentsToReleaseOnUploadCapabilityLoss,
   composerOtherFilesForPresentation,
@@ -377,7 +378,7 @@ export interface ChatComposerProps {
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   isCompacting: boolean;
-  bannerItems: readonly ComposerBannerStackItem[];
+  bannerItems: readonly ThreadNotice[];
   resumeCompactionTokens: number | null;
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
@@ -2385,13 +2386,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   // An open question owns the space above the composer. Only a machine problem,
   // which is why an answer could not go through, stays beside it.
-  const bannerItems: readonly ComposerBannerStackItem[] =
+  const bannerItems: readonly ThreadNotice[] =
     runtimeModeCeilingDenial === undefined || activePendingProgress
       ? props.bannerItems
       : [
           ...props.bannerItems,
           {
             id: "managed-runtime-mode",
+            producer: "managedRuntimeMode",
             variant: "warning",
             icon: <BuildingIcon />,
             title: runtimeModeCeilingDenial,
@@ -2418,6 +2420,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           item.group === "environment" && (item.variant === "error" || item.variant === "warning"),
       )
     : bannerItems;
+  const noticeSlot = useThreadNoticeSlot(shelfItems);
 
   const insertComposerText = (
     text: string,
@@ -3232,7 +3235,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     >
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
-          <ComposerBannerStack items={shelfItems} />
+          <ThreadNoticeSlot slot={noticeSlot} />
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
@@ -3270,6 +3273,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           onToggleMenu={toggleStashMenuStable}
         />
       </ComposerBanner.Dock>
+      <ThreadNoticeStatus slot={noticeSlot} />
       <div className="relative">
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}

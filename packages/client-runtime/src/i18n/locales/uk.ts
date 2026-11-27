@@ -2911,6 +2911,7 @@ const catalog: MessageCatalog = {
   "Branch changed · Tap to choose a new line":
     "Гілку змінено · Торкніться, щоб вибрати новий рядок",
   "Branch changed from": "Гілку змінено з",
+  "Branch changed from {from}": "Гілку змінено з {from}",
   "Branch copied": "Гілку скопійовано",
   "Branch deleted": "Гілку видалено",
   "Branch has diverged from upstream. Rebase/merge first.":
@@ -3040,6 +3041,7 @@ const catalog: MessageCatalog = {
   "Can't connect to this machine.": "Не вдається підключитися до цього комп’ютера.",
   "Can't find a setting? Keep this project picked above and hop to any other settings page.":
     "Не знаходите налаштування? Залиште вибраним цей проєкт угорі й перейдіть на будь-яку іншу сторінку налаштувань.",
+  "Can't send": "Не надсилається",
   cancel: "скасувати",
   Cancel: "Скасувати",
   "Cancel {name} sign-in": "Скасувати вхід у {name}",
@@ -8835,6 +8837,7 @@ const catalog: MessageCatalog = {
   "Other files": "Інші файли",
   "Other folders": "Інші папки",
   "Other Models": "Інші моделі",
+  "Other notices": "Інші сповіщення",
   "Other paired clients will need a new pairing link before reconnecting.":
     "Іншим сполученим клієнтам знадобиться нове посилання сполучення, щоб підключитися знову.",
   "Other shortcuts": "Інші скорочення",
@@ -9314,6 +9317,7 @@ const catalog: MessageCatalog = {
   "Provider setup is read-only.": "Налаштування провайдера доступне лише для читання.",
   "Provider sign-in failed. Try again.": "Не вдалося увійти до провайдера. Спробуйте ще раз.",
   "Provider sign-in terminal": "Термінал входу до провайдера",
+  "Provider status": "Стан провайдера",
   "Provider status refreshed.": "Статус провайдерів оновлено.",
   "Provider status unavailable. Open Settings -> Source control and rescan.":
     "Статус провайдера недоступний. Відкрийте Налаштування → Керування версіями та скануйте ще раз.",
@@ -11067,6 +11071,18 @@ const catalog: MessageCatalog = {
     few: "Показати ще {count} зображення",
     many: "Показати ще {count} зображень",
     other: "Показати ще {count} зображення",
+  },
+  "Show {count} more notices": {
+    one: "Показати ще {count} сповіщення",
+    few: "Показати ще {count} сповіщення",
+    many: "Показати ще {count} сповіщень",
+    other: "Показати ще {count} сповіщення",
+  },
+  "Show {count} more notices, most urgent: {tier}": {
+    one: "Показати ще {count} сповіщення, найтерміновіше: {tier}",
+    few: "Показати ще {count} сповіщення, найтерміновіше: {tier}",
+    many: "Показати ще {count} сповіщень, найтерміновіше: {tier}",
+    other: "Показати ще {count} сповіщення, найтерміновіше: {tier}",
   },
   "Show {count} more settled threads": {
     one: "Показати ще {count} завершений чат",

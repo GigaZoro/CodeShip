@@ -1,3 +1,8 @@
+## 2026-11-27 — One notice above the composer at a time
+
+- A thread shows its most urgent notice in a single line above the composer instead of stacking every notice. What stops sending comes first, then what needs you, failures, usage-limit recovery and information; equally urgent notices show the newest first.
+- A **+N** button names the most urgent notice it hides and lists the rest, each with its own actions. Screen readers announce only the notice in front, and only notices that block sending, need you or failed are coloured.
+
 ## 2026-11-26 — Windows command cleanup respects reused process IDs
 
 - When CodeShip detects that another process has taken a command's PID, it remembers that process's start time so cleanup can spare its children even after it has exited.

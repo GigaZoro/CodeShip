@@ -12,7 +12,7 @@ import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { LimitWindows, ResetCredits } from "../usage/UsageLimits";
 import { ComposerBanner } from "./ComposerBanner";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 
 function accountLabel(account: UsageLimitsReport["accounts"][number]): string {
   if (!account.instanceId) return account.label;
@@ -51,7 +51,7 @@ export function usageLimitsBannerItem(
   report: UsageLimitsReport,
   environmentId: EnvironmentId,
   onDismiss: () => void,
-): ComposerBannerStackItem {
+): ThreadNotice {
   const [first] = report.accounts;
   const single = report.accounts.length === 1 && first ? first : null;
   const summary = single ? (
@@ -61,6 +61,7 @@ export function usageLimitsBannerItem(
   );
   return {
     id,
+    producer: "usageLimits",
     variant: "info",
     icon: <GaugeIcon />,
     title: t("Usage limits"),
@@ -117,9 +118,10 @@ export function modelFallbackBannerItem({
   readonly timestampFormat: TimestampFormat;
   readonly onUseDefault: () => void;
   readonly onDismiss: () => void;
-}): ComposerBannerStackItem {
+}): ThreadNotice {
   return {
     id: "fallback-model",
+    producer: "modelFallback",
     variant: "info",
     icon: <GaugeIcon />,
     title: t("Using {model}", { model: fallbackModelName }),

@@ -5,7 +5,7 @@ import { ClockIcon } from "lucide-react";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { type QueuedThreadMessage, useThreadOutboxStore } from "../../threadOutboxStore";
 import { Button } from "../ui/button";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { t, tn } from "~/i18n";
 
 const NO_MESSAGES: ReadonlyArray<QueuedThreadMessage> = [];
@@ -18,7 +18,7 @@ export function useQueuedMessagesBanner(input: {
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId | null;
   readonly machineLabel: string | null;
-}): ComposerBannerStackItem | null {
+}): ThreadNotice | null {
   const { environmentId, threadId } = input;
   const messages = useThreadOutboxStore((state) =>
     environmentId === null || threadId === null ? NO_MESSAGES : state.messages,
@@ -37,6 +37,7 @@ export function useQueuedMessagesBanner(input: {
   const machine = input.machineLabel ?? t("its machine");
   return {
     id: `queued-messages:${environmentId}:${threadId}`,
+    producer: "queuedMessages",
     variant: failed ? "error" : "info",
     icon: <ClockIcon />,
     title: failed
