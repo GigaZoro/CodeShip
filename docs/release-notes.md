@@ -1,3 +1,7 @@
+## 2026-11-27 — Antigravity no longer drops a workflow skill into your project
+
+- On Antigravity 1.5.2, a session or delegate no longer writes `skills/system/run-workflow/SKILL.md` into the project folder, where it could be committed with your work. T3.CodeShip keeps Antigravity's `run_workflow` tool off on every runtime from 1.4.2 on; delete a copy an earlier session left behind.
+
 ## 2026-11-27 — Antigravity reviews on Claude Opus when Gemini runs out
 
 - When every Antigravity account has used up its Gemini quota, Auto mode's cross-provider review runs on Antigravity's Claude Opus on an account whose separate Claude/GPT-OSS quota has room, instead of offering no Antigravity reviewer. Gemini 4 Neon on any account with room still comes first.
