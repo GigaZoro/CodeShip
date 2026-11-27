@@ -138,7 +138,12 @@ const SLOT_POLL_INTERVAL = "1 second";
 // Every run sharing `directory` draws from this budget. A slot is an open exclusive
 // transaction on its file, which the OS releases when the process exits, killed or not.
 // Open the files only through SQLite: closing any other handle drops this process's lock.
-const sharedBudget = (directory: string, size: number, landing: boolean) => {
+const sharedBudget = (
+  directory: string,
+  size: number,
+  landing: boolean,
+  platform: NodeJS.Platform,
+) => {
   const files = Array.from({ length: size }, (_, index) =>
     NodePath.join(directory, `slot-${index}.sqlite`),
   );
@@ -165,10 +170,22 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   let marker: NodeSqlite.DatabaseSync | undefined;
   const markLanding = () => {
     if (!landing || marker) return;
-    marker = new NodeSqlite.DatabaseSync(
-      NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`),
-    );
-    marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    const file = NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`);
+    const db = new NodeSqlite.DatabaseSync(file);
+    try {
+      db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    } catch (cause) {
+      db.close();
+      // Another run's stale-marker check holds it for a moment; the next take marks again.
+      if (isSqliteBusy(cause)) return;
+      throw cause;
+    }
+    // That check may have removed the file before this lock; a lock on a removed file holds nobody back.
+    if (!NodeFS.existsSync(file)) {
+      db.close();
+      return;
+    }
+    marker = db;
   };
   const unmarkLanding = () => {
     if (!marker) return;
@@ -181,20 +198,31 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
       // A held marker's -journal file is not a database.
-      .filter((name) => /^landing-wait-\d+\.sqlite$/.test(name))
+      .filter((name) => name.startsWith(markerPrefix) && name.endsWith(".sqlite"))
       .some((name) => {
         const file = NodePath.join(directory, name);
         const db = new NodeSqlite.DatabaseSync(file);
         try {
           db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
         } catch (cause) {
+          db.close();
           if (isSqliteBusy(cause)) return true;
           throw cause;
-        } finally {
-          db.close();
         }
-        // Nobody held it: a marker its landing left behind.
-        NodeFS.rmSync(file, { force: true });
+        // Nobody held it: a marker its landing left behind. Remove it while still locked, so a landing
+        // reopening the name meanwhile fails its lock and retries; Windows cannot remove an open file.
+        if (platform !== "win32") NodeFS.rmSync(file, { force: true });
+        db.close();
+        if (platform === "win32") {
+          try {
+            NodeFS.rmSync(file, { force: true });
+          } catch (cause) {
+            const code = (cause as NodeJS.ErrnoException).code;
+            // A landing opened it again since the close.
+            if (code === "EBUSY" || code === "EPERM") return true;
+            throw cause;
+          }
+        }
         return false;
       });
 
@@ -228,8 +256,8 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
 
   /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
   const take = Effect.fnUntraced(function* (max: number) {
-    yield* Effect.try({ try: markLanding, catch: String });
     for (;;) {
+      yield* Effect.try({ try: markLanding, catch: String });
       const signal = freed;
       const held = yield* Effect.uninterruptible(
         lockFree(max).pipe(
@@ -323,7 +351,12 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
   },
 ) {
   const stopped = yield* Deferred.make<void>();
-  const budget = sharedBudget(options.slotDirectory, options.concurrency, options.landing ?? false);
+  const budget = sharedBudget(
+    options.slotDirectory,
+    options.concurrency,
+    options.landing ?? false,
+    yield* HostProcess.Platform,
+  );
   // Steps claim budget one at a time, in order, so a step later in the list
   // never starts ahead of one still waiting for a slot.
   const admission = yield* Semaphore.make(1);
@@ -342,7 +375,7 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
       const stoppedResult = () => ({
         name: step.name,
         outcome: "STOPPED" as const,
-        time: "stopped",
+        time: "",
         note: [],
       });
       const timed = Effect.fnUntraced(function* (slots: number) {

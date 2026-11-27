@@ -242,6 +242,13 @@ describe("check:changed", () => {
       ],
     },
     {
+      platform: "linux",
+      landing: true,
+      attempts: ([first, middle, , independent]: Keys) => [
+        { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
+      ],
+    },
+    {
       platform: "win32",
       attempts: ([first, middle, last, independent]: Keys) => [
         { limit: 2, completed: [], tasks: [hit(first), failed(middle, 1), failed(independent, 1)] },
@@ -251,8 +258,8 @@ describe("check:changed", () => {
       ],
     },
   ])(
-    "resumes after a middle server failure and an interrupted independent group on $platform",
-    ({ platform, attempts: plan }) =>
+    "resumes after a middle server failure and an interrupted independent group on $platform (landing: $landing)",
+    ({ platform, landing = false, attempts: plan }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const directory = yield* slotDirectory;
@@ -275,57 +282,31 @@ describe("check:changed", () => {
         const attempts = plan(
           cachedTestTasks(JSON.stringify(request))["test-cache"]!.dependsOn! as Keys,
         );
-        const expected = attempts.map(report).join("");
-        const result = yield* runTestGroups(cache, requestFile, request, 2, platform, (limit) =>
-          Effect.gen(function* () {
-            const attempt = attempts.shift()!;
-            assert.strictEqual(limit, attempt.limit);
-            const requested = JSON.parse(yield* fs.readFileString(requestFile));
-            assert.deepStrictEqual(requested.completed, attempt.completed);
-            yield* fs.writeFileString(summaryFile, JSON.stringify({ tasks: attempt.tasks }));
-            return { ok: false, output: report(attempt) };
-          }).pipe(Effect.orDie),
+        const expected =
+          attempts.map(report).join("") +
+          (landing
+            ? "\ncheck:changed: a test group failed under the landing turn; the remaining groups were not run.\n"
+            : "");
+        const result = yield* runTestGroups(
+          cache,
+          requestFile,
+          request,
+          2,
+          platform,
+          (limit) =>
+            Effect.gen(function* () {
+              const attempt = attempts.shift()!;
+              assert.strictEqual(limit, attempt.limit);
+              const requested = JSON.parse(yield* fs.readFileString(requestFile));
+              assert.deepStrictEqual(requested.completed, attempt.completed);
+              yield* fs.writeFileString(summaryFile, JSON.stringify({ tasks: attempt.tasks }));
+              return { ok: false, output: report(attempt) };
+            }).pipe(Effect.orDie),
+          { landing },
         );
         assert.deepStrictEqual(attempts, []);
         assert.deepStrictEqual(result, { ok: false, output: expected });
       }).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("stops at the first failing test group under the landing turn", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const directory = yield* slotDirectory;
-      const cache = NodePath.join(directory, "cache");
-      const version = NodePath.join(cache, "v18");
-      yield* fs.makeDirectory(version, { recursive: true });
-      const request = {
-        files: ["apps/server/a.test.ts", "packages/client-runtime/d.test.ts"],
-        groupSize: 1,
-        uncached: [],
-      };
-      const [server, independent] = cachedTestTasks(JSON.stringify(request))["test-cache"]!
-        .dependsOn!;
-      let runs = 0;
-      const result = yield* runTestGroups(
-        cache,
-        NodePath.join(directory, "request.json"),
-        request,
-        2,
-        "linux",
-        () =>
-          Effect.gen(function* () {
-            runs++;
-            yield* fs.writeFileString(
-              NodePath.join(version, "last-summary.json"),
-              JSON.stringify({ tasks: [failed(server!, 1), failed(independent!, 137)] }),
-            );
-            return { ok: false, output: "a failed\n" };
-          }).pipe(Effect.orDie),
-        { landing: true },
-      );
-      assert.strictEqual(runs, 1);
-      assert.isFalse(result.ok);
-    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect.each([true, false])(
@@ -748,6 +729,30 @@ describe("check:changed", () => {
       yield* TestClock.adjust("1 second");
       yield* Fiber.join(other);
       assert.deepStrictEqual(started, ["other"]);
+    }),
+  );
+
+  it.effect("runs a landing whose marker another run's stale-marker check holds for a moment", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const checker = new NodeSqlite.DatabaseSync(
+            NodePath.join(directory, `landing-wait-${process.pid}.sqlite`),
+          );
+          checker.exec("BEGIN EXCLUSIVE;");
+          return checker;
+        }),
+        (checker) => Effect.sync(() => checker.close()),
+      );
+      const results = yield* runSteps(
+        [{ name: "landing", run: () => Effect.succeed({ ok: true, output: "" }) }],
+        { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
+      );
+      assert.deepStrictEqual(
+        results.map((result) => result.outcome),
+        ["pass"],
+      );
     }),
   );
 

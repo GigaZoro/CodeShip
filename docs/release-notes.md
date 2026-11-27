@@ -1,3 +1,8 @@
+## 2026-11-27 — Landing checks stop at the first failure and keep the machine
+
+- Maintainers: under main's landing turn, `vp run check:changed` now stops at the first failing step or test group instead of finishing every other step, so a failed landing releases the turn sooner. Runs outside the landing turn still report every failure.
+- The landing run keeps its check-budget priority for its whole run, so other worktrees' checks start no new step until it ends; a crashed landing still blocks nobody.
+
 ## 2026-11-27 — One-shot usage and cross-thread work carry the demand they serve
 
 - One-shot text generation on Claude and Codex now reports measured token counts (input, cache read, cache write, and output) into the local `text_generation_usage` ledger, keeping unreported counts as `NULL` and recording an unknown row when a started call times out or is interrupted.
