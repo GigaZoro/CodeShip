@@ -27,10 +27,11 @@ const SLOW_NOTIFICATION_HANDLER = Duration.seconds(1);
 
 interface RequestHandlerState {
   parked: boolean;
+  answered: boolean;
   ended: boolean;
 }
 
-/** The server request whose handler the current fiber runs; see `parkRequestHandler`. */
+/** The server request whose handler the current fiber runs; see `requestHandlerWaitpoint`. */
 const CurrentRequestHandler = Context.Reference<RequestHandlerState | undefined>(
   "effect-codex-app-server/protocol/CurrentRequestHandler",
   { defaultValue: () => undefined },
@@ -95,16 +96,25 @@ export interface CodexAppServerPatchedProtocol {
     error: CodexError.CodexAppServerRequestError,
   ) => Effect.Effect<void, CodexError.CodexAppServerError>;
   /**
-   * Called by a server-request handler that has emitted all it will before it waits for an
-   * answer. Returns the effect that ends the wait; the answering side runs it before it answers,
-   * so the handler counts as busy again until its response is queued.
+   * The waitpoint of the server request the current handler serves. The handler parks once it
+   * has emitted all it will; the answering side marks it answered before it answers, so the
+   * handler counts as busy again until its response is queued.
    */
-  readonly parkRequestHandler: Effect.Effect<Effect.Effect<void>>;
+  readonly requestHandlerWaitpoint: Effect.Effect<CodexRequestHandlerWaitpoint>;
   /** Waits until every dispatched server-request handler is parked or has queued its response. */
   readonly awaitRequestHandlersParked: Effect.Effect<void>;
   /** Waits until everything queued so far is written to the app server's stdin. */
   readonly flushOutgoing: Effect.Effect<void>;
 }
+
+export interface CodexRequestHandlerWaitpoint {
+  /** Parks the handler unless it was already answered. */
+  readonly park: Effect.Effect<void>;
+  /** Marks the handler answered, so it counts as busy until it ends. */
+  readonly answer: Effect.Effect<void>;
+}
+
+const IDLE_WAITPOINT: CodexRequestHandlerWaitpoint = { park: Effect.void, answer: Effect.void };
 
 interface CodexAppServerPendingRequest {
   readonly deferred: Deferred.Deferred<unknown, CodexError.CodexAppServerError>;
@@ -366,7 +376,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
                 );
               }
 
-              const state: RequestHandlerState = { parked: false, ended: false };
+              const state: RequestHandlerState = { parked: false, answered: false, ended: false };
               changeUnparkedRequestHandlers(1);
               return handler(request).pipe(
                 Effect.provideService(CurrentRequestHandler, state),
@@ -613,16 +623,23 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         ...(payload !== undefined ? { params: payload } : {}),
       });
 
-    const parkRequestHandler = Effect.gen(function* () {
+    const requestHandlerWaitpoint = Effect.gen(function* () {
       const state = yield* CurrentRequestHandler;
-      if (state === undefined || state.parked || state.ended) return Effect.void;
-      state.parked = true;
-      changeUnparkedRequestHandlers(-1);
-      return Effect.sync(() => {
-        if (state.ended || !state.parked) return;
-        state.parked = false;
-        changeUnparkedRequestHandlers(1);
-      });
+      if (state === undefined) return IDLE_WAITPOINT;
+      const waitpoint: CodexRequestHandlerWaitpoint = {
+        park: Effect.sync(() => {
+          if (state.parked || state.answered || state.ended) return;
+          state.parked = true;
+          changeUnparkedRequestHandlers(-1);
+        }),
+        answer: Effect.sync(() => {
+          state.answered = true;
+          if (!state.parked || state.ended) return;
+          state.parked = false;
+          changeUnparkedRequestHandlers(1);
+        }),
+      };
+      return waitpoint;
     });
 
     const awaitRequestHandlersParked = Effect.suspend(() => {
@@ -646,7 +663,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       notify,
       respond,
       respondError,
-      parkRequestHandler,
+      requestHandlerWaitpoint,
       awaitRequestHandlersParked,
       flushOutgoing,
     } satisfies CodexAppServerPatchedProtocol;
