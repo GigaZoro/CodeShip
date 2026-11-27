@@ -9969,64 +9969,58 @@ describe("codexDynamicToolOutput", () => {
 const sessionHostCodexSettings = Schema.decodeSync(CodexSettings)({ binaryPath: "codex-bin" });
 
 describe("layerAppServerClientFactory with a session host", () => {
-  it.effect(
-    "launches the broker's app server through the agent scope, as a direct spawn does",
-    () =>
-      Effect.gen(function* () {
-        const wrapped: Array<Parameters<AgentScopeShape["wrap"]>[0]> = [];
-        const spawned: Array<SessionHostService.SpawnSessionHostInput> = [];
-        const agentScope: AgentScopeShape = {
-          ...(yield* AgentScope),
-          wrap: (input) => {
-            wrapped.push(input);
-            return Effect.succeed({
-              command: "/bin/sh",
-              args: ["-c", "scoped", "--", input.command, ...input.args],
-            });
-          },
-        };
-        const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
-          spawnChildProcessHandle: (input) => {
-            spawned.push(input);
-            return Effect.die("the broker is not started in this test");
-          },
-        });
-        const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
-          Effect.provide(
-            CodexAdapterV2.layerAppServerClientFactory.pipe(
-              Layer.provide(sessionHost),
-              Layer.provide(
-                Layer.succeed(
-                  ProviderEventLoggers.ProviderEventLoggers,
-                  ProviderEventLoggers.NoOpProviderEventLoggers,
-                ),
+  it.effect("launches the broker's app server without a second agent scope", () =>
+    Effect.gen(function* () {
+      const wrapped: Array<Parameters<AgentScopeShape["wrap"]>[0]> = [];
+      const spawned: Array<SessionHostService.SpawnSessionHostInput> = [];
+      const agentScope: AgentScopeShape = {
+        ...(yield* AgentScope),
+        wrap: (input) => {
+          wrapped.push(input);
+          return Effect.succeed({
+            command: "/bin/sh",
+            args: ["-c", "scoped", "--", input.command, ...input.args],
+          });
+        },
+      };
+      const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
+        spawnChildProcessHandle: (input) => {
+          spawned.push(input);
+          return Effect.die("the broker is not started in this test");
+        },
+      });
+      const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+        Effect.provide(
+          CodexAdapterV2.layerAppServerClientFactory.pipe(
+            Layer.provide(sessionHost),
+            Layer.provide(
+              Layer.succeed(
+                ProviderEventLoggers.ProviderEventLoggers,
+                ProviderEventLoggers.NoOpProviderEventLoggers,
               ),
-              Layer.provide(NodeServices.layer),
             ),
+            Layer.provide(NodeServices.layer),
           ),
-          Effect.provideService(AgentScope, agentScope),
-        );
-        const threadId = ThreadId.make("thread-session-host-scope");
-        const exit = yield* factory
-          .open({
-            instanceId: ProviderInstanceId.make("codex"),
-            threadId,
-            providerSessionId: ProviderSessionId.make("provider-session-host-scope"),
-            runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
-            settings: sessionHostCodexSettings,
-            environment: {},
-          })
-          .pipe(Effect.scoped, Effect.exit);
-        assert.isTrue(Exit.isFailure(exit));
-        assert.equal(wrapped.length, 1);
-        assert.equal(wrapped[0]?.name, "codex");
-        assert.equal(wrapped[0]?.threadId, threadId);
-        assert.equal(wrapped[0]?.shared, true);
-        assert.equal(wrapped[0]?.survivesRestart, true);
-        assert.equal(spawned.length, 1);
-        assert.equal(spawned[0]?.command, "/bin/sh");
-        assert.deepEqual(spawned[0]?.args.slice(0, 4), ["-c", "scoped", "--", "codex-bin"]);
-        assert.equal(spawned[0]?.shell, false);
-      }),
+        ),
+        Effect.provideService(AgentScope, agentScope),
+      );
+      const threadId = ThreadId.make("thread-session-host-scope");
+      const exit = yield* factory
+        .open({
+          instanceId: ProviderInstanceId.make("codex"),
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-host-scope"),
+          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+          settings: sessionHostCodexSettings,
+          environment: {},
+        })
+        .pipe(Effect.scoped, Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      assert.deepEqual(wrapped, []);
+      assert.equal(spawned.length, 1);
+      assert.equal(spawned[0]?.command, "codex-bin");
+      assert.equal(spawned[0]?.threadId, threadId);
+      assert.equal(spawned[0]?.shell, false);
+    }),
   );
 });

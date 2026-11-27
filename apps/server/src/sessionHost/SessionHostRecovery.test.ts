@@ -19,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -759,6 +760,54 @@ const isolatedBaseLayer = (tempBaseDir: string) =>
   Layer.mergeAll(Sqlite.layerMemory, ServerConfig.layerTest(tempBaseDir, tempBaseDir)).pipe(
     Layer.provideMerge(NodeServices.layer),
   );
+
+it.live.skipIf(isWindowsHost)(
+  "gives the broker the provider process's agent scope, which its child stays in",
+  () => {
+    const tempBaseDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-session-host-scope-"),
+    );
+    const wrapped: Array<Parameters<AgentScopeShape["wrap"]>[0]> = [];
+    const recordingScope: AgentScopeShape = {
+      ...AgentScope.defaultValue(),
+      wrap: (input) => {
+        wrapped.push(input);
+        return Effect.succeed({ command: input.command, args: input.args });
+      },
+    };
+    const threadId = ThreadId.make("thread_scope");
+
+    return Effect.gen(function* () {
+      const sessionHost = yield* SessionHostService.SessionHostService;
+      const handle = yield* sessionHost.spawn({
+        providerSessionId: ProviderSessionId.make("ps_scope"),
+        threadId,
+        driver: "codex",
+        command: process.execPath,
+        args: ["-e", ECHO_CHILD_SCRIPT],
+        cwd: tempBaseDir,
+        env: process.env,
+      });
+      yield* Effect.promise(() => readNextLine(handle.stdout));
+      yield* sessionHost.terminate(handle.sessionHostId);
+
+      assert.equal(wrapped.length, 1);
+      assert.include(wrapped[0], {
+        name: "codex",
+        threadId,
+        shared: true,
+        survivesRestart: true,
+      });
+    }).pipe(
+      Effect.provide(sessionHostLayer),
+      Effect.provideService(AgentScope, recordingScope),
+      Effect.ensuring(
+        Effect.sync(() => NodeFS.rmSync(tempBaseDir, { recursive: true, force: true })),
+      ),
+      Effect.provide(isolatedBaseLayer(tempBaseDir)),
+    );
+  },
+);
 
 /** Spawns a host in a service that then closes, as a server does when it stops. */
 const spawnHostInClosedService = (tempBaseDir: string, detachForUpdate: boolean) =>

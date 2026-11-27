@@ -1551,35 +1551,25 @@ interface CodexAppServerLaunchInput {
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly extendEnv?: boolean | undefined;
   readonly threadId?: string | undefined;
-  /** A session host keeps the app server through a planned update, so its scope must too. */
-  readonly survivesRestart?: boolean | undefined;
 }
-
-/** One launch recipe for every app server, spawned directly or by a session host broker. */
-const resolveCodexAppServerLaunch = Effect.fn("CodexAdapterV2.resolveCodexAppServerLaunch")(
-  function* (input: CodexAppServerLaunchInput) {
-    const launch = yield* (yield* AgentScope).wrap({
-      command: input.command,
-      args: input.args,
-      name: "codex",
-      threadId: input.threadId,
-      env: input.env,
-      cwd: input.cwd,
-      shared: true,
-      ...(input.survivesRestart === true ? { survivesRestart: true } : {}),
-    });
-    return yield* resolveSpawnCommand(launch.command, launch.args, {
-      cwd: input.cwd,
-      ...(input.env === undefined ? {} : { env: input.env }),
-      ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
-    });
-  },
-);
 
 export const makeCodexAppServerSpawnCommand = Effect.fn(
   "CodexAdapterV2.makeCodexAppServerSpawnCommand",
 )(function* (input: CodexAppServerLaunchInput) {
-  const spawnCommand = yield* resolveCodexAppServerLaunch(input);
+  const launch = yield* (yield* AgentScope).wrap({
+    command: input.command,
+    args: input.args,
+    name: "codex",
+    threadId: input.threadId,
+    env: input.env,
+    cwd: input.cwd,
+    shared: true,
+  });
+  const spawnCommand = yield* resolveSpawnCommand(launch.command, launch.args, {
+    cwd: input.cwd,
+    ...(input.env === undefined ? {} : { env: input.env }),
+    ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
+  });
   return ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     ...(input.env === undefined ? {} : { env: input.env }),
@@ -1733,14 +1723,11 @@ export const layerAppServerClientFactory: Layer.Layer<
           handle = adopted.childProcess;
         } else if (Option.isSome(sessionHostOption)) {
           const sessionHost = sessionHostOption.value;
-          const launch = yield* resolveCodexAppServerLaunch({
-            command: binaryCommand,
-            args: launchArgs,
+          // Unwrapped: the broker's agent scope already holds the app server.
+          const launch = yield* resolveSpawnCommand(binaryCommand, launchArgs, {
             cwd: workingDirectory,
             env: environment,
-            threadId: input.threadId,
-            survivesRestart: true,
-          }).pipe(Effect.provideService(AgentScope, agentScope));
+          });
           const detached = yield* sessionHost
             .spawnChildProcessHandle({
               providerSessionId: input.providerSessionId,

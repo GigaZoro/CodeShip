@@ -520,11 +520,12 @@ const make = Effect.gen(function* () {
   const launchDetachedBrokerProcess = Effect.fn("SessionHostService.launchDetachedBrokerProcess")(
     function* (
       configPath: string,
-      cwd: string,
+      input: SpawnSessionHostInput,
     ): Effect.fn.Return<
       { readonly unit: string | null; readonly pid: number | null },
       SessionHostError
     > {
+      const { cwd } = input;
       const brokerArgs = [...(cliEntry ? [cliEntry] : []), "__session-host", configPath];
       const brokerEnv: Record<string, string> = {
         ...sanitizeEnv(hostEnv),
@@ -532,13 +533,16 @@ const make = Effect.gen(function* () {
       };
 
       if (!isWindows) {
+        // The broker's scope is the provider process's only one: the child it starts stays in it.
         const scoped = Option.isSome(agentScopeOption)
           ? yield* agentScopeOption.value.wrap({
               command: runtime,
               args: brokerArgs,
-              name: "session-host",
+              name: input.driver,
+              threadId: input.threadId,
               env: brokerEnv,
               cwd,
+              shared: true,
               survivesRestart: true,
             })
           : { command: runtime, args: brokerArgs, unit: undefined };
@@ -785,7 +789,7 @@ const make = Effect.gen(function* () {
     yield* storeAuthToken(id, authToken).pipe(
       Effect.tapError(() => Effect.sync(() => safeUnlinkSync(configPath))),
     );
-    const launched = yield* launchDetachedBrokerProcess(configPath, input.cwd).pipe(
+    const launched = yield* launchDetachedBrokerProcess(configPath, input).pipe(
       Effect.tapError(() =>
         Effect.sync(() => safeUnlinkSync(configPath)).pipe(Effect.andThen(removeAuthToken(id))),
       ),
