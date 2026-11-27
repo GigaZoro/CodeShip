@@ -144,6 +144,39 @@ describe("mobile themes", () => {
     }
   });
 
+  // Calm paints thread statuses with only these three (threadStatusToneClasses), in every pane.
+  it.each(MOBILE_THEME_IDS)("keeps %s calm status colors at AA on thread rows", (themeId) => {
+    const failures: string[] = [];
+    for (const appearance of ["light", "dark"] as const) {
+      for (const platform of ["ios", "android"]) {
+        const variables = getMobileThemeRuntimeVariables(themeId, appearance, platform);
+        const screen = variables["--color-screen"];
+        const drawer = flattenThemeColor(variables["--color-drawer"], screen);
+        const surfaces = {
+          screen,
+          drawer,
+          rowHover: flattenThemeColor(variables["--color-row-hover"], screen),
+          threadHover: flattenThemeColor(variables["--color-thread-hover"], drawer),
+        };
+        for (const foreground of [
+          "--color-calm-status-quiet",
+          "--color-calm-status-attention",
+          "--color-calm-status-alarm",
+        ] as const) {
+          for (const [name, surface] of Object.entries(surfaces)) {
+            const ratio = contrastRatio(variables[foreground], surface);
+            if (ratio < 4.5) {
+              failures.push(
+                `${platform} ${appearance}: ${foreground} on ${name} ${ratio.toFixed(2)}`,
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
   it.each(MOBILE_THEME_IDS)("keeps %s sidebar text readable on Android", (themeId) => {
     for (const appearance of ["light", "dark"] as const) {
       const variables = getMobileThemeRuntimeVariables(themeId, appearance, "android");

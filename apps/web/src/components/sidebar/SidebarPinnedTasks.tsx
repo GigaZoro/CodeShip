@@ -188,7 +188,7 @@ function IntervalWaitBar(props: { task: ScheduledTask }) {
       className="pointer-events-none absolute inset-x-(--sidebar-row-content-inset) bottom-1 h-0.5 overflow-hidden rounded-full bg-sidebar-foreground/10"
     >
       <span
-        className="block h-full origin-left bg-info-foreground/60"
+        className="block h-full origin-left bg-info-foreground/60 calm:bg-calm-quiet/60"
         style={{ transform: `scaleX(${progress})` }}
       />
     </span>

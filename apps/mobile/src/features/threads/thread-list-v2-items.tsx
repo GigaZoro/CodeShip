@@ -180,10 +180,14 @@ const THREAD_STATUS_TONE_CLASSES: Record<ThreadStatusTone, StatusToneClasses> = 
   },
 };
 
+/** The Calm look's colors, solved for AA on every surface a thread row sits on (mobileTheme.ts). */
 const THREAD_STATUS_SALIENCE_CLASSES: Record<ThreadStatusSalience, StatusToneClasses> = {
-  calm: THREAD_STATUS_TONE_CLASSES.muted,
-  attention: THREAD_STATUS_TONE_CLASSES.attention,
-  alarm: THREAD_STATUS_TONE_CLASSES.error,
+  calm: { className: "text-calm-status-quiet", iconTintClassName: "accent-calm-status-quiet" },
+  attention: {
+    className: "text-calm-status-attention",
+    iconTintClassName: "accent-calm-status-attention",
+  },
+  alarm: { className: "text-calm-status-alarm", iconTintClassName: "accent-calm-status-alarm" },
 };
 
 export function threadStatusToneClasses(

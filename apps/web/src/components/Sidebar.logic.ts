@@ -64,7 +64,7 @@ import {
   resolveSidebarProjectScopeKeys,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { normalizeSearchText } from "../lib/utils";
+import { cn, normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { observeIntersection } from "../lib/observeIntersection";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -1515,17 +1515,27 @@ const CALM_PILL_SALIENCE_CLASSES: Record<
   alarm: { colorClass: "calm:text-calm-alarm", dotClass: "calm:bg-calm-alarm" },
 };
 
+/**
+ * Calm paints these tones the same grey without a pulse, and narrow pills hide their label, so the
+ * dot's shape tells them apart: live is a solid circle, waiting hollow, done a square, plan a diamond.
+ */
 const CALM_HOLLOW_DOT_CLASS =
   "calm:bg-transparent calm:ring-1 calm:ring-inset calm:ring-calm-quiet";
+const CALM_DOT_SHAPE_CLASSES: Partial<Record<ThreadStatusTone, string>> = {
+  success: "calm:rounded-[1px]",
+  plan: "calm:rotate-45 calm:rounded-[1px]",
+};
 
 function statusPill(key: ThreadStatusDisplayKey, pulse = false): ThreadStatusPill {
   const { label, tone } = THREAD_STATUS_DISPLAY[key];
   const vivid = PILL_TONE_CLASSES[tone];
   const calm = CALM_PILL_SALIENCE_CLASSES[THREAD_STATUS_TONE_SALIENCE[tone]];
+  const calmDot =
+    tone === "muted" ? CALM_HOLLOW_DOT_CLASS : cn(calm.dotClass, CALM_DOT_SHAPE_CLASSES[tone]);
   return {
     label,
     colorClass: `${vivid.colorClass} ${calm.colorClass}`,
-    dotClass: `${vivid.dotClass} ${tone === "muted" ? CALM_HOLLOW_DOT_CLASS : calm.dotClass}`,
+    dotClass: `${vivid.dotClass} ${calmDot}`,
     pulse,
   };
 }

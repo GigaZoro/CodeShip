@@ -740,27 +740,34 @@ export const CALM_STATUS_VARIABLES = {
 } as const satisfies Record<ThreadStatusSalience, string>;
 
 /**
- * Status text and dots sit on the sidebar, on its hovered, active and selected rows, and on canvas
- * lists. Themes solve their muted and status colors for the canvas alone, so each calm color is
- * solved here for all of those surfaces, keeping its hue.
+ * Status text and dots sit on the sidebar and its hovered, active and selected rows, on canvas
+ * lists and their hovered rows, and on command palette rows (ui/command.tsx tints them with the
+ * text color). Themes solve their muted and status colors for the canvas alone, so each calm color
+ * is solved here for all of those surfaces, keeping its hue.
  */
 export function calmStatusVariables(
   colors: ThemeColors,
 ): Readonly<Record<(typeof CALM_STATUS_VARIABLES)[ThreadStatusSalience], string>> {
-  const opaque = (value: string, under: ThemeRgbColor) => {
+  const opaque = (value: string, under: ThemeRgbColor, coverage = 1) => {
     const parsed = parseThemeColor(value);
     return parsed
-      ? mixThemeRgbColors(under, themeOklchToRgb(parsed.color, false), parsed.alpha)
+      ? mixThemeRgbColors(under, themeOklchToRgb(parsed.color, false), parsed.alpha * coverage)
       : under;
   };
   const canvas = opaque(colors.canvas, THEME_WHITE_FOREGROUND);
   const sidebar = opaque(colors.sidebar, canvas);
+  const popover = opaque(colors.surfaceOverlay, canvas);
   const surfaces = [
     canvas,
     sidebar,
     opaque(colors.sidebarRowHover, sidebar),
     opaque(colors.sidebarRowActive, sidebar),
     opaque(colors.sidebarRowSelected, sidebar),
+    opaque(colors.accentSurface, canvas),
+    popover,
+    opaque(colors.text, popover, 0.06),
+    opaque(colors.text, popover, 0.09),
+    opaque(colors.accentSurface, popover),
   ];
   const contrastOnSurfaces = (color: ThemeRgbColor) =>
     Math.min(...surfaces.map((surface) => themeContrastRatio(color, surface)));
