@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { vi } from "vite-plus/test";
 
+import { PersistenceSqlError } from "../persistence/Errors.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsage.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -90,6 +91,7 @@ const instanceOf = (
 const makeHarness = Effect.fn(function* (options: {
   readonly send: (prompt: string) => Promise<CursorRun>;
   readonly fake?: ProviderInstance["textGeneration"];
+  readonly record?: Effect.Effect<void, PersistenceSqlError>;
 }) {
   let sandboxPolicy = false;
   const send = vi.fn(options.send);
@@ -134,7 +136,9 @@ const makeHarness = Effect.fn(function* (options: {
         }),
         Layer.succeed(TextGenerationUsageRepository.TextGenerationUsageRepository, {
           record: (rows) =>
-            repository.record(rows).pipe(Effect.tap(() => Queue.offer(written, undefined))),
+            (options.record ?? repository.record(rows)).pipe(
+              Effect.tap(() => Queue.offer(written, undefined)),
+            ),
         }),
       ),
     ),
@@ -295,6 +299,35 @@ describe("TextGeneration usage accounting", () => {
           },
         ]);
       }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+
+  it.effect.each([
+    {
+      name: "fails",
+      record: Effect.fail(new PersistenceSqlError({ operation: "recordTextGenerationUsage" })),
+    },
+    { name: "dies", record: Effect.die(new Error("disk gone")) },
+  ])("returns the generation's own result when the ledger write $name", ({ record }) =>
+    Effect.gen(function* () {
+      const replies = ['{"title":"Fix spinner"}', '{"title":123}'];
+      const harness = yield* makeHarness({
+        send: async () => finishedRun({ result: replies.shift() ?? "" }),
+        record,
+      });
+
+      const succeeded = yield* Effect.exit(harness.service.generateThreadTitle(cursorTitle));
+      const failed = yield* Effect.exit(harness.service.generateThreadTitle(cursorTitle));
+
+      expect(succeeded).toEqual(Exit.succeed({ title: "Fix spinner" }));
+      expect(Exit.isFailure(failed) && failed.cause.reasons).toEqual([
+        expect.objectContaining({
+          _tag: "Fail",
+          error: expect.objectContaining({
+            detail: "Cursor SDK returned invalid structured output.",
+          }),
+        }),
+      ]);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
 
   it.effect("stays interrupted and records a send the SDK accepts after interruption", () =>

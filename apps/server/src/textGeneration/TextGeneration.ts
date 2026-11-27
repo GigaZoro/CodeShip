@@ -121,7 +121,8 @@ export const make = Effect.gen(function* () {
         })),
       )
       .pipe(
-        Effect.catch((cause) =>
+        // The ledger runs as the generation's finalizer, so a defect would replace its result.
+        Effect.catchCause((cause) =>
           Effect.logWarning("Could not record text generation usage", { operation, cause }),
         ),
       );
