@@ -185,7 +185,9 @@ describe("providerUsageFields", () => {
           },
           {
             id: "monthly_spend",
+            observedAt: claudeLimits.checkedAt,
             model: null,
+            scope: "spending-cap",
             usedPercent: 100,
             windowMinutes: null,
             resetsAt: null,
