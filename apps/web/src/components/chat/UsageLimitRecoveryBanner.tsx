@@ -22,7 +22,7 @@ import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { Button } from "../ui/button";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { toastManager } from "../ui/toast";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { RetryAccountButton } from "./RetryAccountButton";
 import { copyAdminRequest } from "./ThreadErrorBanner";
 import { t } from "~/i18n";
@@ -42,7 +42,7 @@ type RecoveryProps = {
   signInSettings?: { environmentId: EnvironmentId; instanceId: ProviderInstanceId };
 };
 
-export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBannerStackItem {
+export function usageLimitRecoveryBannerItem(props: RecoveryProps): ThreadNotice {
   const { runId, errorCode, resetAt, stoppedAt, timestampFormat } = props;
   const canSchedule = resetAt !== null && Date.parse(resetAt) > Date.parse(stoppedAt);
   const workspaceLimit = errorCode === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
@@ -57,6 +57,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
   if (!chatGptLimit) {
     return {
       id: `usage-limit-recovery:${runId}`,
+      producer: "usageLimitRecovery",
       variant: "warning",
       icon: <GaugeIcon />,
       title: t("Usage limit reached"),
@@ -67,6 +68,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
   if (appCap) {
     return {
       id: `usage-limit-recovery:${runId}`,
+      producer: "usageLimitRecovery",
       variant: "warning",
       icon: <OpenAI aria-hidden="true" />,
       title: t("ChatGPT's app limit stopped this account"),
@@ -99,6 +101,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
   // OpenAI's partner guidelines specify this ChatGPT notice and its actions.
   return {
     id: `usage-limit-recovery:${runId}`,
+    producer: "usageLimitRecovery",
     variant: "warning",
     icon: <OpenAI aria-hidden="true" />,
     title: t("ChatGPT usage limit reached"),

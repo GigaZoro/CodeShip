@@ -173,7 +173,6 @@ function NoticeCard({
 }) {
   return (
     <ComposerBanner.Root
-      role={item.variant === "error" || item.variant === "warning" ? "alert" : undefined}
       variant={item.variant}
       detached={detached}
       density="comfortable"

@@ -29,7 +29,7 @@ import { Fragment } from "react";
 import { tickTextContent } from "~/lib/tickTextContent";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import type { ThreadNowItem } from "./ThreadNow";
 
 /** Subagents and side chats waiting on the user, unless the parent is itself waiting on them. */
@@ -267,10 +267,12 @@ export function branchMismatchBannerItem(input: {
   readonly restoring: boolean;
   readonly onRestore: () => void;
   readonly onDismiss: () => void;
-}): ComposerBannerStackItem {
+}): ThreadNotice {
   const { mismatch } = input;
   return {
     id: `branch-mismatch:${input.mismatchKey}`,
+    producer: "branchMismatch",
+    announcement: t("Branch changed from {from}", { from: mismatch.threadBranch }),
     variant: "info",
     icon: <GitBranchIcon />,
     title: (

@@ -325,7 +325,8 @@ import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullReq
 import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
-import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { ThreadNoticeSlot, ThreadNoticeStatus, useThreadNoticeSlot } from "./chat/ThreadNoticeSlot";
+import type { ThreadNotice } from "./chat/threadNoticeSlot.logic";
 import { modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
@@ -397,7 +398,7 @@ import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplat
 const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
 const EMPTY_TURN_ITEMS: ThreadStructure["turnItems"] = [];
 const EMPTY_AUTO_UPDATE_ENVIRONMENTS: ReadonlyArray<EnvironmentPresentation> = [];
-const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackItem> = [];
+const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ThreadNotice> = [];
 
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 
@@ -2623,7 +2624,7 @@ export default function ChatView(props: ChatViewProps) {
           },
         })
       : null;
-  const composerBannerItems = (() => {
+  const composerBannerItems = ((): ThreadNotice[] => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
       draftDefaultModelSelection ??
@@ -2645,7 +2646,7 @@ export default function ChatView(props: ChatViewProps) {
     const fallbackWindow = fallback
       ? `${fallback.provider.instanceId}:${fallback.resetsAt ?? ""}`
       : null;
-    const fallbackItems: ComposerBannerStackItem[] =
+    const fallbackItems: ThreadNotice[] =
       fallback &&
       fallbackSelection &&
       defaultSelection &&
@@ -2716,7 +2717,10 @@ export default function ChatView(props: ChatViewProps) {
         },
       }),
     ];
-  })() as ComposerBannerStackItem[];
+  })();
+  const heroNoticeSlot = useThreadNoticeSlot(
+    isDraftHeroState ? composerBannerItems : EMPTY_COMPOSER_BANNER_ITEMS,
+  );
 
   if (
     terminalUiLaunchContext !== null &&
@@ -4032,12 +4036,13 @@ export default function ChatView(props: ChatViewProps) {
                           )}
                         </div>
                       </div>
+                      <ThreadNoticeStatus slot={heroNoticeSlot} />
                       {isDraftHeroState && (composerBannerItems.length > 0 || !embedded) ? (
                         // Out of flow, like the headline, so a notice never moves the centered composer.
                         <div className="absolute inset-x-0 top-full flex flex-col gap-1">
                           {composerBannerItems.length > 0 ? (
                             <div className="flex flex-col gap-1 pt-4">
-                              <ComposerBannerStack items={composerBannerItems} detached />
+                              <ThreadNoticeSlot slot={heroNoticeSlot} detached />
                             </div>
                           ) : null}
                           {embedded ? null : (
