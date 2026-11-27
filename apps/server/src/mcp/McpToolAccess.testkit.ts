@@ -1,4 +1,5 @@
 import {
+  GuestShareId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   ProjectId,
@@ -12,6 +13,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
+import { ProjectionStoreThreadNotFoundError } from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 
 const EPOCH = DateTime.makeUnsafe("2026-01-01T00:00:00.000Z");
@@ -59,9 +62,48 @@ export const liveThreadShell = (
   };
 };
 
-export const liveThreadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
-  getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+export const threadRecordsFromShell = (
+  getThreadShell: ThreadManagement.ThreadManagementService["Service"]["getThreadShell"],
+): Pick<
+  ThreadManagement.ThreadManagementService["Service"],
+  "getThreadShell" | "getThreadRecords"
+> => ({
+  getThreadShell,
+  getThreadRecords: ((threadId: ThreadId) =>
+    getThreadShell(threadId).pipe(
+      Effect.flatMap((shell) => {
+        if (shell === null) {
+          return Effect.fail(
+            new OrchestratorProjectionError({
+              threadId,
+              cause: new ProjectionStoreThreadNotFoundError({ threadId }),
+            }),
+          );
+        }
+        const projection = idleThreadProjection(shell);
+        const guestShare =
+          shell.readOnlyGuestShare === true
+            ? {
+                id: GuestShareId.make(`guest:${threadId}`),
+                host: "guest.example.test",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                expiresAt: "2026-01-02T00:00:00.000Z",
+                guestName: null,
+                messages: [],
+                access: "read-only" as const,
+              }
+            : projection.thread.guestShare;
+        return Effect.succeed({
+          ...projection,
+          thread: { ...projection.thread, ...(guestShare !== undefined ? { guestShare } : {}) },
+        });
+      }),
+    )) as ThreadManagement.ThreadManagementService["Service"]["getThreadRecords"],
 });
+
+export const liveThreadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)(
+  threadRecordsFromShell((threadId) => Effect.succeed(liveThreadShell(threadId))),
+);
 
 export const idleThreadProjection = (
   shell: OrchestrationV2ThreadShell,

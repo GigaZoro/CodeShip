@@ -93,7 +93,8 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
       }),
     makeRuntime: (input) =>
       Effect.gen(function* () {
-        if (input.onAuthorizationUrl) assert.equal(input.profileDirectory, "private-candidate");
+        if (input.onAuthorizationUrl || options.codeLogin)
+          assert.equal(input.profileDirectory, "private-candidate");
         else assert.isUndefined(input.profileDirectory);
         receiveAuthorizationUrl = input.onAuthorizationUrl;
         events.push("process-open");
@@ -236,6 +237,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AntigravityAuth"
         "initialize",
         "authenticate",
         "session-new",
+        "saved",
         "catalog-published",
         "process-close",
       ]);

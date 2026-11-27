@@ -19,7 +19,11 @@ import * as TestClock from "effect/testing/TestClock";
 import { FetchHttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
-import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  VcsProcessExitError,
+  VcsProcessSpawnError,
+} from "@t3tools/contracts";
 import * as AzureDevOpsDriver from "@t3tools/source-control-azure-devops/server/driver";
 import { probeSourceControlProvider } from "@t3tools/source-control-core/server/discovery";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
@@ -405,6 +409,15 @@ describe("VcsProcess.run", () => {
       const lookups = Array.from({ length: 24 }, (_, index) =>
         azure.sourceControl.listChangeRequests({
           cwd: "/workspace",
+          context: {
+            provider: {
+              kind: SourceControlProviderKind.make("azure-devops"),
+              name: "Azure DevOps",
+              baseUrl: "https://dev.azure.com",
+            },
+            remoteName: "origin",
+            remoteUrl: "https://dev.azure.com/org/proj/_git/repo",
+          },
           headSelector: `cs/run-${index}`,
           state: "all",
           limit: 20,

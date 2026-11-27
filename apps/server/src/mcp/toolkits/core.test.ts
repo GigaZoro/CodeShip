@@ -375,10 +375,11 @@ it.effect("t3_queue shows a held queue and sends every queue command the compose
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadShell: (id) =>
+            ...McpToolAccessTestkit.threadRecordsFromShell((id) =>
               Effect.succeed(
                 id === heldThreadId ? shell : McpToolAccessTestkit.liveThreadShell(id),
               ),
+            ),
             getProjectThreadRecords: () =>
               Effect.succeed({
                 ...McpToolAccessTestkit.idleThreadProjection(shell),
@@ -442,7 +443,7 @@ it.effect("a pending question read keeps option previews", () => {
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadShell: () => Effect.succeed(shell),
+            ...McpToolAccessTestkit.threadRecordsFromShell(() => Effect.succeed(shell)),
             getProjectThreadRecords: () =>
               Effect.succeed({
                 ...projection,
@@ -586,8 +587,8 @@ it.effect("returns an HTML render reference that Codex and Claude tool rows both
         ),
         Layer.provide(FetchHttpClient.layer),
         Layer.provide(
-          Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadShell: (id) =>
+          Layer.mock(ThreadManagement.ThreadManagementService)(
+            McpToolAccessTestkit.threadRecordsFromShell((id) =>
               Effect.succeed({
                 id,
                 deletedAt: null,
@@ -597,7 +598,8 @@ it.effect("returns an HTML render reference that Codex and Claude tool rows both
                 runtimeMode: id === fullAccessThreadId ? "full-access" : "approval-required",
                 interactionMode: "default",
               } as OrchestrationV2ThreadShell),
-          }),
+            ),
+          ),
         ),
       ),
     ),

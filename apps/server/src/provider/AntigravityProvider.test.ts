@@ -581,7 +581,10 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       );
       yield* harness.provider.onConfigOptionsUpdated(configOptions);
       expect((yield* nextSnapshot)[0]).toMatchObject({
-        models: buildAntigravityModelsFromSession({ configOptions }),
+        models: buildAntigravityModelsFromSession({ configOptions }, undefined, {
+          defaultModel: "gemini-3.8-flash-high",
+          authoritative: false,
+        }),
         auth: before.auth,
         workspaceSnapshots: before.workspaceSnapshots,
         slashCommands: expectedCommands,
@@ -651,7 +654,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
           currentValue: "high",
         });
         expect(carbon?.isDefault).toBeUndefined();
-        expect(carbon?.capabilities?.optionDescriptors).toEqual([]);
+        expect(carbon?.capabilities).toBeNull();
 
         // Updating an observed model's choices keeps its recorded default while still offered,
         // and falls back if the agent removes that default.

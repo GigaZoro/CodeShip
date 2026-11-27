@@ -140,8 +140,21 @@ const indexMatchesFiles = (worktreePath: string) => {
   return true;
 };
 
-// The feature is macOS-only; the fixtures need symlinks.
-describe.skipIf(!symlinksSupported)("worktree checkout cache", () => {
+const gitSupportsCache = (() => {
+  try {
+    const version = NodeChildProcess.execFileSync("git", ["--version"], { encoding: "utf8" });
+    const match = /(\d+)\.(\d+)/.exec(version);
+    if (!match) return false;
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    return major > 2 || (major === 2 && minor >= 42);
+  } catch {
+    return false;
+  }
+})();
+
+// The feature is macOS-only, requires Git >= 2.42, and the fixtures need symlinks.
+describe.skipIf(!symlinksSupported || !gitSupportsCache)("worktree checkout cache", () => {
   it.effect("clones a cached checkout that matches what git worktree add writes", () =>
     Effect.gen(function* () {
       const fixture = yield* setup;

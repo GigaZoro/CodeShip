@@ -622,7 +622,12 @@ export const make = Effect.gen(function* () {
           trackedFolders,
         },
         undefined,
-        saveProjectSettings(input.projectId, { scripts: input.scripts }),
+        saveProjectSettings(input.projectId, {
+          scripts: input.scripts,
+          ...(input.defaultModelSelection === undefined
+            ? {}
+            : { defaultModelSelection: input.defaultModelSelection }),
+        }),
       );
       yield* projectEnrichment.invalidate([workspaceRoot]);
       return yield* readCommitted(input.projectId);

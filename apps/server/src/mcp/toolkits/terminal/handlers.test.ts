@@ -24,7 +24,7 @@ import * as Settings from "../../../serverSettings.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import { liveThreadShell, threadRecordsFromShell } from "../../McpToolAccess.testkit.ts";
 import * as TerminalHandlers from "./handlers.ts";
 import { TerminalToolkit } from "./tools.ts";
 
@@ -160,8 +160,8 @@ const callTool = (
               capabilities: new Set(["orchestration" as const]),
               issuedAt: 0,
             }),
-            Layer.mock(ThreadManagement.ThreadManagementService)({
-              getThreadShell: (id) =>
+            Layer.mock(ThreadManagement.ThreadManagementService)(
+              threadRecordsFromShell((id) =>
                 Effect.succeed({
                   ...liveThreadShell(id, { runtimeMode: world.runtimeMode ?? "full-access" }),
                   archivedAt:
@@ -169,7 +169,8 @@ const callTool = (
                       ? DateTime.makeUnsafe("2026-01-02T00:00:00.000Z")
                       : null,
                 }),
-            }),
+              ),
+            ),
             Layer.mock(Settings.ServerSettingsService)({
               getSettings: Effect.succeed({
                 ...DEFAULT_SERVER_SETTINGS,

@@ -1,10 +1,12 @@
-import type {
-  ProjectionRecordField,
-  ProjectionRecordFilter,
+import {
+  type ProjectionRecordField,
+  type ProjectionRecordFilter,
+  ProjectionStoreThreadNotFoundError,
 } from "../orchestration-v2/ProjectionStore.ts";
 import {
   CommandId,
   type EnvironmentId,
+  isReadOnlyGuestShare,
   isRuntimeModeAbove,
   OrchestratorMcpFailure,
   type ProjectId,
@@ -23,6 +25,7 @@ import {
 import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -220,15 +223,27 @@ export const assertNotReadOnlyGuestThread = (
       )
     : Effect.void;
 
+const isProjectionStoreThreadNotFoundError = Schema.is(ProjectionStoreThreadNotFoundError);
+
 /** The calling thread's guard for tools that read, without the live-run checks writes need. */
 export const refuseReadOnlyGuestCaller = Effect.fn("mcp.refuseReadOnlyGuestCaller")(function* () {
   const scope = yield* McpInvocationContext.McpInvocationContext;
   if (scope.thread === undefined) return;
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const shell = yield* threads
-    .getThreadShell(scope.thread.threadId)
-    .pipe(Effect.mapError(unavailable));
-  yield* assertNotReadOnlyGuestThread(shell);
+  const record = yield* threads.getThreadRecords(scope.thread.threadId, []).pipe(
+    Effect.catchIf(
+      (error) =>
+        error._tag === "OrchestratorProjectionError" &&
+        isProjectionStoreThreadNotFoundError(error.cause),
+      () => Effect.succeed(null),
+    ),
+    Effect.mapError(unavailable),
+  );
+  yield* assertNotReadOnlyGuestThread(
+    record !== null && isReadOnlyGuestShare(record.thread.guestShare)
+      ? { readOnlyGuestShare: true }
+      : null,
+  );
 });
 
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */

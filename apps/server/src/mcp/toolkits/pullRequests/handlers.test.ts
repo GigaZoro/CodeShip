@@ -767,7 +767,7 @@ describe("pull request guide tools", () => {
         ).toEqual([
           ["project-web", 7, "uk"],
           [PROJECT_ID, 12, "uk"],
-          ["project-fork", 3],
+          ["project-fork", 3, "uk"],
         ]);
       }),
   );

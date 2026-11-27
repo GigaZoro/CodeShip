@@ -118,9 +118,18 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       return realSpawner.spawn(command);
     }
     return Effect.gen(function* () {
-      const fixture = JSON.parse(
-        (yield* fs.readFileString(localBinaryPath)).split("\n")[1] ?? "",
-      ) as {
+      const content = yield* fs
+        .readFileString(localBinaryPath)
+        .pipe(Effect.orElseSucceed(() => ""));
+      const [header, payload] = content.split("\n");
+      if (
+        (header !== "#!fake-codex" && header !== "\x7fELF") ||
+        !payload ||
+        !payload.startsWith("{")
+      ) {
+        return yield* realSpawner.spawn(command);
+      }
+      const fixture = JSON.parse(payload) as {
         version: string;
         appServerFails?: boolean;
         versionFails?: boolean;
@@ -479,7 +488,12 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("CodexInstallat
       const launcher = `${h.baseDir}/${name}`;
       if (kind === "native") {
         const payload = `${h.baseDir}/codex.js`;
-        yield* h.fs.rename(h.localBinaryPath, payload);
+        yield* h.fs.writeFileString(
+          payload,
+          '#!/bin/sh\ncase "$1" in --version) printf "codex-cli 0.156.1\\n";; app-server) exit 0;; esac\n',
+          { mode: 0o755 },
+        );
+        yield* h.fs.remove(h.localBinaryPath);
         yield* compileNative(
           launcher,
           `#include <string.h>

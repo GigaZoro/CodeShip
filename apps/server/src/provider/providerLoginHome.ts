@@ -63,15 +63,19 @@ export const codexBinding = Effect.fn("ProviderLoginHome.codexBinding")(function
   const envHome = environment.CODEX_HOME ?? "";
   const privateHome = codexAccountShadowHomePath(path, stateDir, instanceId);
   const layout = yield* resolveCodexHomeLayout(
-    config.homePath.trim() || config.shadowHomePath.trim()
+    config.homePath.trim()
       ? config
-      : config.privateLogin
-        ? { ...config, homePath: envHome, shadowHomePath: privateHome }
-        : envHome.trim()
+      : config.shadowHomePath.trim()
+        ? envHome.trim()
           ? { ...config, homePath: envHome }
-          : instanceId !== "codex"
-            ? { ...config, shadowHomePath: privateHome }
-            : config,
+          : config
+        : config.privateLogin
+          ? { ...config, homePath: envHome, shadowHomePath: privateHome }
+          : envHome.trim()
+            ? { ...config, homePath: envHome }
+            : instanceId !== "codex"
+              ? { ...config, shadowHomePath: privateHome }
+              : config,
   );
   const home = layout.effectiveHomePath ?? layout.sharedHomePath;
   const bindingKey = `codex:home:${platform === "win32" ? home.toLowerCase() : home}`;

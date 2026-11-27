@@ -368,7 +368,7 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
         );
         const runtime = yield* options.makeRuntime({
           ...(candidate ? { profileDirectory: candidate.home } : {}),
-          ...(candidate && !signedIn
+          ...(!signedIn
             ? {
                 onAuthorizationUrl: (url: string) => receiveAuthorizationUrl(flow, url, "loopback"),
               }

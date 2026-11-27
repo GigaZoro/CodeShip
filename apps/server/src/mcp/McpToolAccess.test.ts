@@ -23,7 +23,11 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
-import { liveThreadShell, liveThreadsLayer } from "./McpToolAccess.testkit.ts";
+import {
+  liveThreadShell,
+  liveThreadsLayer,
+  threadRecordsFromShell,
+} from "./McpToolAccess.testkit.ts";
 import { assertFullAccess } from "./threadAccess.ts";
 import { MCP_TOOLKITS } from "./toolkits.testkit.ts";
 
@@ -378,9 +382,9 @@ it.effect.each([
     Effect.map((outcome) => expect(outcome).toBe(expected)),
     Effect.provide(
       probeServer(
-        Layer.mock(ThreadManagement.ThreadManagementService)({
-          getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
-        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)(
+          threadRecordsFromShell((threadId) => Effect.succeed(shells.get(threadId) ?? null)),
+        ),
       ),
     ),
   ),
@@ -407,10 +411,11 @@ it.effect("refuses a change when the calling thread cannot be read", () =>
     Effect.map((outcome) => expect(outcome).toBe("orchestration_error")),
     Effect.provide(
       probeServer(
-        Layer.mock(ThreadManagement.ThreadManagementService)({
-          getThreadShell: (threadId) =>
+        Layer.mock(ThreadManagement.ThreadManagementService)(
+          threadRecordsFromShell((threadId) =>
             Effect.fail(new OrchestratorProjectionError({ threadId, cause: "unreadable" })),
-        }),
+          ),
+        ),
       ),
     ),
   ),
@@ -456,9 +461,9 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(
-    Layer.mock(ThreadManagement.ThreadManagementService)({
-      getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
-    }),
+    Layer.mock(ThreadManagement.ThreadManagementService)(
+      threadRecordsFromShell((threadId) => Effect.succeed(shells.get(threadId) ?? null)),
+    ),
   ),
   // Stands in for the linked environment, answering with where the call went.
   Layer.provide(
@@ -596,9 +601,9 @@ const threadLinkProbeServer = McpHttpServer.toolkitRegistration(
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(
-    Layer.mock(ThreadManagement.ThreadManagementService)({
-      getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
-    }),
+    Layer.mock(ThreadManagement.ThreadManagementService)(
+      threadRecordsFromShell((threadId) => Effect.succeed(shells.get(threadId) ?? null)),
+    ),
   ),
   Layer.provide(
     Layer.mock(PeerForwarding.PeerForwarding)({

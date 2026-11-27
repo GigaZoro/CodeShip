@@ -1883,13 +1883,26 @@ it.effect("a client launches with the fallback for an exhausted default", () =>
   }),
 );
 
-it.effect("creating a project through MCP refuses a model default instead of dropping it", () =>
+it.effect("creating a project through MCP forwards a model default instead of dropping it", () =>
   Effect.gen(function* () {
     const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
+    const received: Array<unknown> = [];
     const dependencies = Layer.merge(
       harness.dependencies,
       Layer.mock(Project.ProjectService)({
-        create: () => Effect.die("the project was created without its model default"),
+        create: (input) => {
+          received.push(input);
+          return Effect.succeed({
+            id: input.projectId,
+            title: input.title,
+            workspaceRoot: input.workspaceRoot,
+            defaultModelSelection: input.defaultModelSelection ?? null,
+            scripts: input.scripts ?? [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deletedAt: null,
+          });
+        },
       }),
     );
     const toolkit = yield* ProjectToolkit.pipe(
@@ -1898,7 +1911,7 @@ it.effect("creating a project through MCP refuses a model default instead of dro
       ),
     );
 
-    const refused = yield* toolkit
+    const created = yield* toolkit
       .handle("t3_project_create", {
         title: "client-target",
         workspaceRoot: "/projects/client-target",
@@ -1906,9 +1919,13 @@ it.effect("creating a project through MCP refuses a model default instead of dro
       })
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
 
-    expect(refused.at(-1)?.result).toMatchObject({
-      code: "invalid_request",
-      message: expect.stringContaining("t3_project_update"),
+    expect(created.at(-1)?.result).toMatchObject({
+      title: "client-target",
+      workspaceRoot: "/projects/client-target",
+      defaultModelSelection: harness.modelSelection,
+    });
+    expect(received[0]).toMatchObject({
+      defaultModelSelection: harness.modelSelection,
     });
   }),
 );
@@ -2082,7 +2099,7 @@ it.effect("reading a project shows the default model and actions saved in Settin
     const dependencies = Layer.merge(
       harness.dependencies,
       Layer.mock(Project.ProjectService)({
-        getById: (projectId) =>
+        getWithRepositoryIdentity: (projectId) =>
           Effect.succeedSome({
             id: projectId,
             title: "Client target",

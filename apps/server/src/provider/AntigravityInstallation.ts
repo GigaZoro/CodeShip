@@ -1487,7 +1487,9 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
         );
       }
     },
-    wrapFailure("update", "Could not update the managed Antigravity runtime. Try again."),
+    Effect.mapError(
+      wrapFailure("update", "Could not update the managed Antigravity runtime. Try again."),
+    ),
   );
 
   const cancel = Effect.fn("AntigravityInstallation.cancel")(function* (operationId: string) {

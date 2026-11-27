@@ -560,6 +560,16 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       }),
     }).pipe(Effect.asVoid);
 
+  const classifyTermination = (fallback: AcpError.AcpError): Effect.Effect<AcpError.AcpError> => {
+    if (!options.terminationError) return Effect.succeed(fallback);
+    // Stdio pipes can close or EPIPE around process exit; use a live-clock diagnostic grace period.
+    return options.terminationError.pipe(
+      Effect.timeoutOption("250 millis"),
+      Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+      Effect.map(Option.getOrElse(() => fallback)),
+    );
+  };
+
   const handleTermination = (classify: () => Effect.Effect<AcpError.AcpError>) =>
     Ref.modify(terminationHandled, (handled) => {
       if (handled) {
@@ -890,16 +900,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         return handleTermination(() => Effect.succeed(normalized));
       },
       onSuccess: () =>
-        handleTermination(() => {
-          const ended = new AcpError.AcpInputStreamEndedError({});
-          if (!options.terminationError) return Effect.succeed(ended);
-          // Stdout can close without process exit; use a live-clock diagnostic grace period.
-          return options.terminationError.pipe(
-            Effect.timeoutOption("250 millis"),
-            Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
-            Effect.map(Option.getOrElse(() => ended)),
-          );
-        }),
+        handleTermination(() => classifyTermination(new AcpError.AcpInputStreamEndedError({}))),
     }),
     Effect.forkScoped,
   );
@@ -964,17 +965,21 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     Effect.onExit((exit) =>
       Exit.match(exit, {
         onFailure: (cause) => {
-          const error = new AcpError.AcpTransportError({
-            detail: Cause.hasInterruptsOnly(cause)
+          const interrupted = Cause.hasInterruptsOnly(cause);
+          const fallback = new AcpError.AcpTransportError({
+            detail: interrupted
               ? "The ACP output writer was interrupted while closing"
               : "Failed to write an outgoing ACP message",
             cause,
           });
-          return failOutgoingWrites(error).pipe(
-            Effect.andThen(
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : handleTermination(() => Effect.succeed(error)),
+          if (interrupted) {
+            return failOutgoingWrites(fallback);
+          }
+          return classifyTermination(fallback).pipe(
+            Effect.flatMap((error) =>
+              failOutgoingWrites(error).pipe(
+                Effect.andThen(handleTermination(() => Effect.succeed(error))),
+              ),
             ),
           );
         },

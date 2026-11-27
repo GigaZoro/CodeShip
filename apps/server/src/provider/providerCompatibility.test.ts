@@ -191,11 +191,13 @@ describe("provider compatibility", () => {
       {
         driver: "antigravity",
         t3CodeRange: ">=0.0.42 <0.1.10",
+        versionPattern: "^agy_acp_server_(\\d+\\.\\d+\\.\\d+)$",
         ranges: [{ range: "=1.4.5", status: "supported" }],
       },
       {
         driver: "antigravity",
         t3CodeRange: ">=0.1.10",
+        versionPattern: "^agy_acp_server_(\\d+\\.\\d+\\.\\d+)$",
         ranges: [
           { range: ">=1.5.0 <2", status: "supported" },
           { range: "<1.5.0", status: "broken" },

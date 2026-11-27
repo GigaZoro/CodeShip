@@ -1249,6 +1249,8 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   );
   const stoppingRef = yield* Ref.make(false);
   const terminationRecorded = yield* Deferred.make<void>();
+  const terminationFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
+  const runtimeCloseFiberIdRef = yield* Ref.make<number | undefined>(undefined);
   const stderrFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
   const stderrTailRef = yield* Ref.make("");
   const homeDirectory = yield* HostProcess.HomeDirectory;
@@ -1298,6 +1300,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       ? Effect.succeed(error)
       : Deferred.await(stderrDrained).pipe(
           Effect.timeout("250 millis"),
+          Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
           Effect.ignore,
           Effect.andThen(Ref.get(stderrTailRef)),
           Effect.map((tail) => {
@@ -1329,6 +1332,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     if (!firstTermination) {
       return yield* Deferred.await(terminationRecorded);
     }
+    yield* Deferred.fail(terminationFailure, enriched);
     yield* Effect.gen(function* () {
       yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
       yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
@@ -1374,7 +1378,25 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
     logRequest({ method, payload, status: "started" }).pipe(
       Effect.flatMap(() =>
-        (options.onStderr ? Effect.raceFirst(effect, Deferred.await(stderrFailure)) : effect).pipe(
+        Effect.raceFirst(
+          options.onStderr ? Effect.raceFirst(effect, Deferred.await(stderrFailure)) : effect,
+          Deferred.await(terminationFailure),
+        ).pipe(
+          Effect.catchCauseIf(Cause.hasInterruptsOnly, (cause) =>
+            Effect.gen(function* () {
+              const closeFiberId = yield* Ref.get(runtimeCloseFiberIdRef);
+              const terminationError = yield* Ref.get(terminationErrorRef);
+              const interruptors = Cause.interruptors(cause);
+              if (
+                Option.isSome(terminationError) &&
+                (interruptors.size === 0 ||
+                  (closeFiberId !== undefined && interruptors.has(closeFiberId)))
+              ) {
+                return yield* terminationError.value;
+              }
+              return yield* Effect.failCause(cause);
+            }),
+          ),
           Effect.catch((error) =>
             enrichProcessExitWithStderr(error).pipe(Effect.flatMap(Effect.fail)),
           ),
@@ -1722,7 +1744,11 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       onTermination: (error) =>
         recordTermination(error).pipe(
           Effect.ensuring(
-            Scope.close(runtimeScope, Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid),
+            Effect.withFiber((fiber) =>
+              Ref.set(runtimeCloseFiberIdRef, fiber.id).pipe(
+                Effect.andThen(Scope.close(runtimeScope, Exit.fail(error))),
+              ),
+            ).pipe(Effect.forkDetach, Effect.asVoid),
           ),
         ),
       ...(options.onOutgoingResponseFailure

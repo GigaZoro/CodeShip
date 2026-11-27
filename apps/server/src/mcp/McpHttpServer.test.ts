@@ -1208,9 +1208,7 @@ it.effect(
       }),
     ).pipe(
       Effect.provide(
-        NodeHttpServer.layerTest.pipe(
-          Layer.provideMerge(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
-        ),
+        NodeHttpServer.layerTest.pipe(Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer)),
       ),
     ),
 );
@@ -1368,9 +1366,7 @@ it.effect("answers 2026-07-28 discovery and keeps 2025-06-18 as the initialize f
     }),
   ).pipe(
     Effect.provide(
-      NodeHttpServer.layerTest.pipe(
-        Layer.provideMerge(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
-      ),
+      NodeHttpServer.layerTest.pipe(Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer)),
     ),
   ),
 );
