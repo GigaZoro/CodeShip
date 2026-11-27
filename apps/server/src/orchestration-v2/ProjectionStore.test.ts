@@ -5445,6 +5445,249 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect(
+    "leaves latestRunWorkDone false for Antigravity/Claude refusal notices and zero-progress restarted held attempts",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = yield* addRolledBackRecoveryCandidate("limit-refusal-attempts");
+        const original = (yield* store.getThreadProjection(threadId)).runs[0]!;
+        const now = yield* DateTime.now;
+        const attempt1 = RunAttemptId.make("attempt:limit-refusal-attempts:1");
+        const attempt2 = RunAttemptId.make("attempt:limit-refusal-attempts:2");
+        const pt1 = ProviderTurnId.make("pt:limit-refusal-attempts:1");
+        const pt2 = ProviderTurnId.make("pt:limit-refusal-attempts:2");
+        const resetResumeMessageId = MessageId.make(
+          `limit-reset-resume:${threadId}:${original.id}`,
+        );
+
+        // Register provider turns for attempt 1 (did real work) and attempt 2 (restarted held run).
+        for (const [id, attemptId, ordinal] of [
+          [pt1, attempt1, 1],
+          [pt2, attempt2, 2],
+        ] as const) {
+          yield* store.apply({
+            id: EventId.make(`event:limit-refusal:pt:${ordinal}`),
+            type: "provider-turn.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id,
+              providerThreadId: ProviderThreadId.make("pthread:limit-refusal-attempts"),
+              nodeId: original.rootNodeId!,
+              runAttemptId: attemptId,
+              nativeTurnRef: null,
+              ordinal,
+              status: "failed",
+              startedAt: now,
+              completedAt: now,
+            },
+          });
+        }
+
+        // Update run to attempt 2 with the limit-reset-resume userMessageId (as restart_active does).
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:run:attempt2"),
+          type: "run.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...original,
+            activeAttemptId: attempt2,
+            userMessageId: resetResumeMessageId,
+            status: "failed",
+            completedAt: now,
+          },
+        });
+
+        // Attempt 2 receives provider refusal assistant_message notices and late attempt-1 work before failing.
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:prompt2"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:limit-refusal:prompt2"),
+            threadId,
+            runId: original.id,
+            nodeId: original.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: pt2,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 10,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "user_message",
+            createdBy: "user",
+            creationSource: "server",
+            messageId: resetResumeMessageId,
+            inputIntent: "turn_start",
+            text: "Continue where you left off.",
+            attachments: [],
+          },
+        });
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:ag-notice"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:limit-refusal:ag-notice"),
+            threadId,
+            runId: original.id,
+            nodeId: original.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: pt2,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 11,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "assistant_message",
+            messageId: MessageId.make("msg:limit-refusal:ag"),
+            text: "Usage Limit Reached. You have reached your current quota.",
+            streaming: false,
+          },
+        });
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:claude-notice"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:limit-refusal:claude-notice"),
+            threadId,
+            runId: original.id,
+            nodeId: original.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: pt2,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 12,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "assistant_message",
+            messageId: MessageId.make("msg:limit-refusal:claude"),
+            text: "You've reached your Fable limit. Switch to another model to continue.",
+            streaming: false,
+          },
+        });
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:late-attempt1-work"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:limit-refusal:late-attempt1-work"),
+            threadId,
+            runId: original.id,
+            nodeId: original.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: pt1,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 13,
+            status: "completed",
+            title: "stale attempt 1 command",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "command_execution",
+            input: "echo stale",
+            output: "stale",
+          },
+        });
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:error"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:limit-refusal:error"),
+            threadId,
+            runId: original.id,
+            nodeId: original.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: pt2,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 14,
+            status: "failed",
+            title: "Usage limit reached",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "error",
+            failure: {
+              class: "usage_limit",
+              message: "You have reached your Antigravity quota for this period.",
+              resetAt: "2099-01-01T00:00:00.000Z",
+              code: "QUOTA_EXHAUSTED",
+              retryable: true,
+            },
+          },
+        });
+
+        const beforeAttempt2Work = (yield* store.getLimitRecoveryCandidates({
+          now,
+          autoResume: true,
+          snooze: false,
+        })).find((row) => row.id === threadId);
+        assert.isDefined(beforeAttempt2Work);
+        assert.strictEqual(beforeAttempt2Work?.latestRunUserMessageId, resetResumeMessageId);
+        // Attempt 1's earlier work (ordinal 1), late attempt 1 work (ordinal 13 on pt1),
+        // and attempt 2's refusal assistant_message notices must NOT mark attempt 2 as work done.
+        assert.isFalse(beforeAttempt2Work?.latestRunWorkDone);
+
+        // Once attempt 2 actually performs work (reasoning / tool call on pt2 after ordinal 10),
+        // latestRunWorkDone flips to true.
+        yield* store.apply({
+          id: EventId.make("event:limit-refusal:attempt2-work"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("item:limit-refusal:attempt2-work"),
+            threadId,
+            runId: original.id,
+            nodeId: original.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: pt2,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 15,
+            status: "completed",
+            title: "real attempt 2 work",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "command_execution",
+            input: "git status",
+            output: "clean",
+          },
+        });
+        const afterAttempt2Work = (yield* store.getLimitRecoveryCandidates({
+          now,
+          autoResume: true,
+          snooze: false,
+        })).find((row) => row.id === threadId);
+        assert.isTrue(afterAttempt2Work?.latestRunWorkDone);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}`;
+        yield* sql`UPDATE orchestration_v2_projection_threads SET deleted_at = ${DateTime.formatIso(now)} WHERE thread_id = ${threadId}`;
+      }),
+  );
+
   it.effect("projects only the latest failed root turn's limit into SQL and memory shells", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -5899,15 +6142,24 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.isDefined(waitingCandidate);
       assert.strictEqual(waitingCandidate?.latestRunUserMessageId, original.userMessageId);
       assert.isTrue(waitingCandidate?.latestRunWorkDone);
-      // Only non-work turn items (error, user_message) leave latestRunWorkDone false.
-      yield* sql`UPDATE orchestration_v2_projection_turn_items
-        SET type = 'user_message'
-        WHERE turn_item_id = 'item:limit-shell:rolled-back'`;
-      assert.isFalse(
-        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
-          (row) => row.id === threadId,
-        )?.latestRunWorkDone,
-      );
+      // Refusal assistant_message items (as emitted by Antigravity and Claude on usage limits)
+      // and non-progress lifecycle items (handoff, compaction, checkpoint) leave latestRunWorkDone false.
+      for (const nonWorkType of [
+        "user_message",
+        "assistant_message",
+        "handoff",
+        "compaction",
+        "checkpoint",
+      ]) {
+        yield* sql`UPDATE orchestration_v2_projection_turn_items
+          SET type = ${nonWorkType}
+          WHERE turn_item_id = 'item:limit-shell:rolled-back'`;
+        assert.isFalse(
+          (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
+            (row) => row.id === threadId,
+          )?.latestRunWorkDone,
+        );
+      }
       yield* sql`UPDATE orchestration_v2_projection_turn_items
         SET type = 'command_execution'
         WHERE turn_item_id = 'item:limit-shell:rolled-back'`;

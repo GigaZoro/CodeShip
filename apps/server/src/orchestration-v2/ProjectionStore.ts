@@ -4308,10 +4308,47 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE stop.thread_id = t.thread_id AND stop.run_id = r.run_id
             AND stop.type = 'run_interrupt_request'
         ) AS stop_requested`;
+        // Explicit allowlist of concrete work items for reset-credit loop breaking:
+        // excludes assistant_message (Antigravity and Claude emit quota-refusal notices as
+        // assistant_message items) and non-progress lifecycle items (handoff, compaction,
+        // checkpoint, interrupts), and scopes strictly to the run's current attempt.
+        const limitRecoveryWorkItemTypes: ReadonlyArray<OrchestrationV2TurnItem["type"]> = [
+          "reasoning",
+          "proposed_plan",
+          "todo_list",
+          "user_input_request",
+          "file_change",
+          "command_execution",
+          "file_search",
+          "web_search",
+          "approval_request",
+          "subagent",
+          "dynamic_tool",
+          "thread_created",
+        ];
         const workDoneColumn = sql`EXISTS (
           SELECT 1 FROM orchestration_v2_projection_turn_items work
+          LEFT JOIN orchestration_v2_projection_provider_turns pt
+            ON pt.provider_turn_id = work.provider_turn_id
           WHERE work.thread_id = t.thread_id AND work.run_id = r.run_id
-            AND work.type NOT IN ${sql.in(NON_WORK_TURN_ITEM_TYPES)}
+            AND work.type IN ${sql.in(limitRecoveryWorkItemTypes)}
+            AND (
+              pt.run_attempt_id IS NULL
+              OR json_extract(r.payload_json, '$.activeAttemptId') IS NULL
+              OR pt.run_attempt_id = json_extract(r.payload_json, '$.activeAttemptId')
+            )
+            AND work.ordinal > COALESCE(
+              (
+                SELECT MAX(prompt.ordinal)
+                FROM orchestration_v2_projection_turn_items prompt
+                WHERE prompt.thread_id = t.thread_id
+                  AND prompt.run_id = r.run_id
+                  AND prompt.type = 'user_message'
+                  AND json_extract(r.payload_json, '$.userMessageId') IS NOT NULL
+                  AND json_extract(prompt.payload_json, '$.messageId') = json_extract(r.payload_json, '$.userMessageId')
+              ),
+              -1
+            )
         ) AS work_done`;
         const rows = yield* sql<{
           readonly payload_json: string;
