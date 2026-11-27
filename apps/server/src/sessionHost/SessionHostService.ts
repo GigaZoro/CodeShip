@@ -6,7 +6,6 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import type { SpawnedProcess as ClaudeSpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { ThreadId } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -141,10 +140,6 @@ export interface SessionHostServiceShape {
   readonly spawn: (
     input: SpawnSessionHostInput,
   ) => Effect.Effect<DetachedStdioHandle, SessionHostError>;
-  readonly createPendingClaudeProcess: (input: SpawnSessionHostInput) => {
-    readonly handle: DetachedStdioHandle;
-    readonly spawnedProcess: ClaudeSpawnedProcess;
-  };
   readonly spawnChildProcessHandle: (input: SpawnSessionHostInput) => Effect.Effect<
     {
       readonly handle: DetachedStdioHandle;
@@ -750,73 +745,6 @@ const make = Effect.gen(function* () {
     return handle;
   });
 
-  const createPendingClaudeProcess: SessionHostServiceShape["createPendingClaudeProcess"] = (
-    input,
-  ) => {
-    const { id, authToken, socketPath, configPath, readyFilePath } = prepareSpawnArtifacts(input);
-
-    let trackedRef: ActiveTrackedHost | undefined;
-    const handle = DetachedStdioHandle.createPending({
-      sessionHostId: id,
-      socketPath,
-      authToken,
-      initialAfterSeq: 0,
-      ...(input.onStderr !== undefined ? { onStderr: input.onStderr } : {}),
-      onAckSeq: (seq) => {
-        if (trackedRef !== undefined) {
-          scheduleAckFlush(trackedRef, seq, runFork);
-        }
-      },
-    });
-    trackedRef = trackHandle(
-      id,
-      input.providerSessionId,
-      input.threadId,
-      input.driver,
-      handle,
-      null,
-      runFork,
-    );
-
-    runFork(
-      Effect.gen(function* () {
-        yield* launchDetachedBrokerProcess(configPath, input.cwd);
-        const attached = yield* connectWithRetry(handle, readyFilePath, 0);
-        yield* insertHostRow({
-          id,
-          providerSessionId: input.providerSessionId,
-          providerThreadId: input.providerThreadId ?? null,
-          threadId: input.threadId,
-          driver: input.driver,
-          socketPath,
-          authToken,
-          brokerPid: attached.brokerPid,
-          brokerIdentity: attached.brokerIdentity,
-          childPid: attached.childPid,
-          status: handle.detachingForUpdate
-            ? "detached_for_update"
-            : attached.exited
-              ? "exited"
-              : "running",
-        });
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.sync(() => {
-            clearTrackedHost(trackedRef!);
-            safeUnlinkSync(configPath);
-            safeUnlinkSync(readyFilePath);
-            handle.failStartup(error instanceof Error ? error : new Error(String(error)));
-          }),
-        ),
-      ),
-    );
-
-    return {
-      handle,
-      spawnedProcess: handle.asClaudeSpawnedProcess(),
-    };
-  };
-
   const spawnChildProcessHandle: SessionHostServiceShape["spawnChildProcessHandle"] = Effect.fn(
     "SessionHostService.spawnChildProcessHandle",
   )(function* (input: SpawnSessionHostInput) {
@@ -1149,7 +1077,6 @@ const make = Effect.gen(function* () {
 
   return {
     spawn,
-    createPendingClaudeProcess,
     spawnChildProcessHandle,
     reattach,
     probeDetachedForUpdate,

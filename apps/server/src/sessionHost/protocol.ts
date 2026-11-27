@@ -3,7 +3,8 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-export type SessionHostDriver = "claude" | "codex" | "acp";
+// Only drivers whose running turn a new server can adopt run in a session host (docs/internals/server-updates.md).
+export type SessionHostDriver = "codex";
 
 export type SessionHostStatus = "running" | "detached_for_update" | "exited" | "dead";
 

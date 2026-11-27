@@ -7,7 +7,6 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
-import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -16,7 +15,6 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -107,32 +105,6 @@ export interface AcpSpawnInput {
   readonly extendEnv?: boolean;
   readonly shell?: false;
 }
-
-export interface AcpDetachedProcessSpawnInput {
-  readonly command: string;
-  readonly args: ReadonlyArray<string>;
-  readonly cwd: string;
-  readonly env: Readonly<Record<string, string | undefined>>;
-  readonly threadId: string | undefined;
-}
-
-export class AcpDetachedProcessSpawnError extends Data.TaggedError("AcpDetachedProcessSpawnError")<{
-  readonly detail: string;
-  readonly cause?: unknown;
-}> {}
-
-export class AcpDetachedProcessSpawner extends Context.Service<
-  AcpDetachedProcessSpawner,
-  {
-    readonly spawn: (
-      input: AcpDetachedProcessSpawnInput,
-    ) => Effect.Effect<
-      ChildProcessSpawner.ChildProcessHandle,
-      AcpDetachedProcessSpawnError,
-      Scope.Scope
-    >;
-  }
->()("@t3tools/provider-acp/server/AcpSessionRuntime/AcpDetachedProcessSpawner") {}
 
 export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
@@ -1397,22 +1369,15 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           });
         });
   const agentScope = yield* AgentScope;
-  const detachedSpawnerOption = yield* Effect.serviceOption(AcpDetachedProcessSpawner);
-  const scopeThreadId = yield* AgentScopeThreadId;
-  const useDetachedSpawner =
-    Option.isSome(detachedSpawnerOption) &&
-    scopeThreadId !== undefined &&
-    linuxCgroupLease === undefined &&
-    !spawnCommand.shell;
   const scopedLaunch =
-    useDetachedSpawner || linuxCgroupLease !== undefined || spawnCommand.shell
+    linuxCgroupLease !== undefined || spawnCommand.shell
       ? undefined
       : yield* agentScope.wrap({
           command: spawnCommand.command,
           args: spawnCommand.args,
           name: "acp",
           cwd: spawnCwd,
-          threadId: scopeThreadId,
+          threadId: yield* AgentScopeThreadId,
           env: targetEnvironment,
         });
   const scopedSpawnCommand =
@@ -1437,57 +1402,31 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ELECTRON_RUN_AS_NODE: "1",
           T3_ACP_CGROUP_WRAPPER: "1",
         };
-  const { handle: child, stopTree: stopWindowsTree } = useDetachedSpawner
-    ? {
-        handle: yield* detachedSpawnerOption.value
-          .spawn({
-            command: spawnCommand.command,
-            args: spawnCommand.args,
-            cwd: spawnCwd ?? (yield* HostProcess.WorkingDirectory),
-            env: targetEnvironment,
-            threadId: scopeThreadId,
-          })
-          .pipe(
-            Effect.provideService(Scope.Scope, runtimeScope),
-            Effect.mapError(
-              (cause) =>
-                new EffectAcpErrors.AcpSpawnError({
-                  command: options.spawn.command,
-                  cause,
-                }),
-            ),
-          ),
-        stopTree: Effect.void as Effect.Effect<
-          void,
-          PlatformError.PlatformError,
-          ChildProcessSpawner.ChildProcessSpawner
-        >,
-      }
-    : yield* spawner
-        .spawn(
-          ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
-            ...(spawnCwd ? { cwd: spawnCwd } : {}),
-            ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
-            extendEnv: options.spawn.extendEnv ?? true,
-            // A detached Windows child starts without a console, and a .cmd launcher then never
-            // receives stdin. Windows owns no process group; its tree is stopped through PowerShell.
-            ...(options.ownDetachedProcessGroup === undefined
-              ? {}
-              : { detached: options.ownDetachedProcessGroup && hostPlatform !== "win32" }),
-            shell: containedSpawnCommand.shell,
+  const { handle: child, stopTree: stopWindowsTree } = yield* spawner
+    .spawn(
+      ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
+        ...(spawnCwd ? { cwd: spawnCwd } : {}),
+        ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
+        extendEnv: options.spawn.extendEnv ?? true,
+        // A detached Windows child starts without a console, and a .cmd launcher then never
+        // receives stdin. Windows owns no process group; its tree is stopped through PowerShell.
+        ...(options.ownDetachedProcessGroup === undefined
+          ? {}
+          : { detached: options.ownDetachedProcessGroup && hostPlatform !== "win32" }),
+        shell: containedSpawnCommand.shell,
+      }),
+    )
+    .pipe(
+      withWindowsTreeStop,
+      Effect.provideService(Scope.Scope, runtimeScope),
+      Effect.mapError(
+        (cause) =>
+          new EffectAcpErrors.AcpSpawnError({
+            command: options.spawn.command,
+            cause,
           }),
-        )
-        .pipe(
-          withWindowsTreeStop,
-          Effect.provideService(Scope.Scope, runtimeScope),
-          Effect.mapError(
-            (cause) =>
-              new EffectAcpErrors.AcpSpawnError({
-                command: options.spawn.command,
-                cause,
-              }),
-          ),
-        );
+      ),
+    );
 
   // Detached children can keep stdout open, delaying protocol termination.
   if (scopeUnit !== undefined) {

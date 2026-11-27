@@ -16,15 +16,13 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
-import { EnvironmentHttpApi, type RepositoryIdentity, ThreadId } from "@t3tools/contracts";
-import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
-import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
@@ -485,49 +483,6 @@ export const layerPlatformServices = DocumentText.layer.pipe(
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
 const layerSessionHost = SessionHostService.layer.pipe(Layer.provide(layerPersistence));
-
-const layerAcpDetachedProcessSpawner = Layer.effect(
-  AcpSessionRuntime.AcpDetachedProcessSpawner,
-  Effect.gen(function* () {
-    const sessionHost = yield* SessionHostService.SessionHostService;
-    return AcpSessionRuntime.AcpDetachedProcessSpawner.of({
-      spawn: Effect.fn("AcpDetachedProcessSpawner.spawn")(function* (input) {
-        const scope = yield* Scope.Scope;
-        const threadId = ThreadId.make(input.threadId ?? "acp");
-        const detached = yield* sessionHost
-          .spawnChildProcessHandle({
-            providerSessionId: `acp:${threadId}`,
-            threadId,
-            driver: "acp",
-            command: input.command,
-            args: input.args,
-            cwd: input.cwd,
-            env: input.env,
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new AcpSessionRuntime.AcpDetachedProcessSpawnError({
-                  detail: cause.detail,
-                  cause,
-                }),
-            ),
-          );
-        yield* Scope.addFinalizer(
-          scope,
-          Effect.gen(function* () {
-            if (detached.handle.detachingForUpdate) {
-              yield* Effect.promise(() => detached.handle.detach());
-              return;
-            }
-            yield* sessionHost.terminate(detached.handle.sessionHostId);
-          }),
-        );
-        return detached.childProcess;
-      }),
-    });
-  }),
-).pipe(Layer.provide(layerSessionHost));
 
 const layerAccountRouting = AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer));
 
@@ -1413,7 +1368,6 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
-      Layer.provideMerge(layerAcpDetachedProcessSpawner),
       Layer.provideMerge(layerSessionHost),
       Layer.provideMerge(layerUpdateShutdownState),
       Layer.provideMerge(

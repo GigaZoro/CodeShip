@@ -380,8 +380,7 @@ activation so they cannot start runs that reconciliation would then cancel.
 
 ## Detached provider session hosts
 
-Provider runtimes (`ClaudeAdapterV2`, `CodexAdapterV2`, and `AcpSessionRuntime`) can run
-inside a detached [`__session-host`](../../apps/server/src/sessionHost/broker.ts) broker
+Codex app-server processes run inside a detached [`__session-host`](../../apps/server/src/sessionHost/broker.ts) broker
 outside `t3-server`'s process tree and cgroup so live agent sessions survive planned
 updates without dying or injecting a continuation prompt. The broker uses the same
 isolation mechanisms as `CommandRunner` (`AgentScope` with `survivesRestart` on Linux,
@@ -417,3 +416,23 @@ triggering `RestartContinuation`. If a broker exited or failed identity verifica
 the server was down, its row is marked `dead` and recovery falls back cleanly to
 `RestartContinuation`. Any detached broker that is never reattached self-terminates its
 child process group and removes its socket after `orphanTtlMs` (default 15 minutes).
+
+### Which drivers run in a session host
+
+Only a driver whose running turn a new server can adopt runs in a session host, and only
+once a test proves the adoption (`SessionHostDriver` in
+[`protocol.ts`](../../apps/server/src/sessionHost/protocol.ts)). Every other driver is a
+normal child of `t3-server`, dies with it, and resumes through `RestartContinuation`.
+
+- **Claude stays a normal child.** The Claude Agent SDK keeps the turn's control state in
+  the server process: `can_use_tool` permission callbacks, hooks and SDK MCP servers are
+  closures registered by `query()`, and the CLI sends each `control_request` to the process
+  that started the turn. A probe on 2026-11-27 with `claude` 2.1.332 (isolated
+  `CLAUDE_CONFIG_DIR` and `HOME`, no paid turn) showed an idle CLI answers a second
+  `initialize`, but nothing shows that a new `query()` takes over a turn in flight or
+  receives the requests the old process left unanswered. Proving that needs a paid
+  mid-turn run, so Claude is not detached.
+- **ACP stays a normal child.** The `session/prompt` response is the turn's terminal message,
+  and it answers a request id owned by the old server's client, so a new client cannot finish
+  the run. Each ACP agent also keeps its own adapter state, which a new server would have to
+  rebuild per agent.

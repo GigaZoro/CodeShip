@@ -4,7 +4,6 @@ import * as NodeNet from "node:net";
 import * as NodeStream from "node:stream";
 import * as NodeStringDecoder from "node:string_decoder";
 
-import type { SpawnedProcess as ClaudeSpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as PlatformError from "effect/PlatformError";
@@ -418,46 +417,6 @@ export class DetachedStdioHandle {
     } catch {
       // Ignore write failures if already closing.
     }
-  }
-
-  asClaudeSpawnedProcess(): ClaudeSpawnedProcess {
-    const handle = this;
-    const spawned: ClaudeSpawnedProcess & { readonly signalCode?: NodeJS.Signals | null } = {
-      stdin: handle.stdin,
-      stdout: handle.stdout,
-      get killed() {
-        return handle.killedFlag;
-      },
-      get exitCode() {
-        return handle.exitCodeValue;
-      },
-      get signalCode() {
-        return handle.signalCodeValue;
-      },
-      kill(signal?: NodeJS.Signals) {
-        // Planned updates detach instead of terminating the surviving provider process.
-        if (handle.detachingForUpdateFlag) {
-          void handle.detach();
-          return true;
-        }
-        handle.killedFlag = true;
-        void handle.terminate(signal ?? "SIGTERM");
-        return true;
-      },
-      on(event: string, listener: (...args: Array<any>) => void) {
-        handle.events.on(event, listener);
-        return spawned;
-      },
-      once(event: string, listener: (...args: Array<any>) => void) {
-        handle.events.once(event, listener);
-        return spawned;
-      },
-      off(event: string, listener: (...args: Array<any>) => void) {
-        handle.events.off(event, listener);
-        return spawned;
-      },
-    };
-    return spawned;
   }
 
   asChildProcessHandle(): ChildProcessSpawner.ChildProcessHandle {
