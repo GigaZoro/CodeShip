@@ -12,6 +12,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -175,7 +176,7 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
 
   it("keeps an answered runtime request answered when its question is asked again", () => {
     const pending = {
-      id: "runtime-request-reducer",
+      id: RuntimeRequestId.make("runtime-request-reducer"),
       nodeId: NodeId.make("runtime-request-node-reducer"),
       providerTurnId: null,
       nativeRequestRef: null,
