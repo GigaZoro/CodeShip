@@ -35,6 +35,7 @@ import {
   RAISE_OOM_SCORE_LINE,
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { owningWindowsJobs } from "@t3tools/shared/windowsJobSpawner";
 import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import {
@@ -1180,9 +1181,20 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   // On Windows a session's tree ends with it; a tree the session owns is stopped below instead.
   const spawner =
     options.ownDetachedProcessGroup === true
-      ? withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner)
+      ? owningWindowsJobs(
+          withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner),
+          hostPlatform,
+        )
       : endingWindowsTrees(yield* ChildProcessSpawner.ChildProcessSpawner, hostPlatform);
-  const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
+  // The protocol's end closes the runtime scope from a detached fiber, and a second close of a
+  // closing scope returns at once. The session's close waits for the runtime's last finalizer, so
+  // the agent's processes never outlive the session's teardown.
+  const runtimeScope = yield* Scope.make();
+  const runtimeScopeFinalized = yield* Deferred.make<void>();
+  yield* Scope.addFinalizer(runtimeScope, Deferred.succeed(runtimeScopeFinalized, undefined));
+  yield* Scope.addFinalizerExit(yield* Scope.Scope, (exit) =>
+    Scope.close(runtimeScope, exit).pipe(Effect.andThen(Deferred.await(runtimeScopeFinalized))),
+  );
   const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
   const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallTrackedState>());
@@ -1409,7 +1421,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
         extendEnv: options.spawn.extendEnv ?? true,
         // A detached Windows child starts without a console, and a .cmd launcher then never
-        // receives stdin. Windows owns no process group; its tree is stopped through PowerShell.
+        // receives stdin. Windows owns no process group; its tree is stopped through its job.
         ...(options.ownDetachedProcessGroup === undefined
           ? {}
           : { detached: options.ownDetachedProcessGroup && hostPlatform !== "win32" }),

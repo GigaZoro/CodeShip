@@ -74,6 +74,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -216,6 +217,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -317,6 +319,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -418,6 +421,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -504,6 +508,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -580,6 +585,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -677,6 +683,7 @@ describe("OrchestratorMcpService", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
         const scope: McpInvocationScope = {
@@ -769,6 +776,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -860,6 +868,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -945,6 +954,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -1032,6 +1042,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -1166,6 +1177,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const scope: McpInvocationScope = {
@@ -1500,6 +1512,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       yield* Effect.gen(function* () {
@@ -1619,6 +1632,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       yield* Effect.gen(function* () {
@@ -1742,6 +1756,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
           AccountRouting.layer.pipe(
             Layer.provide(
@@ -1982,6 +1997,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(ProjectService.ProjectService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                Layer.mock(CommandRunner.CommandRunner)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
               ),
             ),
@@ -2125,6 +2141,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(ProjectService.ProjectService)({}),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(CommandRunner.CommandRunner)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
                 ),
               ),
@@ -2201,6 +2218,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const result = yield* Effect.flatMap(
@@ -2273,6 +2291,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
 
@@ -2325,6 +2344,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
 
@@ -2410,6 +2430,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
 
@@ -2467,6 +2488,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
 
@@ -2520,6 +2542,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
 
@@ -2593,6 +2616,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       const shortage = {
@@ -2796,6 +2820,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
 
@@ -2938,6 +2963,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
           Layer.mock(AccountRouting.AccountRouting)({
             launchLimit: () => Ref.get(limit),
@@ -3089,6 +3115,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(ProjectService.ProjectService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                Layer.mock(CommandRunner.CommandRunner)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
                 Layer.mock(AccountRouting.AccountRouting)({
                   launchLimit: () => Ref.get(limit),
@@ -3532,6 +3559,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(CommandRunner.CommandRunner)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
           );
 
@@ -3753,6 +3781,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(CommandRunner.CommandRunner)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
               liveRuns: () => Effect.succeed(null),
               recentRunCounts: () => Effect.succeed(new Map()),
@@ -3826,6 +3855,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(ProjectService.ProjectService)({}),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(CommandRunner.CommandRunner)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     liveRuns: () => Effect.succeed(null),
                     recentRunCounts: () => Effect.succeed(new Map()),
@@ -3945,6 +3975,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   }),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(CommandRunner.CommandRunner)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     liveRuns: () => Effect.succeed(null),
                     recentRunCounts: () => Effect.succeed(new Map()),
@@ -4018,6 +4049,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(ProjectService.ProjectService)({}),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(CommandRunner.CommandRunner)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     liveRuns: () => Effect.succeed(null),
                     recentRunCounts: () => Effect.succeed(new Map()),
@@ -4125,6 +4157,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(CommandRunner.CommandRunner)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
               liveRuns: () => Effect.succeed(null),
               recentRunCounts: () => Effect.succeed(new Map()),
@@ -5857,6 +5890,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
         yield* Effect.gen(function* () {
@@ -6075,6 +6109,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(CommandRunner.CommandRunner)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
           );
           yield* Effect.gen(function* () {
@@ -6135,6 +6170,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       yield* Effect.gen(function* () {
@@ -6241,6 +6277,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
         yield* Effect.gen(function* () {
@@ -6401,6 +6438,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       yield* Effect.gen(function* () {
@@ -6566,6 +6604,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
         yield* Effect.gen(function* () {
@@ -6695,6 +6734,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         );
         yield* Effect.gen(function* () {
@@ -6773,6 +6813,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       );
       yield* Effect.gen(function* () {
@@ -6867,6 +6908,7 @@ describe("OrchestratorMcpService thread lookup", () => {
           Layer.mock(ProjectService.ProjectService)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         ),
       ),
@@ -7012,6 +7054,7 @@ describe("OrchestratorMcpService thread list", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
       ),
     ),
@@ -7176,6 +7219,7 @@ describe("OrchestratorMcpService thread stop", () => {
               Layer.mock(ProjectService.ProjectService)({}),
               Layer.mock(SecretRequests.SecretRequests)({}),
               Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+              Layer.mock(CommandRunner.CommandRunner)({}),
               Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             ),
           ),

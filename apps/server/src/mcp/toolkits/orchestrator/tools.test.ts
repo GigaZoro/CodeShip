@@ -6,6 +6,7 @@ import { Tool } from "effect/ai";
 import { ORCHESTRATOR_MCP_COMMAND_SHELLS } from "@t3tools/contracts";
 
 import { COMMAND_SHELL_LABELS } from "../../../commandRunner/CommandRunner.ts";
+import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import { OrchestratorToolkit } from "./tools.ts";
 
 // Oversized page sizes clamp on decode, so the schema has no `maximum`; Codex also drops
@@ -38,6 +39,64 @@ it("names every shell t3_command_run can report in its description", () => {
   const description = OrchestratorToolkit.tools.t3_command_run.description ?? "";
   for (const shell of ORCHESTRATOR_MCP_COMMAND_SHELLS) {
     expect(description, shell).toContain(COMMAND_SHELL_LABELS[shell]);
+  }
+});
+
+// A retried call is a new tool call: only the caller's key tells it from a second run.
+it("requires the clientRequestId a retried t3_command_run reuses to find its command", () => {
+  const tool = OrchestratorToolkit.tools.t3_command_run;
+  const decode = Schema.decodeUnknownExit(tool.parametersSchema);
+  expect(Exit.isFailure(decode({ command: "echo once" }))).toBe(true);
+  expect(Exit.isSuccess(decode({ command: "echo once", clientRequestId: "run-1" }))).toBe(true);
+  const schema = advertisedJsonSchema(tool) as {
+    readonly required?: ReadonlyArray<string>;
+    readonly properties: Readonly<Record<string, { readonly description?: string }>>;
+  };
+  expect(schema.required).toContain("clientRequestId");
+  expect(schema.properties.clientRequestId?.description).toContain("instead of running it again");
+  // Every tool that takes the key tells the agent how a retry uses it.
+  for (const [name, other] of Object.entries(OrchestratorToolkit.tools)) {
+    const advertised = advertisedJsonSchema(other) as typeof schema;
+    if (advertised.properties?.clientRequestId === undefined) continue;
+    expect(advertised.properties.clientRequestId.description, name).toMatch(/retry/i);
+  }
+});
+
+// A new thread runs in this checkout, so create_threads ignored the environment and project a
+// delegated task's target names, while their descriptions told the agent where the thread would run.
+it("offers create_threads only the provider and model of a delegated task's target", () => {
+  type Target = { readonly properties: Readonly<Record<string, unknown>> };
+  const threads = advertisedJsonSchema(OrchestratorToolkit.tools.create_threads) as {
+    readonly properties: {
+      readonly threads: { readonly items: { readonly properties: { readonly target: Target } } };
+    };
+  };
+  const task = advertisedJsonSchema(OrchestratorToolkit.tools.delegate_task) as {
+    readonly properties: { readonly target: Target };
+  };
+  const model = ["providerInstanceId", "driverKind", "model", "options"];
+  expect(Object.keys(threads.properties.threads.items.properties.target.properties)).toEqual(model);
+  expect(Object.keys(task.properties.target.properties)).toEqual([
+    ...model,
+    "environmentId",
+    "projectId",
+  ]);
+});
+
+it("advertises the webhook guidance on the schedule tag and both signature alternatives", () => {
+  const schema = advertisedJsonSchema(OrchestratorToolkit.tools.schedule_task);
+  const properties = "properties.schedule.properties";
+  expect(schema).toHaveProperty(
+    properties + ".type.description",
+    expect.stringContaining("'webhook': Run per webhook request."),
+  );
+  for (const index of [0, 1]) {
+    const fields = properties + ".signature.anyOf." + index + ".properties";
+    expect(schema).toHaveProperty(fields + ".secret.description", "Default: stored secret.");
+    expect(schema).toHaveProperty(
+      fields + ".secretRef.description",
+      "From `request_secret`. Instead of `secret`. Spent by this save.",
+    );
   }
 });
 

@@ -1,10 +1,66 @@
 import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import { Tool } from "effect/ai";
 
 import { OrchestratorMcpSaveScheduledTaskInput } from "@t3tools/contracts";
 
 import { advertisedJsonSchema, unknownArguments } from "./advertisedJsonSchema.ts";
+import { MCP_TOOLKITS } from "./toolkits.testkit.ts";
+
+/** Each description written on a decoded schema, one of its checks or a key, at any depth. */
+const writtenDescriptions = (root: SchemaAST.AST): ReadonlySet<string> => {
+  const found = new Set<string>();
+  const seen = new Set<SchemaAST.AST>();
+  const visit = (ast: SchemaAST.AST): void => {
+    if (seen.has(ast)) return;
+    seen.add(ast);
+    for (const annotations of [
+      ast.annotations,
+      ast.context?.annotations,
+      ...(ast.checks ?? []).map((check) => check.annotations),
+    ]) {
+      if (typeof annotations?.description === "string") found.add(annotations.description);
+    }
+    if (SchemaAST.isObjects(ast)) {
+      for (const property of ast.propertySignatures) visit(property.type);
+      for (const index of ast.indexSignatures) visit(index.type);
+    } else if (SchemaAST.isArrays(ast)) {
+      for (const element of [...ast.elements, ...ast.rest]) visit(element);
+    } else if (SchemaAST.isUnion(ast)) {
+      for (const member of ast.types) visit(member);
+    } else if (SchemaAST.isSuspend(ast)) {
+      visit(ast.thunk());
+    }
+  };
+  visit(root);
+  return found;
+};
+
+const advertisedDescriptions = (node: unknown, found = new Set<string>()): ReadonlySet<string> => {
+  if (Array.isArray(node)) for (const item of node) advertisedDescriptions(item, found);
+  else if (typeof node === "object" && node !== null) {
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "description" && typeof value === "string") found.add(value);
+      else advertisedDescriptions(value, found);
+    }
+  }
+  return found;
+};
+
+// JSON Schema describes the encoded side, so a description `.annotate` puts on the decoded side of
+// a transformation, such as a trimmed string, never reaches the agent; `annotateEncoded` does.
+it("advertises every description written on a served tool's input", () => {
+  const lost = MCP_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> =>
+    Object.values(toolkit.tools),
+  ).flatMap((tool) => {
+    const advertised = [...advertisedDescriptions(advertisedJsonSchema(tool))];
+    return [...writtenDescriptions(tool.parametersSchema.ast)]
+      .filter((description) => !advertised.some((text) => text.includes(description)))
+      .map((description) => `${tool.name}: ${description}`);
+  });
+  expect(lost).toEqual([]);
+});
 
 it("drops JSON noise, merges tagged unions, and keeps null and per-tag requirements", () => {
   const Every = Schema.Struct({ ms: Schema.Int });
@@ -21,7 +77,9 @@ it("drops JSON noise, merges tagged unions, and keeps null and per-tag requireme
               kind: Schema.Literal("url"),
               url: Schema.String.annotate({ description: "Page URL." }),
             }),
-            Schema.Struct({ kind: Schema.Literal("number"), number: Schema.Int }),
+            Schema.Struct({ kind: Schema.Literal("number"), number: Schema.Int }).annotate({
+              description: "By number.",
+            }),
             Schema.Struct({ kind: Schema.Literal("none"), number: Schema.optional(Schema.Int) }),
           ]),
         ),
@@ -39,7 +97,11 @@ it("drops JSON noise, merges tagged unions, and keeps null and per-tag requireme
       target: {
         type: "object",
         properties: {
-          kind: { type: "string", enum: ["url", "number", "none"] },
+          kind: {
+            type: "string",
+            enum: ["url", "number", "none"],
+            description: "'number': By number.",
+          },
           url: { type: "string", description: "Page URL. Required when kind is 'url'." },
           number: { type: "integer", description: "Required when kind is 'number'." },
         },

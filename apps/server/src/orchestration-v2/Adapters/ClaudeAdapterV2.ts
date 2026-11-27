@@ -1,3 +1,5 @@
+import { WindowsJobHost, windowsJobOf } from "@t3tools/shared/windowsJob";
+import { windowsJobSpawn } from "@t3tools/shared/windowsJobNode";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
@@ -74,12 +76,10 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
 import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { windowsTreeStopper } from "@t3tools/shared/windowsProcessTree";
 import {
-  endedWindowsTreeRoot,
   type WindowsProcessTreeRoot,
-  windowsTreeRootFromNow,
-} from "@t3tools/shared/windowsProcessTreeScript";
+  windowsTreeStopper,
+} from "@t3tools/shared/windowsProcessTree";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { CLAUDE_MODEL_FAMILIES, claudeUsageWindowScope } from "@t3tools/shared/usageLimits";
 import {
@@ -427,26 +427,27 @@ export function spawnClaudeProcessGroup(
 function spawnClaudeProcessTree(
   options: ClaudeSpawnOptions,
   stopTree: (root: WindowsProcessTreeRoot) => Promise<void>,
+  host: string,
   onStderr?: (text: string) => void,
 ) {
-  const rootOf = windowsTreeRootFromNow();
-  const child = NodeChildProcess.spawn(options.command, options.args, {
+  const child = windowsJobSpawn(host)(options.command, options.args, {
     cwd: options.cwd,
     env: options.env,
     signal: options.signal,
-    windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const root = child.pid === undefined ? undefined : rootOf(child.pid);
+  const root = child.pid === undefined ? undefined : { pid: child.pid, job: windowsJobOf(child)! };
   child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    child.once("error", () => {
+      if (child.pid === undefined) resolve();
+    });
+  });
   return {
     child,
     exited,
-    ended:
-      root === undefined
-        ? Promise.resolve()
-        : exited.then(() => stopTree(endedWindowsTreeRoot(root))),
+    ended: root === undefined ? Promise.resolve() : exited.then(() => stopTree(root)),
   };
 }
 
@@ -1193,6 +1194,12 @@ export const layerQueryRunner: Layer.Layer<
           const appendStderr = (text: string) => {
             if (!answered) stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
           };
+          const jobHost =
+            platform === "win32" && options.spawnClaudeCodeProcess === undefined
+              ? yield* (yield* WindowsJobHost).pipe(
+                  Effect.mapError((cause) => queryRunnerError(cause, "spawn")),
+                )
+              : undefined;
           let windowsCli: ClaudeWindowsCli | undefined;
           const spawnProcess =
             options.spawnClaudeCodeProcess ??
@@ -1207,10 +1214,15 @@ export const layerQueryRunner: Layer.Layer<
                   appendStderr,
                 );
               }
-              const cli = spawnClaudeProcessTree(spawnOptions, stopWindowsTree, (chunk) => {
-                appendStderr(chunk);
-                options.stderr?.(chunk);
-              });
+              const cli = spawnClaudeProcessTree(
+                spawnOptions,
+                stopWindowsTree,
+                jobHost!,
+                (chunk) => {
+                  appendStderr(chunk);
+                  options.stderr?.(chunk);
+                },
+              );
               windowsCli = cli;
               windowsClis.add(cli);
               void cli.ended.then(() => windowsClis.delete(cli));

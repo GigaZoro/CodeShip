@@ -348,55 +348,96 @@ restarting and lets the user update now or cancel. The wait happens outside the
 per-environment config queue so other settings for that server are not held. A
 crash still loses the work; the note reports it.
 
-A command an agent starts with `t3_command_run` is not the provider's, so neither a restart nor
-a crash cuts it. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
-starts it outside the provider and the server: in its own session, which on Linux under systemd
-is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart`), and on
-Windows through `Win32_Process.Create`, outside the server's job. Neither the desktop app, the
-launcher nor the service manager reaches it. A wrapper writes its output to a capped log under
-the state directory and its exit status to a file it renames into place, so a reader never sees
-half a status. On Windows the command runs in a console apart from its wrapper's, so a console
-event the command gets (Ctrl+C, or its console closing) cannot end the wrapper first. The
-command is an app-owned task on its thread, recorded like a delegated task, with a
-`command_runs` row holding its pid and an identity a wall clock step cannot move
-([processIdentity](../../apps/server/src/commandRunner/processIdentity.ts)): on Linux its start
-in ticks since boot with the boot id; on Windows and macOS the start time the system stored. On
-Windows, when the launch could not read it, the identity is the window the launch bounds it to.
-That window runs from the record to the launch's return, each end widened by how far the wall clock
-fell behind the monotonic clock in between: the net step back, since a step forward in the same
-launch hides as much of one back. A start read outside it is not pinned, since Windows soon gives
-an ended process's pid to another and the read may be that process's. macOS hands pids out in turn
-and keeps its read, which opposite clock steps can place outside the window. A Windows wrapper its
-launcher cannot find right after creating it has ended. It names itself in its pid file before it
-starts the command, so without that file it started nothing and the launch fails; a pid file that
-cannot be looked for may be there, so the record stays. With the file it is recorded as ended,
-since a later read could find a process that took its pid inside a window a clock step widened, and
-the first watch reports the command lost when another process holds that pid, without reading that
-process's start. The Windows tree stop takes as its root only a holder of the pid that started at
-the pinned start or inside the window, give or take its 100 ms of clock skew. Of what descends from
-the pid, the runner bounds what the stop's first walk takes by the pinned start or, with a window
-or an ended record, by the later of the record and when the wrapper named itself in its pid file
-(the record when that file cannot be read), since the window's earlier part may hold what the pid's
-last holder started; the walk allows that bound the same 100 ms. A clock set back before the
-command started can date the command's own processes earlier still, and that walk spares them
-rather than risk another program's. The stop's later passes take what a process it holds starts
-after its own start. A wrapper recorded as ended, or already gone when a later server recovers it
-from its pid file, is stopped with a start no process has, so a holder of its pid is never the root
-and bounds the wrapper's children by its own start, not by a clock reading. One recovered while
-running whose start cannot be read has no identity, and its stop takes any holder that started from
-the record on; that bound also places the root, which started before it named itself. Startup
-adopts every row not yet delivered: a status file means it ended; a live pid with the same identity
-is watched again, one whose identity cannot be read is watched and read again on each pass, and a
-pid whose check fails for a reason other than "no such process" is checked again on the next pass.
-Anything else is lost and reported once, and its row keeps why (its process ended, the machine
-restarted, or its pid names a later process), when it was last seen running, what the check
-reported and its last output. Its end completes the task through `delegated_task.command.complete`,
-which wakes the chat through the durable delivery a child's result uses and refuses a second
-result, so a restart between the end and its delivery cannot wake the chat twice. task_cancel,
-Stop, archiving and deleting the thread also give the task its result, and the runner then kills
-the command's process group (its tree on Windows). The hold leaves these tasks out like every
-app-owned task, and the continuation of a cut turn tells the agent the commands it started still
-run and will wake it.
+A command an agent starts with `t3_command_run` belongs to the app, outside the
+provider and server lifetimes. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
+starts POSIX commands in their own session; Linux services also give them a systemd scope
+outside the service cgroup. Windows uses WMI to start a separate native host, and the launcher
+waits on a handle to it: a host that exits fails the launch at once, even when Windows gives its
+PID to another process. The host
+creates the command inside a named Job Object before any command code executes, and
+holds the job until the command ends. A restarted server opens the job, pins the recorded
+child process, and verifies its full 100 ns FILETIME creation identity and membership before stopping it.
+That identity stays a decimal string through IPC and persistence, and only it authorizes a stop.
+A reused job name never authorizes termination. Windows retains descendant membership even when an intermediate process
+exits; PID ancestry snapshots cannot establish that ownership. The host closes admission
+and terminates the job before reporting completion. A host crash also terminates the job.
+
+The [same native host](../../packages/shared/src/windowsJob.ts) owns provider subprocesses
+through the worker, standalone spawners and SDK callbacks. Their control pipe keeps them
+owned through startup: losing the owner ends the job unless an acknowledged unref permits
+it to outlive that owner. Command-runner hosts instead survive server restarts. Job handles
+and control descriptors are private to the host, so a child cannot retain ownership by
+inheriting them. The host releases its copies of command stream handles after spawn, so a
+child closing stdout can finish a protocol stream while it remains alive. The helper builds
+with the Windows .NET Framework compiler and verifies cached executable contents by SHA-256
+once per server process. It is unsigned and stored in the user's cache: AppLocker or WDAC rules
+that block executables in user-writable folders prevent Windows commands and provider processes
+from launching. A rejected host spawn preserves the cached executable's path and system error;
+access-denied or unknown spawn errors name these policies as a possible cause.
+
+Launch and identity work run outside the shared state lock. Startup registers every row
+before accepting new requests, without waiting for probes. Separate bounded probe and stop
+queues keep cancellation and deadlines independent of a held launcher or identity check.
+Healthy commands use cheap liveness checks with periodic identity verification. Before a
+command takes its start gate, its wrapper records its PID and identity: Linux uses boot ID and
+kernel start ticks so wall-clock corrections cannot change ownership, macOS uses the wrapper's
+creation time, and Windows uses full FILETIME. A Linux boot ID or a Windows FILETIME also decides
+whether the machine rebooted since the command started; only a row with neither compares its start
+with the clock and uptime. POSIX and Windows cancellation and recovery atomically close the same gate.
+A closed gate proves the command
+cannot execute, including a late WMI creation; a failed database write does not prevent gate
+closure. Gate failures are written to the command log. A command waiting in the memory or CPU
+queue has no gate or launcher yet: the runner opens its gate in the same locked step that marks
+it running, and cancelling it while it waits removes it from the queue and reports it as never
+started.
+
+A launcher failure returns a task ID. The task remains watched while startup evidence is
+unreadable, and its result arrives through normal task delivery. Recovery retries filesystem
+and database failures after a restart too. Missing legacy evidence proves neither execution
+nor non-execution. A deadline reports once before identity probes or termination, with cleanup
+explicitly pending. `task_cancel` hands a command to its runner, which closes the gate, stops the
+command and reports the result with the cancel's reason. The result says the command was stopped,
+that cleanup is still pending (when stopping fails or takes over 15 seconds), or that the
+command was cancelled before it started, and the cancel's response gives the same outcome as its
+`cleanup`. A command that already wrote its exit status keeps it: a cancel or deadline reports it
+as exited with its code. One whose exit status cannot be read is stopped anyway, and its result
+says why the status could not be read. Cleanup failures remain watched and retry independently;
+delivery is recorded after the gate is closed or authorized cleanup finishes. A legacy
+launch with no gate, unit, PID file or exit status retires at its deadline on every platform with an explicit
+ownership-unknown result; this does not claim it never ran or that any process was stopped. A status file
+preserves the wrapper-reported PID even when identity is unavailable. Proven absence,
+replacement or reboot ends a legacy task; an unknown identity alone does not prove loss.
+
+An older Windows row that recorded only its wrapper's creation millisecond takes the full FILETIME
+of a live process under its PID that started in that millisecond. Windows gives a PID to a new
+process only after the old one ends, so that process is the wrapper. The runner records the
+FILETIME and stops the command through it. A row that holds only a launch window or a PID-file time
+cannot tell its wrapper from a later process. It is marked unproven and never stopped, and its
+deadline or cancellation result says CodeShip could not prove the process was the command's. Its
+identity check gets one probe's time past the deadline before the timeout is decided. A command
+without a job is stopped with the processes it started. The host opens its root through the full
+identity and holds that handle, so the PID cannot pass on, then takes one list of every process. A
+process belongs to the command when its parent PID names a member that still holds it and it
+started after that member, which tells a child from the orphan of an earlier holder of that PID.
+The host stops each member through a handle it opened and checked, lists again to catch what
+started meanwhile, and names each process it could not stop. The row keeps those, its cleanup stays
+pending, its result names them, and the next stop starts from them. A process whose parent ended
+before the stop cannot be traced. macOS wrappers publish their
+own `ps` identity before taking the launch gate; legacy PID-only records require an identity
+within the recorded launch and PID-file bounds. Persisted PID replacement or reboot evidence
+forbids further PID or process-group signals.
+A systemd unit owns its cleanup even after the leader exits; a failed scope with no processes left
+counts as stopped. Without a unit, as on macOS,
+cleanup may signal the surviving group only when no replacement has been observed. One window
+remains unobservable: the whole original group ends, a replacement leader reuses its PID, and
+that leader exits while its children live, all between two probes. Neither platform treats
+an I/O failure as a missing status file or a delay as proof that a launch cannot execute.
+
+Output goes to a capped log and exit status is published by atomic rename. The Windows
+command has a separate console so its Ctrl+C or console close cannot end the wrapper first.
+Completion uses the durable delegated-task delivery and refuses a second result. Cancellation,
+Stop, archiving and deletion also end the task. The restart hold excludes app-owned commands;
+continuation tells the agent that surviving commands still run and will wake it.
 
 The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`
 entries. Claude creates a running item for every `tool_use` block of an assistant message at

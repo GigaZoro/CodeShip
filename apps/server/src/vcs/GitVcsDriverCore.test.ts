@@ -632,10 +632,11 @@ describe("Windows long path configuration", () => {
     platform: NodeJS.Platform,
     key: string,
   ) {
-    const layer = GitVcsDriver.layer.pipe(
+    const layer = Layer.effect(GitVcsDriver.GitVcsDriver, GitVcsDriver.make).pipe(
+      Layer.provide(Layer.succeed(HostProcess.Platform, platform)),
+      Layer.provide(WorkerProcessSpawner.layer),
       Layer.provide(layerServerConfig),
       Layer.provideMerge(NodeServices.layer),
-      Layer.provide(Layer.succeed(HostProcess.Platform, platform)),
     );
     return yield* Effect.gen(function* () {
       const driver = yield* GitVcsDriver.GitVcsDriver;

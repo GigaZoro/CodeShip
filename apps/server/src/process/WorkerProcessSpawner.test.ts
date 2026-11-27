@@ -1,13 +1,13 @@
-// @effect-diagnostics nodeBuiltinImport:off - one test makes the main thread's execFile throw.
-import type * as NodeChildProcess from "node:child_process";
-import * as NodeModule from "node:module";
+// @effect-diagnostics nodeBuiltinImport:off -- compiles a test native host on Windows.
+import * as NodeChildProcess from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
+import { windowsFrameworkCompiler, WindowsJobHost } from "@t3tools/shared/windowsJob";
+import { WINDOWS_JOB_START_TIMEOUT_SECONDS } from "@t3tools/shared/windowsJobSpawner";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { vi } from "vite-plus/test";
 
@@ -27,12 +28,6 @@ import { timeoutProcessOption } from "./processDeadline.ts";
 import * as WorkerProcessSpawner from "./WorkerProcessSpawner.ts";
 
 const layer = WorkerProcessSpawner.layer.pipe(Layer.provide(NodeServices.layer));
-// Takes the Windows paths on any host.
-const windowsLayer = WorkerProcessSpawner.layer.pipe(
-  Layer.provide(NodeServices.layer),
-  Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
-);
-
 const node = (script: string, options?: ChildProcess.CommandOptions) =>
   ChildProcess.make(process.execPath, ["-e", script], options);
 
@@ -49,59 +44,158 @@ const errorLogs = () => {
   return { messages, logged: Deferred.await(logged), layer: Logger.layer([logger]) };
 };
 
-// Within the scope, the main thread's execFile throws as Node's does for a spawn error like ENOMEM.
-const execFileThrows = (error: Error) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      const childProcess = NodeModule.createRequire(import.meta.url)(
-        "node:child_process",
-      ) as typeof NodeChildProcess;
-      const spy = vi.spyOn(childProcess, "execFile").mockImplementation(() => {
-        throw error;
-      });
-      NodeModule.syncBuiltinESMExports();
-      return spy;
-    }),
-    (spy) =>
-      Effect.sync(() => {
-        spy.mockRestore();
-        NodeModule.syncBuiltinESMExports();
-      }),
+describe("WorkerProcessSpawner", () => {
+  it.live.runIf(isWindowsHost)(
+    "preserves the rejected native host path in worker spawn errors",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const host = yield* fs.makeTempDirectoryScoped({ prefix: "t3-blocked-host-" });
+        const error = yield* node("", quiet).pipe(
+          Effect.provideService(WindowsJobHost, Effect.succeed(host)),
+          Effect.flip,
+        );
+        assert.include(error.message, host);
+        assert.notInclude(error.message, "AppLocker or WDAC");
+        assert.equal(error.reason._tag, "NotFound");
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, layer))),
   );
 
-// Within the scope, the main thread's execFile records its arguments and never runs PowerShell.
-const execFileCalls = Effect.acquireRelease(
-  Effect.sync(() => {
-    const childProcess = NodeModule.createRequire(import.meta.url)(
-      "node:child_process",
-    ) as typeof NodeChildProcess;
-    const calls: Array<ReadonlyArray<string>> = [];
-    const spy = vi.spyOn(childProcess, "execFile").mockImplementation(((
-      _file: string,
-      args: ReadonlyArray<string>,
-    ) => {
-      calls.push(args);
-    }) as never);
-    NodeModule.syncBuiltinESMExports();
-    return { spy, calls };
-  }),
-  ({ spy }) =>
-    Effect.sync(() => {
-      spy.mockRestore();
-      NodeModule.syncBuiltinESMExports();
-    }),
-);
+  it.effect.runIf(isWindowsHost)(
+    "stops a job host that never reports its child and fails the launch",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stalled-host-" });
+        const host = yield* processPipe;
+        // Node runs this for the host's "owned" mode: it keeps its ownership channel open and never
+        // reports the suspended child, as a host stalled before its start reply would.
+        yield* fs.writeFileString(
+          path.join(directory, "owned.js"),
+          `const s=require('node:net').connect(${JSON.stringify(host.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit()); setInterval(()=>{},1e9);`,
+        );
+        const launch = yield* ChildProcess.make("provider.exe", [], {
+          ...quiet,
+          cwd: directory,
+        }).pipe(
+          Effect.provideService(WindowsJobHost, Effect.succeed(process.execPath)),
+          Effect.scoped,
+          Effect.flip,
+          Effect.forkChild,
+        );
+        yield* host.started;
+        // The worker reported the host's start before this sync's reply, so its deadline runs.
+        yield* WorkerProcessSpawner.settle;
+        yield* TestClock.adjust(`${WINDOWS_JOB_START_TIMEOUT_SECONDS - 1} seconds`);
+        assert.isUndefined(launch.pollUnsafe());
+        yield* TestClock.adjust("1 second");
+        const error = yield* Fiber.join(launch);
+        assert.equal(error.reason._tag, "TimedOut");
+        assert.include(error.message, "did not start the command within 30 s");
+        yield* host.ended;
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, layer))),
+  );
 
-describe("WorkerProcessSpawner", () => {
+  it.live.runIf(isWindowsHost)("stops the Windows job before ending its host", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-job-stop-order-" });
+      const sourcePath = path.join(directory, "Host.cs");
+      const exePath = path.join(directory, "Host.exe");
+      const stopSawPath = path.join(directory, "stop-saw.txt");
+      // Mock native host: records its PID, announces a started child on the replies fd, and
+      // stays alive until "stop" runs. If signalGroup kills the host before spawning "stop",
+      // "stop" observes the host already dead and bypasses the Job Object drain barrier.
+      yield* fs.writeFileString(
+        sourcePath,
+        [
+          "using System;",
+          "using System.Diagnostics;",
+          "using System.IO;",
+          "using System.Runtime.InteropServices;",
+          "using System.Text;",
+          "using System.Threading;",
+          "class Host {",
+          "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]",
+          "  struct Startup { public int cb; public IntPtr r1,d,t; public int x,y,xs,ys,xc,yc,fa,fl; public short sw,r2; public IntPtr rd,i,o,e; }",
+          '  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern void GetStartupInfo(out Startup s);',
+          '  [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(IntPtr h, byte[] b, int n, out int w, IntPtr ov);',
+          "  static int Main(string[] args) {",
+          "    string dir = Path.GetDirectoryName(typeof(Host).Assembly.Location);",
+          '    string pidFile = Path.Combine(dir, "host.pid");',
+          '    string sawFile = Path.Combine(dir, "stop-saw.txt");',
+          '    if (args[0] == "stop") {',
+          "      int pid = int.Parse(File.ReadAllText(pidFile).Trim());",
+          "      bool alive = false;",
+          "      try { using (var p = Process.GetProcessById(pid)) { alive = !p.HasExited; } } catch {}",
+          '      File.WriteAllText(sawFile, alive ? "host-alive" : "host-dead");',
+          "      if (alive) { try { using (var p = Process.GetProcessById(pid)) { p.Kill(); p.WaitForExit(5000); } } catch {} }",
+          "      return 0;",
+          "    }",
+          "    File.WriteAllText(pidFile, Process.GetCurrentProcess().Id.ToString());",
+          "    Startup st; GetStartupInfo(out st);",
+          "    int fd = int.Parse(args[2]);",
+          "    int count = Marshal.ReadInt32(st.rd);",
+          "    IntPtr reply = Marshal.ReadIntPtr(st.rd, 4 + count + (fd + 1) * IntPtr.Size);",
+          '    byte[] msg = Encoding.UTF8.GetBytes("S 4242 12345\\n");',
+          "    int w; WriteFile(reply, msg, msg.Length, out w, IntPtr.Zero);",
+          "    Thread.Sleep(Timeout.Infinite);",
+          "    return 0;",
+          "  }",
+          "}",
+        ].join("\n"),
+      );
+      const compiled = NodeChildProcess.spawnSync(
+        windowsFrameworkCompiler(process.env.SystemRoot ?? "C:\\Windows"),
+        ["/nologo", "/optimize+", "/platform:x64", `/out:${exePath}`, sourcePath],
+        { encoding: "utf8", windowsHide: true },
+      );
+      assert.equal(compiled.status, 0, compiled.stderr || compiled.stdout);
+      const handle = yield* ChildProcess.make("provider.exe", [], {
+        ...quiet,
+        cwd: directory,
+      }).pipe(Effect.provideService(WindowsJobHost, Effect.succeed(exePath)));
+      yield* handle.kill();
+      const saw = yield* fs.readFileString(stopSawPath);
+      assert.equal(saw, "host-alive");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, layer))),
+  );
+
+  it.live.runIf(isWindowsHost)(
+    "ends an orphaned grandchild when its worker stops after the intermediate exited",
+    () =>
+      Effect.gen(function* () {
+        const member = yield* processPipe;
+        const grandchild = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+        const intermediate = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',detached:true,windowsHide:true}).unref();`;
+        const root = yield* node(
+          `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(intermediate)}],{stdio:'ignore',windowsHide:true}); c.on('exit',()=>process.stdout.write('ready')); process.stdin.resume();`,
+        );
+        yield* member.started;
+        yield* root.stdout.pipe(Stream.take(1), Stream.runDrain);
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+        yield* member.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.live("relays stdin, output and the exit code", () =>
     Effect.gen(function* () {
       const handle = yield* node(
-        "process.stdin.pipe(process.stdout); process.stdin.on('end', () => { process.exitCode = 3; });",
-        { stdin: Stream.encodeText(Stream.make("hello ", "worker")) },
+        "process.stdin.pipe(process.stdout); process.stdin.on('end', () => { require('node:fs').writeSync(3, Buffer.from([0,255,9])); process.exitCode = 3; });",
+        {
+          stdin: Stream.encodeText(Stream.make("hello ", "worker")),
+          additionalFds: { fd3: { type: "output" } },
+        },
       );
       const stdout = yield* handle.stdout.pipe(Stream.decodeText(), Stream.mkString);
 
       assert.equal(stdout, "hello worker");
+      assert.deepEqual(
+        (yield* handle.getOutputFd(3).pipe(Stream.runCollect)).flatMap((chunk) => [...chunk]),
+        [0, 255, 9],
+      );
       assert.equal(yield* handle.exitCode, ChildProcessSpawner.ExitCode(3));
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
@@ -138,6 +232,16 @@ describe("WorkerProcessSpawner", () => {
       Effect.scoped,
       Effect.provide(WorkerProcessSpawner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     ),
+  );
+
+  it.live.runIf(isWindowsHost)("preserves shell parsing inside the owned job", () =>
+    Effect.gen(function* () {
+      const child = yield* ChildProcess.make('echo "two words" & echo second', [], { shell: true });
+      const output = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
+      assert.include(output, '"two words"');
+      assert.include(output, "second");
+      assert.equal(yield* child.exitCode, 0);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.live("relays output past the high-water mark intact", () =>
@@ -223,13 +327,14 @@ describe("WorkerProcessSpawner", () => {
     Effect.gen(function* () {
       const leader = yield* leftover.command;
       yield* leftover.started;
+      yield* Stream.run(Stream.empty, leader.stdin);
       assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
       return leader;
     });
 
   it.live("kill ends what a child left running after it exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const leader = yield* leaderThatLeftAChild(leftover);
 
       yield* leader.kill();
@@ -240,7 +345,7 @@ describe("WorkerProcessSpawner", () => {
 
   it.live("an interrupted command ends what its child left running after it exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const exited = yield* Deferred.make<void>();
       const command = yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -267,82 +372,6 @@ describe("WorkerProcessSpawner", () => {
       assert.deepEqual(errors.messages, []);
     }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
   });
-
-  // It exits when the stopped worker closes its stdin, and no one hears of that exit. As in the
-  // server, the spawning fiber has the logger and the spawner's layer does not.
-  const leaderOfWorkerToStop = (errors: ReturnType<typeof errorLogs>) =>
-    node("process.stdin.resume();", { stdout: "ignore", stderr: "ignore" }).pipe(
-      Effect.provide(errors.layer),
-    );
-
-  // PowerShell is missing here, so the walk fails as a denied WMI query does on Windows.
-  it.live.skipIf(isWindowsHost)(
-    "a stopped worker that cannot start another walks the tree and logs to the spawning fiber",
-    () => {
-      const errors = errorLogs();
-      return Effect.gen(function* () {
-        const leader = yield* leaderOfWorkerToStop(errors);
-        const kill = yield* Effect.acquireRelease(
-          Effect.sync(() => vi.spyOn(process, "kill")),
-          (spy) => Effect.sync(() => spy.mockRestore()),
-        );
-        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
-
-        yield* WorkerProcessSpawner.__testing.stopWorker;
-
-        yield* errors.logged;
-        assert.notInclude(
-          kill.mock.calls.map(([pid]) => pid),
-          leader.pid,
-        );
-      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
-    },
-  );
-
-  it.live(
-    "a stopped worker's walk of a leader whose exit it relayed bounds the root by that exit",
-    () =>
-      Effect.gen(function* () {
-        const leader = yield* node("", quiet);
-        yield* leader.exitCode;
-        const { calls } = yield* execFileCalls;
-        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
-
-        yield* WorkerProcessSpawner.__testing.stopWorker;
-
-        assert.match(calls.at(-1)?.at(-1) ?? "", / -ended \d+$/);
-      }).pipe(Effect.scoped, Effect.provide(windowsLayer)),
-  );
-
-  it.live("a stopped worker's walk of a leader that may still run names no end", () => {
-    const errors = errorLogs();
-    return Effect.gen(function* () {
-      yield* leaderOfWorkerToStop(errors);
-      const { calls } = yield* execFileCalls;
-      yield* WorkerProcessSpawner.__testing.failWorkerStarts;
-
-      yield* WorkerProcessSpawner.__testing.stopWorker;
-
-      assert.notInclude(calls.at(-1)?.at(-1) ?? "", "-ended");
-    }).pipe(Effect.scoped, Effect.provide(windowsLayer));
-  });
-
-  it.live(
-    "a stopped worker whose tree walk cannot start PowerShell logs it and fails its children",
-    () => {
-      const errors = errorLogs();
-      return Effect.gen(function* () {
-        const leader = yield* leaderOfWorkerToStop(errors);
-        yield* execFileThrows(Object.assign(new Error("spawn ENOMEM"), { code: "ENOMEM" }));
-        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
-
-        yield* WorkerProcessSpawner.__testing.stopWorker;
-
-        yield* errors.logged;
-        assert.isTrue(Exit.isFailure(yield* Effect.exit(leader.exitCode)));
-      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
-    },
-  );
 
   // POSIX gives no process the pid of a group that still exists, so one holding it ended the group.
   it.live.skipIf(isWindowsHost)(
@@ -428,7 +457,7 @@ describe("WorkerProcessSpawner", () => {
     "a stopped worker kills what a child left running after it exited, through $through",
     ({ replacement }) =>
       Effect.gen(function* () {
-        const leftover = yield* leaderLeavingChild();
+        const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
         yield* leaderThatLeftAChild(leftover);
         yield* replacement;
 

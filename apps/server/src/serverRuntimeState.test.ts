@@ -5,6 +5,7 @@ import * as NodeSqlite from "node:sqlite";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { WindowsJobHost, prepareWindowsJobHost } from "@t3tools/shared/windowsJob";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -136,6 +137,34 @@ const startBesideBootService = Effect.fn("test.startBesideBootService")(function
 });
 
 describe("server ownership", () => {
+  it.effect("reads Windows creation time when Get-Process StartTime is inaccessible", () =>
+    Effect.gen(function* () {
+      const made = yield* ServerRuntimeState.readProcessStartedAt(42);
+      assert.equal(made, 1_794_960_000_123);
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(WindowsJobHost, Effect.succeed("job-host.exe")),
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: (input) =>
+          Effect.succeed({
+            stdout:
+              input.command === "job-host.exe" && input.args[0] === "identity"
+                ? "134394336001230001"
+                : "",
+            stderr: "Access denied to Get-Process.StartTime",
+            code: ChildProcessSpawner.ExitCode(
+              input.command === "job-host.exe" && input.args[0] === "identity" ? 0 : 1,
+            ),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          }),
+      }),
+    ),
+  );
+
   // An empty home, so no boot service unit installed on this machine is read.
   const layerOwnership = Layer.mergeAll(
     ProcessRunner.layer,
@@ -146,6 +175,10 @@ describe("server ownership", () => {
       }),
     ),
     Layer.succeed(HostProcess.Environment, {}),
+    Layer.succeed(
+      WindowsJobHost,
+      prepareWindowsJobHost().pipe(Effect.provideService(HostProcess.Environment, process.env)),
+    ),
   ).pipe(Layer.provideMerge(NodeServices.layer));
   const makeState = ServerRuntimeState.makePersistedServerRuntimeState({
     config: { host: undefined, devUrl: undefined },

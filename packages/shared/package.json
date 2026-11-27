@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./windowsJobNode": {
+      "types": "./src/windowsJobNode.ts",
+      "import": "./src/windowsJobNode.ts"
+    },
     "./providerLoginExpiry": {
       "types": "./src/providerLoginExpiry.ts",
       "import": "./src/providerLoginExpiry.ts"
@@ -390,6 +394,14 @@
     "./windowsProcessTreeScript": {
       "types": "./src/windowsProcessTreeScript.ts",
       "import": "./src/windowsProcessTreeScript.ts"
+    },
+    "./windowsJobSpawner": {
+      "types": "./src/windowsJobSpawner.ts",
+      "import": "./src/windowsJobSpawner.ts"
+    },
+    "./windowsJob": {
+      "types": "./src/windowsJob.ts",
+      "import": "./src/windowsJob.ts"
     },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",

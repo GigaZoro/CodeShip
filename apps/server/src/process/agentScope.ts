@@ -53,6 +53,8 @@ export interface ScopeState {
   readonly result: string;
   readonly oomKills: number | undefined;
   readonly populated: boolean | undefined;
+  /** Empty once systemd released the unit's cgroup. */
+  readonly controlGroup: string;
 }
 
 /** Pipes can close before systemd records oom-kill; stopping, empty or OOM-counted scopes remain pending. */
@@ -268,6 +270,7 @@ export const make = Effect.gen(function* () {
       result: values.get("Result") ?? "",
       oomKills: parseCgroupCounter(memoryEvents, "oom_kill"),
       populated: populated === undefined ? undefined : populated === 1,
+      controlGroup,
     } satisfies ScopeState;
   });
 
@@ -373,6 +376,37 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const stopCommand = Effect.fn("AgentScope.stopCommand")(function* (unit: string) {
+    if (!unit.startsWith("t3code-command-") || !unit.endsWith(".scope")) return false;
+    if (!hostEnvironment.XDG_RUNTIME_DIR) return false;
+    // Persisted command scopes remain ours even when the launch-capability probe fails.
+    const systemctl = yield* resolve("systemctl", hostEnvironment);
+    if (systemctl === null) return false;
+    // A failed scope has stopped like an inactive one; reset-failed releases its name.
+    const isEmpty = Effect.fn("AgentScope.stopCommand.isEmpty")(function* (
+      state: ScopeState | undefined,
+    ) {
+      if (state === undefined) return false;
+      // An existing cgroup whose events cannot be read may still hold the command's processes.
+      if (state.populated !== false && state.controlGroup !== "") return false;
+      if (state.activeState === "failed") {
+        yield* clearFailed(systemctl, unit);
+        return true;
+      }
+      return (
+        state.loadState === "not-found" ||
+        state.activeState === "inactive" ||
+        state.populated === false
+      );
+    });
+    const before = yield* readScope(systemctl, unit);
+    if (yield* isEmpty(before)) return true;
+    if (before === undefined || before.loadState !== "loaded") return false;
+    const stopped = yield* run(systemctl, ["--user", "stop", "--no-block", unit]);
+    if (stopped._tag === "None" || stopped.value.code !== 0) return false;
+    return yield* isEmpty(yield* readScope(systemctl, unit));
+  });
+
   const kill: AgentScopeShape["kill"] = Effect.fn("AgentScope.kill")(function* (threadId) {
     const tracked = scopeByThread.get(threadId);
     if (tracked === undefined || tracked.shared) return false;
@@ -467,6 +501,7 @@ export const make = Effect.gen(function* () {
     }),
     oomKilled,
     stop,
+    stopCommand,
     kill,
     clear,
   } satisfies AgentScopeShape;

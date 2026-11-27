@@ -384,14 +384,25 @@ returns its existing status, and its child thread still stops, including later
 runs and watch wakes. Published task results remain available. It accepts an
 optional cancellation reason.
 
+A `t3_command_run` task has no child thread: its runner stops the command and
+waits up to 15 s for the stop. The response's `cleanup` says what this cancel did
+to the command's processes: `stopped` (none is left), `pending` (stopping takes
+longer and CodeShip keeps trying in the background; the task's result reports
+that cleanup is still pending), `never-started` (cancelled before the command started, so
+it never ran; CodeShip still stops any process its launcher left) or `unproven` (CodeShip could not prove the process was the
+command's, so it stopped nothing and the command may still be running). A
+command that had already ended keeps its own result, and the response has no
+`cleanup`.
+
 ### `t3_command_run`
 
 Runs a shell command that ends (tests, a build, an install, a push, a deploy, a long script) as an app-owned task of
 the calling thread, started outside the provider and the server so a restart does not cut it.
-It takes `command`, an optional `cwd` (the thread's checkout by default), `label`,
+It takes `command`, a `clientRequestId`, an optional `cwd` (the thread's checkout by default), `label`,
 `timeoutMinutes` (default 60, at most 720), and `shell`, whose one value `bash` runs the command
 unchanged in bash on every OS: the user's shell when it is bash, else `bash` from `PATH`, and Git
-Bash on Windows. It returns the `taskId`, the log path and the timeout. The command gets the whole environment the calling agent's own shell commands get in
+Bash on Windows. A retry of a call reuses its `clientRequestId` and gets the command that call
+started, so a command runs once however often its call is retried. It returns the `taskId`, the log path and the timeout. The command gets the whole environment the calling agent's own shell commands get in
 the thread's folder: the host environment without the server's own variables, then the
 variables set on the agent's provider account, which every provider starts its agent with, then
 its provider's rules. For Claude that is
@@ -460,7 +471,7 @@ Claude settings an organization's policy helper computes (a `policyHelper` or a 
 `policyHelpers` entry, neither of which `resolveSettings` applies), the call fails and nothing
 runs. The command's end completes the task through the same durable delivery as a delegated
 task's result, which wakes the thread once with the exit code and the last output.
-`task_status` reads the task, and `task_cancel` kills the command's process tree. Native
+`task_status` reads the task, and `task_cancel` kills the command's process tree and says what it stopped (see `task_cancel`). Native
 background shells stay for work left running, such as dev servers and watchers; the update hold
 lists neither. [Server updates](../internals/server-updates.md) describes how the command
 survives a restart.
@@ -671,7 +682,8 @@ results use the latest assistant content from the final work turn.
 - `clientRequestId` derives stable command, thread, and message IDs within the
   provider session. Retrying the same call returns the same durable work.
 - Calls without `clientRequestId` receive a generated request key and create
-  new work.
+  new work. `t3_command_run` requires one, because a second run of a command repeats what it
+  does outside CodeShip.
 
 Expected denials use the typed `OrchestratorMcpFailure` result:
 

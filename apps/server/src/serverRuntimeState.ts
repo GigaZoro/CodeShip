@@ -1,4 +1,9 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  WindowsJobHost,
+  parseWindowsProcessIdentity,
+  windowsCreationTimeMillis,
+} from "@t3tools/shared/windowsJob";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -136,34 +141,63 @@ export const clearPersistedServerRuntimeState = Effect.fn(
   );
 });
 
+/** What the job host's `identity` prints for a live process; nothing when it cannot tell. */
+const runIdentityProbe = Effect.fn("serverRuntimeState.runIdentityProbe")(function* (
+  args: ReadonlyArray<string>,
+  timeout: Duration.Input,
+) {
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const host = yield* (yield* WindowsJobHost).pipe(Effect.option);
+  if (Option.isNone(host)) return undefined;
+  const result = yield* runner
+    .run({ command: host.value, args: ["identity", ...args], timeout, maxOutputBytes: 16_384 })
+    .pipe(Effect.option);
+  if (Option.isNone(result) || result.value.code !== 0) return undefined;
+  return result.value.stdout.trim();
+});
+
+export const readWindowsProcessIdentity = Effect.fn(
+  "serverRuntimeState.readWindowsProcessIdentity",
+)(function* (pid: number, timeout: Duration.Input = Duration.seconds(2)) {
+  return parseWindowsProcessIdentity(yield* runIdentityProbe([String(pid)], timeout));
+});
+
 /**
- * When `pid` started, in epoch milliseconds, to tell a process from a later one that reuses
- * its pid; undefined when it cannot be read. POSIX `ps` reports whole seconds.
+ * A live process's full FILETIME and whether its command line contains `text`, read through one
+ * handle, so a pid that passes to another process between the two cannot mix them.
  */
+export const readWindowsProcessNaming = Effect.fn("serverRuntimeState.readWindowsProcessNaming")(
+  function* (pid: number, text: string, timeout: Duration.Input = Duration.seconds(2)) {
+    const [created, verdict] =
+      (yield* runIdentityProbe([String(pid), text], timeout))?.split(" ") ?? [];
+    const createdAt = parseWindowsProcessIdentity(created);
+    return createdAt === undefined || (verdict !== "named" && verdict !== "other")
+      ? undefined
+      : { createdAt, named: verdict === "named" };
+  },
+);
+
+/** Millisecond timestamps support runtime diagnostics; Windows stop ownership uses full FILETIME. */
 export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessStartedAt")(function* (
   pid: number,
+  timeout: Duration.Input = Duration.seconds(2),
 ) {
-  const windows = (yield* HostProcess.Platform) === "win32";
+  if ((yield* HostProcess.Platform) === "win32") {
+    const identity = yield* readWindowsProcessIdentity(pid, timeout);
+    return identity === undefined ? undefined : windowsCreationTimeMillis(identity);
+  }
   const runner = yield* ProcessRunner.ProcessRunner;
   const result = yield* runner
     .run({
-      command: windows ? "powershell.exe" : "ps",
-      args: windows
-        ? [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
-          ]
-        : ["-p", String(pid), "-o", "lstart="],
+      command: "ps",
+      args: ["-p", String(pid), "-o", "lstart="],
       env: { LC_ALL: "C", TZ: "UTC" },
-      timeout: Duration.seconds(2),
+      timeout,
       maxOutputBytes: 16_384,
     })
     .pipe(Effect.option);
   if (Option.isNone(result) || result.value.code !== 0) return undefined;
-  const output = result.value.stdout.trim();
-  const startedAt = Date.parse(windows ? output : `${output} UTC`);
+  const startedAt = Date.parse(`${result.value.stdout.trim()} UTC`);
   return Number.isFinite(startedAt) ? startedAt : undefined;
 });
 

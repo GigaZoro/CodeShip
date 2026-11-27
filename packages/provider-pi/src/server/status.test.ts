@@ -1,3 +1,4 @@
+import { makePiProtocolSpawner } from "./rpc.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -47,7 +48,7 @@ function processHandle(input: {
 }
 
 function piProbeSpawner(version: string) {
-  return ChildProcessSpawner.make((command) => {
+  return makePiProtocolSpawner((command) => {
     const args = ChildProcess.isStandardCommand(command) ? command.args : [];
     return Effect.succeed(
       args.includes("--version")
@@ -96,7 +97,7 @@ const piDiscoverySpawner = (
         }
       }),
     );
-    return ChildProcessSpawner.make((command) => {
+    return makePiProtocolSpawner((command) => {
       const args = ChildProcess.isStandardCommand(command) ? command.args : [];
       if (args.includes("--version")) {
         return Effect.succeed(processHandle({ stdout: `pi ${options.version ?? "0.84.3"}\n` }));
@@ -185,7 +186,7 @@ describe("PiProvider", () => {
   ] as const)("gives `pi --version` 10 s when it $label", (row) =>
     Effect.gen(function* () {
       const spawned: Array<string> = [];
-      const spawner = ChildProcessSpawner.make((command) => {
+      const spawner = makePiProtocolSpawner((command) => {
         const args = ChildProcess.isStandardCommand(command) ? command.args : [];
         spawned.push(args.join(" "));
         return Effect.succeed(

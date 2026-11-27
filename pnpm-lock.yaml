@@ -368,7 +368,7 @@ patchedDependencies:
   '@expo/ui@58.0.20': 64559cb60723e19a8a72256d4c78d1315d937a7af3b32d19860ea596f88736ce
   '@ff-labs/fff-node@0.11.0': cc71fcec015f4d39bc96ae2e2bf6b0ca678124c722c66a7841efce9d34b5983c
   '@legendapp/list@3.3.5': 1ddea7cbf2b91de6b569c9684421c3adf56ca17d538906619612fa270a34dff2
-  '@muse-code/sdk@1.4.6': 7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268
+  '@muse-code/sdk@1.4.6': b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da
   '@pierre/diffs@1.6.1': 322ac5f5db8b5715189c010802047f8235c3a45d8ed5ca0ba60fac266e2eba34
   '@react-native-ai/apple@0.12.0': 2d09870c2848d185cb05b53ed823a46e12dba519324d8dd8e584e28731990f9d
   '@react-native-menu/menu@2.0.0': 910ec1bf22aa85a96fcf12299cd823bc30f702dd9b2d77b564d10b9ed709f7f6
@@ -848,7 +848,7 @@ importers:
         version: 0.11.0(patch_hash=cc71fcec015f4d39bc96ae2e2bf6b0ca678124c722c66a7841efce9d34b5983c)
       '@muse-code/sdk':
         specifier: 1.4.6
-        version: 1.4.6(patch_hash=7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268)(@types/node@24.12.4)
+        version: 1.4.6(patch_hash=b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da)(@types/node@24.12.4)
       '@napi-rs/keyring':
         specifier: ^1.3.0
         version: 1.3.0
@@ -1827,7 +1827,7 @@ importers:
     dependencies:
       '@muse-code/sdk':
         specifier: 1.4.6
-        version: 1.4.6(patch_hash=7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268)(@types/node@24.12.4)
+        version: 1.4.6(patch_hash=b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da)(@types/node@24.12.4)
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -15042,7 +15042,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@muse-code/sdk@1.4.6(patch_hash=7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268)(@types/node@24.12.4)':
+  '@muse-code/sdk@1.4.6(patch_hash=b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da)(@types/node@24.12.4)':
     optionalDependencies:
       '@types/node': 24.12.4
 

@@ -1,14 +1,21 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- A stopped worker's trees end from its exit listener, outside every fiber.
-import * as NodeChildProcess from "node:child_process";
 import * as NodeWorkerThreads from "node:worker_threads";
 
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
+import { sleepAwake } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import {
-  WINDOWS_STOP_TREE_ARGS,
-  windowsStopTreeArgs,
-} from "@t3tools/shared/windowsProcessTreeScript";
+  WindowsJobHost,
+  attachWindowsJob,
+  parseWindowsProcessIdentity,
+  windowsHostSpawnError,
+  type WindowsJob,
+} from "@t3tools/shared/windowsJob";
+import {
+  markWindowsJobSpawner,
+  WINDOWS_JOB_START_TIMEOUT_MESSAGE,
+  WINDOWS_JOB_START_TIMEOUT_SECONDS,
+} from "@t3tools/shared/windowsJobSpawner";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -40,8 +47,9 @@ const HIGH_WATER_BYTES = 1 << 20;
 const STAT_STATE = 0;
 const STAT_PPID = 1;
 const STAT_START_TIME = 19;
-const STOP_TREE_ARGS = ${JSON.stringify(WINDOWS_STOP_TREE_ARGS)};
 const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
+const hostSpawnError = ${windowsHostSpawnError.toString()};
+const parseIdentity = ${parseWindowsProcessIdentity.toString()};
 const children = new Map();
 const post = (message, transfer) => parentPort.postMessage(message, transfer);
 const describe = (error) => ({
@@ -110,35 +118,28 @@ const isAlive = (entry) => {
     return false;
   }
 };
-// Windows has no process groups, and taskkill finds descendants only through a running leader, so
-// this walks the tree in PowerShell (windowsProcessTreeScript.ts), also after the leader exited.
-// "ended" is when the leader's exit was seen, or "running": a walk bounds an ended root's children
-// by it and never takes a later holder of its pid for the root.
-const stopTree = ({ pid, since, spawnedAt, ended }, done) => {
-  const call = " " + [pid, since, since, spawnedAt, ...(ended === "running" ? [] : ["-ended", ended])].join(" ");
-  const args = STOP_TREE_ARGS.map((arg, index) => (index === STOP_TREE_ARGS.length - 1 ? arg + call : arg));
-  const failed = (why) => done(new Error("Could not stop the process tree of " + pid + ": " + why));
+const stopTree = ({ job }, done) => {
+  if (!job || !job.child) return done(new Error("Windows process ownership is missing"));
   try {
-    execFile("powershell.exe", args, { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
-      if (!error) return done(undefined);
-      failed(
-        error.killed
-          ? "PowerShell did not finish in time"
-          : typeof error.code === "number"
-            ? "PowerShell exited " + error.code + ": " + String(stderr).trim()
-            : error.message,
-      );
+    execFile(job.host, ["stop", job.name, String(job.child.pid), String(job.child.created)], { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
+      done(error ? new Error("Could not stop Windows job " + job.name + ": " + error.message + ": " + String(stderr).trim()) : undefined);
     });
-  } catch (error) {
-    // Spawn errors such as ENOMEM throw rather than reach the callback.
-    failed(error.message);
-  }
+  } catch (error) { done(error); }
 };
 const signalGroup = (entry, signal, done) => {
   const fallback = () =>
     done(entry.child.kill(signal) ? undefined : new Error("Failed to kill child process"));
   if (process.platform === "win32") {
-    return stopTree({ ...entry.root, ended: entry.exit === null ? "running" : entry.exit.at }, (error) => (error !== undefined && entry.exit === null ? fallback() : done(error)));
+    if (!entry.root.job?.child) {
+      if (entry.exit === null) entry.child.kill(signal);
+      return done(undefined);
+    }
+    return stopTree(entry.root, (error) => {
+      if ((error !== undefined || signal === "SIGKILL") && entry.exit === null) {
+        entry.child.kill(signal);
+      }
+      done(error);
+    });
   }
   if (groupEnded(entry)) return done(undefined);
   try {
@@ -210,21 +211,32 @@ const relayOutput = (entry, fd) => {
   stream.on("error", (error) => close({ type: "streamError", id: entry.id, fd, error: describe(error) }));
 };
 
-const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, killLeaderAtExit }) => {
+const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, killLeaderAtExit, jobHost }) => {
   if (stallMs > 0) Atomics.wait(nap, 0, 0, stallMs);
   let child;
-  // The system's clock, which a Windows tree walk compares with process creation times.
-  const since = Date.now();
+  const job = jobHost ? { host: jobHost, name: "Global\\\\CodeShip.Job." + require("node:crypto").randomUUID() } : undefined;
+  const ownershipFd = options.stdio.length;
+  let target = command, targetArgs = args, raw = false;
+  if (job && options.shell) {
+    target = typeof options.shell === "string" ? options.shell : (process.env.comspec || "cmd.exe");
+    const content = [command, ...args].join(" ");
+    if (/cmd(?:\\.exe)?$/i.test(target)) { targetArgs = ["/d", "/s", "/c", '"' + content + '"']; raw = true; }
+    else targetArgs = ["-c", content];
+  }
   try {
-    child = spawn(command, args, options);
+    child = job
+      ? spawn(job.host, [raw ? "owned-raw" : "owned", job.name, String(ownershipFd), target, ...targetArgs], { ...options, shell: false, stdio: [...options.stdio, "pipe", "pipe"] })
+      : spawn(command, args, options);
   } catch (error) {
-    post({ type: "spawnFailed", id, error: describe(error) });
+    post({ type: "spawnFailed", id, error: describe(job ? hostSpawnError(job.host, error) : error) });
     return;
   }
   const entry = {
     id,
     child,
-    root: { pid: child.pid, since, spawnedAt: Date.now() },
+    root: { pid: child.pid, job },
+    ownership: job ? child.stdio[ownershipFd] : undefined,
+    refReplies: [],
     // Until its exit event the child is unreaped, so the pid is still its own. Without a readable
     // /proc it stays unknown and every exit counts as a reap, as on macOS.
     startTime: process.platform === "linux" ? procStat(child.pid)[STAT_START_TIME] : undefined,
@@ -245,20 +257,67 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     if (entry.started) return;
     entry.started = true;
     children.delete(id);
-    post({ type: "spawnFailed", id, error: describe(error) });
+    post({ type: "spawnFailed", id, error: describe(job ? hostSpawnError(job.host, error) : error) });
   });
-  child.on("spawn", () => {
+  const started = () => {
+    if (entry.started) return;
     entry.started = true;
     post({ type: "spawned", id, root: entry.root });
-  });
+  };
+  if (!job) child.on("spawn", started);
+  else {
+    // The host runs; the caller's startup deadline counts from here.
+    post({ type: "hosted", id });
+    let received = "";
+    const failed = (error) => {
+      if (!entry.started) {
+        entry.started = true;
+        entry.released = true;
+        post({ type: "spawnFailed", id, error: describe(error) });
+      }
+      child.kill();
+    };
+    entry.ownership.on("error", failed);
+    const replies = child.stdio[ownershipFd + 1];
+    replies.setEncoding("utf8");
+    replies.on("error", failed);
+    replies.on("data", (chunk) => {
+      received += chunk;
+      if (received.length > 65536) return failed(new Error("Oversized ownership reply"));
+      for (;;) {
+        const end = received.indexOf("\\n");
+        if (end === -1) break;
+        const line = received.slice(0, end);
+        received = received.slice(end + 1);
+        if (line === "W") { entry.ownership.write("R"); continue; }
+        if (line === "R" || line === "U") { reply(id, entry.refReplies.shift(), undefined); continue; }
+        const fields = line.split(" ");
+        const identity = parseIdentity(fields[2]);
+        if (fields[0] === "S" && Number.isSafeInteger(Number(fields[1])) && Number(fields[1]) > 0 && identity !== undefined) {
+          job.child = { pid: Number(fields[1]), created: identity };
+          entry.root = { pid: Number(fields[1]), job };
+          started();
+        } else if (fields[0] === "E") {
+          const code = Number(fields[1]);
+          failed(Object.assign(new Error(Buffer.from(fields[2] || "", "base64").toString()), { code: code === 2 || code === 3 ? "ENOENT" : code === 5 ? "EACCES" : "UNKNOWN" }));
+        } else failed(new Error("Invalid ownership reply"));
+      }
+    });
+    replies.on("end", () => {
+      if (!entry.started) failed(new Error("Windows process host ended before reporting startup"));
+    });
+    child.on("exit", () => {
+      for (const seq of entry.refReplies.splice(0)) reply(id, seq, undefined);
+    });
+  }
   child.on("exit", (code, signal) => {
     if (killLeaderAtExit) killAsExitArrives(child.pid);
     // Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node
     // reports it as an exit. That leader still holds its pid, stopped or, once killed, as a zombie;
     // any other holder took the pid after a real reap.
-    entry.exit = { code, signal, reaped: !isLeader(entry), at: Date.now() };
-    post({ type: "exit", id, code, signal, reaped: entry.exit.reaped, at: entry.exit.at });
-    // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
+    entry.exit = { code, signal, reaped: !isLeader(entry) };
+    post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
+    // The Windows host ends its job before reporting the exit.
     if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
       try {
         process.kill(-child.pid, killSignal);
@@ -284,9 +343,7 @@ const discard = (entry) => {
     output.stream.resume();
   }
 };
-// Whether to end what a leader that exited may have left running. A Windows tree walk starts
-// PowerShell, too slow for every command, so it runs only for a cancelled command or one whose
-// output pipe is still open, as when what the leader left running holds it.
+// POSIX groups can outlive their leader; Windows hosts end their jobs before their exit.
 const leftBehind = (entry, referenced, interrupted) => {
   if (process.platform === "win32") return referenced && (interrupted || entry.open.size > 0);
   const failed = entry.exit.code !== 0 && entry.exit.code !== null;
@@ -341,8 +398,6 @@ parentPort.on("message", (message) => {
     syncs.push(message);
     return scheduleTurn();
   }
-  // The worker that ran these children stopped.
-  if (message.type === "killTree") return stopTree({ ...message.root, ended: message.ended }, (error) => reply(undefined, message.seq, error));
   if (message.type === "abandon" && queued.delete(message.id)) return;
   const { id, seq } = message;
   const entry = children.get(id);
@@ -376,6 +431,11 @@ parentPort.on("message", (message) => {
       stream.end((error) => reply(id, seq, error));
       return;
     }
+    case "reference":
+      if (!entry.ownership || entry.exit !== null) return reply(id, seq, undefined);
+      entry.refReplies.push(seq);
+      entry.ownership.write(message.referenced ? "R" : "U");
+      return;
     case "terminate":
       return terminate(entry, message.signal, message.forceKillAfterMs, (error) => reply(id, seq, error));
     case "release":
@@ -403,6 +463,7 @@ interface WorkerError {
 }
 
 type WorkerEvent =
+  | { readonly type: "hosted"; readonly id: number }
   | { readonly type: "spawned"; readonly id: number; readonly root: StartedChild }
   | { readonly type: "spawnFailed"; readonly id: number; readonly error: WorkerError }
   | { readonly type: "data"; readonly id: number; readonly fd: number; readonly chunk: Uint8Array }
@@ -419,7 +480,6 @@ type WorkerEvent =
       readonly code: number | null;
       readonly signal: string | null;
       readonly reaped: boolean;
-      readonly at: number;
     }
   | {
       readonly type: "done";
@@ -449,14 +509,12 @@ interface PendingReply {
 }
 
 // How to end a child with its descendants: its process group on POSIX when detached, its process
-// tree through a walk of Win32_Process on Windows, otherwise only the child.
+// job on Windows, otherwise only the child.
 type Kills = "group" | "tree" | "leader";
 
-/** Times are the system clock's, read in the worker just before and after the start. */
 interface StartedChild {
   readonly pid: number;
-  readonly since: number;
-  readonly spawnedAt: number;
+  readonly job?: WindowsJob;
 }
 
 interface RemoteChild {
@@ -464,16 +522,14 @@ interface RemoteChild {
   readonly connection: Connection;
   readonly command: ChildProcess.StandardCommand;
   readonly kills: Kills;
-  // Logs through the spawning fiber's logger a failure no fiber awaits, as after its worker stopped.
-  readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
   // The worker relayed an exit that reaped the leader, not a ptrace stop Node reports as one.
   reaped: boolean;
-  // The system clock when the worker saw the leader exit; a Windows tree walk bounds the root by it.
-  exitedAt: number | undefined;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
   starting: ((outcome: StartedChild | PlatformError.PlatformError) => void) | undefined;
+  // The worker started this child's Windows job host, which has yet to report the child.
+  hosted: (() => void) | undefined;
   root: StartedChild | undefined;
   referenced: boolean;
   holdsWorker: boolean;
@@ -505,7 +561,8 @@ const toPlatformError = (
     _tag: systemErrorTags[error.code ?? ""] ?? "Unknown",
     module: "ChildProcess",
     method,
-    pathOrDescriptor: `${command.command} ${command.args.join(" ")}`,
+    pathOrDescriptor: error.path ?? `${command.command} ${command.args.join(" ")}`,
+    description: error.message,
     syscall: error.syscall,
     cause: error,
   });
@@ -630,81 +687,14 @@ const sigkill = (pid: number) => {
   }
 };
 
-interface Orphan {
-  readonly child: RemoteChild;
-  readonly root: StartedChild;
-  readonly ended: number | "running";
-}
-
-// Only for when no worker can start, as starting PowerShell blocks this thread. A stopped worker
-// relays no exits, so a leader's pid alone may name an unrelated process by now.
-const stopTreeHere = ({ child, root, ended }: Orphan) => {
-  const args = windowsStopTreeArgs({
-    pid: root.pid,
-    since: root.since,
-    created: { from: root.since, to: root.spawnedAt },
-    ended,
-  });
-  const failed = (why: string) => {
-    const cause = new Error(`Could not stop the process tree of ${root.pid}: ${why}`);
-    child.report(toPlatformError("kill", cause, child.command));
-  };
-  try {
-    NodeChildProcess.execFile(
-      "powershell.exe",
-      args,
-      { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS },
-      (error, _stdout, stderr) => {
-        if (error === null) return;
-        failed(
-          error.killed
-            ? "PowerShell did not finish in time"
-            : typeof error.code === "number"
-              ? `PowerShell exited ${error.code}: ${String(stderr).trim()}`
-              : error.message,
-        );
-      },
-    );
-  } catch (cause) {
-    // Spawn errors such as ENOMEM throw rather than reach the callback, here inside the worker's
-    // exit listener, which must still end the stopped worker's other children.
-    failed(toError(cause).message);
-  }
-};
-
-const killTrees = (trees: ReadonlyArray<Orphan>) => {
-  let connection: Connection;
-  try {
-    connection = connect();
-  } catch {
-    for (const orphan of trees) stopTreeHere(orphan);
-    return;
-  }
-  for (const { child, root, ended } of trees) {
-    const seq = nextSeq++;
-    connection.replies.set(seq, {
-      method: "kill",
-      command: child.command,
-      resume: (error) => {
-        if (error !== undefined) child.report(error);
-      },
-    });
-    hold(connection);
-    post(connection, { type: "killTree", root, ended, seq });
-  }
-};
-
 // Nothing supervises the children of a stopped worker, so the referenced ones end with it, with
 // the descendants that outlived their leader. Unreferenced ones may outlive it.
 const killOrphans = (children: Iterable<RemoteChild>) => {
-  const trees: Array<Orphan> = [];
   for (const child of children) {
     const root = child.root;
     if (!child.referenced || root === undefined) continue;
-    if (child.kills === "tree") {
-      trees.push({ child, root, ended: child.exitedAt ?? "running" });
-      continue;
-    }
+    // The worker's closed ownership pipe ends referenced Windows jobs, including unpublished roots.
+    if (child.kills === "tree") continue;
     // As in the worker's groupEnded, a process holding a reaped leader's pid means the group ended. A
     // leader the stopping worker reaped without relaying the exit goes unchecked, so its ids could
     // name a process started in the moments since.
@@ -712,7 +702,6 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
       if (!(child.reaped && isProcessAlive(root.pid))) sigkill(-root.pid);
     } else if (!child.reaped) sigkill(root.pid);
   }
-  if (trees.length > 0) killTrees(trees);
 };
 
 const stop = (connection: Connection, cause: Error) => {
@@ -760,6 +749,9 @@ const receive = (connection: Connection, event: WorkerEvent) => {
   const child = connection.children.get(event.id);
   if (child === undefined) return;
   switch (event.type) {
+    case "hosted":
+      child.hosted?.();
+      return;
     case "spawned":
       child.starting?.(event.root);
       return;
@@ -789,7 +781,6 @@ const receive = (connection: Connection, event: WorkerEvent) => {
     }
     case "exit":
       child.reaped = event.reaped;
-      child.exitedAt = event.at;
       Deferred.doneUnsafe(child.exit, Exit.succeed([event.code, event.signal] as const));
       if (child.holdsWorker) {
         child.holdsWorker = false;
@@ -871,7 +862,8 @@ const launch = (
   message: object,
   outputs: ReadonlyMap<number, OutputQueue>,
   kills: Kills,
-  report: RemoteChild["report"],
+  // Receives, once the worker started the Windows job host, what fails a start still pending.
+  hosted?: Deferred.Deferred<(error: PlatformError.PlatformError) => void>,
 ) =>
   Effect.callback<RemoteChild, PlatformError.PlatformError>((resume) => {
     let connection: Connection;
@@ -887,18 +879,37 @@ const launch = (
       connection,
       command,
       kills,
-      report,
       exit: Deferred.makeUnsafe(),
       reaped: false,
-      exitedAt: undefined,
       outputs,
       open: new Set(outputs.keys()),
       starting: undefined,
+      hosted: undefined,
       root: undefined,
       referenced: true,
       holdsWorker: false,
       released: false,
     };
+    // The worker drops a start it has not begun and stops the child of one it began.
+    const abandon = () => {
+      if (child.starting === undefined) return false;
+      child.starting = undefined;
+      unhold(connection);
+      connection.children.delete(id);
+      post(connection, { type: "abandon", id });
+      return true;
+    };
+    if (hosted !== undefined) {
+      child.hosted = () => {
+        child.hosted = undefined;
+        Deferred.doneUnsafe(
+          hosted,
+          Exit.succeed((error) => {
+            if (abandon()) resume(Effect.fail(error));
+          }),
+        );
+      };
+    }
     child.starting = (outcome) => {
       child.starting = undefined;
       unhold(connection);
@@ -924,13 +935,36 @@ const launch = (
       killLeaderAtExit: killLeadersAtExit,
     });
     return Effect.sync(() => {
-      if (child.starting === undefined) return;
-      child.starting = undefined;
-      unhold(connection);
-      connection.children.delete(id);
-      post(connection, { type: "abandon", id });
+      abandon();
     });
   });
+
+// Ending a host closes its job, whose kill-on-close limit ends a child it already made, so a host
+// that never reports its child is stopped like an abandoned start.
+const expireUnreportedHost = (
+  hosted: Deferred.Deferred<(error: PlatformError.PlatformError) => void>,
+  command: ChildProcess.StandardCommand,
+) =>
+  Deferred.await(hosted).pipe(
+    Effect.flatMap((expire) =>
+      sleepAwake(`${WINDOWS_JOB_START_TIMEOUT_SECONDS} seconds`).pipe(
+        Effect.andThen(
+          Effect.sync(() =>
+            expire(
+              PlatformError.systemError({
+                _tag: "TimedOut",
+                module: "ChildProcess",
+                method: "spawn",
+                pathOrDescriptor: command.command,
+                description: WINDOWS_JOB_START_TIMEOUT_MESSAGE,
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+    Effect.andThen(Effect.never),
+  );
 
 // A released child stays registered until its exit and output arrived, so an unreferenced one can
 // still be killed and read.
@@ -950,6 +984,12 @@ const make = Effect.gen(function* () {
   // Each spawn already sits inside the caller's git or process span.
   const spawnStandard = Effect.fnUntraced(function* (command: ChildProcess.StandardCommand) {
     const options = command.options;
+    const jobHost =
+      platform === "win32"
+        ? yield* (yield* WindowsJobHost).pipe(
+            Effect.mapError((cause) => toPlatformError("spawn", cause, command)),
+          )
+        : undefined;
     const stdinConfig = resolveStdinOption(options);
     const stdout = resolveOutputOption(options.stdout);
     const stderr = resolveOutputOption(options.stderr);
@@ -970,10 +1010,6 @@ const make = Effect.gen(function* () {
     const detached = options.detached ?? platform !== "win32";
     const killSignal = options.killSignal ?? "SIGTERM";
     const forceKillAfterMs = forceKillMillis(options.forceKillAfter);
-    const runFork = Effect.runForkWith(yield* Effect.context<never>());
-    const report = (error: PlatformError.PlatformError) => {
-      runFork(Effect.logError("Could not end a child process tree", error));
-    };
     const outputs = new Map<number, OutputQueue>();
     for (const fd of outputFds) {
       outputs.set(
@@ -982,30 +1018,38 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const child = yield* Effect.acquireRelease(
-      launch(
-        command,
-        {
-          command: command.command,
-          args: command.args,
-          options: {
-            cwd,
-            env: options.extendEnv ? { ...process.env, ...options.env } : options.env,
-            stdio,
-            detached,
-            shell: options.shell,
-            windowsHide: options.windowsHide ?? !detached,
-          },
-          outputs: outputFds,
-          inputs: inputFds,
-          encoding: stdinConfig.encoding,
-          killSignal,
-          forceKillAfterMs,
+    const hosted =
+      jobHost === undefined
+        ? undefined
+        : yield* Deferred.make<(error: PlatformError.PlatformError) => void>();
+    const started = launch(
+      command,
+      {
+        command: command.command,
+        args: command.args,
+        jobHost,
+        options: {
+          cwd,
+          env: options.extendEnv ? { ...process.env, ...options.env } : options.env,
+          stdio,
+          detached,
+          shell: options.shell,
+          windowsHide: options.windowsHide ?? !detached,
         },
-        outputs,
-        platform === "win32" ? "tree" : detached ? "group" : "leader",
-        report,
-      ),
+        outputs: outputFds,
+        inputs: inputFds,
+        encoding: stdinConfig.encoding,
+        killSignal,
+        forceKillAfterMs,
+      },
+      outputs,
+      platform === "win32" ? "tree" : detached ? "group" : "leader",
+      hosted,
+    );
+    const child = yield* Effect.acquireRelease(
+      hosted === undefined
+        ? started
+        : Effect.raceFirst(started, expireUnreportedHost(hosted, command)),
       (child, exit) =>
         // A stopped worker's children were ended by killOrphans, which reports its own failures.
         (child.connection.stopped === undefined
@@ -1079,8 +1123,10 @@ const make = Effect.gen(function* () {
       }
     }
 
-    const reref = Effect.sync(() => {
+    const reref = Effect.gen(function* () {
       if (child.referenced) return;
+      if (child.root?.job !== undefined && !Deferred.isDoneUnsafe(child.exit))
+        yield* request(child, "ref", { type: "reference", referenced: true });
       child.referenced = true;
       if (!Deferred.isDoneUnsafe(child.exit) && child.connection.stopped === undefined) {
         child.holdsWorker = true;
@@ -1088,7 +1134,7 @@ const make = Effect.gen(function* () {
       }
     });
 
-    return ChildProcessSpawner.makeHandle({
+    const handle = ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(child.root?.pid ?? 0),
       exitCode: Effect.flatMap(Deferred.await(child.exit), ([code, signal]) =>
         code !== null
@@ -1108,8 +1154,10 @@ const make = Effect.gen(function* () {
           signal: killOptions?.killSignal ?? "SIGTERM",
           forceKillAfterMs: forceKillMillis(killOptions?.forceKillAfter),
         }).pipe(Effect.andThen(Deferred.await(child.exit)), Effect.asVoid),
-      unref: Effect.sync(() => {
+      unref: Effect.gen(function* () {
         if (child.referenced) {
+          if (child.root?.job !== undefined && !Deferred.isDoneUnsafe(child.exit))
+            yield* request(child, "unref", { type: "reference", referenced: false });
           child.referenced = false;
           if (child.holdsWorker) {
             child.holdsWorker = false;
@@ -1125,6 +1173,8 @@ const make = Effect.gen(function* () {
       getInputFd: (fd) => inputSinks.get(fd) ?? Sink.drain,
       getOutputFd: (fd) => outputStreams.get(fd) ?? Stream.empty,
     });
+    if (child.root?.job !== undefined) attachWindowsJob(handle, child.root.job);
+    return handle;
   });
 
   const spawnCommand: (
@@ -1184,7 +1234,8 @@ const make = Effect.gen(function* () {
     });
   });
 
-  return ChildProcessSpawner.make(spawnCommand);
+  const spawner = ChildProcessSpawner.make(spawnCommand);
+  return platform === "win32" ? markWindowsJobSpawner(spawner) : spawner;
 });
 
 /** @internal Exported for tests. */

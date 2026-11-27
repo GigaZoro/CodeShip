@@ -124,6 +124,11 @@ import Migration0114 from "./Migrations/114_UsageStopReplay.ts";
 import Migration0115 from "./Migrations/115_UsageStopSteerTargets.ts";
 import Migration0116 from "./Migrations/116_CommandRunLaterPidHolder.ts";
 import Migration0117 from "./Migrations/117_UsageLimitRefusals.ts";
+import Migration0118 from "./Migrations/118_CommandLaunchError.ts";
+import Migration0119 from "./Migrations/119_CommandResultReported.ts";
+import Migration0120 from "./Migrations/120_CommandWindowsIdentity.ts";
+import Migration0121 from "./Migrations/121_CommandExitStatusError.ts";
+import Migration0122 from "./Migrations/122_CommandStopLeftovers.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -244,6 +249,11 @@ const migrationEntries = [
   [115, "UsageStopSteerTargets", Migration0115],
   [116, "CommandRunLaterPidHolder", Migration0116],
   [117, "UsageLimitRefusals", Migration0117],
+  [118, "CommandLaunchError", Migration0118],
+  [119, "CommandResultReported", Migration0119],
+  [120, "CommandWindowsIdentity", Migration0120],
+  [121, "CommandExitStatusError", Migration0121],
+  [122, "CommandStopLeftovers", Migration0122],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

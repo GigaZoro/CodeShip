@@ -26,6 +26,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -179,6 +180,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -265,6 +267,7 @@ it("readThread pages cut-off text without splitting an emoji across pages", asyn
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -398,6 +401,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -526,6 +530,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () =>
             Effect.succeed({

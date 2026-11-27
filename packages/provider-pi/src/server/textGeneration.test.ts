@@ -1,3 +1,4 @@
+import { makePiProtocolSpawner } from "./rpc.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -47,7 +48,7 @@ const makeFakePi = (
           }
         }
       });
-    const spawner = ChildProcessSpawner.make(() =>
+    const spawner = makePiProtocolSpawner(() =>
       Effect.succeed(
         ChildProcessSpawner.makeHandle({
           // Outside the valid pid range, so PiRpc's process-group kill never lands.

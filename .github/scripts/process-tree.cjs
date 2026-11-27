@@ -3,9 +3,6 @@
 // stays the tree's; should its caller die first, the anchor has the tree ended. On Windows, which has no process
 // groups, the shared PowerShell walk ends the tree.
 const { spawn, spawnSync } = require("node:child_process");
-const path = require("node:path");
-
-const SHARED_SOURCE = path.join(__dirname, "../../packages/shared/src");
 // How long ending a tree may take, counted from the stop's start.
 const STOP_TREE_MS = 30 * 1000;
 const GONE_POLL_MS = 50;
@@ -139,7 +136,7 @@ function stopWindowsTree(windows, root) {
 }
 
 function spawnWindowsTree(command, args, options) {
-  const windows = require(path.join(SHARED_SOURCE, "windowsProcessTreeScript.ts"));
+  const windows = require("../../packages/shared/src/windowsProcessTreeScript.ts");
   const rootOf = windows.windowsTreeRootFromNow();
   const child = spawn(command, args, options);
   let root = child.pid === undefined ? null : rootOf(child.pid);

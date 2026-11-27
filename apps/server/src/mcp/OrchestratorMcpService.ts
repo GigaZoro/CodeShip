@@ -46,7 +46,7 @@ import {
   type OrchestratorMcpScheduledTask,
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
-  type OrchestratorMcpTarget,
+  type OrchestratorMcpModelTarget,
   type OrchestratorMcpTaskRole,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
@@ -178,6 +178,7 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -1355,6 +1356,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const commandRunner = yield* CommandRunner.CommandRunner;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -1794,7 +1796,7 @@ const make = Effect.gen(function* () {
   const delegatedTaskRoleSelection = Effect.fn("OrchestratorMcpService.delegatedTaskRoleSelection")(
     function* (input: {
       readonly role?: OrchestratorMcpTaskRole | undefined;
-      readonly target?: OrchestratorMcpTarget | undefined;
+      readonly target?: OrchestratorMcpModelTarget | undefined;
     }) {
       if (
         input.target?.providerInstanceId !== undefined ||
@@ -1809,7 +1811,7 @@ const make = Effect.gen(function* () {
 
   const resolveTarget = Effect.fn("OrchestratorMcpService.resolveTarget")(function* (input: {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
-    readonly target: OrchestratorMcpTarget | undefined;
+    readonly target: OrchestratorMcpModelTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
@@ -2262,8 +2264,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Records a running command as cancelled; its runner then stops the command's processes.
-   * The caller asked for the stop, so the command's end does not wake it.
+   * Has the command's runner stop it, which reports what happened: the command's end once it has
+   * stopped, or that its cleanup is still pending when stopping takes longer. The response says
+   * what the cancel did to the command's processes, as the task's result does.
    */
   const cancelCommandTask = Effect.fn("OrchestratorMcpService.cancelCommandTask")(function* (
     scope: McpThreadInvocationScope,
@@ -2279,56 +2282,20 @@ const make = Effect.gen(function* () {
         : undefined;
     const done = settled(current);
     if (done !== undefined) return { taskId: current.taskId, status: done };
-    const key = yield* requestKey(input.clientRequestId);
-    const recorded = yield* threadManagement
-      .dispatch({
-        type: "delegated_task.command.complete",
-        commandId: stableCommandId({ scope, requestKey: key, operation: "cancel-command" }),
+    const cancelled = yield* commandRunner
+      .cancel({
         parentThreadId: scope.thread.threadId,
         taskId: current.taskId,
-        status: "cancelled",
-        result: input.reason === undefined ? "Cancelled." : `Cancelled: ${input.reason}`,
+        reason: input.reason,
       })
-      .pipe(
-        Effect.as(undefined),
-        // The command's own end can land first; its result stands.
-        Effect.catch((error) =>
-          readTask(scope, current.taskId).pipe(
-            Effect.flatMap((task) => {
-              const status = settled(task);
-              return status === undefined
-                ? Effect.fail(
-                    failure(
-                      "orchestration_error",
-                      `Unable to cancel command task ${current.taskId}: ${errorMessage(error)}`,
-                    ),
-                  )
-                : Effect.succeed(status);
-            }),
-          ),
-        ),
-      );
-    if (recorded !== undefined) return { taskId: current.taskId, status: recorded };
-    yield* threadManagement
-      .dispatch({
-        type: "delegated_task.completion-delivery.dispose",
-        commandId: stableCommandId({
-          scope,
-          requestKey: key,
-          operation: "cancel-task-completion-delivery",
-        }),
-        parentThreadId: scope.thread.threadId,
-        taskId: current.taskId,
-      })
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to dispose command task ${current.taskId} completion delivery: ${errorMessage(error)}`,
-          ),
-        ),
-      );
-    return { taskId: current.taskId, status: "cancel_requested" };
+      .pipe(Effect.result);
+    const cleanup = cancelled._tag === "Success" ? cancelled.success : undefined;
+    const withCleanup = cleanup === undefined ? {} : { cleanup };
+    // The command's own end can land first; its result stands.
+    const status = settled(yield* readTask(scope, current.taskId));
+    if (status !== undefined) return { taskId: current.taskId, status, ...withCleanup };
+    if (cancelled._tag === "Failure") return yield* cancelled.failure;
+    return { taskId: current.taskId, status: "cancel_requested", ...withCleanup };
   });
 
   /**
@@ -4702,6 +4669,7 @@ export const layer: Layer.Layer<
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
+  | CommandRunner.CommandRunner
   | PeerLinks.PeerLinks
   | MemoryAdmission.MemoryAdmission
 > = Layer.effect(OrchestratorMcpService, make);

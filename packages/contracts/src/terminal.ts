@@ -133,7 +133,9 @@ export const TerminalToolReadInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: Schema.optional(ThreadId),
   terminalId: Schema.optional(
-    TerminalIdSchema.annotate({ description: "One terminal. Omit for all of them." }),
+    TerminalIdSchema.pipe(
+      Schema.annotateEncoded({ description: "One terminal. Omit for all of them." }),
+    ),
   ),
   lines: Schema.optional(clampedPositiveInt(TERMINAL_TOOL_MAX_LINES)).annotate({
     description: `Last lines per terminal, 1 to ${TERMINAL_TOOL_MAX_LINES}. Default ${TERMINAL_TOOL_DEFAULT_LINES}.`,
@@ -172,7 +174,9 @@ export const TerminalToolWriteInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: Schema.optional(ThreadId),
   terminalId: Schema.optional(
-    TerminalIdSchema.annotate({ description: "Omit when the thread has one terminal running." }),
+    TerminalIdSchema.pipe(
+      Schema.annotateEncoded({ description: "Omit when the thread has one terminal running." }),
+    ),
   ),
   input: Schema.String.check(Schema.isNonEmpty())
     .check(Schema.isMaxLength(16_384))

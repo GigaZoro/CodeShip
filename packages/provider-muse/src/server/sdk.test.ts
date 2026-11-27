@@ -12,9 +12,10 @@ import {
 import { it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
-import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
 import { probeProcess } from "@t3tools/shared/processProbe";
-import { type WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTreeScript";
+import { WindowsJobHost } from "@t3tools/shared/windowsJob";
+import { type WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTree";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -291,15 +292,35 @@ describe("the tree a Muse host leaves", () => {
     await host.close();
 
     expect(stopTree.mock.calls).toEqual(
-      Array.from({ length: stops }, () => [
-        expect.objectContaining({ pid: MOCK_HOST_PID, ended: expect.any(Number) }),
-      ]),
+      Array.from({ length: stops }, () => [{ pid: MOCK_HOST_PID }]),
     );
   });
 });
 
 // The SDK ends only the host on Windows, so what it started outlives it there.
 describe.runIf(isWindowsHost)("a Muse host on Windows", () => {
+  it.live("ends an orphaned grandchild when SDK startup is cancelled", () =>
+    Effect.gen(function* () {
+      const sdk = yield* Effect.promise(() =>
+        vi.importActual<typeof import("@muse-code/sdk")>("@muse-code/sdk"),
+      );
+      const member = yield* processPipe;
+      const ready = yield* processPipe;
+      const connected = (pipe: string) =>
+        `const s=require('node:net').connect(${JSON.stringify(pipe)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+      const intermediate = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(connected(member.path))}],{stdio:'ignore',detached:true,windowsHide:true}).unref();`;
+      const root = `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(intermediate)}],{stdio:'ignore',windowsHide:true}); c.on('exit',()=>{ ${connected(ready.path)} }); process.stdin.resume(); process.stdin.on('end',()=>process.exit());`;
+      const starting = yield* createMuseSdkHostEffect(
+        { binaryPath: process.execPath, launch: { command: process.execPath, args: ["-e", root] } },
+        (options) => createMuseSdkHost(options, sdk.spawnMspConnection),
+      ).pipe(Effect.forkChild);
+      yield* member.started;
+      yield* ready.started;
+      yield* Fiber.interrupt(starting);
+      yield* member.ended;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("has ended what the host left running once its startup is cancelled", () =>
     Effect.gen(function* () {
       const sdk = yield* Effect.promise(() =>
@@ -342,6 +363,7 @@ describe("Muse launch", () => {
         createHost,
       ).pipe(
         Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(WindowsJobHost, Effect.succeed("job-host.exe")),
         Effect.provideService(SpawnExecutableResolution, (_command, _platform, _env, directory) =>
           directory === cwd ? expected : "C:\\server\\tools\\muse.exe",
         ),

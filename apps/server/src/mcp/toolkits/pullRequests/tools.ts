@@ -37,15 +37,19 @@ const guideDependencies = [
 export const PullRequestTargetInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: Schema.optional(
-    ThreadId.annotate({
-      description: "Thread. Default: this thread.",
-    }),
+    ThreadId.pipe(
+      Schema.annotateEncoded({
+        description: "Thread. Default: this thread.",
+      }),
+    ),
   ),
   url: Schema.optional(TrimmedNonEmptyString),
   repository: Schema.optional(
-    TrimmedNonEmptyString.annotate({
-      description: "With `number`, when no `url`.",
-    }),
+    TrimmedNonEmptyString.pipe(
+      Schema.annotateEncoded({
+        description: "With `number`, when no `url`.",
+      }),
+    ),
   ),
   number: Schema.optional(
     PositiveInt.annotate({
@@ -53,9 +57,11 @@ export const PullRequestTargetInput = Schema.Struct({
     }),
   ),
   host: Schema.optional(
-    TrimmedNonEmptyString.annotate({
-      description: "Default: this project's host.",
-    }),
+    TrimmedNonEmptyString.pipe(
+      Schema.annotateEncoded({
+        description: "Default: this project's host.",
+      }),
+    ),
   ),
 });
 export type PullRequestTargetInput = typeof PullRequestTargetInput.Type;
@@ -321,7 +327,9 @@ const LinkPullRequestsTool = Tool.make("link_pull_requests", {
     "Link several PRs to a thread in one call. Use it instead of one `link_pull_request` per PR. URLs that are not PRs come back in `invalidUrls`.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
+    threadId: Schema.optional(
+      ThreadId.pipe(Schema.annotateEncoded({ description: "Thread. Default: this thread." })),
+    ),
     urls: Schema.Array(TrimmedNonEmptyString).check(Schema.isMinLength(1)),
   }),
   success: LinkPullRequestsResult,
@@ -353,7 +361,9 @@ const UnlinkPullRequestsTool = Tool.make("unlink_pull_requests", {
     "Unlink every PR on a thread whose last known state (as `list_thread_pull_requests` shows) is in `states`, in one call. Use it instead of one `unlink_pull_request` per PR. PRs with no known state stay linked.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
+    threadId: Schema.optional(
+      ThreadId.pipe(Schema.annotateEncoded({ description: "Thread. Default: this thread." })),
+    ),
     states: Schema.Array(PullRequestState).check(Schema.isMinLength(1)),
   }),
   success: UnlinkPullRequestsResult,
@@ -371,7 +381,9 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
     "List PRs linked to a thread, with last known state and stack order (bottom to top). Call only when you need that list. Never as an end-of-work check.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
+    threadId: Schema.optional(
+      ThreadId.pipe(Schema.annotateEncoded({ description: "Thread. Default: this thread." })),
+    ),
   }),
   success: ListThreadPullRequestsResult,
   failure: PullRequestToolError,

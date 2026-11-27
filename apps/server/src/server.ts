@@ -966,7 +966,7 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
-  // t3_command_run, from /mcp and the watcher above.
+  // t3_command_run and a command's task_cancel, from /mcp and the watcher above.
   Layer.provide(CommandRunner.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Agents see which accounts a usage limit stopped, and launches onto one fail before they start.
   Layer.provide(layerAccountRouting),

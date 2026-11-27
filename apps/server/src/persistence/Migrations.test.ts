@@ -30,6 +30,66 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("keeps exact Windows identity separate from legacy millisecond evidence", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 97 });
+      yield* sql`INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status, started_at, deadline_at, process_started_at)
+        VALUES ('legacy-ms', 'thread', 'run', 'true', '/tmp', '/tmp/old', 'running', '2026-11-19T00:00:00Z', '2026-11-19T01:00:00Z', 1795046400123)`;
+      yield* runMigrations();
+      assert.deepEqual(
+        yield* sql`SELECT process_identity, windows_created_at FROM command_runs WHERE task_id = 'legacy-ms'`,
+        [{ process_identity: "time:1795046400123", windows_created_at: null }],
+      );
+      const exact = "134395200001234567";
+      yield* sql`UPDATE command_runs SET windows_created_at = ${exact} WHERE task_id = 'legacy-ms'`;
+      assert.deepEqual(
+        yield* sql`SELECT windows_created_at, typeof(windows_created_at) AS storage FROM command_runs WHERE task_id = 'legacy-ms'`,
+        [{ windows_created_at: exact, storage: "text" }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each([99, 117, 118])("adds launch evidence after migration %s already ran", (id) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: id });
+      assert.deepEqual(
+        (yield* history).at(-1),
+        migrationManifest.find(([migrationId]) => migrationId === id),
+      );
+      const before = yield* sql<{ name: string }>`PRAGMA table_info(command_runs)`;
+      assert.equal(
+        before.some((column) => column.name === "launch_error"),
+        id === 118,
+      );
+      assert.isFalse(before.some((column) => column.name === "reported_at"));
+      yield* sql`INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status, started_at, deadline_at, delivered_at)
+          VALUES ('old-delivered', 'thread', 'run', 'true', '/tmp', '/tmp/old', 'exited', '2026-11-19T00:00:00Z', '2026-11-19T01:00:00Z', '2026-11-19T00:01:00Z')`;
+      yield* runMigrations();
+      const after = yield* sql<{
+        name: string;
+        notnull: number;
+      }>`PRAGMA table_info(command_runs)`;
+      assert.equal(after.find((column) => column.name === "launch_error")?.notnull, 0);
+      assert.equal(after.find((column) => column.name === "reported_at")?.notnull, 0);
+      assert.equal(after.find((column) => column.name === "exit_status_error")?.notnull, 0);
+      assert.equal(after.find((column) => column.name === "stop_leftovers")?.notnull, 0);
+      assert.deepEqual(
+        yield* sql`SELECT reported_at, delivered_at FROM command_runs WHERE task_id = 'old-delivered'`,
+        [{ reported_at: "2026-11-19T00:01:00Z", delivered_at: "2026-11-19T00:01:00Z" }],
+      );
+      assert.deepEqual((yield* history).slice(-5), [
+        [118, "CommandLaunchError"],
+        [119, "CommandResultReported"],
+        [120, "CommandWindowsIdentity"],
+        [121, "CommandExitStatusError"],
+        [122, "CommandStopLeftovers"],
+      ]);
+      assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("keeps scheduler-owned occurrence history when migrating it into startup", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

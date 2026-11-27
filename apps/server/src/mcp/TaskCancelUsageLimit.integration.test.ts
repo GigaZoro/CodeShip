@@ -43,6 +43,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
@@ -203,6 +204,7 @@ it.effect.each([
               Layer.mock(ProjectService.ProjectService)({}),
               Layer.mock(SecretRequests.SecretRequests)({}),
               Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+              Layer.mock(CommandRunner.CommandRunner)({}),
               ServerSettings.layerTest(),
               Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
               NodeServices.layer,

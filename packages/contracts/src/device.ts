@@ -636,9 +636,11 @@ export type DeviceToolListResult = typeof DeviceToolListResult.Type;
 
 export const DeviceToolOpenInput = Schema.Struct({
   deviceId: Schema.optional(
-    DeviceId.annotate({
-      description: "Device id from `device_list`. Default: the booted or last used device.",
-    }),
+    DeviceId.pipe(
+      Schema.annotateEncoded({
+        description: "Device id from `device_list`. Default: the booted or last used device.",
+      }),
+    ),
   ),
   platform: Schema.optional(
     DevicePlatform.annotate({
@@ -646,7 +648,9 @@ export const DeviceToolOpenInput = Schema.Struct({
     }),
   ),
   hostId: Schema.optional(
-    DeviceHostId.annotate({ description: "Host from `device_list`. Default local." }),
+    DeviceHostId.pipe(
+      Schema.annotateEncoded({ description: "Host from `device_list`. Default local." }),
+    ),
   ),
 });
 export type DeviceToolOpenInput = typeof DeviceToolOpenInput.Type;
@@ -664,9 +668,11 @@ export type DeviceToolOpenResult = typeof DeviceToolOpenResult.Type;
 
 export const DeviceToolTargetInput = Schema.Struct({
   deviceId: Schema.optional(
-    DeviceId.annotate({
-      description: "Device. Default: the last one opened here.",
-    }),
+    DeviceId.pipe(
+      Schema.annotateEncoded({
+        description: "Device. Default: the last one opened here.",
+      }),
+    ),
   ),
   hostId: Schema.optional(DeviceHostId),
 });
@@ -685,9 +691,11 @@ export type DeviceToolScreenshotResult = typeof DeviceToolScreenshotResult.Type;
 
 export const DeviceToolCloseInput = Schema.Struct({
   deviceId: Schema.optional(
-    DeviceId.annotate({
-      description: "Device to close. None: close all here.",
-    }),
+    DeviceId.pipe(
+      Schema.annotateEncoded({
+        description: "Device to close. None: close all here.",
+      }),
+    ),
   ),
   hostId: Schema.optional(DeviceHostId),
   shutdown: Schema.optional(
