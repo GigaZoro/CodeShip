@@ -88,6 +88,7 @@ const layerDispatchChokepointTest =
     options: {
       readonly autoAccount?: boolean;
       readonly accountRouting?: Layer.Layer<AccountRouting.AccountRouting>;
+      readonly runs?: (threadId: ThreadId) => ReadonlyArray<Partial<OrchestrationV2Run>>;
     } = {},
   ) =>
   (dispatched: Array<OrchestrationV2ServerCommand>) => {
@@ -108,8 +109,14 @@ const layerDispatchChokepointTest =
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadRecords: () =>
-            Effect.succeed({ thread } as unknown as OrchestrationV2ThreadProjection),
+          getThreadRecords: (threadId) =>
+            Effect.succeed({
+              thread,
+              runs: options.runs?.(threadId) ?? [],
+              providerTurns: [],
+              messages: [],
+              turnItems: [],
+            } as unknown as OrchestrationV2ThreadProjection),
           getThreadShell: () => Effect.succeed(thread as unknown as OrchestrationV2ThreadShell),
           dispatch: (command) =>
             Effect.sync(() => {
@@ -296,6 +303,54 @@ it.effect(
     }).pipe(Effect.provide(layerTest));
   },
 );
+
+it.effect.each([
+  { case: "another thread joins the demand its active run serves", to: "other", owned: true },
+  { case: "another thread stays unattributed without an active run", to: "other", owned: false },
+  { case: "its own thread keeps its own demand rules", to: "self", owned: true },
+] as const)("an agent's message to $case", ({ to, owned }) => {
+  const sender = ThreadId.make("thread:thread-management:sender");
+  const threadId = ThreadId.make("thread:thread-management:chokepoint");
+  const demandId = `demand:${"b".repeat(64)}`;
+  const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  const layerTest = layerDispatchChokepointTest(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [ProviderInstanceId.make("codex_work")]: { driver: "codex", enabled: true },
+      },
+    }),
+    {
+      runs: (id) =>
+        id === (to === "self" ? threadId : sender) && owned
+          ? [
+              { id: RunId.make("run:sender:old"), ordinal: 1, status: "completed", demandId: null },
+              { id: RunId.make("run:sender:live"), ordinal: 2, status: "running", demandId },
+            ]
+          : [],
+    },
+  )(dispatched);
+
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:thread-management:agent-send"),
+      threadId,
+      senderThreadId: to === "self" ? threadId : sender,
+      messageId: MessageId.make("message:thread-management:agent-send"),
+      text: "Please check the build.",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+
+    expect(dispatched).toMatchObject([{ type: "message.dispatch" }]);
+    expect((dispatched[0] as { readonly demandId?: string | null }).demandId).toBe(
+      to === "other" && owned ? demandId : undefined,
+    );
+  }).pipe(Effect.provide(layerTest));
+});
 
 it.effect.each([{ scheduled: false }, { scheduled: true }])(
   "checks an Auto dispatch against the selected account (scheduled: $scheduled)",

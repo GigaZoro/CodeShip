@@ -71,6 +71,7 @@ import {
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
 import {
   conventionalCommitsTextGenerationPolicy,
   customTextGenerationPolicy,
@@ -763,6 +764,28 @@ export const make = Effect.gen(function* () {
         ),
       ),
   );
+  // A commit or PR made from a thread serves the work of its latest run.
+  const textGenerationAttribution = Effect.fn("GitManager.textGenerationAttribution")(function* (
+    threadId: ThreadId | undefined,
+  ) {
+    if (threadId === undefined) return { threadId: null, demandId: null };
+    const demandId = yield* threads.getThreadShell(threadId).pipe(
+      Effect.flatMap((thread) =>
+        thread?.latestRunId == null
+          ? Effect.succeed(null)
+          : threads
+              .getThreadRecords(threadId, ["runs"], { runIds: [thread.latestRunId] })
+              .pipe(Effect.map(({ runs }) => runs[0]?.demandId ?? null)),
+      ),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not read the thread's demand; its git text stays unattributed", {
+          threadId,
+          cause,
+        }).pipe(Effect.as(null)),
+      ),
+    );
+    return { threadId, demandId };
+  });
   // Hands the base T3 recorded for a branch to the host, whose own tools may keep it elsewhere.
   // Best-effort: nothing T3 does reads it back from there.
   const shareBranchBase = Effect.fn("GitManager.shareBranchBase")(function* (
@@ -3321,6 +3344,10 @@ export const make = Effect.gen(function* () {
       });
 
       return yield* runAction().pipe(
+        Effect.provideService(
+          TextGenerationAttribution,
+          yield* textGenerationAttribution(input.threadId),
+        ),
         Effect.ensuring(invalidateStatus(input.cwd)),
         Effect.tapError((error) =>
           Effect.flatMap(Ref.get(currentPhase), (phase) =>

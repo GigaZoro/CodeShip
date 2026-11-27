@@ -62,6 +62,7 @@ import {
   layerSharedTaskIdentities,
 } from "../scheduledTasks/sharedTaskTestLayers.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -3202,6 +3203,42 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
       );
       assert.equal(harness.renameBranch.mock.calls.length, 0);
       assert.isNull((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("attributes worktree branch name generation to the launch run's demand", () =>
+  Effect.gen(function* () {
+    const capturedAttribution = yield* Deferred.make<{
+      readonly threadId: ThreadId | null;
+      readonly demandId: string | null;
+    }>();
+    const harness = makeHarness({
+      generateBranchName: () =>
+        Effect.gen(function* () {
+          const attribution = yield* TextGenerationAttribution;
+          yield* Deferred.succeed(capturedAttribution, attribution);
+          return { branch: "generated-branch" };
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "launch:branch-demand-attribution",
+          thread: "thread:branch-demand-attribution",
+          message: "Attribute the branch name call",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      const attribution = yield* Deferred.await(capturedAttribution);
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.isString(projection.runs[0]?.demandId);
+      assert.deepStrictEqual(attribution, {
+        threadId: launched.threadId,
+        demandId: projection.runs[0]!.demandId ?? null,
+      });
     }).pipe(Effect.provide(harness.layer));
   }),
 );

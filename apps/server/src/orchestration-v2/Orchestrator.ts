@@ -8754,15 +8754,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { reviewAssignment: command.reviewAssignment }),
       };
-      // A local MCP credential can outlive a run. Without a run-bound invocation, different owners are ambiguous.
-      const parentDemand = parentRun.demandId ?? null;
-      const childDemand =
-        command.creationSource === "mcp" &&
-        parentProjection.runs.some(
-          (run) => run.status !== "queued" && (run.demandId ?? null) !== parentDemand,
-        )
-          ? null
-          : parentDemand;
+      // Matches latestActiveRun in withSenderDemand; the rare stale-credential case is accepted so multi-demand threads stay attributed.
+      const childDemand = parentRun.demandId ?? null;
       const task: OrchestrationV2Subagent = {
         demandId: childDemand,
         id: taskNodeId,
@@ -9194,6 +9187,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         parentNodeId: command.parentNodeId,
         origin: "app_owned",
         createdBy: "agent",
+        demandId: parentRun.demandId ?? null,
         driver: command.driver,
         providerInstanceId: command.modelSelection.instanceId,
         providerThreadId: null,
@@ -9531,6 +9525,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           parentNodeId: command.parentNodeId,
           origin: "app_owned",
           createdBy: "agent",
+          demandId: parentRun.demandId ?? null,
           driver: command.driver,
           providerInstanceId: command.providerInstanceId,
           providerThreadId: null,

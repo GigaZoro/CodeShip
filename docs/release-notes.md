@@ -1,3 +1,8 @@
+## 2026-11-27 — One-shot usage and cross-thread work carry the demand they serve
+
+- One-shot text generation on Claude and Codex now reports measured token counts (input, cache read, cache write, and output) into the local `text_generation_usage` ledger, keeping unreported counts as `NULL` and recording an unknown row when a started call times out or is interrupted.
+- Titles, branch names, commit messages, PR descriptions, delegated command and remote tasks, and cross-thread agent messages now carry the demand id of the active run they serve, leaving calls with no known demand in the visible unattributed bucket. Cross-thread agent sends using `auto` or `steer` delivery can now steer an active run on the same demand while queueing behind a different demand.
+
 ## 2026-11-27 — Auto mode matches model and reasoning effort to request complexity
 
 - New **Auto** threads start on a faster model (such as Sonnet or GPT-6.2 Sol) at low effort for short lookups, utility slash commands, and tiny mechanical edits, then upgrade monotonically to the configured coordinator model when a deeper request arrives.

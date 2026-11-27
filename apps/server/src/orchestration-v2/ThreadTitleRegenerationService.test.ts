@@ -33,6 +33,8 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
+import { originalDemandId } from "./demandId.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -76,8 +78,15 @@ function makeHarness(
     Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
   );
   const layerOutbox = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
+  const attributions: Array<typeof TextGenerationAttribution.Service> = [];
+  const generate: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
+    options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" }));
   const generateThreadTitle = vi.fn(
-    options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
+    (input: Parameters<typeof generate>[0]): ReturnType<typeof generate> =>
+      Effect.gen(function* () {
+        attributions.push(yield* TextGenerationAttribution);
+        return yield* generate(input);
+      }),
   );
   const layerProjectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
     get: (requestedProjectId) =>
@@ -123,6 +132,7 @@ function makeHarness(
       layerDatabase,
     ),
     generateThreadTitle,
+    attributions,
   };
 }
 
@@ -319,6 +329,11 @@ describe("ThreadTitleRegenerationService", () => {
             const call = harness.generateThreadTitle.mock.calls[0]?.[0];
             assert.equal(call?.message, "");
             assert.deepEqual(call?.attachments, attachments);
+            // The title's call is charged to the demand of the message it names.
+            assert.deepEqual(harness.attributions.at(-1), {
+              threadId,
+              demandId: originalDemandId("message", threadId, messageId),
+            });
             const projection = yield* threads.getThreadProjection(threadId);
             assert.equal(projection.messages[0]?.text, text);
             assert.equal(projection.thread.title, "Generated title");
@@ -424,6 +439,16 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(call?.previousTitle, "Seed title");
         assert.equal(call?.cwd, "/repo");
         assert.include(call?.message, "USER:\nInvestigate the flaky login test");
+        assert.deepEqual(harness.attributions, [
+          {
+            threadId,
+            demandId: originalDemandId(
+              "message",
+              threadId,
+              MessageId.make("command:title:landing:message:message"),
+            ),
+          },
+        ]);
         const projection = yield* threads.getThreadProjection(threadId);
         assert.equal(projection.thread.title, "Fresh title");
         assert.isNotOk(projection.thread.titleRegeneration);

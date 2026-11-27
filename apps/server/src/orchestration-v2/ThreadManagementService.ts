@@ -1015,6 +1015,33 @@ const make = Effect.gen(function* () {
     }
   };
 
+  // An agent's message to another thread is part of the work its own active run serves. Its own
+  // thread keeps the steering rules for its own messages, and an unknown owner stays unattributed.
+  const withSenderDemand = (
+    sent: OrchestrationV2ServerCommand,
+  ): Effect.Effect<OrchestrationV2ServerCommand> =>
+    sent.type !== "message.dispatch" ||
+    sent.demandId !== undefined ||
+    sent.createdBy !== "agent" ||
+    sent.senderThreadId === undefined ||
+    sent.senderThreadId === sent.threadId
+      ? Effect.succeed(sent)
+      : orchestrator.getThreadRecords(sent.senderThreadId, ["runs"]).pipe(
+          Effect.map((sender) => {
+            const demandId = latestActiveRun(sender)?.demandId;
+            return demandId == null ? sent : { ...sent, demandId };
+          }),
+          Effect.catch((cause) =>
+            Effect.logWarning(
+              "Could not read the sender's demand; the message stays unattributed",
+              {
+                threadId: sent.senderThreadId,
+                cause,
+              },
+            ).pipe(Effect.as(sent)),
+          ),
+        );
+
   const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn(
     "ThreadManagementService.dispatch",
   )(function* (sent, recorder) {
@@ -1022,7 +1049,10 @@ const make = Effect.gen(function* () {
     const observe: AccountRouting.ObserveAccount = (instance, reason) => {
       observations.push({ id: evidenceKey(instance), reason });
     };
-    const command = yield* routeDispatchAccount(sent, recorder ? observe : undefined);
+    const command = yield* routeDispatchAccount(
+      yield* withSenderDemand(sent),
+      recorder ? observe : undefined,
+    );
     if (recorder) {
       const instance =
         command.type === "message.dispatch" ? command.modelSelection?.instanceId : undefined;

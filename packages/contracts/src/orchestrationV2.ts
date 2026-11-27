@@ -1144,7 +1144,7 @@ export const OrchestrationV2SubagentReview = Schema.Struct({
 export type OrchestrationV2SubagentReview = typeof OrchestrationV2SubagentReview.Type;
 
 export const OrchestrationV2Subagent = Schema.Struct({
-  /** Accounting owner captured when a local delegation was accepted. */
+  /** Accounting owner: the parent run's demand when the task was accepted. */
   demandId: OrchestrationV2Run.fields.demandId,
   id: NodeId,
   threadId: ThreadId,

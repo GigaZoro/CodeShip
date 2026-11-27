@@ -45,6 +45,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
 import {
   fromRunner,
   decodeJsonReply,
@@ -3660,6 +3661,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         completedAt: createdAt,
         checkpointId: null,
         contextHandoffId: null,
+        demandId: `demand:${String(ordinal).repeat(64)}`,
       });
       const itemBase = (ordinal: number, runId: RunId) => ({
         id: TurnItemId.make(`item:pr-thread-context:${ordinal}`),
@@ -3678,6 +3680,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         updatedAt: createdAt,
       });
       let generatedThreadContext: string | undefined;
+      let generatedAttribution: typeof TextGenerationAttribution.Service | undefined;
       let generatedPrompt = "";
       const writer = fromRunner("test", (request) => {
         generatedPrompt = request.prompt;
@@ -3686,10 +3689,12 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
 
       const { manager } = yield* makeManager({
         textGeneration: {
-          generatePrContent: (input) => {
-            generatedThreadContext = input.threadContext;
-            return writer.generatePrContent(input);
-          },
+          generatePrContent: (input) =>
+            Effect.gen(function* () {
+              generatedThreadContext = input.threadContext;
+              generatedAttribution = yield* TextGenerationAttribution;
+              return yield* writer.generatePrContent(input);
+            }),
         },
         seed: Effect.gen(function* () {
           const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -3800,6 +3805,8 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect(generatedPrompt).not.toContain("vp run abandoned");
       expect(generatedPrompt).not.toContain("abandoned output");
       expect(Buffer.byteLength(generatedThreadContext ?? "")).toBeLessThanOrEqual(16_000);
+      // The PR text is charged to the thread and the demand of its latest run.
+      expect(generatedAttribution).toEqual({ threadId, demandId: `demand:${"2".repeat(64)}` });
     }),
   );
 
