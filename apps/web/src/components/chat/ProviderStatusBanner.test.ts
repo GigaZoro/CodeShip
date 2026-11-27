@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import {
   getProviderStatusNoticeKey,
   getProviderStatusMessage,
+  providerStatusNotice,
   shouldShowProviderStatusNotice,
 } from "./ProviderStatusBanner";
 
@@ -134,5 +140,40 @@ describe("provider status notices", () => {
     ).not.toBeNull();
     expect(getProviderStatusNoticeKey({ ...healthy, availability: "unavailable" })).not.toBeNull();
     expect(getProviderStatusNoticeKey({ ...healthy, enabled: false })).toBeNull();
+  });
+
+  it("names an unavailable provider's reason and shows it again when the reason changes", () => {
+    const blocked: ServerProvider = {
+      ...healthy,
+      installed: false,
+      setup: { canInstall: true, canAuthenticate: false },
+      availability: "unavailable",
+      unavailableReason: "Blocked by organization policy.",
+    };
+    expect(getProviderStatusMessage(blocked)).toBe(blocked.unavailableReason);
+    expect(
+      shouldShowProviderStatusNotice(
+        { ...blocked, unavailableReason: "Removed from this build." },
+        getProviderStatusNoticeKey(blocked),
+      ),
+    ).toBe(true);
+  });
+
+  it("says a provider is signed out whatever status the probe reported", () => {
+    const notice = (status: ServerProvider) =>
+      providerStatusNotice({
+        environmentId: EnvironmentId.make("local"),
+        onDismiss: () => {},
+        status,
+      });
+    for (const probe of ["ready", "warning", "error"] as const) {
+      expect
+        .soft(
+          notice({ ...healthy, status: probe, auth: { status: "unauthenticated" } }).title,
+          probe,
+        )
+        .toBe("Codex is signed out");
+    }
+    expect(notice({ ...healthy, installed: false }).title).toBe("Codex: Not found");
   });
 });

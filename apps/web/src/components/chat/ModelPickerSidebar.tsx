@@ -13,9 +13,14 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 
-function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
+export function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   const label = entry.displayName;
-  const { key, headline, detail } = deriveProviderStatus(entry.snapshot);
+  // A project override changes the entry's enabled state, not its snapshot's.
+  const { key, headline, detail } = deriveProviderStatus(
+    entry.enabled === entry.snapshot.enabled
+      ? entry.snapshot
+      : { ...entry.snapshot, enabled: entry.enabled },
+  );
   if (key === "ready") return label;
   const message = detail?.trim();
   return message

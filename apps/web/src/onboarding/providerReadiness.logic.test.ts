@@ -57,6 +57,14 @@ describe("getOnboardingProviderState", () => {
     ).toBe("signIn");
     expect(getOnboardingProviderState({ ...readyCodex, status: "error" })).toBe("attention");
     expect(getOnboardingProviderState({ ...readyCodex, status: "warning" })).toBe("attention");
+    expect(
+      getOnboardingProviderState({
+        ...readyCodex,
+        auth: { status: "authenticated" },
+        availability: "unavailable",
+        installed: false,
+      }),
+    ).toBe("attention");
   });
 
   it("does not offer installation or sign-in for disabled providers", () => {

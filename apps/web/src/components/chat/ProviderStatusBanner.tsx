@@ -12,15 +12,14 @@ import { formatProviderDriverKindLabel } from "../../providerModels";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { RefreshIcon } from "../ui/refresh-icon";
-import { deriveProviderStatus } from "../settings/providerStatus";
+import { deriveProviderStatus, isProviderSignedOut } from "../settings/providerStatus";
 import type { ThreadNotice } from "./threadNoticeSlot.logic";
 
 function getIncompatibleVersion(provider: ServerProvider) {
   const compatibility = provider.compatibilityAdvisory;
-  const { key } = deriveProviderStatus(provider);
-  if (key === "error" && provider.auth.status === "unauthenticated") return null;
+  if (isProviderSignedOut(provider)) return null;
   return compatibility?.status === "broken" ||
-    (key === "ready" && compatibility?.status === "unsupported")
+    (deriveProviderStatus(provider).key === "ready" && compatibility?.status === "unsupported")
     ? compatibility
     : null;
 }
@@ -40,7 +39,13 @@ export function getProviderStatusNoticeKey(provider: ServerProvider | null): str
     ].join("\u0000");
   }
   if (key !== "error" && key !== "warning") return null;
-  return [provider.instanceId, key, provider.auth.status, provider.message ?? ""].join("\u0000");
+  return [
+    provider.instanceId,
+    key,
+    provider.auth.status,
+    provider.message ?? "",
+    provider.unavailableReason ?? "",
+  ].join("\u0000");
 }
 
 export function shouldShowProviderStatusNotice(
@@ -66,6 +71,9 @@ export function getProviderStatusMessage(status: ServerProvider): string {
     status.compatibilityAdvisory.message
   ) {
     return status.compatibilityAdvisory.message;
+  }
+  if (status.availability === "unavailable" && status.unavailableReason) {
+    return status.unavailableReason;
   }
   if (status.message) return status.message;
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
@@ -104,7 +112,7 @@ export function providerStatusNotice({
 }): ThreadNotice {
   const derived = deriveProviderStatus(status);
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
-  const isUnauthenticated = derived.key === "error" && status.auth.status === "unauthenticated";
+  const isUnauthenticated = isProviderSignedOut(status);
   const incompatible = getIncompatibleVersion(status);
   const driverLabel = formatProviderDriverKindLabel(status.driver);
   const accountedName =
@@ -121,10 +129,10 @@ export function providerStatusNotice({
             provider: providerName,
             version: status.version ?? "",
           })
-      : t("{provider} provider status", { provider: providerName });
+      : t("{provider}: {status}", { provider: providerName, status: derived.headline });
   const isWarning = incompatible ? incompatible.status !== "broken" : derived.key === "warning";
   return {
-    id: `provider-status:${status.instanceId}`,
+    id: `provider-status:${environmentId}:${status.instanceId}`,
     producer: "providerStatus",
     // A provider that cannot answer is why a reply beside an open question would fail.
     group: "environment",
@@ -146,10 +154,7 @@ export function providerStatusNotice({
         />
       </>
     ),
-    dismissLabel: t("Dismiss {provider} provider {status}", {
-      provider: providerName,
-      status: status.status,
-    }),
+    dismissLabel: t("Dismiss {provider} provider notice", { provider: providerName }),
     onDismiss,
   };
 }

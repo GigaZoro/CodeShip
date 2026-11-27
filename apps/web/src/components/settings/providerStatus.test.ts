@@ -262,7 +262,12 @@ it("is the only provider status reading any renderer uses", () => {
     if (!/\bderiveProviderStatus\(/.test(source)) continue;
     renderers.push(file);
     // A renderer that also reads the raw state can disagree with the derivation it imports.
-    if (/\.status [!=]== "(?:ready|warning|error)"/.test(source)) rawReaders.push(file);
+    if (
+      /\.status [!=]== "(?:ready|warning|error|disabled)"|\b(?:provider|snapshot|status)\.status\b/.test(
+        source,
+      )
+    )
+      rawReaders.push(file);
   }
   expect(rawReaders).toEqual([]);
   expect(renderers.toSorted()).toEqual([

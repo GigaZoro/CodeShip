@@ -45,6 +45,17 @@ export interface ProviderStatus {
   readonly detail: string | null;
 }
 
+/** Sign-in is the problem to report once a provider is enabled, reachable and installed. */
+export function isProviderSignedOut(provider: ServerProvider): boolean {
+  return (
+    provider.enabled &&
+    provider.status !== "disabled" &&
+    provider.availability !== "unavailable" &&
+    provider.installed &&
+    provider.auth.status === "unauthenticated"
+  );
+}
+
 /**
  * The one reading of a provider's state. Settings, the model picker and the thread notice render
  * it, so a provider never reads as ready in one place and as needing attention in another.
@@ -81,7 +92,7 @@ export function deriveProviderStatus(provider: ServerProvider | undefined): Prov
       detail: provider.message ?? t("CLI not detected on PATH."),
     };
   }
-  if (provider.auth.status === "unauthenticated") {
+  if (isProviderSignedOut(provider)) {
     const authLabel = provider.auth.label ?? provider.auth.type;
     return {
       key: problem,

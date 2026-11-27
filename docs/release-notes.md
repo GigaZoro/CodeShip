@@ -1,6 +1,6 @@
 ## 2026-11-27 — Provider status and quota warnings read the same everywhere
 
-- Quota bars turn amber at 25% left and red at 10% left in the thread details, the sidebar, the mobile usage screen and the home-screen widgets alike.
+- Quota bars turn amber at 25% left and red at 10% left in the thread details, the sidebar and the mobile usage screen alike, and the home-screen widgets turn red at the same 10%.
 - Settings, the model picker and the thread now agree on a provider's status. A provider that is signed out, missing or unavailable no longer shows as ready in Settings, and the picker names the same problem Settings does.
 - A provider problem in a thread now appears in the thread's one notice slot, beside the thread's other notices, instead of a separate banner. Antigravity API-key and Agent Platform warnings that Settings flags now show there too.
 

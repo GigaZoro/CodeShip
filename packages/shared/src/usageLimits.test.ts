@@ -2948,8 +2948,11 @@ describe("usageLimitTone", () => {
         const file = `${root}/${String(entry).split(NodePath.sep).join("/")}`;
         if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
         const source = NodeFS.readFileSync(NodePath.join(repo, file), "utf8");
+        // Components handed a percentage through props count as well as those that import it.
         if (
-          !/from "(?:@t3tools\/shared\/usageLimits|\.\/subscriptionUsageSnapshot)"/.test(source)
+          !/from "(?:@t3tools\/shared\/usageLimits|\.\/subscriptionUsageSnapshot)"|\b(?:remaining|used)Percent\b/.test(
+            source,
+          )
         ) {
           continue;
         }
