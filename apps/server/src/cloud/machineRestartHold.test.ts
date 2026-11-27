@@ -262,4 +262,13 @@ it.layer(NodeServices.layer)("machine restart hold", (it) => {
       expect(drainLinks).toEqual({ opened: 1, closed: 1 });
     }),
   );
+
+  it.effect("preserves draining: true when merging multi-backend restart holds", () =>
+    Effect.gen(function* () {
+      const { machine } = yield* setup({ ...answering, draining: true });
+      const hold = yield* machine.restartHold;
+      expect(hold.draining).toBe(true);
+      expect(hold.runningTurns).toEqual(answering.runningTurns);
+    }),
+  );
 });

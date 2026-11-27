@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
@@ -36,9 +38,8 @@ const awaitAdmissions = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
   );
 
 // Registration and the final drain check must agree even if a holder arrives during dispatch.
-export const tryAdmitStart = Effect.gen(function* () {
-  const drain = yield* UpdateDrain;
-  return yield* Effect.acquireRelease(
+export const tryAdmitStartRef = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
+  Effect.acquireRelease(
     SubscriptionRef.modify(drain, (state) =>
       state.holders > 0
         ? ([false, state] as const)
@@ -46,10 +47,45 @@ export const tryAdmitStart = Effect.gen(function* () {
     ),
     (admitted) =>
       admitted
-        ? SubscriptionRef.update(drain, (state) => ({ ...state, admitting: state.admitting - 1 }))
+        ? SubscriptionRef.update(drain, (state) => ({
+            ...state,
+            admitting: Math.max(0, state.admitting - 1),
+          }))
         : Effect.void,
   );
-});
+
+export const tryAdmitStart = Effect.flatMap(UpdateDrain, tryAdmitStartRef);
+
+/**
+ * Acquires a drain holder immediately in the calling fiber and releases it once `duration`
+ * elapses or `scope` closes. Used after an accepted update handoff so closing a client drain
+ * stream cannot briefly drop `holders` to 0 before the process receives SIGTERM.
+ */
+export const holdInBackgroundRef = (
+  drain: SubscriptionRef.SubscriptionRef<DrainState>,
+  scope: Scope.Scope,
+  duration: Duration.Input,
+  onExpired: Effect.Effect<void> = Effect.void,
+) =>
+  Effect.uninterruptible(
+    Effect.gen(function* () {
+      let released = false;
+      const releaseOnce = Effect.suspend(() => {
+        if (released) return Effect.void;
+        released = true;
+        return give(drain);
+      });
+      yield* take(drain);
+      yield* Scope.addFinalizer(scope, releaseOnce).pipe(Effect.onError(() => releaseOnce));
+      yield* Effect.sleep(duration).pipe(
+        Effect.andThen(onExpired),
+        Effect.ensuring(releaseOnce),
+        Effect.forkIn(scope),
+        Effect.asVoid,
+        Effect.onError(() => releaseOnce),
+      );
+    }),
+  );
 
 /** Holds new turns, idle wakes, and scheduled starts for the life of `effect`, however it ends. */
 export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(function* <A, E, R>(

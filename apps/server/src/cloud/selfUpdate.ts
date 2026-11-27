@@ -46,9 +46,16 @@ import {
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import * as UpdateDrain from "./updateDrain.ts";
 
 // A staged runtime's cold start can take over a minute on a loaded, swapping host.
 const PREFLIGHT_TIMEOUT = Duration.minutes(3);
+/**
+ * An accepted handoff stops this server within seconds. Keep UpdateDrain held server-side until
+ * shutdown so closing the client drain stream cannot release queued work into a dying process;
+ * release after this bound if the launcher or desktop host fails to stop the server.
+ */
+export const SELF_UPDATE_HANDOFF_DRAIN_LIMIT = Duration.minutes(5);
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -172,6 +179,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const releaseBaseUrl = Option.getOrUndefined(
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
   );
+  const serviceScope = yield* Effect.scope;
+  const updateDrain = yield* UpdateDrain.UpdateDrain;
   const inFlight = yield* Ref.make(false);
   const staged = yield* Ref.make<{
     readonly prepared: PreparedServerSelfUpdate;
@@ -210,6 +219,17 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     cause === undefined
       ? new ServerSelfUpdateError({ reason })
       : new ServerSelfUpdateError({ reason, cause });
+
+  const holdDrainAfterHandoff = (targetVersion?: string) =>
+    UpdateDrain.holdInBackgroundRef(
+      updateDrain,
+      serviceScope,
+      SELF_UPDATE_HANDOFF_DRAIN_LIMIT,
+      Effect.logWarning(
+        "Server update handoff did not stop this server.",
+        targetVersion === undefined ? {} : { targetVersion },
+      ),
+    );
 
   const crossesTrackUnsafely = (input: ServerSelfUpdateInput) =>
     trackSwitchBlockReason({
@@ -372,7 +392,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
                 error,
               ),
             ),
-            Effect.tap(() => onHandoffAccepted()),
+            Effect.tap(() =>
+              holdDrainAfterHandoff(prepared.targetVersion).pipe(
+                Effect.andThen(onHandoffAccepted()),
+              ),
+            ),
           ),
       );
 
@@ -418,14 +442,14 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     "cloud.server_self_update.prepare",
   )(function* (input, reportProgress = () => Effect.void) {
     const targetVersion = yield* validateBootServiceInput(input);
-    const cached = yield* cachedPreparedFor(targetVersion);
-    if (cached !== undefined) return cached;
     if (yield* Ref.getAndSet(inFlight, true)) {
       return yield* failWith("A server update is already in progress.");
     }
-    return yield* stageBootServiceRuntime(targetVersion, reportProgress).pipe(
-      Effect.ensuring(Ref.set(inFlight, false)),
-    );
+    return yield* Effect.gen(function* () {
+      const cached = yield* cachedPreparedFor(targetVersion);
+      if (cached !== undefined) return cached;
+      return yield* stageBootServiceRuntime(targetVersion, reportProgress);
+    }).pipe(Effect.ensuring(Ref.set(inFlight, false)));
   });
 
   const activatePrepared: ServerSelfUpdate["Service"]["activatePrepared"] = Effect.fn(
@@ -497,8 +521,19 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           return prepared;
         }
         const token = prepared.desktopUpdateToken;
+        let held = false;
+        const holdOnce = () =>
+          held
+            ? Effect.void
+            : Effect.sync(() => {
+                held = true;
+              }).pipe(Effect.andThen(holdDrainAfterHandoff(prepared.targetVersion)));
         return yield* beforeHandoff().pipe(
-          Effect.andThen(desktopAppUpdate.commit(token, onHandoffAccepted)),
+          Effect.andThen(
+            desktopAppUpdate
+              .commit(token, () => holdOnce().pipe(Effect.andThen(onHandoffAccepted())))
+              .pipe(Effect.tap(holdOnce)),
+          ),
           Effect.onError(() => desktopAppUpdate.cancel(token)),
         );
       }
@@ -542,7 +577,21 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       : Effect.undefined,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
-        return desktopAppUpdate.commit(requestId, onHandoffAccepted);
+        let held = false;
+        const holdOnce = () =>
+          held
+            ? Effect.void
+            : Effect.sync(() => {
+                held = true;
+              }).pipe(Effect.andThen(holdDrainAfterHandoff()));
+        return desktopAppUpdate
+          .commit(
+            requestId,
+            onHandoffAccepted === undefined
+              ? undefined
+              : () => holdOnce().pipe(Effect.andThen(onHandoffAccepted())),
+          )
+          .pipe(Effect.tap(holdOnce));
       },
     ),
   });

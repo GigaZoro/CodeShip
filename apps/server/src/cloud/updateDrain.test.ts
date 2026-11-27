@@ -8,9 +8,11 @@ import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 
 import {
   drainUntilClosed,
+  holdInBackgroundRef,
   isDraining,
   tryAdmitStart,
   UpdateDrain,
@@ -106,6 +108,48 @@ describe("update drain barrier", () => {
         expect(yield* isDraining().pipe(Effect.provide(drainLayer))).toBe(true);
         yield* Fiber.interrupt(fiber);
         expect(yield* isDraining().pipe(Effect.provide(drainLayer))).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "holdInBackgroundRef acquires immediately, bridges closing outer drains, and releases on expiry or scope close",
+    () =>
+      Effect.gen(function* () {
+        const ref = yield* SubscriptionRef.make({ holders: 0, admitting: 0 });
+        const drainLayer = Layer.succeed(UpdateDrain, ref);
+        const outerScope = yield* Scope.make();
+        const serviceScope = yield* Scope.make();
+        let expired = 0;
+
+        yield* drainUntilClosed.pipe(Scope.provide(outerScope), Effect.provide(drainLayer));
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(1);
+
+        yield* holdInBackgroundRef(
+          ref,
+          serviceScope,
+          "5 minutes",
+          Effect.sync(() => {
+            expired += 1;
+          }),
+        );
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(2);
+
+        // Closing the outer client drain must not drop holders to 0.
+        yield* Scope.close(outerScope, Exit.void);
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(1);
+        expect(yield* isDraining().pipe(Effect.provide(drainLayer))).toBe(true);
+
+        // Expiry releases the background holder and invokes onExpired.
+        yield* TestClock.adjust("5 minutes");
+        expect(expired).toBe(1);
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(0);
+        expect(yield* isDraining().pipe(Effect.provide(drainLayer))).toBe(false);
+
+        // Closing the owning service scope releases an active background holder early.
+        yield* holdInBackgroundRef(ref, serviceScope, "5 minutes");
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(1);
+        yield* Scope.close(serviceScope, Exit.void);
+        expect((yield* SubscriptionRef.get(ref)).holders).toBe(0);
       }),
   );
 });

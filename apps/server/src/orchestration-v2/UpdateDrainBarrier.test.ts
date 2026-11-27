@@ -30,6 +30,7 @@ import * as UpdateDrain from "../cloud/updateDrain.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -66,7 +67,7 @@ const acquireDrain = (drain: SubscriptionRef.SubscriptionRef<UpdateDrain.DrainSt
 
 const releaseDrain = (scope: Scope.Closeable) => Scope.close(scope, Exit.void);
 
-const makeLayerTest = () => {
+const makeLayerTest = (customAdapter: ProviderAdapter.ProviderAdapterV2["Service"] = adapter) => {
   const layerDrain = UpdateDrain.layer;
   const layerOffers = Layer.effect(
     OfferQueue,
@@ -75,7 +76,7 @@ const makeLayerTest = () => {
   const layerDatabase = SqlitePersistence.layerMemory;
   const layerReplay = ProviderReplayHarness.layerWithRegistry(
     { name: "update-drain-barrier" },
-    ProviderAdapterRegistry.layerFromAdapters([adapter]),
+    ProviderAdapterRegistry.layerFromAdapters([customAdapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   );
   const layerRecovery = ProviderRuntimeRecoveryService.layer.pipe(
@@ -413,5 +414,223 @@ it.effect("restartHold and watchRestartHold reactively reflect draining state", 
     assert.equal((yield* recovery.restartHold).draining, undefined);
 
     yield* Fiber.interrupt(watcher);
+  }).pipe(Effect.provide(makeLayerTest())),
+);
+
+it.effect(
+  "defer_start with workspaceStrategy queues under drain and promotes into preparing + workspace.prepare when drain clears",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const drain = yield* UpdateDrain.UpdateDrain;
+      const threadId = yield* createIdleThread("drain-defer-start");
+
+      const lease = yield* acquireDrain(drain);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:msg:drain-defer-start"),
+        threadId,
+        messageId: MessageId.make("message:drain-defer-start"),
+        text: "Prepare a worktree once drain clears",
+        attachments: [],
+        dispatchMode: {
+          type: "defer_start",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        },
+        createdBy: "user",
+        creationSource: "web",
+        modelSelection,
+      });
+
+      const whileDraining = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(whileDraining.runs[0]?.status, "queued");
+      assert.equal(whileDraining.runs[0]?.queueHeldByUpdateDrain, true);
+      assert.equal(whileDraining.runs[0]?.workspacePreparation?.type, "worktree");
+
+      const promoted = yield* orchestrator.streamDomainEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            event.type === "run.updated" &&
+            event.payload.status === "preparing",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* releaseDrain(lease);
+      yield* Fiber.join(promoted);
+
+      const afterClear = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(afterClear.runs[0]?.status, "preparing");
+      assert.equal(afterClear.runs[0]?.queueHeldByUpdateDrain, undefined);
+      const claimed = yield* outbox.claimNext({ workerId: "test-drain-defer" });
+      assert.isTrue(Option.isSome(claimed));
+      if (Option.isSome(claimed)) {
+        assert.equal(claimed.value.request.type, "workspace.prepare");
+        assert.equal(
+          claimed.value.request.type === "workspace.prepare" ? claimed.value.request.runId : null,
+          afterClear.runs[0]?.id,
+        );
+      }
+    }).pipe(Effect.provide(makeLayerTest())),
+);
+
+it.effect(
+  "drain waits for an in-flight Orchestrator dispatch to commit before reading restartHold (no TOCTOU race)",
+  () =>
+    Effect.gen(function* () {
+      const capabilitiesEntered = yield* Deferred.make<void>();
+      const releaseCapabilities = yield* Deferred.make<void>();
+      let blockNextCapabilities = false;
+      const pausingAdapter = {
+        ...adapter,
+        getCapabilities: () =>
+          blockNextCapabilities
+            ? Deferred.succeed(capabilitiesEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseCapabilities)),
+                Effect.as(CodexProviderCapabilitiesV2),
+              )
+            : Effect.succeed(CodexProviderCapabilitiesV2),
+      } as ProviderAdapter.ProviderAdapterV2["Service"];
+
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        const drain = yield* UpdateDrain.UpdateDrain;
+        const threadId = yield* createIdleThread("drain-toctou");
+
+        blockNextCapabilities = true;
+        const dispatchFiber = yield* orchestrator
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("command:msg:drain-toctou"),
+            threadId,
+            messageId: MessageId.make("message:drain-toctou"),
+            text: "Admitted just before drain arrives",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+            modelSelection,
+          })
+          .pipe(Effect.forkChild);
+
+        yield* Deferred.await(capabilitiesEntered);
+
+        const drainEntered = yield* Deferred.make<void>();
+        const drainFiber = yield* UpdateDrain.whileDraining(
+          Deferred.succeed(drainEntered, undefined).pipe(Effect.andThen(recovery.restartHold)),
+        ).pipe(Effect.provideService(UpdateDrain.UpdateDrain, drain), Effect.forkChild);
+
+        yield* Effect.yieldNow;
+        assert.isFalse(yield* Deferred.isDone(drainEntered));
+
+        yield* Deferred.succeed(releaseCapabilities, undefined);
+        yield* Fiber.join(dispatchFiber);
+        const hold = yield* Fiber.join(drainFiber);
+
+        assert.isTrue(hold.draining === true);
+        assert.isTrue(hold.runningTurns?.some((turn) => turn.threadId === threadId));
+      }).pipe(Effect.provide(makeLayerTest(pausingAdapter)));
+    }),
+);
+
+it.effect(
+  "queue.resume during drain keeps queueHeldByUpdateDrain on every queued run and skips starting them",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const drain = yield* UpdateDrain.UpdateDrain;
+      const threadId = yield* createIdleThread("drain-queue-resume");
+
+      const lease = yield* acquireDrain(drain);
+      for (const index of [1, 2] as const) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:msg:drain-queue-resume-${index}`),
+          threadId,
+          messageId: MessageId.make(`message:drain-queue-resume-${index}`),
+          text: `Queued message ${index}`,
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+          modelSelection,
+        });
+      }
+
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        commandId: CommandId.make("command:queue-resume:drain"),
+        threadId,
+      });
+
+      const afterResume = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(afterResume.runs.length, 2);
+      for (const run of afterResume.runs) {
+        assert.equal(run.status, "queued");
+        assert.equal(run.queueHeldByUpdateDrain, true);
+      }
+
+      yield* releaseDrain(lease);
+    }).pipe(Effect.provide(makeLayerTest())),
+);
+
+it.effect("run.memory-admit is skipped while draining and leaves the run waiting for memory", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const drain = yield* UpdateDrain.UpdateDrain;
+    const threadId = yield* createIdleThread("drain-memory-admit");
+    const runId = RunId.make("run:drain-memory-admit");
+    const now = yield* DateTime.now;
+
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("event:drain-memory-admit:run"),
+          type: "run.created",
+          threadId,
+          runId,
+          providerInstanceId: instanceId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            status: "starting",
+            requestedAt: now,
+            startedAt: null,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+            modelSelection,
+            providerInstanceId: instanceId,
+            providerThreadId: null,
+            rootNodeId: null,
+            activeAttemptId: null,
+            userMessageId: MessageId.make("message:drain-memory-admit"),
+            memoryAdmission: {
+              waitingSince: now,
+            },
+          },
+        },
+      ],
+    });
+
+    const lease = yield* acquireDrain(drain);
+    yield* orchestrator.dispatch({
+      type: "run.memory-admit",
+      commandId: CommandId.make("command:memory-admit:drain"),
+      threadId,
+      runId,
+    });
+
+    const afterAdmit = yield* orchestrator.getThreadProjection(threadId);
+    assert.equal(afterAdmit.runs[0]?.status, "starting");
+    assert.equal(afterAdmit.runs[0]?.memoryAdmission?.admittedAt, undefined);
+
+    yield* releaseDrain(lease);
   }).pipe(Effect.provide(makeLayerTest())),
 );

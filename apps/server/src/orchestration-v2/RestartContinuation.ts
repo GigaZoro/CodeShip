@@ -19,6 +19,8 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+import * as UpdateDrain from "../cloud/updateDrain.ts";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 
 import * as ServerSettings from "../serverSettings.ts";
@@ -406,7 +408,25 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         runId: source.id,
       };
       // A retry that puts the run back to preparing its workspace also queues that preparation.
-      yield* threads.dispatch({ type: "prepared-run.retry", automatic: true, ...target }).pipe(
+      // Wait for any active update drain to clear before retrying so automatic retries do not
+      // start fresh turns during drain (and release cleanly if the drain is cancelled).
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          let admitted = false;
+          while (!admitted) {
+            yield* UpdateDrain.watchDraining.pipe(
+              Stream.filter((draining) => !draining),
+              Stream.runHead,
+            );
+            admitted = yield* UpdateDrain.tryAdmitStart;
+          }
+          return yield* threads.dispatch({
+            type: "prepared-run.retry",
+            automatic: true,
+            ...target,
+          });
+        }),
+      ).pipe(
         Effect.catchTags({
           ThreadManagementProviderInstanceDisabledError: (error) =>
             Effect.logInfo("orchestration-v2.restart-retry.instance-disabled", {

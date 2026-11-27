@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   OrchestrationV2RestartHoldCommand,
+  OrchestrationV2RestartHoldTurn,
   OrchestrationV2RestartHoldWork,
 } from "@t3tools/contracts";
 import { commandDisplayText } from "@t3tools/client-runtime/work-log/command-label";
@@ -266,6 +267,28 @@ function CommandGroup({
             <span className="text-muted-foreground">{entry.threadTitle}</span>
           </>
         ),
+      }))}
+    />
+  );
+}
+
+/** Chats whose active turns the update is waiting to finish. */
+export function RunningTurnsGroup({
+  title,
+  note,
+  turns,
+}: {
+  readonly title: string;
+  readonly note?: string;
+  readonly turns: ReadonlyArray<OrchestrationV2RestartHoldTurn>;
+}) {
+  return (
+    <EntryGroup
+      title={title}
+      {...(note !== undefined ? { note } : {})}
+      entries={turns.map((turn) => ({
+        key: turn.threadId,
+        content: turn.threadTitle,
       }))}
     />
   );
